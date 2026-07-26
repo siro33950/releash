@@ -73,6 +73,7 @@ function makeRefs(): TestRefs {
 		dispatch: vi.fn(),
 		viewableRegistry: registry,
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
+		applyDisplayWindow: vi.fn(),
 	};
 }
 
@@ -145,9 +146,31 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-permission-mode-changed");
 		expect(eventNames).toContain("agent-models-updated");
 		expect(eventNames).toContain("agent-session-context-carry-updated");
+		expect(eventNames).toContain("agent-session-display-window-updated");
 		expect(eventNames).not.toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
+	});
+
+	it("reports when the display-window listener is ready", async () => {
+		listenResolvers = [];
+		const refs = makeRefs();
+		const onDisplayWindowListenerReady = vi.fn();
+
+		renderHook(() =>
+			useAgentSdkListeners({ ...refs, onDisplayWindowListenerReady }),
+		);
+		const displayListener = listenResolvers.find(
+			(resolver) =>
+				resolver.eventName === "agent-session-display-window-updated",
+		);
+		expect(displayListener).toBeDefined();
+
+		displayListener?.resolve(vi.fn());
+
+		await vi.waitFor(() => {
+			expect(onDisplayWindowListenerReady).toHaveBeenCalledTimes(1);
+		});
 	});
 });
 
@@ -726,13 +749,11 @@ describe("agent-streaming-delta event", () => {
 });
 
 describe("agent-session-state-changed event", () => {
-	it("marks every state event dirty and reconciles a visible non-terminal session", async () => {
-		const reconcileSession = vi.fn().mockResolvedValue(undefined);
-		const markSessionForReconciliation = vi.fn();
+	it("refreshes the Rust-owned display window for a visible non-terminal session", async () => {
+		const refreshDisplayedSession = vi.fn().mockResolvedValue(undefined);
 		const refs = {
 			...makeRefs(),
-			reconcileSession,
-			markSessionForReconciliation,
+			refreshDisplayedSession,
 		};
 		setViewable(refs, "session-1");
 		renderHook(() => useAgentSdkListeners(refs));
@@ -745,8 +766,7 @@ describe("agent-session-state-changed event", () => {
 			},
 		});
 
-		expect(markSessionForReconciliation).toHaveBeenCalledWith("session-1");
-		expect(reconcileSession).toHaveBeenCalledWith("session-1");
+		expect(refreshDisplayedSession).toHaveBeenCalledWith("session-1");
 	});
 
 	it("mirrors backend-owned queue pause changes", () => {

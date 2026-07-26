@@ -30,6 +30,7 @@ pub(crate) trait WorkflowNodeSessionGateway: Send + Sync {
 
     fn open_node_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError>;
 
+    #[cfg(test)]
     fn close_node_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError>;
 }
 
@@ -67,13 +68,6 @@ impl NodeExecutionLifecycleUsecase {
     ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         self.lifecycle().try_open_tab(session_id).await
     }
-
-    pub async fn close_tab_target(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
-        self.lifecycle().close_tab_target(session_id).await
-    }
 }
 
 impl<'a> NodeExecutionLifecycle<'a> {
@@ -95,6 +89,7 @@ impl<'a> NodeExecutionLifecycle<'a> {
         Ok(Some(target))
     }
 
+    #[cfg(test)]
     pub async fn close_tab_target(
         &self,
         session_id: &str,

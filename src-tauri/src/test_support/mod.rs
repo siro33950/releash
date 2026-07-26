@@ -744,6 +744,13 @@ struct NoopAgentSessionEventNotifier;
 impl AgentSessionEventNotifier for NoopAgentSessionEventNotifier {
     fn persist_notice(&self, _notice: crate::usecase::agent_session::status::SessionNotice) {}
 
+    fn display_window_updated(
+        &self,
+        _response: &crate::usecase::agent_session::session::GetSessionResponse,
+    ) -> bool {
+        true
+    }
+
     fn session_state_changed(&self, _payload: AgentSessionStateChangedPayload) {}
 
     fn stall_observed(&self, _payload: AgentStallObservedPayload) {}

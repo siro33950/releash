@@ -36,10 +36,7 @@ use crate::usecase::agent_session::session::{
     AcceptedQueuedTurnStartCommitOutcome, NextTurnIdError, SessionState, SessionStore,
 };
 
-/// All local transports operate under the same installation authority. The
-/// renderer caller journal remains Tauri-owned, but its operation binding must
-/// converge with an authenticated loopback WebSocket retry.
-pub(crate) const LOCAL_INSTALLATION_OPERATION_PRINCIPAL: &str = "local-app";
+pub(crate) use crate::usecase::agent_session::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL;
 const INTERNAL_WORKFLOW_OPERATION_PRINCIPAL: &str = "workflow-runtime";
 
 fn runtime_stop_request_id(session_id: &str, turn_id: u64) -> String {
@@ -729,6 +726,17 @@ pub(crate) struct RuntimeSendOperationGate {
     status_sink:
         OnceLock<Weak<crate::usecase::agent_session::operation::AgentSendOperationUsecase>>,
     workflow_runtime: OnceLock<Weak<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
+    #[cfg(test)]
+    acceptance_pause: parking_lot::Mutex<Option<Arc<TestSendAcceptancePause>>>,
+    #[cfg(test)]
+    execution_pause: parking_lot::Mutex<Option<Arc<TestSendAcceptancePause>>>,
+}
+
+#[cfg(test)]
+struct TestSendAcceptancePause {
+    armed: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 impl RuntimeSendOperationGate {
@@ -754,7 +762,33 @@ impl RuntimeSendOperationGate {
             queued_send_redrive,
             status_sink: OnceLock::new(),
             workflow_runtime: OnceLock::new(),
+            #[cfg(test)]
+            acceptance_pause: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            execution_pause: parking_lot::Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    fn pause_next_acceptance(&self) -> Arc<TestSendAcceptancePause> {
+        let pause = Arc::new(TestSendAcceptancePause {
+            armed: std::sync::atomic::AtomicBool::new(true),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self.acceptance_pause.lock() = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    fn pause_next_execution(&self) -> Arc<TestSendAcceptancePause> {
+        let pause = Arc::new(TestSendAcceptancePause {
+            armed: std::sync::atomic::AtomicBool::new(true),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self.execution_pause.lock() = Some(pause.clone());
+        pause
     }
 
     pub(crate) fn bind_workflow_runtime(
@@ -858,6 +892,21 @@ async fn persist_accepted_turn_reconciliation(
         operation_id,
         obligation_id,
         || sink.mark_turn_reconciliation_required(operation_id, obligation_id, failure.clone()),
+        sink.pending_recovery_wakeup(),
+    )
+    .await
+}
+
+async fn persist_unclaimed_turn_failure(
+    sink: &crate::usecase::agent_session::operation::AgentSendOperationUsecase,
+    operation_id: &str,
+    obligation_id: &str,
+    failure: SafeOperationFailure,
+) -> Option<AcceptedSendRecoveryWake> {
+    retry_accepted_turn_reconciliation(
+        operation_id,
+        obligation_id,
+        || sink.fail_unclaimed_turn_execution(operation_id, obligation_id, failure.clone()),
         sink.pending_recovery_wakeup(),
     )
     .await
@@ -1241,6 +1290,15 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         plan: &SendPlan,
         events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
     ) -> Result<Vec<crate::domain::local_event::LocalStateMutation>, SafeOperationFailure> {
+        #[cfg(test)]
+        let acceptance_pause = { self.acceptance_pause.lock().clone() };
+        #[cfg(test)]
+        if let Some(pause) = acceptance_pause {
+            if pause.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                pause.entered.notify_one();
+                pause.release.notified().await;
+            }
+        }
         self.session_store
             .prepare_send_acceptance_mutations(
                 crate::usecase::agent_session::session::SendAcceptanceProjectionInput {
@@ -1255,7 +1313,18 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                     events,
                 },
             )
-            .map_err(|_| Self::failure("The send projection could not be prepared."))
+            .map_err(|error| {
+                if error.contains("send allocation projection changed before acceptance") {
+                    SafeOperationFailure::new(
+                        SessionOperationFailureKind::OwnerRevisionChanged,
+                        true,
+                        "The session changed while accepting the send.",
+                        uuid::Uuid::new_v4().to_string(),
+                    )
+                } else {
+                    Self::failure("The send projection could not be prepared.")
+                }
+            })
     }
 
     async fn classify_legacy_provider_establish(
@@ -1430,8 +1499,17 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         }
         let queued_send_redrive = self.queued_send_redrive.clone();
         let session_store = self.session_store.clone();
+        #[cfg(test)]
+        let execution_pause = self.execution_pause.lock().clone();
         tokio::spawn(async move {
             let sink = status_sink;
+            #[cfg(test)]
+            if let Some(pause) = execution_pause {
+                if pause.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                }
+            }
             let immediate_turn = matches!(
                 &disposition,
                 crate::domain::agent_session::events::SendDisposition::StartedTurn { .. }
@@ -1476,6 +1554,57 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                     },
                 )
                 .await;
+            if let Err(
+                crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::AcceptedEffectAdmissionFailed {
+                    stage,
+                    effect_may_be_reserved,
+                },
+            ) = &execution_result
+            {
+                log::warn!(
+                    "accepted send reached a finite preclaim failure [{operation_id}/{stage}]"
+                );
+                let failure = SafeOperationFailure::new(
+                    if *effect_may_be_reserved {
+                        SessionOperationFailureKind::OutcomeUnknown
+                    } else {
+                        SessionOperationFailureKind::InvalidEffectIntent
+                    },
+                    *effect_may_be_reserved,
+                    if *effect_may_be_reserved {
+                        "The accepted send requires reconciliation before it can continue."
+                    } else {
+                        "The accepted send could not start because its session was not runnable."
+                    },
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                let recovery_wake = if *effect_may_be_reserved {
+                    persist_accepted_turn_reconciliation(
+                        &sink,
+                        &operation_id,
+                        &obligation_id,
+                        failure,
+                    )
+                    .await
+                } else {
+                    persist_unclaimed_turn_failure(
+                        &sink,
+                        &operation_id,
+                        &obligation_id,
+                        failure,
+                    )
+                    .await
+                };
+                match recovery_wake {
+                    Some(recovery_wake) => release_send_worker_to_recovery(
+                        &mut _claim,
+                        dispatch_lease,
+                        recovery_wake,
+                    ),
+                    None => drop(dispatch_lease),
+                }
+                return;
+            }
             if matches!(
                 &execution_result,
                 Err(crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::AcceptedEffectAdmissionDeferred)
@@ -1821,6 +1950,7 @@ mod lifecycle_gate_tests {
         action: SessionLifecycleAction,
         expected_state: SessionState,
         expected_backend: &str,
+        expected_queue_pause_count: usize,
     ) {
         let data = tempfile::tempdir().unwrap();
         let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
@@ -2026,7 +2156,7 @@ mod lifecycle_gate_tests {
                     }
                 ))
                 .count(),
-            1
+            expected_queue_pause_count
         );
         assert!(matches!(
             store
@@ -2056,6 +2186,7 @@ mod lifecycle_gate_tests {
             SessionLifecycleAction::Close,
             SessionState::Closed,
             "claude",
+            1,
         )
         .await;
     }
@@ -2067,6 +2198,7 @@ mod lifecycle_gate_tests {
             SessionLifecycleAction::ArchiveOpen,
             SessionState::Archived,
             "claude",
+            1,
         )
         .await;
     }
@@ -2080,6 +2212,7 @@ mod lifecycle_gate_tests {
             },
             SessionState::Idle,
             "codex",
+            1,
         )
         .await;
     }
@@ -3504,6 +3637,423 @@ mod send_execution_tests {
                 &terminal_result,
             )
             .expect("turn one terminal must commit before queue drain");
+    }
+
+    #[tokio::test]
+    async fn workspace_created_session_model_change_then_first_send_starts_instead_of_queuing() {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let session_id = crate::usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationUsecase::new(
+            Arc::clone(&session_store),
+        )
+        .create_workspace_session(
+            runtime.backend_registry(),
+            &data_path,
+            crate::usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationRequest {
+                request_id: "da94358a-77eb-4b69-9adb-319cb7c62227".to_string(),
+                session: crate::usecase::agent_session::workspace_session_creation::SessionCreationRequest {
+                    worktree_path: data_path.to_string_lossy().to_string(),
+                    permission_mode: "ask".to_string(),
+                    backend_id: Some("claude".to_string()),
+                    model_id: Some("claude-4-sonnet".to_string()),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            session_store
+                .get_session_shell(&data_path, &session_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::usecase::agent_session::session::SessionState::Idle
+        );
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository,
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+
+        let operation_id = "workspace-first-send".to_string();
+        let acceptance_pause = gate.pause_next_acceptance();
+        let send_task = {
+            let send = Arc::clone(&send);
+            let session_id = session_id.clone();
+            let data_path = data_path.clone();
+            let operation_id = operation_id.clone();
+            tokio::spawn(async move {
+                send.send(
+                    crate::usecase::agent_session::operation::SendOperationRequest {
+                        principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                        operation_id,
+                        canonical_payload: serde_json::to_string(&CanonicalSendCommandV1 {
+                            target: CanonicalSendTargetV1::Direct {
+                                chat_session_id: Some(session_id),
+                                worktree_path: data_path.to_string_lossy().to_string(),
+                            },
+                            content: "first workspace message".to_string(),
+                            permission_mode: "ask".to_string(),
+                            plan_mode: false,
+                            backend_id: Some("claude".to_string()),
+                            model_id: Some("claude-opus-5".to_string()),
+                            images: Vec::new(),
+                            mentions: Vec::new(),
+                            editor_context: None,
+                        })
+                        .unwrap(),
+                    },
+                )
+                .await
+            })
+        };
+        acceptance_pause.entered.notified().await;
+        runtime
+            .set_model(&session_id, "claude:claude-opus-5")
+            .await
+            .unwrap();
+        let changed = session_store
+            .get_session_meta(&data_path, &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            changed.state,
+            crate::usecase::agent_session::session::SessionState::Idle
+        );
+        assert_eq!(changed.selected_model.as_deref(), Some("claude-opus-5"));
+        acceptance_pause.release.notify_one();
+        let outcome = send_task.await.unwrap().unwrap();
+        let crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(accepted) =
+            outcome
+        else {
+            panic!("the first workspace send must be durably accepted")
+        };
+        assert!(matches!(
+            accepted.receipt.disposition,
+            crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                turn_id
+            } if turn_id == "1"
+        ));
+        assert!(session_store
+            .canonical_pending_send_queue(&session_id)
+            .unwrap()
+            .is_empty());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, &operation_id)
+                    .await
+                    .unwrap();
+                let starts = controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count();
+                if starts == 1
+                    && matches!(
+                        operation.latest_status,
+                        crate::usecase::agent_session::operation::SendExecutionStatus::Running { .. }
+                    )
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first workspace send must reach the provider exactly once");
+        assert_eq!(
+            runtime
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .pending_queue_count,
+            0
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1
+        );
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .into_iter()
+            .any(|kind| matches!(
+                kind,
+                TestRuntimeCallKind::OpenSession { model, .. }
+                    if model == "claude-opus-5"
+            )));
+    }
+
+    #[tokio::test]
+    async fn provider_cold_backend_model_change_then_first_send_uses_the_selected_model() {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let session_id = crate::usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationUsecase::new(
+            Arc::clone(&session_store),
+        )
+        .create_workspace_session(
+            runtime.backend_registry(),
+            &data_path,
+            crate::usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationRequest {
+                request_id: "631b26dd-f787-4018-bc51-d40a598960e0".to_string(),
+                session: crate::usecase::agent_session::workspace_session_creation::SessionCreationRequest {
+                    worktree_path: data_path.to_string_lossy().to_string(),
+                    permission_mode: "ask".to_string(),
+                    backend_id: Some("claude".to_string()),
+                    model_id: Some("claude-4-sonnet".to_string()),
+                },
+            },
+        )
+        .unwrap();
+        runtime.set_model(&session_id, "codex:gpt-5").await.unwrap();
+        let selected = session_store
+            .get_session_meta(&data_path, &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.backend_id, "codex");
+        assert_eq!(selected.selected_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            session_store
+                .load_queue_paused_at(&data_path, &session_id)
+                .unwrap(),
+            None
+        );
+
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository,
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+        let operation_id = "provider-cold-cross-backend-send";
+        let outcome = send
+            .send(
+                crate::usecase::agent_session::operation::SendOperationRequest {
+                    principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                    operation_id: operation_id.to_string(),
+                    canonical_payload: serde_json::to_string(&CanonicalSendCommandV1 {
+                        target: CanonicalSendTargetV1::Direct {
+                            chat_session_id: Some(session_id.clone()),
+                            worktree_path: data_path.to_string_lossy().to_string(),
+                        },
+                        content: "use the selected cross-backend model".to_string(),
+                        permission_mode: "ask".to_string(),
+                        plan_mode: false,
+                        backend_id: None,
+                        model_id: None,
+                        images: Vec::new(),
+                        mentions: Vec::new(),
+                        editor_context: None,
+                    })
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(_)
+        ));
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, operation_id)
+                    .await
+                    .unwrap();
+                if matches!(
+                    operation.latest_status,
+                    crate::usecase::agent_session::operation::SendExecutionStatus::Running { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the cross-backend cold send must start");
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .into_iter()
+            .any(|kind| matches!(
+                kind,
+                TestRuntimeCallKind::OpenSession { model, .. } if model == "gpt-5"
+            )));
+    }
+
+    #[tokio::test]
+    async fn permanent_unclaimed_preflight_failure_becomes_visible_terminal_failure() {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository,
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+        let execution_pause = gate.pause_next_execution();
+
+        let operation_id = "permanent-preclaim-failure";
+        let outcome = send
+            .send(
+                crate::usecase::agent_session::operation::SendOperationRequest {
+                    principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                    operation_id: operation_id.to_string(),
+                    canonical_payload: serde_json::to_string(&CanonicalSendCommandV1 {
+                        target: CanonicalSendTargetV1::Direct {
+                            chat_session_id: None,
+                            worktree_path: data_path.to_string_lossy().to_string(),
+                        },
+                        content: "must not remain silent".to_string(),
+                        permission_mode: "ask".to_string(),
+                        plan_mode: false,
+                        backend_id: Some("claude".to_string()),
+                        model_id: Some("claude-4-sonnet".to_string()),
+                        images: Vec::new(),
+                        mentions: Vec::new(),
+                        editor_context: None,
+                    })
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        let crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(accepted) =
+            outcome
+        else {
+            panic!("the send must first be durably accepted")
+        };
+        execution_pause.entered.notified().await;
+        session_store
+            .append_session_event_and_project_state(
+                &data_path,
+                &accepted.receipt.session_id,
+                crate::domain::agent_session::events::AgentSessionDomainEvent::QueuePaused {
+                    at: crate::usecase::agent_session::session::now_timestamp(),
+                },
+            )
+            .unwrap();
+        execution_pause.release.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, operation_id)
+                    .await
+                    .unwrap();
+                if matches!(
+                    operation.latest_status,
+                    crate::usecase::agent_session::operation::SendExecutionStatus::Failed { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the permanent preclaim failure must become terminal");
+        assert!(controller
+            .call_kinds_for(&accepted.receipt.session_id)
+            .into_iter()
+            .all(|kind| !matches!(kind, TestRuntimeCallKind::StartTurn)));
+        assert_eq!(
+            send.recover_pending_provider_effects_pass().await.unwrap(),
+            0,
+            "the failed obligation must leave no pending recovery loop"
+        );
     }
 
     #[tokio::test]

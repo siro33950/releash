@@ -290,6 +290,22 @@ pub async fn get_session(
         .await
 }
 
+#[tauri::command]
+pub async fn get_agent_session_display_window(
+    usecase: tauri::State<
+        '_,
+        Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    >,
+    session_id: String,
+    visible_message_count: Option<usize>,
+) -> Result<Option<GetSessionResponseDtoV1>, String> {
+    Ok(usecase
+        .get_display_session_window(&session_id, visible_message_count)
+        .await
+        .map_err(|error| error.to_string())?
+        .map(GetSessionResponseDtoV1::from))
+}
+
 async fn dispatch_feedback_supervised_session_load(
     usecase: &crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase,
     session_id: &str,

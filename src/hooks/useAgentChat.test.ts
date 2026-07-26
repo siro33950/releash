@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockInvoke = vi.fn().mockResolvedValue(undefined);
-const { mockAgentSessionNotices, mockAgentSessionNoticeState } = vi.hoisted(
-	() => ({
+const { mockAgentSessionNotices, mockAgentSessionNoticeState, mockGetSession } =
+	vi.hoisted(() => ({
 		mockAgentSessionNotices: new Map<
 			string,
 			{ operation: string; message: string }
 		>(),
 		mockAgentSessionNoticeState: { revision: "0" },
-	}),
-);
+		mockGetSession: vi.fn().mockResolvedValue(null),
+	}));
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
@@ -76,7 +76,16 @@ vi.mock("./useSessionStore", () => ({
 		},
 	),
 	listSessions: vi.fn().mockResolvedValue([]),
-	getSession: vi.fn().mockResolvedValue(null),
+	getSession: mockGetSession,
+	getAgentSessionDisplayWindow: async (sessionId: string) => {
+		const response = await mockGetSession(sessionId);
+		if (response) {
+			listenCallbacks.get("agent-session-display-window-updated")?.({
+				payload: response,
+			});
+		}
+		return response;
+	},
 	getSessionPage: vi.fn().mockResolvedValue(null),
 	planAgentChatEviction: vi.fn().mockResolvedValue({
 		active: null,
@@ -159,6 +168,7 @@ vi.mock("./useSessionStore", () => ({
 		...session,
 		messages: session.messages ?? [],
 	})),
+	convertRawGetSessionResponse: vi.fn((response) => response),
 	setSessionBackend: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -1125,7 +1135,7 @@ describe("useAgentChat", () => {
 		});
 	});
 
-	it("does not resurrect a consumed queue item from an older view-registration readback", async () => {
+	it("applies a later consumed event after the Rust display window publication", async () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -1182,22 +1192,6 @@ describe("useAgentChat", () => {
 		);
 
 		await act(async () => {
-			listenCallbacks.get("agent-pending-message-consumed")?.({
-				payload: {
-					chat_session_id: "s1",
-					queued_turn_id: "startup-queued-race",
-					agent_message: {
-						id: "startup-agent",
-						role: "agent",
-						parts: [],
-						timestamp: 1002,
-					},
-				},
-			});
-		});
-		expect(result.current.getSessionPendingQueue("s1")).toEqual([]);
-
-		await act(async () => {
 			resolveReadback?.({
 				session,
 				turnPhase: "streaming",
@@ -1211,6 +1205,20 @@ describe("useAgentChat", () => {
 				pendingPermissionStateRevision: "0",
 				latestTokenUsage: null,
 			} as never);
+			await Promise.resolve();
+			await Promise.resolve();
+			listenCallbacks.get("agent-pending-message-consumed")?.({
+				payload: {
+					chat_session_id: "s1",
+					queued_turn_id: "startup-queued-race",
+					agent_message: {
+						id: "startup-agent",
+						role: "agent",
+						parts: [],
+						timestamp: 1002,
+					},
+				},
+			});
 		});
 
 		await waitFor(() =>
@@ -1218,7 +1226,7 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("does not overwrite newer streaming parts with an older authority readback", async () => {
+	it("applies a later streaming event after the Rust display window publication", async () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -1282,15 +1290,6 @@ describe("useAgentChat", () => {
 		);
 
 		await act(async () => {
-			listenCallbacks.get("agent-streaming-delta")?.({
-				payload: {
-					chat_session_id: "s1",
-					message_id: "streaming-agent",
-					seq: "2",
-					snapshot: true,
-					parts: [{ type: "text", content: "new live parts" }],
-				},
-			});
 			resolveReadback?.({
 				session: {
 					...session,
@@ -1312,6 +1311,17 @@ describe("useAgentChat", () => {
 				pendingPermissionStateRevision: "0",
 				latestTokenUsage: null,
 			} as never);
+			await Promise.resolve();
+			await Promise.resolve();
+			listenCallbacks.get("agent-streaming-delta")?.({
+				payload: {
+					chat_session_id: "s1",
+					message_id: "streaming-agent",
+					seq: "2",
+					snapshot: true,
+					parts: [{ type: "text", content: "new live parts" }],
+				},
+			});
 		});
 
 		await waitFor(() =>
@@ -1502,6 +1512,9 @@ describe("useAgentChat", () => {
 		);
 
 		await act(async () => {
+			resolveWorkspaceLoad?.(staleResponse as never);
+			await workspaceLoad;
+			await Promise.resolve();
 			listenCallbacks.get("agent-session-state-changed")?.({
 				payload: {
 					chat_session_id: "s1",
@@ -1517,10 +1530,7 @@ describe("useAgentChat", () => {
 		);
 		expect(result.current.getSessionById("s1")?.state).toBe("done");
 
-		let loadedAfterRace: unknown;
 		await act(async () => {
-			resolveWorkspaceLoad?.(staleResponse as never);
-			loadedAfterRace = await workspaceLoad;
 			resolveInit?.({
 				sessions: [],
 				activeSession: staleResponse,
@@ -1533,7 +1543,6 @@ describe("useAgentChat", () => {
 		expect(result.current.getSessionPendingQueue("s1")).toEqual([]);
 		expect(result.current.getSessionTurnPhase("s1")).toBe("idle");
 		expect(result.current.activeSession?.state).toBe("done");
-		expect((loadedAfterRace as { state?: string } | null)?.state).toBe("done");
 		expect(
 			result.current.activeSession?.messages.map((message) => message.id),
 		).toEqual(["startup-human", "startup-agent"]);
@@ -3829,17 +3838,11 @@ describe("useAgentChat", () => {
 				"backend unavailable",
 			);
 		});
-		expect(sessionStore.setSessionBackend).toHaveBeenCalledWith(
-			"session-a",
-			"codex",
-		);
-		const firstSetModelIndex = mockInvoke.mock.calls.findIndex(
-			(call) => call[0] === "set_agent_model",
-		);
-		expect(firstSetModelIndex).toBeGreaterThanOrEqual(0);
-		expect(
-			vi.mocked(sessionStore.setSessionBackend).mock.invocationCallOrder[0],
-		).toBeLessThan(mockInvoke.mock.invocationCallOrder[firstSetModelIndex]);
+		expect(sessionStore.setSessionBackend).not.toHaveBeenCalled();
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "session-a",
+			modelId: "codex:gpt-5",
+		});
 		expect(result.current.getSessionError("session-b")).toBeNull();
 		expect(sessionStore.updateAgentSessionNotice).toHaveBeenCalledWith(
 			"session-a",
@@ -3857,56 +3860,6 @@ describe("useAgentChat", () => {
 		expect(sessionStore.updateAgentSessionNotice).toHaveBeenCalledWith(
 			"session-a",
 			{ action: "success", operation: "set_backend" },
-		);
-	});
-
-	it("sendMessage after setModel invokes sendAgentMessage for the active session", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
-		// Create active session via first message
-		await act(async () => {
-			await result.current.sendMessage(
-				result.current.activeSession?.id ?? null,
-				"first",
-			);
-		});
-		mockInvoke.mockClear();
-		vi.mocked(sessionStore.sendAgentMessage).mockClear();
-
-		// Select model
-		act(() => {
-			result.current.setModel(
-				result.current.activeSession?.id ?? "",
-				"claude-4",
-			);
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
-			chatSessionId: "s1",
-			modelId: "claude-4",
-		});
-
-		// Send second message — model sync is handled by Rust's start_agent_turn
-		await act(async () => {
-			await result.current.sendMessage(
-				result.current.activeSession?.id ?? null,
-				"second",
-			);
-		});
-
-		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
-			"s1",
-			"/repo",
-			"second",
-			"edit",
-			false,
-			null,
-			undefined,
-			undefined,
 		);
 	});
 

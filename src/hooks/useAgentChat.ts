@@ -6,7 +6,6 @@ import type {
 	AgentEditorContext,
 	AgentStallObservation,
 	BackendInfo,
-	ChatMessage,
 	ChatSession,
 	ImageAttachment,
 	MentionReference,
@@ -50,8 +49,8 @@ import {
 	createWorkspaceSession,
 	forkSession as forkSessionApi,
 	type GetSessionResponse,
+	getAgentSessionDisplayWindow,
 	getAgentSessionNotice,
-	getSession,
 	getSessionPage,
 	initAgentSessions,
 	type LoadedMessagePage,
@@ -214,73 +213,6 @@ function loadedMessageCount(pages: LoadedMessagePage[]): number {
 
 function initialLoadedPages(count: number): LoadedMessagePage[] {
 	return count > 0 ? [{ requestCursor: null, count }] : [];
-}
-
-function mergeAuthoritativeMessageWindow(
-	current: ChatMessage[],
-	authoritative: ChatMessage[],
-): ChatMessage[] {
-	if (current.length === 0) return authoritative;
-	if (authoritative.length === 0) return current;
-
-	const merged = current.slice();
-	for (
-		let authoritativeIndex = 0;
-		authoritativeIndex < authoritative.length;
-		authoritativeIndex++
-	) {
-		const message = authoritative[authoritativeIndex];
-		const existingIndex = merged.findIndex(
-			(candidate) => candidate.id === message.id,
-		);
-		if (existingIndex >= 0) {
-			merged[existingIndex] = message;
-			continue;
-		}
-
-		let insertionIndex = -1;
-		for (
-			let nextIndex = authoritativeIndex + 1;
-			nextIndex < authoritative.length;
-			nextIndex++
-		) {
-			const nextMessageId = authoritative[nextIndex]?.id;
-			const nextExistingIndex = merged.findIndex(
-				(candidate) => candidate.id === nextMessageId,
-			);
-			if (nextExistingIndex >= 0) {
-				insertionIndex = nextExistingIndex;
-				break;
-			}
-		}
-		if (insertionIndex < 0) {
-			for (
-				let previousIndex = authoritativeIndex - 1;
-				previousIndex >= 0;
-				previousIndex--
-			) {
-				const previousMessageId = authoritative[previousIndex]?.id;
-				const previousExistingIndex = merged.findIndex(
-					(candidate) => candidate.id === previousMessageId,
-				);
-				if (previousExistingIndex >= 0) {
-					insertionIndex = previousExistingIndex + 1;
-					break;
-				}
-			}
-		}
-		if (insertionIndex < 0) {
-			insertionIndex = merged.findIndex(
-				(candidate) => candidate.timestamp > message.timestamp,
-			);
-		}
-		merged.splice(
-			insertionIndex < 0 ? merged.length : insertionIndex,
-			0,
-			message,
-		);
-	}
-	return merged;
 }
 
 function loadedPagesEqual(
@@ -601,127 +533,16 @@ export function useAgentChat(
 	// SDK listener gating: 表示中の session id 集合を管理する registry。
 	// 各 panel が register したものは getIds() で参照される（listener が更新を gate する）。
 	const viewableIdsRef = useRef<Map<string, number>>(new Map());
-	const sessionReadbackGenerationsRef = useRef<Map<string, number>>(new Map());
-	const sessionBodyGenerationsRef = useRef<Map<string, number>>(new Map());
-	const sessionsNeedingReconciliationRef = useRef<Set<string>>(new Set());
-	const sessionAuthorityReadEpochRef = useRef(0);
-	const sessionAuthorityReadEpochsRef = useRef<Map<string, number>>(new Map());
-	const markSessionForReconciliation = useCallback(
-		(sessionId: string, options: { invalidateReadback?: boolean } = {}) => {
-			sessionsNeedingReconciliationRef.current.add(sessionId);
-			sessionAuthorityReadEpochRef.current += 1;
-			sessionAuthorityReadEpochsRef.current.set(
-				sessionId,
-				sessionAuthorityReadEpochRef.current,
-			);
-			if (options.invalidateReadback !== false) {
-				sessionReadbackGenerationsRef.current.set(
-					sessionId,
-					(sessionReadbackGenerationsRef.current.get(sessionId) ?? 0) + 1,
-				);
-			}
-		},
-		[],
+	const displayWindowListenerReadyRef = useRef(false);
+	const displayWindowReadsCompletedBeforeListenerReadyRef = useRef<Set<string>>(
+		new Set(),
 	);
-	const beginSessionAuthorityRead = useCallback((sessionId: string) => {
-		sessionAuthorityReadEpochRef.current += 1;
-		sessionAuthorityReadEpochsRef.current.set(
-			sessionId,
-			sessionAuthorityReadEpochRef.current,
-		);
-		const generation =
-			(sessionReadbackGenerationsRef.current.get(sessionId) ?? 0) + 1;
-		sessionReadbackGenerationsRef.current.set(sessionId, generation);
-		return {
-			generation,
-			bodyGeneration: sessionBodyGenerationsRef.current.get(sessionId) ?? 0,
-		};
-	}, []);
-	const applySessionAuthorityResponse = useCallback(
-		(
-			sessionId: string,
-			token: { generation: number; bodyGeneration: number },
-			response: GetSessionResponse,
-			options: {
-				requireViewable?: boolean;
-				refreshWorkspace?: boolean;
-				resetMessageWindow?: boolean;
-			} = {},
-		): boolean => {
-			if (
-				sessionReadbackGenerationsRef.current.get(sessionId) !==
-					token.generation ||
-				(options.requireViewable === true &&
-					!viewableIdsRef.current.has(sessionId))
-			) {
-				return false;
-			}
-			const current = sessionsByIdRef.current[sessionId];
-			const bodyChangedWhileReading =
-				(sessionBodyGenerationsRef.current.get(sessionId) ?? 0) !==
-				token.bodyGeneration;
-			if (bodyChangedWhileReading && current != null) {
-				dispatchSessionMeta(dispatch, sessionId, response);
-				if (options.refreshWorkspace === true) {
-					dispatchWorkspaceTreeRefresh(response.session.worktreePath);
-				}
-				return true;
-			}
-			const resetMessageWindow = options.resetMessageWindow === true;
-			const messages = resetMessageWindow
-				? response.session.messages
-				: mergeAuthoritativeMessageWindow(
-						current?.messages ?? [],
-						response.session.messages,
-					);
-			const reconciledSession = {
-				...response.session,
-				messages,
-			};
-			const currentPageState = pageStateRef.current[sessionId];
-			const pageAccountingIsValid =
-				!resetMessageWindow &&
-				current != null &&
-				currentPageState != null &&
-				loadedMessageCount(currentPageState.loadedPages) ===
-					current.messages.length;
-			if (!pageAccountingIsValid) {
-				rememberInitialPage({
-					...response,
-					session: reconciledSession,
-				});
-			} else {
-				const olderPages = currentPageState.loadedPages.slice(1);
-				const olderCount = loadedMessageCount(olderPages);
-				const latestCount = Math.max(0, messages.length - olderCount);
-				const preservePagingCursor =
-					currentPageState.loading || olderPages.length > 0;
-				const reconciledPageState = {
-					nextCursor: preservePagingCursor
-						? currentPageState.nextCursor
-						: (response.initialPage?.nextCursor ?? currentPageState.nextCursor),
-					hasMore: preservePagingCursor
-						? currentPageState.hasMore
-						: (response.initialPage?.hasMore ?? currentPageState.hasMore),
-					loading: currentPageState.loading,
-					loadedPages:
-						messages.length === 0
-							? []
-							: [{ requestCursor: null, count: latestCount }, ...olderPages],
-				};
-				if (currentPageState.loading) {
-					Object.assign(currentPageState, reconciledPageState);
-				} else {
-					pageStateRef.current[sessionId] = reconciledPageState;
-				}
-			}
-			dispatch({ type: "UPSERT_SESSION", session: reconciledSession });
-			dispatchSessionMeta(dispatch, sessionId, response);
-			sessionsNeedingReconciliationRef.current.delete(sessionId);
-			if (options.refreshWorkspace === true) {
-				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
-			}
-			return true;
+	const applyDisplayWindow = useCallback(
+		(response: GetSessionResponse) => {
+			rememberInitialPage(response);
+			dispatch({ type: "UPSERT_SESSION", session: response.session });
+			dispatchSessionMeta(dispatch, response.session.id, response);
+			dispatchWorkspaceTreeRefresh(response.session.worktreePath);
 		},
 		[rememberInitialPage],
 	);
@@ -734,18 +555,37 @@ export function useAgentChat(
 				resetMessageWindow?: boolean;
 			} = {},
 		): Promise<{ response: GetSessionResponse | null; applied: boolean }> => {
-			const token = beginSessionAuthorityRead(sessionId);
-			const response = await getSession(sessionId);
+			if (
+				options.requireViewable === true &&
+				!viewableIdsRef.current.has(sessionId)
+			) {
+				return { response: null, applied: false };
+			}
+			const visibleMessageCount =
+				sessionsByIdRef.current[sessionId]?.messages.length;
+			const response = await getAgentSessionDisplayWindow(
+				sessionId,
+				visibleMessageCount,
+			);
+			if (response && !displayWindowListenerReadyRef.current) {
+				displayWindowReadsCompletedBeforeListenerReadyRef.current.add(
+					sessionId,
+				);
+			}
+			if (response && !sessionsByIdRef.current[sessionId]) {
+				applyDisplayWindow(response);
+			}
+			if (response && options.refreshWorkspace === true) {
+				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
+			}
 			return {
 				response,
-				applied:
-					response != null &&
-					applySessionAuthorityResponse(sessionId, token, response, options),
+				applied: response != null,
 			};
 		},
-		[applySessionAuthorityResponse, beginSessionAuthorityRead],
+		[applyDisplayWindow],
 	);
-	const reconcileSessionFromAuthority = useCallback(
+	const refreshDisplayedSession = useCallback(
 		async (sessionId: string): Promise<void> => {
 			try {
 				await readSessionFromAuthority(sessionId, {
@@ -776,22 +616,19 @@ export function useAgentChat(
 				touchSessionAccess(sessionId);
 				const map = viewableIdsRef.current;
 				map.set(sessionId, (map.get(sessionId) ?? 0) + 1);
+				const mirroredSession = sessionsByIdRef.current[sessionId];
 				const mirrorMayBeStale =
-					sessionsNeedingReconciliationRef.current.has(sessionId) ||
-					(pendingQueuesRef.current[sessionId]?.length ?? 0) > 0 ||
-					(turnPhasesRef.current[sessionId] ?? "idle") !== "idle";
+					mirroredSession &&
+					((pendingQueuesRef.current[sessionId]?.length ?? 0) > 0 ||
+						(turnPhasesRef.current[sessionId] ?? "idle") !== "idle");
 				if (mirrorMayBeStale) {
-					void reconcileSessionFromAuthority(sessionId);
+					void refreshDisplayedSession(sessionId);
 				}
 				return () => {
 					const m = viewableIdsRef.current;
 					const next = (m.get(sessionId) ?? 0) - 1;
 					if (next <= 0) {
 						m.delete(sessionId);
-						sessionReadbackGenerationsRef.current.set(
-							sessionId,
-							(sessionReadbackGenerationsRef.current.get(sessionId) ?? 0) + 1,
-						);
 						if (!sessionsByIdRef.current[sessionId]) {
 							sessionNoticeRequestControllersRef.current
 								.get(sessionId)
@@ -806,27 +643,11 @@ export function useAgentChat(
 			},
 			getIds: () => new Set(viewableIdsRef.current.keys()),
 		}),
-		[touchSessionAccess, reconcileSessionFromAuthority],
+		[touchSessionAccess, refreshDisplayedSession],
 	);
 
 	const dispatchWithMessageWindowTracking = useCallback(
 		(action: AgentChatAction) => {
-			const bodyMutationSessionId =
-				action.type === "UPSERT_SESSION"
-					? action.session.id
-					: action.type === "ADD_MESSAGE" ||
-							action.type === "SET_STREAMING_MESSAGE" ||
-							action.type === "APPLY_STREAMING_DELTA" ||
-							action.type === "MARK_AGENT_TURN_COMPLETED"
-						? action.sessionId
-						: null;
-			if (bodyMutationSessionId) {
-				sessionBodyGenerationsRef.current.set(
-					bodyMutationSessionId,
-					(sessionBodyGenerationsRef.current.get(bodyMutationSessionId) ?? 0) +
-						1,
-				);
-			}
 			if (action.type === "ADD_MESSAGE") {
 				const pageState = pageStateRef.current[action.sessionId];
 				const session = sessionsByIdRef.current[action.sessionId];
@@ -1828,54 +1649,17 @@ export function useAgentChat(
 		const selectedBackend = selectedModel
 			? getModelInfoBackend(selectedModel)
 			: "";
-		const currentBackend = sessionsByIdRef.current[sessionId]?.backendId ?? "";
-		const persistSelectedModel = () =>
-			invoke("set_agent_model", {
-				chatSessionId: sessionId,
-				modelId: normalizedModelId,
-			});
-
-		if (
-			selectedBackend &&
-			currentBackend &&
-			selectedBackend !== currentBackend
-		) {
-			void setSessionBackend(sessionId, selectedBackend)
-				.then(async (response) => {
-					const switchedModel = normalizeModelSelectionId(
-						response.availableModels,
-						response.selectedModel,
-					);
-					if (switchedModel !== normalizedModelId) {
-						await persistSelectedModel();
-					}
-					await clearSessionError(
-						dispatch,
-						sessionNoticeRequestControllersRef,
-						sessionId,
-						"set_backend",
-					);
-					dispatch({
-						type: "SET_SESSION_MODEL",
-						sessionId,
-						modelId: normalizedModelId,
-						backendId: selectedBackend,
-					});
-				})
-				.catch(async (e) => {
-					await setSessionError(
-						dispatch,
-						sessionNoticeRequestControllersRef,
-						sessionId,
-						"set_backend",
-						`Agent の変更に失敗: ${e}`,
-					);
-				});
-			return;
-		}
-
-		persistSelectedModel()
-			.then(() => {
+		invoke("set_agent_model", {
+			chatSessionId: sessionId,
+			modelId: normalizedModelId,
+		})
+			.then(async () => {
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_backend",
+				);
 				dispatch({
 					type: "SET_SESSION_MODEL",
 					sessionId,
@@ -1883,8 +1667,14 @@ export function useAgentChat(
 					backendId: selectedBackend || undefined,
 				});
 			})
-			.catch((e) => {
-				console.error("Failed to set agent model:", e);
+			.catch(async (e) => {
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_backend",
+					`モデルの変更に失敗: ${e}`,
+				);
 			});
 	}, []);
 
@@ -1910,7 +1700,6 @@ export function useAgentChat(
 			) {
 				return;
 			}
-			const token = beginSessionAuthorityRead(sessionId);
 			setSessionBackend(sessionId, backendId)
 				.then(async (response) => {
 					await clearSessionError(
@@ -1920,9 +1709,7 @@ export function useAgentChat(
 						"set_backend",
 					);
 					if (activeSessionIdRef.current === sessionId) {
-						applySessionAuthorityResponse(sessionId, token, response, {
-							resetMessageWindow: true,
-						});
+						applyDisplayWindow(response);
 					}
 				})
 				.catch(async (e) => {
@@ -1935,7 +1722,7 @@ export function useAgentChat(
 					);
 				});
 		},
-		[applySessionAuthorityResponse, beginSessionAuthorityRead],
+		[applyDisplayWindow],
 	);
 
 	const getStreamingDeltaDropReason = useCallback(
@@ -1948,13 +1735,25 @@ export function useAgentChat(
 		},
 		[],
 	);
+	const onDisplayWindowListenerReady = useCallback(() => {
+		displayWindowListenerReadyRef.current = true;
+		const completedReads =
+			displayWindowReadsCompletedBeforeListenerReadyRef.current;
+		displayWindowReadsCompletedBeforeListenerReadyRef.current = new Set();
+		for (const sessionId of completedReads) {
+			if (viewableIdsRef.current.has(sessionId)) {
+				void refreshDisplayedSession(sessionId);
+			}
+		}
+	}, [refreshDisplayedSession]);
 
 	useAgentSdkListeners({
 		dispatch: dispatchWithMessageWindowTracking,
 		viewableRegistry,
 		refreshSessions,
-		reconcileSession: reconcileSessionFromAuthority,
-		markSessionForReconciliation,
+		refreshDisplayedSession,
+		applyDisplayWindow,
+		onDisplayWindowListenerReady,
 		getStreamingDeltaDropReason,
 		worktreePath,
 	});
@@ -2002,8 +1801,6 @@ export function useAgentChat(
 		const initGeneration = initSessionsGenerationRef.current + 1;
 		initSessionsGenerationRef.current = initGeneration;
 		const requestedWorktreePath = worktreePathRef.current;
-		const initAuthorityEpoch = sessionAuthorityReadEpochRef.current + 1;
-		sessionAuthorityReadEpochRef.current = initAuthorityEpoch;
 		try {
 			const response = await initAgentSessions(requestedWorktreePath);
 			if (
@@ -2023,26 +1820,18 @@ export function useAgentChat(
 			});
 			if (response.activeSession) {
 				const sessionId = response.activeSession.session.id;
+				if (!sessionsByIdRef.current[sessionId]) {
+					applyDisplayWindow(response.activeSession);
+				}
 				dispatch({
 					type: "SET_ACTIVE_SESSION_ID",
 					sessionId,
 				});
-				const laterSessionReadEpoch =
-					sessionAuthorityReadEpochsRef.current.get(sessionId) ?? 0;
-				if (laterSessionReadEpoch <= initAuthorityEpoch) {
-					const token = beginSessionAuthorityRead(sessionId);
-					applySessionAuthorityResponse(
-						sessionId,
-						token,
-						response.activeSession,
-						{ resetMessageWindow: true },
-					);
-				}
 			}
 		} catch (error) {
 			console.error("Failed to initialize agent sessions:", error);
 		}
-	}, [applySessionAuthorityResponse, beginSessionAuthorityRead]);
+	}, [applyDisplayWindow]);
 
 	// Load sessions and backends on mount
 	useEffect(() => {

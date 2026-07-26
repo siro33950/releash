@@ -44,7 +44,7 @@ use crate::usecase::agent_session::session::{
     InitialSessionPage, MessagePart, MessageRole, ModelInfo, OpenTabRegistry,
     PendingRecoveryMessage, PermissionPartStatus, PermissionRequestMsg,
     ProviderSessionEstablishmentOutcome, QueuedAgentTurn, SessionState, SessionStore,
-    SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
+    SessionSummary, INITIAL_SESSION_PAGE_LIMIT, RETAINED_MESSAGE_CAP,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
@@ -226,10 +226,19 @@ pub struct AgentEditorSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRuntimeError {
-    StartupTimeout { retry_count: u32, max_retries: u32 },
+    StartupTimeout {
+        retry_count: u32,
+        max_retries: u32,
+    },
     BackendSelectionLocked,
-    BackendSessionLost { requested_resume_id: String },
+    BackendSessionLost {
+        requested_resume_id: String,
+    },
     AcceptedEffectAdmissionDeferred,
+    AcceptedEffectAdmissionFailed {
+        stage: &'static str,
+        effect_may_be_reserved: bool,
+    },
     Other(String),
 }
 
@@ -255,6 +264,13 @@ impl std::fmt::Display for AgentRuntimeError {
             Self::AcceptedEffectAdmissionDeferred => {
                 f.write_str("Accepted effect admission was deferred for durable redrive")
             }
+            Self::AcceptedEffectAdmissionFailed {
+                stage,
+                effect_may_be_reserved,
+            } => write!(
+                f,
+                "Accepted effect admission failed at {stage} (effect_may_be_reserved={effect_may_be_reserved})"
+            ),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -262,21 +278,24 @@ impl std::fmt::Display for AgentRuntimeError {
 
 impl std::error::Error for AgentRuntimeError {}
 
-fn defer_accepted_effect_preflight(
-    stage: &str,
+fn fail_accepted_effect_preflight(
+    stage: &'static str,
     error: impl std::fmt::Display,
 ) -> AgentRuntimeError {
-    log::warn!("accepted send preflight deferred before durable effect claim [{stage}]: {error}");
-    AgentRuntimeError::AcceptedEffectAdmissionDeferred
+    log::warn!("accepted send preflight failed before durable effect claim [{stage}]: {error}");
+    AgentRuntimeError::AcceptedEffectAdmissionFailed {
+        stage,
+        effect_may_be_reserved: false,
+    }
 }
 
 fn classify_turn_preclaim_error(
     accepted_execution: bool,
-    stage: &str,
+    stage: &'static str,
     error: AgentRuntimeError,
 ) -> AgentRuntimeError {
     if accepted_execution {
-        defer_accepted_effect_preflight(stage, error)
+        fail_accepted_effect_preflight(stage, error)
     } else {
         error
     }
@@ -934,21 +953,21 @@ impl AgentSessionRuntimeUsecase {
             .ctx
             .shutdown_admission
             .admit()
-            .map_err(|error| defer_accepted_effect_preflight("shutdown-admission", error))?;
+            .map_err(|error| fail_accepted_effect_preflight("shutdown-admission", error))?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         self.ensure_session_not_closing(session_id)
             .await
-            .map_err(|error| defer_accepted_effect_preflight("session-closing", error))?;
+            .map_err(|error| fail_accepted_effect_preflight("session-closing", error))?;
         let session = self
             .ctx
             .session_store
             .get_session_shell(&self.ctx.data_dir, session_id)
-            .map_err(|error| defer_accepted_effect_preflight("session-shell", error))?
+            .map_err(|error| fail_accepted_effect_preflight("session-shell", error))?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
         let backend_id = required_backend_id(&session)?;
         self.hydrate_runtime_session_state(&session)
             .await
-            .map_err(|error| defer_accepted_effect_preflight("runtime-hydration", error))?;
+            .map_err(|error| fail_accepted_effect_preflight("runtime-hydration", error))?;
 
         let base_system_prompt = req.base_system_prompt;
         let workflow_instructions = req.workflow_instructions;
@@ -983,7 +1002,7 @@ impl AgentSessionRuntimeUsecase {
                     .ctx
                     .session_store
                     .canonical_pending_send_queue(session_id)
-                    .map_err(|error| defer_accepted_effect_preflight("canonical-queue", error))?;
+                    .map_err(|error| fail_accepted_effect_preflight("canonical-queue", error))?;
                 let mut sessions = self.ctx.sessions.lock().await;
                 let state = sessions
                     .entry(session_id.to_string())
@@ -1028,9 +1047,7 @@ impl AgentSessionRuntimeUsecase {
                     .ctx
                     .session_store
                     .canonical_message_projection(session_id, assistant_message_id)
-                    .map_err(|error| {
-                        defer_accepted_effect_preflight("assistant-projection", error)
-                    })?
+                    .map_err(|error| fail_accepted_effect_preflight("assistant-projection", error))?
                     .ok_or_else(|| {
                         AgentRuntimeError::Other(
                             "accepted assistant projection is unavailable".into(),
@@ -1047,7 +1064,7 @@ impl AgentSessionRuntimeUsecase {
                         accepted_input.editor_context.as_ref(),
                         workflow_instructions,
                     )
-                    .map_err(|error| defer_accepted_effect_preflight("system-prompt", error))?;
+                    .map_err(|error| fail_accepted_effect_preflight("system-prompt", error))?;
                 self.start_turn_for_session(
                     &session,
                     &human_message,
@@ -1653,14 +1670,30 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .resolve_model_entry(entry_id)
             .map_err(AgentRuntimeError::Other)?;
-        let session = self
+        let (session, page, _) = self
             .ctx
             .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
+            .get_session_with_latest_page(&self.ctx.data_dir, session_id, 1)
             .map_err(AgentRuntimeError::Other)?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
-        if session.backend_id != entry.backend {
-            return Err(AgentRuntimeError::BackendSelectionLocked);
+        let backend_changes = session.backend_id.as_deref() != Some(entry.backend.as_str());
+        if backend_changes {
+            let runtime_is_idle = {
+                let sessions = self.ctx.sessions.lock().await;
+                sessions.get(session_id).is_none_or(|state| {
+                    state.phase == RuntimeSessionPhase::Idle
+                        && state.pending_permission_request.is_none()
+                        && state.pending_queue.is_empty()
+                        && state.backend_recovery.is_none()
+                })
+            };
+            let selection_is_unlocked = page.total_count == 0
+                && session.agent_session_id.is_none()
+                && runtime_is_idle
+                && !matches!(session.state, SessionState::Closed | SessionState::Archived);
+            if !selection_is_unlocked {
+                return Err(AgentRuntimeError::BackendSelectionLocked);
+            }
         }
         self.ctx
             .session_store
@@ -1671,6 +1704,9 @@ impl AgentSessionRuntimeUsecase {
                 Some(entry.model_id.clone()),
             )
             .map_err(AgentRuntimeError::Other)?;
+        if backend_changes {
+            self.close_session_runtime_locked(session_id).await;
+        }
         if let Ok(available_models) = self.ctx.registry.available_models(&entry.backend) {
             self.ctx
                 .notifier
@@ -1980,15 +2016,33 @@ impl AgentSessionRuntimeUsecase {
         &self,
         session_id: &str,
     ) -> Result<Option<GetSessionResponse>, AgentRuntimeError> {
+        self.get_session_with_message_limit(session_id, INITIAL_SESSION_PAGE_LIMIT, false)
+            .await
+    }
+
+    pub async fn get_display_session_window(
+        &self,
+        session_id: &str,
+        visible_message_count: Option<usize>,
+    ) -> Result<Option<GetSessionResponse>, AgentRuntimeError> {
+        let message_limit = visible_message_count
+            .unwrap_or(INITIAL_SESSION_PAGE_LIMIT)
+            .clamp(INITIAL_SESSION_PAGE_LIMIT, RETAINED_MESSAGE_CAP);
+        self.get_session_with_message_limit(session_id, message_limit, true)
+            .await
+    }
+
+    async fn get_session_with_message_limit(
+        &self,
+        session_id: &str,
+        message_limit: usize,
+        overlay_live_streaming: bool,
+    ) -> Result<Option<GetSessionResponse>, AgentRuntimeError> {
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        let Some((session, page, last_turn_interruption)) = self
+        let Some((mut session, page, last_turn_interruption)) = self
             .ctx
             .session_store
-            .get_session_with_latest_page(
-                &self.ctx.data_dir,
-                session_id,
-                INITIAL_SESSION_PAGE_LIMIT,
-            )
+            .get_session_with_latest_page(&self.ctx.data_dir, session_id, message_limit)
             .map_err(AgentRuntimeError::Other)?
         else {
             return Ok(None);
@@ -2007,6 +2061,7 @@ impl AgentSessionRuntimeUsecase {
             pending_permission_request,
             pending_permission_state_revision,
             active_turn_id,
+            streaming_message,
         ) = {
             let mut sessions = self.ctx.sessions.lock().await;
             let state = sessions.entry(session_id.to_string()).or_insert_with(|| {
@@ -2024,8 +2079,29 @@ impl AgentSessionRuntimeUsecase {
                 (state.phase != RuntimeSessionPhase::Idle)
                     .then_some(state.current_turn_id)
                     .flatten(),
+                overlay_live_streaming
+                    .then(|| {
+                        state.streaming_message_id.as_ref().map(|message_id| {
+                            (
+                                message_id.clone(),
+                                state.streaming_parts.clone(),
+                                state.streaming_delta_seq,
+                            )
+                        })
+                    })
+                    .flatten(),
             )
         };
+        if let Some((message_id, parts, streaming_final_seq)) = streaming_message {
+            if let Some(message) = session
+                .messages
+                .iter_mut()
+                .find(|message| message.id == message_id)
+            {
+                message.parts = Some(parts);
+                message.streaming_final_seq = message.streaming_final_seq.max(streaming_final_seq);
+            }
+        }
         if pending_permission_request.is_some() {
             turn_phase = TurnPhase::WaitingPermission;
         }
@@ -2060,6 +2136,14 @@ impl AgentSessionRuntimeUsecase {
             latest_token_usage: latest_token_usage.or(page.latest_token_usage),
             last_turn_interruption,
         };
+        // This method still owns the per-session runtime lock acquired above. Publish the
+        // bounded window before releasing it so every later runtime/state event is ordered
+        // after this snapshot instead of being overwritten by a delayed command response.
+        if overlay_live_streaming && !self.ctx.notifier.display_window_updated(&response) {
+            return Err(AgentRuntimeError::Other(
+                "failed to publish agent session display window".to_string(),
+            ));
+        }
         Ok(Some(response))
     }
 
@@ -2451,19 +2535,19 @@ impl AgentSessionRuntimeUsecase {
             return Ok(AcceptedQueueDrainOutcome::Blocked);
         }
         if front_requires_durable_idle {
-            let meta = self
+            let readiness = self
                 .ctx
                 .session_store
-                .get_session_meta(&self.ctx.data_dir, session_id)
-                .map_err(AgentRuntimeError::Other)?
-                .ok_or_else(|| {
-                    AgentRuntimeError::Other(format!("Session not found: {session_id}"))
-                })?;
-            if !matches!(
-                meta.state,
-                SessionState::Idle | SessionState::Done | SessionState::Error
-            ) {
-                return Ok(AcceptedQueueDrainOutcome::Blocked);
+                .accepted_queue_start_readiness(&self.ctx.data_dir, session_id)
+                .map_err(AgentRuntimeError::Other)?;
+            match readiness {
+                Some(true) => {}
+                Some(false) => return Ok(AcceptedQueueDrainOutcome::Blocked),
+                None => {
+                    return Err(AgentRuntimeError::Other(format!(
+                        "Session not found: {session_id}"
+                    )));
+                }
             }
         }
         start_next_queued_turn(&self.ctx, session_id).await;
@@ -2535,22 +2619,15 @@ impl AgentSessionRuntimeUsecase {
         match self
             .ctx
             .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
+            .accepted_queue_start_readiness(&self.ctx.data_dir, session_id)
         {
-            Ok(Some(meta))
-                if !matches!(
-                    meta.state,
-                    SessionState::Idle | SessionState::Done | SessionState::Error
-                ) =>
-            {
-                return AcceptedQueueRedriveReadiness::Blocked;
-            }
+            Ok(Some(false)) => return AcceptedQueueRedriveReadiness::Blocked,
             // A missing or temporarily unreadable projection must enter the
             // bounded redriver. It will either recover the exact local item or
             // retire/reconcile it; treating the read error as owned forever
             // would strand the accepted obligation without another signal.
             Ok(None) | Err(_) => return AcceptedQueueRedriveReadiness::Ready,
-            Ok(Some(_)) => {}
+            Ok(Some(true)) => {}
         }
         if let Err(failure) = self
             .ctx
@@ -2829,7 +2906,10 @@ impl AgentSessionRuntimeUsecase {
                 .get(&session.id)
                 .is_some_and(|state| state.queue_paused);
         if queue_is_blocked && payload.accepted_execution_identity.is_some() {
-            return Err(AgentRuntimeError::AcceptedEffectAdmissionDeferred);
+            return Err(fail_accepted_effect_preflight(
+                "queue-blocked-before-turn-claim",
+                format!("the accepted send queue is paused for {}", session.id),
+            ));
         }
         let accepted_claim = if let Some(identity) = payload.accepted_execution_identity.as_ref() {
             let driver = self
@@ -2855,7 +2935,10 @@ impl AgentSessionRuntimeUsecase {
                     }
                     #[cfg(not(test))]
                     {
-                        return Err(AgentRuntimeError::AcceptedEffectAdmissionDeferred);
+                        return Err(fail_accepted_effect_preflight(
+                            "turn-execution-driver",
+                            "the accepted send obligation driver is unavailable",
+                        ));
                     }
                 }
             }
@@ -7451,13 +7534,22 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         log::warn!("queued turn session not found: {session_id}");
         return;
     };
-    if queued_turn_has_accepted_identity(&queued)
-        && !matches!(
-            session.state,
-            SessionState::Idle | SessionState::Done | SessionState::Error
-        )
-    {
-        return;
+    if queued_turn_has_accepted_identity(&queued) {
+        match ctx
+            .session_store
+            .accepted_queue_start_readiness(&ctx.data_dir, session_id)
+        {
+            Ok(Some(true)) => {}
+            Ok(Some(false)) => return,
+            Ok(None) => {
+                log::warn!("accepted queue session projection not found: {session_id}");
+                return;
+            }
+            Err(error) => {
+                log::warn!("accepted queue readiness is unavailable for {session_id}: {error}");
+                return;
+            }
+        }
     }
     let mut accepted_claim;
     let accepted_obligation = match (
@@ -9678,6 +9770,8 @@ mod tests {
         delivered_streaming_deltas: Mutex<Vec<AgentStreamingDeltaPayload>>,
         permission_modes: Mutex<Vec<(String, String)>>,
         model_updates: Mutex<Vec<(String, Vec<ModelInfo>, String)>>,
+        display_windows: Mutex<Vec<GetSessionResponse>>,
+        display_window_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         streaming_delta_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         fail_streaming_delta: Mutex<bool>,
         streaming_delta_outcomes: Mutex<std::collections::VecDeque<bool>>,
@@ -9717,6 +9811,14 @@ mod tests {
             self.model_updates.lock().unwrap().clone()
         }
 
+        fn display_windows(&self) -> Vec<GetSessionResponse> {
+            self.display_windows.lock().unwrap().clone()
+        }
+
+        fn set_display_window_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+            *self.display_window_hook.lock().unwrap() = Some(hook);
+        }
+
         fn set_streaming_delta_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
             *self.streaming_delta_hook.lock().unwrap() = Some(hook);
         }
@@ -9737,6 +9839,15 @@ mod tests {
     impl AgentSessionEventNotifier for RecordingAgentNotifier {
         fn persist_notice(&self, notice: SessionNotice) {
             self.notices.lock().unwrap().push(notice);
+        }
+
+        fn display_window_updated(&self, response: &GetSessionResponse) -> bool {
+            if let Some(hook) = self.display_window_hook.lock().unwrap().clone() {
+                hook();
+            }
+            self.display_windows.lock().unwrap().push(response.clone());
+            self.event_order.lock().unwrap().push("display_window");
+            true
         }
 
         fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
@@ -11409,6 +11520,147 @@ mod tests {
             })
         );
         assert_eq!(storage.event_read_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn display_session_window_is_bounded_by_the_backend_retention_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        for index in 0..210 {
+            add_message_internal(
+                &session_store,
+                tmp.path(),
+                &session.id,
+                MessageRole::Human,
+                &format!("message-{index}"),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+
+        let response = usecase
+            .get_display_session_window(&session.id, Some(usize::MAX))
+            .await
+            .unwrap()
+            .expect("display window");
+
+        assert_eq!(response.session.messages.len(), RETAINED_MESSAGE_CAP);
+        assert_eq!(response.session.messages[0].content, "message-10");
+        assert_eq!(
+            response.session.messages.last().unwrap().content,
+            "message-209"
+        );
+        assert_eq!(
+            response.initial_page.unwrap().total_count,
+            210,
+            "the bounded body must retain full-history page accounting"
+        );
+    }
+
+    #[tokio::test]
+    async fn display_session_window_is_published_inside_the_runtime_event_ordering_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let session_locks = usecase.ctx.session_locks.clone();
+        let session_id = session.id.clone();
+        event_notifier.set_display_window_hook(Arc::new(move || {
+            assert!(
+                session_locks.is_held_for_test(&session_id),
+                "the bounded read must publish before a later runtime event can acquire the session"
+            );
+        }));
+
+        let response = usecase
+            .get_display_session_window(&session.id, None)
+            .await
+            .unwrap()
+            .expect("display window");
+
+        let published = event_notifier.display_windows();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].session.id, response.session.id);
+        assert_eq!(event_notifier.event_order(), vec!["display_window"]);
+    }
+
+    #[tokio::test]
+    async fn display_session_window_overlays_the_latest_runtime_stream_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store, tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let agent_message_id = response.agent_message.unwrap().id;
+        let live_parts = vec![MessagePart::Text {
+            content: "latest live snapshot".to_string(),
+            parent_tool_use_id: None,
+        }];
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session_id).expect("live runtime state");
+            assert_eq!(
+                state.streaming_message_id.as_deref(),
+                Some(agent_message_id.as_str())
+            );
+            state.streaming_parts = live_parts.clone();
+            state.streaming_delta_seq = 7;
+        }
+
+        let window = usecase
+            .get_display_session_window(&session_id, None)
+            .await
+            .unwrap()
+            .expect("display window");
+        let displayed = window
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .expect("streaming message");
+
+        assert_eq!(displayed.parts.as_ref(), Some(&live_parts));
+        assert_eq!(displayed.streaming_final_seq, 7);
     }
 
     #[tokio::test]
@@ -17859,7 +18111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_backend_set_model_requires_the_durable_lifecycle_operation() {
+    async fn cross_backend_set_model_changes_an_unstarted_empty_session_without_lifecycle_pause() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -17884,19 +18136,25 @@ mod tests {
             },
         )
         .unwrap();
-        let error = usecase
-            .set_model(&session.id, "codex:gpt-5")
-            .await
-            .unwrap_err();
-
-        assert_eq!(error, AgentRuntimeError::BackendSelectionLocked);
+        usecase.set_model(&session.id, "codex:gpt-5").await.unwrap();
         let saved = session_store
             .get_session_meta(tmp.path(), &session.id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.backend_id, "claude");
-        assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
-        assert!(event_notifier.model_updates().is_empty());
+        assert_eq!(saved.backend_id, "codex");
+        assert_eq!(saved.selected_model.as_deref(), Some("gpt-5"));
+        let model_updates = event_notifier.model_updates();
+        assert_eq!(model_updates.len(), 1);
+        assert_eq!(model_updates[0].0, session.id);
+        assert_eq!(model_updates[0].2, "gpt-5");
+        assert!(model_updates[0]
+            .1
+            .iter()
+            .any(|model| model.id == "codex:gpt-5"));
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session.id)
+            .unwrap()
+            .is_none());
         assert_eq!(
             controller
                 .call_kinds_for(&session.id)
@@ -20670,7 +20928,7 @@ mod tests {
             .iter()
             .find(|summary| summary.id == session.id)
             .unwrap();
-        assert_eq!(tauri_recovering.state, before_recovery.state);
+        assert_eq!(tauri_recovering.state, SessionState::Active);
         assert_eq!(tauri_recovering.updated_at, before_recovery.updated_at);
         assert_eq!(workspace_recovering.state, WorkspaceSessionState::Active);
         assert_eq!(workspace_recovering.updated_at, before_recovery.updated_at);
@@ -20684,7 +20942,7 @@ mod tests {
             .unwrap();
         assert_eq!(tauri_normal.state, normal_before_recovery.state);
         assert_eq!(tauri_normal.updated_at, normal_before_recovery.updated_at);
-        assert_eq!(workspace_normal.state, WorkspaceSessionState::Active);
+        assert_eq!(workspace_normal.state, WorkspaceSessionState::Idle);
         assert_eq!(
             workspace_normal.updated_at,
             normal_before_recovery.updated_at

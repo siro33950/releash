@@ -32,6 +32,9 @@ impl From<AgentRuntimeError> for AppError {
             deferred @ AgentRuntimeError::AcceptedEffectAdmissionDeferred => {
                 Self::Internal(deferred.to_string())
             }
+            failed @ AgentRuntimeError::AcceptedEffectAdmissionFailed { .. } => {
+                Self::Internal(failed.to_string())
+            }
             AgentRuntimeError::Other(message) => Self::Internal(message),
         }
     }
@@ -88,6 +91,7 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "expand_pasted_text_blocks",
     "list_sessions",
     "get_session",
+    "get_agent_session_display_window",
     "get_session_page",
     "plan_agent_chat_eviction",
     "get_session_attachment",
@@ -157,6 +161,7 @@ pub(crate) fn invoke_handler(
         paste::expand_pasted_text_blocks,
         stored_session::list_sessions,
         session::get_session,
+        session::get_agent_session_display_window,
         session::get_session_page,
         session::plan_agent_chat_eviction,
         session::get_session_attachment,

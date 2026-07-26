@@ -6,8 +6,6 @@ use crate::adaptor::protocol::agent_session_v1::{ChatSessionDtoV1, SessionSummar
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
-#[cfg(test)]
-use crate::usecase::agent_session::session::{CloseSessionOutcome, StoredSessionClosePort};
 use crate::usecase::agent_session::session::{
     RestoreSessionOutcome, RestoreSessionResponse, SessionStore, StoredSessionLifecycleUsecase,
 };
@@ -136,15 +134,6 @@ pub async fn set_session_title(
     Ok(summary.into())
 }
 
-#[cfg(test)]
-async fn close_session_with_usecase(
-    lifecycle: &dyn StoredSessionClosePort,
-    data_dir: &std::path::Path,
-    session_id: &str,
-) -> Result<CloseSessionOutcome, String> {
-    lifecycle.close_session(data_dir, session_id).await
-}
-
 #[tauri::command]
 pub async fn restore_session(
     local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
@@ -179,42 +168,6 @@ fn restore_session_response(outcome: &RestoreSessionOutcome) -> RestoreSessionRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parking_lot::Mutex;
-
-    #[derive(Default)]
-    struct RecordingClosePort {
-        calls: Mutex<Vec<(std::path::PathBuf, String)>>,
-    }
-
-    #[async_trait::async_trait]
-    impl StoredSessionClosePort for RecordingClosePort {
-        async fn close_session(
-            &self,
-            data_dir: &std::path::Path,
-            session_id: &str,
-        ) -> Result<CloseSessionOutcome, String> {
-            self.calls
-                .lock()
-                .push((data_dir.to_path_buf(), session_id.to_string()));
-            Ok(CloseSessionOutcome::StoredSessionClosed)
-        }
-    }
-
-    #[tokio::test]
-    async fn close_session_command_boundary_delegates_to_shared_close_usecase() {
-        let port = RecordingClosePort::default();
-        let data_dir = std::path::Path::new("/app-data");
-
-        let outcome = close_session_with_usecase(&port, data_dir, "session-a")
-            .await
-            .unwrap();
-
-        assert_eq!(outcome, CloseSessionOutcome::StoredSessionClosed);
-        assert_eq!(
-            port.calls.lock().as_slice(),
-            [(data_dir.to_path_buf(), "session-a".to_string())]
-        );
-    }
 
     #[test]
     fn restore_session_outcome_maps_to_existing_wire_response() {

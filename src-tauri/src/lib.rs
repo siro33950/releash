@@ -1185,19 +1185,6 @@ pub fn run() {
                     ),
                 );
                 app.manage(stored_session_lifecycle.clone());
-                let workspace_node_resolver: Arc<
-                    dyn usecase::workflow::WorkspaceNodeActionResolver,
-                > = app
-                    .state::<adaptor::controller::state::AppState>()
-                    .workflow_usecase
-                    .clone();
-                app.manage(Arc::new(
-                    adaptor::controller::wiring::build_workspace_node_command_usecase(
-                        workspace_node_resolver,
-                        stored_session_lifecycle,
-                        data_dir.clone(),
-                    ),
-                ));
             }
             let agent_runtime = app
                 .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
@@ -1246,6 +1233,20 @@ pub fn run() {
                 ),
             );
             app.manage(lifecycle_operation.clone());
+            let workspace_node_resolver: Arc<
+                dyn usecase::workflow::WorkspaceNodeActionResolver,
+            > = app
+                .state::<adaptor::controller::state::AppState>()
+                .workflow_usecase
+                .clone();
+            app.manage(Arc::new(
+                adaptor::controller::wiring::build_workspace_node_command_usecase(
+                    workspace_node_resolver,
+                    lifecycle_operation.clone(),
+                    session_store.clone(),
+                    data_dir.clone(),
+                ),
+            ));
             let stop_operation = Arc::new(
                 usecase::agent_session::operation::StopOperationUsecase::new(
                     operation_repository.clone(),

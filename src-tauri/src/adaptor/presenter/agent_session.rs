@@ -2,15 +2,17 @@ use serde::Serialize;
 use tauri::Emitter;
 
 use crate::adaptor::protocol::agent::MessagePartDtoV1;
-use crate::adaptor::protocol::agent_session_v1::{ChatMessageDtoV1, ChatSessionDtoV1};
+use crate::adaptor::protocol::agent_session_v1::{
+    ChatMessageDtoV1, ChatSessionDtoV1, GetSessionResponseDtoV1,
+};
 use crate::adaptor::protocol::{AgentSupportedCommandMsg, AgentSupportedCommandsUpdated};
 use crate::usecase::agent_session::runtime::ports::{
     AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
     AgentStreamingDeltaPayload,
 };
 use crate::usecase::agent_session::session::{
-    project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState, ModelInfo,
-    PermissionRequestMsg, SessionState, TokenUsage,
+    project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState,
+    GetSessionResponse, ModelInfo, PermissionRequestMsg, SessionState, TokenUsage,
 };
 use crate::usecase::agent_session::status::{SessionNotice, TurnPhase};
 
@@ -175,6 +177,15 @@ struct AgentStreamingDeltaEventPayload {
 impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
     fn persist_notice(&self, notice: SessionNotice) {
         let _ = self.app.emit("agent-session-notice", notice);
+    }
+
+    fn display_window_updated(&self, response: &GetSessionResponse) -> bool {
+        self.app
+            .emit(
+                "agent-session-display-window-updated",
+                GetSessionResponseDtoV1::from(response.clone()),
+            )
+            .is_ok()
     }
 
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {

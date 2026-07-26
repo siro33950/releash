@@ -20,7 +20,10 @@ import type { AgentChatAction } from "./agentChatReducer";
 import {
 	convertLegacyMessage,
 	convertLegacySession,
+	convertRawGetSessionResponse,
+	type GetSessionResponse,
 	type LegacyChatSession,
+	type RawGetSessionResponse,
 } from "./useSessionStore";
 
 interface SessionStateChanged {
@@ -117,11 +120,9 @@ export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	viewableRegistry: ViewableSessionRegistry;
 	refreshSessions: () => Promise<unknown>;
-	reconcileSession?: (sessionId: string) => Promise<void>;
-	markSessionForReconciliation?: (
-		sessionId: string,
-		options?: { invalidateReadback?: boolean },
-	) => void;
+	refreshDisplayedSession?: (sessionId: string) => Promise<void>;
+	applyDisplayWindow?: (response: GetSessionResponse) => void;
+	onDisplayWindowListenerReady?: () => void;
 	getStreamingDeltaDropReason?: (
 		sessionId: string,
 		messageId: string,
@@ -168,11 +169,37 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		dispatch,
 		viewableRegistry,
 		refreshSessions,
-		reconcileSession,
-		markSessionForReconciliation,
+		refreshDisplayedSession,
+		applyDisplayWindow,
+		onDisplayWindowListenerReady,
 		getStreamingDeltaDropReason,
 		worktreePath,
 	} = refs;
+
+	useEffect(() => {
+		if (!applyDisplayWindow) return;
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<RawGetSessionResponse>(
+			"agent-session-display-window-updated",
+			(event) => {
+				applyDisplayWindow(convertRawGetSessionResponse(event.payload));
+			},
+		).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+				onDisplayWindowListenerReady?.();
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [applyDisplayWindow, onDisplayWindowListenerReady]);
 
 	// Listen to typed turn usage updates emitted by Rust backend.
 	useEffect(() => {
@@ -228,9 +255,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const { chat_session_id, session, human_message, agent_message } =
 				event.payload;
 			if (worktreePath && session.worktreePath !== worktreePath) return;
-			markSessionForReconciliation?.(chat_session_id, {
-				invalidateReadback: false,
-			});
 			dispatch({
 				type: "UPSERT_SESSION",
 				session: convertLegacySession(session),
@@ -261,7 +285,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, worktreePath, markSessionForReconciliation]);
+	}, [dispatch, worktreePath]);
 
 	// Listen to agent-supported-commands-updated from Rust backend.
 	useEffect(() => {
@@ -429,9 +453,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<StreamingMessageUpdated>("agent-streaming-delta", (event) => {
 			const { chat_session_id, message_id, seq, snapshot, parts, message } =
 				event.payload;
-			markSessionForReconciliation?.(chat_session_id, {
-				invalidateReadback: false,
-			});
 
 			const dropReason = getStreamingDeltaDropReason?.(
 				chat_session_id,
@@ -482,7 +503,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, getStreamingDeltaDropReason, markSessionForReconciliation]);
+	}, [dispatch, getStreamingDeltaDropReason]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -501,7 +522,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				pending_permission_request,
 				pending_permission_state_revision,
 			} = event.payload;
-			markSessionForReconciliation?.(chat_session_id);
 			const pendingPermissionStateRevision =
 				typeof pending_permission_state_revision === "string"
 					? {
@@ -564,8 +584,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					console.error("Failed to refresh sessions:", e),
 				);
 			}
-			if (reconcileSession && isViewable(chat_session_id, viewableRegistry)) {
-				void reconcileSession(chat_session_id);
+			if (
+				refreshDisplayedSession &&
+				isViewable(chat_session_id, viewableRegistry)
+			) {
+				void refreshDisplayedSession(chat_session_id);
 			}
 		}).then((fn) => {
 			if (cancelled) {
@@ -579,13 +602,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [
-		dispatch,
-		viewableRegistry,
-		refreshSessions,
-		reconcileSession,
-		markSessionForReconciliation,
-	]);
+	}, [dispatch, viewableRegistry, refreshSessions, refreshDisplayedSession]);
 
 	// Listen to agent-pending-message-consumed (Rust auto-consumed pending message after turn_complete)
 	useEffect(() => {
@@ -601,7 +618,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					human_message,
 					agent_message,
 				} = event.payload;
-				markSessionForReconciliation?.(chat_session_id);
 				if (!isViewable(chat_session_id, viewableRegistry)) return;
 				if (queued_turn_id) {
 					dispatch({
@@ -639,8 +655,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 						timestamp: agent_message.timestamp,
 					},
 				});
-				if (reconcileSession) {
-					void reconcileSession(chat_session_id);
+				if (refreshDisplayedSession) {
+					void refreshDisplayedSession(chat_session_id);
 				}
 			},
 		).then((fn) => {
@@ -655,12 +671,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [
-		dispatch,
-		viewableRegistry,
-		reconcileSession,
-		markSessionForReconciliation,
-	]);
+	}, [dispatch, viewableRegistry, refreshDisplayedSession]);
 
 	// Listen to agent-models-updated (session 単位の更新) from Rust backend
 	useEffect(() => {

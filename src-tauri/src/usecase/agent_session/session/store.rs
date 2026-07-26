@@ -26,7 +26,7 @@ use super::{
     RecoveryPublicationClassification, RecoveryPublicationList, RecoveryPublicationSnapshot,
     RecoveryPublicationWorkflowOwner, SessionAttachment, SessionMeta, SessionPage,
     SessionReviewContext, SessionState, SessionSummary, SessionToolOutput, TokenUsage,
-    TurnInterruption, WorkflowNodeContextDto,
+    TurnInterruption, TurnPhase, WorkflowNodeContextDto,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
@@ -302,6 +302,19 @@ pub(crate) struct CanonicalQueuedSend {
     pub human_message_id: String,
     pub reserved_turn_id: String,
     pub input_ref: String,
+}
+
+fn reducer_has_active_turn(events: &[AgentSessionEvent]) -> bool {
+    TurnEventLog::from_events(events.to_vec())
+        .project()
+        .status
+        .turn_phase
+        != TurnPhase::Idle
+}
+
+fn reducer_allows_queue_start(state: &SessionState, events: &[AgentSessionEvent]) -> bool {
+    !matches!(state, SessionState::Closed | SessionState::Archived)
+        && !reducer_has_active_turn(events)
 }
 
 pub(crate) struct SendAcceptanceProjectionInput<'a> {
@@ -592,9 +605,16 @@ fn recovery_publication_snapshot(
                     .as_ref()
                     .map(|context| context.node_execution_id.clone()),
             });
+    let mut summary = meta.to_summary();
+    if list == RecoveryPublicationList::SessionList {
+        // Recovery is an active workflow/runtime state even when the bounded
+        // turn reducer currently projects the session body as Idle. Preserve
+        // that publication identity without rewriting the reducer-owned meta.
+        summary.state = SessionState::Active;
+    }
     RecoveryPublicationSnapshot {
         recovery_id: recovery_id.to_string(),
-        summary: meta.to_summary(),
+        summary,
         classification: RecoveryPublicationClassification {
             list,
             workflow_owner,
@@ -3298,15 +3318,13 @@ impl SessionStore {
                                                 ),
                                             );
                                         }
-                                        if !matches!(
+                                        if !reducer_allows_queue_start(
                                             &meta.state,
-                                            SessionState::Idle
-                                                | SessionState::Done
-                                                | SessionState::Error
+                                            &reducer_events,
                                         ) {
                                             return Err(format!(
-                                                "{ACCEPTED_QUEUE_START_BLOCKED}: canonical session state is {:?}",
-                                                meta.state
+                                                "{ACCEPTED_QUEUE_START_BLOCKED}: canonical turn is active or session state is {:?}",
+                                                meta.state,
                                             ));
                                         }
                                         if TurnEventLog::from_events(reducer_events.clone())
@@ -6236,9 +6254,41 @@ impl SessionStore {
             next_turn_id: last_turn_id
                 .checked_add(1)
                 .ok_or(NextTurnIdError::CapacityExceeded)?,
-            has_active_turn: projection.meta.state == SessionState::Active,
+            has_active_turn: reducer_has_active_turn(&projection.reducer_events),
             has_pending_queue: !projection.pending_send_queue.is_empty(),
             session_projection_guard: crate::domain::local_event::RevisionGuard::Expected(revision),
+        })
+    }
+
+    /// Report whether a durably accepted queue front may claim the next turn.
+    ///
+    /// Older builds persisted a newly-created session as `Active` before any
+    /// `TurnStarted` event existed. The bounded reducer is the canonical turn
+    /// owner, so that legacy label must not strand the accepted first send.
+    pub(crate) fn accepted_queue_start_readiness(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<bool>, String> {
+        if self.canonical_authority_active() {
+            return self
+                .canonical_session_projection(session_id)
+                .map(|projection| {
+                    projection.map(|projection| {
+                        reducer_allows_queue_start(
+                            &projection.meta.state,
+                            &projection.reducer_events,
+                        )
+                    })
+                });
+        }
+        self.get_session_meta(app_data_dir, session_id).map(|meta| {
+            meta.map(|meta| {
+                matches!(
+                    meta.state,
+                    SessionState::Idle | SessionState::Done | SessionState::Error
+                )
+            })
         })
     }
 
@@ -6255,7 +6305,7 @@ impl SessionStore {
         Ok(self
             .canonical_session_projection(session_id)?
             .is_some_and(|projection| {
-                projection.meta.state == SessionState::Active
+                reducer_has_active_turn(&projection.reducer_events)
                     && projection.meta.last_turn_id == Some(turn_id)
             }))
     }
@@ -9320,6 +9370,85 @@ mod tests {
                 .next_turn_id(app_data_dir.path(), &session.id)
                 .unwrap(),
             5
+        );
+    }
+
+    #[test]
+    fn legacy_active_turn_zero_is_idle_for_first_send_and_atomic_queue_claim() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+
+        let initial = writer.send_acceptance_allocation(&session.id).unwrap();
+        assert_eq!(initial.next_turn_id, 1);
+        assert!(!initial.has_active_turn);
+
+        // Reproduce the projection written by older builds: creation marked
+        // the session Active even though no TurnStarted boundary existed.
+        let mut legacy = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        legacy.meta.state = SessionState::Active;
+        legacy.meta.last_turn_id = Some(0);
+        legacy.reducer_events.clear();
+        legacy.pending_send_queue.push(CanonicalQueuedSend {
+            queue_item_id: "queue-1".to_string(),
+            human_message_id: "human-1".to_string(),
+            reserved_turn_id: "1".to_string(),
+            input_ref: "input-1".to_string(),
+        });
+        writer.commit_session_projection_snapshot(legacy).unwrap();
+
+        assert_eq!(
+            writer
+                .accepted_queue_start_readiness(app_data_dir.path(), &session.id)
+                .unwrap(),
+            Some(true)
+        );
+        writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-1",
+                turn_started(1),
+            )
+            .unwrap();
+
+        let claimed = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.meta.state, SessionState::Active);
+        assert_eq!(claimed.meta.last_turn_id, Some(1));
+        assert!(claimed.pending_send_queue.is_empty());
+        assert!(reducer_has_active_turn(&claimed.reducer_events));
+        assert_eq!(
+            writer
+                .accepted_queue_start_readiness(app_data_dir.path(), &session.id)
+                .unwrap(),
+            Some(false)
         );
     }
 

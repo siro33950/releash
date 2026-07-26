@@ -39,13 +39,9 @@ use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-#[cfg(test)]
 use crate::adaptor::gateway::workflow::{
-    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
-};
-use crate::adaptor::gateway::workflow::{
-    RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
-    StoredWorkspaceNodeSessionCloseGateway, StoredWorkspaceSessionGateway,
+    DurableWorkspaceNodeSessionCloseGateway, RepoPathsManagedWorktreeGateway,
+    RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
     TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
     WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
@@ -54,6 +50,10 @@ use crate::adaptor::gateway::workflow::{
     WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
     WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::{
+    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
+};
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::local_event::LocalEventTransactionRepository;
@@ -61,6 +61,7 @@ use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::infrastructure::agent_session::{
     claude::ClaudeBackend as NewClaudeBackend, codex::CodexBackend as NewCodexBackend,
 };
+use crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
@@ -234,28 +235,19 @@ impl WorkflowNodeSessionRestorer for WorkflowNodeSessionRestorerAdapter {
                 crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
             })
     }
-
-    async fn try_close_tab(&self, session_id: &str) -> Result<Option<String>, String> {
-        self.lifecycle
-            .close_tab_target(session_id)
-            .await
-            .map(|target| target.map(|target| target.worktree_path))
-            .map_err(|error| {
-                log::debug!("failed to close workflow node session tab for {session_id}: {error}");
-                crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
-            })
-    }
 }
 
 pub(crate) fn build_workspace_node_command_usecase(
     resolver: Arc<dyn WorkspaceNodeActionResolver>,
-    lifecycle: Arc<StoredSessionLifecycleUsecase>,
+    lifecycle: Arc<SessionLifecycleOperationUsecase>,
+    session_store: Arc<SessionStore>,
     data_dir: impl Into<PathBuf>,
 ) -> WorkspaceNodeCommandUsecase {
     WorkspaceNodeCommandUsecase::new(
         resolver,
-        Arc::new(StoredWorkspaceNodeSessionCloseGateway::new(
+        Arc::new(DurableWorkspaceNodeSessionCloseGateway::new(
             lifecycle,
+            session_store,
             data_dir.into(),
         )),
     )

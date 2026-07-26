@@ -23,6 +23,9 @@ mod acceptance_recovery_tests;
 #[cfg(test)]
 mod tests;
 
+/// Shared principal for operations issued by authenticated local transports.
+pub(crate) const LOCAL_INSTALLATION_OPERATION_PRINCIPAL: &str = "local-app";
+
 pub(crate) use caller_journal::{
     BoundCallerOperation, CallerAttemptJournal, CallerJournalError, PendingCallerAttempt,
     PendingCallerAttemptPage,

@@ -37,6 +37,7 @@ pub(crate) fn close_node_session_tab_state(open_tabs: Option<&OpenTabRegistry>, 
     try_close_node_session_tab_state(open_tabs, session_id);
 }
 
+#[cfg(test)]
 pub(crate) fn try_close_node_session_tab_state(
     open_tabs: Option<&OpenTabRegistry>,
     session_id: &str,
@@ -104,6 +105,7 @@ impl WorkflowNodeSessionGateway for TauriNodeExecutionLifecycleGateway {
         Ok(())
     }
 
+    #[cfg(test)]
     fn close_node_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
         Ok(try_close_node_session_tab_state(
             Some(self.open_tabs.as_ref()),

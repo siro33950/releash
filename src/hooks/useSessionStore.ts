@@ -615,7 +615,7 @@ export interface AgentChatEvictionPlan {
 	evictSessionIds: string[];
 }
 
-interface RawGetSessionResponse {
+export interface RawGetSessionResponse {
 	id: string;
 	worktree_path: string;
 	messages: RawChatMessageDtoV1[];
@@ -654,7 +654,7 @@ interface RawGetSessionResponse {
 	} | null;
 }
 
-function convertRawGetSessionResponse(
+export function convertRawGetSessionResponse(
 	raw: RawGetSessionResponse,
 ): GetSessionResponse {
 	return {
@@ -760,6 +760,20 @@ export async function getSession(
 	}
 	if (!raw) return null;
 	return convertRawGetSessionResponse(raw);
+}
+
+export async function getAgentSessionDisplayWindow(
+	sessionId: string,
+	visibleMessageCount?: number,
+): Promise<GetSessionResponse | null> {
+	const raw = await invoke<RawGetSessionResponse | null>(
+		"get_agent_session_display_window",
+		{
+			sessionId,
+			visibleMessageCount,
+		},
+	);
+	return raw ? convertRawGetSessionResponse(raw) : null;
 }
 
 export async function getSessionToolOutput(

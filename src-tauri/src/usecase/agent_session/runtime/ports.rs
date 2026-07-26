@@ -5,8 +5,8 @@ use crate::domain::agent_session::gateway::AgentRuntimeEvent;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
-    ChatMessage, ChatSession, ContextCarryState, ModelInfo, PermissionRequestMsg, SessionState,
-    TokenUsage,
+    ChatMessage, ChatSession, ContextCarryState, GetSessionResponse, ModelInfo,
+    PermissionRequestMsg, SessionState, TokenUsage,
 };
 use crate::usecase::agent_session::status::{SessionNotice, TurnPhase};
 use crate::usecase::workflow::ports::{
@@ -158,6 +158,8 @@ pub(crate) struct AgentStallObservedPayload {
 
 pub(crate) trait AgentSessionEventNotifier: Send + Sync {
     fn persist_notice(&self, notice: SessionNotice);
+
+    fn display_window_updated(&self, response: &GetSessionResponse) -> bool;
 
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload);
 

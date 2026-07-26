@@ -397,6 +397,7 @@ mod tests {
             "fork_session",
             "gc_ptys_for_worktree",
             "generate_hooks_config",
+            "get_agent_session_display_window",
             "get_agent_session_notice",
             "list_agent_session_feedback",
             "retry_agent_session_feedback",

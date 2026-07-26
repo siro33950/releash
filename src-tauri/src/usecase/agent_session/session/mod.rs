@@ -27,6 +27,7 @@ pub(crate) use image_attachment::{
 };
 pub(crate) use message_window::{
     plan_agent_chat_eviction, AgentChatEvictionPlan, AgentChatEvictionPlanRequest,
+    RETAINED_MESSAGE_CAP,
 };
 pub use open_tabs::OpenTabRegistry;
 pub(crate) use prompt_suggestion::{
@@ -55,11 +56,8 @@ pub(crate) use store::{
     SessionEventLogRecoverySignal, SessionQueuePauseReader, SessionReviewContextReader,
 };
 pub use store::{SessionReaderPort, SessionStore};
-#[cfg(test)]
-pub(crate) use stored_lifecycle::CloseSessionOutcome;
 pub(crate) use stored_lifecycle::{
-    RestoreSessionOutcome, StoredSessionClosePort, StoredSessionLifecycleUsecase,
-    WorkflowNodeSessionRestorer,
+    RestoreSessionOutcome, StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1216,7 +1214,7 @@ pub(crate) fn build_new_session_with_id(
         id: session_id,
         worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
-        state: SessionState::Active,
+        state: SessionState::Idle,
         error_reason: None,
         created_at: now,
         updated_at: now,
@@ -2995,7 +2993,7 @@ mod tests {
             create_session_internal(&store, dir.path(), "/repo", Some("claude".to_string()))
                 .unwrap();
         assert_eq!(session.backend_id, Some("claude".to_string()));
-        assert_eq!(session.state, SessionState::Active);
+        assert_eq!(session.state, SessionState::Idle);
         assert_eq!(session.worktree_path, "/repo");
     }
 

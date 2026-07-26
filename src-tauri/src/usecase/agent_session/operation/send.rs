@@ -172,6 +172,7 @@ fn now_ms() -> i64 {
 }
 
 const SEND_BACKGROUND_RETRY_ATTEMPTS: usize = 8;
+const SEND_OWNER_REVISION_REPLAN_ATTEMPTS: usize = 4;
 
 fn send_background_retry_delay(attempt: usize) -> std::time::Duration {
     let shift = u32::try_from(attempt.min(5)).unwrap_or(5);
@@ -812,6 +813,25 @@ impl AgentSendOperationUsecase {
         &self,
         request: SendOperationRequest,
     ) -> Result<SendCommandOutcome, SendAgentMessageError> {
+        for attempt in 0..SEND_OWNER_REVISION_REPLAN_ATTEMPTS {
+            let outcome = self.send_once(request.clone()).await?;
+            if matches!(
+                &outcome,
+                SendCommandOutcome::RejectedBeforeCommit { failure }
+                    if failure.kind == SessionOperationFailureKind::OwnerRevisionChanged
+            ) && attempt + 1 < SEND_OWNER_REVISION_REPLAN_ATTEMPTS
+            {
+                continue;
+            }
+            return Ok(outcome);
+        }
+        unreachable!("the bounded send replan loop always returns")
+    }
+
+    async fn send_once(
+        &self,
+        request: SendOperationRequest,
+    ) -> Result<SendCommandOutcome, SendAgentMessageError> {
         if validate_operation_identity(&request.operation_id).is_err() {
             return Err(SendAgentMessageError::InvalidRequest);
         }
@@ -1193,7 +1213,7 @@ impl AgentSendOperationUsecase {
                     &principal_mac,
                     &binding_hmac,
                     SafeOperationFailure::new(
-                        SessionOperationFailureKind::PersistFailure,
+                        SessionOperationFailureKind::OwnerRevisionChanged,
                         true,
                         "The session changed while accepting the send. Retry with the same operation identity.",
                         format!("send-head-{}", uuid_like()),
@@ -2383,6 +2403,70 @@ impl AgentSendOperationUsecase {
             }
             Err(_) => Err(internal_error("status-commit")),
         }
+    }
+
+    /// Fail an accepted TurnExecution that was rejected before any durable
+    /// provider-effect reservation could be obtained.
+    ///
+    /// This is a terminal operation outcome: the obligation leaves the pending
+    /// recovery index, while the immutable Accepted receipt remains available
+    /// with a visible `Failed` status.
+    pub(crate) async fn fail_unclaimed_turn_execution(
+        &self,
+        operation_id: &str,
+        obligation_id: &str,
+        failure: SafeOperationFailure,
+    ) -> Result<(), SendAgentMessageError> {
+        if validate_operation_identity(operation_id).is_err() {
+            return Err(SendAgentMessageError::InvalidRequest);
+        }
+        let record = self
+            .lookup_record(operation_id)
+            .await
+            .map_err(|_| internal_error("turn-failure-operation-lookup"))?
+            .ok_or(SendAgentMessageError::NotFound)?;
+        if matches!(record.latest_status, SendExecutionStatus::Terminal { .. }) {
+            return self
+                .complete_obligation_for_terminal_operation(operation_id, obligation_id)
+                .await;
+        }
+        let result = self
+            .repository
+            .query(LocalEventQuery::ObligationByIdentity {
+                obligation_id: obligation_id.to_string(),
+            })
+            .await
+            .map_err(|_| internal_error("turn-failure-obligation-lookup"))?;
+        let LocalEventQueryResult::ObligationByIdentity(Some(obligation)) = result else {
+            return Err(internal_error("turn-failure-obligation-shape"));
+        };
+        let value = SendObligationData::decode(&obligation.record)
+            .ok_or_else(|| internal_error("turn-failure-obligation-decode"))?;
+        if value.operation_id != operation_id
+            || value.obligation_id != obligation_id
+            || value.kind != SendObligationKindRecord::TurnExecution
+        {
+            return Err(internal_error("turn-failure-owner"));
+        }
+        if value.state == ObligationStateRecord::Failed
+            && matches!(record.latest_status, SendExecutionStatus::Failed { .. })
+        {
+            return Ok(());
+        }
+        if value.state != ObligationStateRecord::Pending {
+            return Err(internal_error("turn-failure-obligation-state"));
+        }
+        self.transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id,
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "failed",
+            keep_pending: false,
+            status: Some(SendExecutionStatus::Failed { failure }),
+        })
+        .await
+        .map(|_| ())
     }
 
     /// Atomically publish an ambiguous TurnExecution effect as recovery work.
