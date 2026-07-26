@@ -20,7 +20,7 @@
 		"test:integration:ui": "playwright test --ui"
 	},
 	"dependencies": {
-		"@anthropic-ai/sdk": "^0.112.3",
+		"@anthropic-ai/sdk": "^0.115.0",
 		"@lobehub/icons-static-svg": "^1.94.0",
 		"@react-symbols/icons": "^1.4.1",
 		"@shikijs/langs": "^4.3.1",
