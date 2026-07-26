@@ -39,7 +39,7 @@
 		"cmdk": "^1.1.1",
 		"lucide-react": "^1.25.0",
 		"monaco-editor": "0.55.1",
-		"radix-ui": "^1.6.2",
+		"radix-ui": "^1.6.7",
 		"react": "^19.2.7",
 		"react-dom": "^19.2.7",
 		"react-markdown": "^10.1.0",
