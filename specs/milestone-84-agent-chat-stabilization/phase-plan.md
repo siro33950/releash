@@ -1,12 +1,12 @@
 # Milestone 84 実装順序
 
-更新日: 2026-07-24
+更新日: 2026-07-27
 
 ## Status
 
 本書はmilestone 84「Agentチャット安定化」のIssue間の順序、依存関係、吸収済みIssueを定める。Phase名とIssue分類子は計画上のlabelであり、runtime module、type、table、physical store identityではない。
 
-Phaseは0から7までの直列である。Phase NはPhase N-1までが完了してから開始し、同じPhase内のIssue同士には依存辺を置かない。
+Phaseは0から8までの直列である。Phase NはPhase N-1までが完了してから開始し、同じPhase内のIssue同士には依存辺を置かない。
 
 ## 吸収済みIssue
 
@@ -24,27 +24,31 @@ Phaseは0から7までの直列である。Phase NはPhase N-1までが完了し
 | --- | --- | --- |
 | 0 | #1499 | command受理、terminal、recovery、Session lifecycle、shutdown、canonical message semantics、恒久SQLite authorityを一つのcontractとして完成させる |
 | 1 | #1491（F8） | #1499を利用し、追加のbounded projectionとID-based queryでdetail取得の性能退行を解消する |
-| 2 | #1386（F4）、#1387（F5）、#1446（F7）、#1497（F10）、#1413（P1）、#1521 | provider adapter、queue lifecycle、presentation、およびfrontend subscription lifecycleを拡張する |
-| 3 | #1388（F6）、#1389（S1）、#1390（S2）、#1391（S3）、#1392（S4）、#1393（S5）、#1394（S6）、#1397（S9）、#1400（S11）、#1404（L3）、#1406（L5）、#1516 | safety機構とbackground activity / Workspace quiescenceを拡張する |
-| 4 | #1395（S7）、#1396（S8）、#1399（S10b）、#1401（S12）、#1410（L9）、#1415（P3）、#1447（S13）、#1448（S14）、#1449（S15）、#1470（L13）、#1472（L14）、#1498（L15） | liveness、設定、capability、status presentationを拡張する |
-| 5 | #1450（L12） | Phase 4までの設定・capability契約をworkflow、queue、restartへ継承する |
-| 6 | #1412（L11）、#1451（P4） | 前段の完成contractを利用するlifecycleとpresentationを完成させる |
-| 7 | #1416（T1） | Phase 0〜6のbackend / surface contractをcross-backend parity E2Eで統合検証する |
+| 2 | #1561 | session ライフサイクルのDomain整理（集約確立・usecase 3分解）を実施し、完了後に再監査してaudit台帳を再構築する |
+| 3 | #1386（F4）、#1387（F5）、#1446（F7）、#1497（F10）、#1413（P1）、#1521 | provider adapter、queue lifecycle、presentation、およびfrontend subscription lifecycleを拡張する |
+| 4 | #1388（F6）、#1389（S1）、#1390（S2）、#1391（S3）、#1392（S4）、#1393（S5）、#1394（S6）、#1397（S9）、#1400（S11）、#1404（L3）、#1406（L5）、#1516 | safety機構とbackground activity / Workspace quiescenceを拡張する |
+| 5 | #1395（S7）、#1396（S8）、#1399（S10b）、#1401（S12）、#1410（L9）、#1415（P3）、#1447（S13）、#1448（S14）、#1449（S15）、#1470（L13）、#1472（L14）、#1498（L15） | liveness、設定、capability、status presentationを拡張する |
+| 6 | #1450（L12） | Phase 5までの設定・capability契約をworkflow、queue、restartへ継承する |
+| 7 | #1412（L11）、#1451（P4） | 前段の完成contractを利用するlifecycleとpresentationを完成させる |
+| 8 | #1416（T1） | Phase 0〜7のbackend / surface contractをcross-backend parity E2Eで統合検証する |
 
 Phase 0の完了条件は、[Issue #1499 Primary Spec](../../docs/specs/issues-1499/requirements.md)、[close / quit decision table](close-quit-decision-table.md)、milestone 84の現行正本を満たすことである。吸収済みIssueを別途待たない。
+
+Phase 3以降のIssueは、Phase 2（#1561）の再監査による再分類（構造整理で解消 / 残存 / 新規発見）が出るまで着手しない。再分類の結果に基づき、Phase 3以降のIssue群は再編（吸収・close・再スコープ）される。本書のPhase 3〜8の配置は再編までの暫定である。
 
 ## Hard dependencies
 
 | Consumer | Predecessor |
 | --- | --- |
 | #1491 | #1499 |
+| #1561 | #1491 |
 | #1521 | #1491 |
 | #1386 / #1387 | #1383、#1445 |
 | #1516 | #1499、#1386、#1387 |
 | #1410 / #1415 | #1516 |
-| #1450 | Phase 4の設定・capability契約 |
+| #1450 | Phase 5の設定・capability契約 |
 | #1451 | #1450を含む前段contract |
-| #1416 | Phase 0〜6の統合contract |
+| #1416 | Phase 0〜7の統合contract |
 
 依存辺は常に小さいPhaseから大きいPhaseへ向く。後続Issueは先行contractを利用し、同義の暫定store、bridge、projection、authorityを再定義しない。
 
