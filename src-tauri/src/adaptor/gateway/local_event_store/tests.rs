@@ -22,8 +22,9 @@ use crate::adaptor::gateway::local_event_store::envelope::{
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 use crate::adaptor::gateway::local_event_store::reader::{
-    read_envelope, READ_QUEUE_MAX_DEPTH, SQL_OPERATION_LOOKUP, SQL_PENDING_FIRST_PAGE,
-    SQL_PENDING_FIRST_PAGE_PARTITION, SQL_PENDING_FIRST_PAGE_PREFIX, SQL_TERMINAL_LOOKUP,
+    read_envelope, MAX_ACTIVE_RECOVERY_SNAPSHOTS, READ_QUEUE_MAX_DEPTH, SQL_OPERATION_LOOKUP,
+    SQL_PENDING_FIRST_PAGE, SQL_PENDING_FIRST_PAGE_PARTITION, SQL_PENDING_FIRST_PAGE_PREFIX,
+    SQL_TERMINAL_LOOKUP,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     canonicalize_recovery_result_record, StoredObligationV1, StoredOperationReceiptV1,
@@ -3665,6 +3666,188 @@ async fn pending_recovery_cursor_pages_and_rejects_tampering() {
             .await,
         Err(LocalEventQueryError::InvalidRequest)
     ));
+}
+
+#[tokio::test]
+async fn recovery_snapshot_workers_close_after_the_final_page() {
+    let harness = Harness::open();
+    harness
+        .store
+        .commit_batch(batch(
+            "commit-snapshot-worker-expiry",
+            "key-snapshot-worker-expiry",
+            [41; 32],
+            vec![],
+            vec![],
+            vec![
+                obligation_mutation("snapshot-worker-1", true),
+                obligation_mutation("snapshot-worker-2", true),
+            ],
+        ))
+        .await
+        .expect("seed recovery snapshot worker fixtures");
+
+    let LocalEventQueryResult::PendingRecoveryPage(completed) = harness
+        .store
+        .query(LocalEventQuery::PendingRecoveryPage {
+            limit: 2,
+            partition: None,
+            owner: None,
+            ordered_key_prefix: None,
+            shutdown_plan: None,
+            cursor: None,
+        })
+        .await
+        .expect("complete recovery page")
+    else {
+        panic!("unexpected complete recovery page result");
+    };
+    assert!(completed.next_cursor.is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while harness.store.recovery_snapshot_worker_count_for_test() != 0
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        harness.store.recovery_snapshot_worker_count_for_test(),
+        0,
+        "a completed page must not retain a SQLite read transaction"
+    );
+
+    let LocalEventQueryResult::PendingRecoveryPage(first) = harness
+        .store
+        .query(LocalEventQuery::PendingRecoveryPage {
+            limit: 1,
+            partition: None,
+            owner: None,
+            ordered_key_prefix: None,
+            shutdown_plan: None,
+            cursor: None,
+        })
+        .await
+        .expect("first incomplete recovery page")
+    else {
+        panic!("unexpected incomplete recovery page result");
+    };
+    assert!(first.next_cursor.is_some());
+    assert_eq!(
+        harness.store.recovery_snapshot_worker_count_for_test(),
+        1,
+        "an incomplete page must retain its SQLite snapshot"
+    );
+}
+
+#[tokio::test]
+async fn recovery_snapshot_issue_order_does_not_grow_for_completed_pages() {
+    let harness = Harness::open();
+    harness
+        .store
+        .commit_batch(batch(
+            "commit-snapshot-issue-order",
+            "key-snapshot-issue-order",
+            [43; 32],
+            vec![],
+            vec![],
+            vec![obligation_mutation("snapshot-issue-order-1", true)],
+        ))
+        .await
+        .expect("seed recovery snapshot issue order fixture");
+
+    for _ in 0..(MAX_ACTIVE_RECOVERY_SNAPSHOTS * 4) {
+        let LocalEventQueryResult::PendingRecoveryPage(page) = harness
+            .store
+            .query(LocalEventQuery::PendingRecoveryPage {
+                limit: 2,
+                partition: None,
+                owner: None,
+                ordered_key_prefix: None,
+                shutdown_plan: None,
+                cursor: None,
+            })
+            .await
+            .expect("complete recovery page")
+        else {
+            panic!("unexpected complete recovery page result");
+        };
+        assert!(page.next_cursor.is_none());
+    }
+
+    assert_eq!(
+        harness.store.recovery_snapshot_issue_order_len_for_test(),
+        0,
+        "a completed page must drop its snapshot id from the eviction queue"
+    );
+}
+
+/// A page released at its internal cursor must also be complete for the public
+/// caller. If DTO expansion pushed the page past the public bound, the public
+/// layer would truncate and hand back a continuation cursor for a snapshot the
+/// gateway already released, so the next request would fail as `CursorExpired`.
+#[tokio::test]
+async fn an_internal_pending_page_survives_dto_expansion_within_the_public_bound() {
+    let harness = Harness::open();
+    let owner = "o".repeat(12 * 1024);
+    let mutations = (0..200)
+        .map(|ordinal| {
+            let mut mutation = obligation_mutation(&format!("public-bound-{ordinal:03}"), true);
+            let LocalStateMutation::Obligation(ref mut obligation) = mutation else {
+                unreachable!("obligation helper always returns an obligation mutation");
+            };
+            obligation.pending.as_mut().expect("pending entry").owner = owner.clone();
+            mutation
+        })
+        .collect::<Vec<_>>();
+    harness
+        .store
+        .commit_batch(batch(
+            "commit-public-bound",
+            "key-public-bound",
+            [47; 32],
+            vec![],
+            vec![],
+            mutations,
+        ))
+        .await
+        .expect("seed pending obligations with expanding owners");
+
+    let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
+    let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
+        harness.store.clone();
+    let usecase = crate::usecase::agent_session::operation::RecoveryActionUsecase::new(
+        repository,
+        authority,
+        Arc::new(PerformanceRecoveryExecutor),
+        harness.store.installation_id().to_string(),
+    );
+    let query =
+        |cursor: Option<String>| crate::usecase::agent_session::operation::PendingRecoveryQuery {
+            limit: 200,
+            partition: None,
+            owner: None,
+            shutdown_plan: None,
+            cursor,
+        };
+
+    let page = usecase
+        .pending(query(None))
+        .await
+        .expect("first pending recovery page");
+    let internal_next_cursor = page.next_cursor.clone();
+    let public = crate::adaptor::protocol::agent_session_v1::checked_pending_recovery_page(page)
+        .expect("bounded public pending page");
+    assert_eq!(
+        public.next_cursor, internal_next_cursor,
+        "the public layer must not truncate an internal page and invent a continuation"
+    );
+
+    let continuation = public
+        .next_cursor
+        .expect("the internal byte bound must close the first page before the count bound");
+    usecase
+        .pending(query(Some(continuation)))
+        .await
+        .expect("the continuation must resolve inside the retained snapshot");
 }
 
 #[tokio::test]

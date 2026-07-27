@@ -757,6 +757,16 @@ impl LocalEventStore {
         Arc::clone(&self.readers)
     }
 
+    #[cfg(test)]
+    pub(crate) fn recovery_snapshot_worker_count_for_test(&self) -> usize {
+        self.recovery_snapshots.running_worker_count_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_snapshot_issue_order_len_for_test(&self) -> usize {
+        self.recovery_snapshots.issue_order_len_for_test()
+    }
+
     /// Validate and encode a batch before queue admission (design step 1).
     fn prepare(&self, batch: LocalAtomicBatch) -> Result<PreparedBatch, CommitBatchError> {
         if batch.idempotency.installation_id != self.installation_id {
