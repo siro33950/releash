@@ -1,1 +1,2 @@
-pub(crate) type TestRuntimeKernel = super::runtime_executor::WorkflowRuntimeExecutor;
+pub(crate) type TestRuntimeKernel =
+    crate::infrastructure::runtime::workflow_host::WorkflowRuntimeHost;

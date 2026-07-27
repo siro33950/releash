@@ -1,6 +1,7 @@
 use super::failure::{FailureDisposition, NodeExecutionFailureKind};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,

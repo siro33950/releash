@@ -15,7 +15,10 @@ mod output;
 pub(crate) mod ports;
 pub(crate) mod query_service;
 pub(crate) mod runtime_command;
-pub(crate) mod runtime_execution;
+pub(crate) mod runtime_driver;
+pub(crate) mod runtime_error;
+pub(crate) mod runtime_resolver;
+pub(crate) mod runtime_snapshot;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod turn_complete;

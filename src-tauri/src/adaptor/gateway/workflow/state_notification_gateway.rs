@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
-use crate::adaptor::gateway::workflow::event_projection::derive_workflow_execution_fields;
 use crate::adaptor::protocol::workflow::{
     WorkflowExecutionChangedPayloadView, WorkflowExecutionView,
 };
+use crate::domain::workflow::services::event_replay::derive_workflow_execution_fields;
 use crate::domain::workflow::{
     Artifact, ExecutionInterruptionReason, ExecutionStatus, NodeExecution, RuntimeExecutionState,
     WorkflowExecution, WorkflowRuntimeSnapshot,
@@ -244,11 +244,11 @@ mod tests {
     use crate::adaptor::gateway::workflow::event::{
         FanoutParentRef as EventFanoutParentRef, TokenUsage as EventTokenUsage, WorkflowEvent,
     };
-    use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition as EventNodeDefinition, NodeKindName as EventNodeKindName,
         WorkflowDefinitionYaml as EventWorkflowDefinitionYaml,
     };
+    use crate::domain::workflow::services::event_replay::project_workflow_execution;
     use crate::domain::workflow::{
         FanoutParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
         NodeExecutionStatus, NodeHistoryEntry, NodeKindName, RuntimeArtifact, TokenUsage,

@@ -445,14 +445,17 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
             ),
             _ => None,
         });
-        super::event_projection::project_workflow_execution(execution_id.as_str(), &events)
-            .map(|execution| {
-                execution.map(|execution| WorkflowExecutionProjection {
-                    execution,
-                    definition,
-                })
+        crate::domain::workflow::services::event_replay::project_workflow_execution(
+            execution_id.as_str(),
+            &events,
+        )
+        .map(|execution| {
+            execution.map(|execution| WorkflowExecutionProjection {
+                execution,
+                definition,
             })
-            .map_err(WorkflowError::external)
+        })
+        .map_err(WorkflowError::external)
     }
 
     fn get_workspace_execution_with_definition(
@@ -468,7 +471,7 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
             ),
             _ => None,
         });
-        super::event_projection::project_payload_stripped_workflow_execution(
+        crate::domain::workflow::services::event_replay::project_payload_stripped_workflow_execution(
             execution_id.as_str(),
             &events,
         )

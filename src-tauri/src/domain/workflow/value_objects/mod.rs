@@ -6,6 +6,7 @@ mod facet;
 mod failure;
 mod ids;
 mod node_execution;
+mod runtime_event;
 mod runtime_projection;
 mod state;
 mod workflow_node_context;
@@ -25,7 +26,7 @@ pub use execution_metadata::WorkflowExecutionRecord;
 pub use execution_metadata::{
     ExecutionListFilter, ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
 };
-pub use facet::{FacetKey, FacetKind, FacetSummary};
+pub use facet::{FacetContents, FacetKey, FacetKind, FacetSummary, WorkflowFacetContents};
 pub use failure::{
     FailureClassification, FailureDisposition, NodeExecutionFailureKind, TimeoutKind,
 };
@@ -35,6 +36,7 @@ pub use ids::{
 pub use node_execution::{
     FanoutParentRef, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
 };
+pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 pub use runtime_projection::{
     default_node_history_status, FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact,
     TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,

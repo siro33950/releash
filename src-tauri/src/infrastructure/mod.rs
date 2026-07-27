@@ -7,4 +7,5 @@ pub(crate) mod local_api;
 pub(crate) mod platform;
 pub(crate) mod process;
 pub(crate) mod pty_session;
+pub(crate) mod runtime;
 pub(crate) mod telemetry;

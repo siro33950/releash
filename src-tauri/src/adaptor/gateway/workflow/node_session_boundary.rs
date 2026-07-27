@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use super::runtime_events as workflow_runtime_events;
-use super::runtime_session as workflow_runtime_session;
-use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
-use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::WorkflowNodeContext;
+use crate::infrastructure::runtime::workflow_host::node_settings::WorkflowDefaults;
+use crate::infrastructure::runtime::workflow_host::runtime_events as workflow_runtime_events;
+use crate::infrastructure::runtime::workflow_host::runtime_session as workflow_runtime_session;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
+use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 /// AgentSession 開始呼び出しを抽象化するトレイト。
 /// production では `start_agent_session_internal` を呼ぶ `RealSessionStartGate` を使い、
