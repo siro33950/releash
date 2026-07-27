@@ -8652,7 +8652,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn hanging_target_inventory_aborts_before_activation_at_the_absolute_cutoff() {
     let harness = Harness::open();
     let executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::HangTargets);
@@ -8671,24 +8671,19 @@ async fn hanging_target_inventory_aborts_before_activation_at_the_absolute_cutof
             )
             .await
     });
-    for _ in 0..1_000 {
-        if executor
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while executor
             .target_queries
             .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
+            != 1
         {
-            break;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(
-        executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "request did not reach the target inventory"
-    );
+    })
+    .await
+    .expect("request did not reach the target inventory");
 
+    tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(13)).await;
     let outcome = request.await.unwrap().unwrap();
     let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::RejectedBeforeCommit {
