@@ -1104,12 +1104,13 @@ impl AgentSessionRuntimeUsecase {
     /// Read the process-local send admission state without acquiring the
     /// per-session command lock. Workflow activation already owns that lock
     /// while it commits its durable Send operation.
-    pub(crate) async fn workflow_send_runtime_is_busy(&self, session_id: &str) -> bool {
+    pub(crate) async fn workflow_turn_runtime_activity(&self, session_id: &str) -> (bool, bool) {
         let sessions = self.ctx.sessions.lock().await;
-        sessions.get(session_id).is_some_and(|state| {
-            state.phase != RuntimeSessionPhase::Idle
-                || state.queue_paused
-                || !state.pending_queue.is_empty()
+        sessions.get(session_id).map_or((false, false), |state| {
+            (
+                state.phase != RuntimeSessionPhase::Idle,
+                !state.pending_queue.is_empty(),
+            )
         })
     }
 

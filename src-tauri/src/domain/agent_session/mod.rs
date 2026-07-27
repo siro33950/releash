@@ -6,8 +6,9 @@ pub(crate) mod storage;
 pub(crate) mod value_objects;
 
 pub(crate) use services::{
-    dedup_instructions, latest_revisions_by_kind, next_epoch_for_identity,
-    normalize_path_components, replacement_action, snapshot_is_stale,
+    decide_workflow_turn_admission, dedup_instructions, latest_revisions_by_kind,
+    next_epoch_for_identity, normalize_path_components, replacement_action, snapshot_is_stale,
+    WorkflowTurnAdmissionFacts, WorkflowTurnAdmissionRejection,
 };
 #[cfg(test)]
 pub(crate) use storage::AgentSessionProjectionPreparer;

@@ -16344,7 +16344,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_missing_output_repair_start_failure_fails_child_siblings_and_parent_in_live_and_replay(
+    async fn fanout_child_missing_output_repair_start_failure_checkpoints_structured_mismatch_in_live_and_replay(
     ) {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeExecutor::new_for_test();
@@ -16469,7 +16469,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "failed");
+        assert_eq!(live_status("fanout-review"), "aborted");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -16495,7 +16495,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status("review-a"),
@@ -16520,13 +16520,17 @@ mod dispatch_boundary_tests {
             .node_executions
             .iter()
             .all(|execution| !execution.status.is_active()));
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            WorkflowEvent::NodeFailed {
+                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
                 ..
             }
         )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
     }
 
     /// Spec [05] commit 境界: production 経路 `execute_outcome` の pre-commit phase で
@@ -19835,7 +19839,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn missing_required_output_requests_repair_without_failing_within_limit() {
+    async fn issue_1557_done_session_accepts_missing_output_repair_turn() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
@@ -19855,11 +19859,10 @@ mod dispatch_boundary_tests {
 
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut session = chat_session_for_test(session_id, worktree_path, None, true);
+        session.state = crate::usecase::agent_session::session::SessionState::Done;
         session_store
-            .save_full_session_for_restore(
-                &data_dir,
-                &chat_session_for_test(session_id, worktree_path, None, true),
-            )
+            .save_full_session_for_restore(&data_dir, &session)
             .unwrap();
         insert_ready_agent_process_for_internal_turn_test(
             &handles,
@@ -20017,7 +20020,10 @@ mod dispatch_boundary_tests {
         let Some((reason, failure_kind)) = execution_failed else {
             panic!("repair start failure must append ExecutionFailed; got {events:?}");
         };
-        assert_eq!(*failure_kind, NodeExecutionFailureKind::InfrastructureCrash);
+        assert_eq!(
+            *failure_kind,
+            NodeExecutionFailureKind::StructuredOutputMismatch
+        );
         assert!(
             reason.contains("contract output repair turn failed to start"),
             "terminal reason must include repair startup failure; got {reason}"

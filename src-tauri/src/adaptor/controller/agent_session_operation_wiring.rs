@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::domain::agent_session::entities::SessionState as DomainSessionState;
+use crate::domain::agent_session::{
+    decide_workflow_turn_admission, WorkflowTurnAdmissionFacts, WorkflowTurnAdmissionRejection,
+};
 use crate::domain::local_event::{
     LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository, ObligationRecord,
     ObligationStateRecord, SafeOperationFailure, SendObligationKindRecord,
@@ -38,6 +42,17 @@ use crate::usecase::agent_session::session::{
 
 pub(crate) use crate::usecase::agent_session::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL;
 const INTERNAL_WORKFLOW_OPERATION_PRINCIPAL: &str = "workflow-runtime";
+
+fn domain_session_state(state: &SessionState) -> DomainSessionState {
+    match state {
+        SessionState::Active => DomainSessionState::Active,
+        SessionState::Idle => DomainSessionState::Idle,
+        SessionState::Done => DomainSessionState::Done,
+        SessionState::Error => DomainSessionState::Error,
+        SessionState::Closed => DomainSessionState::Closed,
+        SessionState::Archived => DomainSessionState::Archived,
+    }
+}
 
 fn runtime_stop_request_id(session_id: &str, turn_id: u64) -> String {
     let digest =
@@ -143,6 +158,8 @@ struct DurableWorkflowSendOperationDriver {
     data_dir: PathBuf,
 }
 
+const WORKFLOW_SEND_RETRY_ATTEMPTS: usize = 3;
+
 #[async_trait::async_trait]
 impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
     for DurableWorkflowSendOperationDriver
@@ -185,39 +202,52 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
             editor_context: None,
         })
         .map_err(|_| "The durable workflow Send payload could not be encoded.".to_string())?;
-        match self
-            .operation
-            .send(crate::usecase::agent_session::operation::SendOperationRequest {
-                principal: INTERNAL_WORKFLOW_OPERATION_PRINCIPAL.to_string(),
-                operation_id: request.operation_id,
-                canonical_payload,
-            })
-            .await
-            .map_err(|error| format!("The durable workflow Send failed: {error:?}"))?
-        {
-            crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(accepted) => {
-                if accepted.receipt.session_id != meta.id
-                    || !matches!(
-                        accepted.receipt.disposition,
-                        crate::domain::agent_session::events::SendDisposition::StartedTurn { .. }
-                    )
-                {
-                    return Err(
-                        "The durable workflow Send converged on an incompatible receipt."
-                            .to_string(),
-                    );
+        let operation_request = crate::usecase::agent_session::operation::SendOperationRequest {
+            principal: INTERNAL_WORKFLOW_OPERATION_PRINCIPAL.to_string(),
+            operation_id: request.operation_id,
+            canonical_payload,
+        };
+        for attempt in 0..WORKFLOW_SEND_RETRY_ATTEMPTS {
+            match self
+                .operation
+                .send(operation_request.clone())
+                .await
+                .map_err(|error| format!("The durable workflow Send failed: {error:?}"))?
+            {
+                crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(
+                    accepted,
+                ) => {
+                    if accepted.receipt.session_id != meta.id
+                        || !matches!(
+                            accepted.receipt.disposition,
+                            crate::domain::agent_session::events::SendDisposition::StartedTurn { .. }
+                        )
+                    {
+                        return Err(
+                            "The durable workflow Send converged on an incompatible receipt."
+                                .to_string(),
+                        );
+                    }
+                    return Ok(());
                 }
-                Ok(())
+                crate::usecase::agent_session::operation::SendCommandOutcome::RejectedBeforeCommit {
+                    failure,
+                } if failure.retryable && attempt + 1 < WORKFLOW_SEND_RETRY_ATTEMPTS => {
+                    tokio::task::yield_now().await;
+                }
+                crate::usecase::agent_session::operation::SendCommandOutcome::RejectedBeforeCommit {
+                    failure,
+                } => return Err(failure.to_string()),
+                crate::usecase::agent_session::operation::SendCommandOutcome::OutcomeUnknown {
+                    operation_id,
+                } => {
+                    return Err(format!(
+                        "The durable workflow Send acceptance is unknown ({operation_id})."
+                    ));
+                }
             }
-            crate::usecase::agent_session::operation::SendCommandOutcome::RejectedBeforeCommit {
-                failure,
-            } => Err(failure.to_string()),
-            crate::usecase::agent_session::operation::SendCommandOutcome::OutcomeUnknown {
-                operation_id,
-            } => Err(format!(
-                "The durable workflow Send acceptance is unknown ({operation_id})."
-            )),
         }
+        unreachable!("the bounded workflow Send retry loop always returns")
     }
 }
 
@@ -1134,11 +1164,11 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         // the gate, so response-loss/restart replay never depends on the
         // workflow still being at its original approval checkpoint.
         let workflow_turn = matches!(&command.target, CanonicalSendTargetV1::WorkflowTurn { .. });
-        let (chat_session_id, worktree_path, workflow_projection_busy) = match &command.target {
+        let (chat_session_id, worktree_path, workflow_session_state) = match &command.target {
             CanonicalSendTargetV1::Direct {
                 chat_session_id,
                 worktree_path,
-            } => (chat_session_id.clone(), worktree_path.clone(), false),
+            } => (chat_session_id.clone(), worktree_path.clone(), None),
             CanonicalSendTargetV1::WorkflowApproval { execution_id } => {
                 let runtime = self
                     .workflow_runtime
@@ -1151,7 +1181,7 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                     .prepare_approval_chat(execution_id, &command.content)
                     .await
                     .map_err(|_| Self::failure("The workflow approval target is unavailable."))?;
-                (Some(target.chat_session_id), target.worktree_path, false)
+                (Some(target.chat_session_id), target.worktree_path, None)
             }
             CanonicalSendTargetV1::WorkflowTurn {
                 chat_session_id, ..
@@ -1166,30 +1196,26 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                     .get_session_meta(&self.data_dir, chat_session_id)
                     .map_err(|_| Self::failure("The workflow turn target is unavailable."))?
                     .ok_or_else(|| Self::failure("The workflow turn target does not exist."))?;
-                if !matches!(meta.state, SessionState::Active | SessionState::Idle) {
-                    return Err(Self::failure("The workflow turn target is not open."));
-                }
-                let projection_busy = meta.state != SessionState::Idle
-                    || self
-                        .session_store
-                        .load_queue_paused_at(&self.data_dir, chat_session_id)
-                        .map_err(|_| {
-                            Self::failure("The workflow turn queue state is unavailable.")
-                        })?
-                        .is_some();
                 (
                     Some(chat_session_id.clone()),
                     meta.worktree_path,
-                    projection_busy,
+                    Some(domain_session_state(&meta.state)),
                 )
             }
         };
         let session_id = chat_session_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        self.session_store
+        let unresolved_recovery = self
+            .session_store
             .ensure_no_unresolved_recovery(&session_id)
-            .await?;
+            .await
+            .err();
+        if !workflow_turn {
+            if let Some(failure) = unresolved_recovery {
+                return Err(failure);
+            }
+        }
         let allocation = if chat_session_id.is_some() {
             self.session_store
                 .send_acceptance_allocation(&session_id)
@@ -1202,14 +1228,30 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                 session_projection_guard: crate::domain::local_event::RevisionGuard::Absent,
             }
         };
-        let busy = if workflow_turn {
-            workflow_projection_busy
-                || allocation.has_active_turn
-                || allocation.has_pending_queue
-                || self
-                    .runtime
-                    .workflow_send_runtime_is_busy(&session_id)
-                    .await
+        let busy = if let Some(session_state) = workflow_session_state {
+            let (runtime_has_active_turn, runtime_has_pending_queue) = self
+                .runtime
+                .workflow_turn_runtime_activity(&session_id)
+                .await;
+            match decide_workflow_turn_admission(WorkflowTurnAdmissionFacts {
+                session_state,
+                has_active_turn: allocation.has_active_turn || runtime_has_active_turn,
+                has_pending_queue: allocation.has_pending_queue || runtime_has_pending_queue,
+                has_unresolved_recovery: unresolved_recovery.is_some(),
+            }) {
+                Ok(()) => false,
+                Err(WorkflowTurnAdmissionRejection::SessionClosed) => {
+                    return Err(Self::failure("The workflow turn target is not open."));
+                }
+                Err(WorkflowTurnAdmissionRejection::NotQuiescent) => {
+                    return Err(Self::failure(
+                        "The workflow turn target already has pending work.",
+                    ));
+                }
+                Err(WorkflowTurnAdmissionRejection::UnresolvedRecovery) => {
+                    return Err(unresolved_recovery.expect("recovery rejection preserves failure"));
+                }
+            }
         } else if chat_session_id.is_some() {
             let response = self
                 .runtime
@@ -1225,11 +1267,6 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         } else {
             false
         };
-        if workflow_turn && busy {
-            return Err(Self::failure(
-                "The workflow turn target already has pending work.",
-            ));
-        }
         let queue_item_id = format!("queue-{}", &hex::encode(digest)[..32]);
         let prompt = crate::domain::agent_session::events::PromptInput {
             content: command.content.clone(),

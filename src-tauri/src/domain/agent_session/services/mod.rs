@@ -1,5 +1,6 @@
 pub(crate) mod context_replacement;
 pub(crate) mod skill_frontmatter;
+pub(crate) mod workflow_turn_admission;
 
 use super::SkillEntry;
 
@@ -8,6 +9,9 @@ pub(crate) use context_replacement::{
     normalize_path_components, replacement_action, snapshot_is_stale,
 };
 pub(crate) use skill_frontmatter::parse_skill_frontmatter;
+pub(crate) use workflow_turn_admission::{
+    decide_workflow_turn_admission, WorkflowTurnAdmissionFacts, WorkflowTurnAdmissionRejection,
+};
 
 /// Maximum image size in bytes (5 MiB).
 /// Anthropic Messages API limits base64-encoded images to roughly 5 MB.

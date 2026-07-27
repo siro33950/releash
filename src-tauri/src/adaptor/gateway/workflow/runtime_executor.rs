@@ -3978,10 +3978,21 @@ impl WorkflowRuntimeExecutor {
             .await;
         drop(runtime_guard);
         if let Err(err) = start_result {
+            let is_startup_timeout = matches!(
+                &err,
+                crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
+                    ..
+                }
+            );
             let error = WorkflowRuntimeError::with_agent_runtime_context(
                 "contract output repair turn failed to start",
                 err,
             );
+            let failure_kind = if is_startup_timeout {
+                error.workflow_failure_kind()
+            } else {
+                NodeExecutionFailureKind::StructuredOutputMismatch
+            };
             return self
                 .fail_missing_required_output_with_metadata(
                     app,
@@ -3992,7 +4003,7 @@ impl WorkflowRuntimeExecutor {
                     node_name,
                     contract,
                     &error.to_string(),
-                    error.workflow_failure_kind(),
+                    failure_kind,
                     error.retry_count(),
                     node_execution_id,
                 )
