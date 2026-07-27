@@ -1,6 +1,6 @@
 # ワークフローエンジン発展計画
 
-この文書は Releash workflow engine の戦略、採用判断、実行モデル、マイルストーンを定義する一次 Owner である。語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md)、WorkflowDefinition の grammar は [`workflow-yaml-syntax.md`](./workflow-yaml-syntax.md) を正とする。
+この文書は Releash workflow engine の戦略、採用判断、実行モデル、マイルストーンを定義する一次 Owner である。語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md)、WorkflowDefinition の grammar は [`workflow-yaml-syntax.md`](./workflow-yaml-syntax.md)、実行時ライフサイクル不変条件は [`../specs/workflow-lifecycle/workflow-ideal-lifecycle.md`](../specs/workflow-lifecycle/workflow-ideal-lifecycle.md) を正とする。
 
 ## 目的
 
