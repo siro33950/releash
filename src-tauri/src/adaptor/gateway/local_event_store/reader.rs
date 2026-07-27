@@ -59,7 +59,16 @@ pub const MAX_PENDING_RECOVERY_PAGE: usize = 200;
 /// The public 4 MiB bound is enforced after semantic decoding and DTO
 /// expansion. This separate cap bounds one internal SQLite fetch without
 /// confusing opaque record bytes with encoded public response bytes.
-pub const PENDING_RECOVERY_INTERNAL_PAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
+///
+/// The internal cap stays an eighth of the public bound so that DTO expansion
+/// keeps a whole internal page inside the public response. That matters beyond
+/// response size: a page that survives to the public layer intact never needs
+/// the public truncation path, and only an untruncated page lets a snapshot be
+/// released as soon as its internal cursor is exhausted. Expansion is not
+/// bounded in theory — an owner repeated across the entry and its target, or a
+/// control character escaped as `\u00XX`, still multiplies bytes — so the
+/// public truncation remains as a safety valve.
+pub const PENDING_RECOVERY_INTERNAL_PAGE_MAX_BYTES: usize = 512 * 1024;
 pub const MAX_ACTIVE_RECOVERY_SNAPSHOTS: usize = 8;
 pub const MAX_SHUTDOWN_PAGE: usize = 128;
 pub const SHUTDOWN_PAGE_MAX_BYTES: usize = 1024 * 1024;
@@ -2341,11 +2350,13 @@ impl RecoverySnapshotPager {
     }
 
     fn remove(&self, snapshot_id: &str) {
-        self.state
-            .lock()
-            .expect("recovery snapshot pager poisoned")
-            .active
-            .remove(snapshot_id);
+        let mut state = self.state.lock().expect("recovery snapshot pager poisoned");
+        Self::forget(&mut state, snapshot_id);
+    }
+
+    fn forget(state: &mut RecoverySnapshotState, snapshot_id: &str) {
+        state.active.remove(snapshot_id);
+        state.issue_order.retain(|id| id != snapshot_id);
     }
 
     fn reserve(
@@ -2366,7 +2377,7 @@ impl RecoverySnapshotPager {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in expired {
-            state.active.remove(&id);
+            Self::forget(&mut state, &id);
         }
         while state.active.len() >= MAX_ACTIVE_RECOVERY_SNAPSHOTS {
             let Some(oldest) = state.issue_order.pop_front() else {
@@ -2389,9 +2400,9 @@ impl RecoverySnapshotPager {
 
     fn should_retain(result: &Result<LocalEventQueryResult, LocalEventQueryError>) -> bool {
         match result {
-            Ok(LocalEventQueryResult::PendingRecoveryPage(page)) => !page.entries.is_empty(),
+            Ok(LocalEventQueryResult::PendingRecoveryPage(page)) => page.next_cursor.is_some(),
             Ok(LocalEventQueryResult::PendingRecoverySnapshotPage(page)) => {
-                !page.entries.is_empty()
+                page.next_cursor.is_some()
             }
             _ => false,
         }
@@ -2499,6 +2510,25 @@ impl RecoverySnapshotPager {
             .expect("recovery snapshot worker list poisoned")
             .push(worker);
         self.dispatch(&snapshot_id, &sender, query).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn issue_order_len_for_test(&self) -> usize {
+        self.state
+            .lock()
+            .expect("recovery snapshot pager poisoned")
+            .issue_order
+            .len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running_worker_count_for_test(&self) -> usize {
+        self.workers
+            .lock()
+            .expect("recovery snapshot worker list poisoned")
+            .iter()
+            .filter(|worker| !worker.is_finished())
+            .count()
     }
 
     pub fn close(&self) {
