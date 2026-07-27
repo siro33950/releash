@@ -5,6 +5,7 @@
 - **外部入力の受け口**として薄く保つ
 - 引数のシリアライズ／デシリアライズと型変換のみ
 - 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
+- **受理判定を controller で書かない**: 「この状態でこの操作を受理してよいか」の判断は domain の集約が答える（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。controller が状態型を独自解釈してゲートを設けると、同じ判断が層をまたいで二重化し、domain 側の不変条件が効かなくなる
 - 2系統の入口を分離：
   - `controller/command/` — Tauri コマンド（`#[tauri::command]`）
   - `controller/handler/` — WebSocket ハンドラ

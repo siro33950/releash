@@ -7,6 +7,8 @@
 - ドメイン型 ↔ 外部システム型の変換を Gateway 内で完結させる
 - CQRS に従い、Command（書き込み）と Query（読み込み）を別ファイルに分離
 - **gateway は単一集約に対する純粋な I/O プリミティブを提供する**: 複数集約をまたぐオーケストレーションや操作の順序制御（業務手順）は usecase の責務であり、gateway に潰し込まない（[USECASE.md](./USECASE.md)）
+- **gateway は状態機械を持たない**: 状態・ライフサイクルの表現主体は domain の集約である（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。gateway が domain の状態を別の型で表現し直したり、domain 集約を経由せず自前の可変状態を進めたりしてはならない。gateway が状態を扱う場合は、domain の集約を保持して判断を委譲する（参照: `domain/pty_session/entities/pty_session_registry.rs` と `adaptor/gateway/pty_session/backend_impl.rs`）
+- **業務判断を gateway に沈めない**: 「マージ済みか」「削除してよいか」のような判定規則は、外部ライブラリ（git2 等）を使う位置にあっても domain のサービス・集約に置き、gateway はその入力となる生データの取得に徹する
 
 ## ディレクトリ構造
 

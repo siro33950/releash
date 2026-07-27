@@ -164,6 +164,7 @@ Releash を変更するときは、次を確認する。
 - workflow action の定義、実行、観測、承認、却下、再指示のどれかが軽くなるか。
 - 新しいロジックは frontend ではなく Rust に置かれているか。
 - 変更した state の source of truth は明確か。
+- ドメインの規則（判断・計算・分類・検証・遷移）を domain が所有しているか。状態を持つ概念は集約が、持たない概念は値オブジェクトとドメインサービスが表現しているか。同じ概念が二つの場所で表現されていないか。domain の型と規則は実行経路にあるか（`docs/architecture/DOMAIN.md` モデルが実行を担う）。
 - full-retention / full-recompute 経路を増やしていないか。
 - 同じ backend-owned state を Tauri、WebSocket、将来の client surface で再利用できるか。
 - artifact が workflow の判断材料として扱われているか。
