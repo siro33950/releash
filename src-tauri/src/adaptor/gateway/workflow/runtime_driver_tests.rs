@@ -174,7 +174,7 @@ fn fanout_child_failure_kind_uses_typed_refusal_signal() {
 fn fanout_child_failure_kind_without_signal_uses_session_error_classification() {
     let kind = fanout_child_failure_kind(1, None);
 
-    assert_eq!(kind, NodeExecutionFailureKind::InfrastructureCrash);
+    assert_eq!(kind, NodeExecutionFailureKind::ValidationFailure);
 }
 
 #[test]
@@ -2355,7 +2355,7 @@ fn turn_complete_action_session_error() {
         TurnCompleteAction::SessionError {
             node_name: "plan".to_string(),
             exit_code: 1,
-            kind: NodeExecutionFailureKind::InfrastructureCrash,
+            kind: NodeExecutionFailureKind::ValidationFailure,
         }
     );
 }
@@ -2433,7 +2433,7 @@ fn turn_complete_action_negative_exit_code() {
         TurnCompleteAction::SessionError {
             node_name: "plan".to_string(),
             exit_code: -1,
-            kind: NodeExecutionFailureKind::InfrastructureCrash,
+            kind: NodeExecutionFailureKind::ValidationFailure,
         }
     );
 }
@@ -6211,6 +6211,57 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
     assert!(matches!(err, WorkflowRuntimeError::AlreadyActive(_)));
 }
 
+#[tokio::test]
+async fn interrupted_snapshot_without_a_reason_is_rejected_instead_of_guessing_crash() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let driver = WorkflowRuntimeHost::new_for_test();
+    driver
+        .set_execution_store_data_dir(tmp.path().to_path_buf())
+        .await;
+    let execution_id = uuid::Uuid::new_v4().to_string();
+    let worktree_path = "/wt/unclassified-interruption";
+    driver
+        .seed_active_execution_for_test(
+            execution_id.clone(),
+            make_minimal_workflow(),
+            RuntimeExecutionState::Running,
+            worktree_path.to_string(),
+            ExecutionOrigin::DesktopUi,
+        )
+        .await;
+    let running_snapshot = driver
+        .executions
+        .lock()
+        .await
+        .get(&execution_id)
+        .unwrap()
+        .to_commit_snapshot();
+    let snapshot = RuntimeCommitSnapshot {
+        state: RuntimeExecutionState::Interrupted,
+        error_reason: None,
+        ..running_snapshot
+    };
+
+    let error = workflow_runtime_commit::sync_execution_store_from_snapshot(
+        driver.execution_store(),
+        &execution_id,
+        &snapshot,
+    )
+    .await
+    .expect_err("an interrupted snapshot requires a classified reason");
+
+    assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
+    assert_eq!(
+        driver
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap()
+            .status,
+        ExecutionStatus::Running
+    );
+}
+
 /// Spec issues-1011 finding 10: authoritative sync により、active な execution が
 /// terminal に遷移したとき Execution Store の active から外れて completed に
 /// 追加され、failed/aborted も同じく completed 一覧に現れる。
@@ -9154,7 +9205,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn resume_runtime_start_failure_is_accepted_with_a_crash_checkpoint() {
+    async fn resume_runtime_start_failure_is_accepted_with_a_classified_terminal_failure() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -9187,11 +9238,9 @@ mod dispatch_boundary_tests {
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            metadata.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
+        assert_eq!(metadata.status, ExecutionStatus::Failed);
+        assert_eq!(metadata.interruption_reason, None);
+        assert_eq!(metadata.resume_from_node, None);
         assert!(!driver.contains_execution_for_test(&execution_id).await);
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -9218,6 +9267,13 @@ mod dispatch_boundary_tests {
             1
         );
         assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                ..
+            }
+        )));
+        assert!(events.iter().all(|event| !matches!(
             event,
             WorkflowEvent::ExecutionInterrupted {
                 reason: ExecutionInterruptionReason::Crash,
@@ -13110,7 +13166,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn app_exit_shutdown_interrupts_active_command_and_kills_process_group() {
+    async fn app_exit_shutdown_is_graceful_and_kills_process_group_without_crash_fact() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
@@ -13140,15 +13196,11 @@ mod dispatch_boundary_tests {
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Running);
         let events = read_dispatch_events(&app, &execution_id);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                WorkflowEvent::ExecutionInterrupted { reason, .. }
-                    if reason == &ExecutionInterruptionReason::Crash
-            )
-        }));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         assert!(events.iter().all(|event| {
             !matches!(
                 event,
@@ -13160,16 +13212,16 @@ mod dispatch_boundary_tests {
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Running);
         assert!(projected.node_executions.iter().all(|node_execution| {
-            node_execution.status == crate::domain::workflow::NodeExecutionStatus::Aborted
-                && node_execution.completed_at.is_some()
+            node_execution.status == crate::domain::workflow::NodeExecutionStatus::Running
+                && node_execution.completed_at.is_none()
         }));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn app_exit_shutdown_interrupts_fanout_command_child_by_node_execution_id() {
+    async fn app_exit_shutdown_leaves_fanout_for_orphan_recovery_without_crash_fact() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
@@ -13196,17 +13248,15 @@ mod dispatch_boundary_tests {
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Running);
         let events = read_dispatch_events(&app, &execution_id);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionInterrupted { reason, .. }
-                if reason == &ExecutionInterruptionReason::Crash
-        )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Running);
         let parent = projected
             .node_executions
             .iter()
@@ -13219,11 +13269,11 @@ mod dispatch_boundary_tests {
             .expect("fanout child execution");
         assert_eq!(
             parent.status,
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
         assert_eq!(
             child.status,
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
     }
 
@@ -15565,7 +15615,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_model_refusal_checkpoints_confirmed_child_and_resume_completes_pending_child() {
+    async fn fanout_model_refusal_fails_without_claiming_execution_crash() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -15697,19 +15747,16 @@ mod dispatch_boundary_tests {
 
         assert!(
             !driver.contains_execution_for_test(&execution_id).await,
-            "partial failure must release the interrupted fanout runtime"
+            "fanout failure must release the terminal runtime"
         );
         let stored = driver
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep the resumable checkpoint metadata");
-        assert_eq!(stored.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            stored.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
+            .expect("ExecutionStore must keep terminal failure metadata");
+        assert_eq!(stored.status, ExecutionStatus::Failed);
+        assert_eq!(stored.interruption_reason, None);
+        assert_eq!(stored.resume_from_node, None);
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -15735,16 +15782,16 @@ mod dispatch_boundary_tests {
             event,
             WorkflowEvent::NodeCompleted { node_name, .. } if node_name == "review-b"
         )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::ModelRefusal,
                 ..
             }
         )));
-        assert!(events
-            .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
         assert!(events.iter().all(|event| !matches!(
             event,
             WorkflowEvent::ArtifactProduced { node_name, .. } if node_name == "fanout-review"
@@ -15755,83 +15802,6 @@ mod dispatch_boundary_tests {
                 .all(|event| !matches!(event, WorkflowEvent::ContractViolated { .. })),
             "model refusal signal must not be rerouted into contract repair; got {events:?}"
         );
-
-        driver
-            .resume_workflow_execution(app.handle(), &session_store, &handles, &execution_id)
-            .await
-            .unwrap();
-        let resumed_child_session = {
-            let execs = driver.executions.lock().await;
-            let resumed = execs.get(&execution_id).expect("resumed fanout runtime");
-            let fanout = resumed
-                .fanout_runtime
-                .as_ref()
-                .expect("active resumed fanout");
-            let reused = fanout
-                .children
-                .iter()
-                .find(|child| child.node_name == "review-b")
-                .expect("confirmed child");
-            assert_eq!(reused.state, FanoutChildRuntimeState::Completed);
-            assert!(
-                reused.session_id.is_empty(),
-                "confirmed child is not restarted"
-            );
-            assert_eq!(
-                reused.artifact,
-                Some(serde_json::json!({"verdict": "LGTM"}))
-            );
-            let pending = fanout
-                .children
-                .iter()
-                .find(|child| child.node_name == "review-a")
-                .expect("failed child restarted as pending");
-            assert_eq!(pending.state, FanoutChildRuntimeState::Running);
-            assert!(!pending.session_id.is_empty());
-            pending.session_id.clone()
-        };
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                &resumed_child_session,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "recovered review".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
-
-        let completed = driver
-            .execution_store
-            .get_execution(&execution_id)
-            .await
-            .expect("resumed fanout reaches a final metadata state");
-        assert_eq!(completed.status, ExecutionStatus::Completed);
-        let completed_events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert_eq!(
-            completed_events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::SessionAttached { node_execution_id, .. }
-                        if node_execution_id.starts_with("ne-review-b")
-                ))
-                .count(),
-            1,
-            "the confirmed child keeps its original session and is not re-executed"
-        );
-        assert!(matches!(
-            completed_events.last(),
-            Some(WorkflowEvent::ExecutionCompleted { .. })
-        ));
     }
 
     #[tokio::test]
@@ -15968,7 +15938,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_missing_output_after_repair_limit_creates_resumable_partial_checkpoint() {
+    async fn fanout_child_missing_output_after_repair_limit_fails_without_crash_fact() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -16081,7 +16051,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             !driver.contains_execution_for_test(&execution_id).await,
-            "repair limit fanout missing-output failure must release the interrupted execution"
+            "repair limit fanout missing-output failure must release the terminal execution"
         );
         let live_payload = received_payloads
             .lock()
@@ -16100,7 +16070,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "aborted");
+        assert_eq!(live_status("fanout-review"), "failed");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -16118,7 +16088,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status("review-a"),
@@ -16143,11 +16113,14 @@ mod dispatch_boundary_tests {
             .node_executions
             .iter()
             .all(|execution| !execution.status.is_active()));
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Failed);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
                 ..
             }
         )));
@@ -16155,14 +16128,13 @@ mod dispatch_boundary_tests {
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("repair exhaustion remains resumable");
-        assert_eq!(stored.status, ExecutionStatus::Interrupted);
-        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
+            .expect("repair exhaustion remains terminally observable");
+        assert_eq!(stored.status, ExecutionStatus::Failed);
+        assert_eq!(stored.resume_from_node, None);
     }
 
     #[tokio::test]
-    async fn approval_fanout_child_missing_output_after_repair_limit_is_resumable_with_child_node_failed(
-    ) {
+    async fn approval_fanout_child_missing_output_after_repair_limit_fails_without_crash_fact() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -16287,7 +16259,7 @@ mod dispatch_boundary_tests {
         ));
         assert!(
             !driver.contains_execution_for_test(&execution_id).await,
-            "repair limit approval fanout missing-output failure must release the interrupted execution"
+            "repair limit approval fanout missing-output failure must release the terminal execution"
         );
         let live_payload = received_payloads
             .lock()
@@ -16306,7 +16278,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status_by_id(&parent_node_execution_id), "aborted");
+        assert_eq!(live_status_by_id(&parent_node_execution_id), "failed");
         assert_eq!(
             live_status_by_id(&approval_child_node_execution_id),
             "failed"
@@ -16337,7 +16309,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status_by_id(&parent_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status_by_id(&approval_child_node_execution_id),
@@ -16347,11 +16319,14 @@ mod dispatch_boundary_tests {
             projected_status_by_id(&sibling_node_execution_id),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Failed);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
                 ..
             }
         )));
@@ -16483,7 +16458,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "aborted");
+        assert_eq!(live_status("fanout-review"), "failed");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -16509,7 +16484,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status("review-a"),
@@ -16534,7 +16509,7 @@ mod dispatch_boundary_tests {
             .node_executions
             .iter()
             .all(|execution| !execution.status.is_active()));
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Failed);
         assert!(events.iter().any(|event| matches!(
             event,
             WorkflowEvent::NodeFailed {
@@ -16542,9 +16517,16 @@ mod dispatch_boundary_tests {
                 ..
             }
         )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
+                ..
+            }
+        )));
         assert!(events
             .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
     }
 
     /// Spec [05] commit 境界: production 経路 `execute_outcome` の pre-commit phase で
@@ -20648,7 +20630,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_activation_crash_checkpoints_aborted_children_in_live_snapshot_and_replay() {
+    async fn fanout_activation_failure_is_terminal_without_claiming_a_crash() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -20700,24 +20682,21 @@ mod dispatch_boundary_tests {
 
         assert!(
             !driver.contains_execution_for_test(&execution_id).await,
-            "activation crash must release the live execution after checkpointing"
+            "activation failure must release the terminal live execution"
         );
         let execution = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            execution.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(execution.resume_from_node.as_deref(), Some("fanout-review"));
+        assert_eq!(execution.status, ExecutionStatus::Failed);
+        assert_eq!(execution.interruption_reason, None);
+        assert_eq!(execution.resume_from_node, None);
 
         let payloads = received_payloads.lock().unwrap().clone();
         let live_payload = payloads
             .last()
-            .expect("activation crash must broadcast its checkpoint snapshot");
+            .expect("activation failure must broadcast its terminal snapshot");
         let live_json: serde_json::Value = serde_json::from_str(live_payload).unwrap();
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -20729,7 +20708,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "aborted");
+        assert_eq!(live_status("fanout-review"), "failed");
         assert_eq!(live_status("review-a"), "aborted");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -20737,7 +20716,7 @@ mod dispatch_boundary_tests {
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(projected.status, ExecutionStatus::Failed);
         let projected_status = |node_name: &str| {
             projected
                 .node_executions
@@ -20748,7 +20727,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status("review-a"),
@@ -20773,6 +20752,16 @@ mod dispatch_boundary_tests {
             .node_executions
             .iter()
             .all(|execution| execution.completed_at.is_some()));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionFailed {
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                ..
+            }
+        )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
     }
 
     #[tokio::test]

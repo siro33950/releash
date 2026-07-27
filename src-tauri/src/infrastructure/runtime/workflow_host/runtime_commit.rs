@@ -193,7 +193,11 @@ pub(crate) async fn sync_execution_store_from_snapshot(
                 .error_reason
                 .as_deref()
                 .and_then(ExecutionInterruptionReason::from_reason)
-                .unwrap_or(ExecutionInterruptionReason::Crash);
+                .ok_or_else(|| {
+                    WorkflowRuntimeError::InvalidState(format!(
+                        "interrupted execution '{execution_id}' has no classified interruption reason"
+                    ))
+                })?;
             execution_store
                 .interrupt_execution_with_usage(
                     execution_id,

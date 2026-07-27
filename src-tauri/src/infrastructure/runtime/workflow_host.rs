@@ -225,7 +225,7 @@ pub struct WorkflowRuntimeHost {
     /// node_execution_id → command completion observer task owned by this workflow runtime.
     command_completion_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// node_execution_id → shutdown reason consumed by the completion observer.
-    command_shutdown_reasons: Arc<Mutex<HashMap<String, ActiveCommandShutdownReason>>>,
+    command_shutdown_intents: Arc<Mutex<HashMap<String, ActiveCommandShutdownIntent>>>,
     /// Startup handoff replay may advance canonical workflow state but must
     /// never activate the next provider/command node in the recovery pass.
     recovery_effect_suppression: Arc<Mutex<HashSet<String>>>,
@@ -311,8 +311,8 @@ struct WorkflowExecutionInsert {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveCommandShutdownReason {
-    Crash,
+enum ActiveCommandShutdownIntent {
+    GracefulShutdown,
 }
 
 struct CommandArtifact {
@@ -720,33 +720,6 @@ fn finalize_fanout_child_failure_state(
         timestamp,
     }];
 
-    if failure_disposition == FailureDisposition::Partial {
-        let _ = exec.abort_node_execution(&parent_node_execution_id, timestamp);
-        let _ = exec.transition_interrupted(ExecutionInterruptionReason::Crash);
-        exec.record_interruption_metadata(ExecutionInterruptionReason::Crash, timestamp);
-        let mut progress_events = progress_events;
-        progress_events.push(WorkflowEvent::ExecutionInterrupted {
-            execution_id: exec.id.clone(),
-            reason: ExecutionInterruptionReason::Crash,
-            timestamp,
-        });
-        return Ok(FanoutChildFailureCommit {
-            completion: FanoutChildCompletionCommit {
-                all_completed: true,
-                outcome: Some(NodeOutcome::Persist(exec.to_commit_snapshot())),
-                snapshot_before,
-                progress_events,
-                required_progress_events: true,
-                failure_telemetry: Some(FailureClassification::with_disposition(
-                    failure_kind,
-                    FailureDisposition::Partial,
-                )),
-            },
-            interrupted_session_ids,
-            interrupted_command_ids,
-        });
-    }
-
     exec.fail_node_execution(
         &parent_node_execution_id,
         input.terminal_reason.clone(),
@@ -768,7 +741,7 @@ fn finalize_fanout_child_failure_state(
             required_progress_events: true,
             failure_telemetry: Some(FailureClassification::with_disposition(
                 failure_kind,
-                FailureDisposition::Terminal,
+                failure_disposition,
             )),
         },
         interrupted_session_ids,
@@ -875,7 +848,7 @@ impl WorkflowRuntimeHost {
             active_commands: Arc::new(Mutex::new(HashMap::new())),
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
-            command_shutdown_reasons: Arc::new(Mutex::new(HashMap::new())),
+            command_shutdown_intents: Arc::new(Mutex::new(HashMap::new())),
             recovery_effect_suppression: Arc::new(Mutex::new(HashSet::new())),
             execution_store,
             workflow_resolver,
@@ -1814,11 +1787,13 @@ impl WorkflowRuntimeHost {
             .await
         {
             let _ = self
-                .interrupt_active_execution(
+                .settle_runtime_failure(
                     app,
+                    session_store,
                     agent_runtime,
+                    &worktree_path,
                     &execution_id,
-                    ExecutionInterruptionReason::Crash,
+                    &e,
                 )
                 .await;
             log::warn!("workflow {execution_id}: post-commit node runtime start failed: {e}");
@@ -4493,37 +4468,31 @@ impl WorkflowRuntimeHost {
                 {
                     let reason = format!("command completion failed: {error}");
                     log::warn!("{reason}");
-                    let _ = self
-                        .interrupt_current_command_node(
-                            app,
-                            agent_runtime,
-                            &failure_input,
-                            ExecutionInterruptionReason::Crash,
-                        )
-                        .await;
+                    if self.command_execution_still_current(&failure_input).await {
+                        let _ = self
+                            .settle_runtime_failure(
+                                app,
+                                session_store,
+                                agent_runtime,
+                                &failure_input.worktree_path,
+                                &failure_input.execution_id,
+                                &error,
+                            )
+                            .await;
+                    }
                 }
             }
             Err(CommandRunnerError::Cancelled) => {
-                let reason = self
-                    .command_shutdown_reasons
+                let intent = self
+                    .command_shutdown_intents
                     .lock()
                     .await
                     .remove(&input.node_execution_id);
-                if matches!(reason, Some(ActiveCommandShutdownReason::Crash)) {
-                    if let Err(error) = self
-                        .interrupt_current_command_node(
-                            app,
-                            agent_runtime,
-                            &input,
-                            ExecutionInterruptionReason::Crash,
-                        )
-                        .await
-                    {
-                        log::warn!(
-                            "workflow {}: command interruption commit failed: {error}",
-                            input.execution_id
-                        );
-                    }
+                if matches!(intent, Some(ActiveCommandShutdownIntent::GracefulShutdown)) {
+                    log::debug!(
+                        "workflow {}: command cancelled for graceful shutdown without durable interruption",
+                        input.execution_id
+                    );
                 }
             }
             Err(error) => {
@@ -5128,7 +5097,7 @@ impl WorkflowRuntimeHost {
                 );
             }
         }
-        self.command_shutdown_reasons
+        self.command_shutdown_intents
             .lock()
             .await
             .remove(node_execution_id);
@@ -5168,11 +5137,11 @@ impl WorkflowRuntimeHost {
             return;
         }
         {
-            let mut reasons = self.command_shutdown_reasons.lock().await;
+            let mut intents = self.command_shutdown_intents.lock().await;
             for (node_execution_id, _) in &commands {
-                reasons.insert(
+                intents.insert(
                     node_execution_id.clone(),
-                    ActiveCommandShutdownReason::Crash,
+                    ActiveCommandShutdownIntent::GracefulShutdown,
                 );
             }
         }
@@ -5202,9 +5171,9 @@ impl WorkflowRuntimeHost {
             }
         }
         {
-            let mut reasons = self.command_shutdown_reasons.lock().await;
+            let mut intents = self.command_shutdown_intents.lock().await;
             for node_execution_id in &node_execution_ids {
-                reasons.remove(node_execution_id);
+                intents.remove(node_execution_id);
             }
         }
         let mut executions = self.active_command_executions.lock().await;
@@ -5844,6 +5813,94 @@ impl WorkflowRuntimeHost {
         .await
     }
 
+    async fn settle_runtime_failure<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        worktree_path: &str,
+        execution_id: &str,
+        error: &WorkflowRuntimeError,
+    ) -> Result<(), WorkflowRuntimeError> {
+        let failure_kind = error.workflow_failure_kind();
+        if failure_kind == NodeExecutionFailureKind::InfrastructureCrash {
+            self.interrupt_active_execution(
+                app,
+                agent_runtime,
+                execution_id,
+                ExecutionInterruptionReason::Crash,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let reason = format!("workflow runtime activation failed: {error}");
+        let (snapshot, snapshot_before, session_ids) = {
+            let mut executions = self.executions.lock().await;
+            let execution = executions
+                .get_mut(execution_id)
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            if !execution.is_active() {
+                return Ok(());
+            }
+            let snapshot_before = execution.clone();
+            let mut session_ids = execution
+                .current_session_id
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(fanout) = execution.fanout_runtime.as_ref() {
+                session_ids.extend(
+                    fanout
+                        .children
+                        .iter()
+                        .filter(|child| child.state == FanoutChildRuntimeState::Running)
+                        .filter(|child| !child.session_id.is_empty())
+                        .map(|child| child.session_id.clone()),
+                );
+            }
+            session_ids.sort();
+            session_ids.dedup();
+
+            let timestamp = current_timestamp();
+            if let Some(node_execution_id) = execution
+                .active_current_node_execution_id()
+                .map(str::to_owned)
+            {
+                let _ = execution.fail_node_execution(
+                    &node_execution_id,
+                    reason.clone(),
+                    failure_kind,
+                    timestamp,
+                );
+            }
+            execution.interrupt_running_fanout_children(None, timestamp);
+            let history = execution.make_failed_node_history_entry_at(
+                Some(reason.clone()),
+                None,
+                None,
+                timestamp,
+            );
+            execution.record_history_entry(history, timestamp);
+            let _ = execution.transition_failed(reason, failure_kind, error.retry_count());
+            (execution.to_commit_snapshot(), snapshot_before, session_ids)
+        };
+
+        self.execute_outcome(
+            app,
+            session_store,
+            agent_runtime,
+            worktree_path,
+            NodeOutcome::Persist(snapshot),
+            snapshot_before,
+        )
+        .await?;
+        workflow_runtime_session::interrupt_agents(agent_runtime, &session_ids).await?;
+        self.shutdown_active_commands_for_execution(execution_id)
+            .await;
+        Ok(())
+    }
+
     /// [04] post-commit variant work（共通 side-effect helper）。
     ///
     /// snapshot は既に persist 済みである前提で、outcome variant に応じた残りの副作用
@@ -5896,14 +5953,15 @@ impl WorkflowRuntimeHost {
                 ))
                 .await
                 {
-                    let _ = self
-                        .interrupt_active_execution(
-                            app,
-                            agent_runtime,
-                            &snapshot.execution_id,
-                            ExecutionInterruptionReason::Crash,
-                        )
-                        .await;
+                    let _ = Box::pin(self.settle_runtime_failure(
+                        app,
+                        session_store,
+                        agent_runtime,
+                        worktree_path,
+                        &snapshot.execution_id,
+                        &e,
+                    ))
+                    .await;
                     return Err(e);
                 }
                 Ok(())
@@ -5917,14 +5975,15 @@ impl WorkflowRuntimeHost {
                 ))
                 .await
                 {
-                    let _ = self
-                        .interrupt_active_execution(
-                            app,
-                            agent_runtime,
-                            &snapshot.execution_id,
-                            ExecutionInterruptionReason::Crash,
-                        )
-                        .await;
+                    let _ = Box::pin(self.settle_runtime_failure(
+                        app,
+                        session_store,
+                        agent_runtime,
+                        worktree_path,
+                        &snapshot.execution_id,
+                        &e,
+                    ))
+                    .await;
                     return Err(e);
                 }
                 Ok(())
@@ -5938,14 +5997,15 @@ impl WorkflowRuntimeHost {
                 ))
                 .await
                 {
-                    let _ = self
-                        .interrupt_active_execution(
-                            app,
-                            agent_runtime,
-                            &snapshot.execution_id,
-                            ExecutionInterruptionReason::Crash,
-                        )
-                        .await;
+                    let _ = Box::pin(self.settle_runtime_failure(
+                        app,
+                        session_store,
+                        agent_runtime,
+                        worktree_path,
+                        &snapshot.execution_id,
+                        &e,
+                    ))
+                    .await;
                     return Err(e);
                 }
                 Ok(())

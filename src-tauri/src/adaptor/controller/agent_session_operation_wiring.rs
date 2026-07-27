@@ -36,6 +36,7 @@ use crate::usecase::agent_session::operation::{
 use crate::usecase::agent_session::runtime::ports::{
     AcceptedQueuedTurnExecutionClaimOutcome, AcceptedSendExecutionClaim, AcceptedSendRecoveryWake,
 };
+use crate::usecase::agent_session::runtime::DurableWorkflowSendError;
 use crate::usecase::agent_session::session::{
     AcceptedQueuedTurnStartCommitOutcome, NextTurnIdError, SessionState, SessionStore,
 };
@@ -167,24 +168,17 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
     async fn send(
         &self,
         request: crate::usecase::agent_session::runtime::DurableWorkflowTurnRequest,
-    ) -> Result<(), String> {
+    ) -> Result<(), DurableWorkflowSendError> {
         let meta = self
             .session_store
-            .get_session_meta(&self.data_dir, &request.session_id)?
-            .ok_or_else(|| {
-                format!(
-                    "The workflow turn session does not exist: {}",
-                    request.session_id
-                )
-            })?;
+            .get_session_meta(&self.data_dir, &request.session_id)
+            .map_err(DurableWorkflowSendError::SessionStore)?
+            .ok_or_else(|| DurableWorkflowSendError::SessionNotFound(request.session_id.clone()))?;
         if !meta.workflow_node_session {
-            return Err("The durable workflow Send target is not a workflow session.".to_string());
+            return Err(DurableWorkflowSendError::InvalidWorkflowTarget);
         }
         if meta.permission_mode != request.permission_mode.as_str() {
-            return Err(
-                "The durable workflow Send permission differs from the session authority."
-                    .to_string(),
-            );
+            return Err(DurableWorkflowSendError::AuthorityMismatch);
         }
         let canonical_payload = serde_json::to_string(&CanonicalSendCommandV1 {
             target: CanonicalSendTargetV1::WorkflowTurn {
@@ -201,7 +195,7 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
             mentions: Vec::new(),
             editor_context: None,
         })
-        .map_err(|_| "The durable workflow Send payload could not be encoded.".to_string())?;
+        .map_err(|_| DurableWorkflowSendError::PayloadEncoding)?;
         let operation_request = crate::usecase::agent_session::operation::SendOperationRequest {
             principal: INTERNAL_WORKFLOW_OPERATION_PRINCIPAL.to_string(),
             operation_id: request.operation_id,
@@ -212,7 +206,7 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
                 .operation
                 .send(operation_request.clone())
                 .await
-                .map_err(|error| format!("The durable workflow Send failed: {error:?}"))?
+                .map_err(DurableWorkflowSendError::Operation)?
             {
                 crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(
                     accepted,
@@ -223,10 +217,7 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
                             crate::domain::agent_session::events::SendDisposition::StartedTurn { .. }
                         )
                     {
-                        return Err(
-                            "The durable workflow Send converged on an incompatible receipt."
-                                .to_string(),
-                        );
+                        return Err(DurableWorkflowSendError::IncompatibleReceipt);
                     }
                     return Ok(());
                 }
@@ -237,13 +228,11 @@ impl crate::usecase::agent_session::runtime::DurableWorkflowSendDriver
                 }
                 crate::usecase::agent_session::operation::SendCommandOutcome::RejectedBeforeCommit {
                     failure,
-                } => return Err(failure.to_string()),
+                } => return Err(DurableWorkflowSendError::Admission(failure)),
                 crate::usecase::agent_session::operation::SendCommandOutcome::OutcomeUnknown {
                     operation_id,
                 } => {
-                    return Err(format!(
-                        "The durable workflow Send acceptance is unknown ({operation_id})."
-                    ));
+                    return Err(DurableWorkflowSendError::OutcomeUnknown(operation_id));
                 }
             }
         }

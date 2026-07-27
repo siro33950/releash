@@ -85,7 +85,9 @@ pub fn classify_session_error(
         Some(SessionFailureSignal::Crash) => NodeExecutionFailureKind::InfrastructureCrash,
         Some(SessionFailureSignal::ModelRefusal) => NodeExecutionFailureKind::ModelRefusal,
         None if exit_code == 124 => NodeExecutionFailureKind::StaleRuntimeTimeout,
-        None => NodeExecutionFailureKind::InfrastructureCrash,
+        // A non-zero exit without a typed failure signal is observed failure,
+        // but it is not evidence that a process or store was lost.
+        None => NodeExecutionFailureKind::ValidationFailure,
     }
 }
 
@@ -328,7 +330,7 @@ mod tests {
             TurnCompleteMutationPlan::SessionError {
                 node_name: "agent".to_string(),
                 exit_code: 42,
-                kind: NodeExecutionFailureKind::InfrastructureCrash,
+                kind: NodeExecutionFailureKind::ValidationFailure,
                 history_result: "error (exit_code: 42)".to_string(),
                 failure_reason: "AgentSession error at node 'agent' (exit_code: 42)".to_string()
             }
@@ -372,7 +374,7 @@ mod tests {
         );
         assert_eq!(
             classify_session_error(42, None),
-            NodeExecutionFailureKind::InfrastructureCrash
+            NodeExecutionFailureKind::ValidationFailure
         );
     }
 

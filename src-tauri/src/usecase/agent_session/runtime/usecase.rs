@@ -239,6 +239,7 @@ pub enum AgentRuntimeError {
         stage: &'static str,
         effect_may_be_reserved: bool,
     },
+    WorkflowTurnSend(DurableWorkflowSendError),
     Other(String),
 }
 
@@ -271,6 +272,7 @@ impl std::fmt::Display for AgentRuntimeError {
                 f,
                 "Accepted effect admission failed at {stage} (effect_may_be_reserved={effect_may_be_reserved})"
             ),
+            Self::WorkflowTurnSend(error) => write!(f, "{error}"),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -343,9 +345,62 @@ pub(crate) struct DurableWorkflowTurnRequest {
     pub workflow_instructions: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableWorkflowSendError {
+    SessionStore(String),
+    SessionNotFound(String),
+    InvalidWorkflowTarget,
+    AuthorityMismatch,
+    PayloadEncoding,
+    Operation(crate::usecase::agent_session::operation::SendAgentMessageError),
+    Admission(crate::domain::local_event::SafeOperationFailure),
+    OutcomeUnknown(String),
+    IncompatibleReceipt,
+    DriverUnavailable,
+}
+
+impl std::fmt::Display for DurableWorkflowSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SessionStore(message) => write!(f, "workflow Send session store: {message}"),
+            Self::SessionNotFound(session_id) => {
+                write!(f, "The workflow turn session does not exist: {session_id}")
+            }
+            Self::InvalidWorkflowTarget => {
+                f.write_str("The durable workflow Send target is not a workflow session.")
+            }
+            Self::AuthorityMismatch => f.write_str(
+                "The durable workflow Send permission differs from the session authority.",
+            ),
+            Self::PayloadEncoding => {
+                f.write_str("The durable workflow Send payload could not be encoded.")
+            }
+            Self::Operation(error) => {
+                write!(f, "The durable workflow Send operation failed: {error:?}")
+            }
+            Self::Admission(failure) => write!(f, "{failure}"),
+            Self::OutcomeUnknown(operation_id) => write!(
+                f,
+                "The durable workflow Send acceptance is unknown ({operation_id})."
+            ),
+            Self::IncompatibleReceipt => {
+                f.write_str("The durable workflow Send converged on an incompatible receipt.")
+            }
+            Self::DriverUnavailable => {
+                f.write_str("The durable workflow Send authority is unavailable.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DurableWorkflowSendError {}
+
 #[async_trait::async_trait]
 pub(crate) trait DurableWorkflowSendDriver: Send + Sync {
-    async fn send(&self, request: DurableWorkflowTurnRequest) -> Result<(), String>;
+    async fn send(
+        &self,
+        request: DurableWorkflowTurnRequest,
+    ) -> Result<(), DurableWorkflowSendError>;
 }
 
 pub(crate) fn durable_workflow_turn_operation_id(
@@ -2274,7 +2329,10 @@ impl AgentSessionRuntimeUsecase {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         if let Some(driver) = driver {
-            return driver.send(request).await.map_err(AgentRuntimeError::Other);
+            return driver
+                .send(request)
+                .await
+                .map_err(AgentRuntimeError::WorkflowTurnSend);
         }
 
         #[cfg(test)]
@@ -2289,8 +2347,8 @@ impl AgentSessionRuntimeUsecase {
             .await;
 
         #[cfg(not(test))]
-        Err(AgentRuntimeError::Other(
-            "The durable workflow Send authority is unavailable.".to_string(),
+        Err(AgentRuntimeError::WorkflowTurnSend(
+            DurableWorkflowSendError::DriverUnavailable,
         ))
     }
 

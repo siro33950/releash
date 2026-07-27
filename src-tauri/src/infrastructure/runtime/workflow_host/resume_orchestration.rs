@@ -500,21 +500,23 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .start_current_node_runtime(app, session_store, agent_runtime, &checkpoint.worktree_path)
         .await
     {
-        if let Err(interrupt_error) = driver
-            .interrupt_active_execution(
+        if let Err(settlement_error) = driver
+            .settle_runtime_failure(
                 app,
+                session_store,
                 agent_runtime,
+                &checkpoint.worktree_path,
                 execution_id,
-                ExecutionInterruptionReason::Crash,
+                &error,
             )
             .await
         {
             return Err(WorkflowRuntimeError::SessionStore(format!(
-                "resumed runtime start failed: {error}; crash checkpoint failed: {interrupt_error}"
+                "resumed runtime start failed: {error}; failure settlement failed: {settlement_error}"
             )));
         }
         log::warn!(
-            "workflow {execution_id}: accepted Resume runtime start failed; crash checkpoint recorded: {error}"
+            "workflow {execution_id}: accepted Resume runtime start failed and was classified durably: {error}"
         );
     }
     Ok(())

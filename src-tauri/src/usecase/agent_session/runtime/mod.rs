@@ -13,5 +13,5 @@ pub(crate) use usecase::SendAgentMessageRequest;
 pub(crate) use usecase::{
     durable_workflow_turn_operation_id, AcceptedQueueDrainOutcome, AcceptedQueueRedriveReadiness,
     AcceptedSendExecution, AgentSessionRuntimeUsecase, DurableStopDriver,
-    DurableWorkflowSendDriver, DurableWorkflowTurnRequest,
+    DurableWorkflowSendDriver, DurableWorkflowSendError, DurableWorkflowTurnRequest,
 };

@@ -35,6 +35,9 @@ impl From<AgentRuntimeError> for AppError {
             failed @ AgentRuntimeError::AcceptedEffectAdmissionFailed { .. } => {
                 Self::Internal(failed.to_string())
             }
+            workflow_send @ AgentRuntimeError::WorkflowTurnSend(_) => {
+                Self::Internal(workflow_send.to_string())
+            }
             AgentRuntimeError::Other(message) => Self::Internal(message),
         }
     }
