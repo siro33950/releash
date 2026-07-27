@@ -1,4 +1,4 @@
-//! Usecase-owned workflow execution metadata registry and persistence procedure.
+//! Gateway-owned workflow execution metadata registry and persistence procedure.
 //!
 //! 役割:
 //! - active な execution を `execution_id` キーの in-memory map で管理し、worktree_path → execution_id の

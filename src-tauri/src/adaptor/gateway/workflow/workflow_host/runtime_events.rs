@@ -1,10 +1,10 @@
 //! Domain decision to durable event mapping.
 
+use crate::adaptor::gateway::workflow::workflow_host::internal_node_command::InternalNodeCommand;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_commit::NodeOutcome;
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::NODE_STATUS_ABORTED;
-use crate::infrastructure::runtime::workflow_host::internal_node_command::InternalNodeCommand;
-use crate::infrastructure::runtime::workflow_host::runtime_commit::NodeOutcome;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 

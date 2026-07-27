@@ -3,17 +3,17 @@
 use std::collections::HashMap;
 
 use super::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
+    DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
+};
+use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::{
+    artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
+    token_usage_to_domain, workflow_definition_to_domain,
+};
 use crate::domain::workflow::services::fanout as workflow_fanout;
 use crate::domain::workflow::FanoutParentRef;
 use crate::domain::workflow::NodeDefinition;
 use crate::domain::workflow::{RuntimeArtifact, TokenUsage};
-use crate::infrastructure::runtime::workflow_host::execution_state::{
-    DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
-};
-use crate::infrastructure::runtime::workflow_host::runtime_mapping::{
-    artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
-    token_usage_to_domain, workflow_definition_to_domain,
-};
 use crate::usecase::workflow::runtime_error::{
     workflow_error_to_runtime_error, WorkflowRuntimeError,
 };
@@ -347,16 +347,16 @@ mod tests {
 
     fn workflow_execution_fixture(
         node: NodeDefinition,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         workflow_execution_with_nodes(vec![node])
     }
 
     fn workflow_execution_with_nodes(
         nodes: Vec<NodeDefinition>,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
                 name: "test-workflow".to_string(),

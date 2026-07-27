@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Notify};
 use crate::adaptor::gateway::workflow::execution_store::{
     ActiveInterruptionReservation, ExecutionStore, WorkflowExecutionMetadata,
 };
-use crate::infrastructure::runtime::workflow_host::runtime_commit;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_commit;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 const ACTIVATION_CANCEL_PENDING: u8 = 0;

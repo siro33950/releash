@@ -416,7 +416,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::schema::{
         FacetRefs, NodeDefinition, NodeKind, SessionSpec,
     };
-    use crate::infrastructure::runtime::workflow_host::prompt_rendering;
+    use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
     use tempfile::TempDir;
 
     fn assert_no_deprecated_workflow_vocabulary(label: &str, content: &str) {
@@ -700,7 +700,7 @@ mod tests {
             ),
             (
                 "prompt rendering",
-                include_str!("../../../infrastructure/runtime/workflow_host/prompt_rendering.rs"),
+                include_str!("workflow_host/prompt_rendering.rs"),
             ),
             ("facet rendering", include_str!("facet.rs")),
         ];
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn compose_and_render_pipeline() {
-        use crate::infrastructure::runtime::workflow_host::prompt_rendering;
+        use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 
         let tmp = TempDir::new().unwrap();
         let policies = tmp.path().join("policies");

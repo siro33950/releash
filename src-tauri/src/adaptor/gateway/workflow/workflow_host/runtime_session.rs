@@ -9,24 +9,24 @@ use std::{
 use tokio::sync::{oneshot, Mutex};
 
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
+use crate::adaptor::gateway::workflow::workflow_host::execution_registry::find_by_worktree;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
+    DomainWorkflowExecution, SessionWorkflowRef,
+};
+use crate::adaptor::gateway::workflow::workflow_host::fanout_runtime::{
+    self as workflow_fanout_runtime, FanoutChildSessionSetup, FanoutPromptInputs,
+    FanoutStartContext,
+};
+use crate::adaptor::gateway::workflow::workflow_host::node_settings::{
+    resolve_node_settings, ResolvedNodeSettings, WorkflowDefaults,
+};
+use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering as workflow_prompt;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::SchemaDef;
 use crate::domain::workflow::WorkflowFacetContents;
 use crate::domain::workflow::{
     NodeExecutionFailureKind, NodeKindName, RetryPolicy, TimeoutContext, WorkflowNodeContext,
 };
-use crate::infrastructure::runtime::workflow_host::execution_registry::find_by_worktree;
-use crate::infrastructure::runtime::workflow_host::execution_state::{
-    DomainWorkflowExecution, SessionWorkflowRef,
-};
-use crate::infrastructure::runtime::workflow_host::fanout_runtime::{
-    self as workflow_fanout_runtime, FanoutChildSessionSetup, FanoutPromptInputs,
-    FanoutStartContext,
-};
-use crate::infrastructure::runtime::workflow_host::node_settings::{
-    resolve_node_settings, ResolvedNodeSettings, WorkflowDefaults,
-};
-use crate::infrastructure::runtime::workflow_host::prompt_rendering as workflow_prompt;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::SessionRuntimeLockGuard;
@@ -966,10 +966,10 @@ mod tests {
     fn workflow_execution_fixture(
         execution_id: &str,
         worktree_path: &str,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let node_name = "plan".to_string();
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.to_string(),
             workflow: WorkflowDefinition {
                 name: "test-workflow".to_string(),

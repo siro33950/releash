@@ -5,15 +5,15 @@
 
 use super::resume_projection::ActiveTurnCompletionProjection;
 use super::*;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
+    FanoutChildRuntime, FanoutRuntimeState,
+};
 use crate::domain::workflow::entities::workflow_execution::{
     CanonicalNodeFact, TurnCompletionApplication, WorkflowExecution as WorkflowExecutionAggregate,
 };
 use crate::domain::workflow::{
     ContractValidationResult, NodeExecution as DomainNodeExecution,
     NodeExecutionStatus as DomainNodeExecutionStatus,
-};
-use crate::infrastructure::runtime::workflow_host::execution_state::{
-    FanoutChildRuntime, FanoutRuntimeState,
 };
 use crate::usecase::agent_session::session::MessagePart;
 use crate::usecase::workflow::ports::{
@@ -451,7 +451,7 @@ fn hydrate_active_execution(
     };
     let fanout_runtime = hydrate_fanout_runtime(checkpoint, target)?;
     Ok(
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: checkpoint.execution_id.clone(),
             workflow: checkpoint.workflow.clone(),
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(state),

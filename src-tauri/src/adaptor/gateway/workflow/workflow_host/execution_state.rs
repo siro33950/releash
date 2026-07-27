@@ -1,16 +1,16 @@
-//! Usecase-owned execution registry value and commit-snapshot preparation.
+//! Gateway bridge for retained execution aggregates and commit snapshots.
 //!
 //! Mutable execution state and transition decisions live in the domain
 //! aggregate. This module bridges driver decisions to the gateway commit DTO.
 
+use crate::adaptor::gateway::workflow::workflow_host::runtime_commit::NodeOutcome;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_start_guard;
 use crate::domain::workflow::entities::workflow_execution::{
     ExecutionAdvanceDecision, WorkflowExecution as WorkflowExecutionAggregate,
 };
 use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowDefinition;
-use crate::infrastructure::runtime::workflow_host::runtime_commit::NodeOutcome;
-use crate::infrastructure::runtime::workflow_host::runtime_start_guard;
 use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;

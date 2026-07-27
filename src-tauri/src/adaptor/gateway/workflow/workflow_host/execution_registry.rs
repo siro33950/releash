@@ -1,8 +1,8 @@
-//! In-memory execution lookup rules owned by the runtime usecase.
+//! Gateway-owned lookup over retained workflow execution aggregates.
 
 use std::collections::HashMap;
 
-use crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
 
 /// `execs: HashMap<execution_id, DomainWorkflowExecution>` から、worktree_path 属性が一致する
 /// **active な** `(execution_id, exec)` を線形走査で取得する補助関数。

@@ -403,7 +403,7 @@ fn validate_execution_id(execution_id: &str) -> Result<(), String> {
 #[cfg(test)]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
-        crate::infrastructure::runtime::workflow_host::prompt_rendering::find_undefined_template_variables(
+        crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::find_undefined_template_variables(
             content,
         );
     if !errors.is_empty() {

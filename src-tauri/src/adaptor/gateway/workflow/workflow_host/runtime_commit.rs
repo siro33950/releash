@@ -10,10 +10,10 @@ use tokio::sync::Mutex;
 use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionStore, TerminalExecutionStatus, WorkflowExecutionMetadata,
 };
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::{ExecutionInterruptionReason, ExecutionStatus};
-use crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 

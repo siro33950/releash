@@ -5,6 +5,10 @@ use crate::adaptor::gateway::app_config::config_models::{
 use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
+use crate::adaptor::gateway::workflow::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
+    LoopGuardResult, TurnCompleteAction,
+};
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
     AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime,
@@ -16,10 +20,6 @@ use crate::domain::agent_session::value_objects::{
 use crate::domain::workflow::services::event_replay::project_workflow_execution;
 use crate::domain::workflow::services::transition::ApprovalApplication;
 use crate::domain::workflow::FanoutParentRef;
-use crate::infrastructure::runtime::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
-use crate::infrastructure::runtime::workflow_host::execution_state::{
-    LoopGuardResult, TurnCompleteAction,
-};
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use async_trait::async_trait;
 use tauri::{Listener, Manager};
@@ -584,7 +584,7 @@ fn make_minimal_approval_exec(
     execution_id: &str,
     current_session_id: &str,
     node_name: &str,
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
     let workflow = WorkflowDefinition {
         name: "test-workflow".to_string(),
         description: "minimal approval fixture".to_string(),
@@ -604,7 +604,7 @@ fn make_minimal_approval_exec(
             },
         ],
     };
-    crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: execution_id.to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(
@@ -1329,7 +1329,7 @@ fn make_test_workflow() -> WorkflowDefinition {
 #[test]
 fn workflow_execution_to_commit_snapshot() {
     let workflow = make_test_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -1369,7 +1369,7 @@ fn workflow_execution_to_commit_snapshot() {
 
 #[test]
 fn is_active_executionning() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -1399,7 +1399,7 @@ fn is_active_executionning() {
 
 #[test]
 fn is_active_waiting_approval() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(
@@ -1431,7 +1431,7 @@ fn is_active_waiting_approval() {
 
 #[test]
 fn is_active_completed() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Completed),
@@ -1461,7 +1461,7 @@ fn is_active_completed() {
 
 #[test]
 fn is_active_failed() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Failed {
@@ -1495,7 +1495,7 @@ fn is_active_failed() {
 
 #[test]
 fn is_active_aborted() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Aborted),
@@ -1528,7 +1528,7 @@ fn is_active_aborted() {
 #[test]
 fn to_commit_snapshot_waiting_approval() {
     let workflow = make_test_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(
@@ -1564,7 +1564,7 @@ fn to_commit_snapshot_waiting_approval() {
 #[test]
 fn to_commit_snapshot_failed() {
     let workflow = make_test_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Failed {
@@ -1620,7 +1620,7 @@ fn to_commit_snapshot_failed() {
 #[test]
 fn to_commit_snapshot_aborted() {
     let workflow = make_test_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Aborted),
@@ -1652,7 +1652,7 @@ fn to_commit_snapshot_aborted() {
 #[test]
 fn to_commit_snapshot_completed() {
     let workflow = make_test_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Completed),
@@ -1722,8 +1722,8 @@ fn loop_guard_no_guard_defined() {
 
 fn make_exec(
     node_index: usize,
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
-    crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -1753,8 +1753,8 @@ fn make_exec(
 fn workflow_exec(
     workflow: WorkflowDefinition,
     node_index: usize,
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
-    crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -3553,7 +3553,7 @@ fn insert_single_node_execution(
         schemas: Default::default(),
         nodes: vec![node],
     };
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-id".to_string(),
         workflow,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -4018,8 +4018,8 @@ fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() 
 fn make_approval_exec(
     state: RuntimeExecutionState,
     rules: Vec<Rule>,
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
-    crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: WorkflowDefinition {
             name: "test".to_string(),
@@ -4425,7 +4425,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
 
 #[test]
 fn apply_approval_application_records_approved_policy_and_advances_once() {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: WorkflowDefinition {
             name: "auto-approve".to_string(),
@@ -4514,7 +4514,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
 
 #[test]
 fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-auto-approve".to_string(),
         workflow: WorkflowDefinition {
             name: "auto-approve-path".to_string(),
@@ -4626,7 +4626,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
     let policy_session_id = uuid::Uuid::new_v4().to_string();
 
     let fix_node = make_test_node("fix", TestKind::Session, "Fix", vec![], None);
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-auto-approve".to_string(),
         workflow: WorkflowDefinition {
             name: "auto-approve-execute-outcome".to_string(),
@@ -4773,8 +4773,8 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
 }
 
 fn make_normal_node_exec_with_stall_observation(
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "normal-stall-clear".to_string(),
         workflow: WorkflowDefinition {
             name: "normal-stall-clear-wf".to_string(),
@@ -4850,7 +4850,7 @@ fn normal_node_completion_retry_and_transition_clear_stall_observations() {
 // R4-02: make_node_history_entryがcontract resultをRuntimeArtifact.resultに保存する
 #[test]
 fn make_node_history_entry_saves_contract_result_to_node_output() {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -4901,7 +4901,7 @@ fn make_node_history_entry_saves_contract_result_to_node_output() {
 
 #[test]
 fn make_node_history_entry_no_artifact_no_node_output() {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -4978,7 +4978,7 @@ fn make_on_exhausted_workflow() -> WorkflowDefinition {
 
 #[test]
 fn on_exhausted_transitions_to_fallback_node() {
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5019,7 +5019,7 @@ fn on_exhausted_transitions_to_fallback_node() {
 
 #[test]
 fn check_loop_guard_exceeded_with_on_exhausted() {
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5102,7 +5102,7 @@ fn on_exhausted_chain_transitions() {
             make_test_node("node_c", TestKind::Session, "C", vec![], None),
         ],
     };
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: wf,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5296,7 +5296,7 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
             make_fanout_child("review_style"),
         ],
     };
-    let mut exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let mut exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: wf,
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5591,7 +5591,7 @@ async fn engine_execution_id_consistency_across_execution_and_execution_store_me
     let execution_id = uuid::Uuid::new_v4().to_string();
     let worktree_path = "/wt/a";
     let workflow = make_minimal_workflow();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: execution_id.clone(),
         workflow: workflow.clone(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5684,7 +5684,7 @@ async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktr
     let workflow = make_minimal_workflow();
     let worktree_path = "/wt/dup";
 
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "existing-execution".to_string(),
         workflow: workflow.clone(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5934,7 +5934,7 @@ async fn execution_store_active_index_resolves_worktree_to_execution_id_for_dupl
 #[tokio::test]
 async fn handle_auto_complete_fixture_uses_execution_id_as_executions_key() {
     let driver = WorkflowRuntimeHost::new_for_test();
-    let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "auto-complete-execution".to_string(),
         workflow: make_minimal_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -5982,8 +5982,8 @@ fn make_exec_with(
     id: &str,
     worktree_path: &str,
     state: RuntimeExecutionState,
-) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution {
-    crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: id.to_string(),
         workflow: make_minimal_workflow(),
         lifecycle: DomainWorkflowExecution::lifecycle_from_state(state),
@@ -6991,12 +6991,12 @@ mod dispatch_boundary_tests {
         ExecutionOrigin, ExecutionStatus, TerminalExecutionStatus, WorkflowExecutionMetadata,
     };
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+    use crate::adaptor::gateway::workflow::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
+    use crate::adaptor::gateway::workflow::workflow_host::internal_node_command::InternalNodeCommand;
     use crate::domain::workflow::RuntimeExecutionState;
     use crate::domain::workflow::WorkflowError;
     use crate::domain::workflow::WorkflowEvent;
     use crate::domain::workflow::{ItemsSource, Rule, WorkflowDefinition};
-    use crate::infrastructure::runtime::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
-    use crate::infrastructure::runtime::workflow_host::internal_node_command::InternalNodeCommand;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
     use crate::usecase::workflow::command::{
@@ -7153,7 +7153,7 @@ mod dispatch_boundary_tests {
     fn make_waiting_approval_execution(
         execution_id: &str,
         worktree_path: &str,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let workflow = make_approval_only_workflow();
         make_waiting_approval_execution_with_workflow(execution_id, worktree_path, workflow)
@@ -7163,12 +7163,12 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         worktree_path: &str,
         workflow: WorkflowDefinition,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let node_name = workflow.nodes[0].name.clone();
         let node_kind = workflow.nodes[0].kind_name();
         let node_execution_id = format!("{execution_id}-{node_name}-1");
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.to_string(),
             workflow,
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(
@@ -7340,7 +7340,7 @@ mod dispatch_boundary_tests {
     }
 
     fn same_name_fanout_approval_execution(
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let mut exec = make_waiting_approval_execution("execution-fanout-approval", "/wt/fanout");
         exec.force_state_for_test(RuntimeExecutionState::Running);
@@ -8407,7 +8407,7 @@ mod dispatch_boundary_tests {
     fn resumable_two_node_execution(
         execution_id: &str,
         worktree_path: &str,
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let workflow = WorkflowDefinition {
             name: "resume-checkpoint-wf".to_string(),
@@ -8431,7 +8431,7 @@ mod dispatch_boundary_tests {
                 ),
             ],
         };
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.to_string(),
             workflow,
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -8742,7 +8742,7 @@ mod dispatch_boundary_tests {
         };
         let mut counts_at_reset = HashMap::from([("fix".to_string(), 2), ("round".to_string(), 1)]);
         let domain_workflow =
-            crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain(
+            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
                 &workflow,
             );
         let mut reset_baselines =
@@ -8751,7 +8751,7 @@ mod dispatch_boundary_tests {
         counts_at_reset.insert("fix".to_string(), 3);
         counts_at_reset.insert("route".to_string(), 1);
 
-        let mut execution = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -11076,7 +11076,7 @@ mod dispatch_boundary_tests {
         judge_command: Option<&str>,
         list_threads_command: Option<&str>,
     ) -> WorkflowDefinition {
-        let source = include_str!("../../../../../docs/examples/full-pipeline.yml");
+        let source = include_str!("../../../../../../docs/examples/full-pipeline.yml");
         let diagnosis = crate::adaptor::gateway::workflow::diagnostics::diagnose_workflow_source(
             source,
             Some("full-pipeline"),
@@ -12771,10 +12771,9 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(
-            "../../../adaptor/gateway/workflow/fixtures/valid/fanout-command-reducer.yml"
-        ))
-        .unwrap();
+        let workflow: WorkflowDefinition =
+            serde_saphyr::from_str(include_str!("../fixtures/valid/fanout-command-reducer.yml"))
+                .unwrap();
 
         let execution_id =
             start_command_workflow_for_test(&app, &driver, workflow, worktree.path()).await;
@@ -12812,10 +12811,9 @@ mod dispatch_boundary_tests {
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
         let worktree = TempDir::new().unwrap();
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(
-            "../../../adaptor/gateway/workflow/fixtures/valid/fanout-session-reducer.yml"
-        ))
-        .unwrap();
+        let workflow: WorkflowDefinition =
+            serde_saphyr::from_str(include_str!("../fixtures/valid/fanout-session-reducer.yml"))
+                .unwrap();
         let judge_index = workflow
             .nodes
             .iter()
@@ -15071,7 +15069,7 @@ mod dispatch_boundary_tests {
         assert_eq!(live_count, expected_count_after_first_child);
         assert_eq!(replay_count, live_count);
         let domain_workflow =
-            crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain(
+            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
                 &workflow,
             );
         let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
@@ -15285,7 +15283,7 @@ mod dispatch_boundary_tests {
             expected_range_count
         );
         let domain_workflow =
-            crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain(
+            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
                 &workflow,
             );
         let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(

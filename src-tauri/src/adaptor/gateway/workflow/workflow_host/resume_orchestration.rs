@@ -212,7 +212,7 @@ fn hydrate_resumed_execution(
         });
 
     Ok((
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: checkpoint.execution_id.clone(),
             workflow: checkpoint.workflow.clone(),
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -316,7 +316,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
     workflow_runtime_start_guard::validate_workflow_shape(&checkpoint.workflow)?;
     let registry = agent_runtime.backend_registry();
     let definition =
-        crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain(
+        crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
             &checkpoint.workflow,
         );
     crate::domain::workflow::validation::validate_models(&definition, |model| {

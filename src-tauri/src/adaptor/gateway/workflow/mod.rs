@@ -39,6 +39,7 @@ mod state_notification_gateway;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod workflow_host;
 mod workspace_session;
 mod worktree_gateway;
 

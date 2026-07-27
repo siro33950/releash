@@ -1,8 +1,8 @@
 //! Start command admission and domain validation mapping.
 
+use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain;
 use crate::domain::workflow as domain;
 use crate::domain::workflow::WorkflowDefinition;
-use crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 pub(crate) fn validate_workflow_shape(

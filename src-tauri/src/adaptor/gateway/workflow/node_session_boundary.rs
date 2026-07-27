@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
+use crate::adaptor::gateway::workflow::workflow_host::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_events as workflow_runtime_events;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_session as workflow_runtime_session;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::WorkflowNodeContext;
-use crate::infrastructure::runtime::workflow_host::node_settings::WorkflowDefaults;
-use crate::infrastructure::runtime::workflow_host::runtime_events as workflow_runtime_events;
-use crate::infrastructure::runtime::workflow_host::runtime_session as workflow_runtime_session;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;

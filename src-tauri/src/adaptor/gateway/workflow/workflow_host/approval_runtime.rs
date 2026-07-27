@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::domain::workflow::approval_rules as workflow_approval;
-use crate::domain::workflow::WorkflowError;
-use crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution;
-use crate::infrastructure::runtime::workflow_host::runtime_mapping::{
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::{
     node_history_entries_to_domain, runtime_execution_state_to_domain,
 };
+use crate::domain::workflow::approval_rules as workflow_approval;
+use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::status::TurnPhase;
 use crate::usecase::workflow::runtime_error::{
     workflow_error_to_runtime_error, WorkflowRuntimeError,

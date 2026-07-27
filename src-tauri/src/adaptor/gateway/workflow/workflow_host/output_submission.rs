@@ -2,6 +2,10 @@
 
 use std::collections::HashMap;
 
+use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::{
+    workflow_definition_to_domain, workflow_schemas_to_domain,
+};
 use crate::domain::workflow::services::contract_schema::SchemaViolation;
 use crate::domain::workflow::services::{
     contract as workflow_contract, contract_schema, secret_masker,
@@ -11,10 +15,6 @@ use crate::domain::workflow::WorkflowDefinition;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::{
     ContractType, ContractValidationResult, NodeDefinitionName, OutputSubmissionRollback,
-};
-use crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution;
-use crate::infrastructure::runtime::workflow_host::runtime_mapping::{
-    workflow_definition_to_domain, workflow_schemas_to_domain,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
@@ -310,15 +310,15 @@ pub(crate) fn submitted_node_artifact_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
+        DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
+    };
+    use crate::adaptor::gateway::workflow::workflow_host::node_settings::WorkflowDefaults;
     use crate::domain::workflow::entities::workflow_execution::{
         RuntimeNodeExecution as NodeExecution, RuntimeNodeExecutionStatus as NodeExecutionStatus,
     };
     use crate::domain::workflow::{FanoutParentRef, RuntimeExecutionState, TokenUsage};
     use crate::domain::workflow::{FanoutSpec, NodeDefinition, NodeKind, NodeKindName, SchemaDef};
-    use crate::infrastructure::runtime::workflow_host::execution_state::{
-        DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
-    };
-    use crate::infrastructure::runtime::workflow_host::node_settings::WorkflowDefaults;
 
     fn workflow_with_fanout() -> WorkflowDefinition {
         WorkflowDefinition {
@@ -383,7 +383,7 @@ mod tests {
     }
 
     fn fanout_execution(
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let mut exec = running_execution();
         exec.workflow = workflow_with_fanout();
@@ -467,7 +467,7 @@ mod tests {
     }
 
     fn repeated_fanout_child_execution(
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
         let mut exec = fanout_execution();
         let node_execution_id = "00000000-0000-4000-8000-000000000203";
@@ -519,9 +519,9 @@ mod tests {
     }
 
     fn running_execution(
-    ) -> crate::infrastructure::runtime::workflow_host::execution_state::DomainWorkflowExecution
+    ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
-        crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
                 name: "wf".to_string(),

@@ -25,7 +25,7 @@ use crate::usecase::workflow::ports::{
 use super::runtime_resolver::{
     AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver,
 };
-use crate::infrastructure::runtime::workflow_host::WorkflowRuntimeHost;
+use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Clone)]

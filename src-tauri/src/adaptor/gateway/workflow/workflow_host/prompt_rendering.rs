@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
+use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_schemas_to_domain;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::prompt_composition;
 use crate::domain::workflow::services::reference::{
@@ -14,7 +15,6 @@ use crate::domain::workflow::services::template_preview;
 use crate::domain::workflow::FacetContents;
 use crate::domain::workflow::RuntimeArtifact;
 use crate::domain::workflow::{NodeDefinition, SchemaDef};
-use crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_schemas_to_domain;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 pub(crate) fn artifact_values(

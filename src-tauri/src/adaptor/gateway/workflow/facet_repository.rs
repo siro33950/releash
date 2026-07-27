@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
+use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 use crate::adaptor::gateway::workflow::{builtin, facet as gateway_facet};
 use crate::domain::workflow::{FacetKind, FacetRepository, FacetSummary, WorkflowError};
-use crate::infrastructure::runtime::workflow_host::prompt_rendering;
 
 use super::mapper;
 

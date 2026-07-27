@@ -1,8 +1,10 @@
-//! Workflow execution driver.
+//! Workflow execution host gateway.
 //!
-//! The domain aggregate owns lifecycle transitions and decisions. This usecase
-//! owns their application procedure and transaction boundaries while gateway
-//! collaborators perform external I/O.
+//! The domain aggregate owns lifecycle transitions and decisions, while
+//! `usecase::workflow::runtime_driver` owns their application procedure and
+//! transaction ordering. This gateway retains the aggregates, delegates
+//! decisions to them, and connects event storage, agent sessions, processes,
+//! and notifications.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
@@ -199,7 +201,7 @@ impl ManagedWorktreeResolver for PassthroughManagedWorktreeResolver {
 type AbortAfterLookupGate =
     Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>;
 
-/// ワークフローのステップを順次実行するステートマシンエンジン。
+/// Workflow 集約を保持し、usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
     /// `execution_id` → `DomainWorkflowExecution` の in-memory マッピング。
@@ -969,7 +971,7 @@ impl WorkflowRuntimeHost {
         }
         self.executions.lock().await.insert(
             execution_id.clone(),
-            crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+            crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
                 id: execution_id.clone(),
                 workflow,
                 lifecycle: DomainWorkflowExecution::lifecycle_from_state(state),
@@ -1156,7 +1158,7 @@ impl WorkflowRuntimeHost {
             crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
             workflow_prompt::request_node_artifact(&request_text, now),
         );
-        let mut execution = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
@@ -1598,7 +1600,7 @@ impl WorkflowRuntimeHost {
         //    registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
         let registry = agent_runtime.backend_registry();
         let workflow_definition =
-            crate::infrastructure::runtime::workflow_host::runtime_mapping::workflow_definition_to_domain(
+            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
                 &workflow,
             );
         crate::domain::workflow::validation::validate_models(&workflow_definition, |model| {
@@ -6640,7 +6642,7 @@ impl WorkflowRuntimeHost {
         } else {
             NodeExecutionStatus::Running
         };
-        let exec = crate::infrastructure::runtime::workflow_host::execution_state::domain_workflow_execution! {
+        let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: "exec-approval-chat".to_string(),
             workflow,
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(state),
@@ -6695,5 +6697,4 @@ impl WorkflowRuntimeHost {
 }
 
 #[cfg(test)]
-#[path = "../../adaptor/gateway/workflow/runtime_driver_tests.rs"]
 mod tests;
