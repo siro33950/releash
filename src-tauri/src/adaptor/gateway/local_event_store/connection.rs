@@ -42,13 +42,24 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
     Ok(())
 }
 
-fn configure(connection: &Connection) -> Result<(), ConnectionError> {
+fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
     connection.busy_timeout(Duration::from_secs(2))?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     Ok(())
+}
+
+fn configure_writer(connection: &Connection) -> Result<(), ConnectionError> {
+    configure_common(connection)?;
+    connection.pragma_update(None, "journal_mode", "WAL")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    Ok(())
+}
+
+fn configure_reader(connection: &Connection) -> Result<(), ConnectionError> {
+    // A reader must not participate in persistent journal configuration or
+    // checkpoint ownership. Those effects belong to the single writer.
+    configure_common(connection)
 }
 
 /// Open the single writer connection.
@@ -60,7 +71,7 @@ pub fn open_writer(path: &Path) -> Result<Connection, ConnectionError> {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    configure(&connection)?;
+    configure_writer(&connection)?;
     Ok(connection)
 }
 
@@ -71,7 +82,7 @@ pub fn open_existing_writer(path: &Path) -> Result<Connection, ConnectionError> 
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    configure(&connection)?;
+    configure_writer(&connection)?;
     Ok(connection)
 }
 
@@ -82,7 +93,7 @@ pub fn open_reader(path: &Path) -> Result<Connection, ConnectionError> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    configure(&connection)?;
+    configure_reader(&connection)?;
     Ok(connection)
 }
 
