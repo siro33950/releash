@@ -628,11 +628,9 @@ impl WorkflowRuntimeExecutor {
             return Ok(WorkflowTurnCompleteRecoveryOutcome::Applied);
         }
         if checkpoint.projected_execution.status.is_finished() {
-            return Err(invalid(format!(
-                "workflow turn-completion has no matching durable node fact and execution '{}' is {}",
-                command.execution_id,
-                checkpoint.projected_execution.status.as_str()
-            )));
+            return Ok(WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded,
+            ));
         }
         validate_recovery_can_avoid_provider_effect(&checkpoint, &target, &command)?;
         let execution = hydrate_active_execution(&checkpoint, &target)?;

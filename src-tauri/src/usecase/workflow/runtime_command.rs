@@ -65,8 +65,13 @@ impl WorkflowRuntimeUsecase {
         self.start_execution.execute(command).await
     }
 
-    pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        self.runtime.recover_startup().await
+    pub async fn recover_startup_excluding(
+        &self,
+        unresolved_turn_completions: &std::collections::BTreeSet<String>,
+    ) -> Result<(), WorkflowError> {
+        self.runtime
+            .recover_startup_excluding(unresolved_turn_completions)
+            .await
     }
 
     pub async fn abort_execution(

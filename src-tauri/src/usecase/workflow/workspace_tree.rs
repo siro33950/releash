@@ -60,6 +60,9 @@ pub(crate) struct WorkspaceSessionInput {
     /// Backend-only routing hint for id-based Workspace queries.
     /// It is never serialized into the Workspace tree or Node detail DTOs.
     pub workflow_execution_id: Option<String>,
+    /// Backend-only durable recovery fence used to derive honest workflow
+    /// resume capability.
+    pub unresolved_recovery_reason: Option<String>,
 }
 
 pub(crate) trait WorkspaceSessionGateway: Send + Sync {
@@ -139,6 +142,8 @@ pub(crate) struct WorkspaceWorkflowDto {
 pub(crate) struct WorkspaceWorkflowCapabilitiesDto {
     pub can_stop: bool,
     pub can_resume: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_unavailable_reason: Option<String>,
     pub can_abort: bool,
     pub can_archive: bool,
 }
@@ -767,6 +772,17 @@ fn project_workflow(
     let updated_at = execution
         .map(|execution| execution.updated_at)
         .unwrap_or(summary.updated_at);
+    let resume_unavailable_reason = status
+        .can_resume()
+        .then(|| {
+            sessions
+                .values()
+                .filter(|session| {
+                    session.workflow_execution_id.as_deref() == Some(summary.execution_id.as_str())
+                })
+                .find_map(|session| session.unresolved_recovery_reason.clone())
+        })
+        .flatten();
 
     WorkspaceTreeItemDto::Workflow(WorkspaceWorkflowDto {
         // Execution IDs remain opaque transport identifiers. The Workspace UI
@@ -776,7 +792,8 @@ fn project_workflow(
         status: representative_status(status.as_str()).as_str().to_string(),
         capabilities: WorkspaceWorkflowCapabilitiesDto {
             can_stop: status.can_stop(),
-            can_resume: status.can_resume(),
+            can_resume: status.can_resume() && resume_unavailable_reason.is_none(),
+            resume_unavailable_reason,
             can_abort: status.can_abort(),
             can_archive: matches!(
                 status,
@@ -1507,6 +1524,7 @@ mod tests {
                 first_message: String::new(),
                 workflow_node_session: true,
                 workflow_execution_id: Some(other.execution_id.clone()),
+                unresolved_recovery_reason: None,
             }],
             &WorkspaceProjectionTarget::Session("workflow-session".to_string()),
         );
@@ -1527,6 +1545,7 @@ mod tests {
                     first_message: "Investigate failure".to_string(),
                     workflow_node_session: false,
                     workflow_execution_id: None,
+                    unresolved_recovery_reason: None,
                 },
                 WorkspaceSessionInput {
                     id: "foreign-session".to_string(),
@@ -1537,6 +1556,7 @@ mod tests {
                     first_message: "must not appear".to_string(),
                     workflow_node_session: false,
                     workflow_execution_id: None,
+                    unresolved_recovery_reason: None,
                 },
             ],
             Vec::new(),
@@ -1584,6 +1604,7 @@ mod tests {
                 first_message: "Close me".to_string(),
                 workflow_node_session: false,
                 workflow_execution_id: None,
+                unresolved_recovery_reason: None,
             }],
             Vec::new(),
             HashMap::new(),
@@ -1616,6 +1637,7 @@ mod tests {
                 first_message: "Errored session".to_string(),
                 workflow_node_session: false,
                 workflow_execution_id: None,
+                unresolved_recovery_reason: None,
             }],
             Vec::new(),
             HashMap::new(),
@@ -1984,6 +2006,7 @@ mod tests {
             first_message: String::new(),
             workflow_node_session: true,
             workflow_execution_id: Some(summary().execution_id),
+            unresolved_recovery_reason: None,
         };
         let empty = project_workspace_tree(
             "/repo",
@@ -2413,6 +2436,7 @@ mod tests {
                 first_message: "body excluded".to_string(),
                 workflow_node_session: true,
                 workflow_execution_id: Some(summary().execution_id),
+                unresolved_recovery_reason: None,
             }],
             vec![workflow_summary],
             projection(
@@ -2452,6 +2476,49 @@ mod tests {
         };
         assert_eq!(waiting.status, "waiting");
         assert!(waiting.capabilities.can_approve);
+    }
+
+    #[test]
+    fn resumable_workflow_exposes_the_durable_recovery_block_reason() {
+        let execution_id = summary().execution_id;
+        let mut workflow_summary = summary();
+        workflow_summary.status = ExecutionStatus::Interrupted;
+        let mut runtime = execution(vec![node(
+            "plan-execution",
+            "plan",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Running,
+        )]);
+        runtime.status = ExecutionStatus::Interrupted;
+        let projected = project_workspace_tree(
+            "/repo",
+            vec![WorkspaceSessionInput {
+                id: "plan-session".to_string(),
+                worktree_path: "/repo".to_string(),
+                state: WorkspaceSessionState::Done,
+                error_reason: None,
+                updated_at: 5.0,
+                first_message: String::new(),
+                workflow_node_session: true,
+                workflow_execution_id: Some(execution_id),
+                unresolved_recovery_reason: Some(
+                    "Unresolved recovery recovery-1 must be resolved before resume.".to_string(),
+                ),
+            }],
+            vec![workflow_summary],
+            projection(definition(vec![session_definition("plan")]), runtime),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        assert!(!workflow.capabilities.can_resume);
+        assert_eq!(
+            workflow.capabilities.resume_unavailable_reason.as_deref(),
+            Some("Unresolved recovery recovery-1 must be resolved before resume.")
+        );
     }
 
     #[test]
@@ -2768,6 +2835,7 @@ mod tests {
             first_message: "stored body".to_string(),
             workflow_node_session: true,
             workflow_execution_id: Some(summary().execution_id),
+            unresolved_recovery_reason: None,
         };
         let definition = definition(vec![session_definition("plan")]);
         let runtime = execution(vec![running]);
@@ -2836,6 +2904,7 @@ mod tests {
                 first_message: String::new(),
                 workflow_node_session: true,
                 workflow_execution_id: Some(summary().execution_id),
+                unresolved_recovery_reason: None,
             },
             WorkspaceSessionInput {
                 id: "stored-session-2".to_string(),
@@ -2846,6 +2915,7 @@ mod tests {
                 first_message: String::new(),
                 workflow_node_session: true,
                 workflow_execution_id: Some(summary().execution_id),
+                unresolved_recovery_reason: None,
             },
         ];
         let workflow_definition = definition(vec![session_definition("review")]);
@@ -2978,6 +3048,7 @@ mod tests {
             first_message: "fallback".to_string(),
             workflow_node_session: false,
             workflow_execution_id: None,
+            unresolved_recovery_reason: None,
         };
         let project_snapshot = |sessions| {
             project_workspace_tree(
@@ -3030,6 +3101,7 @@ mod tests {
             first_message: String::new(),
             workflow_node_session: true,
             workflow_execution_id: Some(summary().execution_id),
+            unresolved_recovery_reason: None,
         };
         let archives = vec![WorkflowExecutionManualArchiveRecord {
             execution_id: summary().execution_id,

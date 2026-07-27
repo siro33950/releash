@@ -7850,6 +7850,126 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
+    async fn issue_1558_interrupted_turn_completion_is_recorded_once_without_live_progress() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("session-{execution_id}");
+        let command = seed_pending_sequential_turn_completion(
+            &previous_store,
+            &data_dir,
+            &execution_id,
+            "/wt/turn-recovery-interrupted",
+            &session_id,
+        )
+        .await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::ExecutionInterrupted {
+                execution_id: execution_id.clone(),
+                reason: ExecutionInterruptionReason::Stop,
+                timestamp: 103.0,
+            })
+            .unwrap();
+
+        let engine = WorkflowRuntimeExecutor::new_for_test();
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        assert_eq!(
+            engine
+                .recover_turn_complete(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    command.clone(),
+                )
+                .await
+                .unwrap(),
+            WorkflowTurnCompleteRecoveryOutcome::Applied
+        );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeCompleted {
+                        node_execution_id,
+                        attempt: 1,
+                        ..
+                    } if node_execution_id == &command.node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionResumed { .. })));
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::NodeStarted {
+                node_name,
+                attempt: 1,
+                ..
+            } if node_name == "verify"
+        )));
+        assert_eq!(
+            engine
+                .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command)
+                .await
+                .unwrap(),
+            WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied
+        );
+    }
+
+    #[tokio::test]
+    async fn finished_turn_completion_is_terminally_superseded_without_new_fact() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let session_id = format!("session-{execution_id}");
+        let command = seed_pending_sequential_turn_completion(
+            &previous_store,
+            &data_dir,
+            &execution_id,
+            "/wt/turn-recovery-finished",
+            &session_id,
+        )
+        .await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::ExecutionFailed {
+                execution_id: execution_id.clone(),
+                reason: "already decided".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                timestamp: 103.0,
+            })
+            .unwrap();
+        let before = read_dispatch_events(&app, &execution_id);
+
+        let engine = WorkflowRuntimeExecutor::new_for_test();
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        assert_eq!(
+            engine
+                .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command)
+                .await
+                .unwrap(),
+            WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded
+            )
+        );
+        assert_eq!(
+            read_dispatch_events(&app, &execution_id).len(),
+            before.len()
+        );
+    }
+
+    #[tokio::test]
     async fn restart_turn_completion_rehydrates_and_commits_the_exact_fanout_child() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
@@ -18390,6 +18510,60 @@ mod dispatch_boundary_tests {
             crate::domain::workflow::NodeExecutionStatus::Succeeded
         );
         assert!(projected.completed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn issue_1558_unresolved_turn_completion_blocks_only_its_own_orphan_recovery() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let blocked_id = uuid::Uuid::new_v4().to_string();
+        let independent_id = uuid::Uuid::new_v4().to_string();
+        seed_resumable_orphan_execution(
+            &previous_store,
+            &data_dir,
+            &blocked_id,
+            "/wt/blocked-recovery",
+        )
+        .await;
+        seed_resumable_orphan_execution(
+            &previous_store,
+            &data_dir,
+            &independent_id,
+            "/wt/independent-recovery",
+        )
+        .await;
+
+        let engine = WorkflowRuntimeExecutor::new_for_test();
+        engine.set_execution_store_data_dir(data_dir).await;
+        engine
+            .recover_orphan_executions_excluding(
+                app.handle(),
+                &std::collections::BTreeSet::from([blocked_id.clone()]),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine
+                .execution_store
+                .get_execution(&blocked_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Running
+        );
+        assert_eq!(
+            engine
+                .execution_store
+                .get_execution(&independent_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Interrupted
+        );
     }
 
     #[tokio::test]

@@ -428,7 +428,7 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .recover_turn_complete(&self.app, &self.session_store, &self.agent_runtime, command)
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -465,8 +465,16 @@ impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        self.recover_startup_excluding(&std::collections::BTreeSet::new())
+            .await
+    }
+
+    async fn recover_startup_excluding(
+        &self,
+        unresolved_turn_completions: &std::collections::BTreeSet<String>,
+    ) -> Result<(), WorkflowError> {
         self.engine
-            .recover_orphan_executions(&self.app)
+            .recover_orphan_executions_excluding(&self.app, unresolved_turn_completions)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }

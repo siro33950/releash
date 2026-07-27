@@ -23,9 +23,10 @@ use crate::usecase::workflow::ports::{
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub(crate) trait WorkflowRuntimeOperations: Send + Sync {
-    async fn recover_orphan_executions(
+    async fn recover_orphan_executions_excluding(
         &self,
         app: &tauri::AppHandle,
+        unresolved_turn_completions: &std::collections::BTreeSet<String>,
     ) -> Result<(), WorkflowRuntimeError>;
 
     async fn resolve_start_execution_worktree(
@@ -182,11 +183,17 @@ pub(crate) fn new_workflow_runtime_operations(
 
 #[async_trait]
 impl WorkflowRuntimeOperations for WorkflowRuntimeExecutor {
-    async fn recover_orphan_executions(
+    async fn recover_orphan_executions_excluding(
         &self,
         app: &tauri::AppHandle,
+        unresolved_turn_completions: &std::collections::BTreeSet<String>,
     ) -> Result<(), WorkflowRuntimeError> {
-        WorkflowRuntimeExecutor::recover_orphan_executions(self, app).await
+        WorkflowRuntimeExecutor::recover_orphan_executions_excluding(
+            self,
+            app,
+            unresolved_turn_completions,
+        )
+        .await
     }
 
     async fn resolve_start_execution_worktree(

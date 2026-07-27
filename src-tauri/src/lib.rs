@@ -1429,16 +1429,20 @@ pub fn run() {
                         let workflow = pending_workflow_recovery.clone();
                         let turn_completion = pending_turn_completion_recovery.clone();
                         async move {
-                            // Never orphan-interrupt an execution while its
-                            // exact turn-completion handoff cannot be replayed.
-                            let recovered = turn_completion
+                            let report = turn_completion
                                 .recover_pending_turn_completions()
                                 .await?;
                             workflow
-                                .recover_startup()
+                                .recover_startup_excluding(&report.unresolved_execution_ids)
                                 .await
                                 .map_err(|error| error.to_string())?;
-                            Ok::<usize, String>(recovered)
+                            if report.transient_failures != 0 {
+                                return Err(format!(
+                                    "{} workflow turn-completion item(s) remain transiently unresolved",
+                                    report.transient_failures
+                                ));
+                            }
+                            Ok::<usize, String>(report.terminal_count)
                         }
                     },
                     std::time::Duration::from_millis(50),

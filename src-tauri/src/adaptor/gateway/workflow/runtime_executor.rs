@@ -1430,15 +1430,30 @@ impl WorkflowRuntimeExecutor {
     /// 1 度だけ呼ばれる前提。canonical read / projection / commit のいずれかを確認できない場合は
     /// startup recovery 全体を失敗させる。呼び出し側は通常 activation を開始せず、同じ durable
     /// inventory から再試行する。
+    #[cfg(test)]
     pub async fn recover_orphan_executions<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.recover_orphan_executions_excluding(app, &std::collections::BTreeSet::new())
+            .await
+    }
+
+    pub async fn recover_orphan_executions_excluding<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        unresolved_turn_completions: &std::collections::BTreeSet<String>,
     ) -> Result<(), WorkflowRuntimeError> {
         let orphans = self
             .execution_store
             .try_list_non_terminal_metadata()
             .await
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
+            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?
+            .into_iter()
+            .filter(|metadata| {
+                !unresolved_turn_completions.contains(metadata.execution_id.as_str())
+            })
+            .collect::<Vec<_>>();
         if orphans.is_empty() {
             return Ok(());
         }

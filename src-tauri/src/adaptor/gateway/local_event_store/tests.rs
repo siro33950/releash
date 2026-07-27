@@ -5866,6 +5866,10 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .expect("bounded prefix page");
     assert_eq!(page.entries.len(), 1);
     assert!(page.next_cursor.is_none());
+    assert!(session_store
+        .unresolved_recovery_reason(&session.id)
+        .expect("read capability recovery fence")
+        .is_some());
 
     session_store
         .complete_workflow_turn_completion(&pending)
@@ -5877,6 +5881,47 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .pending_workflow_turn_completion(&session.id, 7)
         .expect("read consumed handoff")
         .is_none());
+    assert_eq!(
+        session_store
+            .unresolved_recovery_reason(&session.id)
+            .expect("read settled capability recovery fence"),
+        None
+    );
+
+    persist_terminal_fixture(
+        &harness,
+        &session_store,
+        &session.id,
+        8,
+        &["cannot reconstruct required artifact"],
+    );
+    let retired = session_store
+        .pending_workflow_turn_completion(&session.id, 8)
+        .expect("read unrecoverable handoff")
+        .expect("pending unrecoverable handoff");
+    session_store
+        .settle_workflow_turn_completion(
+            &retired,
+            crate::domain::local_event::WorkflowObligationTerminalOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+            ),
+        )
+        .expect("retire unrecoverable handoff");
+    session_store
+        .settle_workflow_turn_completion(
+            &retired,
+            crate::domain::local_event::WorkflowObligationTerminalOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+            ),
+        )
+        .expect("idempotent retire replay");
+    assert_eq!(
+        session_store
+            .unresolved_recovery_reason(&session.id)
+            .expect("read retired capability recovery fence"),
+        None,
+        "retired obligations remain durable history but leave effect admission"
+    );
 }
 
 #[tokio::test]
