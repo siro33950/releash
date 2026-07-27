@@ -4,8 +4,8 @@ use rusqlite::Connection;
 
 use super::fault::{FaultInjector, InitialCreateFaultPoint};
 
-/// Minimum SQLite library version required at compile / startup.
-pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_045_000;
+/// Minimum SQLite version containing the WAL-reset corruption fix.
+pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
 pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
