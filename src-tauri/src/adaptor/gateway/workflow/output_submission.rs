@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     workflow_definition_to_domain, workflow_schemas_to_domain,
 };
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
+use crate::adaptor::gateway::workflow::runtime_state::WorkflowRuntimeRecord;
 use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
-use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, RuntimeExecutionState};
+use crate::adaptor::gateway::workflow::state::RuntimeArtifact;
 use crate::domain::workflow::services::contract_schema::SchemaViolation;
 use crate::domain::workflow::services::{
     contract as workflow_contract, contract_schema, secret_masker,
@@ -32,24 +32,24 @@ pub(crate) struct ValidatedSubmissionOutput {
 
 #[derive(Debug)]
 pub(crate) enum SubmissionValidationError {
-    Engine(WorkflowEngineError),
+    Runtime(WorkflowRuntimeError),
     SchemaViolation {
-        error: WorkflowEngineError,
+        error: WorkflowRuntimeError,
         violations: Vec<SchemaViolation>,
     },
 }
 
 impl SubmissionValidationError {
-    pub(crate) fn into_engine_error(self) -> WorkflowEngineError {
+    pub(crate) fn into_runtime_error(self) -> WorkflowRuntimeError {
         match self {
-            Self::Engine(error) | Self::SchemaViolation { error, .. } => error,
+            Self::Runtime(error) | Self::SchemaViolation { error, .. } => error,
         }
     }
 
     pub(crate) fn schema_violations(&self) -> Option<&[SchemaViolation]> {
         match self {
             Self::SchemaViolation { violations, .. } => Some(violations),
-            Self::Engine(_) => None,
+            Self::Runtime(_) => None,
         }
     }
 }
@@ -69,19 +69,19 @@ pub(crate) fn validate_submit_output_request(
     node_name: &str,
     node_execution_id: Option<&str>,
     contract: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     uuid::Uuid::parse_str(execution_id).map_err(|_| {
-        WorkflowEngineError::ValidationError("execution_id must be UUID".to_string())
+        WorkflowRuntimeError::ValidationError("execution_id must be UUID".to_string())
     })?;
     NodeDefinitionName::new(node_name).map_err(|_| {
-        WorkflowEngineError::ValidationError("node_name must not be empty".to_string())
+        WorkflowRuntimeError::ValidationError("node_name must not be empty".to_string())
     })?;
     ContractType::new(contract).map_err(|_| {
-        WorkflowEngineError::ValidationError("contract must not be empty".to_string())
+        WorkflowRuntimeError::ValidationError("contract must not be empty".to_string())
     })?;
     if let Some(node_execution_id) = node_execution_id {
         uuid::Uuid::parse_str(node_execution_id).map_err(|_| {
-            WorkflowEngineError::ValidationError(
+            WorkflowRuntimeError::ValidationError(
                 "node_execution_id must be UUID when provided".to_string(),
             )
         })?;
@@ -102,7 +102,7 @@ pub(crate) fn validate_submission_output_with_secrets(
             Ok(ValidatedSubmissionOutput { artifact, result })
         }
         ContractValidationResult::Invalid(violation) => {
-            let error = WorkflowEngineError::ValidationError(format!(
+            let error = WorkflowRuntimeError::ValidationError(format!(
                 "artifact schema validation failed ({}): {}",
                 violation.reason, violation.details
             ));
@@ -113,38 +113,38 @@ pub(crate) fn validate_submission_output_with_secrets(
                     .unwrap_or_default();
                 Err(SubmissionValidationError::SchemaViolation { error, violations })
             } else {
-                Err(SubmissionValidationError::Engine(error))
+                Err(SubmissionValidationError::Runtime(error))
             }
         }
     }
 }
 
 pub(crate) fn validate_submission_target_context(
-    exec: &WorkflowExecution,
+    exec: &WorkflowRuntimeRecord,
     execution_id: &str,
     node_name: &str,
     node_execution_id: Option<&str>,
     contract: &str,
-) -> Result<SubmissionTargetContext, WorkflowEngineError> {
-    match exec.state {
-        RuntimeExecutionState::Running | RuntimeExecutionState::WaitingApproval => {}
-        _ => {
-            return Err(WorkflowEngineError::InvalidState(format!(
-                "execution {execution_id} is not accepting structured output (state: {})",
-                exec.state.as_str()
-            )));
-        }
+) -> Result<SubmissionTargetContext, WorkflowRuntimeError> {
+    if !matches!(
+        exec.lifecycle.admit_artifact_submission(true),
+        crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+    ) {
+        return Err(WorkflowRuntimeError::InvalidState(format!(
+            "execution {execution_id} is not accepting structured output (state: {})",
+            exec.state().as_str()
+        )));
     }
 
     let workflow = workflow_definition_to_domain(&exec.workflow);
     let expected_contract = workflow_contract::lookup_node_contract(&workflow, node_name)
         .ok_or_else(|| {
-            WorkflowEngineError::ValidationError(format!(
+            WorkflowRuntimeError::ValidationError(format!(
                 "node '{node_name}' is not a valid submission target"
             ))
         })?;
     if expected_contract != contract {
-        return Err(WorkflowEngineError::ValidationError(format!(
+        return Err(WorkflowRuntimeError::ValidationError(format!(
             "contract mismatch: node '{node_name}' expects '{expected_contract}', got '{contract}'"
         )));
     }
@@ -153,7 +153,7 @@ pub(crate) fn validate_submission_target_context(
         .workflow
         .nodes
         .get(exec.current_node_index)
-        .ok_or_else(|| WorkflowEngineError::InvalidState("current node is unavailable".into()))?;
+        .ok_or_else(|| WorkflowRuntimeError::InvalidState("current node is unavailable".into()))?;
     let parent_attempt = exec
         .node_execution_counts
         .get(&current_node.name)
@@ -180,7 +180,7 @@ pub(crate) fn validate_submission_target_context(
             .into_iter()
             .find(|execution| execution.id == node_execution_id)
             .ok_or_else(|| {
-                WorkflowEngineError::InvalidState(format!(
+                WorkflowRuntimeError::InvalidState(format!(
                     "active node execution '{node_execution_id}' for node '{node_name}' was not found"
                 ))
             })?
@@ -188,7 +188,7 @@ pub(crate) fn validate_submission_target_context(
         match candidates.as_slice() {
             [execution] => *execution,
             [] => {
-                return Err(WorkflowEngineError::InvalidState(format!(
+                return Err(WorkflowRuntimeError::InvalidState(format!(
                     "node '{node_name}' is not currently accepting structured output"
                 )))
             }
@@ -198,7 +198,7 @@ pub(crate) fn validate_submission_target_context(
                     .map(|execution| execution.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                return Err(WorkflowEngineError::InvalidState(format!(
+                return Err(WorkflowRuntimeError::InvalidState(format!(
                     "node '{node_name}' has {} active executions; node_execution_id is required; candidates: [{candidate_ids}]",
                     candidates.len(),
                 )));
@@ -218,7 +218,7 @@ pub(crate) fn validate_submission_target_context(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_validated_submission(
-    exec: &mut WorkflowExecution,
+    exec: &mut WorkflowRuntimeRecord,
     execution_id: &str,
     node_name: &str,
     node_execution_id: Option<&str>,
@@ -226,7 +226,7 @@ pub(crate) fn apply_validated_submission(
     validated_output: &serde_json::Value,
     validated_result: Option<String>,
     timestamp: f64,
-) -> Result<SubmittedOutputMutation, WorkflowEngineError> {
+) -> Result<SubmittedOutputMutation, WorkflowRuntimeError> {
     let target = validate_submission_target_context(
         exec,
         execution_id,
@@ -239,7 +239,7 @@ pub(crate) fn apply_validated_submission(
         .iter()
         .position(|execution| execution.id == target.node_execution_id)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "node execution '{}' disappeared during output submission",
                 target.node_execution_id
             ))
@@ -290,7 +290,7 @@ pub(crate) fn apply_validated_submission(
 }
 
 pub(crate) fn rollback_validated_submission(
-    exec: &mut WorkflowExecution,
+    exec: &mut WorkflowRuntimeRecord,
     node_name: &str,
     mutation: SubmittedOutputMutation,
 ) {
@@ -372,7 +372,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
     use crate::adaptor::gateway::workflow::runtime_state::{
-        FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowExecution,
+        FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowRuntimeRecord,
     };
     use crate::adaptor::gateway::workflow::schema::{
         FanoutSpec, NodeDefinition, NodeKind, NodeKindName, SchemaDef,
@@ -443,7 +443,7 @@ mod tests {
         }
     }
 
-    fn fanout_execution() -> WorkflowExecution {
+    fn fanout_execution() -> WorkflowRuntimeRecord {
         let mut exec = running_execution();
         exec.workflow = workflow_with_fanout();
         exec.current_session_id = None;
@@ -525,7 +525,7 @@ mod tests {
         exec
     }
 
-    fn repeated_fanout_child_execution() -> WorkflowExecution {
+    fn repeated_fanout_child_execution() -> WorkflowRuntimeRecord {
         let mut exec = fanout_execution();
         let node_execution_id = "00000000-0000-4000-8000-000000000203";
         exec.node_executions.push(node_execution(
@@ -575,8 +575,8 @@ mod tests {
         }
     }
 
-    fn running_execution() -> WorkflowExecution {
-        WorkflowExecution {
+    fn running_execution() -> WorkflowRuntimeRecord {
+        WorkflowRuntimeRecord {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinitionYaml {
                 name: "wf".to_string(),
@@ -587,7 +587,7 @@ mod tests {
                 }],
                 ..WorkflowDefinitionYaml::default()
             },
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 0,
             node_execution_counts: HashMap::from([("review".to_string(), 2)]),
             loop_guard_reset_baselines: Default::default(),
@@ -640,7 +640,7 @@ mod tests {
     fn validate_submit_output_request_rejects_invalid_identity_fields() {
         assert!(matches!(
             validate_submit_output_request("not-a-uuid", "review", None, "review-verdict"),
-            Err(WorkflowEngineError::ValidationError(message))
+            Err(WorkflowRuntimeError::ValidationError(message))
                 if message == "execution_id must be UUID"
         ));
         assert!(matches!(
@@ -650,7 +650,7 @@ mod tests {
                 None,
                 "review-verdict"
             ),
-            Err(WorkflowEngineError::ValidationError(message))
+            Err(WorkflowRuntimeError::ValidationError(message))
                 if message == "node_name must not be empty"
         ));
         assert!(matches!(
@@ -660,7 +660,7 @@ mod tests {
                 None,
                 ""
             ),
-            Err(WorkflowEngineError::ValidationError(message))
+            Err(WorkflowRuntimeError::ValidationError(message))
                 if message == "contract must not be empty"
         ));
     }
@@ -790,7 +790,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
                 if message.contains("node_execution_id is required")
                     && message.contains("00000000-0000-4000-8000-000000000201")
                     && message.contains("00000000-0000-4000-8000-000000000203")
@@ -900,7 +900,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(matches!(err, WorkflowRuntimeError::ValidationError(_)));
         assert!(exec.artifacts.is_empty());
     }
 
@@ -919,7 +919,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+        assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
         assert!(exec.artifacts.is_empty());
     }
 

@@ -6,10 +6,8 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 };
 pub use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
-use crate::domain::workflow::{
-    ExecutionOrigin, FailureDisposition, NodeExecutionFailureKind, NODE_STATUS_ABORTED,
-    NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
-};
+pub use crate::domain::workflow::RuntimeExecutionState;
+use crate::domain::workflow::{ExecutionOrigin, FailureDisposition, NodeExecutionFailureKind};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeCommitSnapshot {
@@ -82,33 +80,6 @@ pub struct NodeExecution {
     pub fanout_parent: Option<FanoutParentRef>,
     pub started_at: f64,
     pub completed_at: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum RuntimeExecutionState {
-    Running,
-    WaitingApproval,
-    Completed,
-    Failed {
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    },
-    Aborted,
-    Interrupted,
-}
-
-impl RuntimeExecutionState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => NODE_STATUS_RUNNING,
-            Self::WaitingApproval => NODE_STATUS_WAITING_APPROVAL,
-            Self::Completed => NODE_STATUS_COMPLETED,
-            Self::Failed { .. } => NODE_STATUS_FAILED,
-            Self::Aborted => NODE_STATUS_ABORTED,
-            Self::Interrupted => crate::domain::workflow::NODE_STATUS_INTERRUPTED,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

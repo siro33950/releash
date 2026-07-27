@@ -1,3 +1,5 @@
+//! Stop, resume, abort, and approval integration.
+
 use super::*;
 
 enum AbortCommit {
@@ -9,20 +11,20 @@ enum AbortCommit {
 fn abort_outcome_to_command_result(
     outcome: AbortOutcome,
     execution_id: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     match outcome {
         AbortOutcome::Aborted => Ok(()),
-        AbortOutcome::NotFound => Err(WorkflowEngineError::ExecutionNotFound(
+        AbortOutcome::NotFound => Err(WorkflowRuntimeError::ExecutionNotFound(
             execution_id.to_string(),
         )),
-        AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(format!(
+        AbortOutcome::AlreadyTerminal => Err(WorkflowRuntimeError::InvalidState(format!(
             "execution {execution_id} is already terminal"
         ))),
     }
 }
 
 /// abort / stop / resume の execution ライフサイクル typed command 群。
-impl WorkflowRuntimeService {
+impl WorkflowRuntimeExecutor {
     pub(crate) async fn abort_workflow_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -30,7 +32,7 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         expected_node_name: Option<&str>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
         if let Some(expected_node_name) = expected_node_name {
             let target_node = if metadata.status == ExecutionStatus::Interrupted {
@@ -39,7 +41,7 @@ impl WorkflowRuntimeService {
                 metadata.current_node.as_deref()
             };
             if target_node != Some(expected_node_name) {
-                return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
+                return Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(
                     "node does not match".to_string(),
                 ));
             }
@@ -50,7 +52,7 @@ impl WorkflowRuntimeService {
                 Some(data_dir) => data_dir,
                 None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
                     .map_err(|error| {
-                        WorkflowEngineError::SessionStore(format!("resolve_data_dir: {error}"))
+                        WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {error}"))
                     })?,
             };
             let events = self
@@ -58,16 +60,16 @@ impl WorkflowRuntimeService {
                 .await?
                 .read_log_durable(execution_id)
                 .await
-                .map_err(WorkflowEngineError::SessionStore)?;
+                .map_err(WorkflowRuntimeError::SessionStore)?;
             let projected =
                 crate::adaptor::gateway::workflow::event_projection::project_workflow_execution(
                     execution_id,
                     &events,
                 )
-                .map_err(WorkflowEngineError::InvalidState)?
-                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
+                .map_err(WorkflowRuntimeError::InvalidState)?
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
             if projected.status != ExecutionStatus::Interrupted {
-                return Err(WorkflowEngineError::InvalidState(format!(
+                return Err(WorkflowRuntimeError::InvalidState(format!(
                     "execution {execution_id} event log has status {} instead of interrupted",
                     projected.status.as_str()
                 )));
@@ -75,7 +77,7 @@ impl WorkflowRuntimeService {
             if projected.worktree_path != metadata.worktree_path
                 || projected.resume_from_node != metadata.resume_from_node
             {
-                return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+                return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
                     "execution {execution_id} metadata does not match its event-log checkpoint"
                 )));
             }
@@ -85,13 +87,13 @@ impl WorkflowRuntimeService {
                 .await
                 .map_err(|error| match error {
                     ExecutionStoreError::ExecutionNotFound { .. } => {
-                        WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                        WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
                     }
                     ExecutionStoreError::InvalidStatusTransition { .. }
                     | ExecutionStoreError::TransitionInProgress { .. } => {
-                        WorkflowEngineError::InvalidState(error.to_string())
+                        WorkflowRuntimeError::InvalidState(error.to_string())
                     }
-                    other => WorkflowEngineError::SessionStore(format!(
+                    other => WorkflowRuntimeError::SessionStore(format!(
                         "ExecutionStore interrupted abort reservation failed: {other}"
                     )),
                 })?;
@@ -102,7 +104,7 @@ impl WorkflowRuntimeService {
                     reservation.aborted.updated_at,
                 )
                 .await
-                .map_err(|error| WorkflowEngineError::SessionStore(error.to_string()))?;
+                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
             let append_result = self.write_log_required_batch_with_mutations_as(
                 app,
                 CommitOperationKind::UserMutation,
@@ -118,11 +120,11 @@ impl WorkflowRuntimeService {
                     .rollback_interrupted_abort(reservation)
                     .await
                     .map_err(|rollback_error| {
-                        WorkflowEngineError::SessionStore(format!(
+                        WorkflowRuntimeError::SessionStore(format!(
                             "ExecutionAborted log failed: {error}; interrupted metadata rollback failed: {rollback_error}"
                         ))
                     })?;
-                return Err(WorkflowEngineError::SessionStore(format!(
+                return Err(WorkflowRuntimeError::SessionStore(format!(
                     "ExecutionAborted log failed: {error}"
                 )));
             }
@@ -140,7 +142,7 @@ impl WorkflowRuntimeService {
             return Ok(());
         }
         if !metadata.status.is_active() {
-            return Err(WorkflowEngineError::InvalidState(format!(
+            return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be aborted from status {}",
                 metadata.status.as_str()
             )));
@@ -151,13 +153,13 @@ impl WorkflowRuntimeService {
             .await
             .map_err(|error| match error {
                 ExecutionStoreError::ExecutionNotFound { .. } => {
-                    WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                    WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
                 }
                 ExecutionStoreError::InvalidStatusTransition { .. }
                 | ExecutionStoreError::TransitionInProgress { .. } => {
-                    WorkflowEngineError::InvalidState(error.to_string())
+                    WorkflowRuntimeError::InvalidState(error.to_string())
                 }
-                other => WorkflowEngineError::SessionStore(format!(
+                other => WorkflowRuntimeError::SessionStore(format!(
                     "ExecutionStore abort reservation failed: {other}"
                 )),
             })?;
@@ -196,7 +198,7 @@ impl WorkflowRuntimeService {
                     .finish_active_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
-                        WorkflowEngineError::SessionStore(format!(
+                        WorkflowRuntimeError::SessionStore(format!(
                             "ExecutionStore abort reservation cleanup failed: {error}"
                         ))
                     })?;
@@ -208,7 +210,7 @@ impl WorkflowRuntimeService {
                     .finish_active_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
-                        WorkflowEngineError::SessionStore(format!(
+                        WorkflowRuntimeError::SessionStore(format!(
                             "ExecutionStore abort reservation rollback failed: {error}"
                         ))
                     })?;
@@ -224,7 +226,7 @@ impl WorkflowRuntimeService {
                     .finish_active_interruption(interruption_reservation)
                     .await
                     .map_err(|error| {
-                        WorkflowEngineError::SessionStore(format!(
+                        WorkflowRuntimeError::SessionStore(format!(
                             "ExecutionStore abort reservation rollback failed: {error}"
                         ))
                     })?;
@@ -246,7 +248,7 @@ impl WorkflowRuntimeService {
                     activation_gate.reset_cancel();
                 }
                 reservation_result.map_err(|reservation_error| {
-                    WorkflowEngineError::SessionStore(format!(
+                    WorkflowRuntimeError::SessionStore(format!(
                         "abort failed: {error}; abort reservation rollback failed: {reservation_error}"
                     ))
                 })?;
@@ -262,13 +264,13 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
         if !matches!(
             metadata.status,
             ExecutionStatus::Running | ExecutionStatus::WaitingApproval
         ) {
-            return Err(WorkflowEngineError::InvalidState(format!(
+            return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be stopped from status {}",
                 metadata.status.as_str()
             )));
@@ -283,7 +285,7 @@ impl WorkflowRuntimeService {
             )
             .await?
         {
-            return Err(WorkflowEngineError::InvalidState(format!(
+            return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} is not active"
             )));
         }
@@ -298,7 +300,7 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         resume_orchestration::resume_workflow_execution(
             self,
             app,
@@ -311,13 +313,13 @@ impl WorkflowRuntimeService {
     pub(super) async fn validate_execution_command_target(
         &self,
         execution_id: &str,
-    ) -> Result<WorkflowExecutionMetadata, WorkflowEngineError> {
+    ) -> Result<WorkflowExecutionMetadata, WorkflowRuntimeError> {
         if self
             .execution_store
             .interrupted_transition_pending(execution_id)
             .await
         {
-            return Err(WorkflowEngineError::InvalidState(format!(
+            return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} already has a transition in progress"
             )));
         }
@@ -326,25 +328,25 @@ impl WorkflowRuntimeService {
             .get_execution_record(execution_id)
             .await
             .map_err(|error| {
-                WorkflowEngineError::SessionStore(format!(
+                WorkflowRuntimeError::SessionStore(format!(
                     "canonical workflow execution read failed: {error}"
                 ))
             })?
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
+            .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
         let resolved = self
             .worktree_resolver
             .resolve(metadata.worktree_path.clone())
             .await
-            .map_err(|error| WorkflowEngineError::UnauthorizedWorktree(error.to_string()))?;
+            .map_err(|error| WorkflowRuntimeError::UnauthorizedWorktree(error.to_string()))?;
         if resolved != metadata.worktree_path {
-            return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+            return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
                 "execution {execution_id} targets '{}' but managed worktree resolves to '{resolved}'",
                 metadata.worktree_path
             )));
         }
         if let Some(in_memory) = self.executions.lock().await.get(execution_id) {
             if in_memory.worktree_path != metadata.worktree_path {
-                return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+                return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
                     "execution {execution_id} worktree does not match persisted metadata"
                 )));
             }
@@ -366,7 +368,7 @@ impl WorkflowRuntimeService {
     ///   `AbortOutcome::Aborted` を返す。
     ///
     /// ExecutionAborted event は `write_log_required` 経由で必須 append し、append 失敗時は
-    /// mutation 直前 snapshot で `WorkflowExecution` 全体を一括復元する
+    /// mutation 直前 snapshot で `WorkflowRuntimeRecord` 全体を一括復元する
     /// （Spec atomic mutation 境界）。
     ///
     /// 外部から直接呼ばれることはなく、`abort_workflow_execution*` runtime primitive 経路のみが
@@ -379,7 +381,7 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         expected_node_name: Option<&str>,
-    ) -> Result<AbortOutcome, WorkflowEngineError> {
+    ) -> Result<AbortOutcome, WorkflowRuntimeError> {
         let commit = self
             .commit_abort_workflow_by_execution_id(
                 app,
@@ -405,7 +407,7 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         execution_id: &str,
         expected_node_name: Option<&str>,
-    ) -> Result<AbortCommit, WorkflowEngineError> {
+    ) -> Result<AbortCommit, WorkflowRuntimeError> {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await?;
@@ -456,12 +458,12 @@ impl WorkflowRuntimeService {
                     .get(exec.current_node_index)
                     .map(|node| node.name.as_str())
                     .ok_or_else(|| {
-                        WorkflowEngineError::InvalidState(format!(
+                        WorkflowRuntimeError::InvalidState(format!(
                             "execution {execution_id} has invalid current node"
                         ))
                     })?;
                 if expected_node_name != current_node {
-                    return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
+                    return Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(
                         "node does not match".to_string(),
                     ));
                 }
@@ -504,7 +506,7 @@ impl WorkflowRuntimeService {
                 }
             }
 
-            exec.state = RuntimeExecutionState::Aborted;
+            let _ = exec.transition_aborted();
             exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
             let snapshot_state = exec.to_commit_snapshot();
@@ -512,7 +514,7 @@ impl WorkflowRuntimeService {
         };
 
         // 3. [04] commit point: ExecutionAborted を必須 append。失敗時は
-        //    WorkflowExecution / Execution Store / ChatSession を snapshot で一括復元する。
+        //    WorkflowRuntimeRecord / Execution Store / ChatSession を snapshot で一括復元する。
         //    interrupt_agent はこの時点ではまだ実行していないため、append 失敗時には
         //    rollback 不能な外部副作用が残らない。
         let aborted_event = WorkflowEvent::ExecutionAborted {
@@ -568,7 +570,7 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         session_ids: &[String],
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         // ExecutionAborted is durable before this method is called. Runtime activation must be
         // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
@@ -619,7 +621,7 @@ impl WorkflowRuntimeService {
     pub(super) async fn abort_target_lookup(
         &self,
         execution_id: &str,
-    ) -> Result<AbortTargetLookup, WorkflowEngineError> {
+    ) -> Result<AbortTargetLookup, WorkflowRuntimeError> {
         {
             let execs = self.executions.lock().await;
             if let Some(exec) = execs.get(execution_id) {
@@ -650,13 +652,13 @@ impl WorkflowRuntimeService {
     pub(super) async fn has_terminal_execution_record(
         &self,
         execution_id: &str,
-    ) -> Result<bool, WorkflowEngineError> {
+    ) -> Result<bool, WorkflowRuntimeError> {
         Ok(self
             .execution_store
             .get_execution_record(execution_id)
             .await
             .map_err(|error| {
-                WorkflowEngineError::SessionStore(format!(
+                WorkflowRuntimeError::SessionStore(format!(
                     "canonical workflow execution read failed: {error}"
                 ))
             })?

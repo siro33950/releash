@@ -1,7 +1,7 @@
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
 use crate::adaptor::gateway::workflow::runtime_commit::NodeOutcome;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 use crate::adaptor::gateway::workflow::state::{RuntimeCommitSnapshot, RuntimeExecutionState};
 use crate::domain::workflow::NODE_STATUS_ABORTED;
 
@@ -12,7 +12,7 @@ use crate::domain::workflow::NODE_STATUS_ABORTED;
 pub(crate) fn dispatch_internal_node_command(
     snapshot: &mut RuntimeCommitSnapshot,
     command: InternalNodeCommand,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
+) -> Result<WorkflowEvent, WorkflowRuntimeError> {
     apply_internal_node_command_state_mutation(snapshot, &command)?;
     map_internal_node_command_to_event(command)
 }
@@ -20,7 +20,7 @@ pub(crate) fn dispatch_internal_node_command(
 fn apply_internal_node_command_state_mutation(
     snapshot: &mut RuntimeCommitSnapshot,
     command: &InternalNodeCommand,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     match command {
         InternalNodeCommand::CompleteNode {
             execution_id,
@@ -35,13 +35,13 @@ fn apply_internal_node_command_state_mutation(
             timestamp,
         } => {
             if execution_id != &snapshot.execution_id {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode execution_id mismatch: command='{execution_id}', snapshot='{}'",
                     snapshot.execution_id
                 )));
             }
             if workflow_name != &snapshot.workflow_name {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode workflow_name mismatch: command='{workflow_name}', snapshot='{}'",
                     snapshot.workflow_name
                 )));
@@ -54,44 +54,44 @@ fn apply_internal_node_command_state_mutation(
                 "CompleteNode",
             )?;
             let Some(last_entry) = snapshot.node_history.last() else {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode for node '{node_name}' but snapshot.node_history is empty"
                 )));
             };
             if last_entry.node_name != *node_name {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode node mismatch: command='{node_name}', snapshot last='{}'",
                     last_entry.node_name
                 )));
             }
             if (last_entry.completed_at - *timestamp).abs() > f64::EPSILON {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode timestamp mismatch for node '{node_name}': command={timestamp}, snapshot={}",
                     last_entry.completed_at
                 )));
             }
             if last_entry.result != *result {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode result mismatch for node '{node_name}'"
                 )));
             }
             if last_entry.session_id != *session_id {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode session_id mismatch for node '{node_name}'"
                 )));
             }
             if last_entry.token_usage != *token_usage {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode token_usage mismatch for node '{node_name}'"
                 )));
             }
             if last_entry.artifact != *artifact {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode artifact mismatch for node '{node_name}'"
                 )));
             }
             if Some(last_entry.attempt) != *attempt {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "CompleteNode attempt mismatch for node '{node_name}': command={attempt:?}, snapshot={}",
                     last_entry.attempt
                 )));
@@ -110,13 +110,13 @@ fn apply_internal_node_command_state_mutation(
             timestamp,
         } => {
             if execution_id != &snapshot.execution_id {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "FailNode execution_id mismatch: command='{execution_id}', snapshot='{}'",
                     snapshot.execution_id
                 )));
             }
             if workflow_name != &snapshot.workflow_name {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "FailNode workflow_name mismatch: command='{workflow_name}', snapshot='{}'",
                     snapshot.workflow_name
                 )));
@@ -129,7 +129,7 @@ fn apply_internal_node_command_state_mutation(
                 "FailNode",
             )?;
             if *node_name != snapshot.current_node_name {
-                return Err(WorkflowEngineError::ValidationError(format!(
+                return Err(WorkflowRuntimeError::ValidationError(format!(
                     "FailNode node_name mismatch: command='{node_name}', snapshot='{}'",
                     snapshot.current_node_name
                 )));
@@ -153,13 +153,13 @@ fn validate_top_level_node_execution(
     node_name: &str,
     attempt: Option<u32>,
     command_name: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let execution = snapshot
         .node_executions
         .iter()
         .find(|execution| execution.id == node_execution_id)
         .ok_or_else(|| {
-            WorkflowEngineError::ValidationError(format!(
+            WorkflowRuntimeError::ValidationError(format!(
                 "{command_name} references unknown node_execution_id '{node_execution_id}'"
             ))
         })?;
@@ -168,7 +168,7 @@ fn validate_top_level_node_execution(
         || execution.fanout_parent.is_some()
         || attempt.is_some_and(|attempt| execution.attempt != attempt)
     {
-        return Err(WorkflowEngineError::ValidationError(format!(
+        return Err(WorkflowRuntimeError::ValidationError(format!(
             "{command_name} node execution mismatch: id='{node_execution_id}', node='{node_name}', attempt={attempt:?}"
         )));
     }
@@ -177,7 +177,7 @@ fn validate_top_level_node_execution(
 
 fn map_internal_node_command_to_event(
     command: InternalNodeCommand,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
+) -> Result<WorkflowEvent, WorkflowRuntimeError> {
     match command {
         InternalNodeCommand::CompleteNode {
             execution_id,
@@ -227,7 +227,7 @@ fn map_internal_node_command_to_event(
 
 pub(crate) fn pre_commit_required_events_for_outcome(
     outcome: &NodeOutcome,
-) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Vec<WorkflowEvent>, WorkflowRuntimeError> {
     let mut events = Vec::new();
     let mut snapshot = outcome.snapshot().clone();
     match outcome {
@@ -261,7 +261,7 @@ pub(crate) fn pre_commit_required_events_for_outcome(
 
 pub(crate) fn terminal_required_events_for_snapshot(
     snapshot: &RuntimeCommitSnapshot,
-) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Vec<WorkflowEvent>, WorkflowRuntimeError> {
     let mut local = snapshot.clone();
     let mut events = Vec::new();
     if matches!(snapshot.state, RuntimeExecutionState::Completed) {
@@ -283,7 +283,7 @@ pub(crate) fn terminal_events_for_append(
 
 pub(crate) fn last_node_completed_event_for_snapshot(
     snapshot: &mut RuntimeCommitSnapshot,
-) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Option<WorkflowEvent>, WorkflowRuntimeError> {
     let Some(last_entry) = snapshot.node_history.last().cloned() else {
         return Ok(None);
     };
@@ -318,7 +318,7 @@ fn top_level_node_execution<'a>(
     snapshot: &'a RuntimeCommitSnapshot,
     node_name: &str,
     attempt: u32,
-) -> Result<&'a crate::adaptor::gateway::workflow::state::NodeExecution, WorkflowEngineError> {
+) -> Result<&'a crate::adaptor::gateway::workflow::state::NodeExecution, WorkflowRuntimeError> {
     snapshot
         .node_executions
         .iter()
@@ -329,7 +329,7 @@ fn top_level_node_execution<'a>(
                 && execution.fanout_parent.is_none()
         })
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "top-level NodeExecution for node '{node_name}' attempt {attempt} is unavailable"
             ))
         })
@@ -339,7 +339,7 @@ fn top_level_node_execution_id(
     snapshot: &RuntimeCommitSnapshot,
     node_name: &str,
     attempt: u32,
-) -> Result<String, WorkflowEngineError> {
+) -> Result<String, WorkflowRuntimeError> {
     Ok(top_level_node_execution(snapshot, node_name, attempt)?
         .id
         .clone())
@@ -347,7 +347,7 @@ fn top_level_node_execution_id(
 
 pub(crate) fn node_started_event_for_snapshot(
     snapshot: &RuntimeCommitSnapshot,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
+) -> Result<WorkflowEvent, WorkflowRuntimeError> {
     let attempt = current_node_attempt(snapshot);
     let execution = top_level_node_execution(snapshot, &snapshot.current_node_name, attempt)?;
     Ok(WorkflowEvent::NodeStarted {
@@ -363,7 +363,7 @@ pub(crate) fn node_started_event_for_snapshot(
 
 pub(crate) fn node_session_started_event_for_snapshot(
     snapshot: &RuntimeCommitSnapshot,
-) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Option<WorkflowEvent>, WorkflowRuntimeError> {
     let Some(session_id) = snapshot.current_session_id.clone() else {
         return Ok(None);
     };
@@ -379,7 +379,7 @@ pub(crate) fn node_session_started_event_for_snapshot(
 
 pub(crate) fn fanout_parent_started_event_for_snapshot(
     snapshot: &RuntimeCommitSnapshot,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
+) -> Result<WorkflowEvent, WorkflowRuntimeError> {
     let event = node_started_event_for_snapshot(snapshot)?;
     if !matches!(
         event,
@@ -388,7 +388,7 @@ pub(crate) fn fanout_parent_started_event_for_snapshot(
             ..
         }
     ) {
-        return Err(WorkflowEngineError::InvalidState(format!(
+        return Err(WorkflowRuntimeError::InvalidState(format!(
             "fanout parent '{}' does not reference a fanout NodeExecution",
             snapshot.current_node_name
         )));
@@ -398,14 +398,14 @@ pub(crate) fn fanout_parent_started_event_for_snapshot(
 
 pub(crate) fn terminal_events_for_snapshot(
     snapshot: &mut RuntimeCommitSnapshot,
-) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Vec<WorkflowEvent>, WorkflowRuntimeError> {
     match snapshot.state.clone() {
         RuntimeExecutionState::Completed => Ok(vec![WorkflowEvent::ExecutionCompleted {
             execution_id: snapshot.execution_id.clone(),
             total_token_usage: snapshot.total_token_usage.clone(),
             timestamp: snapshot.updated_at,
         }]),
-        RuntimeExecutionState::Interrupted => Err(WorkflowEngineError::InvalidState(
+        RuntimeExecutionState::Interrupted => Err(WorkflowRuntimeError::InvalidState(
             "Interrupted transitions require an explicit typed interruption reason".to_string(),
         )),
         RuntimeExecutionState::Failed {
@@ -459,7 +459,7 @@ pub(crate) fn terminal_events_for_snapshot(
 pub(crate) fn required_events_for_approval_commit(
     approval_event: WorkflowEvent,
     outcome: &mut NodeOutcome,
-) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
+) -> Result<Vec<WorkflowEvent>, WorkflowRuntimeError> {
     let mut events = vec![approval_event];
     match outcome {
         NodeOutcome::Persist(snapshot) => {
@@ -778,7 +778,7 @@ mod tests {
 
         let error = node_started_event_for_snapshot(&snapshot).unwrap_err();
 
-        assert!(matches!(error, WorkflowEngineError::InvalidState(message)
+        assert!(matches!(error, WorkflowRuntimeError::InvalidState(message)
             if message.contains("NodeExecution") && message.contains("implement")));
     }
 }

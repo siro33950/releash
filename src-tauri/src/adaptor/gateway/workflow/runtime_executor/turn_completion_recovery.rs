@@ -1,4 +1,4 @@
-//! Crash-recovery path for durable agent turn-completion handoffs.
+//! Crash-recovery adapter for durable agent turn-completion handoffs.
 //!
 //! The implementation is kept in this module so canonical event hydration
 //! remains separate from normal provider activation.
@@ -6,6 +6,9 @@
 use super::*;
 use crate::adaptor::gateway::workflow::resume_projection::ActiveTurnCompletionProjection;
 use crate::adaptor::gateway::workflow::runtime_state::{FanoutChildRuntime, FanoutRuntimeState};
+use crate::domain::workflow::entities::workflow_execution::{
+    CanonicalNodeFact, TurnCompletionApplication, WorkflowExecution as WorkflowExecutionAggregate,
+};
 use crate::domain::workflow::{
     ContractValidationResult, NodeExecution as DomainNodeExecution,
     NodeExecutionStatus as DomainNodeExecutionStatus,
@@ -23,14 +26,14 @@ struct RecoveryTarget {
     current_node_index: usize,
 }
 
-fn invalid(message: impl Into<String>) -> WorkflowEngineError {
-    WorkflowEngineError::InvalidState(message.into())
+fn invalid(message: impl Into<String>) -> WorkflowRuntimeError {
+    WorkflowRuntimeError::InvalidState(message.into())
 }
 
 fn validate_recovery_target(
     checkpoint: &ActiveTurnCompletionProjection,
     command: &WorkflowTurnCompleteRecoveryCommand,
-) -> Result<RecoveryTarget, WorkflowEngineError> {
+) -> Result<RecoveryTarget, WorkflowRuntimeError> {
     if checkpoint.execution_id != command.execution_id
         || checkpoint.workflow.name != command.workflow_name
         || checkpoint.projected_execution.workflow_name != command.workflow_name
@@ -196,7 +199,7 @@ fn runtime_result_from_artifact(
     checkpoint: &ActiveTurnCompletionProjection,
     contract: Option<&str>,
     value: &serde_json::Value,
-) -> Result<Option<String>, WorkflowEngineError> {
+) -> Result<Option<String>, WorkflowRuntimeError> {
     let Some(contract) = contract else {
         return Ok(None);
     };
@@ -215,7 +218,7 @@ fn runtime_result_from_artifact(
 
 fn hydrate_runtime_artifacts(
     checkpoint: &ActiveTurnCompletionProjection,
-) -> Result<HashMap<String, RuntimeArtifact>, WorkflowEngineError> {
+) -> Result<HashMap<String, RuntimeArtifact>, WorkflowRuntimeError> {
     let mut artifacts = HashMap::new();
     artifacts.insert(
         crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
@@ -350,7 +353,7 @@ fn hydrate_node_history(
 fn hydrate_fanout_runtime(
     checkpoint: &ActiveTurnCompletionProjection,
     target: &RecoveryTarget,
-) -> Result<Option<FanoutRuntimeState>, WorkflowEngineError> {
+) -> Result<Option<FanoutRuntimeState>, WorkflowRuntimeError> {
     let Some(target_parent) = target.target.fanout_parent.as_ref() else {
         return Ok(None);
     };
@@ -429,7 +432,7 @@ fn hydrate_fanout_runtime(
 fn hydrate_active_execution(
     checkpoint: &ActiveTurnCompletionProjection,
     target: &RecoveryTarget,
-) -> Result<WorkflowExecution, WorkflowEngineError> {
+) -> Result<WorkflowRuntimeRecord, WorkflowRuntimeError> {
     if target.target.status != DomainNodeExecutionStatus::Running
         || target.parent.status != DomainNodeExecutionStatus::Running
     {
@@ -448,10 +451,10 @@ fn hydrate_active_execution(
         }
     };
     let fanout_runtime = hydrate_fanout_runtime(checkpoint, target)?;
-    Ok(WorkflowExecution {
+    Ok(WorkflowRuntimeRecord {
         id: checkpoint.execution_id.clone(),
         workflow: checkpoint.workflow.clone(),
-        state,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(state),
         current_node_index: target.current_node_index,
         node_execution_counts: checkpoint.node_execution_counts.clone(),
         loop_guard_reset_baselines: checkpoint.loop_guard_reset_baselines.clone(),
@@ -489,7 +492,7 @@ fn validate_recovery_can_avoid_provider_effect(
     checkpoint: &ActiveTurnCompletionProjection,
     target: &RecoveryTarget,
     command: &WorkflowTurnCompleteRecoveryCommand,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     if command.notification.interrupted
         && command.notification.exit_code == 0
         && command.notification.failure_signal.is_none()
@@ -518,25 +521,74 @@ fn validate_recovery_can_avoid_provider_effect(
     Ok(())
 }
 
-impl WorkflowRuntimeService {
+fn record_only_completion_event(command: &WorkflowTurnCompleteRecoveryCommand) -> WorkflowEvent {
+    let timestamp = current_timestamp();
+    let failure_signal = command
+        .notification
+        .failure_signal
+        .map(|signal| match signal {
+            WorkflowTurnFailureSignal::ModelRefusal => {
+                crate::domain::workflow::services::transition::SessionFailureSignal::ModelRefusal
+            }
+        });
+    if command.notification.exit_code != 0 || failure_signal.is_some() {
+        let kind = crate::domain::workflow::services::transition::classify_session_error(
+            command.notification.exit_code,
+            failure_signal,
+        );
+        return WorkflowEvent::NodeFailed {
+            execution_id: command.execution_id.clone(),
+            node_execution_id: command.node_execution_id.clone(),
+            node_name: command.node_name.clone(),
+            attempt: command.attempt,
+            reason: format!(
+                "workflow-owned session failed (exit_code: {})",
+                command.notification.exit_code
+            ),
+            failure_kind: kind,
+            retry_count: None,
+            timestamp,
+        };
+    }
+
+    let token_usage = command.notification.token_usage.as_ref().map(|usage| {
+        crate::adaptor::gateway::workflow::event::TokenUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+        }
+    });
+    let result_summary = (!command.notification.final_text_parts.is_empty())
+        .then(|| command.notification.final_text_parts.join("\n"));
+    WorkflowEvent::NodeCompleted {
+        execution_id: command.execution_id.clone(),
+        node_execution_id: command.node_execution_id.clone(),
+        node_name: command.node_name.clone(),
+        attempt: command.attempt,
+        result_summary,
+        token_usage,
+        timestamp,
+    }
+}
+
+impl WorkflowRuntimeExecutor {
     pub(crate) async fn recover_turn_complete<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         command: WorkflowTurnCompleteRecoveryCommand,
-    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowEngineError> {
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowRuntimeError> {
         let data_dir = match self.execution_store.configured_data_dir().await {
             Some(data_dir) => data_dir,
             None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-                .map_err(WorkflowEngineError::SessionStore)?,
+                .map_err(WorkflowRuntimeError::SessionStore)?,
         };
         let events = self
             .durable_workflow_event_log(&data_dir)
             .await?
             .read_log_durable(&command.execution_id)
             .await
-            .map_err(WorkflowEngineError::SessionStore)?;
+            .map_err(WorkflowRuntimeError::SessionStore)?;
         let checkpoint = workflow_resume_projection::project_turn_completion_checkpoint(
             &command.execution_id,
             &events,
@@ -546,7 +598,36 @@ impl WorkflowRuntimeService {
         if has_canonical_completion_fact(&events, &command) {
             return Ok(WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied);
         }
-        if !checkpoint.projected_execution.status.is_active() {
+        if checkpoint.projected_execution.status.is_resumable() {
+            validate_recovery_can_avoid_provider_effect(&checkpoint, &target, &command)?;
+            let event = record_only_completion_event(&command);
+            let fact = match &event {
+                WorkflowEvent::NodeCompleted { .. } => CanonicalNodeFact::Completed,
+                WorkflowEvent::NodeFailed {
+                    reason,
+                    failure_kind,
+                    ..
+                } => CanonicalNodeFact::Failed {
+                    reason: reason.clone(),
+                    kind: *failure_kind,
+                },
+                _ => unreachable!("record-only completion must produce a canonical node fact"),
+            };
+            let lifecycle = WorkflowExecutionAggregate::restore(
+                RuntimeExecutionState::Interrupted,
+                checkpoint.projected_execution.interruption_reason,
+            );
+            let decision = lifecycle.apply_turn_completion(fact);
+            if decision.application != TurnCompletionApplication::RecordOnly {
+                return Err(invalid(
+                    "interrupted workflow completion did not select record-only application",
+                ));
+            }
+            self.write_log_required(app, event)
+                .map_err(WorkflowRuntimeError::SessionStore)?;
+            return Ok(WorkflowTurnCompleteRecoveryOutcome::Applied);
+        }
+        if checkpoint.projected_execution.status.is_finished() {
             return Err(invalid(format!(
                 "workflow turn-completion has no matching durable node fact and execution '{}' is {}",
                 command.execution_id,
@@ -642,7 +723,7 @@ impl WorkflowRuntimeService {
             .await?
             .read_log_durable(&command.execution_id)
             .await
-            .map_err(WorkflowEngineError::SessionStore)?;
+            .map_err(WorkflowRuntimeError::SessionStore)?;
         let committed_checkpoint = workflow_resume_projection::project_turn_completion_checkpoint(
             &command.execution_id,
             &committed_events,

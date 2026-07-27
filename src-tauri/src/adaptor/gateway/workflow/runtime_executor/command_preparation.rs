@@ -1,3 +1,5 @@
+//! Command input preparation for the runtime adapter.
+
 use super::*;
 
 #[derive(Clone)]
@@ -15,7 +17,7 @@ pub(super) struct CommandExecutionInput {
 }
 
 pub(super) fn command_execution_input_is_current(
-    execution: &WorkflowExecution,
+    execution: &WorkflowRuntimeRecord,
     input: &CommandExecutionInput,
 ) -> bool {
     let node_execution_is_active = execution.node_executions.iter().any(|node_execution| {
@@ -35,14 +37,14 @@ pub(super) fn command_execution_input_is_current(
     }
 }
 
-impl WorkflowRuntimeService {
+impl WorkflowRuntimeExecutor {
     pub(super) async fn commit_command_prepared<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         input: &CommandExecutionInput,
-    ) -> Result<bool, WorkflowEngineError> {
+    ) -> Result<bool, WorkflowRuntimeError> {
         let raw_command = input.raw_command.as_deref().ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "raw command for node execution '{}' is unavailable",
                 input.node_execution_id
             ))
@@ -69,13 +71,13 @@ impl WorkflowRuntimeService {
                 .iter_mut()
                 .find(|node_execution| node_execution.id == input.node_execution_id)
                 .ok_or_else(|| {
-                    WorkflowEngineError::InvalidState(format!(
+                    WorkflowRuntimeError::InvalidState(format!(
                         "active command node execution '{}' disappeared before preparation",
                         input.node_execution_id
                     ))
                 })?;
             if node_execution.kind != NodeKindName::Command {
-                return Err(WorkflowEngineError::InvalidState(format!(
+                return Err(WorkflowRuntimeError::InvalidState(format!(
                     "node execution '{}' is not a command",
                     input.node_execution_id
                 )));
@@ -91,7 +93,7 @@ impl WorkflowRuntimeService {
             };
             if let Err(error) = self.write_log_required_batch(app, &[event]) {
                 *execution = snapshot_before;
-                return Err(WorkflowEngineError::SessionStore(format!(
+                return Err(WorkflowRuntimeError::SessionStore(format!(
                     "command prepared event append failed: {error}"
                 )));
             }

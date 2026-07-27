@@ -4,13 +4,13 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
-use crate::adaptor::gateway::workflow::engine_error::{
-    workflow_error_to_engine_error, WorkflowEngineError,
-};
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
 use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::runtime_error::{
+    workflow_error_to_runtime_error, WorkflowRuntimeError,
+};
 use crate::adaptor::gateway::workflow::runtime_state::{
-    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowExecution,
+    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowRuntimeRecord,
 };
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 use crate::adaptor::gateway::workflow::state::{
@@ -78,26 +78,26 @@ pub(crate) struct FanoutChildSessionSetup {
 }
 
 pub(crate) fn prepare_fanout_start_context(
-    exec: &WorkflowExecution,
-) -> Result<FanoutStartContext, WorkflowEngineError> {
+    exec: &WorkflowRuntimeRecord,
+) -> Result<FanoutStartContext, WorkflowRuntimeError> {
     let node = exec
         .workflow
         .nodes
         .get(exec.current_node_index)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "current_node_index {} is out of bounds for workflow '{}'",
                 exec.current_node_index, exec.workflow.name
             ))
         })?;
     let fanout = node.fanout().ok_or_else(|| {
-        WorkflowEngineError::InvalidState(format!(
+        WorkflowRuntimeError::InvalidState(format!(
             "StartFanout requires fanout node '{}'",
             node.name
         ))
     })?;
     if fanout.child.is_empty() {
-        return Err(WorkflowEngineError::InvalidState(format!(
+        return Err(WorkflowRuntimeError::InvalidState(format!(
             "StartFanout requires child references for node '{}'",
             node.name
         )));
@@ -113,13 +113,13 @@ pub(crate) fn prepare_fanout_start_context(
         .nodes
         .get(exec.current_node_index)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "current_node_index {} is out of bounds for workflow '{}'",
                 exec.current_node_index, exec.workflow.name
             ))
         })?;
     let domain_fanout = domain_node.fanout().ok_or_else(|| {
-        WorkflowEngineError::InvalidState(format!(
+        WorkflowRuntimeError::InvalidState(format!(
             "StartFanout requires fanout node '{}'",
             node.name
         ))
@@ -131,7 +131,7 @@ pub(crate) fn prepare_fanout_start_context(
         &domain_artifacts,
         &exec.node_execution_counts,
     )
-    .map_err(workflow_error_to_engine_error)?;
+    .map_err(workflow_error_to_runtime_error)?;
     let children = expansion_plan
         .children
         .into_iter()
@@ -143,7 +143,7 @@ pub(crate) fn prepare_fanout_start_context(
                 .find(|node| node.name == child.node_name)
                 .cloned()
                 .ok_or_else(|| {
-                    WorkflowEngineError::InvalidState(format!(
+                    WorkflowRuntimeError::InvalidState(format!(
                         "fanout child node '{}' is undefined",
                         child.node_name
                     ))
@@ -158,7 +158,7 @@ pub(crate) fn prepare_fanout_start_context(
                 reused: None,
             })
         })
-        .collect::<Result<Vec<_>, WorkflowEngineError>>()?;
+        .collect::<Result<Vec<_>, WorkflowRuntimeError>>()?;
     Ok(FanoutStartContext {
         parent_node_name: node.name.clone(),
         parent_attempt,
@@ -171,23 +171,23 @@ pub(crate) fn prepare_fanout_start_context(
     })
 }
 
-pub(crate) fn fanout_prompt_inputs(exec: &WorkflowExecution) -> FanoutPromptInputs {
+pub(crate) fn fanout_prompt_inputs(exec: &WorkflowRuntimeRecord) -> FanoutPromptInputs {
     FanoutPromptInputs {
         artifacts: exec.artifacts.clone(),
     }
 }
 
 pub(crate) fn apply_fanout_runtime_state(
-    exec: &mut WorkflowExecution,
+    exec: &mut WorkflowRuntimeRecord,
     fanout_start: &FanoutStartContext,
     session_setups: &[FanoutChildSessionSetup],
     timestamp: f64,
-) -> Result<RuntimeCommitSnapshot, WorkflowEngineError> {
+) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
     let parent_node_execution_id = exec
         .active_current_node_execution_id()
         .map(ToOwned::to_owned)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "active fanout parent NodeExecution for '{}' is unavailable",
                 fanout_start.parent_node_name
             ))
@@ -349,12 +349,12 @@ mod tests {
     };
     use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
 
-    fn workflow_execution_fixture(node: NodeDefinition) -> WorkflowExecution {
+    fn workflow_execution_fixture(node: NodeDefinition) -> WorkflowRuntimeRecord {
         workflow_execution_with_nodes(vec![node])
     }
 
-    fn workflow_execution_with_nodes(nodes: Vec<NodeDefinition>) -> WorkflowExecution {
-        WorkflowExecution {
+    fn workflow_execution_with_nodes(nodes: Vec<NodeDefinition>) -> WorkflowRuntimeRecord {
+        WorkflowRuntimeRecord {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinitionYaml {
                 name: "test-workflow".to_string(),
@@ -363,7 +363,7 @@ mod tests {
                 schemas: Default::default(),
                 nodes,
             },
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 0,
             node_execution_counts: HashMap::new(),
             loop_guard_reset_baselines: Default::default(),
@@ -417,7 +417,7 @@ mod tests {
     }
 
     fn apply_fanout_and_assert_child_node_executions(
-        exec: &mut WorkflowExecution,
+        exec: &mut WorkflowRuntimeRecord,
         context: &FanoutStartContext,
     ) {
         let parent_node_execution_id = exec.start_current_node_execution(1.5);
@@ -770,7 +770,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
                 if message == "fanout items source 'source.targets' is unavailable"
         ));
     }
@@ -805,7 +805,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
                 if message == "fanout items source 'source.targets' is not an array"
         ));
     }
@@ -830,7 +830,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
                 if message == "StartFanout requires child references for node 'fanout-review'"
         ));
     }

@@ -4,9 +4,9 @@ use crate::adaptor::gateway::workflow::resolver::{
 use crate::domain::workflow::NodeExecutionFailureKind;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
-/// ワークフローエンジンのエラー型。
+/// Workflow runtime boundary error.
 #[derive(Debug)]
-pub enum WorkflowEngineError {
+pub enum WorkflowRuntimeError {
     /// ワークフロー実行が見つからない
     ExecutionNotFound(String),
     /// セッションが見つからない
@@ -35,7 +35,7 @@ pub enum WorkflowEngineError {
     },
 }
 
-impl std::fmt::Display for WorkflowEngineError {
+impl std::fmt::Display for WorkflowRuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ExecutionNotFound(id) => {
@@ -58,7 +58,7 @@ impl std::fmt::Display for WorkflowEngineError {
     }
 }
 
-impl WorkflowEngineError {
+impl WorkflowRuntimeError {
     pub(crate) fn workflow_failure_kind(&self) -> NodeExecutionFailureKind {
         match self {
             Self::AgentRuntime { failure_kind, .. } => *failure_kind,
@@ -114,7 +114,7 @@ impl WorkflowEngineError {
     }
 }
 
-impl From<AgentRuntimeError> for WorkflowEngineError {
+impl From<AgentRuntimeError> for WorkflowRuntimeError {
     fn from(error: AgentRuntimeError) -> Self {
         match error {
             error @ AgentRuntimeError::StartupTimeout { retry_count, .. } => Self::AgentRuntime {
@@ -139,13 +139,13 @@ impl From<AgentRuntimeError> for WorkflowEngineError {
     }
 }
 
-impl From<WorkflowEngineError> for String {
-    fn from(e: WorkflowEngineError) -> Self {
+impl From<WorkflowRuntimeError> for String {
+    fn from(e: WorkflowRuntimeError) -> Self {
         e.to_string()
     }
 }
 
-impl From<WorkflowDefinitionResolverError> for WorkflowEngineError {
+impl From<WorkflowDefinitionResolverError> for WorkflowRuntimeError {
     fn from(e: WorkflowDefinitionResolverError) -> Self {
         match e {
             WorkflowDefinitionResolverError::InvalidWorkflow(message) => {
@@ -156,7 +156,7 @@ impl From<WorkflowDefinitionResolverError> for WorkflowEngineError {
     }
 }
 
-impl From<ManagedWorktreeResolverError> for WorkflowEngineError {
+impl From<ManagedWorktreeResolverError> for WorkflowRuntimeError {
     fn from(e: ManagedWorktreeResolverError) -> Self {
         match e {
             ManagedWorktreeResolverError::Validation(message) => Self::ValidationError(message),
@@ -165,7 +165,7 @@ impl From<ManagedWorktreeResolverError> for WorkflowEngineError {
 }
 
 impl From<crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError>
-    for WorkflowEngineError
+    for WorkflowRuntimeError
 {
     fn from(e: crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError) -> Self {
         match e {
@@ -182,28 +182,28 @@ impl From<crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError>
     }
 }
 
-pub(crate) fn workflow_error_to_engine_error(
+pub(crate) fn workflow_error_to_runtime_error(
     err: crate::domain::workflow::WorkflowError,
-) -> WorkflowEngineError {
+) -> WorkflowRuntimeError {
     match err {
         crate::domain::workflow::WorkflowError::InvalidState(message) => {
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
         }
         crate::domain::workflow::WorkflowError::Validation(message) => {
             if let Some(node_name) = message.strip_prefix("node not found: ") {
-                WorkflowEngineError::InvalidWorkflow(format!(
+                WorkflowRuntimeError::InvalidWorkflow(format!(
                     "Node '{node_name}' not found in workflow"
                 ))
             } else {
-                WorkflowEngineError::InvalidWorkflow(message)
+                WorkflowRuntimeError::InvalidWorkflow(message)
             }
         }
         crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(message) => {
-            WorkflowEngineError::UnauthorizedApprovalTarget(message)
+            WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
         }
         crate::domain::workflow::WorkflowError::NotFound(message)
         | crate::domain::workflow::WorkflowError::External(message) => {
-            WorkflowEngineError::InvalidWorkflow(message)
+            WorkflowRuntimeError::InvalidWorkflow(message)
         }
     }
 }
@@ -216,10 +216,10 @@ mod tests {
     #[test]
     fn workflow_failure_kind_preserves_validation_and_infrastructure_boundary() {
         let validation_errors = [
-            WorkflowEngineError::InvalidWorkflow("missing facet".to_string()),
-            WorkflowEngineError::ValidationError("bad output".to_string()),
-            WorkflowEngineError::InvalidState("not accepting output".to_string()),
-            WorkflowEngineError::UnauthorizedApprovalTarget("wrong execution".to_string()),
+            WorkflowRuntimeError::InvalidWorkflow("missing facet".to_string()),
+            WorkflowRuntimeError::ValidationError("bad output".to_string()),
+            WorkflowRuntimeError::InvalidState("not accepting output".to_string()),
+            WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong execution".to_string()),
         ];
         for error in validation_errors {
             assert_eq!(
@@ -230,8 +230,8 @@ mod tests {
         }
 
         let infrastructure_errors = [
-            WorkflowEngineError::SessionStore("io".to_string()),
-            WorkflowEngineError::AgentSession("backend unavailable".to_string()),
+            WorkflowRuntimeError::SessionStore("io".to_string()),
+            WorkflowRuntimeError::AgentSession("backend unavailable".to_string()),
         ];
         for error in infrastructure_errors {
             assert_eq!(
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn workflow_failure_kind_preserves_agent_runtime_metadata() {
-        let error = WorkflowEngineError::from(AgentRuntimeError::StartupTimeout {
+        let error = WorkflowRuntimeError::from(AgentRuntimeError::StartupTimeout {
             retry_count: 1,
             max_retries: 2,
         });

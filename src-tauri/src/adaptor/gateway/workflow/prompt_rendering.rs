@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_schemas_to_domain;
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::facet::FacetContents;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 use crate::adaptor::gateway::workflow::schema::{NodeDefinition, SchemaDef};
 use crate::adaptor::gateway::workflow::state::RuntimeArtifact;
 use crate::domain::workflow::services::contract as workflow_contract;
@@ -208,16 +208,16 @@ pub(crate) fn build_node_prompt(
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     schemas: &BTreeMap<String, SchemaDef>,
-) -> Result<(Option<String>, String), WorkflowEngineError> {
+) -> Result<(Option<String>, String), WorkflowRuntimeError> {
     if !node.has_facet_refs() {
-        return Err(WorkflowEngineError::InvalidWorkflow(format!(
+        return Err(WorkflowRuntimeError::InvalidWorkflow(format!(
             "Node '{}' has no facet refs.",
             node.name
         )));
     }
 
     if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
-        return Err(WorkflowEngineError::InvalidWorkflow(format!(
+        return Err(WorkflowRuntimeError::InvalidWorkflow(format!(
             "Node '{}' has unresolved facet refs (workflow must go through load pipeline)",
             node.name
         )));
@@ -264,9 +264,9 @@ pub(crate) fn build_fanout_child_prompt(
     artifacts: &HashMap<String, RuntimeArtifact>,
     context: FanoutChildPromptContext<'_>,
     schemas: &BTreeMap<String, SchemaDef>,
-) -> Result<(Option<String>, String), WorkflowEngineError> {
+) -> Result<(Option<String>, String), WorkflowRuntimeError> {
     if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
-        return Err(WorkflowEngineError::InvalidWorkflow(format!(
+        return Err(WorkflowRuntimeError::InvalidWorkflow(format!(
             "Fanout child '{}' has unresolved facet refs (workflow must go through load pipeline)",
             node.name
         )));
@@ -350,7 +350,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            WorkflowEngineError::InvalidWorkflow(message)
+            WorkflowRuntimeError::InvalidWorkflow(message)
                 if message == "Node 'review' has no facet refs."
         ));
     }

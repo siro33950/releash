@@ -1,3 +1,5 @@
+//! Resume integration for durable runtime state.
+
 use super::*;
 
 fn runtime_node_kind_name(kind: crate::domain::workflow::NodeKindName) -> NodeKindName {
@@ -64,14 +66,14 @@ pub(super) fn runtime_node_execution(
 fn hydrate_resumed_execution(
     checkpoint: &workflow_resume_projection::ResumeProjection,
     now: f64,
-) -> Result<(WorkflowExecution, Option<FanoutResumeCheckpoint>), WorkflowEngineError> {
+) -> Result<(WorkflowRuntimeRecord, Option<FanoutResumeCheckpoint>), WorkflowRuntimeError> {
     let current_node_index = checkpoint
         .workflow
         .nodes
         .iter()
         .position(|node| node.name == checkpoint.resume_from_node)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidWorkflow(format!(
+            WorkflowRuntimeError::InvalidWorkflow(format!(
                 "resume node '{}' is absent from workflow '{}'",
                 checkpoint.resume_from_node, checkpoint.workflow.name
             ))
@@ -212,10 +214,10 @@ fn hydrate_resumed_execution(
         });
 
     Ok((
-        WorkflowExecution {
+        WorkflowRuntimeRecord {
             id: checkpoint.execution_id.clone(),
             workflow: checkpoint.workflow.clone(),
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index,
             node_execution_counts,
             loop_guard_reset_baselines: checkpoint.loop_guard_reset_baselines.clone(),
@@ -242,17 +244,17 @@ fn hydrate_resumed_execution(
 }
 
 pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
-    engine: &WorkflowRuntimeService,
+    engine: &WorkflowRuntimeExecutor,
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
     execution_id: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let metadata = engine
         .validate_execution_command_target(execution_id)
         .await?;
     if metadata.status != ExecutionStatus::Interrupted {
-        return Err(WorkflowEngineError::InvalidState(format!(
+        return Err(WorkflowRuntimeError::InvalidState(format!(
             "execution {execution_id} cannot be resumed from status {}",
             metadata.status.as_str()
         )));
@@ -261,7 +263,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
     let data_dir = match engine.execution_store.configured_data_dir().await {
         Some(data_dir) => data_dir,
         None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app).map_err(
-            |error| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {error}")),
+            |error| WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {error}")),
         )?,
     };
     let events = engine
@@ -269,13 +271,13 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .await?
         .read_log_durable(execution_id)
         .await
-        .map_err(WorkflowEngineError::SessionStore)?;
+        .map_err(WorkflowRuntimeError::SessionStore)?;
     let checkpoint = workflow_resume_projection::project_resume_checkpoint(execution_id, &events)
-        .map_err(WorkflowEngineError::InvalidState)?;
+        .map_err(WorkflowRuntimeError::InvalidState)?;
     if checkpoint.worktree_path != metadata.worktree_path
         || checkpoint.resume_from_node != metadata.resume_from_node.clone().unwrap_or_default()
     {
-        return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+        return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
             "execution {execution_id} metadata does not match its event-log checkpoint"
         )));
     }
@@ -283,7 +285,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .ensure_no_unresolved_recovery(execution_id)
         .await
         .map_err(|failure| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot resume while recovery {} is unresolved: {failure}",
                 failure.correlation_id
             ))
@@ -300,7 +302,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             .ensure_no_unresolved_recovery(&session_id)
             .await
             .map_err(|failure| {
-                WorkflowEngineError::InvalidState(format!(
+                WorkflowRuntimeError::InvalidState(format!(
                     "execution {execution_id} cannot resume while owned session {session_id} has unresolved recovery {}: {failure}",
                     failure.correlation_id
                 ))
@@ -308,12 +310,12 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         agent_runtime
             .ensure_recovery_operation_allowed(&session_id)
             .map_err(|error| {
-                WorkflowEngineError::InvalidState(format!(
+                WorkflowRuntimeError::InvalidState(format!(
                     "execution {execution_id} cannot resume while owned session {session_id} has unresolved recovery: {error}"
                 ))
             })?;
     }
-    workflow_engine_start_guard::validate_workflow_shape(&checkpoint.workflow)?;
+    workflow_runtime_start_guard::validate_workflow_shape(&checkpoint.workflow)?;
     let registry = agent_runtime.backend_registry();
     let definition =
         crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
@@ -324,9 +326,9 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             .resolve_model_entry(model)
             .map(|entry| Some(entry.backend))
     })
-    .map_err(|error| WorkflowEngineError::InvalidWorkflow(error.to_string()))?;
+    .map_err(|error| WorkflowRuntimeError::InvalidWorkflow(error.to_string()))?;
     let facet_contents =
-        WorkflowRuntimeService::resolve_facet_contents_for_workflow(&checkpoint.workflow)?;
+        WorkflowRuntimeExecutor::resolve_facet_contents_for_workflow(&checkpoint.workflow)?;
 
     let now = current_timestamp();
     let (execution, fanout_checkpoint) = hydrate_resumed_execution(&checkpoint, now)?;
@@ -338,15 +340,15 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .await
         .map_err(|error| match error {
             ExecutionStoreError::WorktreeAlreadyActive { .. } => {
-                WorkflowEngineError::AlreadyActive(checkpoint.workflow.name.clone())
+                WorkflowRuntimeError::AlreadyActive(checkpoint.workflow.name.clone())
             }
             ExecutionStoreError::ExecutionNotFound { .. } => {
-                WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
             }
             ExecutionStoreError::InvalidStatusTransition { .. } => {
-                WorkflowEngineError::InvalidState(error.to_string())
+                WorkflowRuntimeError::InvalidState(error.to_string())
             }
-            other => WorkflowEngineError::SessionStore(format!(
+            other => WorkflowRuntimeError::SessionStore(format!(
                 "ExecutionStore resume reservation failed: {other}"
             )),
         })?;
@@ -355,14 +357,14 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         let mut executions = engine.executions.lock().await;
         if executions.contains_key(execution_id)
             || find_any_by_worktree(&executions, &checkpoint.worktree_path)
-                .is_some_and(WorkflowExecution::is_active)
+                .is_some_and(WorkflowRuntimeRecord::is_active)
         {
             drop(executions);
             let _ = engine
                 .execution_store
                 .rollback_resume_reservation(reservation)
                 .await;
-            return Err(WorkflowEngineError::AlreadyActive(
+            return Err(WorkflowRuntimeError::AlreadyActive(
                 checkpoint.workflow.name.clone(),
             ));
         }
@@ -399,7 +401,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .execution_store
         .prepare_atomic_existing_snapshot_mutations(&snapshot)
         .await
-        .map_err(|error| WorkflowEngineError::SessionStore(error.to_string()))?;
+        .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
     let append_result = if injected_failure {
         Err("injected required event append failure".to_string())
     } else {
@@ -423,11 +425,11 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             .rollback_resume_reservation(reservation)
             .await
             .map_err(|rollback_error| {
-                WorkflowEngineError::SessionStore(format!(
+                WorkflowRuntimeError::SessionStore(format!(
                     "ExecutionResumed log failed: {error}; reservation rollback failed: {rollback_error}"
                 ))
             })?;
-        return Err(WorkflowEngineError::SessionStore(format!(
+        return Err(WorkflowRuntimeError::SessionStore(format!(
             "ExecutionResumed log failed: {error}"
         )));
     }
@@ -464,7 +466,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
                     .execution_store
                     .rollback_resume_reservation(reservation)
                     .await;
-                return Err(WorkflowEngineError::SessionStore(format!(
+                return Err(WorkflowRuntimeError::SessionStore(format!(
                     "ExecutionResumed metadata commit failed: {error}; crash checkpoint failed: {checkpoint_error}; reservation rollback: {}",
                     rollback_result
                         .as_ref()
@@ -509,7 +511,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             )
             .await
         {
-            return Err(WorkflowEngineError::SessionStore(format!(
+            return Err(WorkflowRuntimeError::SessionStore(format!(
                 "resumed runtime start failed: {error}; crash checkpoint failed: {interrupt_error}"
             )));
         }

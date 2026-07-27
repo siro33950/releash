@@ -32,26 +32,7 @@ pub(crate) fn workflow_schemas_to_domain(
 pub(crate) fn runtime_execution_state_to_domain(
     state: &runtime_state::RuntimeExecutionState,
 ) -> domain::RuntimeExecutionState {
-    match state {
-        runtime_state::RuntimeExecutionState::Running => domain::RuntimeExecutionState::Running,
-        runtime_state::RuntimeExecutionState::WaitingApproval => {
-            domain::RuntimeExecutionState::WaitingApproval
-        }
-        runtime_state::RuntimeExecutionState::Completed => domain::RuntimeExecutionState::Completed,
-        runtime_state::RuntimeExecutionState::Failed {
-            reason,
-            kind,
-            retry_count,
-        } => domain::RuntimeExecutionState::Failed {
-            reason: reason.clone(),
-            kind: *kind,
-            retry_count: *retry_count,
-        },
-        runtime_state::RuntimeExecutionState::Aborted => domain::RuntimeExecutionState::Aborted,
-        runtime_state::RuntimeExecutionState::Interrupted => {
-            domain::RuntimeExecutionState::Interrupted
-        }
-    }
+    state.clone()
 }
 
 pub(crate) fn artifacts_to_domain(

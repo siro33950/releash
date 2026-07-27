@@ -38,7 +38,7 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 use crate::adaptor::gateway::workflow::{
     DurableWorkspaceNodeSessionCloseGateway, RepoPathsManagedWorktreeGateway,
     RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
@@ -530,7 +530,7 @@ fn build_workflow_services_with_gateways(
 pub(crate) fn build_workflow_runtime_usecase(
     app: tauri::AppHandle,
     deps: TauriWorkflowRuntimeCommandGatewayDeps,
-) -> Result<WorkflowRuntimeUsecase, WorkflowEngineError> {
+) -> Result<WorkflowRuntimeUsecase, WorkflowRuntimeError> {
     Ok(WorkflowRuntimeUsecase::new(Arc::new(
         TauriWorkflowRuntimeCommandGateway::new_with_default_engine(app, deps)?,
     )))

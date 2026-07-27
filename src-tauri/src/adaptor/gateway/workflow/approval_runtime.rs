@@ -6,10 +6,10 @@ use tauri::Manager;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     node_history_entries_to_domain, runtime_execution_state_to_domain,
 };
-use crate::adaptor::gateway::workflow::engine_error::{
-    workflow_error_to_engine_error, WorkflowEngineError,
+use crate::adaptor::gateway::workflow::runtime_error::{
+    workflow_error_to_runtime_error, WorkflowRuntimeError,
 };
-use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+use crate::adaptor::gateway::workflow::runtime_state::WorkflowRuntimeRecord;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::workflow::approval_rules as workflow_approval;
 use crate::domain::workflow::WorkflowError;
@@ -18,22 +18,22 @@ use crate::usecase::agent_session::status::TurnPhase;
 #[cfg(test)]
 pub(crate) const MAX_APPROVAL_COMMENT_CHARS: usize = workflow_approval::MAX_APPROVAL_COMMENT_CHARS;
 
-pub(crate) fn validate_approve_comment(comment: Option<&str>) -> Result<(), WorkflowEngineError> {
+pub(crate) fn validate_approve_comment(comment: Option<&str>) -> Result<(), WorkflowRuntimeError> {
     workflow_approval::validate_optional_comment_text(comment, "Approve comment")
-        .map_err(|err| WorkflowEngineError::ValidationError(err.to_string()))
+        .map_err(|err| WorkflowRuntimeError::ValidationError(err.to_string()))
 }
 
 pub(crate) fn resolve_chat_session_for_approval(
-    exec: &WorkflowExecution,
-) -> Result<String, WorkflowEngineError> {
+    exec: &WorkflowRuntimeRecord,
+) -> Result<String, WorkflowRuntimeError> {
     let current_node = exec
         .workflow
         .nodes
         .get(exec.current_node_index)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState("current node index is out of range".to_string())
+            WorkflowRuntimeError::InvalidState("current node index is out of range".to_string())
         })?;
-    let state = runtime_execution_state_to_domain(&exec.state);
+    let state = runtime_execution_state_to_domain(exec.state());
     workflow_approval::resolve_chat_session_for_approval(
         workflow_approval::ApprovalChatSessionSnapshot {
             is_active: exec.is_active(),
@@ -43,20 +43,20 @@ pub(crate) fn resolve_chat_session_for_approval(
         },
     )
     .map(str::to_string)
-    .map_err(workflow_error_to_engine_error)
+    .map_err(workflow_error_to_runtime_error)
 }
 
 pub(crate) fn validate_approval_chat_instruction(
-    exec: &WorkflowExecution,
+    exec: &WorkflowRuntimeRecord,
     session_id: &str,
     content: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let current_node = &exec.workflow.nodes[exec.current_node_index];
     let is_current_approval_session = current_node.is_approval_session()
         && exec.current_session_id.as_deref() == Some(session_id);
     let is_prior_approval_gate_session =
         !is_current_approval_session && is_approval_gate_session(exec, session_id);
-    let state = runtime_execution_state_to_domain(&exec.state);
+    let state = runtime_execution_state_to_domain(exec.state());
     workflow_approval::validate_approval_chat_instruction(
         workflow_approval::ApprovalChatInstructionContext {
             is_current_approval_session,
@@ -66,12 +66,12 @@ pub(crate) fn validate_approval_chat_instruction(
         content,
     )
     .map_err(|err| match err {
-        WorkflowError::Validation(message) => WorkflowEngineError::ValidationError(message),
-        other => workflow_error_to_engine_error(other),
+        WorkflowError::Validation(message) => WorkflowRuntimeError::ValidationError(message),
+        other => workflow_error_to_runtime_error(other),
     })
 }
 
-fn is_approval_gate_session(exec: &WorkflowExecution, session_id: &str) -> bool {
+fn is_approval_gate_session(exec: &WorkflowRuntimeRecord, session_id: &str) -> bool {
     let approval_gate_session_names: HashSet<String> = exec
         .workflow
         .nodes
@@ -91,11 +91,11 @@ fn is_approval_gate_session(exec: &WorkflowExecution, session_id: &str) -> bool 
 
 #[cfg(test)]
 pub(crate) fn validate_approval_target_snapshot(
-    exec: &WorkflowExecution,
+    exec: &WorkflowRuntimeRecord,
     expected_execution_id: Option<&str>,
     expected_node_name: Option<&str>,
-) -> Result<(), WorkflowEngineError> {
-    let state = runtime_execution_state_to_domain(&exec.state);
+) -> Result<(), WorkflowRuntimeError> {
+    let state = runtime_execution_state_to_domain(exec.state());
     let current_node = &exec.workflow.nodes[exec.current_node_index];
     workflow_approval::validate_approval_target(
         workflow_approval::ApprovalTargetSnapshot {
@@ -107,15 +107,15 @@ pub(crate) fn validate_approval_target_snapshot(
         expected_execution_id,
         expected_node_name,
     )
-    .map_err(workflow_error_to_engine_error)
+    .map_err(workflow_error_to_runtime_error)
 }
 
 pub(crate) fn resolve_approval_target_snapshot(
-    exec: &WorkflowExecution,
+    exec: &WorkflowRuntimeRecord,
     expected_execution_id: Option<&str>,
     expected_node_name: Option<&str>,
-) -> Result<String, WorkflowEngineError> {
-    let state = runtime_execution_state_to_domain(&exec.state);
+) -> Result<String, WorkflowRuntimeError> {
+    let state = runtime_execution_state_to_domain(exec.state());
     let current_node = &exec.workflow.nodes[exec.current_node_index];
     workflow_approval::resolve_approval_target(
         workflow_approval::ApprovalTargetSnapshot {
@@ -128,15 +128,15 @@ pub(crate) fn resolve_approval_target_snapshot(
         expected_node_name,
     )
     .map(str::to_string)
-    .map_err(workflow_error_to_engine_error)
+    .map_err(workflow_error_to_runtime_error)
 }
 
 pub(crate) fn validate_approval_turn_phase(
     turn_phase: Option<TurnPhase>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     match turn_phase {
         Some(TurnPhase::Streaming) | Some(TurnPhase::WaitingPermission) => Err(
-            WorkflowEngineError::ValidationError("approval output is not complete".to_string()),
+            WorkflowRuntimeError::ValidationError("approval output is not complete".to_string()),
         ),
         Some(TurnPhase::Idle) | None => Ok(()),
     }
@@ -230,6 +230,6 @@ mod tests {
     fn validate_approve_comment_delegates_length_rule_to_domain() {
         let approve = validate_approve_comment(Some(&"x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1)))
             .unwrap_err();
-        assert!(matches!(approve, WorkflowEngineError::ValidationError(_)));
+        assert!(matches!(approve, WorkflowRuntimeError::ValidationError(_)));
     }
 }

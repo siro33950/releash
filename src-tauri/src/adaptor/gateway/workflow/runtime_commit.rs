@@ -5,12 +5,12 @@ use std::sync::Arc;
 #[cfg(test)]
 use tokio::sync::Mutex;
 
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionStore, TerminalExecutionStatus, WorkflowExecutionMetadata,
 };
-use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
+use crate::adaptor::gateway::workflow::runtime_state::WorkflowRuntimeRecord;
 use crate::adaptor::gateway::workflow::state::{RuntimeCommitSnapshot, RuntimeExecutionState};
 use crate::domain::workflow::{ExecutionInterruptionReason, ExecutionStatus};
 
@@ -29,7 +29,7 @@ pub(crate) enum AbortTargetLookup {
 ///
 /// 中断要求に対し、runtime primitive が「実際に中断を実施したか」「対象 execution が
 /// 存在しないか」「既に終了済みで中断不能だったか」を typed に表現する。
-/// `NotFound` / `AlreadyTerminal` は非受理（`WorkflowEngineError` 経由）として
+/// `NotFound` / `AlreadyTerminal` は非受理（`WorkflowRuntimeError` 経由）として
 /// 上位に伝播する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
 ///
 /// engine 内部用途のみのため可視性は module-private に閉じる。外部入口は
@@ -46,7 +46,7 @@ pub(crate) enum AbortOutcome {
 
 pub(crate) struct CommandMutationRollback<'a> {
     pub(crate) execution_id: &'a str,
-    pub(crate) snapshot_before: WorkflowExecution,
+    pub(crate) snapshot_before: WorkflowRuntimeRecord,
     pub(crate) execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
     pub(crate) context: &'a str,
 }
@@ -55,7 +55,7 @@ pub(crate) struct RequiredEventCommit<'a> {
     pub(crate) operation_kind: crate::domain::local_event::CommitOperationKind,
     pub(crate) execution_id: &'a str,
     pub(crate) snapshot_for_commit: &'a RuntimeCommitSnapshot,
-    pub(crate) snapshot_before: WorkflowExecution,
+    pub(crate) snapshot_before: WorkflowRuntimeRecord,
     pub(crate) execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
     pub(crate) required_events: Vec<WorkflowEvent>,
     pub(crate) append_error_context: &'a str,
@@ -145,7 +145,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
     execution_store: &Arc<ExecutionStore>,
     execution_id: &str,
     snapshot: &RuntimeCommitSnapshot,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let now = snapshot.updated_at;
     let total_token_usage = crate::domain::workflow::TokenUsage {
         input_tokens: snapshot.total_token_usage.input_tokens,
@@ -221,7 +221,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
         }
     };
     result.map_err(|e| {
-        WorkflowEngineError::SessionStore(format!(
+        WorkflowRuntimeError::SessionStore(format!(
             "ExecutionStore sync failed for execution {execution_id}: {e}"
         ))
     })
@@ -230,7 +230,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
 pub(crate) async fn restore_execution_store_active_snapshot(
     execution_store: &Arc<ExecutionStore>,
     metadata_snapshot: Option<WorkflowExecutionMetadata>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let Some(metadata_snapshot) = metadata_snapshot else {
         return Ok(());
     };
@@ -239,7 +239,7 @@ pub(crate) async fn restore_execution_store_active_snapshot(
         .restore_active_snapshot_for_rollback(metadata_snapshot)
         .await
         .map_err(|e| {
-            WorkflowEngineError::SessionStore(format!(
+            WorkflowRuntimeError::SessionStore(format!(
                 "ExecutionStore rollback failed for execution {execution_id}: {e}"
             ))
         })
@@ -247,7 +247,7 @@ pub(crate) async fn restore_execution_store_active_snapshot(
 
 #[cfg(test)]
 pub(crate) async fn rollback_execution_projection_after_execution_store_sync_failure(
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
+    executions: &Mutex<HashMap<String, WorkflowRuntimeRecord>>,
     execution_store: &Arc<ExecutionStore>,
     execution_id: &str,
     failed_snapshot: &RuntimeCommitSnapshot,
@@ -273,10 +273,10 @@ pub(crate) async fn rollback_execution_projection_after_execution_store_sync_fai
     let Some(exec) = execs.get_mut(execution_id) else {
         return;
     };
-    if exec.state != failed_snapshot.state {
+    if exec.state() != &failed_snapshot.state {
         return;
     }
-    exec.state = rollback_state;
+    exec.restore_lifecycle_after_failed_commit(rollback_state);
     if let Some(current_node) = active_projection.current_node {
         if let Some(index) = exec
             .workflow

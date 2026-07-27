@@ -5,13 +5,13 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     runtime_artifact_from_domain, runtime_execution_state_to_domain, token_usage_from_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
-use crate::adaptor::gateway::workflow::engine_error::{
-    workflow_error_to_engine_error, WorkflowEngineError,
-};
-use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
 use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::runtime_commit::NodeOutcome;
+use crate::adaptor::gateway::workflow::runtime_error::{
+    workflow_error_to_runtime_error, WorkflowRuntimeError,
+};
+use crate::adaptor::gateway::workflow::runtime_start_guard;
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::state::{
     NodeExecution, NodeExecutionFailure, NodeExecutionStatus, NodeHistoryEntry,
@@ -19,6 +19,9 @@ use crate::adaptor::gateway::workflow::state::{
     TokenUsage,
 };
 use crate::domain::workflow as workflow_domain;
+use crate::domain::workflow::entities::workflow_execution::{
+    TransitionOutcome, WorkflowExecution as WorkflowExecutionAggregate,
+};
 use crate::domain::workflow::services::history as workflow_history;
 use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::services::routing as workflow_routing;
@@ -26,15 +29,18 @@ use crate::domain::workflow::services::submission as workflow_submission;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::{FailureDisposition, NodeExecutionFailureKind};
 use crate::usecase::agent_session::status::current_timestamp;
+use crate::usecase::workflow::runtime_execution::{
+    WorkflowExecutionCommand, WorkflowExecutionUsecase,
+};
 
 /// ワークフロー実行の内部状態。
 #[derive(Clone)]
-pub(crate) struct WorkflowExecution {
+pub(crate) struct WorkflowRuntimeRecord {
     /// `RuntimeCommitSnapshot.execution_id` を `execution_id` として昇格させた識別子。
-    /// `WorkflowRuntimeService.executions` の HashMap キーと一致する。
+    /// `WorkflowRuntimeExecutor.executions` の HashMap キーと一致する。
     pub(crate) id: String,
     pub(crate) workflow: WorkflowDefinitionYaml,
-    pub(crate) state: RuntimeExecutionState,
+    pub(crate) lifecycle: WorkflowExecutionAggregate,
     pub(crate) current_node_index: usize,
     pub(crate) node_execution_counts: HashMap<String, u32>,
     pub(crate) loop_guard_reset_baselines: workflow_routing::LoopGuardResetBaselines,
@@ -104,31 +110,110 @@ pub(crate) enum FanoutChildRuntimeState {
 ///
 /// parent ChatSession 機構撤去後は node session のみが登録されるため種別区別は不要
 /// （Spec issues-929: 「逐次 node と並列子 node は単一経路で扱う」/ Spec issues-1011:
-/// engine 内部キーは execution_id に統一）。worktree_path は `WorkflowExecution.worktree_path`
+/// engine 内部キーは execution_id に統一）。worktree_path は `WorkflowRuntimeRecord.worktree_path`
 /// 属性として exec から取得する。
 #[derive(Clone)]
 pub(crate) struct SessionWorkflowRef {
-    /// engine.executions の HashMap キー（= `WorkflowExecution.id` = `execution_id`）。
+    /// engine.executions の HashMap キー（= `WorkflowRuntimeRecord.id` = `execution_id`）。
     pub(crate) execution_id: String,
 }
 
-impl WorkflowExecution {
+impl WorkflowRuntimeRecord {
+    pub(crate) fn lifecycle_from_state(state: RuntimeExecutionState) -> WorkflowExecutionAggregate {
+        let interruption_reason = match &state {
+            RuntimeExecutionState::Interrupted => {
+                Some(crate::domain::workflow::ExecutionInterruptionReason::Crash)
+            }
+            _ => None,
+        };
+        WorkflowExecutionUsecase::restore(state, interruption_reason)
+    }
+
+    pub(crate) fn state(&self) -> &RuntimeExecutionState {
+        self.lifecycle.state()
+    }
+
+    pub(crate) fn transition_completed(&mut self) -> TransitionOutcome {
+        self.commit_lifecycle_command(WorkflowExecutionCommand::Complete)
+    }
+
+    pub(crate) fn transition_failed(
+        &mut self,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        retry_count: Option<u32>,
+    ) -> TransitionOutcome {
+        self.commit_lifecycle_command(WorkflowExecutionCommand::Fail {
+            reason,
+            kind,
+            retry_count,
+        })
+    }
+
+    pub(crate) fn transition_running(&mut self) -> TransitionOutcome {
+        if self.lifecycle.is_resumable() {
+            return self.commit_lifecycle_command(WorkflowExecutionCommand::Resume);
+        }
+        match self.lifecycle.state() {
+            RuntimeExecutionState::WaitingApproval => {
+                self.commit_lifecycle_command(WorkflowExecutionCommand::ResolveApproval)
+            }
+            RuntimeExecutionState::Running => TransitionOutcome::AlreadyApplied,
+            RuntimeExecutionState::Interrupted
+            | RuntimeExecutionState::Completed
+            | RuntimeExecutionState::Failed { .. }
+            | RuntimeExecutionState::Aborted => TransitionOutcome::NotApplicable,
+        }
+    }
+
+    pub(crate) fn transition_waiting_approval(&mut self) -> TransitionOutcome {
+        self.commit_lifecycle_command(WorkflowExecutionCommand::RequestApproval)
+    }
+
+    pub(crate) fn transition_interrupted(
+        &mut self,
+        reason: crate::domain::workflow::ExecutionInterruptionReason,
+    ) -> TransitionOutcome {
+        let command = if reason == crate::domain::workflow::ExecutionInterruptionReason::Stop {
+            WorkflowExecutionCommand::Stop
+        } else {
+            WorkflowExecutionCommand::Interrupt(reason)
+        };
+        self.commit_lifecycle_command(command)
+    }
+
+    pub(crate) fn transition_aborted(&mut self) -> TransitionOutcome {
+        self.commit_lifecycle_command(WorkflowExecutionCommand::Abort)
+    }
+
+    fn commit_lifecycle_command(&mut self, command: WorkflowExecutionCommand) -> TransitionOutcome {
+        WorkflowExecutionUsecase::prepare(&self.lifecycle, command).commit(&mut self.lifecycle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_lifecycle_after_failed_commit(&mut self, state: RuntimeExecutionState) {
+        let interruption_reason = if matches!(state, RuntimeExecutionState::Interrupted) {
+            Some(crate::domain::workflow::ExecutionInterruptionReason::Crash)
+        } else {
+            None
+        };
+        self.lifecycle
+            .restore_after_failed_commit(state, interruption_reason);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_lifecycle_state_for_test(&mut self, state: RuntimeExecutionState) {
+        self.lifecycle.force_state_for_test(state);
+    }
+
     /// ワークフローが実行中（Running または WaitingApproval）かどうかを返す。
     pub(crate) fn is_active(&self) -> bool {
-        matches!(
-            self.state,
-            RuntimeExecutionState::Running | RuntimeExecutionState::WaitingApproval
-        )
+        self.lifecycle.is_active()
     }
 
     /// ワークフローが終了状態（Completed / Failed / Aborted）かどうかを返す。
     pub(crate) fn is_terminal(&self) -> bool {
-        matches!(
-            self.state,
-            RuntimeExecutionState::Completed
-                | RuntimeExecutionState::Failed { .. }
-                | RuntimeExecutionState::Aborted
-        )
+        self.lifecycle.is_finished()
     }
 
     pub(crate) fn start_node_execution(
@@ -234,12 +319,12 @@ impl WorkflowExecution {
     /// in-memory executions 表が一時的に不整合な場合に、最終的な atomic guard として機能する。
     pub(crate) fn validate_start(
         workflow: &WorkflowDefinitionYaml,
-        existing: Option<&WorkflowExecution>,
-    ) -> Result<(), WorkflowEngineError> {
+        existing: Option<&WorkflowRuntimeRecord>,
+    ) -> Result<(), WorkflowRuntimeError> {
         let existing_active_workflow_name = existing
             .filter(|existing| existing.is_active())
             .map(|existing| existing.workflow.name.as_str());
-        engine_start_guard::validate_start(workflow, existing_active_workflow_name)
+        runtime_start_guard::validate_start(workflow, existing_active_workflow_name)
     }
 
     /// 永続化用の `RuntimeCommitSnapshot` に変換する。
@@ -253,12 +338,12 @@ impl WorkflowExecution {
             worktree_path: self.worktree_path.clone(),
             created_from: self.created_from,
             request: self.request.clone().unwrap_or_default(),
-            error_reason: match &self.state {
+            error_reason: match self.state() {
                 RuntimeExecutionState::Failed { reason, .. } => Some(reason.clone()),
                 RuntimeExecutionState::Interrupted => self.error_reason.clone(),
                 _ => None,
             },
-            state: self.state.clone(),
+            state: self.state().clone(),
             current_node_index: self.current_node_index,
             current_node_name: self.workflow.nodes[self.current_node_index].name.clone(),
             current_session_id: self.current_session_id.clone(),
@@ -439,7 +524,7 @@ impl WorkflowExecution {
         let decision = self.decide_next_node_with_workflow(&workflow);
         match decision {
             NextNodeDecision::Completed => {
-                self.state = RuntimeExecutionState::Completed;
+                let _ = self.transition_completed();
                 self.updated_at = current_timestamp();
                 NodeOutcome::Persist(self.to_commit_snapshot())
             }
@@ -461,7 +546,7 @@ impl WorkflowExecution {
         let node_index = self.current_node_index;
         let node_name = self.workflow.nodes[node_index].name.clone();
         let completed_session_id = self.current_session_id.clone();
-        self.state = RuntimeExecutionState::Running;
+        let _ = self.transition_running();
         *self.node_execution_counts.entry(node_name).or_insert(0) += 1;
         self.current_session_id = None;
         self.current_node_token_usage = TokenUsage::default();
@@ -476,18 +561,18 @@ impl WorkflowExecution {
     }
 
     fn fail_validation(&mut self, reason: impl Into<String>) -> NodeOutcome {
-        self.state = RuntimeExecutionState::Failed {
-            reason: reason.into(),
-            kind: NodeExecutionFailureKind::ValidationFailure,
-            retry_count: None,
-        };
+        let _ = self.transition_failed(
+            reason.into(),
+            NodeExecutionFailureKind::ValidationFailure,
+            None,
+        );
         self.updated_at = current_timestamp();
         NodeOutcome::Persist(self.to_commit_snapshot())
     }
 
     fn apply_transition_index(&mut self, node_index: usize, node_name: &str) {
         self.current_node_index = node_index;
-        self.state = RuntimeExecutionState::Running;
+        let _ = self.transition_running();
         *self
             .node_execution_counts
             .entry(node_name.to_string())
@@ -548,7 +633,7 @@ impl WorkflowExecution {
     pub(crate) fn check_loop_guard(
         &self,
         target_node_name: &str,
-    ) -> Result<LoopGuardResult, WorkflowEngineError> {
+    ) -> Result<LoopGuardResult, WorkflowRuntimeError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
         let decision = workflow_routing::guarded_target_with_reset_baselines(
             &workflow,
@@ -556,7 +641,7 @@ impl WorkflowExecution {
             &self.node_execution_counts,
             &self.loop_guard_reset_baselines,
         )
-        .map_err(workflow_error_to_engine_error)?;
+        .map_err(workflow_error_to_runtime_error)?;
         if matches!(
             decision,
             workflow_routing::RouteDecision::TransitionTo(ref name) if name == target_node_name
@@ -568,7 +653,7 @@ impl WorkflowExecution {
             .iter()
             .find(|node| node.name == target_node_name)
             .ok_or_else(|| {
-                WorkflowEngineError::InvalidWorkflow(format!(
+                WorkflowRuntimeError::InvalidWorkflow(format!(
                     "Node '{target_node_name}' not found in workflow"
                 ))
             })?;
@@ -597,7 +682,7 @@ impl WorkflowExecution {
     #[cfg(test)]
     pub(crate) fn decide_turn_complete_action(&self, exit_code: i64) -> TurnCompleteAction {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        let state = runtime_execution_state_to_domain(&self.state);
+        let state = runtime_execution_state_to_domain(self.state());
         let action = workflow_transition::decide_turn_complete_action(
             &workflow,
             self.current_node_index,
@@ -634,9 +719,9 @@ impl WorkflowExecution {
         &self,
         exit_code: i64,
         failure_signal: Option<workflow_transition::SessionFailureSignal>,
-    ) -> Result<workflow_transition::TurnCompleteMutationPlan, WorkflowEngineError> {
+    ) -> Result<workflow_transition::TurnCompleteMutationPlan, WorkflowRuntimeError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        let state = runtime_execution_state_to_domain(&self.state);
+        let state = runtime_execution_state_to_domain(self.state());
         workflow_transition::plan_turn_complete_mutation_with_signal(
             &workflow,
             self.current_node_index,
@@ -644,31 +729,31 @@ impl WorkflowExecution {
             exit_code,
             failure_signal,
         )
-        .map_err(workflow_error_to_engine_error)
+        .map_err(workflow_error_to_runtime_error)
     }
 
     /// approvalモードの判定ロジック（純粋関数）。
     #[cfg(test)]
-    pub(crate) fn decide_approve_action(&self) -> Result<(), WorkflowEngineError> {
+    pub(crate) fn decide_approve_action(&self) -> Result<(), WorkflowRuntimeError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        let state = runtime_execution_state_to_domain(&self.state);
+        let state = runtime_execution_state_to_domain(self.state());
         workflow_transition::decide_approve_action(&workflow, self.current_node_index, &state)
-            .map_err(workflow_error_to_engine_error)
+            .map_err(workflow_error_to_runtime_error)
     }
 
     pub(crate) fn plan_approval_application(
         &self,
         application: workflow_transition::ApprovalApplication,
-    ) -> Result<workflow_transition::ApprovalApplicationPlan, WorkflowEngineError> {
+    ) -> Result<workflow_transition::ApprovalApplicationPlan, WorkflowRuntimeError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        let state = runtime_execution_state_to_domain(&self.state);
+        let state = runtime_execution_state_to_domain(self.state());
         workflow_transition::plan_approval_application(
             &workflow,
             self.current_node_index,
             &state,
             application,
         )
-        .map_err(workflow_error_to_engine_error)
+        .map_err(workflow_error_to_runtime_error)
     }
 }
 

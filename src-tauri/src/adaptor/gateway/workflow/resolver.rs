@@ -29,7 +29,7 @@ impl std::fmt::Display for ManagedWorktreeResolverError {
     }
 }
 
-/// WorkflowRuntimeService core が workflow 定義の保存形式や builtin 解決方法を知らずに済むよう、
+/// WorkflowRuntimeExecutor core が workflow 定義の保存形式や builtin 解決方法を知らずに済むよう、
 /// YAML / builtin / facet 解決を担う境界。
 #[async_trait::async_trait]
 pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
@@ -39,7 +39,7 @@ pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
     ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError>;
 }
 
-/// WorkflowRuntimeService core が AppConfig / filesystem canonicalize / Git worktree 列挙を
+/// WorkflowRuntimeExecutor core が AppConfig / filesystem canonicalize / Git worktree 列挙を
 /// 直接知らずに済むよう、managed worktree 解決を担う境界。
 #[async_trait::async_trait]
 pub(crate) trait ManagedWorktreeResolver: Send + Sync {

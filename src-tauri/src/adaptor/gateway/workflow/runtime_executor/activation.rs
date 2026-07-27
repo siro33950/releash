@@ -1,14 +1,16 @@
+//! Cancellation-safe activation boundary for external runtime commands.
+
 use std::future::{ready, Future};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_store::{
     ActiveInterruptionReservation, ExecutionStore, WorkflowExecutionMetadata,
 };
 use crate::adaptor::gateway::workflow::runtime_commit;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 
 const ACTIVATION_CANCEL_PENDING: u8 = 0;
 const ACTIVATION_CANCEL_COMMIT: u8 = 1;
@@ -35,7 +37,7 @@ pub(super) async fn rollback_active_interruption(
     activation_gate: &RuntimeActivationGate,
     activation_was_paused: bool,
     projection: InterruptionRollback,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let reservation_error = execution_store
         .finish_active_interruption(reservation)
         .await
@@ -62,7 +64,7 @@ pub(super) async fn rollback_active_interruption(
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(WorkflowEngineError::SessionStore(errors.join("; ")))
+        Err(WorkflowRuntimeError::SessionStore(errors.join("; ")))
     }
 }
 
@@ -155,9 +157,9 @@ pub(super) async fn run_runtime_activation<F, T>(
     execution_id: &str,
     activation_kind: &str,
     future: F,
-) -> Result<T, WorkflowEngineError>
+) -> Result<T, WorkflowRuntimeError>
 where
-    F: Future<Output = Result<T, WorkflowEngineError>>,
+    F: Future<Output = Result<T, WorkflowRuntimeError>>,
 {
     run_runtime_activation_with_cancel_cleanup(
         gate,
@@ -175,9 +177,9 @@ pub(super) async fn run_runtime_activation_with_cancel_cleanup<F, C, T>(
     activation_kind: &str,
     future: F,
     cancel_cleanup: C,
-) -> Result<T, WorkflowEngineError>
+) -> Result<T, WorkflowRuntimeError>
 where
-    F: Future<Output = Result<T, WorkflowEngineError>>,
+    F: Future<Output = Result<T, WorkflowRuntimeError>>,
     C: Future<Output = ()>,
 {
     let mut future = Box::pin(future);
@@ -187,14 +189,14 @@ where
             _ = gate.cancelled() => {
                 gate.acknowledge_cancel();
                 let error = match gate.cancel_decision().await {
-                    ACTIVATION_CANCEL_COMMIT => WorkflowEngineError::InvalidState(format!(
+                    ACTIVATION_CANCEL_COMMIT => WorkflowRuntimeError::InvalidState(format!(
                             "execution {execution_id} {activation_kind} activation was cancelled"
                         )),
                     ACTIVATION_CANCEL_ROLLBACK => {
                         gate.reset_cancel();
                         continue;
                     }
-                    decision => WorkflowEngineError::InvalidState(format!(
+                    decision => WorkflowRuntimeError::InvalidState(format!(
                             "execution {execution_id} {activation_kind} activation received invalid cancellation decision {decision}"
                         )),
                 };

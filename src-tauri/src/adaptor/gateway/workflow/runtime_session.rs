@@ -6,7 +6,6 @@ use std::{
 
 use tokio::sync::{oneshot, Mutex};
 
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_registry::find_by_worktree;
 use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
@@ -18,7 +17,8 @@ use crate::adaptor::gateway::workflow::node_settings::{
     resolve_node_settings, ResolvedNodeSettings, WorkflowDefaults,
 };
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
-use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
+use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowRuntimeRecord};
 use crate::adaptor::gateway::workflow::schema::SchemaDef;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
@@ -57,12 +57,12 @@ pub(crate) struct FanoutStartRuntimeInputs {
 }
 
 pub(crate) async fn load_fanout_start_runtime_inputs(
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
+    executions: &Mutex<HashMap<String, WorkflowRuntimeRecord>>,
     worktree_path: &str,
-) -> Result<FanoutStartRuntimeInputs, WorkflowEngineError> {
+) -> Result<FanoutStartRuntimeInputs, WorkflowRuntimeError> {
     let execs = executions.lock().await;
     let (_, exec) = find_by_worktree(&execs, worktree_path)
-        .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+        .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string()))?;
     Ok(FanoutStartRuntimeInputs {
         fanout_start: workflow_fanout_runtime::prepare_fanout_start_context(exec)?,
         prompt_inputs: workflow_fanout_runtime::fanout_prompt_inputs(exec),
@@ -75,7 +75,7 @@ pub(crate) async fn load_fanout_start_runtime_inputs(
 pub(crate) fn resolve_backend_for_node_model(
     registry: &AgentBackendRegistry,
     model: &str,
-) -> Result<Option<String>, WorkflowEngineError> {
+) -> Result<Option<String>, WorkflowRuntimeError> {
     resolve_node_model_with_registry(registry, model).map(Some)
 }
 
@@ -84,12 +84,12 @@ pub(crate) fn resolve_backend_for_node_model(
 pub(crate) fn resolve_node_model_with_registry(
     registry: &AgentBackendRegistry,
     model: &str,
-) -> Result<String, WorkflowEngineError> {
+) -> Result<String, WorkflowRuntimeError> {
     crate::domain::agent_session::ModelId::parse(model).map_err(|e| {
-        WorkflowEngineError::InvalidWorkflow(format!("invalid model '{model}': {e}"))
+        WorkflowRuntimeError::InvalidWorkflow(format!("invalid model '{model}': {e}"))
     })?;
     let entry = registry.resolve_model_entry(model).map_err(|e| {
-        WorkflowEngineError::InvalidWorkflow(format!("model '{model}' could not be resolved: {e}"))
+        WorkflowRuntimeError::InvalidWorkflow(format!("model '{model}' could not be resolved: {e}"))
     })?;
     Ok(entry.backend)
 }
@@ -106,7 +106,7 @@ fn resolve_node_session_creation_settings(
     node_model: Option<String>,
     node_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
-) -> Result<NodeSessionCreationSettings, WorkflowEngineError> {
+) -> Result<NodeSessionCreationSettings, WorkflowRuntimeError> {
     let (node_model, resolved_backend_id) = match node_model {
         Some(model) => {
             let backend_id = resolve_backend_for_node_model(registry, &model)?;
@@ -119,13 +119,13 @@ fn resolve_node_session_creation_settings(
                 .map(Ok)
                 .unwrap_or_else(|| {
                     registry.resolve_default_id().map_err(|e| {
-                        WorkflowEngineError::InvalidWorkflow(format!(
+                        WorkflowRuntimeError::InvalidWorkflow(format!(
                             "default backend could not be resolved: {e}"
                         ))
                     })
                 })?;
             let selected_model = registry.default_model_for(&backend_id).map_err(|e| {
-                WorkflowEngineError::InvalidWorkflow(format!(
+                WorkflowRuntimeError::InvalidWorkflow(format!(
                     "default model for backend '{backend_id}' could not be resolved: {e}"
                 ))
             })?;
@@ -143,9 +143,9 @@ fn resolve_node_session_creation_settings(
 
 fn node_session_creation_settings_from_resolved(
     settings: ResolvedNodeSettings,
-) -> Result<NodeSessionCreationSettings, WorkflowEngineError> {
+) -> Result<NodeSessionCreationSettings, WorkflowRuntimeError> {
     let permission_mode = PermissionMode::parse_canonical(&settings.permission_mode)
-        .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        .map_err(|e| WorkflowRuntimeError::InvalidWorkflow(e.to_string()))?;
     Ok(NodeSessionCreationSettings {
         backend_id: settings.backend_id,
         selected_model: settings.selected_model,
@@ -160,7 +160,7 @@ fn create_node_session_from_resolved_settings(
     settings: NodeSessionCreationSettings,
     workflow_node_context: WorkflowNodeContext,
     kind_context: NodeRuntimeKindContext,
-) -> Result<ChatSession, WorkflowEngineError> {
+) -> Result<ChatSession, WorkflowRuntimeError> {
     let workflow_node_context =
         workflow_node_context_with_runtime_timeouts(&settings, workflow_node_context, kind_context);
     crate::usecase::agent_session::session::create_session_internal_with_attributes(
@@ -176,7 +176,7 @@ fn create_node_session_from_resolved_settings(
             ..Default::default()
         },
     )
-    .map_err(|e| WorkflowEngineError::SessionStore(format!("create node session: {e}")))
+    .map_err(|e| WorkflowRuntimeError::SessionStore(format!("create node session: {e}")))
 }
 
 fn workflow_node_context_with_runtime_timeouts(
@@ -212,7 +212,7 @@ pub(crate) fn create_node_session_with_settings(
     workflow_defaults: &WorkflowDefaults,
     workflow_node_context: WorkflowNodeContext,
     kind_context: NodeRuntimeKindContext,
-) -> Result<ChatSession, WorkflowEngineError> {
+) -> Result<ChatSession, WorkflowRuntimeError> {
     let settings = resolve_node_session_creation_settings(
         registry,
         node_model,
@@ -250,9 +250,9 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 pub(crate) async fn interrupt_agent(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     runtime.interrupt(session_id).await.map_err(|error| {
-        WorkflowEngineError::with_agent_runtime_context(
+        WorkflowRuntimeError::with_agent_runtime_context(
             format!("Failed to durably interrupt agent session '{session_id}'"),
             error,
         )
@@ -262,7 +262,7 @@ pub(crate) async fn interrupt_agent(
 pub(crate) async fn interrupt_agents(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_ids: &[String],
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let mut failures = Vec::new();
     for session_id in session_ids {
         if let Err(error) = interrupt_agent(runtime, session_id).await {
@@ -272,7 +272,7 @@ pub(crate) async fn interrupt_agents(
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(WorkflowEngineError::AgentSession(format!(
+        Err(WorkflowRuntimeError::AgentSession(format!(
             "One or more durable workflow Stop operations failed: {}",
             failures.join("; ")
         )))
@@ -306,12 +306,12 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
     prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
     schemas: &BTreeMap<String, SchemaDef>,
-) -> Result<Vec<FanoutChildSessionSetup>, WorkflowEngineError> {
+) -> Result<Vec<FanoutChildSessionSetup>, WorkflowRuntimeError> {
     let prompt_plans =
         prepare_fanout_child_prompt_plans(fanout_start, prompt_inputs, facet_contents, schemas)?;
     let creation_plans = prepare_fanout_child_creation_plans(registry, fanout_start, prompt_plans)?;
     let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-        .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+        .map_err(|e| WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {e}")))?;
     let mut child_setups = Vec::new();
     let mut created_session_ids = Vec::new();
 
@@ -388,7 +388,7 @@ fn prepare_fanout_child_prompt_plans(
     prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
     schemas: &BTreeMap<String, SchemaDef>,
-) -> Result<Vec<FanoutChildPromptPlan>, WorkflowEngineError> {
+) -> Result<Vec<FanoutChildPromptPlan>, WorkflowRuntimeError> {
     fanout_start
         .children
         .iter()
@@ -428,12 +428,12 @@ fn prepare_fanout_child_creation_plans(
     registry: &AgentBackendRegistry,
     fanout_start: &FanoutStartContext,
     prompt_plans: Vec<FanoutChildPromptPlan>,
-) -> Result<Vec<FanoutChildCreationPlan>, WorkflowEngineError> {
+) -> Result<Vec<FanoutChildCreationPlan>, WorkflowRuntimeError> {
     let mut creation_plans = Vec::with_capacity(prompt_plans.len());
     for prompt_plan in prompt_plans {
         let child = &fanout_start.children[prompt_plan.expansion_index];
         let session = child.node.session().ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
+            WorkflowRuntimeError::InvalidState(format!(
                 "fanout child '{}' is not a session node",
                 child.node.name
             ))
@@ -477,8 +477,8 @@ async fn rollback_created_fanout_child_sessions(
     data_dir: &Path,
     session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
     created_session_ids: &[String],
-    original_error: WorkflowEngineError,
-) -> WorkflowEngineError {
+    original_error: WorkflowRuntimeError,
+) -> WorkflowRuntimeError {
     if created_session_ids.is_empty() {
         return original_error;
     }
@@ -500,7 +500,7 @@ async fn rollback_created_fanout_child_sessions(
     if rollback_errors.is_empty() {
         original_error
     } else {
-        WorkflowEngineError::SessionStore(format!(
+        WorkflowRuntimeError::SessionStore(format!(
             "fanout child setup failed: {original_error}; rollback failed for created child sessions: {}",
             rollback_errors.join("; ")
         ))
@@ -512,12 +512,12 @@ pub(crate) async fn rollback_prepared_fanout_child_sessions<R: tauri::Runtime>(
     session_store: &SessionStore,
     session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
     child_setups: &[FanoutChildSessionSetup],
-    original_error: WorkflowEngineError,
-) -> WorkflowEngineError {
+    original_error: WorkflowRuntimeError,
+) -> WorkflowRuntimeError {
     let data_dir = match crate::infrastructure::platform::app_data_dir::resolve_data_dir(app) {
         Ok(data_dir) => data_dir,
         Err(error) => {
-            return WorkflowEngineError::SessionStore(format!(
+            return WorkflowRuntimeError::SessionStore(format!(
                 "fanout child event commit failed: {original_error}; failed to resolve rollback data dir: {error}"
             ));
         }
@@ -547,7 +547,7 @@ pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime>(
     child_setups: &[FanoutChildSessionSetup],
     snapshot: RuntimeCommitSnapshot,
     activation_tasks: Arc<FanoutActivationTaskTracker>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let activations =
         reserve_fanout_child_sessions(runtime, child_setups, &activation_tasks).await?;
     broadcast_state(app, worktree_path, snapshot).await;
@@ -624,14 +624,14 @@ async fn reserve_fanout_child_sessions(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     child_setups: &[FanoutChildSessionSetup],
     activation_tasks: &FanoutActivationTaskTracker,
-) -> Result<Vec<FanoutChildSessionActivation>, WorkflowEngineError> {
+) -> Result<Vec<FanoutChildSessionActivation>, WorkflowRuntimeError> {
     let mut activations = Vec::with_capacity(child_setups.len());
 
     for setup in child_setups {
         let permission_mode = match PermissionMode::parse_canonical(&setup.permission_mode) {
             Ok(permission_mode) => permission_mode,
             Err(error) => {
-                let error = WorkflowEngineError::InvalidWorkflow(error.to_string());
+                let error = WorkflowRuntimeError::InvalidWorkflow(error.to_string());
                 activation_tasks.abort_and_wait().await;
                 return Err(error);
             }
@@ -682,12 +682,12 @@ async fn reserve_fanout_child_sessions(
 async fn wait_for_fanout_child_session_reservations(
     activations: &mut [FanoutChildSessionActivation],
     activation_tasks: &FanoutActivationTaskTracker,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     for activation in activations.iter_mut() {
         let reserved = match activation.reserved.take() {
             Some(reserved) => reserved,
             None => {
-                let error = WorkflowEngineError::InvalidState(format!(
+                let error = WorkflowRuntimeError::InvalidState(format!(
                     "fanout child '{}' activation reservation was already consumed",
                     activation.session_id
                 ));
@@ -696,7 +696,7 @@ async fn wait_for_fanout_child_session_reservations(
             }
         };
         if reserved.await.is_err() {
-            let error = WorkflowEngineError::AgentSession(format!(
+            let error = WorkflowRuntimeError::AgentSession(format!(
                 "fanout child '{}' activation task ended before reserving its session",
                 activation.session_id
             ));
@@ -712,7 +712,7 @@ async fn start_fanout_child_sessions(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     open_tabs: &Arc<OpenTabRegistry>,
     mut activations: Vec<FanoutChildSessionActivation>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let created_session_ids = activations
         .iter()
         .map(|activation| activation.session_id.clone())
@@ -725,7 +725,7 @@ async fn start_fanout_child_sessions(
     for activation in &mut activations {
         if let Err(error) = start_single_fanout_child(runtime, activation).await {
             if let Err(interrupt_error) = interrupt_agents(runtime, &created_session_ids).await {
-                return Err(WorkflowEngineError::AgentSession(format!(
+                return Err(WorkflowRuntimeError::AgentSession(format!(
                     "{error}; fanout cleanup failed: {interrupt_error}"
                 )));
             }
@@ -739,20 +739,20 @@ async fn start_fanout_child_sessions(
 async fn start_single_fanout_child(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     activation: &mut FanoutChildSessionActivation,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let started = activation
         .start
         .take()
         .is_some_and(|start| start.send(()).is_ok());
     if !started {
-        return Err(WorkflowEngineError::AgentSession(format!(
+        return Err(WorkflowRuntimeError::AgentSession(format!(
             "fanout child '{}' activation task ended before start",
             activation.session_id
         )));
     }
 
     let task = activation.task.take().ok_or_else(|| {
-        WorkflowEngineError::InvalidState(format!(
+        WorkflowRuntimeError::InvalidState(format!(
             "fanout child '{}' activation task was already consumed",
             activation.session_id
         ))
@@ -760,13 +760,13 @@ async fn start_single_fanout_child(
     let runtime_guard = task
         .await
         .map_err(|error| {
-            WorkflowEngineError::AgentSession(format!(
+            WorkflowRuntimeError::AgentSession(format!(
                 "fanout child '{}' activation task failed: {error}",
                 activation.session_id
             ))
         })?
         .ok_or_else(|| {
-            WorkflowEngineError::AgentSession(format!(
+            WorkflowRuntimeError::AgentSession(format!(
                 "fanout child '{}' activation task ended before transferring its session reservation",
                 activation.session_id
             ))
@@ -793,7 +793,7 @@ async fn start_single_fanout_child(
         .await;
     drop(runtime_guard);
     result.map_err(|error| {
-        WorkflowEngineError::with_agent_runtime_context(
+        WorkflowRuntimeError::with_agent_runtime_context(
             format!(
                 "Failed to start turn for fanout child '{}'",
                 activation.node_name
@@ -963,9 +963,12 @@ mod tests {
         }
     }
 
-    fn workflow_execution_fixture(execution_id: &str, worktree_path: &str) -> WorkflowExecution {
+    fn workflow_execution_fixture(
+        execution_id: &str,
+        worktree_path: &str,
+    ) -> WorkflowRuntimeRecord {
         let node_name = "plan".to_string();
-        WorkflowExecution {
+        WorkflowRuntimeRecord {
             id: execution_id.to_string(),
             workflow: WorkflowDefinitionYaml {
                 name: "test-workflow".to_string(),
@@ -977,7 +980,7 @@ mod tests {
                     ..Default::default()
                 }],
             },
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 0,
             node_execution_counts: HashMap::from([(node_name, 1)]),
             loop_guard_reset_baselines: Default::default(),
@@ -1036,7 +1039,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, WorkflowEngineError::InvalidWorkflow(_)));
+        assert!(matches!(error, WorkflowRuntimeError::InvalidWorkflow(_)));
         assert!(error.to_string().contains("default backend"));
     }
 
@@ -1294,7 +1297,7 @@ mod tests {
         };
 
         match error {
-            WorkflowEngineError::InvalidWorkflow(message) => assert_eq!(
+            WorkflowRuntimeError::InvalidWorkflow(message) => assert_eq!(
                 message,
                 PermissionMode::parse_canonical(invalid_permission_mode)
                     .unwrap_err()
@@ -1373,7 +1376,7 @@ mod tests {
             .unwrap_err();
 
         match error {
-            WorkflowEngineError::InvalidState(message) => assert_eq!(
+            WorkflowRuntimeError::InvalidState(message) => assert_eq!(
                 message,
                 "fanout child 'child-session' activation reservation was already consumed"
             ),
@@ -1405,7 +1408,7 @@ mod tests {
             .unwrap_err();
 
         match error {
-            WorkflowEngineError::AgentSession(message) => assert_eq!(
+            WorkflowRuntimeError::AgentSession(message) => assert_eq!(
                 message,
                 "fanout child 'child-session' activation task ended before reserving its session"
             ),

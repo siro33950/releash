@@ -43,5 +43,5 @@ pub use value_objects::{
     TokenUsage, WorkflowDefinition, WorkflowDefinitionName, WorkflowExecution, WorkflowExecutionId,
     WorkflowExecutionSummary, WorkflowNodeContext, WorkflowPageRequest, WorkflowRuntimeSnapshot,
     WorkflowSummary, WorkspaceWorktreePath, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
-    NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
+    NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
 };

@@ -22,8 +22,8 @@ use crate::usecase::workflow::ports::{
     WorkflowTurnFailureSignal,
 };
 
-use super::engine_error::WorkflowEngineError;
-use super::runtime_engine::{new_workflow_runtime_engine, WorkflowRuntimeEngine};
+use super::runtime_error::WorkflowRuntimeError;
+use super::runtime_operations::{new_workflow_runtime_operations, WorkflowRuntimeOperations};
 use super::runtime_resolver::{
     AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver,
 };
@@ -31,7 +31,7 @@ use super::runtime_resolver::{
 #[derive(Clone)]
 pub(crate) struct TauriWorkflowRuntimeCommandGateway {
     app: tauri::AppHandle,
-    engine: Arc<dyn WorkflowRuntimeEngine>,
+    engine: Arc<dyn WorkflowRuntimeOperations>,
     session_store: Arc<SessionStore>,
     agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     local_event_repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
@@ -198,7 +198,7 @@ impl TauriWorkflowRuntimeCommandGateway {
     pub(crate) fn new_with_default_engine(
         app: tauri::AppHandle,
         deps: TauriWorkflowRuntimeCommandGatewayDeps,
-    ) -> Result<Self, WorkflowEngineError> {
+    ) -> Result<Self, WorkflowRuntimeError> {
         let TauriWorkflowRuntimeCommandGatewayDeps {
             repository_usecase,
             app_config,
@@ -210,7 +210,7 @@ impl TauriWorkflowRuntimeCommandGateway {
             local_event_repository,
             local_event_installation_id,
         } = deps;
-        let engine = new_workflow_runtime_engine(
+        let engine = new_workflow_runtime_operations(
             Arc::new(DefaultWorkflowDefinitionResolver),
             Arc::new(AppConfigManagedWorktreeResolver::new(
                 repository_usecase,
@@ -242,7 +242,7 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .resolve_start_execution_worktree(worktree_path)
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 
     async fn resolve_start_execution_workflow(
@@ -253,7 +253,7 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
             .engine
             .resolve_start_execution_workflow(workflow_name)
             .await
-            .map_err(workflow_engine_error_to_workflow_error)?;
+            .map_err(workflow_runtime_error_to_workflow_error)?;
         super::mapper::schema_workflow_to_domain(workflow)
     }
 
@@ -276,30 +276,29 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 permission_mode,
             )
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
-fn workflow_engine_error_to_workflow_error(error: WorkflowEngineError) -> WorkflowError {
+fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError {
     match error {
-        WorkflowEngineError::InvalidWorkflow(message)
-        | WorkflowEngineError::ValidationError(message) => WorkflowError::validation(message),
-        error @ WorkflowEngineError::ExecutionNotFound(_)
-        | error @ WorkflowEngineError::SessionNotFound(_) => {
+        WorkflowRuntimeError::InvalidWorkflow(message)
+        | WorkflowRuntimeError::ValidationError(message) => WorkflowError::validation(message),
+        error @ WorkflowRuntimeError::ExecutionNotFound(_)
+        | error @ WorkflowRuntimeError::SessionNotFound(_) => {
             WorkflowError::NotFound(error.to_string())
         }
-        error @ WorkflowEngineError::AlreadyActive(_) => {
+        error @ WorkflowRuntimeError::AlreadyActive(_) => {
             WorkflowError::InvalidState(error.to_string())
         }
-        WorkflowEngineError::InvalidState(message) => WorkflowError::InvalidState(message),
-        WorkflowEngineError::UnauthorizedWorktree(message) => WorkflowError::validation(message),
-        WorkflowEngineError::UnauthorizedApprovalTarget(message) => {
+        WorkflowRuntimeError::InvalidState(message) => WorkflowError::InvalidState(message),
+        WorkflowRuntimeError::UnauthorizedWorktree(message) => WorkflowError::validation(message),
+        WorkflowRuntimeError::UnauthorizedApprovalTarget(message) => {
             WorkflowError::UnauthorizedApprovalTarget(message)
         }
-        WorkflowEngineError::SessionStore(message) | WorkflowEngineError::AgentSession(message) => {
-            WorkflowError::external(message)
-        }
-        WorkflowEngineError::AgentRuntime { message, .. } => WorkflowError::external(message),
+        WorkflowRuntimeError::SessionStore(message)
+        | WorkflowRuntimeError::AgentSession(message) => WorkflowError::external(message),
+        WorkflowRuntimeError::AgentRuntime { message, .. } => WorkflowError::external(message),
     }
 }
 
@@ -315,7 +314,7 @@ impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 command.expected_node_name.as_deref(),
             )
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -325,7 +324,7 @@ impl WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .stop_workflow_execution(&self.app, &self.agent_runtime, &command.execution_id)
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -340,7 +339,7 @@ impl WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 &command.execution_id,
             )
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -358,7 +357,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 command.node_execution_id.as_deref(),
             )
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -377,7 +376,7 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
                 command.artifact,
             )
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 }
 
@@ -469,7 +468,7 @@ impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .recover_orphan_executions(&self.app)
             .await
-            .map_err(workflow_engine_error_to_workflow_error)
+            .map_err(workflow_runtime_error_to_workflow_error)
     }
 
     #[cfg(test)]
@@ -720,9 +719,10 @@ mod tests {
 
     #[test]
     fn workflow_name_resolution_diagnostics_remain_validation_errors() {
-        let error = workflow_engine_error_to_workflow_error(WorkflowEngineError::InvalidWorkflow(
-            "workflow_diagnostics: WFS006: duplicate workflow name".to_string(),
-        ));
+        let error =
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidWorkflow(
+                "workflow_diagnostics: WFS006: duplicate workflow name".to_string(),
+            ));
 
         assert!(matches!(
             error,
@@ -734,32 +734,32 @@ mod tests {
     #[test]
     fn runtime_command_error_mapping_preserves_domain_variants() {
         assert!(matches!(
-            workflow_engine_error_to_workflow_error(WorkflowEngineError::ExecutionNotFound(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ExecutionNotFound(
                 "missing".to_string()
             )),
             WorkflowError::NotFound(message)
                 if message == "No workflow execution found for session 'missing'"
         ));
         assert!(matches!(
-            workflow_engine_error_to_workflow_error(WorkflowEngineError::InvalidState(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidState(
                 "terminal".to_string()
             )),
             WorkflowError::InvalidState(message) if message == "terminal"
         ));
         assert!(matches!(
-            workflow_engine_error_to_workflow_error(
-                WorkflowEngineError::UnauthorizedApprovalTarget("wrong target".to_string())
+            workflow_runtime_error_to_workflow_error(
+                WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong target".to_string())
             ),
             WorkflowError::UnauthorizedApprovalTarget(message) if message == "wrong target"
         ));
         assert!(matches!(
-            workflow_engine_error_to_workflow_error(WorkflowEngineError::ValidationError(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ValidationError(
                 "bad output".to_string()
             )),
             WorkflowError::Validation(message) if message == "bad output"
         ));
         assert!(matches!(
-            workflow_engine_error_to_workflow_error(WorkflowEngineError::SessionStore(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::SessionStore(
                 "io".to_string()
             )),
             WorkflowError::External(message) if message == "io"

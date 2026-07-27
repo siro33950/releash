@@ -38,7 +38,7 @@ pub use node_execution::{
 pub use runtime_projection::{
     default_node_history_status, FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact,
     TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
-    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
+    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use workflow_node_context::WorkflowNodeContext;

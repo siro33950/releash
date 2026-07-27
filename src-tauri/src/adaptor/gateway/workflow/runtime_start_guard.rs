@@ -1,44 +1,46 @@
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
+use crate::adaptor::gateway::workflow::runtime_error::WorkflowRuntimeError;
 use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow as domain;
 
 pub(crate) fn validate_workflow_shape(
     workflow: &WorkflowDefinitionYaml,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     let definition = workflow_definition_to_domain(workflow);
     domain::validation::validate_workflow_shape(&definition)
-        .map_err(|err| domain_validation_to_engine_error(err, &definition))
+        .map_err(|err| domain_validation_to_runtime_error(err, &definition))
 }
 
 pub(crate) fn validate_start(
     workflow: &WorkflowDefinitionYaml,
     existing_active_workflow_name: Option<&str>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     validate_workflow_shape(workflow)?;
     if let Some(workflow_name) = existing_active_workflow_name {
-        return Err(WorkflowEngineError::AlreadyActive(
+        return Err(WorkflowRuntimeError::AlreadyActive(
             workflow_name.to_string(),
         ));
     }
     Ok(())
 }
 
-fn domain_validation_to_engine_error(
+fn domain_validation_to_runtime_error(
     err: domain::WorkflowError,
     _workflow: &domain::WorkflowDefinition,
-) -> WorkflowEngineError {
+) -> WorkflowRuntimeError {
     match err {
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
-            WorkflowEngineError::InvalidWorkflow("Workflow has no nodes".to_string())
+            WorkflowRuntimeError::InvalidWorkflow("Workflow has no nodes".to_string())
         }
-        domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
-        domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
+        domain::WorkflowError::Validation(message) => {
+            WorkflowRuntimeError::InvalidWorkflow(message)
+        }
+        domain::WorkflowError::InvalidState(message) => WorkflowRuntimeError::InvalidState(message),
         domain::WorkflowError::UnauthorizedApprovalTarget(message) => {
-            WorkflowEngineError::UnauthorizedApprovalTarget(message)
+            WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
         }
         domain::WorkflowError::NotFound(message) | domain::WorkflowError::External(message) => {
-            WorkflowEngineError::InvalidWorkflow(message)
+            WorkflowRuntimeError::InvalidWorkflow(message)
         }
     }
 }

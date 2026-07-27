@@ -6,6 +6,9 @@ use crate::adaptor::gateway::workflow::event::{
     FanoutParentRef as EventFanoutParentRef, TokenUsage as EventTokenUsage, WorkflowEvent,
 };
 use crate::adaptor::gateway::workflow::schema::NodeKindName as EventNodeKindName;
+use crate::domain::workflow::entities::workflow_execution::{
+    CanonicalNodeFact, ReplayOutcome, WorkflowExecution as WorkflowExecutionAggregate,
+};
 use crate::domain::workflow::services::routing::{self, LoopGuardResetBaselines, RouteDecision};
 use crate::domain::workflow::{
     ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeExecution,
@@ -198,6 +201,7 @@ fn project_workflow_execution_with_payload_policy(
         fanouts: Vec::new(),
         approval_target: None,
     };
+    let mut lifecycle = WorkflowExecutionAggregate::start();
     let mut authoritative_total_usage = None;
     let mut routing_replay = match payload_policy {
         ProjectionPayloadPolicy::Retained => Some(RoutingReplayState::new(definition)),
@@ -208,7 +212,14 @@ fn project_workflow_execution_with_payload_policy(
         execution.updated_at = execution.updated_at.max(event.timestamp());
 
         match event {
-            WorkflowEvent::ExecutionStarted { .. } => {}
+            WorkflowEvent::ExecutionStarted { .. } => {
+                require_replay(
+                    execution_id,
+                    "execution_started",
+                    lifecycle.replay_started(),
+                    true,
+                )?;
+            }
             WorkflowEvent::NodeStarted {
                 node_execution_id,
                 node_name,
@@ -296,6 +307,7 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
+                let _ = lifecycle.apply_turn_completion(CanonicalNodeFact::Completed);
                 let node = node_mut(&mut execution, node_execution_id, "node_completed")?;
                 require_node_identity(node, node_name, *attempt, "node_completed")?;
                 node.status = NodeExecutionStatus::Succeeded;
@@ -316,6 +328,10 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
+                let _ = lifecycle.apply_turn_completion(CanonicalNodeFact::Failed {
+                    reason: reason.clone(),
+                    kind: *failure_kind,
+                });
                 let node = node_mut(&mut execution, node_execution_id, "node_failed")?;
                 require_node_identity(node, node_name, *attempt, "node_failed")?;
                 node.status = NodeExecutionStatus::Failed;
@@ -330,6 +346,21 @@ fn project_workflow_execution_with_payload_policy(
                 node_name,
                 ..
             } => {
+                let fanout_child = execution
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == *node_execution_id)
+                    .is_some_and(|node| node.fanout_parent.is_some());
+                require_replay(
+                    execution_id,
+                    "approval_requested",
+                    if fanout_child {
+                        lifecycle.replay_fanout_approval()
+                    } else {
+                        lifecycle.replay_approval_requested()
+                    },
+                    false,
+                )?;
                 let node = node_mut(&mut execution, node_execution_id, "approval_requested")?;
                 require_node_name(node, node_name, "approval_requested")?;
                 node.status = NodeExecutionStatus::WaitingApproval;
@@ -339,6 +370,21 @@ fn project_workflow_execution_with_payload_policy(
                 node_name,
                 ..
             } => {
+                let fanout_child = execution
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == *node_execution_id)
+                    .is_some_and(|node| node.fanout_parent.is_some());
+                require_replay(
+                    execution_id,
+                    "approval_resolved",
+                    if fanout_child {
+                        lifecycle.replay_fanout_approval()
+                    } else {
+                        lifecycle.replay_approval_resolved()
+                    },
+                    false,
+                )?;
                 let node = node_mut(&mut execution, node_execution_id, "approval_resolved")?;
                 require_node_name(node, node_name, "approval_resolved")?;
                 node.status = NodeExecutionStatus::Running;
@@ -348,6 +394,12 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
+                require_replay(
+                    execution_id,
+                    "execution_completed",
+                    lifecycle.replay_completed(),
+                    true,
+                )?;
                 execution.status = ExecutionStatus::Completed;
                 execution.completed_at = Some(*timestamp);
                 execution.error_reason = None;
@@ -367,6 +419,12 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
+                require_replay(
+                    execution_id,
+                    "execution_failed",
+                    lifecycle.replay_failed(reason.clone(), *failure_kind, None),
+                    true,
+                )?;
                 execution.status = ExecutionStatus::Failed;
                 execution.completed_at = Some(*timestamp);
                 execution.error_reason = Some(reason.clone());
@@ -382,6 +440,12 @@ fn project_workflow_execution_with_payload_policy(
                 );
             }
             WorkflowEvent::ExecutionAborted { timestamp, .. } => {
+                require_replay(
+                    execution_id,
+                    "execution_aborted",
+                    lifecycle.replay_aborted(),
+                    true,
+                )?;
                 execution.status = ExecutionStatus::Aborted;
                 execution.completed_at = Some(*timestamp);
                 execution.error_reason = None;
@@ -397,12 +461,12 @@ fn project_workflow_execution_with_payload_policy(
             WorkflowEvent::ExecutionInterrupted {
                 reason, timestamp, ..
             } => {
-                if execution.status.is_finished() {
-                    return Err(format!(
-                        "execution {execution_id} cannot be interrupted from status {}",
-                        execution.status.as_str()
-                    ));
-                }
+                require_replay(
+                    execution_id,
+                    "execution_interrupted",
+                    lifecycle.replay_interrupted(*reason),
+                    false,
+                )?;
                 let resume_from_node = match payload_policy {
                     ProjectionPayloadPolicy::Retained => {
                         let routing_replay = routing_replay
@@ -432,12 +496,12 @@ fn project_workflow_execution_with_payload_policy(
             WorkflowEvent::ExecutionResumed {
                 resume_from_node, ..
             } => {
-                if execution.status != ExecutionStatus::Interrupted {
-                    return Err(format!(
-                        "execution {execution_id} cannot resume from status {}",
-                        execution.status.as_str()
-                    ));
-                }
+                require_replay(
+                    execution_id,
+                    "execution_resumed",
+                    lifecycle.replay_resumed(),
+                    false,
+                )?;
                 if execution
                     .resume_from_node
                     .as_deref()
@@ -477,6 +541,24 @@ fn project_workflow_execution_with_payload_policy(
         execution,
         routing_replay,
     }))
+}
+
+fn require_replay(
+    execution_id: &str,
+    event_name: &str,
+    outcome: ReplayOutcome,
+    allow_not_applicable: bool,
+) -> Result<(), String> {
+    match outcome {
+        ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied => Ok(()),
+        ReplayOutcome::NotApplicable if allow_not_applicable => Ok(()),
+        ReplayOutcome::NotApplicable => Err(format!(
+            "execution {execution_id} cannot apply {event_name} from its current lifecycle state"
+        )),
+        ReplayOutcome::Rejected(reason) => Err(format!(
+            "execution {execution_id} rejected {event_name}: {reason:?}"
+        )),
+    }
 }
 
 fn derive_resume_from_node(

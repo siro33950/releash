@@ -14,7 +14,7 @@ use crate::domain::workflow::NodeExecutionFailureKind;
 /// workflow engine 内部の node 完了 / 失敗遷移を表す typed command。
 ///
 /// UI / Tauri command / CLI はこの enum を組み立てない。外部 mutation は
-/// `WorkflowRuntimeService::{abort_workflow_execution, resolve_workflow_approval, submit_workflow_output}`
+/// `WorkflowRuntimeExecutor::{abort_workflow_execution, resolve_workflow_approval, submit_workflow_output}`
 /// などの runtime primitive wrapper を呼び、この enum は internal node event の commit
 /// 境界だけに閉じ込める。
 #[derive(Debug, Clone)]

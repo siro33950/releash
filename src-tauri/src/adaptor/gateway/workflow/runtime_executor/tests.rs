@@ -187,7 +187,7 @@ fn workflow_resolve_rejects_ambiguous_model_in_multiple_backends() {
     let registry = make_workflow_test_registry(&["shared"], &["shared"]);
     let err = resolve_node_model_with_registry(&registry, "shared").unwrap_err();
     match err {
-        WorkflowEngineError::InvalidWorkflow(msg) => {
+        WorkflowRuntimeError::InvalidWorkflow(msg) => {
             assert!(msg.contains("could not be resolved"));
         }
         other => panic!("expected InvalidWorkflow, got {:?}", other),
@@ -199,7 +199,7 @@ fn workflow_resolve_rejects_unknown_model() {
     let registry = make_workflow_test_registry(&["claude-4"], &[]);
     let err = resolve_node_model_with_registry(&registry, "unknown").unwrap_err();
     match err {
-        WorkflowEngineError::InvalidWorkflow(msg) => {
+        WorkflowRuntimeError::InvalidWorkflow(msg) => {
             assert!(msg.contains("could not be resolved"));
         }
         other => panic!("expected InvalidWorkflow, got {:?}", other),
@@ -212,7 +212,7 @@ fn workflow_resolve_rejects_invalid_format() {
     // 形式不正（空文字）は登録判定に進む前に拒否される
     let err = resolve_node_model_with_registry(&registry, "").unwrap_err();
     match err {
-        WorkflowEngineError::InvalidWorkflow(msg) => {
+        WorkflowRuntimeError::InvalidWorkflow(msg) => {
             assert!(msg.contains("invalid model"));
         }
         other => panic!("expected InvalidWorkflow, got {:?}", other),
@@ -358,7 +358,7 @@ fn node_session_tab_cleanup_is_view_only_and_preserves_history() {
 
 #[tokio::test]
 async fn persist_outcome_without_new_history_does_not_cleanup_last_node_session() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
@@ -391,7 +391,7 @@ async fn persist_outcome_without_new_history_does_not_cleanup_last_node_session(
 
 #[tokio::test]
 async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
@@ -422,7 +422,7 @@ async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry(
 
 #[tokio::test]
 async fn terminal_state_cleanup_targets_current_and_fanout_node_sessions() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut exec = engine
         .insert_test_approval_execution(
             "/repo",
@@ -476,7 +476,7 @@ async fn terminal_state_cleanup_targets_current_and_fanout_node_sessions() {
 
 #[tokio::test]
 async fn terminal_outcome_cleanup_includes_parent_entry_and_fanout_fanout_children() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
@@ -533,7 +533,7 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_fanout_fanout_childr
 
 #[tokio::test]
 async fn retry_current_node_outcome_releases_previous_session_only() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let snapshot = engine
         .insert_test_approval_execution(
             "/repo",
@@ -582,7 +582,7 @@ fn make_minimal_approval_exec(
     execution_id: &str,
     current_session_id: &str,
     node_name: &str,
-) -> WorkflowExecution {
+) -> WorkflowRuntimeRecord {
     let workflow = WorkflowDefinitionYaml {
         name: "test-workflow".to_string(),
         description: "minimal approval fixture".to_string(),
@@ -602,10 +602,12 @@ fn make_minimal_approval_exec(
             },
         ],
     };
-    WorkflowExecution {
+    WorkflowRuntimeRecord {
         id: execution_id.to_string(),
         workflow,
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 0,
         node_execution_counts: HashMap::from([(node_name.to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -741,7 +743,7 @@ async fn agent_stall_observed_updates_commit_snapshot_without_completing_node() 
         data_dir.path().to_path_buf(),
     );
     app.manage(runtime);
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(data_dir.path().to_path_buf())
         .await;
@@ -967,7 +969,7 @@ async fn agent_stall_observed_append_failure_rolls_back_state_and_execution_stor
         data_dir.path().to_path_buf(),
     );
     app.manage(runtime);
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(data_dir.path().to_path_buf())
         .await;
@@ -1078,7 +1080,7 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_execution_store
         data_dir.path().to_path_buf(),
     );
     app.manage(runtime);
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(data_dir.path().to_path_buf())
         .await;
@@ -1167,7 +1169,7 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_execution_store
     );
 }
 
-// ---- WorkflowExecution ----
+// ---- WorkflowRuntimeRecord ----
 
 fn make_test_node(
     name: &str,
@@ -1325,10 +1327,10 @@ fn make_test_workflow() -> WorkflowDefinitionYaml {
 #[test]
 fn workflow_execution_to_commit_snapshot() {
     let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1365,10 +1367,10 @@ fn workflow_execution_to_commit_snapshot() {
 
 #[test]
 fn is_active_executionning() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1395,10 +1397,12 @@ fn is_active_executionning() {
 
 #[test]
 fn is_active_waiting_approval() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1425,10 +1429,10 @@ fn is_active_waiting_approval() {
 
 #[test]
 fn is_active_completed() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Completed,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Completed),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1455,14 +1459,14 @@ fn is_active_completed() {
 
 #[test]
 fn is_active_failed() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Failed {
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Failed {
             reason: "err".to_string(),
             kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
             retry_count: None,
-        },
+        }),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1489,10 +1493,10 @@ fn is_active_failed() {
 
 #[test]
 fn is_active_aborted() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Aborted,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Aborted),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1522,10 +1526,12 @@ fn is_active_aborted() {
 #[test]
 fn to_commit_snapshot_waiting_approval() {
     let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 3,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1556,14 +1562,14 @@ fn to_commit_snapshot_waiting_approval() {
 #[test]
 fn to_commit_snapshot_failed() {
     let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::Failed {
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Failed {
             reason: "exit code 1".to_string(),
             kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
             retry_count: None,
-        },
+        }),
         current_node_index: 1,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1612,10 +1618,10 @@ fn to_commit_snapshot_failed() {
 #[test]
 fn to_commit_snapshot_aborted() {
     let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::Aborted,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Aborted),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1644,10 +1650,10 @@ fn to_commit_snapshot_aborted() {
 #[test]
 fn to_commit_snapshot_completed() {
     let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::Completed,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Completed),
         current_node_index: 3,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1712,11 +1718,11 @@ fn loop_guard_no_guard_defined() {
 
 // ---- decide_next_node ----
 
-fn make_exec(node_index: usize) -> WorkflowExecution {
-    WorkflowExecution {
+fn make_exec(node_index: usize) -> WorkflowRuntimeRecord {
+    WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: node_index,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -1740,11 +1746,11 @@ fn make_exec(node_index: usize) -> WorkflowExecution {
     }
 }
 
-fn workflow_exec(workflow: WorkflowDefinitionYaml, node_index: usize) -> WorkflowExecution {
-    WorkflowExecution {
+fn workflow_exec(workflow: WorkflowDefinitionYaml, node_index: usize) -> WorkflowRuntimeRecord {
+    WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow,
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: node_index,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -2173,7 +2179,7 @@ fn apply_advance_fails_on_switch_no_match_without_next() {
 
     assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
-        exec.state,
+        exec.state().clone(),
         RuntimeExecutionState::Failed {
             kind: NodeExecutionFailureKind::ValidationFailure,
             ..
@@ -2201,7 +2207,7 @@ fn apply_advance_fails_on_unknown_route_target() {
     exec.apply_advance();
 
     assert!(matches!(
-        exec.state,
+        exec.state().clone(),
         RuntimeExecutionState::Failed {
             kind: NodeExecutionFailureKind::ValidationFailure,
             ..
@@ -2327,7 +2333,7 @@ fn apply_advance_records_fanout_parent_reset_only_when_parent_completes() {
 #[test]
 fn turn_complete_action_not_running() {
     let mut exec = make_exec(0);
-    exec.state = RuntimeExecutionState::Completed;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
     assert_eq!(
         exec.decide_turn_complete_action(0),
         TurnCompleteAction::NotRunning
@@ -2405,7 +2411,7 @@ fn turn_complete_action_unexpected_node_kind_for_fanout() {
 #[test]
 fn turn_complete_action_waiting_approval_state_returns_not_running() {
     let mut exec = make_exec(3);
-    exec.state = RuntimeExecutionState::WaitingApproval;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::WaitingApproval);
     assert_eq!(
         exec.decide_turn_complete_action(0),
         TurnCompleteAction::NotRunning
@@ -2442,7 +2448,7 @@ fn turn_complete_action_auto_no_rules_returns_auto_evaluate_empty() {
 #[test]
 fn decide_approve_action_advances() {
     let mut exec = make_exec(3); // report (approval)
-    exec.state = RuntimeExecutionState::WaitingApproval;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::WaitingApproval);
     exec.decide_approve_action().unwrap();
 }
 
@@ -2463,7 +2469,7 @@ fn validate_start_empty_nodes_returns_err() {
         schemas: Default::default(),
         nodes: vec![],
     };
-    let result = WorkflowExecution::validate_start(&workflow, None);
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, None);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no nodes"));
 }
@@ -2472,7 +2478,7 @@ fn validate_start_empty_nodes_returns_err() {
 fn validate_start_active_workflow_returns_err() {
     let workflow = make_test_workflow();
     let existing = make_exec(0); // Running state
-    let result = WorkflowExecution::validate_start(&workflow, Some(&existing));
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, Some(&existing));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already running"));
 }
@@ -2481,15 +2487,15 @@ fn validate_start_active_workflow_returns_err() {
 fn validate_start_completed_workflow_allows_restart() {
     let workflow = make_test_workflow();
     let mut existing = make_exec(0);
-    existing.state = RuntimeExecutionState::Completed;
-    let result = WorkflowExecution::validate_start(&workflow, Some(&existing));
+    existing.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, Some(&existing));
     assert!(result.is_ok());
 }
 
 #[test]
 fn validate_start_no_existing_returns_ok() {
     let workflow = make_test_workflow();
-    let result = WorkflowExecution::validate_start(&workflow, None);
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, None);
     assert!(result.is_ok());
 }
 
@@ -2506,7 +2512,7 @@ fn validate_start_accepts_command_node() {
             ..NodeDefinition::default()
         }],
     };
-    let result = WorkflowExecution::validate_start(&workflow, None);
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, None);
     assert!(result.is_ok());
 }
 
@@ -2515,25 +2521,25 @@ fn validate_start_accepts_command_node() {
 #[test]
 fn is_terminal_completed() {
     let mut exec = make_exec(0);
-    exec.state = RuntimeExecutionState::Completed;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
     assert!(exec.is_terminal());
 }
 
 #[test]
 fn is_terminal_failed() {
     let mut exec = make_exec(0);
-    exec.state = RuntimeExecutionState::Failed {
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Failed {
         reason: "err".to_string(),
         kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
         retry_count: None,
-    };
+    });
     assert!(exec.is_terminal());
 }
 
 #[test]
 fn is_terminal_aborted() {
     let mut exec = make_exec(0);
-    exec.state = RuntimeExecutionState::Aborted;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Aborted);
     assert!(exec.is_terminal());
 }
 
@@ -2546,7 +2552,7 @@ fn is_terminal_executionning_is_false() {
 #[test]
 fn is_terminal_waiting_approval_is_false() {
     let mut exec = make_exec(0);
-    exec.state = RuntimeExecutionState::WaitingApproval;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::WaitingApproval);
     assert!(!exec.is_terminal());
 }
 
@@ -2729,7 +2735,7 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     let facet_contents = instruction_contents("Fix");
     fix.inputs = vec!["review".to_string()];
     exec.workflow.nodes.push(fix);
-    let outcome = WorkflowRuntimeService::apply_approval_application(
+    let outcome = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -2789,7 +2795,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
     });
     workflow_secret_masker::mask_json_strings(&mut structured, &[secret_env_value]);
 
-    let outcome = WorkflowRuntimeService::apply_approval_application(
+    let outcome = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -3182,7 +3188,7 @@ async fn dispatch_session_start_preserves_startup_timeout_metadata() {
     .unwrap_err();
 
     match err {
-        WorkflowEngineError::AgentRuntime {
+        WorkflowRuntimeError::AgentRuntime {
             failure_kind,
             retry_count,
             ..
@@ -3291,7 +3297,7 @@ async fn build_and_dispatch_node_session_forwards_composed_system_prompt_through
         records: records.clone(),
     };
 
-    let prompt = WorkflowRuntimeService::build_and_dispatch_node_session(
+    let prompt = WorkflowRuntimeExecutor::build_and_dispatch_node_session(
         &gate,
         &node,
         Some(&facet_contents),
@@ -3449,7 +3455,7 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
         _workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
         _kind_context: workflow_runtime_session::NodeRuntimeKindContext,
-    ) -> Result<NodeSessionInfo, WorkflowEngineError> {
+    ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         self.create_node_session_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.created_contexts
@@ -3469,7 +3475,7 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
         _permission_mode: Option<String>,
         _system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         self.dispatch_session_start_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.dispatched_workflow_instructions
@@ -3492,14 +3498,14 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
     async fn append_node_session_started(
         &self,
         _snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         self.append_node_session_started_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self
             .append_node_session_started_should_fail
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(WorkflowEngineError::SessionStore(
+            return Err(WorkflowRuntimeError::SessionStore(
                 "append node session started failed".to_string(),
             ));
         }
@@ -3514,7 +3520,7 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
         _prompt: &str,
         _system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         self.start_agent_turn_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.started_workflow_instructions
@@ -3529,7 +3535,7 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
 /// `executions` に 1 ステップのワークフロー実行を登録する。
 /// 指定された node を current_node_index=0 として登録する。
 fn insert_single_node_execution(
-    execs: &mut HashMap<String, WorkflowExecution>,
+    execs: &mut HashMap<String, WorkflowRuntimeRecord>,
     node: NodeDefinition,
 ) {
     let node_name = node.name.clone();
@@ -3540,10 +3546,10 @@ fn insert_single_node_execution(
         schemas: Default::default(),
         nodes: vec![node],
     };
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-id".to_string(),
         workflow,
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::from([(node_name.clone(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -3577,7 +3583,7 @@ fn insert_single_node_execution(
 }
 
 async fn seed_single_node_facet_contents_for_test(
-    engine: &WorkflowRuntimeService,
+    engine: &WorkflowRuntimeExecutor,
     node_name: &str,
     contents: crate::adaptor::gateway::workflow::facet::FacetContents,
 ) {
@@ -3612,7 +3618,7 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
     //   (e) `executions["/repo"].current_session_id` が `None` のままであること
     // を assert する。`start_node_session` 内の順序を逆転（先に create_node_session
     // → 後に build_node_prompt）させると (b) が 1 となりテストが失敗する。
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
 
     // 参照先ファセットが解決不能な node を含む execution を登録する。
     // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
@@ -3641,7 +3647,7 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
     // (a) build_node_prompt 失敗で InvalidWorkflow エラーになる
     let err = result.expect_err("missing facet must cause start_node_session_with_deps to fail");
     assert!(
-        matches!(err, WorkflowEngineError::InvalidWorkflow(_)),
+        matches!(err, WorkflowRuntimeError::InvalidWorkflow(_)),
         "missing facet must produce InvalidWorkflow error, got: {err:?}"
     );
 
@@ -3699,7 +3705,7 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
     // → NodeSessionStarted append → broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
     // engine.session_workflow_refs と executions["/repo"].current_session_id が
     // 期待通り更新されることを assert する。
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
@@ -3764,7 +3770,7 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
 
 #[tokio::test]
 async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_context() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
     std::fs::create_dir_all(&instructions).unwrap();
@@ -3818,7 +3824,7 @@ async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_co
 
 #[tokio::test]
 async fn start_node_session_with_deps_propagates_node_session_append_failure() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
@@ -3841,7 +3847,7 @@ async fn start_node_session_with_deps_propagates_node_session_append_failure() {
         .expect_err("append failure must propagate to the start flow");
 
     assert!(
-        matches!(&err, WorkflowEngineError::SessionStore(message) if message.contains("append node session started failed")),
+        matches!(&err, WorkflowRuntimeError::SessionStore(message) if message.contains("append node session started failed")),
         "append failure must surface as SessionStore error, got: {err:?}"
     );
     assert_eq!(deps.create_node_session_count(), 1);
@@ -4002,8 +4008,8 @@ fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() 
 
 // ---- decide_approve_action ----
 
-fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> WorkflowExecution {
-    WorkflowExecution {
+fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> WorkflowRuntimeRecord {
+    WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: WorkflowDefinitionYaml {
             name: "test".to_string(),
@@ -4016,7 +4022,7 @@ fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> Workflo
                 rules,
             )],
         },
-        state,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(state),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -4055,14 +4061,14 @@ fn validate_approval_target_missing_values_returns_unauthorized_target() {
         workflow_approval_runtime::validate_approval_target_snapshot(&exec, None, Some("review"));
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        WorkflowRuntimeError::UnauthorizedApprovalTarget(_)
     ));
 
     let result =
         workflow_approval_runtime::validate_approval_target_snapshot(&exec, Some("exec-1"), None);
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        WorkflowRuntimeError::UnauthorizedApprovalTarget(_)
     ));
 }
 
@@ -4076,7 +4082,7 @@ fn validate_approval_target_mismatch_returns_unauthorized_target() {
     );
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        WorkflowRuntimeError::UnauthorizedApprovalTarget(_)
     ));
 
     let result = workflow_approval_runtime::validate_approval_target_snapshot(
@@ -4086,7 +4092,7 @@ fn validate_approval_target_mismatch_returns_unauthorized_target() {
     );
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        WorkflowRuntimeError::UnauthorizedApprovalTarget(_)
     ));
 }
 
@@ -4099,7 +4105,7 @@ fn validate_approval_target_non_waiting_returns_invalid_state() {
         Some("review"),
     );
     let err = result.unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+    assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
     assert!(err.to_string().starts_with("invalid_state:"));
 }
 
@@ -4122,15 +4128,15 @@ fn validate_approval_target_terminal_states_return_invalid_state_without_mutatio
             Some("review"),
         );
         let err = result.unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
-        assert_eq!(exec.state, state);
+        assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
+        assert_eq!(exec.state(), &state);
         assert!(exec.node_history.is_empty());
     }
 }
 
 #[tokio::test]
 async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mutating_state() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     {
         let mut execs = engine.executions.lock().await;
@@ -4141,12 +4147,12 @@ async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mu
         .validate_approval_target("/repo-b", Some("exec-1"), Some("review"))
         .await;
     let err = result.unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::UnauthorizedWorktree(_)));
+    assert!(matches!(err, WorkflowRuntimeError::UnauthorizedWorktree(_)));
     assert!(err.to_string().starts_with("unauthorized_worktree:"));
 
     let execs = engine.executions.lock().await;
     let original = execs.get("/repo-a").unwrap();
-    assert_eq!(original.state, RuntimeExecutionState::WaitingApproval);
+    assert_eq!(original.state(), &RuntimeExecutionState::WaitingApproval);
     assert!(original.node_history.is_empty());
 }
 
@@ -4181,7 +4187,7 @@ fn validate_approval_turn_phase_rejects_unfinished_turns() {
 
 #[tokio::test]
 async fn validate_approval_chat_instruction_limits_current_approval_session() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
@@ -4218,7 +4224,7 @@ async fn validate_approval_chat_instruction_limits_current_approval_session() {
 
 #[tokio::test]
 async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_content() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
@@ -4250,7 +4256,7 @@ async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_con
 
 #[tokio::test]
 async fn validate_approval_chat_instruction_rejects_current_gated_session_before_waiting() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::Running, vec![]);
     exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
@@ -4273,13 +4279,13 @@ async fn validate_approval_chat_instruction_rejects_current_gated_session_before
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::InvalidState(_)
+        WorkflowRuntimeError::InvalidState(_)
     ));
 }
 
 #[tokio::test]
 async fn validate_approval_chat_instruction_rejects_stale_approved_policy_session() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::Running, vec![]);
     exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
     exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
@@ -4336,7 +4342,7 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        WorkflowEngineError::InvalidState(_)
+        WorkflowRuntimeError::InvalidState(_)
     ));
 }
 
@@ -4402,7 +4408,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
     };
 
     let output =
-        WorkflowRuntimeService::extract_last_assistant_text_from_session(&session).unwrap();
+        WorkflowRuntimeExecutor::extract_last_assistant_text_from_session(&session).unwrap();
     assert_eq!(output, "latest approved policy");
 }
 
@@ -4410,7 +4416,7 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
 
 #[test]
 fn apply_approval_application_records_approved_policy_and_advances_once() {
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: WorkflowDefinitionYaml {
             name: "auto-approve".to_string(),
@@ -4430,7 +4436,9 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
                 make_test_node("fix", TestKind::Session, "Fix", vec![], None),
             ],
         },
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -4461,7 +4469,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         "review_node": "code_review_fanout",
         "findings": []
     });
-    let first = WorkflowRuntimeService::apply_approval_application(
+    let first = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -4475,7 +4483,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
     assert_eq!(exec.node_history.len(), 1);
     assert_eq!(*exec.node_execution_counts.get("fix").unwrap(), 1);
 
-    let duplicate = WorkflowRuntimeService::apply_approval_application(
+    let duplicate = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -4488,7 +4496,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         },
     );
     match duplicate {
-        Err(WorkflowEngineError::InvalidState(_)) => {}
+        Err(WorkflowRuntimeError::InvalidState(_)) => {}
         _ => panic!("expected invalid_state"),
     }
     assert_eq!(exec.node_history.len(), 1);
@@ -4497,7 +4505,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
 
 #[test]
 fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "exec-auto-approve".to_string(),
         workflow: WorkflowDefinitionYaml {
             name: "auto-approve-path".to_string(),
@@ -4519,7 +4527,9 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                 make_fanout_node("code_review_fanout", vec![]),
             ],
         },
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 0,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -4557,7 +4567,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         "review_node": "code_review_fanout",
         "findings": []
     });
-    let outcome = WorkflowRuntimeService::apply_approval_application(
+    let outcome = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -4580,7 +4590,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     );
     assert_eq!(exec.node_execution_counts.get("fix"), Some(&1));
 
-    let duplicate = WorkflowRuntimeService::apply_approval_application(
+    let duplicate = WorkflowRuntimeExecutor::apply_approval_application(
         &mut exec,
         ApprovalApplication {
             effective_result: "approved".to_string(),
@@ -4594,7 +4604,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     );
     assert!(matches!(
         duplicate,
-        Err(WorkflowEngineError::InvalidState(_))
+        Err(WorkflowRuntimeError::InvalidState(_))
     ));
     assert_eq!(exec.node_history.len(), 1);
     assert_eq!(exec.node_execution_counts.get("fix"), Some(&1));
@@ -4602,12 +4612,12 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
 
 #[tokio::test]
 async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let worktree_path = "/repo";
     let policy_session_id = uuid::Uuid::new_v4().to_string();
 
     let fix_node = make_test_node("fix", TestKind::Session, "Fix", vec![], None);
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-auto-approve".to_string(),
         workflow: WorkflowDefinitionYaml {
             name: "auto-approve-execute-outcome".to_string(),
@@ -4629,7 +4639,9 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                 fix_node,
             ],
         },
-        state: RuntimeExecutionState::WaitingApproval,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+            RuntimeExecutionState::WaitingApproval,
+        ),
         current_node_index: 1,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -4706,7 +4718,7 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
         None
     );
 
-    exec.state = RuntimeExecutionState::Running;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
     let running = exec.to_commit_snapshot();
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&running, true),
@@ -4722,7 +4734,7 @@ fn workflow_approval_auto_approve_flag_controls_waiting_approval_snapshots() {
     assert!(workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, true));
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, false));
 
-    exec.state = RuntimeExecutionState::Running;
+    exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
     let running = exec.to_commit_snapshot();
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&running, true));
 }
@@ -4751,8 +4763,8 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     );
 }
 
-fn make_normal_node_exec_with_stall_observation() -> WorkflowExecution {
-    let mut exec = WorkflowExecution {
+fn make_normal_node_exec_with_stall_observation() -> WorkflowRuntimeRecord {
+    let mut exec = WorkflowRuntimeRecord {
         id: "normal-stall-clear".to_string(),
         workflow: WorkflowDefinitionYaml {
             name: "normal-stall-clear-wf".to_string(),
@@ -4776,7 +4788,7 @@ fn make_normal_node_exec_with_stall_observation() -> WorkflowExecution {
                 ),
             ],
         },
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::from([("plan".to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -4828,10 +4840,10 @@ fn normal_node_completion_retry_and_transition_clear_stall_observations() {
 // R4-02: make_node_history_entryがcontract resultをRuntimeArtifact.resultに保存する
 #[test]
 fn make_node_history_entry_saves_contract_result_to_node_output() {
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -4879,10 +4891,10 @@ fn make_node_history_entry_saves_contract_result_to_node_output() {
 
 #[test]
 fn make_node_history_entry_no_artifact_no_node_output() {
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -4956,10 +4968,10 @@ fn make_on_exhausted_workflow() -> WorkflowDefinitionYaml {
 
 #[test]
 fn on_exhausted_transitions_to_fallback_node() {
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 1, // review
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -4997,10 +5009,10 @@ fn on_exhausted_transitions_to_fallback_node() {
 
 #[test]
 fn check_loop_guard_exceeded_with_on_exhausted() {
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -5080,10 +5092,10 @@ fn on_exhausted_chain_transitions() {
             make_test_node("node_c", TestKind::Session, "C", vec![], None),
         ],
     };
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: wf,
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -5167,7 +5179,7 @@ fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
 
     assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
-        exec.state,
+        exec.state().clone(),
         RuntimeExecutionState::Failed {
             ref reason,
             kind: NodeExecutionFailureKind::ValidationFailure,
@@ -5274,10 +5286,10 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
             make_fanout_child("review_style"),
         ],
     };
-    let mut exec = WorkflowExecution {
+    let mut exec = WorkflowRuntimeRecord {
         id: "exec-1".to_string(),
         workflow: wf,
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -5553,14 +5565,14 @@ fn node_session_inherits_parent_permission_and_backend_on_initial_save() {
 
 // ---- execution_id 主体性に関する engine レベル統合テスト ----
 
-/// engine が WorkflowExecution を登録する際に、`WorkflowExecution.id` と
+/// engine が WorkflowRuntimeRecord を登録する際に、`WorkflowRuntimeRecord.id` と
 /// Execution Store の `WorkflowExecutionSummary.execution_id` が同一 execution_id を共有することを検証する。
-/// finding 13 対応: `return 値 execution_id = WorkflowExecution.id = active summary の execution_id
+/// finding 13 対応: `return 値 execution_id = WorkflowRuntimeRecord.id = active summary の execution_id
 /// = workflow_executions/{execution_id}.json の execution_id` の一致を engine レベルで検証する。
 #[tokio::test]
 async fn engine_execution_id_consistency_across_execution_and_execution_store_metadata() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -5569,10 +5581,10 @@ async fn engine_execution_id_consistency_across_execution_and_execution_store_me
     let execution_id = uuid::Uuid::new_v4().to_string();
     let worktree_path = "/wt/a";
     let workflow = make_minimal_workflow();
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: execution_id.clone(),
         workflow: workflow.clone(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -5617,7 +5629,7 @@ async fn engine_execution_id_consistency_across_execution_and_execution_store_me
         .await
         .unwrap();
 
-    // (1) WorkflowExecution.id
+    // (1) WorkflowRuntimeRecord.id
     let exec_id = {
         let execs = engine.executions.lock().await;
         execs.get(&execution_id).unwrap().id.clone()
@@ -5658,14 +5670,14 @@ async fn engine_execution_id_consistency_across_execution_and_execution_store_me
 /// validate_start は `AlreadyActive` を返す。
 #[tokio::test]
 async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktree() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let workflow = make_minimal_workflow();
     let worktree_path = "/wt/dup";
 
-    let exec = WorkflowExecution {
+    let exec = WorkflowRuntimeRecord {
         id: "existing-execution".to_string(),
         workflow: workflow.clone(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -5694,9 +5706,9 @@ async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktr
     let execs = engine.executions.lock().await;
     let existing = find_by_worktree(&execs, worktree_path).map(|(_, e)| e);
     assert!(existing.is_some());
-    let result = WorkflowExecution::validate_start(&workflow, existing);
+    let result = WorkflowRuntimeRecord::validate_start(&workflow, existing);
     match result {
-        Err(WorkflowEngineError::AlreadyActive(_)) => {}
+        Err(WorkflowRuntimeError::AlreadyActive(_)) => {}
         other => panic!("expected AlreadyActive, got {other:?}"),
     }
 
@@ -5713,7 +5725,7 @@ async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktr
 #[tokio::test]
 async fn engine_state_transitions_sync_to_execution_store_active_and_completed() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -5841,8 +5853,8 @@ fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_s
         nodes: vec![],
     };
     assert!(matches!(
-        workflow_engine_start_guard::validate_workflow_shape(&empty),
-        Err(WorkflowEngineError::InvalidWorkflow(_))
+        workflow_runtime_start_guard::validate_workflow_shape(&empty),
+        Err(WorkflowRuntimeError::InvalidWorkflow(_))
     ));
 
     // command node を含む workflow は実行可能
@@ -5859,11 +5871,11 @@ fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_s
             None,
         )],
     };
-    assert!(workflow_engine_start_guard::validate_workflow_shape(&command).is_ok());
+    assert!(workflow_runtime_start_guard::validate_workflow_shape(&command).is_ok());
 
     // 正常な workflow は Ok
     let ok = make_minimal_workflow();
-    assert!(workflow_engine_start_guard::validate_workflow_shape(&ok).is_ok());
+    assert!(workflow_runtime_start_guard::validate_workflow_shape(&ok).is_ok());
 }
 
 /// G3: `execution_id_for_worktree` を Execution Store 経由で参照すれば、parent ChatSession 作成より前に
@@ -5871,7 +5883,7 @@ fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_s
 /// 構成要素（Execution Store の active index）を直接検証する。
 #[tokio::test]
 async fn execution_store_active_index_resolves_worktree_to_execution_id_for_duplicate_check() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -5911,11 +5923,11 @@ async fn execution_store_active_index_resolves_worktree_to_execution_id_for_dupl
 /// 回帰防止。
 #[tokio::test]
 async fn handle_auto_complete_fixture_uses_execution_id_as_executions_key() {
-    let engine = WorkflowRuntimeService::new_for_test();
-    let exec = WorkflowExecution {
+    let engine = WorkflowRuntimeExecutor::new_for_test();
+    let exec = WorkflowRuntimeRecord {
         id: "auto-complete-execution".to_string(),
         workflow: make_minimal_workflow(),
-        state: RuntimeExecutionState::Running,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -5960,11 +5972,11 @@ fn make_exec_with(
     id: &str,
     worktree_path: &str,
     state: RuntimeExecutionState,
-) -> WorkflowExecution {
-    WorkflowExecution {
+) -> WorkflowRuntimeRecord {
+    WorkflowRuntimeRecord {
         id: id.to_string(),
         workflow: make_minimal_workflow(),
-        state,
+        lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(state),
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
         loop_guard_reset_baselines: Default::default(),
@@ -5993,7 +6005,7 @@ fn make_exec_with(
 /// terminal execution と active execution が共存しても production 経路で取り違えない。
 #[tokio::test]
 async fn find_by_worktree_filters_terminal_executions_and_returns_active_only() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let worktree_path = "/wt/shared";
     let terminal_execution_id = "terminal-execution".to_string();
     let active_execution_id = "active-execution".to_string();
@@ -6036,7 +6048,7 @@ async fn find_by_worktree_filters_terminal_executions_and_returns_active_only() 
 #[tokio::test]
 async fn abort_workflow_by_execution_id_is_noop_for_terminal_execution_even_if_active_shares_worktree(
 ) {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let worktree_path = "/wt/coexist";
     let terminal_execution_id = "terminal-abort-target".to_string();
     let active_execution_id = "active-bystander".to_string();
@@ -6083,7 +6095,7 @@ async fn abort_workflow_by_execution_id_is_noop_for_terminal_execution_even_if_a
 /// reservation は最初の副作用であり、失敗時は他の副作用が走らない。
 #[tokio::test]
 async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on_conflict() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -6157,7 +6169,7 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
 
 #[tokio::test]
 async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_already_active() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -6186,7 +6198,7 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
         .await
         .unwrap_err();
 
-    assert!(matches!(err, WorkflowEngineError::AlreadyActive(_)));
+    assert!(matches!(err, WorkflowRuntimeError::AlreadyActive(_)));
 }
 
 /// Spec issues-1011 finding 10: authoritative sync により、active な execution が
@@ -6197,7 +6209,7 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
 async fn execution_store_completed_listing_includes_completed_failed_aborted_via_authoritative_sync(
 ) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -6286,7 +6298,7 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
 #[tokio::test]
 async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_state() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -6339,7 +6351,7 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::SessionStore(_)));
+    assert!(matches!(err, WorkflowRuntimeError::SessionStore(_)));
 
     workflow_runtime_commit::rollback_execution_projection_after_execution_store_sync_failure(
         &engine.executions,
@@ -6355,7 +6367,7 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
         .await
         .get(&execution_id)
         .unwrap()
-        .state
+        .state()
         .clone();
     assert_eq!(exec_state, RuntimeExecutionState::Running);
     assert_eq!(
@@ -6372,7 +6384,7 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
 /// 取り違えないことを engine state 観測で保証する。
 #[tokio::test]
 async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_execution_state() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let worktree_path = "/wt/sibling";
     let terminal_execution_id = uuid::Uuid::new_v4().to_string();
     let active_execution_id = uuid::Uuid::new_v4().to_string();
@@ -6399,7 +6411,7 @@ async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_execution
     // execution_id ベース lookup: terminal を引いても active のスナップショットには影響しない。
     let initial_active_state = {
         let execs = engine.executions.lock().await;
-        execs.get(&active_execution_id).map(|e| e.state.clone())
+        execs.get(&active_execution_id).map(|e| e.state().clone())
     };
     assert_eq!(initial_active_state, Some(RuntimeExecutionState::Running));
 
@@ -6413,7 +6425,7 @@ async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_execution
     // active execution には触れていない（同一 worktree でも誤って中断しない）
     let final_active_state = {
         let execs = engine.executions.lock().await;
-        execs.get(&active_execution_id).map(|e| e.state.clone())
+        execs.get(&active_execution_id).map(|e| e.state().clone())
     };
     assert_eq!(final_active_state, Some(RuntimeExecutionState::Running));
 }
@@ -6422,7 +6434,7 @@ async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_execution
 /// 直接更新し、同一 worktree に別 execution が存在しても指定 execution 以外へ適用しない。
 #[tokio::test]
 async fn approval_for_execution_id_updates_only_target_execution_when_worktree_is_shared() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let worktree_path = "/wt/approval-shared";
     let target_execution_id = uuid::Uuid::new_v4().to_string();
     let sibling_execution_id = uuid::Uuid::new_v4().to_string();
@@ -6454,19 +6466,19 @@ async fn approval_for_execution_id_updates_only_target_execution_when_worktree_i
     let execs = engine.executions.lock().await;
     let target = execs.get(&target_execution_id).unwrap();
     let sibling = execs.get(&sibling_execution_id).unwrap();
-    assert_eq!(target.state, RuntimeExecutionState::Completed);
+    assert_eq!(target.state(), &RuntimeExecutionState::Completed);
     assert_eq!(target.node_history.len(), 1);
-    assert_eq!(sibling.state, RuntimeExecutionState::WaitingApproval);
+    assert_eq!(sibling.state(), &RuntimeExecutionState::WaitingApproval);
     assert!(sibling.node_history.is_empty());
 }
 
 /// Spec issues-1011 finding 13: `start_workflow` 本体の core 起動経路が払い出す
-/// execution_id と、`WorkflowExecution.id` / active summary / workflow_executions/{execution_id}.json が
+/// execution_id と、`WorkflowRuntimeRecord.id` / active summary / workflow_executions/{execution_id}.json が
 /// 一貫し、同一 worktree への重複起動を拒否することを直接検証する。
 #[tokio::test]
 async fn start_workflow_core_records_execution_id_and_rejects_duplicate_worktree() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -6548,7 +6560,7 @@ async fn start_workflow_core_records_execution_id_and_rejects_duplicate_worktree
         .await;
     assert!(matches!(
         duplicate,
-        Err(WorkflowEngineError::AlreadyActive(_))
+        Err(WorkflowRuntimeError::AlreadyActive(_))
     ));
 
     let empty_request_execution_id = engine
@@ -6577,7 +6589,7 @@ async fn start_workflow_core_records_execution_id_and_rejects_duplicate_worktree
 #[tokio::test]
 async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -6657,7 +6669,7 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
 // 撤去済み: rollback_created_parent_session は parent ChatSession 機構撤去で消滅した。
 // 旧テスト `start_workflow_rollback_deletes_created_parent_session` も役目を終えた。
 
-async fn active_only_summary(engine: &WorkflowRuntimeService) -> Vec<String> {
+async fn active_only_summary(engine: &WorkflowRuntimeExecutor) -> Vec<String> {
     engine
         .list_active_executions()
         .await
@@ -6674,7 +6686,7 @@ async fn active_only_summary(engine: &WorkflowRuntimeService) -> Vec<String> {
 #[tokio::test]
 async fn execution_store_terminal_statuses_propagate_status_field_in_completed_listing() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
@@ -6769,7 +6781,7 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
 /// `WaitingApproval` でない場合に Err を返す（任意 node session への注入経路を塞ぐ）。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&execution_id, "/wt/x", RuntimeExecutionState::Running);
     exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
@@ -6784,14 +6796,14 @@ async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() 
         .resolve_chat_session_for_approval(&execution_id)
         .await
         .unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+    assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
 }
 
 /// Spec issues-1011 finding 3: `resolve_chat_session_for_approval` は current node が
 /// approval-gated session でない場合に拒否する。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(
         &execution_id,
@@ -6810,13 +6822,13 @@ async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
         .resolve_chat_session_for_approval(&execution_id)
         .await
         .unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+    assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
 }
 
 /// Spec issues-1011 finding 3: 全条件揃った場合のみ session_id / worktree_path を返す。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(
         &execution_id,
@@ -6843,7 +6855,7 @@ async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
 /// 同一 worktree に terminal + active がある状況で terminal 側を狙う注入経路を防ぐ。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_rejects_terminal_execution() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&execution_id, "/wt/x", RuntimeExecutionState::Completed);
     exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
@@ -6858,14 +6870,14 @@ async fn resolve_chat_session_for_approval_rejects_terminal_execution() {
         .resolve_chat_session_for_approval(&execution_id)
         .await
         .unwrap_err();
-    assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+    assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
 }
 
 /// Spec issues-1011 finding 5: terminal transition 経路で `cleanup_session_workflow_refs_by_execution_id`
 /// は対象 execution の refs のみを削除し、同一 worktree の別 active execution の refs は残す。
 #[tokio::test]
 async fn cleanup_session_workflow_refs_by_execution_id_preserves_sibling_execution_refs() {
-    let engine = WorkflowRuntimeService::new_for_test();
+    let engine = WorkflowRuntimeExecutor::new_for_test();
     let terminal_execution_id = uuid::Uuid::new_v4().to_string();
     let active_execution_id = uuid::Uuid::new_v4().to_string();
 
@@ -7080,7 +7092,7 @@ mod dispatch_boundary_tests {
     fn make_waiting_approval_execution(
         execution_id: &str,
         worktree_path: &str,
-    ) -> WorkflowExecution {
+    ) -> WorkflowRuntimeRecord {
         let workflow = make_approval_only_workflow();
         make_waiting_approval_execution_with_workflow(execution_id, worktree_path, workflow)
     }
@@ -7089,14 +7101,16 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         worktree_path: &str,
         workflow: WorkflowDefinitionYaml,
-    ) -> WorkflowExecution {
+    ) -> WorkflowRuntimeRecord {
         let node_name = workflow.nodes[0].name.clone();
         let node_kind = workflow.nodes[0].kind_name();
         let node_execution_id = format!("{execution_id}-{node_name}-1");
-        WorkflowExecution {
+        WorkflowRuntimeRecord {
             id: execution_id.to_string(),
             workflow,
-            state: RuntimeExecutionState::WaitingApproval,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(
+                RuntimeExecutionState::WaitingApproval,
+            ),
             current_node_index: 0,
             node_execution_counts: HashMap::from([(node_name.clone(), 1)]),
             loop_guard_reset_baselines: Default::default(),
@@ -7157,7 +7171,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn install_test_fanout(exec: &mut WorkflowExecution, children: Vec<FanoutChildRuntime>) {
+    fn install_test_fanout(exec: &mut WorkflowRuntimeRecord, children: Vec<FanoutChildRuntime>) {
         let parent = exec
             .node_executions
             .first_mut()
@@ -7214,7 +7228,10 @@ mod dispatch_boundary_tests {
         });
     }
 
-    fn append_started_events_for_execution(data_dir: &std::path::Path, exec: &WorkflowExecution) {
+    fn append_started_events_for_execution(
+        data_dir: &std::path::Path,
+        exec: &WorkflowRuntimeRecord,
+    ) {
         let mut events = vec![WorkflowEvent::ExecutionStarted {
             execution_id: exec.id.clone(),
             workflow_name: exec.workflow.name.clone(),
@@ -7243,15 +7260,23 @@ mod dispatch_boundary_tests {
                     timestamp: node_execution.started_at,
                 });
             }
+            if node_execution.status == NodeExecutionStatus::WaitingApproval {
+                events.push(WorkflowEvent::ApprovalRequested {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: node_execution.id.clone(),
+                    node_name: node_execution.node_name.clone(),
+                    timestamp: node_execution.started_at,
+                });
+            }
         }
         WorkflowEventLog::new(data_dir)
             .append_batch(&events)
             .unwrap();
     }
 
-    fn same_name_fanout_approval_execution() -> WorkflowExecution {
+    fn same_name_fanout_approval_execution() -> WorkflowRuntimeRecord {
         let mut exec = make_waiting_approval_execution("execution-fanout-approval", "/wt/fanout");
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = None;
         install_test_fanout(
             &mut exec,
@@ -7287,7 +7312,7 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(
             error,
-            WorkflowEngineError::InvalidState(message)
+            WorkflowRuntimeError::InvalidState(message)
                 if message.contains("2 active fanout executions")
                     && message.contains("node_execution_id is required")
                     && message.contains("ne-review-child-0")
@@ -7496,7 +7521,7 @@ mod dispatch_boundary_tests {
     #[derive(Clone)]
     struct RecoveredOrphanCommandGateway {
         app: tauri::AppHandle<tauri::test::MockRuntime>,
-        engine: Arc<WorkflowRuntimeService>,
+        engine: Arc<WorkflowRuntimeExecutor>,
         session_store: Arc<crate::usecase::agent_session::session::SessionStore>,
         agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     }
@@ -7738,7 +7763,7 @@ mod dispatch_boundary_tests {
 
         // A fresh engine has no runtime-local session map. Wrong durable
         // coordinates fail closed before any workflow event is appended.
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
         let mut mismatched = command.clone();
@@ -7952,7 +7977,7 @@ mod dispatch_boundary_tests {
             parent_attempt: Some(1),
             order: 0,
         };
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
         assert_eq!(
@@ -7999,7 +8024,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn abort_workflow_by_execution_id_clears_stall_observations_in_live_and_projection() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -8018,7 +8043,7 @@ mod dispatch_boundary_tests {
         let session_id = "abort-stall-session";
         let node_name = "review";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.node_executions[0].status = NodeExecutionStatus::Running;
         exec.current_session_id = Some(session_id.to_string());
         exec.node_executions[0].session_id = Some(session_id.to_string());
@@ -8161,8 +8186,8 @@ mod dispatch_boundary_tests {
     }
 
     async fn insert_execution_and_register_active(
-        engine: &WorkflowRuntimeService,
-        exec: WorkflowExecution,
+        engine: &WorkflowRuntimeExecutor,
+        exec: WorkflowRuntimeRecord,
         created_from: ExecutionOrigin,
     ) {
         let execution_id = exec.id.clone();
@@ -8171,7 +8196,7 @@ mod dispatch_boundary_tests {
             .register_active_execution(WorkflowExecutionMetadata {
                 execution_id: execution_id.clone(),
                 workflow_name: exec.workflow.name.clone(),
-                status: match exec.state {
+                status: match exec.state() {
                     RuntimeExecutionState::WaitingApproval => ExecutionStatus::WaitingApproval,
                     _ => ExecutionStatus::Running,
                 },
@@ -8191,7 +8216,10 @@ mod dispatch_boundary_tests {
         engine.executions.lock().await.insert(execution_id, exec);
     }
 
-    fn resumable_two_node_execution(execution_id: &str, worktree_path: &str) -> WorkflowExecution {
+    fn resumable_two_node_execution(
+        execution_id: &str,
+        worktree_path: &str,
+    ) -> WorkflowRuntimeRecord {
         let workflow = WorkflowDefinitionYaml {
             name: "resume-checkpoint-wf".to_string(),
             description: "resume from the last confirmed node".to_string(),
@@ -8214,10 +8242,10 @@ mod dispatch_boundary_tests {
                 ),
             ],
         };
-        WorkflowExecution {
+        WorkflowRuntimeRecord {
             id: execution_id.to_string(),
             workflow,
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 1,
             node_execution_counts: HashMap::from([
                 ("prepare".to_string(), 1),
@@ -8277,7 +8305,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn append_resumable_two_node_events(data_dir: &std::path::Path, exec: &WorkflowExecution) {
+    fn append_resumable_two_node_events(data_dir: &std::path::Path, exec: &WorkflowRuntimeRecord) {
         let prepare_id = format!("{}-prepare-1", exec.id);
         let execute_id = format!("{}-execute-1", exec.id);
         WorkflowEventLog::new(data_dir)
@@ -8353,7 +8381,7 @@ mod dispatch_boundary_tests {
         permission_mode: &str,
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -8394,7 +8422,7 @@ mod dispatch_boundary_tests {
 
         let executions = engine.executions.lock().await;
         let resumed = executions.get(&execution_id).expect("resumed runtime");
-        assert_eq!(resumed.state, RuntimeExecutionState::Running);
+        assert_eq!(resumed.state(), &RuntimeExecutionState::Running);
         assert_eq!(resumed.current_node_index, 1);
         assert_eq!(resumed.node_execution_counts["prepare"], 1);
         assert_eq!(resumed.node_execution_counts["execute"], 2);
@@ -8480,7 +8508,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn public_resume_preserves_reset_aware_routing_parity_with_uninterrupted_execution() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -8531,10 +8559,10 @@ mod dispatch_boundary_tests {
         counts_at_reset.insert("fix".to_string(), 3);
         counts_at_reset.insert("route".to_string(), 1);
 
-        let mut execution = WorkflowExecution {
+        let mut execution = WorkflowRuntimeRecord {
             id: execution_id.clone(),
             workflow: workflow.clone(),
-            state: RuntimeExecutionState::Running,
+            lifecycle: WorkflowRuntimeRecord::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 2,
             node_execution_counts: counts_at_reset.clone(),
             loop_guard_reset_baselines: reset_baselines.clone(),
@@ -8700,7 +8728,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn resume_required_event_append_failure_rolls_back_every_precommit_state() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -8800,7 +8828,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn b040_workflow_resume_is_rejected_before_mutation_for_owned_session_recovery() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -8919,7 +8947,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn resume_metadata_commit_failure_is_accepted_with_a_crash_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -8987,7 +9015,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn resume_runtime_start_failure_is_accepted_with_a_crash_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -9060,7 +9088,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn partial_fanout_resume_reuses_confirmed_child_and_restarts_only_pending_child() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -9432,7 +9460,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn explicit_stop_accepts_waiting_approval() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (_session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -9466,7 +9494,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn explicit_stop_waits_for_session_turn_activation_and_interrupts_the_started_turn() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -9603,13 +9631,13 @@ mod dispatch_boundary_tests {
 
     struct PausedFanoutActivation {
         app: DispatchTestApp,
-        engine: WorkflowRuntimeService,
+        engine: WorkflowRuntimeExecutor,
         session_store: Arc<SessionStore>,
         agent_runtime: Arc<AgentSessionRuntimeUsecase>,
         controller: crate::test_support::TestAgentRuntimeController,
         execution_id: String,
         child_session_ids: Vec<String>,
-        start_task: tokio::task::JoinHandle<Result<String, WorkflowEngineError>>,
+        start_task: tokio::task::JoinHandle<Result<String, WorkflowRuntimeError>>,
         _worktree: TempDir,
     }
 
@@ -9617,7 +9645,7 @@ mod dispatch_boundary_tests {
         wait_for: PausedFanoutActivationWait,
     ) -> PausedFanoutActivation {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -9906,7 +9934,7 @@ mod dispatch_boundary_tests {
         .await
         .expect("failed stop must decide rollback without waiting for backend start")
         .expect_err("the injected append failure must reject stop");
-        assert!(matches!(stop_error, WorkflowEngineError::SessionStore(_)));
+        assert!(matches!(stop_error, WorkflowRuntimeError::SessionStore(_)));
         assert_eq!(
             engine
                 .execution_store()
@@ -9955,7 +9983,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn stop_append_failure_resumes_the_paused_session_activation_and_restores_running() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -10036,7 +10064,7 @@ mod dispatch_boundary_tests {
         .await
         .expect("failed stop append must roll back without waiting for the paused backend")
         .expect_err("injected stop append failure must be returned");
-        assert!(matches!(stop_error, WorkflowEngineError::SessionStore(_)));
+        assert!(matches!(stop_error, WorkflowRuntimeError::SessionStore(_)));
         let stop_error = stop_error.to_string();
         assert!(stop_error.contains("ExecutionInterrupted log failed"));
         assert!(stop_error.contains("interruption reservation rollback failed"));
@@ -10091,7 +10119,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn active_abort_cancels_a_stuck_session_activation_and_interrupts_the_turn() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -10201,7 +10229,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn active_abort_keeps_activation_cancelled_after_metadata_projection_failure() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -10324,7 +10352,7 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let missing_id = uuid::Uuid::new_v4().to_string();
 
@@ -10332,7 +10360,7 @@ mod dispatch_boundary_tests {
             engine
                 .stop_workflow_execution(app.handle(), &agent_runtime, &missing_id,)
                 .await,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
         assert!(matches!(
             engine
@@ -10343,7 +10371,7 @@ mod dispatch_boundary_tests {
                     &missing_id,
                 )
                 .await,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
         assert!(matches!(
             engine
@@ -10355,7 +10383,7 @@ mod dispatch_boundary_tests {
                     None,
                 )
                 .await,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
 
         let running_id = uuid::Uuid::new_v4().to_string();
@@ -10387,7 +10415,7 @@ mod dispatch_boundary_tests {
                     &running_id,
                 )
                 .await,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         engine
             .execution_store
@@ -10443,7 +10471,7 @@ mod dispatch_boundary_tests {
             engine
                 .stop_workflow_execution(app.handle(), &agent_runtime, &running_id,)
                 .await,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         engine
             .abort_workflow_execution(
@@ -10499,13 +10527,13 @@ mod dispatch_boundary_tests {
                     &completed_id,
                 )
                 .await,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         assert!(matches!(
             engine
                 .stop_workflow_execution(app.handle(), &agent_runtime, &completed_id,)
                 .await,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         assert!(matches!(
             engine
@@ -10517,10 +10545,10 @@ mod dispatch_boundary_tests {
                     None,
                 )
                 .await,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
 
-        let mismatch_engine = WorkflowRuntimeService::new(
+        let mismatch_engine = WorkflowRuntimeExecutor::new(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(RewritingManagedWorktreeResolver),
             None,
@@ -10551,7 +10579,7 @@ mod dispatch_boundary_tests {
             mismatch_engine
                 .stop_workflow_execution(app.handle(), &agent_runtime, &mismatch_id,)
                 .await,
-            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+            Err(WorkflowRuntimeError::UnauthorizedWorktree(_))
         ));
         assert!(matches!(
             mismatch_engine
@@ -10562,7 +10590,7 @@ mod dispatch_boundary_tests {
                     &mismatch_id,
                 )
                 .await,
-            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+            Err(WorkflowRuntimeError::UnauthorizedWorktree(_))
         ));
         assert!(matches!(
             mismatch_engine
@@ -10574,7 +10602,7 @@ mod dispatch_boundary_tests {
                     None,
                 )
                 .await,
-            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+            Err(WorkflowRuntimeError::UnauthorizedWorktree(_))
         ));
     }
 
@@ -10628,7 +10656,7 @@ mod dispatch_boundary_tests {
 
     async fn start_command_workflow_nowait_for_test(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         workflow: WorkflowDefinitionYaml,
         worktree_path: &std::path::Path,
     ) -> String {
@@ -10652,7 +10680,7 @@ mod dispatch_boundary_tests {
 
     async fn start_command_workflow_for_test(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         workflow: WorkflowDefinitionYaml,
         worktree_path: &std::path::Path,
     ) -> String {
@@ -10690,7 +10718,7 @@ mod dispatch_boundary_tests {
             .collect()
     }
 
-    async fn wait_for_active_command(engine: &WorkflowRuntimeService, execution_id: &str) {
+    async fn wait_for_active_command(engine: &WorkflowRuntimeExecutor, execution_id: &str) {
         for _ in 0..100 {
             if engine
                 .active_command_executions
@@ -10707,7 +10735,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_fanout_child_session(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
         child_name: &str,
     ) -> String {
@@ -10737,7 +10765,7 @@ mod dispatch_boundary_tests {
         );
     }
 
-    async fn wait_for_inactive_command(engine: &WorkflowRuntimeService, execution_id: &str) {
+    async fn wait_for_inactive_command(engine: &WorkflowRuntimeExecutor, execution_id: &str) {
         for _ in 0..500 {
             if !engine
                 .active_command_executions
@@ -10789,7 +10817,7 @@ mod dispatch_boundary_tests {
 
     async fn wait_for_execution_terminal(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
     ) {
         let data_dir = dispatch_data_dir(app.handle());
@@ -10827,7 +10855,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_execution_status(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
         expected: ExecutionStatus,
     ) {
@@ -10985,7 +11013,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_top_level_session(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
         node_name: &str,
     ) -> (String, String) {
@@ -11025,7 +11053,7 @@ mod dispatch_boundary_tests {
             let executions = engine.executions.lock().await;
             executions.get(execution_id).map(|execution| {
                 (
-                    execution.state.clone(),
+                    execution.state().clone(),
                     execution.workflow.nodes[execution.current_node_index]
                         .name
                         .clone(),
@@ -11041,7 +11069,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_active_fanout_children(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
         parent_node: &str,
         expected_count: usize,
@@ -11084,7 +11112,7 @@ mod dispatch_boundary_tests {
             .get(execution_id)
             .map(|execution| {
                 (
-                    execution.state.clone(),
+                    execution.state().clone(),
                     execution
                         .workflow
                         .nodes
@@ -11127,7 +11155,7 @@ mod dispatch_boundary_tests {
 
     async fn complete_top_level_session(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
@@ -11172,7 +11200,7 @@ mod dispatch_boundary_tests {
 
     async fn complete_review_fanout(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
@@ -11219,7 +11247,7 @@ mod dispatch_boundary_tests {
 
     async fn complete_and_approve_fix_fanout(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
@@ -11280,7 +11308,7 @@ mod dispatch_boundary_tests {
 
     async fn complete_and_approve_terminal_session(
         app: &DispatchTestApp,
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
@@ -11331,7 +11359,7 @@ mod dispatch_boundary_tests {
     async fn canonical_full_pipeline_executes_command_fanout_approval_loop_and_switch_path() {
         let _env_lock = crate::test_support::TEST_ENV_LOCK.lock();
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime, _canonical_store) =
@@ -11521,7 +11549,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn canonical_full_pipeline_loop_guard_exhaustion_routes_to_give_up() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
@@ -11585,7 +11613,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn canonical_full_pipeline_apply_fixes_loop_guard_exhaustion_routes_to_give_up() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
@@ -11661,7 +11689,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn canonical_full_pipeline_triage_loop_guard_exhaustion_routes_to_escalate() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
@@ -11754,7 +11782,7 @@ mod dispatch_boundary_tests {
     async fn canonical_full_pipeline_switch_executes_ship_and_escalate_cases() {
         for (verdict, terminal_node) in [("SHIP", "done"), ("ESCALATE", "escalate")] {
             let app = make_dispatch_app();
-            let engine = WorkflowRuntimeService::new_for_test();
+            let engine = WorkflowRuntimeExecutor::new_for_test();
             let data_dir = dispatch_data_dir(app.handle());
             engine.set_execution_store_data_dir(data_dir.clone()).await;
             let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
@@ -11831,7 +11859,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_appends_standard_artifact_and_keeps_node_completed_summary_only() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-standard".to_string(),
@@ -11882,7 +11910,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_routes_on_nonzero_exit_ok_false() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-exit-routing".to_string(),
@@ -11920,7 +11948,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_merges_stdout_json_contract_and_routes_on_contract_field() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-contract-routing".to_string(),
@@ -11962,7 +11990,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_contract_validation_failure_routes_to_fix_with_standard_result() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-contract-failure".to_string(),
@@ -12005,7 +12033,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_malformed_stdout_routes_to_fix_with_standard_result_only() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-contract-parse-failure".to_string(),
@@ -12057,7 +12085,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_contract_success_with_nonzero_exit_records_contract_but_ok_false() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-contract-nonzero".to_string(),
@@ -12088,7 +12116,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_forwards_workflow_execution_id_env() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-env-forwarding".to_string(),
@@ -12113,7 +12141,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_forwards_node_execution_id_env() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-node-env-forwarding".to_string(),
@@ -12168,7 +12196,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_command_child_forwards_own_node_execution_id_env() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "fanout-command-node-env-forwarding".to_string(),
@@ -12275,7 +12303,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_command_crash_clears_stall_observations_and_preserves_a_resumable_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (_session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -12305,7 +12333,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -12468,7 +12496,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_parent_artifact_preserves_null_session_and_command_result_order() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -12544,7 +12572,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_command_reducer_fixture_routes_on_boolean_artifact() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow: WorkflowDefinitionYaml =
             serde_saphyr::from_str(include_str!("../fixtures/valid/fanout-command-reducer.yml"))
@@ -12581,7 +12609,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_session_reducer_fixture_receives_array_and_routes_on_enum_artifact() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -12630,7 +12658,7 @@ mod dispatch_boundary_tests {
             &worktree.path().to_string_lossy(),
             workflow,
         );
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_node_index = judge_index;
         execution.current_session_id = Some(judge_session_id.to_string());
         execution.node_execution_counts =
@@ -12700,7 +12728,7 @@ mod dispatch_boundary_tests {
     async fn command_runtime_start_returns_before_long_running_command_completes_and_abort_still_works(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-nonblocking-start".to_string(),
@@ -12751,7 +12779,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn explicit_stop_kills_the_active_command_process_group_and_records_stop_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-explicit-stop".to_string(),
@@ -12806,7 +12834,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn explicit_stop_then_resume_restarts_command_attempt_and_completes() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-stop-resume".to_string(),
@@ -12888,7 +12916,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn explicit_stop_still_kills_the_command_after_metadata_projection_failure() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-stop-projection-failure".to_string(),
@@ -12941,7 +12969,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn app_exit_shutdown_interrupts_active_command_and_kills_process_group() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-app-exit-shutdown".to_string(),
@@ -13000,7 +13028,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn app_exit_shutdown_interrupts_fanout_command_child_by_node_execution_id() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "fanout-command-app-exit".to_string(),
@@ -13059,7 +13087,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_completion_append_failure_records_crash_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinitionYaml {
             name: "command-append-failure".to_string(),
@@ -13111,7 +13139,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_prepared_append_failure_prevents_process_spawn_and_rolls_back_display() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
@@ -13176,7 +13204,7 @@ mod dispatch_boundary_tests {
                 Ok(())
             })
             .unwrap();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let worktree = TempDir::new().unwrap();
@@ -13283,7 +13311,7 @@ mod dispatch_boundary_tests {
                 Ok(())
             })
             .unwrap();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         std::fs::write(
             worktree.path().join("configured-secret.txt"),
@@ -13339,7 +13367,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn command_runtime_renders_previous_command_artifact_reference() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let worktree = TempDir::new().unwrap();
         let mut echo = command_node("echo_thread", "printf '{{ list_threads.stdout }}'", vec![]);
         echo.inputs = vec!["list_threads".to_string()];
@@ -13393,7 +13421,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn abort_workflow_kills_active_command_without_completion_artifact() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -13469,7 +13497,7 @@ mod dispatch_boundary_tests {
     async fn fanout_child_prompt_failure_skips_sessions_refs_and_execution_mutation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
@@ -13499,7 +13527,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
@@ -13511,7 +13539,7 @@ mod dispatch_boundary_tests {
 
         let err = result.expect_err("unresolved child facet must fail before side effects");
         assert!(
-            matches!(err, WorkflowEngineError::InvalidWorkflow(_)),
+            matches!(err, WorkflowRuntimeError::InvalidWorkflow(_)),
             "missing child facet must produce InvalidWorkflow, got: {err:?}"
         );
         assert!(
@@ -13548,7 +13576,7 @@ mod dispatch_boundary_tests {
     async fn fanout_child_setup_failure_rolls_back_created_sessions_refs_and_execution_mutation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let save_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -13581,7 +13609,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
@@ -13593,7 +13621,7 @@ mod dispatch_boundary_tests {
 
         let err = result.expect_err("second child save failure must fail setup");
         assert!(
-            matches!(err, WorkflowEngineError::SessionStore(_)),
+            matches!(err, WorkflowRuntimeError::SessionStore(_)),
             "injected save failure must surface as SessionStore, got: {err:?}"
         );
         assert!(
@@ -13640,7 +13668,7 @@ mod dispatch_boundary_tests {
     async fn fanout_child_start_event_append_failure_rolls_back_sessions_refs_and_expansion() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
 
@@ -13659,7 +13687,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = None;
         exec.node_executions[0].status = NodeExecutionStatus::Running;
         exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
@@ -13673,7 +13701,7 @@ mod dispatch_boundary_tests {
             .expect_err("fanout child start event append failure must be propagated");
 
         assert!(
-            matches!(error, WorkflowEngineError::SessionStore(_)),
+            matches!(error, WorkflowRuntimeError::SessionStore(_)),
             "required append failure must surface as SessionStore: {error:?}"
         );
         assert!(
@@ -13719,7 +13747,7 @@ mod dispatch_boundary_tests {
     async fn fanout_child_post_commit_projection_failure_preserves_attached_sessions() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
 
@@ -13738,7 +13766,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = None;
         exec.node_executions[0].status = NodeExecutionStatus::Running;
         exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
@@ -13872,18 +13900,18 @@ mod dispatch_boundary_tests {
         }
     }
 
-    /// Spec [04]: atomic mutation 境界。mutation 直前の `WorkflowExecution` snapshot を
+    /// Spec [04]: atomic mutation 境界。mutation 直前の `WorkflowRuntimeRecord` snapshot を
     /// 一括復元することで、履歴・state・current_node_index を含む全フィールドが
     /// 元に戻ることを担保する（部分 rollback helper を使わない構造）。
     #[tokio::test]
     async fn approval_snapshot_rollback_restores_workflow_execution_fully() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
 
         let exec = make_waiting_approval_execution(&execution_id, "/wt/atomic");
         let before_history_len = exec.node_history.len();
         let before_node_index = exec.current_node_index;
-        let before_state = exec.state.clone();
+        let before_state = exec.state().clone();
         let snapshot_before = exec.clone();
 
         engine
@@ -13896,7 +13924,7 @@ mod dispatch_boundary_tests {
         {
             let mut execs = engine.executions.lock().await;
             let exec = execs.get_mut(&execution_id).unwrap();
-            let _ = WorkflowRuntimeService::apply_approval_application(
+            let _ = WorkflowRuntimeExecutor::apply_approval_application(
                 exec,
                 ApprovalApplication {
                     effective_result: "approve".to_string(),
@@ -13905,7 +13933,7 @@ mod dispatch_boundary_tests {
                 },
             )
             .unwrap();
-            assert_ne!(exec.state, before_state);
+            assert_ne!(exec.state(), &before_state);
         }
 
         // event append 失敗時の一括復元（handle_approval 内と同じ操作）。
@@ -13918,7 +13946,11 @@ mod dispatch_boundary_tests {
 
         let execs = engine.executions.lock().await;
         let restored = execs.get(&execution_id).expect("execution must remain");
-        assert_eq!(restored.state, before_state, "WaitingApproval が復元される");
+        assert_eq!(
+            restored.state(),
+            &before_state,
+            "WaitingApproval が復元される"
+        );
         assert_eq!(
             restored.current_node_index, before_node_index,
             "current_node_index が復元される"
@@ -14085,7 +14117,7 @@ mod dispatch_boundary_tests {
                 &mut mismatched,
                 mismatched_cmd
             ),
-            Err(WorkflowEngineError::ValidationError(_))
+            Err(WorkflowRuntimeError::ValidationError(_))
         ));
     }
 
@@ -14277,7 +14309,7 @@ mod dispatch_boundary_tests {
             let result =
                 workflow_runtime_events::dispatch_internal_node_command(&mut snapshot, cmd);
             assert!(
-                matches!(result, Err(WorkflowEngineError::ValidationError(_))),
+                matches!(result, Err(WorkflowRuntimeError::ValidationError(_))),
                 "CompleteNode {label} mismatch must return ValidationError, got: {result:?}"
             );
         }
@@ -14326,7 +14358,7 @@ mod dispatch_boundary_tests {
         }
         assert!(matches!(
             workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowEngineError::ValidationError(_))
+            Err(WorkflowRuntimeError::ValidationError(_))
         ));
 
         // workflow_name mismatch
@@ -14341,7 +14373,7 @@ mod dispatch_boundary_tests {
         }
         assert!(matches!(
             workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowEngineError::ValidationError(_))
+            Err(WorkflowRuntimeError::ValidationError(_))
         ));
 
         // node_name mismatch
@@ -14356,14 +14388,14 @@ mod dispatch_boundary_tests {
         }
         assert!(matches!(
             workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowEngineError::ValidationError(_))
+            Err(WorkflowRuntimeError::ValidationError(_))
         ));
     }
 
     #[tokio::test]
     async fn stale_turn_complete_failure_records_resumable_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -14386,7 +14418,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = Some(node_session_id.to_string());
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
@@ -14443,9 +14475,10 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_crash_releases_interrupted_execution_after_broadcast() {
+    async fn issue_1558_fanout_child_nonzero_exit_commits_canonical_failure_before_terminal_state()
+    {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -14467,7 +14500,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -14525,32 +14558,37 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "fanout child crash must release live runtime after checkpointing"
+            "terminal fanout failure must release the live runtime"
         );
         let stored = engine
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep interrupted checkpoint metadata");
-        assert_eq!(stored.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            stored.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
-        assert!(stored.error_reason.is_none());
+            .expect("ExecutionStore must keep terminal metadata");
+        assert_eq!(stored.status, ExecutionStatus::Failed);
+        assert_eq!(stored.interruption_reason, None);
+        assert_eq!(stored.resume_from_node, None);
+        assert!(stored.error_reason.is_some());
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
+        let node_failed_index = events
+            .iter()
+            .position(|event| matches!(event, WorkflowEvent::NodeFailed { .. }))
+            .expect("observed child turn must produce a canonical NodeFailed fact");
+        let execution_failed_index = events
+            .iter()
+            .position(|event| matches!(event, WorkflowEvent::ExecutionFailed { .. }))
+            .expect("terminal fanout policy must produce ExecutionFailed");
         assert!(
-            events.iter().any(|event| matches!(
-                event,
-                WorkflowEvent::ExecutionInterrupted {
-                    reason: ExecutionInterruptionReason::Crash,
-                    ..
-                }
-            )),
-            "fanout child crash must append ExecutionInterrupted(Crash); got {events:?}"
+            node_failed_index < execution_failed_index,
+            "canonical child fact must precede execution terminalization; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })),
+            "a child nonzero exit is not an execution interruption; got {events:?}"
         );
         let refs = engine.session_workflow_refs.lock().await;
         assert!(
@@ -14563,7 +14601,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_child_success_clears_live_stall_observation_for_child() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -14585,7 +14623,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -14669,7 +14707,7 @@ mod dispatch_boundary_tests {
         expected_route_after_first_child: &str,
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -14711,7 +14749,7 @@ mod dispatch_boundary_tests {
             "/wt/fanout-reset-parity",
             workflow,
         );
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([
             ("round".to_string(), 1),
@@ -14971,7 +15009,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn add_historical_guarded_node_completions(execution: &mut WorkflowExecution) {
+    fn add_historical_guarded_node_completions(execution: &mut WorkflowRuntimeRecord) {
         let mut historical_fix_executions = Vec::new();
         for attempt in 1..=2 {
             let node_execution_id = format!("{}-fix-{attempt}", execution.id);
@@ -14994,7 +15032,7 @@ mod dispatch_boundary_tests {
 
     fn append_fanout_child_reset_seed_events(
         data_dir: &std::path::Path,
-        execution: &WorkflowExecution,
+        execution: &WorkflowRuntimeRecord,
     ) {
         append_started_events_for_execution(data_dir, execution);
         WorkflowEventLog::new(data_dir)
@@ -15015,7 +15053,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn assert_fanout_child_completion_live_replay_parity(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         data_dir: &std::path::Path,
         execution_id: &str,
         expected_current_node: &str,
@@ -15086,7 +15124,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_approval_child_reset_baseline_matches_replay_and_append_rollback() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -15100,7 +15138,7 @@ mod dispatch_boundary_tests {
         );
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([
             ("round".to_string(), 1),
@@ -15205,7 +15243,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_command_child_reset_baseline_matches_replay_and_append_rollback() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -15217,7 +15255,7 @@ mod dispatch_boundary_tests {
         );
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([
             ("round".to_string(), 1),
@@ -15313,7 +15351,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn reused_fanout_children_reset_baseline_matches_replay_routing_and_append_rollback() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -15326,7 +15364,7 @@ mod dispatch_boundary_tests {
         );
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, &worktree_path, workflow);
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts =
             HashMap::from([("round".to_string(), 1), ("fix".to_string(), 2)]);
@@ -15387,7 +15425,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_model_refusal_checkpoints_confirmed_child_and_resume_completes_pending_child() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -15411,7 +15449,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -15657,7 +15695,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_terminal_failure_append_failure_rolls_back_child_state_and_execution_store() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -15679,7 +15717,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.updated_at = 1000.0;
@@ -15790,7 +15828,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_child_missing_output_after_repair_limit_creates_resumable_partial_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -15823,7 +15861,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -15988,7 +16026,7 @@ mod dispatch_boundary_tests {
     async fn approval_fanout_child_missing_output_after_repair_limit_is_resumable_with_child_node_failed(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -16021,7 +16059,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -16110,7 +16148,7 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(
             result,
-            Err(WorkflowEngineError::ValidationError(message))
+            Err(WorkflowRuntimeError::ValidationError(message))
                 if message == "required structured output has not been submitted"
         ));
         assert!(
@@ -16189,7 +16227,7 @@ mod dispatch_boundary_tests {
     async fn fanout_child_missing_output_repair_start_failure_fails_child_siblings_and_parent_in_live_and_replay(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
@@ -16222,7 +16260,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
@@ -16383,7 +16421,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn execute_outcome_pre_commit_append_failure_keeps_execution_store_active() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -16472,7 +16510,7 @@ mod dispatch_boundary_tests {
     #[test]
     fn write_terminal_log_emits_startup_timeout_node_failed_followed_by_execution_failed() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         let execution_id = "00000000-0000-0000-0000-000000000605".to_string();
 
@@ -16577,7 +16615,7 @@ mod dispatch_boundary_tests {
     /// 判定し、後段の dispatch では非受理にマッピングされる構造を担保する。
     #[tokio::test]
     async fn abort_target_lookup_returns_not_found_for_unknown_execution_id() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         match engine
             .abort_target_lookup("00000000-0000-0000-0000-000000000700")
             .await
@@ -16590,7 +16628,7 @@ mod dispatch_boundary_tests {
 
     #[tokio::test]
     async fn abort_target_lookup_propagates_execution_store_read_failure() {
-        let mut engine = WorkflowRuntimeService::new_for_test();
+        let mut engine = WorkflowRuntimeExecutor::new_for_test();
         engine.execution_store =
             Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
 
@@ -16598,7 +16636,7 @@ mod dispatch_boundary_tests {
             engine
                 .abort_target_lookup("00000000-0000-0000-0000-000000000701")
                 .await,
-            Err(WorkflowEngineError::SessionStore(_))
+            Err(WorkflowRuntimeError::SessionStore(_))
         ));
     }
 
@@ -16607,7 +16645,7 @@ mod dispatch_boundary_tests {
     /// として lookup 段階で非受理になる。
     #[tokio::test]
     async fn abort_target_lookup_returns_already_terminal_for_terminal_execution() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         for terminal_state in [
             RuntimeExecutionState::Completed,
@@ -16619,7 +16657,7 @@ mod dispatch_boundary_tests {
             },
         ] {
             let mut exec = make_waiting_approval_execution(&execution_id, "/wt/term");
-            exec.state = terminal_state.clone();
+            exec.force_lifecycle_state_for_test(terminal_state.clone());
             engine
                 .executions
                 .lock()
@@ -16638,7 +16676,7 @@ mod dispatch_boundary_tests {
 
     #[tokio::test]
     async fn abort_target_lookup_returns_already_terminal_for_released_terminal_execution_record() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -16677,10 +16715,10 @@ mod dispatch_boundary_tests {
     /// その後の state 遷移経路（mutation → required append → finalize）に乗る。
     #[tokio::test]
     async fn abort_target_lookup_returns_active_for_running_execution() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/active");
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = Some("sess-X".to_string());
         engine
             .executions
@@ -16701,7 +16739,7 @@ mod dispatch_boundary_tests {
 
     #[tokio::test]
     async fn release_terminal_execution_removes_terminal_entries_only() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
 
         for (label, terminal_state) in [
             ("completed", RuntimeExecutionState::Completed),
@@ -16717,7 +16755,7 @@ mod dispatch_boundary_tests {
         ] {
             let execution_id = uuid::Uuid::new_v4().to_string();
             let mut exec = make_waiting_approval_execution(&execution_id, &format!("/wt/{label}"));
-            exec.state = terminal_state;
+            exec.force_lifecycle_state_for_test(terminal_state);
             engine
                 .executions
                 .lock()
@@ -16747,7 +16785,7 @@ mod dispatch_boundary_tests {
         let active_execution_id = uuid::Uuid::new_v4().to_string();
         let mut active =
             make_waiting_approval_execution(&active_execution_id, "/wt/active-release");
-        active.state = RuntimeExecutionState::Running;
+        active.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         engine
             .executions
             .lock()
@@ -16781,7 +16819,7 @@ mod dispatch_boundary_tests {
 
     #[tokio::test]
     async fn get_state_by_execution_id_returns_none_for_released_terminal_state() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().to_path_buf();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -16868,7 +16906,7 @@ mod dispatch_boundary_tests {
     async fn approval_target_validation_rejects_already_resolved_node() {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/idempotent");
-        exec.state = RuntimeExecutionState::Completed;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
         let err = workflow_approval_runtime::validate_approval_target_snapshot(
             &exec,
             Some(&execution_id),
@@ -16876,7 +16914,7 @@ mod dispatch_boundary_tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, WorkflowEngineError::InvalidState(_)),
+            matches!(err, WorkflowRuntimeError::InvalidState(_)),
             "既決 node への Approve は InvalidState で非受理 (got {err:?})"
         );
     }
@@ -16890,7 +16928,7 @@ mod dispatch_boundary_tests {
         let oversize_comment = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
         let err = workflow_approval_runtime::validate_approve_comment(Some(&oversize_comment))
             .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(matches!(err, WorkflowRuntimeError::ValidationError(_)));
     }
 
     /// Spec [04] secret redaction: ApprovalResolved.comment に設定済み secret 値が
@@ -16935,11 +16973,11 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] rollback: production dispatch 経由で event append が失敗した場合、
-    /// WorkflowExecution / Execution Store / event log は command 受理前 snapshot に戻る。
+    /// WorkflowRuntimeRecord / Execution Store / event log は command 受理前 snapshot に戻る。
     #[tokio::test]
     async fn dispatch_approve_node_append_failure_rolls_back_full_snapshot() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -16967,12 +17005,13 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
 
         let execs = engine.executions.lock().await;
         let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(
-            restored.state, snapshot_before.state,
+            restored.state(),
+            snapshot_before.state(),
             "state は snapshot で一括復元される"
         );
         assert_eq!(
@@ -16993,12 +17032,12 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] rollback: AbortExecution の required event append が失敗した場合も、
-    /// WorkflowExecution / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
+    /// WorkflowRuntimeRecord / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
     #[tokio::test]
     async fn dispatch_abort_execution_append_failure_rolls_back_execution_execution_store_and_session(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -17008,7 +17047,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/abort-append-fail";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         let snapshot_before = exec.clone();
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
@@ -17019,10 +17058,10 @@ mod dispatch_boundary_tests {
             .abort_workflow_execution(app.handle(), &session_store, &handles, &execution_id, None)
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
         let execs = engine.executions.lock().await;
         let restored = execs.get(&execution_id).expect("execution must remain");
-        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(restored.state(), snapshot_before.state());
         assert_eq!(
             restored.node_history.len(),
             snapshot_before.node_history.len()
@@ -17042,7 +17081,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_abort_interrupted_append_failure_keeps_checkpoint() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
@@ -17130,7 +17169,7 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
         let checkpoint = engine
             .execution_store
             .get_execution_record(&execution_id)
@@ -17150,7 +17189,7 @@ mod dispatch_boundary_tests {
     /// validation され、拒否時は state / event を変更しない。
     #[tokio::test]
     async fn start_execution_primitive_rejects_invalid_name_without_state_change() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(execution_store_dir.path().to_path_buf())
@@ -17160,7 +17199,7 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(
             result,
-            Err(WorkflowEngineError::ValidationError(_))
+            Err(WorkflowRuntimeError::ValidationError(_))
         ));
         assert!(engine.executions.lock().await.is_empty());
         assert!(engine.list_active_executions().await.is_empty());
@@ -17171,7 +17210,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn start_execution_primitive_accepts_creates_execution_and_appends_event() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(execution_store_dir.path().to_path_buf())
@@ -17201,7 +17240,7 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(
             engine.executions.lock().await.contains_key(&execution_id),
-            "StartExecution must register a WorkflowExecution"
+            "StartExecution must register a WorkflowRuntimeRecord"
         );
         assert!(
             engine.get_execution(&execution_id).await.is_some(),
@@ -17226,7 +17265,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn start_execution_validate_start_failure_releases_execution_facet_contents() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(execution_store_dir.path().to_path_buf())
@@ -17260,7 +17299,10 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::AlreadyActive(_))));
+        assert!(matches!(
+            result,
+            Err(WorkflowRuntimeError::AlreadyActive(_))
+        ));
         assert!(
             engine.execution_facet_contents.lock().await.is_empty(),
             "validate_start rollback must release execution_facet_contents"
@@ -17283,7 +17325,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn start_execution_primitive_append_failure_clears_created_parent_commit_snapshot() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(execution_store_dir.path().to_path_buf())
@@ -17311,7 +17353,7 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
         assert!(engine.executions.lock().await.is_empty());
         assert!(
             engine.execution_facet_contents.lock().await.is_empty(),
@@ -17341,7 +17383,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_abort_execution_accepts_mutates_state_and_appends_event() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -17352,7 +17394,7 @@ mod dispatch_boundary_tests {
         // spec issues-1023: session log 到達経路の維持を検証するため、
         // current_session_id を入れた状態で abort する。
         exec.current_session_id = Some("aborted-node-session".to_string());
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         let node_execution_id = exec.node_executions[0].id.clone();
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         WorkflowEventLog::new(&data_dir)
@@ -17444,7 +17486,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_abort_execution_snapshots_current_attempt_for_retried_node() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -17452,7 +17494,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/dispatch-abort-retry";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         let workflow = exec.workflow.clone();
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = Some("session-review-2".to_string());
         exec.node_execution_counts.insert("review".to_string(), 2);
         exec.node_history.push(NodeHistoryEntry {
@@ -17550,7 +17592,7 @@ mod dispatch_boundary_tests {
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow("exec-abort-fanout", "/wt", workflow);
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         exec.current_session_id = None;
         let mut child_a = test_fanout_child(
             "child-a",
@@ -17589,7 +17631,7 @@ mod dispatch_boundary_tests {
     async fn dispatch_abort_execution_with_expected_node_validates_node_and_appends_execution_aborted(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -17628,11 +17670,11 @@ mod dispatch_boundary_tests {
     // `dispatch_abort_execution_with_expected_node_append_failure_rolls_back` で引き続き検証する。
 
     /// Spec [04] rollback: approval UI 由来の AbortExecution で required event append が失敗した場合も、
-    /// WorkflowExecution / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
+    /// WorkflowRuntimeRecord / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
     #[tokio::test]
     async fn dispatch_abort_execution_with_expected_node_append_failure_rolls_back() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -17657,10 +17699,10 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
         let execs = engine.executions.lock().await;
         let restored = execs.get(&execution_id).unwrap();
-        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(restored.state(), snapshot_before.state());
         assert_eq!(
             restored.node_history.len(),
             snapshot_before.node_history.len()
@@ -17680,7 +17722,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_abort_execution_rejects_not_found_and_terminal_without_append() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -17699,7 +17741,7 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             missing,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
         assert!(read_dispatch_events(&app, &missing_execution_id).is_empty());
 
@@ -17712,7 +17754,7 @@ mod dispatch_boundary_tests {
             let terminal = executions
                 .get_mut(&terminal_execution_id)
                 .expect("live terminal fixture");
-            terminal.state = RuntimeExecutionState::Completed;
+            terminal.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
             terminal.clone()
         };
         engine
@@ -17737,11 +17779,11 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             terminal_result,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
         let restored = execs.get(&terminal_execution_id).unwrap();
-        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(restored.state(), snapshot_before.state());
         assert_eq!(
             restored.node_history.len(),
             snapshot_before.node_history.len()
@@ -17787,7 +17829,7 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             released_terminal_result,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         assert!(read_dispatch_events(&app, &released_terminal_execution_id).is_empty());
     }
@@ -17795,7 +17837,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_abort_execution_treats_execution_released_after_lookup_as_already_terminal() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
@@ -17853,7 +17895,7 @@ mod dispatch_boundary_tests {
             .expect("abort task must not panic");
         assert!(matches!(
             result,
-            Err(WorkflowEngineError::InvalidState(message))
+            Err(WorkflowRuntimeError::InvalidState(message))
                 if message.contains("already terminal")
         ));
         assert!(
@@ -17868,7 +17910,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_targeted_abort_rejects_missing_stale_and_resolved_targets_without_append() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -17887,7 +17929,7 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             missing,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
         assert!(engine.list_active_executions().await.is_empty());
         assert!(engine.list_completed_executions().await.is_empty());
@@ -17912,11 +17954,11 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             stale,
-            Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+            Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(_))
         ));
         let execs = engine.executions.lock().await;
         let stale_after = execs.get(&stale_execution_id).unwrap();
-        assert_eq!(stale_after.state, stale_before.state);
+        assert_eq!(stale_after.state(), stale_before.state());
         assert_eq!(
             stale_after.current_node_index,
             stale_before.current_node_index
@@ -17940,7 +17982,7 @@ mod dispatch_boundary_tests {
         let mut resolved_exec =
             make_waiting_approval_execution(&resolved_execution_id, resolved_worktree);
         resolved_exec.current_session_id = None;
-        resolved_exec.state = RuntimeExecutionState::Completed;
+        resolved_exec.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
         let resolved_before = resolved_exec.clone();
         engine
             .executions
@@ -17989,11 +18031,11 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             resolved,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
         let resolved_after = execs.get(&resolved_execution_id).unwrap();
-        assert_eq!(resolved_after.state, resolved_before.state);
+        assert_eq!(resolved_after.state(), resolved_before.state());
         assert_eq!(
             resolved_after.node_history.len(),
             resolved_before.node_history.len()
@@ -18014,7 +18056,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_approve_node_accepts_mutates_state_and_appends_event() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -18061,7 +18103,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn dispatch_approve_rejects_missing_stale_and_resolved_targets_without_append() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -18081,7 +18123,7 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             missing,
-            Err(WorkflowEngineError::ExecutionNotFound(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
         assert!(read_dispatch_events(&app, &missing_execution_id).is_empty());
 
@@ -18104,11 +18146,11 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             stale,
-            Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+            Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(_))
         ));
         let execs = engine.executions.lock().await;
         let restored = execs.get(&stale_execution_id).unwrap();
-        assert_eq!(restored.state, stale_before.state);
+        assert_eq!(restored.state(), stale_before.state());
         assert_eq!(restored.current_node_index, stale_before.current_node_index);
         assert_eq!(restored.node_history.len(), stale_before.node_history.len());
         drop(execs);
@@ -18118,7 +18160,7 @@ mod dispatch_boundary_tests {
         let mut resolved_exec =
             make_waiting_approval_execution(&resolved_execution_id, "/wt/approve-resolved");
         resolved_exec.current_session_id = None;
-        resolved_exec.state = RuntimeExecutionState::Completed;
+        resolved_exec.force_lifecycle_state_for_test(RuntimeExecutionState::Completed);
         let resolved_before = resolved_exec.clone();
         engine
             .executions
@@ -18138,11 +18180,11 @@ mod dispatch_boundary_tests {
             .await;
         assert!(matches!(
             resolved,
-            Err(WorkflowEngineError::InvalidState(_))
+            Err(WorkflowRuntimeError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
         let restored = execs.get(&resolved_execution_id).unwrap();
-        assert_eq!(restored.state, resolved_before.state);
+        assert_eq!(restored.state(), resolved_before.state());
         assert_eq!(
             restored.node_history.len(),
             resolved_before.node_history.len()
@@ -18161,7 +18203,7 @@ mod dispatch_boundary_tests {
     async fn dispatch_approve_node_execution_store_sync_failure_keeps_committed_event_log_and_state(
     ) {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
             .set_execution_store_data_dir(tmp.path().to_path_buf())
@@ -18190,10 +18232,10 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
         let execs = engine.executions.lock().await;
         let committed = execs.get(&execution_id).unwrap();
-        assert_eq!(committed.state, RuntimeExecutionState::Completed);
+        assert_eq!(committed.state(), &RuntimeExecutionState::Completed);
         assert_eq!(
             committed.node_history.len(),
             snapshot_before.node_history.len() + 1
@@ -18221,10 +18263,10 @@ mod dispatch_boundary_tests {
     /// ことを直接確認する（外部依存の差し替えを必要としない経路）。
     #[tokio::test]
     async fn abort_execution_pre_commit_holds_only_in_memory_mutation() {
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/pre-commit");
-        exec.state = RuntimeExecutionState::Running;
+        exec.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         let snapshot_before = exec.clone();
         engine
             .executions
@@ -18242,13 +18284,13 @@ mod dispatch_boundary_tests {
                 exec.is_active(),
                 "active な execution でなければ mutation しない"
             );
-            exec.state = RuntimeExecutionState::Aborted;
+            exec.force_lifecycle_state_for_test(RuntimeExecutionState::Aborted);
             exec.updated_at = mutated_timestamp;
         }
         {
             let execs = engine.executions.lock().await;
             let exec = execs.get(&execution_id).unwrap();
-            assert_eq!(exec.state, RuntimeExecutionState::Aborted);
+            assert_eq!(exec.state(), &RuntimeExecutionState::Aborted);
             assert_eq!(exec.updated_at, mutated_timestamp);
         }
 
@@ -18263,8 +18305,8 @@ mod dispatch_boundary_tests {
         let execs = engine.executions.lock().await;
         let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(
-            restored.state,
-            RuntimeExecutionState::Running,
+            restored.state(),
+            &RuntimeExecutionState::Running,
             "snapshot 復元で active 状態に戻る"
         );
         assert_ne!(
@@ -18288,7 +18330,7 @@ mod dispatch_boundary_tests {
         seed_resumable_orphan_execution(&prev_store, &data_dir, &orphan_id, "/wt/a").await;
 
         // 起動直後を模擬した engine (空の in-memory state + 同じ data_dir)。
-        let engine = std::sync::Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = std::sync::Arc::new(WorkflowRuntimeExecutor::new_for_test());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         engine
             .recover_orphan_executions(app.handle())
@@ -18366,7 +18408,7 @@ mod dispatch_boundary_tests {
         )
         .await;
 
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         engine.fail_next_required_event_append_for_test();
         let error = engine
@@ -18432,7 +18474,7 @@ mod dispatch_boundary_tests {
         seed_resumable_orphan_execution(&previous_store, &data_dir, &abort_id, "/wt/orphan-abort")
             .await;
 
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         engine
             .recover_orphan_executions(app.handle())
@@ -18554,7 +18596,7 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        let engine = std::sync::Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = std::sync::Arc::new(WorkflowRuntimeExecutor::new_for_test());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let events_before = read_dispatch_events(&app, &done_id);
         engine
@@ -18651,7 +18693,7 @@ mod dispatch_boundary_tests {
             ])
             .unwrap();
 
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         engine
             .recover_orphan_executions(app.handle())
@@ -18751,7 +18793,7 @@ mod dispatch_boundary_tests {
             ])
             .unwrap();
 
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir).await;
         engine
             .recover_orphan_executions(app.handle())
@@ -18795,7 +18837,7 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         engine.set_execution_store_data_dir(data_dir).await;
         engine
             .recover_orphan_executions(app.handle())
@@ -18814,7 +18856,7 @@ mod dispatch_boundary_tests {
     /// Production と同じ submit-output primitive 経由で構造化出力を提出する。
     #[allow(clippy::too_many_arguments)]
     async fn submit_output_for_test(
-        engine: &Arc<WorkflowRuntimeService>,
+        engine: &Arc<WorkflowRuntimeExecutor>,
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         execution_id: &str,
         node_name: &str,
@@ -18822,7 +18864,7 @@ mod dispatch_boundary_tests {
         artifact: serde_json::Value,
         _request_id: Option<&str>,
         _submitted_at: Option<f64>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let (session_store, agent_runtime) = make_dispatch_deps(dispatch_data_dir(app));
         submit_output_for_test_with_deps(
             engine,
@@ -18841,7 +18883,7 @@ mod dispatch_boundary_tests {
 
     #[allow(clippy::too_many_arguments)]
     async fn submit_output_for_test_with_deps(
-        engine: &Arc<WorkflowRuntimeService>,
+        engine: &Arc<WorkflowRuntimeExecutor>,
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
@@ -18851,7 +18893,7 @@ mod dispatch_boundary_tests {
         artifact: serde_json::Value,
         _request_id: Option<&str>,
         _submitted_at: Option<f64>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         engine
             .submit_workflow_output(
                 app,
@@ -18890,7 +18932,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn node_output_for(
-        engine: &WorkflowRuntimeService,
+        engine: &WorkflowRuntimeExecutor,
         execution_id: &str,
         node_name: &str,
     ) -> Option<RuntimeArtifact> {
@@ -18907,7 +18949,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_persists_node_output_and_appends_event_when_contract_satisfied() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -18975,7 +19017,7 @@ mod dispatch_boundary_tests {
         let _secret =
             crate::test_support::EnvVarGuard::set_value("RELEASH_ARBITRARY_SUBMIT_SECRET", secret);
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
@@ -19036,7 +19078,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_invalid_contract_requests_repair_without_persisting_output() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19124,7 +19166,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_child_invalid_submit_repairs_the_selected_node_execution() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19246,7 +19288,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_rejects_unknown_node_without_side_effects() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19273,7 +19315,7 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(matches!(err, WorkflowRuntimeError::ValidationError(_)));
         let events = read_submit_output_events(&app, &execution_id);
         assert!(events
             .iter()
@@ -19284,7 +19326,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_rejects_unknown_execution() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19302,7 +19344,7 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::ExecutionNotFound(_)));
+        assert!(matches!(err, WorkflowRuntimeError::ExecutionNotFound(_)));
     }
 
     /// [08] caller の `--type` と engine の expected contract が一致しない場合は拒否され、
@@ -19310,7 +19352,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_rejects_contract_type_mismatch() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19337,7 +19379,7 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(matches!(err, WorkflowRuntimeError::ValidationError(_)));
         assert!(node_output_for(&engine, &execution_id, "review")
             .await
             .is_none());
@@ -19349,7 +19391,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_node_output_carries_contract_for_downstream_reference() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19389,7 +19431,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_stores_spec_dir_artifact_without_workflow_variable_side_effects() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19441,7 +19483,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_rejects_non_accepting_node_without_side_effects() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19502,7 +19544,7 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+        assert!(matches!(err, WorkflowRuntimeError::InvalidState(_)));
 
         // state は変化していない
         let exec_after = engine
@@ -19528,7 +19570,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn agent_free_text_workflow_output_block_does_not_confirm_node_output() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19621,7 +19663,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn missing_required_output_requests_repair_without_failing_within_limit() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19702,7 +19744,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn missing_required_output_fails_when_repair_turn_cannot_start() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19811,7 +19853,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn repair_turn_startup_timeout_failure_preserves_failure_metadata() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19828,7 +19870,7 @@ mod dispatch_boundary_tests {
             .await;
 
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let error = WorkflowEngineError::with_agent_runtime_context(
+        let error = WorkflowRuntimeError::with_agent_runtime_context(
             "contract output repair turn failed to start",
             crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
                 retry_count: 2,
@@ -19885,7 +19927,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn missing_required_output_fails_with_structured_mismatch_after_repair_limit() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -19971,7 +20013,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn missing_required_output_repair_attempts_are_scoped_to_attempt() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -20111,7 +20153,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn submit_output_rolls_back_state_when_event_append_fails() {
         let app = make_dispatch_app();
-        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let engine = Arc::new(WorkflowRuntimeExecutor::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
@@ -20165,7 +20207,7 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, WorkflowEngineError::SessionStore(_)));
+        assert!(matches!(err, WorkflowRuntimeError::SessionStore(_)));
 
         // state は提出前のまま保たれる
         let exec_after = engine
@@ -20189,7 +20231,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_empty_items_completes_parent_with_empty_artifact_and_follows_parent_rules() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -20309,7 +20351,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_child_completion_ignores_child_rules_and_uses_parent_rules() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -20335,7 +20377,7 @@ mod dispatch_boundary_tests {
         };
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
         install_test_fanout(
@@ -20418,7 +20460,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_activation_crash_checkpoints_aborted_children_in_live_snapshot_and_replay() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
@@ -20546,7 +20588,7 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn last_fanout_session_child_append_failure_rolls_back_parent_artifact_and_completion() {
         let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
+        let engine = WorkflowRuntimeExecutor::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
@@ -20566,7 +20608,7 @@ mod dispatch_boundary_tests {
         };
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        execution.state = RuntimeExecutionState::Running;
+        execution.force_lifecycle_state_for_test(RuntimeExecutionState::Running);
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
         install_test_fanout(
@@ -20606,7 +20648,7 @@ mod dispatch_boundary_tests {
             .await
             .expect_err("last child completion must fail when its event batch cannot append");
         assert!(
-            matches!(error, WorkflowEngineError::SessionStore(_)),
+            matches!(error, WorkflowRuntimeError::SessionStore(_)),
             "required append failure must propagate: {error:?}"
         );
 
@@ -20614,7 +20656,7 @@ mod dispatch_boundary_tests {
         let execution = executions
             .get(&execution_id)
             .expect("execution must be rolled back");
-        assert_eq!(execution.state, RuntimeExecutionState::Running);
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
         assert!(execution.fanout_runtime.as_ref().is_some_and(|fanout| {
             fanout.children.len() == 1
                 && fanout.children[0].state == FanoutChildRuntimeState::Running
