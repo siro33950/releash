@@ -10,85 +10,8 @@ use crate::usecase::agent_session::operation::{
     SessionLifecycleOperationState, SessionLifecycleOperationUsecase, SessionLifecycleRejection,
     SessionLifecycleRequest, LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
 };
-use crate::usecase::agent_session::session::{SessionState, SessionStore, SessionSummary};
+use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::workflow::ports::WorkspaceNodeSessionCloseGateway;
-use crate::usecase::workflow::{
-    WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
-};
-
-pub(crate) struct StoredWorkspaceSessionGateway {
-    session_store: Arc<SessionStore>,
-    data_dir: PathBuf,
-}
-
-impl StoredWorkspaceSessionGateway {
-    pub(crate) fn new(session_store: Arc<SessionStore>, data_dir: PathBuf) -> Self {
-        Self {
-            session_store,
-            data_dir,
-        }
-    }
-
-    fn session_input(
-        &self,
-        session: SessionSummary,
-    ) -> Result<WorkspaceSessionInput, WorkflowError> {
-        let workflow_execution_id = session
-            .workflow_node_context
-            .as_ref()
-            .map(|context| context.execution_id.clone());
-        let session_recovery_reason = self
-            .session_store
-            .unresolved_recovery_reason(&session.id)
-            .map_err(WorkflowError::external)?;
-        let execution_recovery_reason = workflow_execution_id
-            .as_deref()
-            .map(|execution_id| {
-                self.session_store
-                    .unresolved_recovery_reason(execution_id)
-                    .map_err(WorkflowError::external)
-            })
-            .transpose()?
-            .flatten();
-        Ok(WorkspaceSessionInput {
-            id: session.id,
-            worktree_path: session.worktree_path,
-            state: workspace_session_state(session.state),
-            error_reason: session.error_reason,
-            updated_at: session.updated_at,
-            first_message: session.first_message,
-            workflow_node_session: session.workflow_node_session,
-            workflow_execution_id,
-            unresolved_recovery_reason: session_recovery_reason.or(execution_recovery_reason),
-        })
-    }
-}
-
-impl WorkspaceSessionGateway for StoredWorkspaceSessionGateway {
-    fn list_active_sessions(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
-        self.session_store
-            .list_published_sessions(&self.data_dir, worktree_path)
-            .map_err(WorkflowError::external)?
-            .into_iter()
-            .map(|session| self.session_input(session))
-            .collect()
-    }
-
-    fn list_closed_sessions(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
-        self.session_store
-            .list_published_closed_sessions(&self.data_dir, worktree_path)
-            .map_err(WorkflowError::external)?
-            .into_iter()
-            .map(|session| self.session_input(session))
-            .collect()
-    }
-}
 
 #[async_trait]
 trait WorkspaceNodeLifecycleRequester: Send + Sync {
@@ -214,17 +137,6 @@ fn classify_workspace_node_close_result(
         Err(error) => Err(WorkflowError::external(format!(
             "SessionNode close operation failed: {error:?}"
         ))),
-    }
-}
-
-fn workspace_session_state(state: SessionState) -> WorkspaceSessionState {
-    match state {
-        SessionState::Active => WorkspaceSessionState::Active,
-        SessionState::Idle => WorkspaceSessionState::Idle,
-        SessionState::Done => WorkspaceSessionState::Done,
-        SessionState::Error => WorkspaceSessionState::Error,
-        SessionState::Closed => WorkspaceSessionState::Closed,
-        SessionState::Archived => WorkspaceSessionState::Archived,
     }
 }
 

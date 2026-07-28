@@ -38,6 +38,7 @@ pub use mutation::{
     ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
     ShutdownPlanKey, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
     ShutdownTargetMutation, StopResolutionKind, StopResolutionMutation, TerminalRecordMutation,
+    WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
 };
 pub use operation_record::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,

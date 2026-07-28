@@ -338,6 +338,13 @@ mod tests {
             self.inner.query(request).await
         }
 
+        fn query_blocking(
+            &self,
+            request: LocalEventQuery,
+        ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+            self.inner.query_blocking(request)
+        }
+
         fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {
             self.inner.subscribe(after)
         }

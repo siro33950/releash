@@ -28,16 +28,18 @@ use crate::domain::local_event::{
     LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
     ObligationMutation, ObligationRecord, PendingIndexEntry, PendingPartition, QueryCursor,
     Revision, RevisionGuard, SessionProjectionMutation, SessionProjectionRecord,
-    WorkflowExecutionMetadataRecord, WorkflowExecutionProjectionRecord,
+    WorkflowExecutionMetadataRecord, WorkflowExecutionNodeProjectionMutation,
+    WorkflowExecutionProjectionMutation, WorkflowExecutionProjectionRecord,
     WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workflow::{
     ExecutionInterruptionReason, RuntimeExecutionState, TokenUsage,
     WorkflowExecution as DomainWorkflowExecution,
 };
+#[cfg(test)]
+pub(crate) use crate::domain::workflow::{ExecutionListFilter, ExecutionStatusFilter};
 pub(crate) use crate::domain::workflow::{
-    ExecutionListFilter, ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter,
-    WorkflowExecutionSummary,
+    ExecutionOrigin, ExecutionStatus, WorkflowExecutionSummary,
 };
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
@@ -190,7 +192,11 @@ pub(crate) fn workflow_execution_record(
         execution_id: execution.execution_id.clone(),
         workflow_name: execution.workflow_name.clone(),
         status: execution.status,
-        worktree_path: execution.worktree_path.clone(),
+        worktree_path: crate::domain::workspace_tree::WorkspaceIdentity::new(
+            &execution.worktree_path,
+        )
+        .as_str()
+        .to_string(),
         current_node: execution.current_node.clone(),
         created_from: execution.created_from,
         started_at_bits: execution.started_at.to_bits(),
@@ -474,6 +480,7 @@ fn load_validated_metadata_entry(
 ///
 /// `ExecutionStore::list_executions`（API 経路）と CLI の file-direct 経路の双方が同じ projection
 /// に揃うことで観測ロジックの divergence を防ぐ（spec [05] API / CLI の意味的等価性境界）。
+#[cfg(test)]
 pub fn project_executions_to_summaries(
     executions: Vec<WorkflowExecutionMetadata>,
     filter: &ExecutionListFilter,
@@ -500,6 +507,7 @@ pub fn project_executions_to_summaries(
 
 /// `Vec<WorkflowExecutionSummary>` を「active を先頭・以降は completed_at（無ければ updated_at）
 /// の降順」で並び替える。projection helper と ExecutionStore::list_executions から共通で使う。
+#[cfg(test)]
 pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowExecutionSummary]) {
     summaries.sort_by(|a, b| {
         let a_active = !a.status.is_finished();
@@ -518,47 +526,25 @@ pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowExecutionSumm
     });
 }
 
-#[derive(Debug, Clone)]
 #[cfg(test)]
-pub(crate) struct WorkflowExecutionMetadataScan {
-    pub(crate) executions: Vec<WorkflowExecutionMetadata>,
-    pub(crate) is_complete: bool,
-}
-
-#[cfg(test)]
-impl Default for WorkflowExecutionMetadataScan {
-    fn default() -> Self {
-        Self {
-            executions: Vec::new(),
-            is_complete: true,
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn scan_valid_execution_metadata(data_dir: &Path) -> WorkflowExecutionMetadataScan {
+fn scan_valid_execution_metadata(data_dir: &Path) -> Vec<WorkflowExecutionMetadata> {
     let executions_dir = executions_dir(data_dir);
     if !executions_dir.exists() {
-        return WorkflowExecutionMetadataScan::default();
+        return Vec::new();
     }
     let entries = match fs::read_dir(&executions_dir) {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!("ExecutionStore: failed to read executions dir: {e}");
-            return WorkflowExecutionMetadataScan {
-                executions: Vec::new(),
-                is_complete: false,
-            };
+            return Vec::new();
         }
     };
     let mut executions = Vec::new();
-    let mut is_complete = true;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
                 log::warn!("ExecutionStore: failed to read execution metadata entry: {e}");
-                is_complete = false;
                 continue;
             }
         };
@@ -573,133 +559,15 @@ pub(crate) fn scan_valid_execution_metadata(data_dir: &Path) -> WorkflowExecutio
                     "ExecutionStore: skip corrupted execution metadata at {}: {e}",
                     path.display()
                 );
-                is_complete = false;
             }
         }
     }
-    WorkflowExecutionMetadataScan {
-        executions,
-        is_complete,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn read_valid_execution_metadata(
-    data_dir: &Path,
-    execution_id: &str,
-) -> Result<Option<WorkflowExecutionMetadata>, String> {
-    if !is_valid_execution_id(execution_id) {
-        return Err("invalid execution_id".to_string());
-    }
-    let executions_dir = executions_dir(data_dir);
-    let path = execution_file_path(data_dir, execution_id);
-    if !path.exists() {
-        return Ok(None);
-    }
-    load_validated_metadata_entry(&executions_dir, &path).map(Some)
-}
-
-#[cfg(test)]
-pub(crate) fn project_valid_execution_metadata_page(
-    data_dir: &Path,
-    filter: &ExecutionListFilter,
-    offset: usize,
-    limit: usize,
-) -> Vec<WorkflowExecutionSummary> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let executions_dir = executions_dir(data_dir);
-    let entries = match fs::read_dir(&executions_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(error) => {
-            log::warn!("ExecutionStore: failed to read executions dir: {error}");
-            return Vec::new();
-        }
-    };
-    let window_end = offset.saturating_add(limit);
-    let mut window = Vec::new();
-    for entry in entries {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(error) => {
-                log::warn!("ExecutionStore: failed to read execution metadata entry: {error}");
-                continue;
-            }
-        };
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let execution = match load_validated_metadata_entry(&executions_dir, &path) {
-            Ok(execution) => execution,
-            Err(error) => {
-                log::warn!(
-                    "ExecutionStore: skip corrupted execution metadata at {}: {error}",
-                    path.display()
-                );
-                continue;
-            }
-        };
-        if !execution_matches_filter(&execution, filter) {
-            continue;
-        }
-        let insertion_index = window
-            .binary_search_by(|candidate| compare_execution_metadata(candidate, &execution))
-            .unwrap_or_else(|index| index);
-        if insertion_index < window_end {
-            window.insert(insertion_index, execution);
-            if window.len() > window_end {
-                window.pop();
-            }
-        }
-    }
-    window
-        .into_iter()
-        .skip(offset)
-        .map(|execution| WorkflowExecutionSummary::from(&execution))
-        .collect()
-}
-
-#[cfg(test)]
-fn execution_matches_filter(
-    execution: &WorkflowExecutionMetadata,
-    filter: &ExecutionListFilter,
-) -> bool {
-    let status_matches = match filter.status {
-        Some(ExecutionStatusFilter::Active) => !execution.status.is_finished(),
-        Some(ExecutionStatusFilter::Terminal) => execution.status.is_finished(),
-        None => true,
-    };
-    status_matches
-        && filter
-            .worktree_path
-            .as_deref()
-            .is_none_or(|worktree| execution.worktree_path == worktree)
-}
-
-#[cfg(test)]
-fn compare_execution_metadata(
-    left: &WorkflowExecutionMetadata,
-    right: &WorkflowExecutionMetadata,
-) -> std::cmp::Ordering {
-    match (!left.status.is_finished(), !right.status.is_finished()) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => {
-            let left_key = left.completed_at.unwrap_or(left.updated_at);
-            let right_key = right.completed_at.unwrap_or(right.updated_at);
-            right_key
-                .partial_cmp(&left_key)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }
-    }
+    executions
 }
 
 #[cfg(test)]
 pub(crate) fn iter_valid_execution_metadata(data_dir: &Path) -> Vec<WorkflowExecutionMetadata> {
-    let WorkflowExecutionMetadataScan { executions, .. } = scan_valid_execution_metadata(data_dir);
-    executions
+    scan_valid_execution_metadata(data_dir)
 }
 
 /// Execution Store の in-memory state。`active` と `by_worktree` を単一 Mutex で保護することで、
@@ -923,6 +791,11 @@ impl WorkflowExecutionAuthority {
         }
     }
 
+    async fn unresolved_recovery_reason(&self, owner: &str) -> Result<Option<String>, String> {
+        crate::domain::workspace_tree::unresolved_recovery_reason(self.repository.as_ref(), owner)
+            .await
+    }
+
     async fn projection_mutations(
         &self,
         execution: &WorkflowExecutionMetadata,
@@ -981,13 +854,12 @@ impl WorkflowExecutionAuthority {
             execution_id: execution.execution_id.clone(),
             active: !execution.status.is_finished(),
         };
+        let projection = workflow_execution_record(execution);
         Ok(vec![
             LocalStateMutation::SessionProjection(SessionProjectionMutation {
                 session_id: Self::storage_key(&execution.execution_id),
                 projection: SessionProjectionRecord::WorkflowExecution(
-                    WorkflowExecutionProjectionRecord::Present(workflow_execution_record(
-                        execution,
-                    )),
+                    WorkflowExecutionProjectionRecord::Present(projection.clone()),
                 ),
                 expected,
                 revision,
@@ -1011,6 +883,11 @@ impl WorkflowExecutionAuthority {
                 projection: SessionProjectionRecord::WorkflowWorktreeOwner(worktree_projection),
                 expected: worktree_expected,
                 revision: worktree_revision,
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Present(projection),
+                expected,
+                revision,
             }),
         ])
     }
@@ -1090,6 +967,13 @@ impl WorkflowExecutionAuthority {
                 ),
                 expected: worktree_expected,
                 revision: worktree_revision,
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Deleted {
+                    execution_id: execution.execution_id.clone(),
+                },
+                expected: RevisionGuard::Expected(revision),
+                revision: next_revision,
             }),
         ])
     }
@@ -2692,13 +2576,63 @@ impl ExecutionStore {
             input_tokens: snapshot.total_token_usage.input_tokens,
             output_tokens: snapshot.total_token_usage.output_tokens,
         };
-        authority
+        let mut mutations = authority
             .projection_mutations(&execution, base)
             .await
             .map_err(|reason| ExecutionStoreError::PersistFailed {
                 execution_id: snapshot.execution_id.clone(),
                 reason,
+            })?;
+        let (expected, revision, record) = mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                LocalStateMutation::WorkflowExecutionProjection(projection) => {
+                    match &projection.projection {
+                        WorkflowExecutionProjectionRecord::Present(record) => {
+                            Some((projection.expected, projection.revision, record.clone()))
+                        }
+                        WorkflowExecutionProjectionRecord::Deleted { .. } => None,
+                    }
+                }
+                _ => None,
             })
+            .ok_or_else(|| ExecutionStoreError::PersistFailed {
+                execution_id: snapshot.execution_id.clone(),
+                reason: "Workflow execution projection mutation is missing".to_string(),
+            })?;
+        let recovery_owner_reason = authority
+            .unresolved_recovery_reason(&snapshot.execution_id)
+            .await
+            .map_err(|reason| ExecutionStoreError::PersistFailed {
+                execution_id: snapshot.execution_id.clone(),
+                reason,
+            })?;
+        let nodes = crate::domain::workspace_tree::runtime_snapshot_nodes(
+            crate::domain::workspace_tree::RuntimeSnapshotNodeProjection {
+                execution_id: &snapshot.execution_id,
+                workflow_name: &snapshot.workflow_name,
+                workspace_identity: &snapshot.worktree_path,
+                workflow_definition: &snapshot.workflow_definition,
+                node_executions: &snapshot.node_executions,
+                started_at: snapshot.started_at,
+                updated_at: snapshot.updated_at,
+                execution: &record,
+                recovery_owner_reason,
+            },
+        )
+        .map_err(|reason| ExecutionStoreError::PersistFailed {
+            execution_id: snapshot.execution_id.clone(),
+            reason,
+        })?;
+        mutations.push(LocalStateMutation::WorkflowExecutionNodeProjection(
+            WorkflowExecutionNodeProjectionMutation {
+                execution_id: snapshot.execution_id.clone(),
+                nodes,
+                expected,
+                revision,
+            },
+        ));
+        Ok(mutations)
     }
 
     pub(crate) async fn prepare_atomic_interrupted_abort_metadata_mutations(
@@ -3240,8 +3174,20 @@ mod tests {
             request: LocalEventQuery,
         ) -> Result<LocalEventQueryResult, crate::domain::local_event::LocalEventQueryError>
         {
-            let LocalEventQuery::SessionProjectionByIdentity { session_id } = request else {
-                unreachable!("canonical projection fixture only accepts identity reads");
+            let session_id = match request {
+                LocalEventQuery::SessionProjectionByIdentity { session_id } => session_id,
+                LocalEventQuery::PendingRecoveryPage { .. } => {
+                    return Ok(LocalEventQueryResult::PendingRecoveryPage(
+                        crate::domain::local_event::PendingRecoveryPageView {
+                            entries: Vec::new(),
+                            continuation_cursors: Vec::new(),
+                            next_cursor: None,
+                        },
+                    ));
+                }
+                _ => unreachable!(
+                    "canonical projection fixture only accepts identity and recovery-fence reads"
+                ),
             };
             if session_id != WorkflowExecutionAuthority::storage_key(&self.execution_id) {
                 return Ok(LocalEventQueryResult::SessionProjectionByIdentity(None));
@@ -3284,6 +3230,14 @@ mod tests {
                     })
                 }
             }
+        }
+
+        fn query_blocking(
+            &self,
+            _request: LocalEventQuery,
+        ) -> Result<LocalEventQueryResult, crate::domain::local_event::LocalEventQueryError>
+        {
+            Err(crate::domain::local_event::LocalEventQueryError::InvalidRequest)
         }
 
         fn subscribe(
@@ -3331,6 +3285,41 @@ mod tests {
         }
     }
 
+    fn assert_execution_node_projection_parity(mutations: &[LocalStateMutation]) {
+        let execution_projections = mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                LocalStateMutation::WorkflowExecutionProjection(projection) => Some(projection),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let node_projections = mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                LocalStateMutation::WorkflowExecutionNodeProjection(projection) => Some(projection),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            execution_projections.len(),
+            1,
+            "one source batch must own exactly one execution-row update"
+        );
+        assert_eq!(
+            node_projections.len(),
+            1,
+            "a structural execution-row update must replace its node rows in the same batch"
+        );
+        let execution = execution_projections[0];
+        let node = node_projections[0];
+        let WorkflowExecutionProjectionRecord::Present(record) = &execution.projection else {
+            panic!("snapshot source batches must publish a present execution");
+        };
+        assert_eq!(record.execution_id, node.execution_id);
+        assert_eq!(execution.expected, node.expected);
+        assert_eq!(execution.revision, node.revision);
+    }
+
     #[tokio::test]
     async fn canonical_read_failure_is_not_mapped_to_not_found_or_default_projection() {
         let execution_id = test_uuid(201);
@@ -3367,7 +3356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_projection_create_requires_absent_and_update_requires_present() {
+    async fn snapshot_source_batches_keep_execution_and_node_projection_parity() {
         let absent_id = test_uuid(202);
         let absent_store = ExecutionStore::new_in_memory_for_tests();
         let absent_repository = install_canonical_projection_fixture(
@@ -3380,7 +3369,20 @@ mod tests {
             .prepare_atomic_initial_snapshot_mutations(&snapshot(&absent_id))
             .await
             .unwrap();
-        assert_eq!(initial.len(), 3);
+        assert_execution_node_projection_parity(&initial);
+        assert_eq!(initial.len(), 5);
+        assert!(matches!(
+            &initial[3],
+            LocalStateMutation::WorkflowExecutionProjection(mutation)
+                if mutation.expected == RevisionGuard::Absent
+                    && mutation.revision == Revision::new(0).unwrap()
+        ));
+        assert!(matches!(
+            &initial[4],
+            LocalStateMutation::WorkflowExecutionNodeProjection(mutation)
+                if mutation.expected == RevisionGuard::Absent
+                    && mutation.revision == Revision::new(0).unwrap()
+        ));
         assert_eq!(
             absent_repository.execution_reads(),
             1,
@@ -3414,11 +3416,18 @@ mod tests {
             .prepare_atomic_existing_snapshot_mutations(&snapshot(&present_id))
             .await
             .unwrap();
+        assert_execution_node_projection_parity(&update);
         assert_eq!(
             present_repository.execution_reads(),
             1,
             "update must not re-read and adopt a newer revision for stale payload"
         );
+        assert!(update.iter().any(|mutation| matches!(
+            mutation,
+            LocalStateMutation::WorkflowExecutionNodeProjection(node)
+                if node.expected == RevisionGuard::Expected(present_revision)
+                    && node.revision == present_revision.next().unwrap()
+        )));
         let LocalStateMutation::SessionProjection(execution_mutation) = &update[0] else {
             panic!("first mutation must update the workflow execution projection");
         };
@@ -3436,6 +3445,113 @@ mod tests {
                 .await,
             Err(ExecutionStoreError::ExecutionAlreadyExists { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn metadata_only_source_batches_intentionally_do_not_emit_node_replacements() {
+        let assert_metadata_only = |mutations: &[LocalStateMutation], reason: &str| {
+            assert!(
+                mutations.iter().any(|mutation| matches!(
+                    mutation,
+                    LocalStateMutation::WorkflowExecutionProjection(_)
+                )),
+                "{reason}"
+            );
+            assert!(
+                !mutations.iter().any(|mutation| matches!(
+                    mutation,
+                    LocalStateMutation::WorkflowExecutionNodeProjection(_)
+                )),
+                "{reason}"
+            );
+        };
+
+        let abort_id = test_uuid(206);
+        let mut interrupted = make_execution(
+            &abort_id,
+            "/wt/canonical",
+            ExecutionStatus::Interrupted,
+            100.0,
+        );
+        interrupted.interruption_reason = Some(ExecutionInterruptionReason::Crash);
+        interrupted.resume_from_node = Some("node-1".to_string());
+        let abort_store = ExecutionStore::new_in_memory_for_tests();
+        install_canonical_projection_fixture(
+            &abort_store,
+            &abort_id,
+            CanonicalProjectionFixture::Present {
+                metadata: interrupted.clone(),
+                revision: Revision::new(4).unwrap(),
+            },
+        )
+        .await;
+        let mutations = abort_store
+            .prepare_atomic_interrupted_abort_metadata_mutations(&interrupted, 101.0)
+            .await
+            .unwrap();
+        assert_metadata_only(
+            &mutations,
+            "interrupted-abort changes execution metadata only; existing occurrence rows remain valid",
+        );
+
+        let reconciliation_id = test_uuid(207);
+        let running = make_execution(
+            &reconciliation_id,
+            "/wt/canonical",
+            ExecutionStatus::Running,
+            100.0,
+        );
+        let reconciliation_store = ExecutionStore::new_in_memory_for_tests();
+        install_canonical_projection_fixture(
+            &reconciliation_store,
+            &reconciliation_id,
+            CanonicalProjectionFixture::Present {
+                metadata: running.clone(),
+                revision: Revision::new(5).unwrap(),
+            },
+        )
+        .await;
+        let mut completed = running.clone();
+        completed.status = ExecutionStatus::Completed;
+        completed.updated_at = 101.0;
+        completed.completed_at = Some(101.0);
+        let mutations = reconciliation_store
+            .prepare_atomic_event_reconciliation_metadata_mutations(
+                &running,
+                &projected_execution(&completed),
+            )
+            .await
+            .unwrap();
+        assert_metadata_only(
+            &mutations,
+            "event reconciliation changes execution metadata only; existing occurrence rows remain valid",
+        );
+
+        let deletion_id = test_uuid(208);
+        let stale = make_execution(
+            &deletion_id,
+            "/wt/canonical",
+            ExecutionStatus::Running,
+            100.0,
+        );
+        let deletion_store = ExecutionStore::new_in_memory_for_tests();
+        install_canonical_projection_fixture(
+            &deletion_store,
+            &deletion_id,
+            CanonicalProjectionFixture::Present {
+                metadata: stale.clone(),
+                revision: Revision::new(6).unwrap(),
+            },
+        )
+        .await;
+        let mutations = deletion_store
+            .prepare_atomic_stale_reservation_deletion_mutations(&stale)
+            .await
+            .unwrap();
+        assert_metadata_only(
+            &mutations,
+            "deleting the execution row removes owned node rows through the SQLite foreign-key cascade",
+        );
     }
 
     #[tokio::test]

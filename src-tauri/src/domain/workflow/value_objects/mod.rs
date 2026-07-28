@@ -22,9 +22,11 @@ pub use execution::{
     Fanout, WorkflowExecution,
 };
 #[cfg(test)]
+pub use execution_metadata::ExecutionListFilter;
+#[cfg(test)]
 pub use execution_metadata::WorkflowExecutionRecord;
 pub use execution_metadata::{
-    ExecutionListFilter, ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
+    ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
 };
 pub use facet::{FacetContents, FacetKey, FacetKind, FacetSummary, WorkflowFacetContents};
 pub use failure::{

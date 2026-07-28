@@ -250,6 +250,7 @@ fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEvent
 enum ExistingDatabaseKind {
     Current,
     SupportedV1,
+    SupportedV2,
 }
 
 fn classify_existing_database(
@@ -314,6 +315,12 @@ fn classify_existing_database(
         return Ok(ExistingDatabaseKind::SupportedV1);
     }
     if application_id == i64::from(APPLICATION_ID) {
+        if user_version == 2
+            && columns.iter().any(|column| column == "installation_id")
+            && !columns.iter().any(|column| column == "store_id")
+        {
+            return Ok(ExistingDatabaseKind::SupportedV2);
+        }
         if user_version != CURRENT_SCHEMA_VERSION {
             return Err(LocalEventStoreOpenError::UnsupportedStoreVersion);
         }
@@ -558,7 +565,10 @@ impl LocalEventStore {
                         LocalEventStoreOpenError::StoreValidationFailed,
                     )
                 })?;
-                if kind == ExistingDatabaseKind::SupportedV1 {
+                if matches!(
+                    kind,
+                    ExistingDatabaseKind::SupportedV1 | ExistingDatabaseKind::SupportedV2
+                ) {
                     evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
                         classify_sqlite_error(
                             &error,
@@ -863,6 +873,22 @@ impl LocalEventStore {
                 ),
             })?
     }
+
+    /// Runs gateway-local indexed reads on the store's fixed reader pool.
+    ///
+    /// This is intentionally not a general SQL port: only adaptors in this
+    /// crate can provide the closure, so usecase/domain layers cannot acquire
+    /// a connection or create a per-request runtime.
+    pub(crate) fn submit_indexed_query_blocking<T, F>(
+        &self,
+        run: F,
+    ) -> Result<T, LocalEventQueryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
+    {
+        self.readers.submit_blocking(run)
+    }
 }
 
 impl crate::usecase::agent_session::operation::RecoveryResultCanonicalizer for LocalEventStore {
@@ -1023,6 +1049,23 @@ impl LocalEventTransactionRepository for LocalEventStore {
         let context = Arc::clone(&self.query_context);
         self.submit_query(move |connection| run_query(connection, &context, &request))
             .await
+    }
+
+    fn query_blocking(
+        &self,
+        request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+        if matches!(
+            &request,
+            LocalEventQuery::PendingRecoveryPage { .. }
+                | LocalEventQuery::PendingRecoverySnapshotPage { .. }
+        ) {
+            return Err(LocalEventQueryError::InvalidRequest);
+        }
+        let context = Arc::clone(&self.query_context);
+        self.submit_indexed_query_blocking(move |connection| {
+            run_query(connection, &context, &request)
+        })
     }
 
     fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {

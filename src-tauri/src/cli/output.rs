@@ -234,11 +234,12 @@ impl From<WorkflowGetOutputResult> for OutputGetView {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use super::super::common::test_support::{make_execution, test_uuid, write_execution_file};
+    use super::super::common::test_support::{
+        append_workflow_event, make_execution, test_uuid, write_execution_file,
+    };
     use super::super::Cli;
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinitionYaml,
     };
@@ -272,8 +273,9 @@ mod tests {
                 ..Default::default()
             }],
         };
-        WorkflowEventLog::new(data_dir)
-            .append(&WorkflowEvent::ExecutionStarted {
+        append_workflow_event(
+            data_dir,
+            &WorkflowEvent::ExecutionStarted {
                 execution_id: execution_id.to_string(),
                 workflow_name: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -282,8 +284,8 @@ mod tests {
                 permission_mode: "ask".to_string(),
                 definition,
                 timestamp: 1.0,
-            })
-            .unwrap();
+            },
+        );
     }
 
     #[test]
@@ -413,19 +415,20 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(12);
         seed_artifact_node(temp.path(), &execution_id);
-        let log = WorkflowEventLog::new(temp.path());
         for (index, verdict) in ["FIX", "LGTM"].into_iter().enumerate() {
-            log.append(&WorkflowEvent::ArtifactProduced {
-                execution_id: execution_id.clone(),
-                node_execution_id: format!("node-{index}"),
-                node_name: "review".to_string(),
-                contract: Some("review-verdict".to_string()),
-                value: serde_json::json!({"verdict": verdict}),
-                request_id: Some(format!("request-{index}")),
-                submitted_at: Some(2.0 + index as f64),
-                timestamp: 2.0 + index as f64,
-            })
-            .unwrap();
+            append_workflow_event(
+                temp.path(),
+                &WorkflowEvent::ArtifactProduced {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: format!("node-{index}"),
+                    node_name: "review".to_string(),
+                    contract: Some("review-verdict".to_string()),
+                    value: serde_json::json!({"verdict": verdict}),
+                    request_id: Some(format!("request-{index}")),
+                    submitted_at: Some(2.0 + index as f64),
+                    timestamp: 2.0 + index as f64,
+                },
+            );
         }
 
         let output = cmd_output_get(temp.path(), &execution_id, "review", true).unwrap();

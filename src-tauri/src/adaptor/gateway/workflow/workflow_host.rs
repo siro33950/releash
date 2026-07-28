@@ -934,9 +934,8 @@ impl WorkflowRuntimeHost {
             .await
             .unwrap();
         if let Some(data_dir) = self.execution_store.data_dir_for_test().await {
-            let event_log = WorkflowEventLog::new(&data_dir);
-            event_log
-                .append(&WorkflowEvent::ExecutionStarted {
+            let mut events = vec![
+                WorkflowEvent::ExecutionStarted {
                     execution_id: execution_id.clone(),
                     workflow_name: workflow.name.clone(),
                     worktree_path: worktree_path.clone(),
@@ -945,10 +944,8 @@ impl WorkflowRuntimeHost {
                     permission_mode: PermissionMode::EDIT.to_string(),
                     definition: workflow.clone(),
                     timestamp: now,
-                })
-                .unwrap();
-            event_log
-                .append(&WorkflowEvent::NodeStarted {
+                },
+                WorkflowEvent::NodeStarted {
                     execution_id: execution_id.clone(),
                     node_execution_id: node_execution_id.clone(),
                     node_name: current_node.clone(),
@@ -956,16 +953,29 @@ impl WorkflowRuntimeHost {
                     attempt: 1,
                     fanout_parent: None,
                     timestamp: now,
-                })
-                .unwrap();
+                },
+            ];
             if matches!(state, RuntimeExecutionState::WaitingApproval) {
-                event_log
-                    .append(&WorkflowEvent::ApprovalRequested {
-                        execution_id: execution_id.clone(),
-                        node_execution_id: node_execution_id.clone(),
-                        node_name: current_node.clone(),
-                        timestamp: now,
-                    })
+                events.push(WorkflowEvent::ApprovalRequested {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: current_node.clone(),
+                    timestamp: now,
+                });
+            }
+            if let Some((repository, installation_id)) =
+                self.execution_store.local_event_authority().await
+            {
+                WorkflowEventLog::with_authority(repository, installation_id)
+                    .append_batch_durable_with_mutations_blocking_as(
+                        CommitOperationKind::Workflow,
+                        &events,
+                        Vec::new(),
+                    )
+                    .unwrap();
+            } else {
+                WorkflowEventLog::new(&data_dir)
+                    .append_batch(&events)
                     .unwrap();
             }
         }

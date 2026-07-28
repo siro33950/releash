@@ -63,8 +63,7 @@ impl RoutingReplayState {
 
 struct ProjectedWorkflowExecution {
     execution: WorkflowExecution,
-    aggregate: Option<WorkflowExecutionAggregate>,
-    routing_replay: Option<RoutingReplayState>,
+    aggregate: WorkflowExecutionAggregate,
 }
 
 /// Projects one public workflow execution read model from its event stream.
@@ -83,59 +82,18 @@ pub(crate) fn project_retained_workflow_execution(
     execution_id: &str,
     events: &[WorkflowEvent],
 ) -> Result<Option<RetainedWorkflowExecutionProjection>, String> {
-    project_workflow_execution_with_payload_policy(
-        execution_id,
-        events,
-        ProjectionPayloadPolicy::Retained,
-    )
-    .map(|projection| {
-        projection.map(|projection| {
-            let aggregate = projection
-                .aggregate
-                .expect("retained projection must replay the aggregate");
-            let _routing_replay = projection
-                .routing_replay
-                .expect("retained projection must construct routing replay state");
-            RetainedWorkflowExecutionProjection {
-                execution: projection.execution,
-                node_execution_counts: aggregate.node_execution_counts.clone(),
-                loop_guard_reset_baselines: aggregate.loop_guard_reset_baselines.clone(),
-            }
+    project_workflow_execution_retained(execution_id, events).map(|projection| {
+        projection.map(|projection| RetainedWorkflowExecutionProjection {
+            execution: projection.execution,
+            node_execution_counts: projection.aggregate.node_execution_counts.clone(),
+            loop_guard_reset_baselines: projection.aggregate.loop_guard_reset_baselines.clone(),
         })
     })
 }
 
-/// Projects the canonical execution state without requiring retained body
-/// payloads. This is used by summary-only consumers whose event reader replaces
-/// request and Artifact values with empty sentinels before replay.
-///
-/// All lifecycle/node/fanout reduction remains shared with the canonical
-/// projector. Only the artifact-dependent resume checkpoint is omitted: a
-/// stripped Artifact cannot safely reproduce a routing decision, and Workspace
-/// summaries need the interrupted status/capability rather than that internal
-/// checkpoint.
-pub(crate) fn project_payload_stripped_workflow_execution(
+fn project_workflow_execution_retained(
     execution_id: &str,
     events: &[WorkflowEvent],
-) -> Result<Option<WorkflowExecution>, String> {
-    project_workflow_execution_with_payload_policy(
-        execution_id,
-        events,
-        ProjectionPayloadPolicy::Stripped,
-    )
-    .map(|projection| projection.map(|projection| projection.execution))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectionPayloadPolicy {
-    Retained,
-    Stripped,
-}
-
-fn project_workflow_execution_with_payload_policy(
-    execution_id: &str,
-    events: &[WorkflowEvent],
-    payload_policy: ProjectionPayloadPolicy,
 ) -> Result<Option<ProjectedWorkflowExecution>, String> {
     for event in events {
         if event.execution_id() != execution_id {
@@ -212,27 +170,18 @@ fn project_workflow_execution_with_payload_policy(
         fanouts: Vec::new(),
         approval_target: None,
     };
-    let aggregate = match payload_policy {
-        ProjectionPayloadPolicy::Retained => Some(replay_workflow_execution_aggregate(
-            execution_id,
-            definition,
-            worktree_path,
-            created_from,
-            request,
-            permission_mode,
-            started_at,
-            events,
-        )?),
-        // Stripped projections serve summary-only readers that discard the
-        // aggregate; replaying it would recompute state per execution per event
-        // just to drop it.
-        ProjectionPayloadPolicy::Stripped => None,
-    };
+    let aggregate = replay_workflow_execution_aggregate(
+        execution_id,
+        definition,
+        worktree_path,
+        created_from,
+        request,
+        permission_mode,
+        started_at,
+        events,
+    )?;
     let mut authoritative_total_usage = None;
-    let mut routing_replay = match payload_policy {
-        ProjectionPayloadPolicy::Retained => Some(RoutingReplayState::new(definition)),
-        ProjectionPayloadPolicy::Stripped => None,
-    };
+    let mut routing_replay = RoutingReplayState::new(definition);
 
     for event in events {
         execution.updated_at = execution.updated_at.max(event.timestamp());
@@ -248,9 +197,7 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
-                if let Some(routing_replay) = routing_replay.as_mut() {
-                    routing_replay.record_node_started(node_name, *attempt);
-                }
+                routing_replay.record_node_started(node_name, *attempt);
                 if execution
                     .node_executions
                     .iter()
@@ -333,9 +280,7 @@ fn project_workflow_execution_with_payload_policy(
                     token_usage.as_ref().map(token_usage_to_domain),
                     *timestamp,
                 );
-                if let Some(routing_replay) = routing_replay.as_mut() {
-                    routing_replay.record_node_completed(node_name);
-                }
+                routing_replay.record_node_completed(node_name);
             }
             WorkflowEvent::NodeFailed {
                 node_execution_id,
@@ -428,20 +373,12 @@ fn project_workflow_execution_with_payload_policy(
             WorkflowEvent::ExecutionInterrupted {
                 reason, timestamp, ..
             } => {
-                let resume_from_node = match payload_policy {
-                    ProjectionPayloadPolicy::Retained => {
-                        let routing_replay = routing_replay
-                            .as_ref()
-                            .expect("retained projection must construct routing replay state");
-                        derive_resume_from_node(
-                            &routing_replay.workflow,
-                            &execution.node_executions,
-                            &routing_replay.node_execution_counts,
-                            &routing_replay.loop_guard_reset_baselines,
-                        )?
-                    }
-                    ProjectionPayloadPolicy::Stripped => None,
-                };
+                let resume_from_node = derive_resume_from_node(
+                    &routing_replay.workflow,
+                    &execution.node_executions,
+                    &routing_replay.node_execution_counts,
+                    &routing_replay.loop_guard_reset_baselines,
+                )?;
                 execution.status = ExecutionStatus::Interrupted;
                 execution.completed_at = None;
                 execution.error_reason = None;
@@ -495,7 +432,6 @@ fn project_workflow_execution_with_payload_policy(
     Ok(Some(ProjectedWorkflowExecution {
         execution,
         aggregate,
-        routing_replay,
     }))
 }
 
@@ -1894,32 +1830,16 @@ mod tests {
             },
         ];
 
-        let retained = project_workflow_execution_with_payload_policy(
-            EXECUTION_ID,
-            &events,
-            ProjectionPayloadPolicy::Retained,
-        )
-        .unwrap()
-        .unwrap();
-        let execution = retained.execution;
+        let retained = project_workflow_execution_retained(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        let execution = &retained.execution;
 
         assert_eq!(execution.resume_from_node.as_deref(), Some("fix"));
-        assert!(retained.routing_replay.is_some());
-
-        let stripped = project_workflow_execution_with_payload_policy(
-            EXECUTION_ID,
-            &events,
-            ProjectionPayloadPolicy::Stripped,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(stripped.execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(stripped.execution.resume_from_node, None);
         assert_eq!(
-            stripped.execution.node_executions[2].status,
+            execution.node_executions[2].status,
             NodeExecutionStatus::Succeeded
         );
-        assert!(stripped.routing_replay.is_none());
     }
 
     #[test]

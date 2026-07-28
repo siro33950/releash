@@ -38,6 +38,9 @@ impl From<AgentRuntimeError> for AppError {
             workflow_send @ AgentRuntimeError::WorkflowTurnSend(_) => {
                 Self::Internal(workflow_send.to_string())
             }
+            workspace_query @ AgentRuntimeError::WorkspaceQuery(_) => {
+                Self::Internal(workspace_query.to_string())
+            }
             AgentRuntimeError::Other(message) => Self::Internal(message),
         }
     }

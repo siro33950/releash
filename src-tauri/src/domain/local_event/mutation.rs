@@ -10,8 +10,9 @@ use crate::domain::local_event::identifiers::Revision;
 use crate::domain::local_event::record::{
     MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
     RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord, TerminalResultRecord,
+    ShutdownTargetRecord, TerminalResultRecord, WorkflowExecutionProjectionRecord,
 };
+use crate::domain::workspace_tree::WorkspaceTreeNode;
 
 /// A complete message projection may legitimately carry an inline image.
 /// The transaction-wide decoded-byte admission remains the authoritative
@@ -160,6 +161,26 @@ pub struct MessageProjectionMutation {
 pub struct SessionProjectionRemovalMutation {
     pub session_id: String,
     pub expected: RevisionGuard,
+}
+
+/// One indexed execution row, guarded by the owning WorkflowExecution
+/// aggregate revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowExecutionProjectionMutation {
+    pub projection: WorkflowExecutionProjectionRecord,
+    pub expected: RevisionGuard,
+    pub revision: Revision,
+}
+
+/// Complete node-row delta for one WorkflowExecution revision. Runtime writes
+/// replace only this execution's rows; deleting an execution removes them via
+/// the execution-row foreign key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowExecutionNodeProjectionMutation {
+    pub execution_id: String,
+    pub nodes: Vec<WorkspaceTreeNode>,
+    pub expected: RevisionGuard,
+    pub revision: Revision,
 }
 
 /// Terminal uniqueness on `(session_id, turn_id)`. Guard: absent or same
@@ -354,6 +375,8 @@ pub enum LocalStateMutation {
     SessionProjection(SessionProjectionMutation),
     MessageProjection(MessageProjectionMutation),
     SessionProjectionRemoval(SessionProjectionRemovalMutation),
+    WorkflowExecutionProjection(WorkflowExecutionProjectionMutation),
+    WorkflowExecutionNodeProjection(WorkflowExecutionNodeProjectionMutation),
     TerminalRecord(TerminalRecordMutation),
     StopResolution(StopResolutionMutation),
     Obligation(ObligationMutation),
@@ -405,7 +428,10 @@ impl LocalStateMutation {
             // domain-only encoder for a projection would silently change
             // existing replay identities, so projection-capable commit paths
             // must use the gateway canonicalizer.
-            Self::SessionProjection(_) | Self::MessageProjection(_) => {
+            Self::SessionProjection(_)
+            | Self::MessageProjection(_)
+            | Self::WorkflowExecutionProjection(_)
+            | Self::WorkflowExecutionNodeProjection(_) => {
                 return Err("projection identity-v1 encoding is gateway-owned")
             }
             Self::SessionProjectionRemoval(m) => {
@@ -482,6 +508,24 @@ impl LocalStateMutation {
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
             Self::MessageProjection(m) => m.projection.semantic_bytes().saturating_add(96),
             Self::SessionProjectionRemoval(m) => m.session_id.len() + 64,
+            Self::WorkflowExecutionProjection(m) => typed(&m.projection).saturating_add(64),
+            Self::WorkflowExecutionNodeProjection(m) => {
+                m.nodes
+                    .iter()
+                    .fold(m.execution_id.len().saturating_add(64), |total, node| {
+                        total
+                            .saturating_add(node.id.len())
+                            .saturating_add(node.title.len())
+                            .saturating_add(node.error_reason.as_ref().map_or(0, String::len))
+                            .saturating_add(node.display_command.as_ref().map_or(0, String::len))
+                            .saturating_add(
+                                node.command_result
+                                    .as_ref()
+                                    .map_or(0, |result| result.stdout.len() + result.stderr.len()),
+                            )
+                            .saturating_add(256)
+                    })
+            }
             Self::TerminalRecord(m) => typed(&m.result) + 128,
             Self::StopResolution(m) => typed(&m.detail) + 64,
             Self::Obligation(m) => {

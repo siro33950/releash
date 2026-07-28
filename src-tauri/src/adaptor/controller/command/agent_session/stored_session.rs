@@ -89,14 +89,14 @@ pub async fn create_workspace_session(
 
 #[tauri::command]
 pub async fn list_closed_sessions(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     worktree_path: String,
 ) -> Result<Vec<SessionSummaryDtoV1>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    state
-        .list_closed_sessions(&data_dir, &worktree_path)
+    runtime
+        .list_closed_sessions(&worktree_path)
+        .await
         .map(|sessions| sessions.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -14,10 +14,12 @@ use crate::domain::agent_session::{
 };
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
+#[cfg(test)]
+use crate::usecase::agent_session::event_log::BackendSessionRecoveryProjection;
 use crate::usecase::agent_session::event_log::{
     finalize_turn, latest_turn_interruption, AgentSessionEvent, AgentTurnFailureSignal,
-    BackendSessionRecoveryProjection, BackendSessionRecoveryReason, GoalReactivationOutcome,
-    SessionReadModel, TurnEventLog, WorkflowTurnCompleteInput,
+    BackendSessionRecoveryReason, GoalReactivationOutcome, SessionReadModel, TurnEventLog,
+    WorkflowTurnCompleteInput,
 };
 
 use super::{
@@ -619,26 +621,6 @@ fn recovery_publication_snapshot(
             list,
             workflow_owner,
         },
-    }
-}
-
-fn recovery_publication_owner_matches(snapshot: &RecoveryPublicationSnapshot) -> bool {
-    let summary = &snapshot.summary;
-    match &snapshot.classification.workflow_owner {
-        None => !summary.workflow_node_session && summary.workflow_node_context.is_none(),
-        Some(owner) => {
-            if !summary.workflow_node_session && summary.workflow_node_context.is_none() {
-                return false;
-            }
-            match &summary.workflow_node_context {
-                Some(context) => {
-                    owner.execution_id.as_deref() == Some(context.execution_id.as_str())
-                        && owner.node_execution_id.as_deref()
-                            == Some(context.node_execution_id.as_str())
-                }
-                None => owner.execution_id.is_none() && owner.node_execution_id.is_none(),
-            }
-        }
     }
 }
 
@@ -1871,7 +1853,7 @@ impl AgentSessionStorageTypes for SessionStore {
 
 impl AgentSessionReader for SessionStore {
     fn list_metas(&self, app_data_dir: &Path) -> Result<Vec<Self::Meta>, String> {
-        self.list_metas_for_active_read_authority(app_data_dir)
+        self.read_session_metadata_inventory(app_data_dir)
     }
 
     fn session_title(
@@ -1954,7 +1936,7 @@ impl AgentSessionReader for SessionStore {
 }
 
 impl SessionStore {
-    fn list_metas_for_active_read_authority(
+    fn read_session_metadata_inventory(
         &self,
         app_data_dir: &Path,
     ) -> Result<Vec<SessionMeta>, String> {
@@ -1962,7 +1944,7 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             return self.test_storage().list_metas(app_data_dir);
         }
-        self.list_metas_canonical(app_data_dir)
+        self.read_canonical_metadata_inventory(app_data_dir)
     }
 
     fn ensure_canonical_mutation_admission(&self) -> Result<(), String> {
@@ -2183,93 +2165,15 @@ impl SessionStore {
         }
     }
 
-    pub(crate) fn unresolved_recovery_reason(&self, owner: &str) -> Result<Option<String>, String> {
-        use crate::domain::local_event::{LocalEventQuery, LocalEventQueryResult};
-
-        if owner.is_empty() {
-            return Err("recovery owner identity is invalid".to_string());
-        }
-        let authority = match self.event_authority.read().clone() {
-            Some(authority) => authority,
-            None => {
-                #[cfg(test)]
-                return Ok(None);
-                #[cfg(not(test))]
-                return Err("pending recovery authority is unavailable".to_string());
-            }
-        };
-        let owner = owner.to_string();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            format!("failed to create pending recovery read runtime: {error}")
-                        })?
-                        .block_on(async move {
-                            const PAGE_LIMIT: usize = 200;
-                            let mut cursor = None;
-                            loop {
-                                let result = authority
-                                    .repository
-                                    .query(LocalEventQuery::PendingRecoveryPage {
-                                        limit: PAGE_LIMIT,
-                                        partition: None,
-                                        owner: Some(owner.clone()),
-                                        ordered_key_prefix: None,
-                                        shutdown_plan: None,
-                                        cursor,
-                                    })
-                                    .await
-                                    .map_err(|error| {
-                                        format!(
-                                            "pending recovery inventory is unavailable: {error}"
-                                        )
-                                    })?;
-                                let LocalEventQueryResult::PendingRecoveryPage(page) = result else {
-                                    return Err(
-                                        "pending recovery inventory is incompatible".to_string()
-                                    );
-                                };
-                                for entry in page.entries {
-                                    if entry.owner != owner {
-                                        return Err(
-                                            "pending recovery owner index is inconsistent"
-                                                .to_string(),
-                                        );
-                                    }
-                                    if let Some(identity) = crate::usecase::agent_session::operation::recovery::unresolved_recovery_original_identity(
-                                        &entry.obligation_id,
-                                        &entry.record,
-                                    ) {
-                                        return Ok(Some(format!(
-                                            "Unresolved recovery {identity} must be resolved before resume."
-                                        )));
-                                    }
-                                }
-                                cursor = page.next_cursor;
-                                if cursor.is_none() {
-                                    return Ok(None);
-                                }
-                            }
-                        })
-                })
-                .join()
-                .map_err(|_| "pending recovery read worker panicked".to_string())?
-        })
-    }
-
-    fn canonical_session_projection(
+    fn read_session_projection(
         &self,
         session_id: &str,
     ) -> Result<Option<CanonicalAgentSessionProjection>, String> {
-        self.canonical_session_projection_with_revision(session_id)
+        self.read_session_projection_with_revision(session_id)
             .map(|projection| projection.map(|(projection, _)| projection))
     }
 
-    fn canonical_session_projection_with_revision(
+    fn read_session_projection_with_revision(
         &self,
         session_id: &str,
     ) -> Result<
@@ -2282,45 +2186,28 @@ impl SessionStore {
         let Some(authority) = self.event_authority.read().clone() else {
             return Ok(None);
         };
-        let codec = authority.projection_codec.clone();
-        let session_id = session_id.to_string();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            format!("failed to create agent projection read runtime: {error}")
-                        })?
-                        .block_on(async move {
-                            let result = authority
-                                .repository
-                                .query(crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
-                                    session_id: session_id.clone(),
-                                })
-                                .await
-                                .map_err(|error| {
-                                    format!("agent SQLite projection read failed: {error}")
-                                })?;
-                            let crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(
-                                projection,
-                            ) = result
-                            else {
-                                return Err("agent SQLite projection query returned the wrong shape".to_string());
-                            };
-                            projection
-                                .map(|projection| {
-                                    codec
-                                        .decode(&projection.projection)
-                                        .map(|decoded| (decoded, projection.revision))
-                                })
-                                .transpose()
-                        })
-                })
-                .join()
-                .map_err(|_| "agent SQLite projection read worker panicked".to_string())?
-        })
+        let result = authority
+            .repository
+            .query_blocking(
+                crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
+                    session_id: session_id.to_string(),
+                },
+            )
+            .map_err(|error| format!("agent SQLite projection read failed: {error}"))?;
+        let crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(
+            projection,
+        ) = result
+        else {
+            return Err("agent SQLite projection query returned the wrong shape".to_string());
+        };
+        projection
+            .map(|projection| {
+                authority
+                    .projection_codec
+                    .decode(&projection.projection)
+                    .map(|decoded| (decoded, projection.revision))
+            })
+            .transpose()
     }
 
     /// Read the bounded durable queue identity projection in its canonical
@@ -2330,7 +2217,7 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<CanonicalQueuedSend>, String> {
-        self.canonical_session_projection(session_id)?
+        self.read_session_projection(session_id)?
             .map(|projection| projection.pending_send_queue)
             .ok_or_else(|| format!("Session projection not found: {session_id}"))
     }
@@ -3044,61 +2931,53 @@ impl SessionStore {
         })
     }
 
-    fn list_metas_canonical(&self, _app_data_dir: &Path) -> Result<Vec<SessionMeta>, String> {
+    fn read_canonical_metadata_inventory(
+        &self,
+        _app_data_dir: &Path,
+    ) -> Result<Vec<SessionMeta>, String> {
         let authority = self.event_authority.read().clone().ok_or_else(|| {
             "agent-session SQLite projection authority is unavailable".to_string()
         })?;
-        let codec = authority.projection_codec.clone();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            format!("failed to create agent projection page runtime: {error}")
-                        })?
-                        .block_on(async move {
-                            let mut after_session_id = None;
-                            let mut metas = Vec::new();
-                            loop {
-                                let result = authority
-                                    .repository
-                                    .query(crate::domain::local_event::LocalEventQuery::SessionProjectionPage {
-                                        limit: 200,
-                                        after_session_id: after_session_id.clone(),
-                                    })
-                                    .await
-                                    .map_err(|error| {
-                                        format!("agent SQLite projection page read failed: {error}")
-                                    })?;
-                                let crate::domain::local_event::LocalEventQueryResult::SessionProjectionPage(
-                                    page,
-                                ) = result
-                                else {
-                                    return Err("agent SQLite projection page query returned the wrong shape".to_string());
-                                };
-                                let page_len = page.len();
-                                for projection in page {
-                                    after_session_id = Some(projection.session_id);
-                                    if !matches!(
-                                        &projection.projection,
-                                        crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
-                                    ) {
-                                        continue;
-                                    }
-                                    metas.push(codec.decode(&projection.projection)?.meta);
-                                }
-                                if page_len < 200 {
-                                    break;
-                                }
-                            }
-                            Ok(metas)
-                        })
-                })
-                .join()
-                .map_err(|_| "agent SQLite projection page worker panicked".to_string())?
-        })
+        let mut after_session_id = None;
+        let mut metas = Vec::new();
+        loop {
+            let result = authority
+                .repository
+                .query_blocking(
+                    crate::domain::local_event::LocalEventQuery::SessionProjectionPage {
+                        limit: 200,
+                        after_session_id: after_session_id.clone(),
+                    },
+                )
+                .map_err(|error| format!("agent SQLite projection page read failed: {error}"))?;
+            let crate::domain::local_event::LocalEventQueryResult::SessionProjectionPage(page) =
+                result
+            else {
+                return Err(
+                    "agent SQLite projection page query returned the wrong shape".to_string(),
+                );
+            };
+            let page_len = page.len();
+            for projection in page {
+                after_session_id = Some(projection.session_id);
+                if !matches!(
+                    &projection.projection,
+                    crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
+                ) {
+                    continue;
+                }
+                metas.push(
+                    authority
+                        .projection_codec
+                        .decode(&projection.projection)?
+                        .meta,
+                );
+            }
+            if page_len < 200 {
+                break;
+            }
+        }
+        Ok(metas)
     }
 
     fn canonical_message_page(
@@ -3283,7 +3162,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         };
         let fallback_meta = Some(
-            self.canonical_session_projection(session_id)?
+            self.read_session_projection(session_id)?
                 .ok_or_else(|| format!("Session projection not found: {session_id}"))?
                 .meta,
         );
@@ -3778,7 +3657,7 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        let current_projection = self.canonical_session_projection(session_id)?;
+        let current_projection = self.read_session_projection(session_id)?;
         let fallback_meta = current_projection
             .as_ref()
             .map(|projection| projection.meta.clone());
@@ -4213,7 +4092,7 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        let current_projection = self.canonical_session_projection(session_id)?;
+        let current_projection = self.read_session_projection(session_id)?;
         let fallback_meta = current_projection
             .as_ref()
             .map(|projection| projection.meta.clone());
@@ -4337,7 +4216,7 @@ impl SessionStore {
             "provider session generation",
         )?;
         let current_projection = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| "backend recovery owner projection is unavailable".to_string())?;
         let Some(backend_session_id) = current_projection
             .meta
@@ -4889,7 +4768,7 @@ impl SessionStore {
         meta: SessionMeta,
         operation_kind: crate::domain::local_event::CommitOperationKind,
     ) -> Result<(), String> {
-        let current = self.canonical_session_projection(&meta.id)?;
+        let current = self.read_session_projection(&meta.id)?;
         let queue_paused_at = current
             .as_ref()
             .and_then(|projection| projection.queue_paused_at);
@@ -4917,7 +4796,7 @@ impl SessionStore {
         )
     }
 
-    fn remove_canonical_session_projection(&self, session_id: &str) -> Result<(), String> {
+    fn remove_read_session_projection(&self, session_id: &str) -> Result<(), String> {
         let Some(authority) = self.event_authority.read().clone() else {
             #[cfg(test)]
             return Ok(());
@@ -5080,6 +4959,7 @@ impl SessionStore {
         *self.projected_read_model_hook.write() = Some(hook);
     }
 
+    #[cfg(test)]
     pub fn list_sessions(
         &self,
         app_data_dir: &Path,
@@ -5090,6 +4970,7 @@ impl SessionStore {
         })
     }
 
+    #[cfg(test)]
     pub fn list_closed_sessions(
         &self,
         app_data_dir: &Path,
@@ -5105,106 +4986,65 @@ impl SessionStore {
     /// emitted as a second shutdown target here.
     pub(crate) fn application_shutdown_target_session_ids(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
     ) -> Result<Vec<String>, String> {
-        let mut ids = self
-            .list_metas_for_active_read_authority(app_data_dir)?
+        if !self.canonical_authority_active() {
+            #[cfg(test)]
+            {
+                let mut ids = self
+                    .read_session_metadata_inventory(_app_data_dir)?
+                    .into_iter()
+                    .filter(|meta| {
+                        !meta.workflow_node_session
+                            && meta.state != SessionState::Closed
+                            && meta.state != SessionState::Archived
+                    })
+                    .map(|meta| meta.id)
+                    .collect::<Vec<_>>();
+                ids.sort();
+                ids.dedup();
+                return Ok(ids);
+            }
+            #[cfg(not(test))]
+            unreachable!("production always has a SQLite event authority");
+        }
+        let authority = self
+            .event_authority
+            .read()
+            .clone()
+            .expect("canonical authority checked");
+        let result = authority
+            .repository
+            .query_blocking(
+                crate::domain::local_event::LocalEventQuery::CanonicalRuntimeOwnerSnapshot {
+                    limit: 8_192,
+                },
+            )
+            .map_err(|error| format!("runtime owner inventory read failed: {error}"))?;
+        let crate::domain::local_event::LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(
+            owners,
+        ) = result
+        else {
+            return Err("runtime owner inventory returned the wrong shape".to_string());
+        };
+        let mut ids = owners
             .into_iter()
-            .filter(|meta| {
-                !meta.workflow_node_session
-                    && meta.state != SessionState::Closed
-                    && meta.state != SessionState::Archived
+            .filter_map(|owner| match owner {
+                crate::domain::local_event::CanonicalRuntimeOwnerView::AgentSession {
+                    session_id,
+                    shutdown_target: true,
+                    workflow_node_session: false,
+                    ..
+                } => Some(session_id),
+                _ => None,
             })
-            .map(|meta| meta.id)
             .collect::<Vec<_>>();
         ids.sort();
         ids.dedup();
         Ok(ids)
     }
 
-    pub fn list_published_sessions(
-        &self,
-        app_data_dir: &Path,
-        worktree_path: &str,
-    ) -> Result<Vec<SessionSummary>, String> {
-        let summaries = self.list_sessions(app_data_dir, worktree_path)?;
-        self.overlay_recovery_publication_snapshots(
-            app_data_dir,
-            summaries,
-            RecoveryPublicationList::SessionList,
-        )
-    }
-
-    pub fn list_published_closed_sessions(
-        &self,
-        app_data_dir: &Path,
-        worktree_path: &str,
-    ) -> Result<Vec<SessionSummary>, String> {
-        let summaries = self.list_closed_sessions(app_data_dir, worktree_path)?;
-        self.overlay_recovery_publication_snapshots(
-            app_data_dir,
-            summaries,
-            RecoveryPublicationList::ClosedHistory,
-        )
-    }
-
-    fn overlay_recovery_publication_snapshots(
-        &self,
-        _app_data_dir: &Path,
-        summaries: Vec<SessionSummary>,
-        expected_list: RecoveryPublicationList,
-    ) -> Result<Vec<SessionSummary>, String> {
-        let mut published = Vec::with_capacity(summaries.len());
-        for mut summary in summaries {
-            let (events, publication_snapshot) =
-                if let Some(projection) = self.canonical_session_projection(&summary.id)? {
-                    (
-                        projection.reducer_events,
-                        projection.meta.recovery_publication_snapshot,
-                    )
-                } else if self.canonical_authority_active() {
-                    (Vec::new(), None)
-                } else {
-                    #[cfg(test)]
-                    {
-                        (
-                            self.test_storage()
-                                .load_session_events(_app_data_dir, &summary.id)?,
-                            self.test_storage()
-                                .get_session_meta(_app_data_dir, &summary.id)?
-                                .and_then(|meta| meta.recovery_publication_snapshot),
-                        )
-                    }
-                    #[cfg(not(test))]
-                    unreachable!("production always has a SQLite event authority")
-                };
-            let recovery = TurnEventLog::from_events(events).project().backend_recovery;
-            if let Some(BackendSessionRecoveryProjection::Recovering { recovery_id, .. }) = recovery
-            {
-                let Some(snapshot) = publication_snapshot.filter(|snapshot| {
-                    snapshot.recovery_id == recovery_id
-                        && snapshot.classification.list == expected_list
-                        && recovery_publication_owner_matches(snapshot)
-                }) else {
-                    // Recovery records written before durable publication
-                    // snapshots existed remain suppressed rather than being
-                    // reclassified from mutable current state.
-                    continue;
-                };
-                let published_title = summary.first_message.clone();
-                summary = snapshot.summary;
-                summary.first_message = published_title;
-            }
-            published.push(summary);
-        }
-        published.sort_by(|a, b| {
-            b.updated_at
-                .partial_cmp(&a.updated_at)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(published)
-    }
-
+    #[cfg(test)]
     fn list_sessions_filtered(
         &self,
         app_data_dir: &Path,
@@ -5212,7 +5052,7 @@ impl SessionStore {
         predicate: impl Fn(&SessionMeta) -> bool,
     ) -> Result<Vec<SessionSummary>, String> {
         let mut summaries = self
-            .list_metas_for_active_read_authority(app_data_dir)?
+            .read_session_metadata_inventory(app_data_dir)?
             .into_iter()
             .filter(|s| same_worktree_path(&s.worktree_path, worktree_path) && predicate(s))
             .map(|meta| meta.to_summary())
@@ -5257,7 +5097,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<String>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(projection.title);
         }
         if self.canonical_authority_active() {
@@ -5272,7 +5112,7 @@ impl SessionStore {
     pub fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
         if self.canonical_authority_active() {
             let mut titles = HashMap::new();
-            for meta in self.list_metas_canonical(app_data_dir)? {
+            for meta in self.read_canonical_metadata_inventory(app_data_dir)? {
                 if let Some(title) = self.session_title(app_data_dir, &meta.id)? {
                     titles.insert(meta.id, title);
                 }
@@ -5317,7 +5157,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         }
         let current = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         self.commit_user_session_projection_snapshot(CanonicalAgentSessionProjection {
             meta: current.meta.clone(),
@@ -5437,7 +5277,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionMeta>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(Some(projection.meta));
         }
         if self.canonical_authority_active() {
@@ -5456,7 +5296,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionReviewContext>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(Some(projection.meta.into()));
         }
         if self.canonical_authority_active() {
@@ -5475,7 +5315,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<ChatSession>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             let messages = self.canonical_all_messages(session_id)?;
             return Ok(Some(projection.meta.to_session(messages)));
         }
@@ -5495,7 +5335,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Vec<AgentSessionEvent>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(projection.reducer_events);
         }
         if self.canonical_authority_active() {
@@ -5517,7 +5357,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Vec<AgentSessionEvent>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(projection.reducer_events);
         }
         if self.canonical_authority_active() {
@@ -5539,7 +5379,7 @@ impl SessionStore {
         _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<f64>, String> {
-        if let Some(projection) = self.canonical_session_projection(session_id)? {
+        if let Some(projection) = self.read_session_projection(session_id)? {
             return Ok(projection.queue_paused_at);
         }
         if self.canonical_authority_active() {
@@ -5596,7 +5436,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         }
         let events = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .map(|projection| projection.reducer_events)
             .unwrap_or_default();
         #[cfg(test)]
@@ -5640,7 +5480,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         }
         let events = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .map(|projection| projection.reducer_events)
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let projected = TurnEventLog::from_events(events.clone()).project();
@@ -5754,7 +5594,7 @@ impl SessionStore {
                 .map(|authority| authority.projection_codec.clone())
                 .ok_or_else(|| "agent-session projection codec is unavailable".to_string())?;
             let previous = self
-                .canonical_session_projection(session_id)?
+                .read_session_projection(session_id)?
                 .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
             let candidate_turn_id = events.iter().rev().find_map(|event| match event {
                 AgentSessionEvent::TurnCompleted { turn_id, .. }
@@ -5872,7 +5712,7 @@ impl SessionStore {
                 }
             }
             let canonical = self
-                .canonical_session_projection(session_id)?
+                .read_session_projection(session_id)?
                 .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
             let projected = TurnEventLog::from_events(canonical.reducer_events.clone()).project();
             self.projected_meta_for_commit(
@@ -6022,7 +5862,7 @@ impl SessionStore {
         }
 
         let previous_canonical = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let previous_projection = Some(PreviousSessionProjection {
             state: previous_canonical.meta.state.clone(),
@@ -6040,7 +5880,7 @@ impl SessionStore {
             None => self.commit_agent_events(app_data_dir, session_id, events)?,
         }
         let canonical = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let projected = TurnEventLog::from_events(canonical.reducer_events.clone()).project();
         let mut projected_meta = self.projected_meta_for_commit(
@@ -6308,7 +6148,7 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<SendAcceptanceAllocation, NextTurnIdError> {
         let (projection, revision) = self
-            .canonical_session_projection_with_revision(session_id)?
+            .read_session_projection_with_revision(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let mut last_turn_id = projection.meta.last_turn_id.unwrap_or_else(|| {
             projection
@@ -6361,16 +6201,11 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<Option<bool>, String> {
         if self.canonical_authority_active() {
-            return self
-                .canonical_session_projection(session_id)
-                .map(|projection| {
-                    projection.map(|projection| {
-                        reducer_allows_queue_start(
-                            &projection.meta.state,
-                            &projection.reducer_events,
-                        )
-                    })
-                });
+            return self.read_session_projection(session_id).map(|projection| {
+                projection.map(|projection| {
+                    reducer_allows_queue_start(&projection.meta.state, &projection.reducer_events)
+                })
+            });
         }
         self.get_session_meta(app_data_dir, session_id).map(|meta| {
             meta.map(|meta| {
@@ -6393,7 +6228,7 @@ impl SessionStore {
         turn_id: u64,
     ) -> Result<bool, String> {
         Ok(self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .is_some_and(|projection| {
                 reducer_has_active_turn(&projection.reducer_events)
                     && projection.meta.last_turn_id == Some(turn_id)
@@ -7151,7 +6986,7 @@ impl SessionStore {
         };
         let message_id = if self.canonical_authority_active() {
             let current_projection = self
-                .canonical_session_projection(session_id)?
+                .read_session_projection(session_id)?
                 .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
             TurnEventLog::from_events(current_projection.reducer_events)
                 .project()
@@ -7378,7 +7213,7 @@ impl SessionStore {
         }
 
         let mut projection = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let existing = self.canonical_message_projection(session_id, &message.id)?;
         let (recovery_id, message_id) = pending_recovery_message_identity(pending);
@@ -7655,7 +7490,7 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<(), String> {
         self.ensure_canonical_mutation_admission()?;
-        self.remove_canonical_session_projection(session_id)?;
+        self.remove_read_session_projection(session_id)?;
         #[cfg(test)]
         if !self.canonical_authority_active() {
             self.test_storage()
@@ -7671,7 +7506,7 @@ impl SessionStore {
         worktree_path: &str,
     ) -> Result<Vec<ChatSession>, String> {
         Ok(self
-            .list_metas_for_active_read_authority(app_data_dir)?
+            .read_session_metadata_inventory(app_data_dir)?
             .into_iter()
             .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|meta| meta.to_session(Vec::new()))
@@ -7684,7 +7519,7 @@ impl SessionStore {
         worktree_path: &str,
     ) -> Result<Vec<ChatSession>, String> {
         let ids = self
-            .list_metas_for_active_read_authority(app_data_dir)?
+            .read_session_metadata_inventory(app_data_dir)?
             .into_iter()
             .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|session| session.id)
@@ -7753,7 +7588,7 @@ impl SessionStore {
             hook(session)?;
         }
 
-        let previous_projection = self.canonical_session_projection(&session.id)?;
+        let previous_projection = self.read_session_projection(&session.id)?;
         let previous_state = previous_projection
             .as_ref()
             .map(|projection| projection.meta.state.clone());
@@ -8464,7 +8299,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         }
         let current = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let mut meta = current.meta;
         meta.message_count = add_sqlite_count(meta.message_count, 1, "session message count")?;
@@ -8689,7 +8524,7 @@ impl SessionStore {
             return Err("agent-session SQLite event authority is not configured".to_string());
         }
         let current = self
-            .canonical_session_projection(session_id)?
+            .read_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
         let mut message = self
             .canonical_message_projection(session_id, message_id)?
@@ -9035,7 +8870,7 @@ mod tests {
 
         assert_eq!(
             ids(writer
-                .list_published_sessions(app_data_dir.path(), "/repo")
+                .list_sessions(app_data_dir.path(), "/repo")
                 .unwrap()
                 .into_iter()
                 .map(|session| session.id)),
@@ -9043,7 +8878,7 @@ mod tests {
         );
         assert_eq!(
             ids(writer
-                .list_published_closed_sessions(app_data_dir.path(), "/repo")
+                .list_closed_sessions(app_data_dir.path(), "/repo")
                 .unwrap()
                 .into_iter()
                 .map(|session| session.id)),
@@ -9095,7 +8930,7 @@ mod tests {
             "recovery publication must never reopen a closed session"
         );
         let published = reopened
-            .list_published_sessions(app_data_dir.path(), "/repo")
+            .list_sessions(app_data_dir.path(), "/repo")
             .unwrap();
         let workflow_after_restart = published
             .iter()
@@ -9114,7 +8949,7 @@ mod tests {
         );
         assert_eq!(
             ids(reopened
-                .list_published_closed_sessions(app_data_dir.path(), "/repo")
+                .list_closed_sessions(app_data_dir.path(), "/repo")
                 .unwrap()
                 .into_iter()
                 .map(|session| session.id)),
@@ -9160,7 +8995,7 @@ mod tests {
             )
             .is_err());
         let unchanged = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert!(unchanged.meta.recovery_publication_snapshot.is_none());
@@ -9190,7 +9025,7 @@ mod tests {
             ),
         );
         let projection = reopened
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         let snapshot = projection
@@ -9215,7 +9050,7 @@ mod tests {
         );
         assert_eq!(
             ids(reopened
-                .list_published_sessions(app_data_dir.path(), "/repo")
+                .list_sessions(app_data_dir.path(), "/repo")
                 .unwrap()
                 .into_iter()
                 .map(|summary| summary.id)),
@@ -9295,7 +9130,7 @@ mod tests {
             BackendSessionRecoveryStartOutcome::SuppressedByQueuePause
         ));
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(projection.queue_paused_at, Some(8.0));
@@ -9342,7 +9177,7 @@ mod tests {
             .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
             .unwrap();
         let expected_stop_revision = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap()
             .meta
@@ -9389,7 +9224,7 @@ mod tests {
             .is_none());
 
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert!(projection.reducer_events.iter().any(|event| matches!(
@@ -9434,7 +9269,7 @@ mod tests {
             .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
             .unwrap();
         let mut projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         projection.pending_send_queue.extend([
@@ -9497,7 +9332,7 @@ mod tests {
         // Reproduce the projection written by older builds: creation marked
         // the session Active even though no TurnStarted boundary existed.
         let mut legacy = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         legacy.meta.state = SessionState::Active;
@@ -9527,7 +9362,7 @@ mod tests {
             .unwrap();
 
         let claimed = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(claimed.meta.state, SessionState::Active);
@@ -9576,7 +9411,7 @@ mod tests {
         assert_eq!(stale.next_turn_id, 2);
         assert!(stale.has_active_turn);
         let mut projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         projection.pending_send_queue.push(CanonicalQueuedSend {
@@ -9673,7 +9508,7 @@ mod tests {
             )
             .unwrap();
         let mut projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         projection.pending_send_queue.extend([
@@ -9703,7 +9538,7 @@ mod tests {
             )
             .is_err());
         let unchanged = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(unchanged.meta.last_turn_id, Some(1));
@@ -9724,7 +9559,7 @@ mod tests {
             )
             .unwrap();
         let paused = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(paused.queue_paused_at, Some(8.0));
@@ -9737,7 +9572,7 @@ mod tests {
             )
             .is_err());
         let still_paused = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(still_paused.meta.state, paused.meta.state);
@@ -9764,7 +9599,7 @@ mod tests {
             )
             .unwrap();
         let after_front = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(after_front.meta.last_turn_id, Some(2));
@@ -9781,7 +9616,7 @@ mod tests {
             .is_err());
         assert_eq!(
             writer
-                .canonical_session_projection(&session.id)
+                .read_session_projection(&session.id)
                 .unwrap()
                 .unwrap()
                 .meta
@@ -9800,7 +9635,7 @@ mod tests {
             )
             .unwrap();
         let closed = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(closed.meta.state, SessionState::Closed);
@@ -9813,7 +9648,7 @@ mod tests {
             )
             .is_err());
         let still_closed = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(still_closed.meta.state, SessionState::Closed);
@@ -9852,7 +9687,7 @@ mod tests {
         )
         .unwrap();
         let mut projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         projection.pending_send_queue.push(CanonicalQueuedSend {
@@ -9877,7 +9712,7 @@ mod tests {
             BackendSessionRecoveryStartOutcome::Started(_)
         ));
         let recovering = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(recovering.meta.state, SessionState::Idle);
@@ -9891,7 +9726,7 @@ mod tests {
             )
             .is_err());
         let unchanged = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(unchanged.meta.state, recovering.meta.state);
@@ -10085,7 +9920,7 @@ mod tests {
         assert!(outcome.is_none());
 
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(projection.meta.provider_session_generation, 1);
@@ -10186,7 +10021,7 @@ mod tests {
 
         assert!(context_completion.join().unwrap().unwrap().is_none());
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(projection.meta.last_turn_id, Some(2));
@@ -10276,7 +10111,7 @@ mod tests {
         assert!(outcome.is_none());
 
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(projection.meta.provider_session_generation, 2);
@@ -10333,7 +10168,7 @@ mod tests {
             .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
             .unwrap();
         let expected_stop_revision = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap()
             .meta
@@ -10396,7 +10231,7 @@ mod tests {
                 | crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. }
         ));
         let projection = writer
-            .canonical_session_projection(&session.id)
+            .read_session_projection(&session.id)
             .unwrap()
             .unwrap();
         assert!(projection.reducer_events.iter().any(|event| matches!(
@@ -10573,7 +10408,7 @@ mod tests {
         );
 
         let published = reopened
-            .list_published_sessions(app_data_dir.path(), "/repo")
+            .list_sessions(app_data_dir.path(), "/repo")
             .unwrap();
         assert_eq!(
             ids(published
@@ -10601,7 +10436,7 @@ mod tests {
         assert_eq!(published_owner.node_execution_id, "sqlite-restart-node");
         assert_eq!(
             ids(reopened
-                .list_published_closed_sessions(app_data_dir.path(), "/repo")
+                .list_closed_sessions(app_data_dir.path(), "/repo")
                 .unwrap()
                 .into_iter()
                 .map(|summary| summary.id)),
@@ -10645,7 +10480,7 @@ mod tests {
             ),
         ] {
             let projection = reopened
-                .canonical_session_projection(session_id)
+                .read_session_projection(session_id)
                 .unwrap()
                 .expect("session projection survives SQLite reopen");
             assert_eq!(projection.meta.state, expected_current_state);
@@ -10715,7 +10550,7 @@ mod tests {
         }
 
         let turn_projection = reopened
-            .canonical_session_projection(&turn_lifecycle.id)
+            .read_session_projection(&turn_lifecycle.id)
             .unwrap()
             .expect("ordinary turn projection survives SQLite reopen");
         assert_eq!(turn_projection.meta.state, SessionState::Idle);

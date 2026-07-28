@@ -72,6 +72,21 @@ impl From<WorkflowError> for ApiError {
             WorkflowError::External(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "workflow_error", message)
             }
+            WorkflowError::StorageUnavailable { message, .. } => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                message,
+            ),
+            WorkflowError::CorruptStoredState(message) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "corrupt_stored_state",
+                message,
+            ),
+            WorkflowError::IncompatibleStoredEvent(message) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "incompatible_stored_event",
+                message,
+            ),
         }
     }
 }

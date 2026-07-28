@@ -131,11 +131,22 @@ pub(in crate::cli) mod test_support {
     use std::fs;
     use std::path::Path;
 
+    use sha2::Digest as _;
+
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
+    use crate::adaptor::gateway::workflow::execution_store::{
+        workflow_execution_record, WorkflowExecutionMetadata,
+    };
     use crate::domain::comment::{
         ReviewActor, ReviewComment, ReviewHistoryEntry, ReviewResolveInfo, ReviewTarget,
         ReviewThread, ReviewThreadState,
+    };
+    use crate::domain::local_event::{
+        CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
+        LocalEventTransactionRepository, LocalStateMutation, Revision, RevisionGuard,
+        SessionProjectionMutation, SessionProjectionRecord, WorkflowExecutionProjectionMutation,
+        WorkflowExecutionProjectionRecord,
     };
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 
@@ -223,6 +234,82 @@ models = ["opus"]
         let path = executions_dir.join(format!("{}.json", execution.execution_id));
         let json = serde_json::to_string_pretty(execution).unwrap();
         fs::write(path, json).unwrap();
+        write_canonical_execution(data_dir, execution);
+    }
+
+    pub(in crate::cli) fn initialize_canonical_store(data_dir: &Path) {
+        drop(
+            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                .expect("initialize canonical local event store"),
+        );
+    }
+
+    pub(in crate::cli) fn append_workflow_event(data_dir: &Path, event: &WorkflowEvent) {
+        crate::adaptor::gateway::workflow::log::WorkflowEventLog::new(data_dir)
+            .append(event)
+            .expect("append legacy workflow event fixture");
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                .expect("open canonical local event store");
+        let log = crate::adaptor::gateway::workflow::log::WorkflowEventLog::with_authority(
+            store.clone(),
+            store.installation_id().to_string(),
+        );
+        log.append_batch_durable_with_mutations_blocking_as(
+            CommitOperationKind::Workflow,
+            std::slice::from_ref(event),
+            Vec::new(),
+        )
+        .expect("append canonical workflow event fixture");
+    }
+
+    fn write_canonical_execution(data_dir: &Path, execution: &WorkflowExecutionMetadata) {
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                .expect("open canonical local event store");
+        let record = workflow_execution_record(execution);
+        let revision = Revision::new(0).unwrap();
+        let batch = LocalAtomicBatch {
+            commit_id: CommitIdentity::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+            idempotency: IdempotencyBinding {
+                installation_id: store.installation_id().to_string(),
+                operation_kind: CommitOperationKind::Workflow,
+                idempotency_key: format!("cli-test-execution:{}", execution.execution_id),
+                payload_hash: sha2::Sha256::digest(
+                    format!(
+                        "{}:{}:{}",
+                        execution.execution_id, execution.worktree_path, execution.updated_at
+                    )
+                    .as_bytes(),
+                )
+                .into(),
+            },
+            expected_heads: Vec::new(),
+            events: Vec::new(),
+            state_mutations: vec![
+                LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                    session_id: format!("workflow:{}", execution.execution_id),
+                    projection: SessionProjectionRecord::WorkflowExecution(
+                        WorkflowExecutionProjectionRecord::Present(record.clone()),
+                    ),
+                    expected: RevisionGuard::Absent,
+                    revision,
+                }),
+                LocalStateMutation::WorkflowExecutionProjection(
+                    WorkflowExecutionProjectionMutation {
+                        projection: WorkflowExecutionProjectionRecord::Present(record),
+                        expected: RevisionGuard::Absent,
+                        revision,
+                    },
+                ),
+            ],
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(store.commit_batch(batch))
+            .expect("seed canonical workflow execution");
     }
 
     pub(in crate::cli) fn test_uuid(seed: u8) -> String {

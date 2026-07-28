@@ -8,16 +8,15 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::domain::workflow::{
-    ExecutionListFilter, FacetKind, FacetRepository, FacetSummary, NodeExecution,
-    WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
-    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionRepository, WorkflowExecutionSummary,
-    WorkflowPageRequest, WorkflowSummary,
+    FacetKind, FacetRepository, FacetSummary, NodeExecution, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowExecution,
+    WorkflowExecutionId, WorkflowPageRequest, WorkflowSummary,
 };
 
 use super::event_draft;
 use super::ports::{
     WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
-    WorkflowExecutionProjection, WorkflowExecutionProjectionRepository,
+    WorkflowExecutionProjectionRepository,
 };
 
 pub type WorkflowEventView = Value;
@@ -36,7 +35,6 @@ pub enum WorkflowGetOutputResult {
 
 #[derive(Clone)]
 pub struct WorkflowQueryService {
-    executions: Arc<dyn WorkflowExecutionRepository>,
     definitions: Arc<dyn WorkflowDefinitionRepository>,
     definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
     facets: Arc<dyn FacetRepository>,
@@ -46,7 +44,6 @@ pub struct WorkflowQueryService {
 
 impl WorkflowQueryService {
     pub fn new(
-        executions: Arc<dyn WorkflowExecutionRepository>,
         definitions: Arc<dyn WorkflowDefinitionRepository>,
         definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
         facets: Arc<dyn FacetRepository>,
@@ -54,44 +51,12 @@ impl WorkflowQueryService {
         execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
     ) -> Self {
         Self {
-            executions,
             definitions,
             definition_sources,
             facets,
             events,
             execution_projection,
         }
-    }
-
-    pub fn list_executions(
-        &self,
-        filter: ExecutionListFilter,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.executions.list_executions(filter)
-    }
-
-    pub fn list_executions_page(
-        &self,
-        filter: ExecutionListFilter,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.executions.list_executions_page(filter, page)
-    }
-
-    pub fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        self.executions.get_execution(&execution_id)
-    }
-
-    pub fn resolve_worktree_by_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        self.executions.resolve_worktree_by_execution(&execution_id)
     }
 
     pub fn list_workflows(
@@ -126,11 +91,6 @@ impl WorkflowQueryService {
         &self,
         execution_id: &str,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
         Ok(self
             .read_events(execution_id)?
             .into_iter()
@@ -143,11 +103,6 @@ impl WorkflowQueryService {
         execution_id: &str,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
         let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
         Ok(self
             .events
@@ -171,24 +126,6 @@ impl WorkflowQueryService {
     ) -> Result<Option<WorkflowExecution>, WorkflowError> {
         let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
         self.execution_projection.get_execution(&execution_id)
-    }
-
-    pub(in crate::usecase::workflow) fn get_execution_with_definition(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        self.execution_projection
-            .get_execution_with_definition(&execution_id)
-    }
-
-    pub(in crate::usecase::workflow) fn get_workspace_execution_with_definition(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
-        self.execution_projection
-            .get_workspace_execution_with_definition(&execution_id)
     }
 
     pub fn get_node_detail(
@@ -281,100 +218,11 @@ fn latest_artifact_produced_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, FacetRefs, NodeDefinition,
-        NodeExecution, NodeExecutionStatus, NodeKind, NodeKindName, SessionGate, SessionSpec,
-        TokenUsage, WorkflowExecutionRecord,
+        ExecutionOrigin, ExecutionStatus, FacetRefs, NodeDefinition, NodeExecution,
+        NodeExecutionStatus, NodeKind, NodeKindName, SessionGate, SessionSpec, TokenUsage,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct FakeExecutionRepository {
-        executions: Mutex<HashMap<String, WorkflowExecutionSummary>>,
-    }
-
-    impl FakeExecutionRepository {
-        fn seed(&self, execution: WorkflowExecutionSummary) {
-            self.executions
-                .lock()
-                .unwrap()
-                .insert(execution.execution_id.clone(), execution);
-        }
-    }
-
-    impl crate::domain::workflow::WorkflowExecutionRepository for FakeExecutionRepository {
-        fn register_active(
-            &self,
-            _execution: WorkflowExecutionRecord,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn complete_execution(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-            _completed: WorkflowExecutionRecord,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn list_executions(
-            &self,
-            filter: ExecutionListFilter,
-        ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-            let mut executions: Vec<_> =
-                self.executions.lock().unwrap().values().cloned().collect();
-            if let Some(status) = filter.status {
-                executions.retain(|execution| match status {
-                    ExecutionStatusFilter::Active => !execution.status.is_terminal(),
-                    ExecutionStatusFilter::Terminal => execution.status.is_terminal(),
-                });
-            }
-            if let Some(worktree_path) = filter.worktree_path {
-                executions.retain(|execution| execution.worktree_path == worktree_path);
-            }
-            Ok(executions)
-        }
-
-        fn get_execution(
-            &self,
-            execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-            Ok(self
-                .executions
-                .lock()
-                .unwrap()
-                .get(execution_id.as_str())
-                .cloned())
-        }
-
-        fn resolve_active_execution_by_worktree(
-            &self,
-            worktree_path: &str,
-        ) -> Result<Option<WorkflowExecutionId>, WorkflowError> {
-            self.executions
-                .lock()
-                .unwrap()
-                .values()
-                .find(|execution| {
-                    execution.worktree_path == worktree_path && !execution.status.is_terminal()
-                })
-                .map(|execution| WorkflowExecutionId::new(execution.execution_id.clone()))
-                .transpose()
-        }
-
-        fn resolve_worktree_by_execution(
-            &self,
-            execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<String>, WorkflowError> {
-            Ok(self
-                .executions
-                .lock()
-                .unwrap()
-                .get(execution_id.as_str())
-                .map(|execution| execution.worktree_path.clone()))
-        }
-    }
 
     struct FakeDefinitionRepository {
         workflow: WorkflowDefinition,
@@ -539,7 +387,6 @@ mod tests {
 
     struct Fixture {
         service: WorkflowQueryService,
-        executions: Arc<FakeExecutionRepository>,
         facets: Arc<FakeFacetRepository>,
         events: Arc<FakeEventRepository>,
         projections: Arc<FakeExecutionProjectionRepository>,
@@ -547,7 +394,6 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let executions = Arc::new(FakeExecutionRepository::default());
             let definitions = Arc::new(FakeDefinitionRepository {
                 workflow: workflow(),
             });
@@ -558,7 +404,6 @@ mod tests {
             let events = Arc::new(FakeEventRepository::default());
             let projections = Arc::new(FakeExecutionProjectionRepository::default());
             let service = WorkflowQueryService::new(
-                executions.clone(),
                 definitions,
                 definition_sources,
                 facets.clone(),
@@ -567,7 +412,6 @@ mod tests {
             );
             Self {
                 service,
-                executions,
                 facets,
                 events,
                 projections,
@@ -593,28 +437,6 @@ mod tests {
                 }),
                 ..Default::default()
             }],
-        }
-    }
-
-    fn execution_summary(
-        execution_id: &str,
-        status: ExecutionStatus,
-        worktree_path: &str,
-    ) -> WorkflowExecutionSummary {
-        WorkflowExecutionSummary {
-            execution_id: execution_id.to_string(),
-            workflow_name: "wf".to_string(),
-            status,
-            worktree_path: worktree_path.to_string(),
-            current_node: Some("review".to_string()),
-            created_from: ExecutionOrigin::DesktopUi,
-            started_at: 1.0,
-            updated_at: 1.0,
-            completed_at: None,
-            error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
-            total_token_usage: TokenUsage::default(),
         }
     }
 
@@ -684,72 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn list_executions_applies_repository_filters() {
-        let fixture = Fixture::new();
-        fixture.executions.seed(execution_summary(
-            test_execution_id(),
-            ExecutionStatus::Running,
-            "/repo/a",
-        ));
-        fixture.executions.seed(execution_summary(
-            "00000000-0000-4000-8000-000000000102",
-            ExecutionStatus::Completed,
-            "/repo/a",
-        ));
-        fixture.executions.seed(execution_summary(
-            "00000000-0000-4000-8000-000000000103",
-            ExecutionStatus::Running,
-            "/repo/b",
-        ));
-
-        let executions = fixture
-            .service
-            .list_executions(ExecutionListFilter {
-                status: Some(ExecutionStatusFilter::Active),
-                worktree_path: Some("/repo/a".to_string()),
-            })
-            .unwrap();
-
-        assert_eq!(executions.len(), 1);
-        assert_eq!(executions[0].execution_id, test_execution_id());
-    }
-
-    #[test]
-    fn list_executions_page_preserves_filters_and_returns_only_the_requested_window() {
-        let fixture = Fixture::new();
-        fixture.executions.seed(execution_summary(
-            test_execution_id(),
-            ExecutionStatus::Running,
-            "/repo/a",
-        ));
-        fixture.executions.seed(execution_summary(
-            "00000000-0000-4000-8000-000000000102",
-            ExecutionStatus::Running,
-            "/repo/a",
-        ));
-        fixture.executions.seed(execution_summary(
-            "00000000-0000-4000-8000-000000000103",
-            ExecutionStatus::Completed,
-            "/repo/a",
-        ));
-
-        let executions = fixture
-            .service
-            .list_executions_page(
-                ExecutionListFilter {
-                    status: Some(ExecutionStatusFilter::Active),
-                    worktree_path: Some("/repo/a".to_string()),
-                },
-                WorkflowPageRequest::new(1, 1),
-            )
-            .unwrap();
-
-        assert_eq!(executions.len(), 1);
-        assert_eq!(executions[0].worktree_path, "/repo/a");
-        assert!(!executions[0].status.is_terminal());
-    }
-
-    #[test]
     fn workflow_queries_delegate_to_definition_repository() {
         let fixture = Fixture::new();
         let summaries = fixture.service.list_workflows(&["wf".to_string()]).unwrap();
@@ -810,11 +566,6 @@ mod tests {
     #[test]
     fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
         let fixture = Fixture::new();
-        fixture.executions.seed(execution_summary(
-            test_execution_id(),
-            ExecutionStatus::Running,
-            "/wt",
-        ));
         fixture
             .events
             .append(&WorkflowEventDraft {
@@ -844,11 +595,6 @@ mod tests {
     #[test]
     fn get_execution_log_page_projects_only_the_requested_event_window() {
         let fixture = Fixture::new();
-        fixture.executions.seed(execution_summary(
-            test_execution_id(),
-            ExecutionStatus::Running,
-            "/wt",
-        ));
         for (event_kind, timestamp) in [("execution_started", 1.0), ("node_started", 2.0)] {
             fixture
                 .events
@@ -874,11 +620,6 @@ mod tests {
     #[test]
     fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
         let fixture = Fixture::new();
-        fixture.executions.seed(execution_summary(
-            test_execution_id(),
-            ExecutionStatus::Running,
-            "/wt",
-        ));
         fixture
             .events
             .append(&WorkflowEventDraft {
@@ -904,21 +645,6 @@ mod tests {
         assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
         assert!(events[0].get("submitted_at").is_none());
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
-    }
-
-    #[test]
-    fn get_execution_log_rejects_an_unknown_execution_before_reading_events() {
-        let fixture = Fixture::new();
-
-        let error = fixture
-            .service
-            .get_execution_log(test_execution_id())
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            WorkflowError::NotFound(message) if message.contains(test_execution_id())
-        ));
     }
 
     #[test]

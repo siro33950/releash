@@ -101,19 +101,19 @@ pub(crate) fn build_router(
 pub(crate) mod test_support {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::adaptor::gateway::workflow::schema::{
         CommandSpec, NodeDefinition, NodeKind,
         WorkflowDefinitionYaml as GatewayWorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::storage;
-    use crate::adaptor::gateway::workflow::WorkflowEventLogRepository;
     use crate::domain::workflow::{
         ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowDefinition, WorkflowError,
         WorkflowRuntimeSnapshot,
@@ -124,11 +124,11 @@ pub(crate) mod test_support {
     };
     use crate::usecase::workflow::ports::{
         ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-        WorkflowApprovalGateway, WorkflowEventDraft, WorkflowEventRepository,
-        WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-        WorkflowRuntimeStateGateway, WorkflowStallClearedCommand, WorkflowStallObservedCommand,
-        WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
-        WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+        WorkflowApprovalGateway, WorkflowEventDraft, WorkflowResumeExecutionGateway,
+        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
+        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
+        WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
+        WorkflowTurnCompleteGateway,
     };
     use crate::usecase::workflow::WorkflowUsecase;
 
@@ -278,8 +278,9 @@ pub(crate) mod test_support {
                 return Err(error);
             }
             if let Some(data_dir) = self.output_persistence_data_dir.lock().unwrap().clone() {
-                WorkflowEventLogRepository::new(data_dir)
-                    .append(&WorkflowEventDraft {
+                append_canonical_workflow_drafts(
+                    &data_dir,
+                    &[WorkflowEventDraft {
                         execution_id: command.execution_id.clone(),
                         event_kind: "artifact_produced".to_string(),
                         timestamp: 110.0,
@@ -291,8 +292,8 @@ pub(crate) mod test_support {
                             "submitted_at": 109.0,
                             "request_id": "request-1"
                         }),
-                    })
-                    .map_err(|error| WorkflowError::external(error.to_string()))?;
+                    }],
+                )?;
             }
             self.commands.lock().unwrap().outputs.push(command);
             Ok(())
@@ -400,9 +401,31 @@ pub(crate) mod test_support {
         Arc<WorkflowRuntimeUsecase>,
         Arc<RecordingRuntimeGateway>,
     ) {
-        let (workflow, runtime, gateway) = usecases(data_dir);
+        let gateway = Arc::new(RecordingRuntimeGateway::default());
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
+        let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
+            data_dir, None,
+        )
+        .or_else(|read_error| {
+            // A fresh API fixture has no DB yet. Initialize it once, but
+            // never contend with an already-managed production writer.
+            if data_dir
+                .join(crate::adaptor::gateway::local_event_store::layout::DATABASE_FILE)
+                .exists()
+            {
+                return Err(read_error);
+            }
+            drop(
+                LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                    .map_err(|error| error.to_string())?,
+            );
+            crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
+                data_dir, None,
+            )
+        })
+        .unwrap();
         let router = build_router(
-            Arc::new(workflow.read_usecase()),
+            Arc::new(workflow),
             runtime.clone(),
             Arc::<str>::from(token),
             None,
@@ -453,14 +476,35 @@ pub(crate) mod test_support {
         (status, body)
     }
 
+    fn canonical_local_event_store(data_dir: &Path) -> Arc<LocalEventStore> {
+        LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf())).unwrap()
+    }
+
+    fn append_canonical_workflow_drafts(
+        data_dir: &Path,
+        drafts: &[WorkflowEventDraft],
+    ) -> Result<(), WorkflowError> {
+        let events = drafts
+            .iter()
+            .map(crate::adaptor::gateway::workflow::mapper::event_draft_to_event)
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &canonical_local_event_store(data_dir),
+            &events,
+        )
+        .map_err(WorkflowError::external)
+    }
+
     pub(crate) fn seed_query_execution(data_dir: &Path, execution_id: &str) {
-        let executions_dir = data_dir.join("workflow_executions");
-        fs::create_dir_all(&executions_dir).unwrap();
+        seed_query_execution_at(data_dir, execution_id, "/repo");
+    }
+
+    fn seed_query_execution_at(data_dir: &Path, execution_id: &str, worktree_path: &str) {
         let metadata = WorkflowExecutionMetadata {
             execution_id: execution_id.to_string(),
             workflow_name: "review".to_string(),
             status: ExecutionStatus::Running,
-            worktree_path: "/repo".to_string(),
+            worktree_path: worktree_path.to_string(),
             current_node: Some("review".to_string()),
             created_from: ExecutionOrigin::Cli,
             started_at: 100.0,
@@ -471,51 +515,49 @@ pub(crate) mod test_support {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         };
-        fs::write(
-            executions_dir.join(format!("{execution_id}.json")),
-            serde_json::to_vec_pretty(&metadata).unwrap(),
-        )
-        .unwrap();
-
-        WorkflowEventLogRepository::new(data_dir)
-            .append(&WorkflowEventDraft {
-                execution_id: execution_id.to_string(),
-                event_kind: "execution_started".to_string(),
-                timestamp: 100.0,
-                payload: serde_json::json!({
-                    "workflow_name": "review",
-                    "worktree_path": "/repo",
-                    "created_from": "cli",
-                    "request": "review this change",
-                    "permission_mode": "ask",
-                    "definition": {
+        let started = WorkflowEventDraft {
+            execution_id: execution_id.to_string(),
+            event_kind: "execution_started".to_string(),
+            timestamp: 100.0,
+            payload: serde_json::json!({
+                "workflow_name": "review",
+                "worktree_path": worktree_path,
+                "created_from": "cli",
+                "request": "review this change",
+                "permission_mode": "ask",
+                "definition": {
+                    "name": "review",
+                    "description": "Review a change",
+                    "builtin": false,
+                    "schemas": {
+                        "review-result": {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string"}
+                            },
+                            "required": ["status"]
+                        }
+                    },
+                    "nodes": [{
                         "name": "review",
-                        "description": "Review a change",
-                        "builtin": false,
-                        "schemas": {
-                            "review-result": {
-                                "type": "object",
-                                "properties": {
-                                    "status": {"type": "string"}
-                                },
-                                "required": ["status"]
-                            }
-                        },
-                        "nodes": [{
-                            "name": "review",
-                            "session": {"gate": "auto"},
-                            "artifact": "review-result"
-                        }]
-                    }
-                }),
-            })
-            .unwrap();
+                        "session": {"gate": "auto"},
+                        "artifact": "review-result"
+                    }]
+                }
+            }),
+        };
+        let event =
+            crate::adaptor::gateway::workflow::mapper::event_draft_to_event(&started).unwrap();
+        crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
+            &canonical_local_event_store(data_dir),
+            &metadata,
+            &[event],
+        );
     }
 
     pub(crate) fn seed_submitted_output(data_dir: &Path, execution_id: &str) {
-        let events = WorkflowEventLogRepository::new(data_dir);
-        events
-            .append(&WorkflowEventDraft {
+        let drafts = [
+            WorkflowEventDraft {
                 execution_id: execution_id.to_string(),
                 event_kind: "node_started".to_string(),
                 timestamp: 105.0,
@@ -525,10 +567,8 @@ pub(crate) mod test_support {
                     "kind": "session",
                     "attempt": 1
                 }),
-            })
-            .unwrap();
-        events
-            .append(&WorkflowEventDraft {
+            },
+            WorkflowEventDraft {
                 execution_id: execution_id.to_string(),
                 event_kind: "artifact_produced".to_string(),
                 timestamp: 110.0,
@@ -540,8 +580,9 @@ pub(crate) mod test_support {
                     "submitted_at": 109.0,
                     "request_id": "request-1"
                 }),
-            })
-            .unwrap();
+            },
+        ];
+        append_canonical_workflow_drafts(data_dir, &drafts).unwrap();
     }
 
     #[tokio::test]
@@ -999,8 +1040,9 @@ pub(crate) mod test_support {
         let directory = tempfile::tempdir().unwrap();
         let execution_id = "00000000-0000-4000-8000-000000000323";
         seed_query_execution(directory.path(), execution_id);
-        WorkflowEventLogRepository::new(directory.path())
-            .append(&WorkflowEventDraft {
+        append_canonical_workflow_drafts(
+            directory.path(),
+            &[WorkflowEventDraft {
                 execution_id: execution_id.to_string(),
                 event_kind: "node_started".to_string(),
                 timestamp: 105.0,
@@ -1010,8 +1052,9 @@ pub(crate) mod test_support {
                     "kind": "session",
                     "attempt": 1
                 }),
-            })
-            .unwrap();
+            }],
+        )
+        .unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
         gateway.persist_submitted_outputs_to(directory.path().to_path_buf());
 
@@ -1044,26 +1087,27 @@ pub(crate) mod test_support {
         let directory = tempfile::tempdir().unwrap();
         let first_execution_id = "00000000-0000-4000-8000-000000000321";
         let second_execution_id = "00000000-0000-4000-8000-000000000322";
-        seed_query_execution(directory.path(), first_execution_id);
-        seed_query_execution(directory.path(), second_execution_id);
+        let (repository, git_repository) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&git_repository);
+        let canonical_worktree = repository
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
+        config.app.last_repo_paths = vec![canonical_worktree.clone()];
+        crate::adaptor::gateway::app_config::repository_impl::write_config(
+            &directory.path().join("releash.toml"),
+            &config,
+        )
+        .unwrap();
+        seed_query_execution_at(directory.path(), first_execution_id, &canonical_worktree);
+        seed_query_execution_at(directory.path(), second_execution_id, &canonical_worktree);
         seed_submitted_output(directory.path(), first_execution_id);
-        let worktree = directory.path().join("worktree");
-        fs::create_dir(&worktree).unwrap();
-        let canonical_worktree = fs::canonicalize(&worktree).unwrap();
-        for execution_id in [first_execution_id, second_execution_id] {
-            let metadata_path = directory
-                .path()
-                .join("workflow_executions")
-                .join(format!("{execution_id}.json"));
-            let mut metadata: WorkflowExecutionMetadata =
-                serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
-            metadata.worktree_path = canonical_worktree.to_string_lossy().into_owned();
-            fs::write(metadata_path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
-        }
         let (router, _, _) = test_router(directory.path(), "secret");
         let encoded_worktree: String =
-            url::form_urlencoded::byte_serialize(canonical_worktree.to_string_lossy().as_bytes())
-                .collect();
+            url::form_urlencoded::byte_serialize(canonical_worktree.as_bytes()).collect();
 
         let executions = get_json(
             &router,
@@ -1075,10 +1119,7 @@ pub(crate) mod test_support {
         assert_eq!(executions.0, StatusCode::OK);
         assert_eq!(executions.1.as_array().unwrap().len(), 1);
         assert_eq!(executions.1[0]["status"], "running");
-        assert_eq!(
-            executions.1[0]["worktreePath"],
-            canonical_worktree.to_string_lossy().as_ref()
-        );
+        assert_eq!(executions.1[0]["worktreePath"], canonical_worktree);
 
         let logs = get_json(
             &router,

@@ -864,6 +864,18 @@ impl LocalEventTransactionRepository for FakeRepo {
         }
     }
 
+    fn query_blocking(
+        &self,
+        request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+        match request {
+            LocalEventQuery::SessionProjectionByIdentity { .. } => {
+                Ok(LocalEventQueryResult::SessionProjectionByIdentity(None))
+            }
+            _ => Err(LocalEventQueryError::InvalidRequest),
+        }
+    }
+
     fn subscribe(&self, _after: GlobalSequence) -> LocalEventSubscription {
         LocalEventSubscription::new(Box::pin(futures_util::stream::empty()))
     }

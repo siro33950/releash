@@ -148,6 +148,19 @@ fn corrupt(context: &str) -> LocalEventQueryError {
     }
 }
 
+fn reader_pool_unavailable(message: &'static str, retryable: bool) -> LocalEventQueryError {
+    let correlation = correlation_id();
+    log::error!("local event reader pool failure [{correlation}]: {message}");
+    LocalEventQueryError::StorageUnavailable {
+        failure: SafeOperationFailure::new(
+            SessionOperationFailureKind::StorageUnavailable,
+            retryable,
+            message,
+            correlation,
+        ),
+    }
+}
+
 fn session_projection_record(
     raw: String,
     session_id: &str,
@@ -1108,6 +1121,11 @@ fn canonical_runtime_owner_snapshot(
                     session_id: session.meta.id,
                     worktree_path: session.meta.worktree_path,
                     active: session.meta.state == AgentSessionStateRecord::Active,
+                    shutdown_target: !matches!(
+                        session.meta.state,
+                        AgentSessionStateRecord::Closed | AgentSessionStateRecord::Archived
+                    ),
+                    workflow_node_session: session.meta.workflow_node_session,
                 };
                 Some(owner)
             }
@@ -2179,6 +2197,8 @@ pub struct ReaderPool {
     state: Mutex<ReadQueueState>,
     available: Condvar,
     clock: Arc<dyn StoreClock>,
+    #[cfg(test)]
+    running_workers: std::sync::atomic::AtomicUsize,
 }
 
 impl ReaderPool {
@@ -2190,6 +2210,8 @@ impl ReaderPool {
             }),
             available: Condvar::new(),
             clock,
+            #[cfg(test)]
+            running_workers: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -2206,14 +2228,10 @@ impl ReaderPool {
         let deadline_ms = self.clock.now_ms() + QUERY_DEADLINE_MS;
         let mut state = self.state.lock().expect("reader queue poisoned");
         if state.closed {
-            return Err(LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::StorageUnavailable,
-                    false,
-                    "local event store reader pool is closed",
-                    correlation_id(),
-                ),
-            });
+            return Err(reader_pool_unavailable(
+                "local event store reader pool is closed",
+                false,
+            ));
         }
         if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
             return Err(LocalEventQueryError::QueryBusy);
@@ -2233,9 +2251,54 @@ impl ReaderPool {
         Ok(receiver)
     }
 
+    /// Synchronous facade over the same fixed reader workers.
+    ///
+    /// This exists for established synchronous application ports. It does not
+    /// create a thread, runtime, or SQLite connection per call.
+    pub fn submit_blocking<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
+    {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let deadline_ms = self.clock.now_ms() + QUERY_DEADLINE_MS;
+        let mut state = self.state.lock().expect("reader queue poisoned");
+        if state.closed {
+            return Err(reader_pool_unavailable(
+                "local event store reader pool is closed",
+                false,
+            ));
+        }
+        if state.jobs.len() >= READ_QUEUE_MAX_DEPTH {
+            return Err(LocalEventQueryError::QueryBusy);
+        }
+        state.jobs.push_back(ReadJob {
+            deadline_ms,
+            task: Box::new(move |connection, deadline_exceeded| {
+                let result = if deadline_exceeded {
+                    Err(LocalEventQueryError::DeadlineExceeded)
+                } else {
+                    run(connection)
+                };
+                let _ = reply.send(result);
+            }),
+        });
+        drop(state);
+        self.available.notify_one();
+        receiver
+            .recv()
+            .map_err(|_| reader_pool_unavailable("local event store reader reply lost", true))?
+    }
+
     #[cfg(test)]
     pub(crate) fn queued_len_for_test(&self) -> usize {
         self.state.lock().expect("reader queue poisoned").jobs.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running_worker_count_for_test(&self) -> usize {
+        self.running_workers
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn pop_blocking(&self) -> Option<ReadJob> {
@@ -2261,10 +2324,16 @@ impl ReaderPool {
 
     /// Worker loop for one dedicated reader thread.
     pub fn run_worker(self: &Arc<Self>, connection: Connection) {
+        #[cfg(test)]
+        self.running_workers
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         while let Some(job) = self.pop_blocking() {
             let deadline_exceeded = self.clock.now_ms() > job.deadline_ms;
             (job.task)(&connection, deadline_exceeded);
         }
+        #[cfg(test)]
+        self.running_workers
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 

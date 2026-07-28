@@ -526,60 +526,6 @@ impl WorkflowEventLog {
             .collect()
     }
 
-    /// Streams one execution log and maps each line without first retaining the
-    /// complete NDJSON document. Callers can deserialize a payload-stripped
-    /// event mirror while preserving the persistence adapter's UUID and
-    /// per-line execution ownership checks.
-    #[cfg(test)]
-    pub(crate) fn read_log_mapped<T, Parse, EventExecutionId>(
-        &self,
-        execution_id: &str,
-        mut parse: Parse,
-        event_execution_id: EventExecutionId,
-    ) -> Result<Vec<T>, String>
-    where
-        Parse: FnMut(&str) -> Result<T, String>,
-        EventExecutionId: for<'event> Fn(&'event T) -> &'event str,
-    {
-        validate_execution_id(execution_id)?;
-        let path = self.log_path(execution_id);
-        let file = match fs::File::open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(format!("failed to read workflow execution log: {error}"));
-            }
-        };
-
-        let mut events = Vec::new();
-        for (line_index, line) in BufReader::new(file).lines().enumerate() {
-            let line = line.map_err(|error| {
-                format!(
-                    "failed to read workflow execution log line {}: {error}",
-                    line_index + 1
-                )
-            })?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let event = parse(&line).map_err(|error| {
-                format!(
-                    "failed to parse workflow execution log line {}: {error}",
-                    line_index + 1
-                )
-            })?;
-            let actual_execution_id = event_execution_id(&event);
-            if actual_execution_id != execution_id {
-                return Err(format!(
-                    "workflow execution log line {} contains execution_id {actual_execution_id} instead of {execution_id}",
-                    line_index + 1
-                ));
-            }
-            events.push(event);
-        }
-        Ok(events)
-    }
-
     /// Reads only the requested event window without retaining the complete log.
     #[cfg(test)]
     pub fn read_log_page(
