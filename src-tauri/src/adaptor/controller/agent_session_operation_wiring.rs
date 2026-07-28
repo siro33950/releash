@@ -6901,8 +6901,12 @@ mod recovery_executor_tests {
     }
 
     #[tokio::test]
+    // This exercises a production SQLite close/reopen boundary. Keep it out of
+    // the large local-event-store fixtures that otherwise run concurrently.
+    #[allow(clippy::await_holding_lock)]
     async fn f05_production_backend_recovery_read_again_finishes_from_durable_owner_evidence_after_restart(
     ) {
+        let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
         // Given a real backend-recovery reservation whose external effect has
         // durably installed a new provider identity, but whose completion
         // event/result/publication batch was lost at the crash boundary.

@@ -8910,14 +8910,27 @@ async fn hanging_authority_query_is_bounded_by_the_absolute_decision_deadline() 
 }
 
 #[tokio::test]
-// The production cutoff is part of this capacity oracle, so isolate it from
-// the >16 MiB migration fixtures that the Rust test harness runs in parallel.
+// This is the exact target-capacity oracle; fixed-deadline behavior is covered
+// separately. Isolate its large SQLite fixture and widen only its test flight
+// budget so parallel CI load cannot turn capacity into OutcomeUnknown.
 #[allow(clippy::await_holding_lock)]
 async fn b060_exactly_4096_shutdown_targets_are_durably_accepted_as_one_plan() {
     let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
     let harness = Harness::open();
     let executor = TestShutdownExecutor::with_targets(4096, ShutdownExecutorMode::Complete);
-    let coordinator = shutdown_coordinator(&harness, &executor);
+    let coordinator = Arc::new(
+        crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
+            harness.store.clone(),
+            harness.store.clone(),
+            executor.clone(),
+            harness.store.installation_id().to_string(),
+            "test-boot".to_string(),
+        )
+        .with_flight_budget_for_test(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(62),
+        ),
+    );
     let outcome = coordinator
         .request(
             crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
