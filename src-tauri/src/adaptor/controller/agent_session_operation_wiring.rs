@@ -7803,7 +7803,11 @@ mod recovery_executor_tests {
     }
 
     #[tokio::test]
+    // This exercises a production SQLite close/reopen boundary. Keep it out of
+    // the large local-event-store fixtures that otherwise run concurrently.
+    #[allow(clippy::await_holding_lock)]
     async fn f05_production_readbacks_are_atomic_across_loss_restart_replay_and_stale_revision() {
+        let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
         let stop_obligation_id = stop_readback_obligation_id("f05-stop-session", "7");
         let session_close_obligation_id = session_close_readback_obligation_id("f05-close-session");
         let fixtures = [
