@@ -570,7 +570,7 @@ fn complete_fanout_parent_after_all_children(
         completed_at,
     );
 
-    let outcome = exec.apply_advance();
+    let outcome = exec.apply_advance()?;
 
     Ok(FanoutChildCompletionCommit {
         all_completed: true,
@@ -603,7 +603,7 @@ fn finalize_child_terminal_state(
 
     if !all_done {
         exec.touch(current_timestamp());
-        let snapshot = exec.to_commit_snapshot();
+        let snapshot = exec.to_commit_snapshot()?;
         return Ok(FanoutChildCompletionCommit {
             all_completed: false,
             outcome: Some(NodeOutcome::Persist(snapshot)),
@@ -737,7 +737,7 @@ fn finalize_fanout_child_failure_state(
     Ok(FanoutChildFailureCommit {
         completion: FanoutChildCompletionCommit {
             all_completed: true,
-            outcome: Some(NodeOutcome::Persist(exec.to_commit_snapshot())),
+            outcome: Some(NodeOutcome::Persist(exec.to_commit_snapshot()?)),
             snapshot_before,
             progress_events,
             required_progress_events: true,
@@ -1196,7 +1196,7 @@ impl WorkflowRuntimeHost {
             now,
         );
         execs.insert(execution_id.clone(), execution);
-        Ok(execs.get(&execution_id).unwrap().to_commit_snapshot())
+        execs.get(&execution_id).unwrap().to_commit_snapshot()
     }
 
     #[cfg(test)]
@@ -2102,7 +2102,7 @@ impl WorkflowRuntimeHost {
                 timestamp: observation.observed_at,
             };
             (
-                exec.to_commit_snapshot(),
+                exec.to_commit_snapshot()?,
                 snapshot_before,
                 exec.worktree_path.clone(),
                 exec.id.clone(),
@@ -2162,7 +2162,7 @@ impl WorkflowRuntimeHost {
                 timestamp: cleared_at,
             };
             (
-                exec.to_commit_snapshot(),
+                exec.to_commit_snapshot()?,
                 snapshot_before,
                 exec.worktree_path.clone(),
                 exec.id.clone(),
@@ -2374,14 +2374,14 @@ impl WorkflowRuntimeHost {
                         _ => None,
                     };
                     let (outcome, required_events) = if retry_allowed {
-                        (exec.retry_current_node(), Vec::new())
+                        (exec.retry_current_node()?, Vec::new())
                     } else if let Some(reason) = interruption_reason {
                         let timestamp = current_timestamp();
                         exec.abort_active_node_executions(timestamp);
                         let _ = exec.transition_interrupted(reason);
                         exec.record_interruption_metadata(reason, timestamp);
                         (
-                            NodeOutcome::Persist(exec.to_commit_snapshot()),
+                            NodeOutcome::Persist(exec.to_commit_snapshot()?),
                             vec![WorkflowEvent::ExecutionInterrupted {
                                 execution_id: exec.id.clone(),
                                 reason,
@@ -2401,7 +2401,7 @@ impl WorkflowRuntimeHost {
                         exec.record_history_entry(entry, timestamp);
                         let _ = exec.transition_failed(failure_reason, kind, Some(retry_count));
                         exec.touch(timestamp);
-                        (NodeOutcome::Persist(exec.to_commit_snapshot()), Vec::new())
+                        (NodeOutcome::Persist(exec.to_commit_snapshot()?), Vec::new())
                     };
                     Ok(TurnCommit {
                         outcome,
@@ -2427,7 +2427,7 @@ impl WorkflowRuntimeHost {
                     let _ = exec.transition_waiting_approval();
                     exec.touch(timestamp);
                     Ok(TurnCommit {
-                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()),
+                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()?),
                         required_events: vec![WorkflowEvent::ApprovalRequested {
                             execution_id: exec.id.clone(),
                             node_execution_id,
@@ -2456,7 +2456,7 @@ impl WorkflowRuntimeHost {
                     );
                     exec.touch(timestamp);
                     Ok(TurnCommit {
-                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()),
+                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()?),
                         required_events: Vec::new(),
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
@@ -2596,8 +2596,7 @@ impl WorkflowRuntimeHost {
         );
         let completed_at = entry.completed_at;
         exec.record_history_entry(entry, completed_at);
-        let outcome = exec.apply_advance();
-        Ok(outcome)
+        exec.apply_advance()
     }
 
     /// approvalモードでのユーザー判定を処理する。
@@ -2808,7 +2807,7 @@ impl WorkflowRuntimeHost {
             // NodeExecution read model is finalized above. Refresh it while still holding the
             // execution lock so the durable commit snapshot and the live mutation are identical;
             // otherwise the commit CAS correctly rejects this command as stale.
-            *outcome.snapshot_mut() = exec.to_commit_snapshot();
+            *outcome.snapshot_mut() = exec.to_commit_snapshot()?;
             (outcome, snapshot_before, node_name)
         };
 
@@ -3154,7 +3153,7 @@ impl WorkflowRuntimeHost {
             let snapshot_before = execution.clone();
             let timestamp = current_timestamp();
             let _ = execution.mark_node_waiting_approval(&node_execution_id, timestamp);
-            let snapshot = execution.to_commit_snapshot();
+            let snapshot = execution.to_commit_snapshot()?;
             let event = WorkflowEvent::ApprovalRequested {
                 execution_id: execution_id.to_string(),
                 node_execution_id,
@@ -3580,7 +3579,7 @@ impl WorkflowRuntimeHost {
     /// 状態取得。`worktree_path` 属性で in-memory 実行表を検索する。
     pub async fn get_state(&self, worktree_path: &str) -> Option<RuntimeCommitSnapshot> {
         let execs = self.executions.lock().await;
-        find_by_worktree(&execs, worktree_path).map(|(_, e)| e.to_commit_snapshot())
+        find_by_worktree(&execs, worktree_path).and_then(|(_, e)| e.to_commit_snapshot().ok())
     }
 
     /// `execution_id` から `RuntimeCommitSnapshot` を取得する。
@@ -3592,7 +3591,7 @@ impl WorkflowRuntimeHost {
         let execs = self.executions.lock().await;
         execs
             .get(execution_id)
-            .map(|exec| exec.to_commit_snapshot())
+            .and_then(|exec| exec.to_commit_snapshot().ok())
     }
 
     async fn release_execution_facet_contents(&self, execution_id: &str) {
@@ -3982,7 +3981,7 @@ impl WorkflowRuntimeHost {
                 retry_count,
             );
             exec.touch(timestamp);
-            (exec.to_commit_snapshot(), snapshot_before)
+            (exec.to_commit_snapshot()?, snapshot_before)
         };
         self.execute_outcome(
             app,
@@ -4281,7 +4280,7 @@ impl WorkflowRuntimeHost {
             let entry = exec.make_node_history_entry(effective_result, artifact, contract);
             let completed_at = entry.completed_at;
             exec.record_history_entry(entry, completed_at);
-            let outcome = exec.apply_advance();
+            let outcome = exec.apply_advance()?;
             (outcome, snapshot_before)
         };
 
@@ -4633,11 +4632,11 @@ impl WorkflowRuntimeHost {
                 None,
                 timestamp,
             );
-            let outcome = exec.apply_advance();
+            let outcome = exec.apply_advance()?;
             (
                 outcome,
                 snapshot_before,
-                exec.to_commit_snapshot(),
+                exec.to_commit_snapshot()?,
                 exec.worktree_path.clone(),
             )
         };
@@ -4912,7 +4911,7 @@ impl WorkflowRuntimeHost {
             let _ = exec.transition_interrupted(reason);
             exec.record_interruption_metadata(reason, timestamp);
             (
-                exec.to_commit_snapshot(),
+                exec.to_commit_snapshot()?,
                 snapshot_before,
                 exec.worktree_path.clone(),
                 session_ids,
@@ -5385,7 +5384,7 @@ impl WorkflowRuntimeHost {
                     node_session_id.clone(),
                     current_timestamp(),
                 );
-                Some(exec.to_commit_snapshot())
+                Some(exec.to_commit_snapshot()?)
             } else {
                 None
             }
@@ -5885,7 +5884,11 @@ impl WorkflowRuntimeHost {
             );
             execution.record_history_entry(history, timestamp);
             let _ = execution.transition_failed(reason, failure_kind, error.retry_count());
-            (execution.to_commit_snapshot(), snapshot_before, session_ids)
+            (
+                execution.to_commit_snapshot()?,
+                snapshot_before,
+                session_ids,
+            )
         };
 
         self.execute_outcome(
@@ -6163,7 +6166,7 @@ impl WorkflowRuntimeHost {
             {
                 record_fanout_child_successful_completion(execution, &child.node.name);
             }
-            let snapshot = execution.to_commit_snapshot();
+            let snapshot = execution.to_commit_snapshot()?;
             (snapshot_before, snapshot)
         };
 
@@ -6682,7 +6685,9 @@ impl WorkflowRuntimeHost {
                 permission_mode: "edit".to_string(),
             },
         };
-        let snapshot = exec.to_commit_snapshot();
+        let snapshot = exec
+            .to_commit_snapshot()
+            .expect("commit snapshot must be valid");
         let execution_id = exec.id.clone();
         self.executions
             .lock()

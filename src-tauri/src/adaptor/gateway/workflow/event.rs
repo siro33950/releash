@@ -43,8 +43,10 @@ enum StoredExecutionInterruptionReasonV1 {
     Orphan,
 }
 
-/// Gateway-owned V1 NDJSON record. It deliberately does not embed domain or
-/// use-case types; every semantic field crosses an explicit total converter.
+/// Gateway-owned V1 NDJSON record. Scalar fields cross explicit total
+/// converters, while `definition` / `fanout_parent` / `token_usage` /
+/// `violations` reuse the domain types whose serde shapes double as the wire
+/// shapes; those shapes are pinned by the contract tests below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
 enum StoredWorkflowEventV1 {

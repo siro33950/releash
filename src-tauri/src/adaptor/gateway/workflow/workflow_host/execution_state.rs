@@ -56,8 +56,21 @@ impl WorkflowExecutionAggregate {
         runtime_start_guard::validate_start(workflow, existing_active_workflow_name)
     }
 
-    pub(crate) fn to_commit_snapshot(&self) -> RuntimeCommitSnapshot {
-        RuntimeCommitSnapshot {
+    pub(crate) fn to_commit_snapshot(&self) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        let current_node_name = self
+            .workflow
+            .nodes
+            .get(self.current_node_index)
+            .ok_or_else(|| {
+                WorkflowRuntimeError::InvalidState(format!(
+                    "current_node_index {} is out of bounds for {} workflow nodes",
+                    self.current_node_index,
+                    self.workflow.nodes.len()
+                ))
+            })?
+            .name
+            .clone();
+        Ok(RuntimeCommitSnapshot {
             execution_id: self.id.clone(),
             workflow_name: self.workflow.name.clone(),
             worktree_path: self.worktree_path.clone(),
@@ -70,7 +83,7 @@ impl WorkflowExecutionAggregate {
             },
             state: self.state().clone(),
             current_node_index: self.current_node_index,
-            current_node_name: self.workflow.nodes[self.current_node_index].name.clone(),
+            current_node_name,
             current_session_id: self.current_session_id.clone(),
             node_history: self.node_history.clone(),
             node_execution_counts: self.node_execution_counts.clone(),
@@ -80,7 +93,7 @@ impl WorkflowExecutionAggregate {
             node_executions: self.node_executions.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
-        }
+        })
     }
 
     pub(crate) fn make_node_history_entry(
@@ -92,23 +105,23 @@ impl WorkflowExecutionAggregate {
         self.make_node_history_entry_at(result, artifact, contract, current_timestamp())
     }
 
-    pub(crate) fn apply_advance(&mut self) -> NodeOutcome {
-        match self.apply_advance_at(current_timestamp()) {
-            ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(self.to_commit_snapshot()),
+    pub(crate) fn apply_advance(&mut self) -> Result<NodeOutcome, WorkflowRuntimeError> {
+        Ok(match self.apply_advance_at(current_timestamp()) {
+            ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(self.to_commit_snapshot()?),
             ExecutionAdvanceDecision::TransitionAndStart => {
-                NodeOutcome::TransitionAndStart(self.to_commit_snapshot())
+                NodeOutcome::TransitionAndStart(self.to_commit_snapshot()?)
             }
             ExecutionAdvanceDecision::StartFanout => {
-                NodeOutcome::StartFanout(self.to_commit_snapshot())
+                NodeOutcome::StartFanout(self.to_commit_snapshot()?)
             }
-        }
+        })
     }
 
-    pub(crate) fn retry_current_node(&mut self) -> NodeOutcome {
+    pub(crate) fn retry_current_node(&mut self) -> Result<NodeOutcome, WorkflowRuntimeError> {
         let decision = self.retry_current_node_at(current_timestamp());
-        NodeOutcome::RetryCurrentNode {
-            snapshot: self.to_commit_snapshot(),
+        Ok(NodeOutcome::RetryCurrentNode {
+            snapshot: self.to_commit_snapshot()?,
             completed_session_id: decision.completed_session_id,
-        }
+        })
     }
 }

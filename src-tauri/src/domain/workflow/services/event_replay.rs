@@ -63,7 +63,7 @@ impl RoutingReplayState {
 
 struct ProjectedWorkflowExecution {
     execution: WorkflowExecution,
-    aggregate: WorkflowExecutionAggregate,
+    aggregate: Option<WorkflowExecutionAggregate>,
     routing_replay: Option<RoutingReplayState>,
 }
 
@@ -90,7 +90,9 @@ pub(crate) fn project_retained_workflow_execution(
     )
     .map(|projection| {
         projection.map(|projection| {
-            let aggregate = projection.aggregate;
+            let aggregate = projection
+                .aggregate
+                .expect("retained projection must replay the aggregate");
             let _routing_replay = projection
                 .routing_replay
                 .expect("retained projection must construct routing replay state");
@@ -210,16 +212,22 @@ fn project_workflow_execution_with_payload_policy(
         fanouts: Vec::new(),
         approval_target: None,
     };
-    let aggregate = replay_workflow_execution_aggregate(
-        execution_id,
-        definition,
-        worktree_path,
-        created_from,
-        request,
-        permission_mode,
-        started_at,
-        events,
-    )?;
+    let aggregate = match payload_policy {
+        ProjectionPayloadPolicy::Retained => Some(replay_workflow_execution_aggregate(
+            execution_id,
+            definition,
+            worktree_path,
+            created_from,
+            request,
+            permission_mode,
+            started_at,
+            events,
+        )?),
+        // Stripped projections serve summary-only readers that discard the
+        // aggregate; replaying it would recompute state per execution per event
+        // just to drop it.
+        ProjectionPayloadPolicy::Stripped => None,
+    };
     let mut authoritative_total_usage = None;
     let mut routing_replay = match payload_policy {
         ProjectionPayloadPolicy::Retained => Some(RoutingReplayState::new(definition)),

@@ -87,7 +87,7 @@ impl WorkflowRuntimeHost {
                 display_command.clone(),
                 timestamp,
             );
-            let snapshot = execution.to_commit_snapshot();
+            let snapshot = execution.to_commit_snapshot()?;
             let event = WorkflowEvent::CommandPrepared {
                 execution_id: input.execution_id.clone(),
                 node_execution_id: input.node_execution_id.clone(),

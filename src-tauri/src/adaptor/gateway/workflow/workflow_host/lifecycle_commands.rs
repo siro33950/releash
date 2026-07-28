@@ -508,7 +508,7 @@ impl WorkflowRuntimeHost {
 
             let _ = exec.transition_aborted();
             exec.clear_node_stalls(timestamp);
-            let snapshot_state = exec.to_commit_snapshot();
+            let snapshot_state = exec.to_commit_snapshot()?;
             (snapshot_before, snapshot_state, aborted_node_for_event)
         };
 
@@ -601,7 +601,14 @@ impl WorkflowRuntimeHost {
             let Some(exec) = execs.get(execution_id) else {
                 return;
             };
-            (exec.to_commit_snapshot(), exec.worktree_path.clone())
+            let snapshot = match exec.to_commit_snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    log::warn!("terminal transition cleanup skipped for '{execution_id}': {error}");
+                    return;
+                }
+            };
+            (snapshot, exec.worktree_path.clone())
         };
 
         // terminal session の release と refs cleanup。

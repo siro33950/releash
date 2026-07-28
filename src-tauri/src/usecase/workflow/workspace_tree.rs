@@ -775,12 +775,16 @@ fn project_workflow(
     let resume_unavailable_reason = status
         .can_resume()
         .then(|| {
+            // HashMap iteration order is unstable; pick the lowest session id so
+            // repeated projections surface the same reason deterministically.
             sessions
-                .values()
-                .filter(|session| {
+                .iter()
+                .filter(|(_, session)| {
                     session.workflow_execution_id.as_deref() == Some(summary.execution_id.as_str())
+                        && session.unresolved_recovery_reason.is_some()
                 })
-                .find_map(|session| session.unresolved_recovery_reason.clone())
+                .min_by_key(|(session_id, _)| session_id.as_str())
+                .and_then(|(_, session)| session.unresolved_recovery_reason.clone())
         })
         .flatten();
 

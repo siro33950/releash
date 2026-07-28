@@ -14,8 +14,10 @@ pub struct ContractViolationRecord {
 
 /// Canonical facts emitted by a workflow execution.
 ///
-/// The event belongs to the workflow domain. Gateways own only its persisted
-/// wire representation and conversion.
+/// The event belongs to the workflow domain, and its serde representation is
+/// also the persisted wire shape: gateway codecs serialize this type directly,
+/// so serde attribute changes here change stored logs. Compatibility is pinned
+/// by the stored-event contract tests in the gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum WorkflowEvent {

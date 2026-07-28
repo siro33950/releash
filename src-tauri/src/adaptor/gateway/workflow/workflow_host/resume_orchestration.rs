@@ -330,7 +330,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
 
     let now = current_timestamp();
     let (execution, fanout_checkpoint) = hydrate_resumed_execution(&checkpoint, now)?;
-    let snapshot = execution.to_commit_snapshot();
+    let snapshot = execution.to_commit_snapshot()?;
     let node_started = workflow_runtime_events::node_started_event_for_snapshot(&snapshot)?;
     let reservation = driver
         .execution_store
@@ -358,10 +358,15 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
                 .is_some_and(DomainWorkflowExecution::is_active)
         {
             drop(executions);
-            let _ = driver
+            if let Err(rollback_error) = driver
                 .execution_store
                 .rollback_resume_reservation(reservation)
-                .await;
+                .await
+            {
+                log::warn!(
+                    "resume reservation rollback failed after detecting an already-active worktree: {rollback_error}"
+                );
+            }
             return Err(WorkflowRuntimeError::AlreadyActive(
                 checkpoint.workflow.name.clone(),
             ));

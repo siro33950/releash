@@ -10,6 +10,7 @@ use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::{
     artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
+use crate::domain::workflow::entities::workflow_execution::TransitionOutcome;
 use crate::domain::workflow::services::fanout as workflow_fanout;
 use crate::domain::workflow::FanoutParentRef;
 use crate::domain::workflow::NodeDefinition;
@@ -276,7 +277,7 @@ pub(crate) fn apply_fanout_runtime_state(
             }
         })
         .collect();
-    let _ = exec.install_fanout(
+    let outcome = exec.install_fanout(
         FanoutRuntimeState {
             parent_node_name: fanout_start.parent_node_name.clone(),
             parent_node_execution_id,
@@ -284,7 +285,15 @@ pub(crate) fn apply_fanout_runtime_state(
         },
         timestamp,
     );
-    Ok(exec.to_commit_snapshot())
+    if !matches!(
+        outcome,
+        TransitionOutcome::Applied | TransitionOutcome::AlreadyApplied
+    ) {
+        return Err(WorkflowRuntimeError::InvalidState(format!(
+            "fanout runtime installation was rejected by the aggregate: {outcome:?}"
+        )));
+    }
+    exec.to_commit_snapshot()
 }
 
 pub(crate) struct FanoutParentCompletionPlan {

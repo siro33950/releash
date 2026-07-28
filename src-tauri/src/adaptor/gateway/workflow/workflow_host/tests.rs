@@ -1355,7 +1355,9 @@ fn workflow_execution_to_commit_snapshot() {
         },
     };
 
-    let state = exec.to_commit_snapshot();
+    let state = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(state.execution_id, "exec-1");
     assert_eq!(state.workflow_name, "test-workflow");
     assert_eq!(state.state, RuntimeExecutionState::Running);
@@ -1555,7 +1557,9 @@ fn to_commit_snapshot_waiting_approval() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_commit_snapshot();
+    let ws = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::WaitingApproval);
     assert_eq!(ws.current_node_name, "report");
     assert_eq!(ws.current_node_index, 3);
@@ -1604,7 +1608,9 @@ fn to_commit_snapshot_failed() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_commit_snapshot();
+    let ws = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(
         ws.state,
         RuntimeExecutionState::Failed {
@@ -1645,7 +1651,9 @@ fn to_commit_snapshot_aborted() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_commit_snapshot();
+    let ws = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::Aborted);
 }
 
@@ -1677,7 +1685,9 @@ fn to_commit_snapshot_completed() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_commit_snapshot();
+    let ws = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::Completed);
     assert_eq!(ws.workflow_definition.nodes.len(), 4);
 }
@@ -2182,7 +2192,9 @@ fn apply_advance_fails_on_switch_no_match_without_next() {
         structured_node_output("judge", serde_json::json!({"decision": "HOLD"})),
     );
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
 
     assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
@@ -2211,7 +2223,8 @@ fn apply_advance_fails_on_unknown_route_target() {
     };
     let mut exec = workflow_exec(workflow, 0);
 
-    exec.apply_advance();
+    exec.apply_advance()
+        .expect("advance must produce an outcome");
 
     assert!(matches!(
         exec.state().clone(),
@@ -2286,7 +2299,8 @@ fn apply_advance_records_normal_node_reset_boundary_before_routing() {
         LoopGuardResult::Exceeded { count: 3, .. }
     ));
 
-    exec.apply_advance();
+    exec.apply_advance()
+        .expect("advance must produce an outcome");
 
     assert_eq!(
         exec.check_loop_guard("review").unwrap(),
@@ -2328,7 +2342,9 @@ fn apply_advance_records_fanout_parent_reset_only_when_parent_completes() {
     exec.node_execution_counts.insert("round".to_string(), 1);
     exec.node_execution_counts.insert("fix".to_string(), 2);
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
 
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "fix");
@@ -2753,7 +2769,9 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     .unwrap();
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
 
-    let state = exec.to_commit_snapshot();
+    let state = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     let state_artifacts = state
         .artifacts
         .values()
@@ -4560,7 +4578,9 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec.to_commit_snapshot();
+    let snapshot = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&snapshot, true),
         Some((
@@ -4672,7 +4692,9 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec.to_commit_snapshot();
+    let snapshot = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     let execution_id = exec.id.clone();
     driver
         .executions
@@ -4716,7 +4738,9 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
 fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec.to_commit_snapshot();
+    let waiting = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
 
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&waiting, true),
@@ -4728,7 +4752,9 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
     );
 
     exec.force_state_for_test(RuntimeExecutionState::Running);
-    let running = exec.to_commit_snapshot();
+    let running = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&running, true),
         None
@@ -4739,12 +4765,16 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
 fn workflow_approval_auto_approve_flag_controls_waiting_approval_snapshots() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec.to_commit_snapshot();
+    let waiting = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert!(workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, true));
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, false));
 
     exec.force_state_for_test(RuntimeExecutionState::Running);
-    let running = exec.to_commit_snapshot();
+    let running = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&running, true));
 }
 
@@ -4754,7 +4784,9 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     exec.current_session_id = Some("policy-session".to_string());
     let agent_auto_approve_permission_mode = "full";
     let workflow_approval_auto_approve_enabled = false;
-    let snapshot = exec.to_commit_snapshot();
+    let snapshot = exec
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
 
     assert_eq!(agent_auto_approve_permission_mode, "full");
     assert!(
@@ -4834,14 +4866,18 @@ fn normal_node_completion_retry_and_transition_clear_stall_observations() {
 
     let mut retried = make_normal_node_exec_with_stall_observation();
     assert!(matches!(
-        retried.retry_current_node(),
+        retried
+            .retry_current_node()
+            .expect("retry must produce an outcome"),
         NodeOutcome::RetryCurrentNode { .. }
     ));
     assert!(retried.current_stall_observations.is_empty());
 
     let mut transitioned = make_normal_node_exec_with_stall_observation();
     assert!(matches!(
-        transitioned.apply_advance(),
+        transitioned
+            .apply_advance()
+            .expect("advance must produce an outcome"),
         NodeOutcome::TransitionAndStart(_)
     ));
     assert!(transitioned.current_stall_observations.is_empty());
@@ -5009,7 +5045,9 @@ fn on_exhausted_transitions_to_fallback_node() {
     };
 
     // review の next=fix → ガード超過 → on_exhausted で approval へ
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -5134,7 +5172,9 @@ fn on_exhausted_chain_transitions() {
     };
 
     // start の next=node_a → exhausted → node_b → exhausted → node_c
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "node_c");
 }
@@ -5185,7 +5225,9 @@ fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
     exec.node_execution_counts =
         HashMap::from([("node_a".to_string(), 1), ("node_b".to_string(), 1)]);
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
 
     assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
@@ -5240,7 +5282,9 @@ fn apply_advance_clears_artifacts_for_new_node() {
     exec.artifacts
         .insert("plan".to_string(), make_node_output_fixture("plan", 1));
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -5261,7 +5305,9 @@ fn apply_advance_clears_artifacts_for_loop_target_node() {
         make_node_output_fixture("implement", 1),
     );
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -5330,7 +5376,9 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
         },
     };
 
-    let outcome = exec.apply_advance();
+    let outcome = exec
+        .apply_advance()
+        .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::StartFanout(_)));
     assert!(!exec.artifacts.contains_key("code_review_fanout"));
     assert!(!exec.artifacts.contains_key("review_security"));
@@ -6235,7 +6283,8 @@ async fn interrupted_snapshot_without_a_reason_is_rejected_instead_of_guessing_c
         .await
         .get(&execution_id)
         .unwrap()
-        .to_commit_snapshot();
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     let snapshot = RuntimeCommitSnapshot {
         state: RuntimeExecutionState::Interrupted,
         error_reason: None,
@@ -6404,7 +6453,8 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
         .await
         .get(&execution_id)
         .unwrap()
-        .to_commit_snapshot();
+        .to_commit_snapshot()
+        .expect("commit snapshot must be valid");
     let err = workflow_runtime_commit::sync_execution_store_from_snapshot(
         driver.execution_store(),
         &execution_id,
@@ -8884,7 +8934,9 @@ mod dispatch_boundary_tests {
         let mut uninterrupted = workflow_exec(workflow, 2);
         uninterrupted.node_execution_counts = counts_at_reset;
         uninterrupted.loop_guard_reset_baselines = reset_baselines;
-        uninterrupted.apply_advance();
+        uninterrupted
+            .apply_advance()
+            .expect("advance must produce an outcome");
         let expected_node = uninterrupted.workflow.nodes[uninterrupted.current_node_index]
             .name
             .clone();
@@ -16567,7 +16619,11 @@ mod dispatch_boundary_tests {
         // snapshot を Failed terminal に遷移させ、execute_outcome に persist 経路で渡す。
         let mut snapshot = {
             let execs = driver.executions.lock().await;
-            execs.get(&execution_id).unwrap().to_commit_snapshot()
+            execs
+                .get(&execution_id)
+                .unwrap()
+                .to_commit_snapshot()
+                .expect("commit snapshot must be valid")
         };
         snapshot.apply_lifecycle_projection(
             RuntimeExecutionState::Failed {
