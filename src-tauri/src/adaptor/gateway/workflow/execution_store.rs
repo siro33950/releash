@@ -3285,6 +3285,50 @@ mod tests {
         }
     }
 
+    fn attached_session_snapshot(execution_id: &str) -> RuntimeCommitSnapshot {
+        let mut snapshot = snapshot(execution_id);
+        snapshot.current_session_id = Some("session-1".to_string());
+        snapshot.workflow_definition = crate::domain::workflow::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: std::collections::BTreeMap::new(),
+            nodes: vec![crate::domain::workflow::NodeDefinition {
+                name: "node-1".to_string(),
+                kind: crate::domain::workflow::NodeKind::Session(
+                    crate::domain::workflow::SessionSpec::default(),
+                ),
+                artifact: None,
+                input: None,
+                inputs: Vec::new(),
+                rules: Vec::new(),
+            }],
+        };
+        snapshot
+            .node_execution_counts
+            .insert("node-1".to_string(), 1);
+        snapshot.node_executions = vec![
+            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution {
+                id: "node-execution-1".to_string(),
+                execution_id: execution_id.to_string(),
+                node_name: "node-1".to_string(),
+                kind: crate::domain::workflow::NodeKindName::Session,
+                attempt: 1,
+                status: crate::domain::workflow::entities::workflow_execution::
+                    RuntimeNodeExecutionStatus::Running,
+                session_id: Some("session-1".to_string()),
+                display_command: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 101.0,
+                completed_at: None,
+            },
+        ];
+        snapshot
+    }
+
     fn assert_execution_node_projection_parity(mutations: &[LocalStateMutation]) {
         let execution_projections = mutations
             .iter()
@@ -3445,6 +3489,45 @@ mod tests {
                 .await,
             Err(ExecutionStoreError::ExecutionAlreadyExists { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn node_session_attachment_source_batch_publishes_attached_node_atomically() {
+        let execution_id = test_uuid(205);
+        let store = ExecutionStore::new_in_memory_for_tests();
+        let revision = Revision::new(4).unwrap();
+        install_canonical_projection_fixture(
+            &store,
+            &execution_id,
+            CanonicalProjectionFixture::Present {
+                metadata: make_execution(
+                    &execution_id,
+                    "/wt/canonical",
+                    ExecutionStatus::Running,
+                    100.0,
+                ),
+                revision,
+            },
+        )
+        .await;
+
+        let mutations = store
+            .prepare_atomic_existing_snapshot_mutations(&attached_session_snapshot(&execution_id))
+            .await
+            .unwrap();
+
+        assert_execution_node_projection_parity(&mutations);
+        let node_projection = mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                LocalStateMutation::WorkflowExecutionNodeProjection(projection) => Some(projection),
+                _ => None,
+            })
+            .expect("SessionAttached source batch must replace the execution node rows");
+        assert!(node_projection.nodes.iter().any(|node| {
+            node.node_execution_id.as_deref() == Some("node-execution-1")
+                && node.session_id.as_deref() == Some("session-1")
+        }));
     }
 
     #[tokio::test]

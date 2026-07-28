@@ -5210,6 +5210,7 @@ impl WorkflowRuntimeHost {
             branch_diff_context: self.branch_diff_context.clone(),
             agent_runtime,
             session_store,
+            execution_store: &self.execution_store,
             open_tabs: &self.open_tabs,
         };
         self.start_node_session_with_deps(&deps, worktree_path)

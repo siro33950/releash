@@ -13,17 +13,6 @@ pub(crate) fn append_required_events(
     WorkflowEventLog::new(data_dir).append_batch(events)
 }
 
-pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    events: &[WorkflowEvent],
-) -> Result<(), String> {
-    append_required_events_for_app_as(
-        app,
-        crate::domain::local_event::CommitOperationKind::Workflow,
-        events,
-    )
-}
-
 pub(crate) fn append_required_events_for_app_as<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     operation_kind: crate::domain::local_event::CommitOperationKind,
