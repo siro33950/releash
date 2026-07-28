@@ -1299,9 +1299,66 @@ pub enum WorkflowTurnCompletionObligationRecord {
         token_usage: Option<TurnTokenUsage>,
         interrupted: bool,
     },
-    Completed {
-        completed_at_bits: u64,
+    Applied {
+        settled_at_bits: u64,
     },
+    AlreadyApplied {
+        settled_at_bits: u64,
+    },
+    Retired {
+        reason: WorkflowObligationRetirementReason,
+        settled_at_bits: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowObligationRetirementReason {
+    Superseded,
+    Unrecoverable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowObligationTerminalOutcome {
+    Applied,
+    AlreadyApplied,
+    Retired(WorkflowObligationRetirementReason),
+}
+
+impl WorkflowTurnCompletionObligationRecord {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending { .. })
+    }
+
+    pub fn terminal_outcome(&self) -> Option<WorkflowObligationTerminalOutcome> {
+        match self {
+            Self::Pending { .. } => None,
+            Self::Applied { .. } => Some(WorkflowObligationTerminalOutcome::Applied),
+            Self::AlreadyApplied { .. } => Some(WorkflowObligationTerminalOutcome::AlreadyApplied),
+            Self::Retired { reason, .. } => {
+                Some(WorkflowObligationTerminalOutcome::Retired(*reason))
+            }
+        }
+    }
+
+    pub fn settle(
+        &self,
+        outcome: WorkflowObligationTerminalOutcome,
+        settled_at_bits: u64,
+    ) -> Result<Self, WorkflowObligationTerminalOutcome> {
+        if let Some(existing) = self.terminal_outcome() {
+            return Err(existing);
+        }
+        Ok(match outcome {
+            WorkflowObligationTerminalOutcome::Applied => Self::Applied { settled_at_bits },
+            WorkflowObligationTerminalOutcome::AlreadyApplied => {
+                Self::AlreadyApplied { settled_at_bits }
+            }
+            WorkflowObligationTerminalOutcome::Retired(reason) => Self::Retired {
+                reason,
+                settled_at_bits,
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1770,15 +1827,18 @@ impl ObligationRecord {
                     | ObligationStateRecord::OutcomeUnknown
             )
         );
-        let recovery_owned = matches!(
-            original,
+        let recovery_owned = match original {
+            Self::WorkflowTurnCompletion { detail, .. } => detail.is_pending(),
+            Self::WorkflowShutdown { state, .. } => !matches!(
+                state,
+                ObligationStateRecord::Completed | ObligationStateRecord::Cancelled
+            ),
             Self::BackendSessionRecovery { .. }
-                | Self::WorkflowShutdown { .. }
-                | Self::WorkflowTurnCompletion { .. }
-                | Self::RecoveryPublication { .. }
-                | Self::RecoveryReserved { .. }
-                | Self::RecoveryCompleted { .. }
-        );
+            | Self::RecoveryPublication { .. }
+            | Self::RecoveryReserved { .. }
+            | Self::RecoveryCompleted { .. } => true,
+            _ => false,
+        };
         let closing = matches!(original, Self::SessionClose { .. })
             && state != Some(ObligationStateRecord::Completed);
         // ProviderEstablish belongs to the superseded two-flight Send
@@ -1806,6 +1866,8 @@ impl ObligationRecord {
                 | Self::StopInterrupt { .. }
                 | Self::TerminalCommit { .. }
                 | Self::SessionClose { .. }
+                | Self::WorkflowShutdown { .. }
+                | Self::WorkflowTurnCompletion { .. }
         );
         let blocks = action_unresolved
             || explicitly_unresolved
@@ -2106,9 +2168,24 @@ impl ObligationRecord {
                         }
                         bytes.push(u8::from(*interrupted));
                     }
-                    WorkflowTurnCompletionObligationRecord::Completed { completed_at_bits } => {
+                    WorkflowTurnCompletionObligationRecord::Applied { settled_at_bits } => {
                         bytes.push(1);
-                        bytes.extend_from_slice(&completed_at_bits.to_be_bytes());
+                        bytes.extend_from_slice(&settled_at_bits.to_be_bytes());
+                    }
+                    WorkflowTurnCompletionObligationRecord::AlreadyApplied { settled_at_bits } => {
+                        bytes.push(2);
+                        bytes.extend_from_slice(&settled_at_bits.to_be_bytes());
+                    }
+                    WorkflowTurnCompletionObligationRecord::Retired {
+                        reason,
+                        settled_at_bits,
+                    } => {
+                        bytes.push(3);
+                        bytes.push(match reason {
+                            WorkflowObligationRetirementReason::Superseded => 0,
+                            WorkflowObligationRetirementReason::Unrecoverable => 1,
+                        });
+                        bytes.extend_from_slice(&settled_at_bits.to_be_bytes());
                     }
                 }
                 identity_obligation_state(bytes, *state);
@@ -2268,5 +2345,81 @@ impl ObligationRecord {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod workflow_obligation_tests {
+    use super::*;
+
+    fn pending() -> WorkflowTurnCompletionObligationRecord {
+        WorkflowTurnCompletionObligationRecord::Pending {
+            workflow_context: Box::new(WorkflowNodeContext {
+                execution_id: "execution-1".to_string(),
+                node_execution_id: "node-execution-1".to_string(),
+                workflow_name: "workflow".to_string(),
+                node_name: "node".to_string(),
+                attempt: 1,
+                parent_node_name: None,
+                parent_attempt: None,
+                order: 0,
+                startup_timeout_secs: None,
+                startup_max_retries: None,
+                stale_timeout_secs: None,
+            }),
+            message_id: "message-1".to_string(),
+            exit_code: 0,
+            failure_signal: None,
+            token_usage: None,
+            interrupted: false,
+        }
+    }
+
+    #[test]
+    fn workflow_turn_completion_obligation_has_closed_terminal_transitions() {
+        for outcome in [
+            WorkflowObligationTerminalOutcome::Applied,
+            WorkflowObligationTerminalOutcome::AlreadyApplied,
+            WorkflowObligationTerminalOutcome::Retired(
+                WorkflowObligationRetirementReason::Superseded,
+            ),
+            WorkflowObligationTerminalOutcome::Retired(
+                WorkflowObligationRetirementReason::Unrecoverable,
+            ),
+        ] {
+            let terminal = pending().settle(outcome, 42).expect("pending settles");
+            assert_eq!(terminal.terminal_outcome(), Some(outcome));
+            assert!(!terminal.is_pending());
+            assert_eq!(terminal.settle(outcome, 43), Err(outcome));
+        }
+    }
+
+    #[test]
+    fn terminal_workflow_turn_completion_no_longer_blocks_effect_admission() {
+        let record = |detail| ObligationRecord::WorkflowTurnCompletion {
+            session_id: "session-1".to_string(),
+            turn_id: "1".to_string(),
+            terminal_identity: "terminal-1".to_string(),
+            notification_sha256: [1; 32],
+            detail,
+            state: ObligationStateRecord::Completed,
+        };
+        assert!(!record(
+            pending()
+                .settle(WorkflowObligationTerminalOutcome::Applied, 42)
+                .unwrap()
+        )
+        .blocks_effect_admission());
+        assert!(!record(
+            pending()
+                .settle(
+                    WorkflowObligationTerminalOutcome::Retired(
+                        WorkflowObligationRetirementReason::Unrecoverable,
+                    ),
+                    42,
+                )
+                .unwrap()
+        )
+        .blocks_effect_admission());
     }
 }

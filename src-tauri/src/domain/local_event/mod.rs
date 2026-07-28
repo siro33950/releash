@@ -71,7 +71,8 @@ pub use record::{
     SessionProjectionRecord, ShutdownOutcomeRecord, ShutdownPlanRecord, ShutdownTargetKindRecord,
     ShutdownTargetRecord, ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord,
     TerminalInterruptReasonRecord, TerminalResultRecord, WorkflowExecutionMetadataRecord,
-    WorkflowExecutionProjectionRecord, WorkflowTurnCompletionObligationRecord,
+    WorkflowExecutionProjectionRecord, WorkflowObligationRetirementReason,
+    WorkflowObligationTerminalOutcome, WorkflowTurnCompletionObligationRecord,
     WorkflowTurnFailureSignalRecord, WorkflowWorktreeOwnerRecord,
 };
 pub use repository::{LocalEventSignal, LocalEventSubscription, LocalEventTransactionRepository};

@@ -3,51 +3,34 @@
 //! Workflow definitions, diagnostics, and facets remain file-backed. Runtime
 //! execution state and events use the fixed SQLite local event store.
 
-pub(crate) mod approval_runtime;
 pub(crate) mod builtin;
 mod config_path_gateway;
 mod definition_repository;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod diagnostics_gateway;
 pub(crate) mod domain_mapping;
 mod editor_gateway;
-pub(crate) mod engine_error;
-pub(crate) mod engine_start_guard;
 pub(crate) mod event;
 pub(crate) mod event_log_writer;
-pub(crate) mod event_projection;
 mod event_repository;
 mod execution_archive_repository;
 mod execution_projection_repository;
-pub(crate) mod execution_registry;
 mod execution_repository;
 pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
 pub(crate) mod failure_policy_config;
-mod failure_wire;
-pub(crate) mod fanout_runtime;
-pub(crate) mod internal_node_command;
+pub(crate) mod failure_wire;
 pub(crate) mod log;
 pub(crate) mod mapper;
 mod node_lifecycle_adapters;
-mod node_session_boundary;
-pub(crate) mod node_settings;
-pub(crate) mod orphan_recovery;
-pub(crate) mod output_limit;
-pub(crate) mod output_submission;
-pub(crate) mod prompt_rendering;
-pub(crate) mod resolver;
-pub(crate) mod resume_projection;
+pub(crate) mod node_session_boundary;
 mod runtime_command_gateway;
-pub(crate) mod runtime_commit;
-pub(crate) mod runtime_engine;
-pub(crate) mod runtime_engine_impl;
-pub(crate) mod runtime_events;
-mod runtime_resolver;
-mod runtime_session;
-pub(crate) mod runtime_state;
+pub(crate) mod runtime_resolver;
 pub(crate) mod schema;
+#[cfg(test)]
+#[allow(dead_code)]
+mod schema_contract_tests;
 pub(crate) mod secret_source;
 mod secret_source_gateway;
 pub(crate) mod span_map;
@@ -56,7 +39,7 @@ mod state_notification_gateway;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub(crate) mod turn_completion;
+pub(crate) mod workflow_host;
 mod workspace_session;
 mod worktree_gateway;
 

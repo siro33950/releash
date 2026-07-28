@@ -5866,6 +5866,10 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .expect("bounded prefix page");
     assert_eq!(page.entries.len(), 1);
     assert!(page.next_cursor.is_none());
+    assert!(session_store
+        .unresolved_recovery_reason(&session.id)
+        .expect("read capability recovery fence")
+        .is_some());
 
     session_store
         .complete_workflow_turn_completion(&pending)
@@ -5877,6 +5881,47 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .pending_workflow_turn_completion(&session.id, 7)
         .expect("read consumed handoff")
         .is_none());
+    assert_eq!(
+        session_store
+            .unresolved_recovery_reason(&session.id)
+            .expect("read settled capability recovery fence"),
+        None
+    );
+
+    persist_terminal_fixture(
+        &harness,
+        &session_store,
+        &session.id,
+        8,
+        &["cannot reconstruct required artifact"],
+    );
+    let retired = session_store
+        .pending_workflow_turn_completion(&session.id, 8)
+        .expect("read unrecoverable handoff")
+        .expect("pending unrecoverable handoff");
+    session_store
+        .settle_workflow_turn_completion(
+            &retired,
+            crate::domain::local_event::WorkflowObligationTerminalOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+            ),
+        )
+        .expect("retire unrecoverable handoff");
+    session_store
+        .settle_workflow_turn_completion(
+            &retired,
+            crate::domain::local_event::WorkflowObligationTerminalOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+            ),
+        )
+        .expect("idempotent retire replay");
+    assert_eq!(
+        session_store
+            .unresolved_recovery_reason(&session.id)
+            .expect("read retired capability recovery fence"),
+        None,
+        "retired obligations remain durable history but leave effect admission"
+    );
 }
 
 #[tokio::test]
@@ -8607,7 +8652,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn hanging_target_inventory_aborts_before_activation_at_the_absolute_cutoff() {
     let harness = Harness::open();
     let executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::HangTargets);
@@ -8626,24 +8671,19 @@ async fn hanging_target_inventory_aborts_before_activation_at_the_absolute_cutof
             )
             .await
     });
-    for _ in 0..1_000 {
-        if executor
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while executor
             .target_queries
             .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
+            != 1
         {
-            break;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(
-        executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "request did not reach the target inventory"
-    );
+    })
+    .await
+    .expect("request did not reach the target inventory");
 
+    tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(13)).await;
     let outcome = request.await.unwrap().unwrap();
     let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::RejectedBeforeCommit {
@@ -8870,14 +8910,27 @@ async fn hanging_authority_query_is_bounded_by_the_absolute_decision_deadline() 
 }
 
 #[tokio::test]
-// The production cutoff is part of this capacity oracle, so isolate it from
-// the >16 MiB migration fixtures that the Rust test harness runs in parallel.
+// This is the exact target-capacity oracle; fixed-deadline behavior is covered
+// separately. Isolate its large SQLite fixture and widen only its test flight
+// budget so parallel CI load cannot turn capacity into OutcomeUnknown.
 #[allow(clippy::await_holding_lock)]
 async fn b060_exactly_4096_shutdown_targets_are_durably_accepted_as_one_plan() {
     let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
     let harness = Harness::open();
     let executor = TestShutdownExecutor::with_targets(4096, ShutdownExecutorMode::Complete);
-    let coordinator = shutdown_coordinator(&harness, &executor);
+    let coordinator = Arc::new(
+        crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
+            harness.store.clone(),
+            harness.store.clone(),
+            executor.clone(),
+            harness.store.installation_id().to_string(),
+            "test-boot".to_string(),
+        )
+        .with_flight_budget_for_test(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(62),
+        ),
+    );
     let outcome = coordinator
         .request(
             crate::usecase::shutdown_coordinator::ApplicationQuitRequest {

@@ -3,18 +3,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::workflow::{FailureDisposition, NodeExecutionFailureKind, TimeoutKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SubmissionViolation {
-    MissingSubmitOutput,
-    InvalidSubmitOutput,
-}
-
-pub(crate) fn submission_violation_reason(violation: SubmissionViolation) -> &'static str {
-    match violation {
-        SubmissionViolation::MissingSubmitOutput => "missing_submit_output",
-        SubmissionViolation::InvalidSubmitOutput => "invalid_submit_output",
-    }
-}
+#[allow(unused_imports)]
+pub(crate) use crate::domain::workflow::services::submission::{
+    submission_violation_reason, SubmissionViolation,
+};
 
 impl Serialize for NodeExecutionFailureKind {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

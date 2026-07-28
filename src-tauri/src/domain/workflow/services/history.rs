@@ -210,8 +210,10 @@ mod tests {
         let entry = aborted_fanout_history_entry(
             &FanoutRuntimeState {
                 parent_node_name: "fanout-review".to_string(),
+                parent_node_execution_id: "fanout-parent-execution".to_string(),
                 children: vec![
                     FanoutChildRuntime {
+                        node_execution_id: "child-a-execution".to_string(),
                         node_name: "child-a".to_string(),
                         session_id: "child-session-a".to_string(),
                         state: FanoutChildRuntimeState::Completed,
@@ -222,8 +224,10 @@ mod tests {
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         attempt: 1,
+                        completed_at: Some(20.0),
                     },
                     FanoutChildRuntime {
+                        node_execution_id: "child-b-execution".to_string(),
                         node_name: "child-b".to_string(),
                         session_id: "child-session-b".to_string(),
                         state: FanoutChildRuntimeState::Running,
@@ -234,6 +238,7 @@ mod tests {
                         failure_disposition: None,
                         token_usage: TokenUsage::default(),
                         attempt: 2,
+                        completed_at: None,
                     },
                 ],
             },

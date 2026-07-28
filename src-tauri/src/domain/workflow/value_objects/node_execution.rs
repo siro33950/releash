@@ -1,10 +1,12 @@
 use super::{Artifact, NodeExecutionFailureKind, NodeKindName, TokenUsage};
 
 /// fanout child execution が属する親 fanout と、宣言順上の位置。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FanoutParentRef {
     pub parent_node: String,
     pub parent_attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub item_index: Option<usize>,
     pub child_index: usize,
 }
@@ -58,6 +60,41 @@ pub struct NodeExecution {
     pub fanout_parent: Option<FanoutParentRef>,
     pub started_at: f64,
     pub completed_at: Option<f64>,
+}
+
+impl NodeExecution {
+    pub fn replay_completed(
+        &mut self,
+        result_summary: Option<String>,
+        token_usage: Option<TokenUsage>,
+        completed_at: f64,
+    ) {
+        self.status = NodeExecutionStatus::Succeeded;
+        self.result_summary = result_summary;
+        self.token_usage = token_usage;
+        self.failure = None;
+        self.completed_at = Some(completed_at);
+    }
+
+    pub fn replay_failed(&mut self, failure: NodeExecutionFailure, completed_at: f64) {
+        self.status = NodeExecutionStatus::Failed;
+        self.failure = Some(failure);
+        self.completed_at = Some(completed_at);
+    }
+
+    pub fn replay_approval_requested(&mut self) {
+        self.status = NodeExecutionStatus::WaitingApproval;
+    }
+
+    pub fn replay_approval_resolved(&mut self) {
+        self.status = NodeExecutionStatus::Running;
+    }
+}
+
+impl NodeExecution {
+    pub fn record_artifact(&mut self, artifact: Artifact) {
+        self.artifact = Some(artifact);
+    }
 }
 
 #[cfg(test)]

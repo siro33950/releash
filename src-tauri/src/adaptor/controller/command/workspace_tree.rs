@@ -255,6 +255,7 @@ mod tests {
             first_message: id.to_string(),
             workflow_node_session,
             workflow_execution_id: None,
+            unresolved_recovery_reason: None,
         }
     }
 

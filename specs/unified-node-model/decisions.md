@@ -181,6 +181,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
 | `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
 | `docs/architecture/GLOSSARY.md` | §語彙 の反映。同上。 |
+| [`../workflow-lifecycle/workflow-ideal-lifecycle.md`](../workflow-lifecycle/workflow-ideal-lifecycle.md) | 実行時ライフサイクル不変条件(W-I 群)の正本。本モデルの実行木にも同じ invariant を適用し、実装時に状態語彙の対応(ExecutionStatus → Node 実行木の状態)を確定する。 |
 
 ## 語彙
 

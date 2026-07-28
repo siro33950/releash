@@ -204,6 +204,13 @@ pub trait WorkflowRuntimeStateGateway: Send + Sync {
         Ok(())
     }
 
+    async fn recover_startup_excluding(
+        &self,
+        _unresolved_turn_completions: &std::collections::BTreeSet<String>,
+    ) -> Result<(), WorkflowError> {
+        self.recover_startup().await
+    }
+
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
@@ -357,6 +364,7 @@ pub struct WorkflowTurnCompleteRecoveryCommand {
 pub enum WorkflowTurnCompleteRecoveryOutcome {
     Applied,
     AlreadyApplied,
+    Retired(crate::domain::local_event::WorkflowObligationRetirementReason),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

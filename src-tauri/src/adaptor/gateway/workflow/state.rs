@@ -1,156 +1,16 @@
-use std::collections::HashMap;
-
 use crate::adaptor::gateway::workflow::domain_mapping::{
     artifacts_to_domain, node_history_entries_to_domain, runtime_execution_state_to_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
-pub use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
-use crate::domain::workflow::{
-    ExecutionOrigin, FailureDisposition, NodeExecutionFailureKind, NODE_STATUS_ABORTED,
-    NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
+use crate::adaptor::gateway::workflow::schema::NodeKindName;
+pub use crate::domain::workflow::entities::workflow_execution::{
+    RuntimeNodeExecution as NodeExecution, RuntimeNodeExecutionStatus as NodeExecutionStatus,
+};
+pub use crate::domain::workflow::{
+    FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
 };
 
-#[derive(Debug, Clone)]
-pub struct RuntimeCommitSnapshot {
-    pub execution_id: String,
-    pub workflow_name: String,
-    pub worktree_path: String,
-    pub created_from: ExecutionOrigin,
-    pub request: String,
-    pub error_reason: Option<String>,
-    pub state: RuntimeExecutionState,
-    pub current_node_index: usize,
-    pub current_node_name: String,
-    pub current_session_id: Option<String>,
-    pub node_history: Vec<NodeHistoryEntry>,
-    pub node_execution_counts: HashMap<String, u32>,
-    pub workflow_definition: WorkflowDefinitionYaml,
-    pub total_token_usage: TokenUsage,
-    pub artifacts: HashMap<String, RuntimeArtifact>,
-    pub node_executions: Vec<NodeExecution>,
-    pub started_at: f64,
-    pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeStallObservation {
-    pub session_id: String,
-    pub node_name: String,
-    pub attempt: u32,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-    pub observed_at: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeExecutionStatus {
-    Running,
-    WaitingApproval,
-    Succeeded,
-    Failed,
-    Aborted,
-}
-
-impl NodeExecutionStatus {
-    pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeExecutionFailure {
-    pub reason: String,
-    pub kind: NodeExecutionFailureKind,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeExecution {
-    pub id: String,
-    pub execution_id: String,
-    pub node_name: String,
-    pub kind: NodeKindName,
-    pub attempt: u32,
-    pub status: NodeExecutionStatus,
-    pub session_id: Option<String>,
-    pub display_command: Option<String>,
-    pub artifact: Option<serde_json::Value>,
-    pub token_usage: Option<TokenUsage>,
-    pub failure: Option<NodeExecutionFailure>,
-    pub fanout_parent: Option<FanoutParentRef>,
-    pub started_at: f64,
-    pub completed_at: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum RuntimeExecutionState {
-    Running,
-    WaitingApproval,
-    Completed,
-    Failed {
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    },
-    Aborted,
-    Interrupted,
-}
-
-impl RuntimeExecutionState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => NODE_STATUS_RUNNING,
-            Self::WaitingApproval => NODE_STATUS_WAITING_APPROVAL,
-            Self::Completed => NODE_STATUS_COMPLETED,
-            Self::Failed { .. } => NODE_STATUS_FAILED,
-            Self::Aborted => NODE_STATUS_ABORTED,
-            Self::Interrupted => crate::domain::workflow::NODE_STATUS_INTERRUPTED,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeHistoryEntry {
-    pub node_name: String,
-    pub completed_at: f64,
-    pub result: Option<String>,
-    pub session_id: Option<String>,
-    pub token_usage: Option<TokenUsage>,
-    pub artifact: Option<serde_json::Value>,
-    pub attempt: u32,
-    pub fanout_children: Option<Vec<FanoutChildSnapshot>>,
-    /// node entry の終端状態。
-    pub state: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct FanoutChildSnapshot {
-    pub node_name: String,
-    pub session_id: Option<String>,
-    pub result: Option<String>,
-    pub attempt: u32,
-    pub completed_at: f64,
-    pub artifact: Option<serde_json::Value>,
-    pub contract: Option<String>,
-    /// child snapshot の終端状態。
-    pub state: String,
-    pub failure_kind: Option<NodeExecutionFailureKind>,
-    pub failure_disposition: Option<FailureDisposition>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RuntimeArtifact {
-    pub node_name: String,
-    pub attempt: u32,
-    pub session_id: Option<String>,
-    pub result: Option<String>,
-    pub artifact: Option<serde_json::Value>,
-    pub contract: Option<String>,
-    pub token_usage: Option<TokenUsage>,
-    pub completed_at: f64,
-}
+pub(crate) use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
     state: RuntimeCommitSnapshot,

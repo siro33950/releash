@@ -2183,6 +2183,84 @@ impl SessionStore {
         }
     }
 
+    pub(crate) fn unresolved_recovery_reason(&self, owner: &str) -> Result<Option<String>, String> {
+        use crate::domain::local_event::{LocalEventQuery, LocalEventQueryResult};
+
+        if owner.is_empty() {
+            return Err("recovery owner identity is invalid".to_string());
+        }
+        let authority = match self.event_authority.read().clone() {
+            Some(authority) => authority,
+            None => {
+                #[cfg(test)]
+                return Ok(None);
+                #[cfg(not(test))]
+                return Err("pending recovery authority is unavailable".to_string());
+            }
+        };
+        let owner = owner.to_string();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            format!("failed to create pending recovery read runtime: {error}")
+                        })?
+                        .block_on(async move {
+                            const PAGE_LIMIT: usize = 200;
+                            let mut cursor = None;
+                            loop {
+                                let result = authority
+                                    .repository
+                                    .query(LocalEventQuery::PendingRecoveryPage {
+                                        limit: PAGE_LIMIT,
+                                        partition: None,
+                                        owner: Some(owner.clone()),
+                                        ordered_key_prefix: None,
+                                        shutdown_plan: None,
+                                        cursor,
+                                    })
+                                    .await
+                                    .map_err(|error| {
+                                        format!(
+                                            "pending recovery inventory is unavailable: {error}"
+                                        )
+                                    })?;
+                                let LocalEventQueryResult::PendingRecoveryPage(page) = result else {
+                                    return Err(
+                                        "pending recovery inventory is incompatible".to_string()
+                                    );
+                                };
+                                for entry in page.entries {
+                                    if entry.owner != owner {
+                                        return Err(
+                                            "pending recovery owner index is inconsistent"
+                                                .to_string(),
+                                        );
+                                    }
+                                    if let Some(identity) = crate::usecase::agent_session::operation::recovery::unresolved_recovery_original_identity(
+                                        &entry.obligation_id,
+                                        &entry.record,
+                                    ) {
+                                        return Ok(Some(format!(
+                                            "Unresolved recovery {identity} must be resolved before resume."
+                                        )));
+                                    }
+                                }
+                                cursor = page.next_cursor;
+                                if cursor.is_none() {
+                                    return Ok(None);
+                                }
+                            }
+                        })
+                })
+                .join()
+                .map_err(|_| "pending recovery read worker panicked".to_string())?
+        })
+    }
+
     fn canonical_session_projection(
         &self,
         session_id: &str,
@@ -2681,9 +2759,21 @@ impl SessionStore {
     /// Removes the pending membership only after the workflow side has
     /// durably accepted this exact notification. Replays of the same consume
     /// are successful; a different binding fails closed.
+    #[cfg(test)]
     pub(crate) fn complete_workflow_turn_completion(
         &self,
         entry: &PendingWorkflowTurnCompletion,
+    ) -> Result<(), String> {
+        self.settle_workflow_turn_completion(
+            entry,
+            crate::domain::local_event::WorkflowObligationTerminalOutcome::Applied,
+        )
+    }
+
+    pub(crate) fn settle_workflow_turn_completion(
+        &self,
+        entry: &PendingWorkflowTurnCompletion,
+        outcome: crate::domain::local_event::WorkflowObligationTerminalOutcome,
     ) -> Result<(), String> {
         let expected_sha256 = workflow_turn_completion_notification_sha256(
             &entry.session_id,
@@ -2707,18 +2797,15 @@ impl SessionStore {
             .map_err(|_| "workflow turn-completion digest is invalid".to_string())?
             .try_into()
             .map_err(|_| "workflow turn-completion digest has an invalid length".to_string())?;
-        match &current.record {
+        let pending_detail = match &current.record {
             crate::domain::local_event::ObligationRecord::WorkflowTurnCompletion {
                 session_id,
                 turn_id,
                 terminal_identity,
                 notification_sha256,
-                detail:
-                    crate::domain::local_event::WorkflowTurnCompletionObligationRecord::Completed {
-                        ..
-                    },
+                detail,
                 state: crate::domain::local_event::ObligationStateRecord::Completed,
-            } => {
+            } if detail.terminal_outcome().is_some() => {
                 if session_id == &entry.session_id
                     && turn_id.parse::<u64>().ok() == Some(entry.input.turn_id)
                     && terminal_identity == &entry.terminal_identity
@@ -2737,7 +2824,7 @@ impl SessionStore {
                 terminal_identity,
                 notification_sha256,
                 detail:
-                    crate::domain::local_event::WorkflowTurnCompletionObligationRecord::Pending {
+                    detail @ crate::domain::local_event::WorkflowTurnCompletionObligationRecord::Pending {
                         workflow_context,
                         message_id,
                         exit_code,
@@ -2770,6 +2857,7 @@ impl SessionStore {
                         "pending workflow turn-completion obligation is inconsistent".to_string(),
                     );
                 }
+                detail.clone()
             }
             _ => {
                 return Err(
@@ -2777,15 +2865,19 @@ impl SessionStore {
                         .to_string(),
                 );
             }
-        }
+        };
+        let settled_at_bits = now_timestamp().to_bits();
+        let detail = pending_detail
+            .settle(outcome, settled_at_bits)
+            .map_err(|_| {
+                "workflow turn-completion obligation was already terminal before settle".to_string()
+            })?;
         let record = crate::domain::local_event::ObligationRecord::WorkflowTurnCompletion {
             session_id: entry.session_id.clone(),
             turn_id: entry.input.turn_id.to_string(),
             terminal_identity: entry.terminal_identity.clone(),
             notification_sha256: notification_digest,
-            detail: crate::domain::local_event::WorkflowTurnCompletionObligationRecord::Completed {
-                completed_at_bits: now_timestamp().to_bits(),
-            },
+            detail,
             state: crate::domain::local_event::ObligationStateRecord::Completed,
         };
         let mutation = crate::domain::local_event::LocalStateMutation::Obligation(
@@ -2887,10 +2979,7 @@ impl SessionStore {
                     turn_id,
                     terminal_identity,
                     notification_sha256,
-                    detail:
-                        crate::domain::local_event::WorkflowTurnCompletionObligationRecord::Completed {
-                            ..
-                        },
+                    detail,
                     state: crate::domain::local_event::ObligationStateRecord::Completed,
                 } = current.record
                 {
@@ -2899,6 +2988,7 @@ impl SessionStore {
                         && terminal_identity == entry.terminal_identity
                         && notification_sha256 == notification_digest
                         && current.pending.is_none()
+                        && detail.terminal_outcome().is_some()
                     {
                         return Ok(());
                     }

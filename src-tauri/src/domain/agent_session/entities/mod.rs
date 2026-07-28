@@ -15,4 +15,5 @@ pub use permission_request::{
     PermissionQuestionOption, PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
     PermissionResponse, PermissionResponseDecision,
 };
+pub(crate) use session::SessionState;
 pub use turn::{InterruptReason, TokenUsage, TurnResult, TurnStopReason};

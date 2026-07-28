@@ -2272,10 +2272,39 @@ fn encode_obligation(value: &ObligationRecord) -> Result<Value, StoredRecordCode
                     }
                     object.insert("interrupted".into(), Value::Bool(*interrupted));
                 }
-                WorkflowTurnCompletionObligationRecord::Completed { completed_at_bits } => {
+                WorkflowTurnCompletionObligationRecord::Applied { settled_at_bits } => {
                     object.insert(
                         "completed_at_bits".into(),
-                        Value::String(completed_at_bits.to_string()),
+                        Value::String(settled_at_bits.to_string()),
+                    );
+                }
+                WorkflowTurnCompletionObligationRecord::AlreadyApplied { settled_at_bits } => {
+                    object.insert(
+                        "already_applied_at_bits".into(),
+                        Value::String(settled_at_bits.to_string()),
+                    );
+                }
+                WorkflowTurnCompletionObligationRecord::Retired {
+                    reason,
+                    settled_at_bits,
+                } => {
+                    object.insert(
+                        "retired_at_bits".into(),
+                        Value::String(settled_at_bits.to_string()),
+                    );
+                    object.insert(
+                        "retirement_reason".into(),
+                        Value::String(
+                            match reason {
+                                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded => {
+                                    "superseded"
+                                }
+                                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable => {
+                                    "unrecoverable"
+                                }
+                            }
+                            .to_string(),
+                        ),
                     );
                 }
             }
@@ -2663,9 +2692,27 @@ fn decode_obligation_base(
             state,
         }),
         "workflow_turn_completion_obligation_v1" => {
-            let detail = if object.contains_key("completed_at_bits") {
-                WorkflowTurnCompletionObligationRecord::Completed {
-                    completed_at_bits: u64_field(object, family, "completed_at_bits")?,
+            let detail = if object.contains_key("retired_at_bits") {
+                WorkflowTurnCompletionObligationRecord::Retired {
+                    reason: match required_text(object, family, "retirement_reason")? {
+                        "superseded" => crate::domain::local_event::WorkflowObligationRetirementReason::Superseded,
+                        "unrecoverable" => crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+                        other => {
+                            return Err(StoredRecordCodecError::Incompatible {
+                                family,
+                                schema: format!("workflow_obligation_retirement_reason.{other}"),
+                            })
+                        }
+                    },
+                    settled_at_bits: u64_field(object, family, "retired_at_bits")?,
+                }
+            } else if object.contains_key("already_applied_at_bits") {
+                WorkflowTurnCompletionObligationRecord::AlreadyApplied {
+                    settled_at_bits: u64_field(object, family, "already_applied_at_bits")?,
+                }
+            } else if object.contains_key("completed_at_bits") {
+                WorkflowTurnCompletionObligationRecord::Applied {
+                    settled_at_bits: u64_field(object, family, "completed_at_bits")?,
                 }
             } else {
                 WorkflowTurnCompletionObligationRecord::Pending {
@@ -3043,6 +3090,9 @@ fn known_obligation_fields(schema: &str) -> &'static [&'static str] {
         "reason",
         "reserved_at_bits",
         "completed_at_bits",
+        "already_applied_at_bits",
+        "retired_at_bits",
+        "retirement_reason",
         "error_sha256",
         "failed_at_bits",
         "owner_revision",
@@ -4426,6 +4476,25 @@ mod tests {
         let decoded = StoredStateRecordV1::decode(StoredRecordFamily::ShutdownTarget, raw)
             .expect("additive field");
         assert_eq!(decoded.encode(), raw);
+    }
+
+    #[test]
+    fn workflow_turn_completion_retirement_reason_round_trips_as_closed_data() {
+        let raw = r#"{"schema":"workflow_turn_completion_obligation_v1","session_id":"session-1","turn_id":"7","terminal_identity":"terminal-7","notification_sha256":"0707070707070707070707070707070707070707070707070707070707070707","state":"completed","retired_at_bits":"42","retirement_reason":"unrecoverable"}"#;
+        let stored = StoredObligationV1::decode(raw).expect("retired workflow obligation");
+        assert!(matches!(
+            stored.value(),
+            ObligationRecord::WorkflowTurnCompletion {
+                detail: WorkflowTurnCompletionObligationRecord::Retired {
+                    reason:
+                        crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+                    settled_at_bits: 42,
+                },
+                state: ObligationStateRecord::Completed,
+                ..
+            }
+        ));
+        assert_eq!(stored.raw(), raw);
     }
 
     #[test]

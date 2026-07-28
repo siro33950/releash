@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::domain::workflow::WorkflowError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,6 +46,50 @@ pub struct FacetSummary {
     pub kind: String,
     pub description: String,
     pub builtin: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FacetContents {
+    pub policy: Option<String>,
+    pub knowledge: Vec<String>,
+    pub instruction: Option<String>,
+}
+
+impl FacetContents {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_none() && self.knowledge.is_empty() && self.instruction.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowFacetContents {
+    nodes: BTreeMap<String, FacetContents>,
+}
+
+impl WorkflowFacetContents {
+    pub fn for_node(&self, node_name: &str) -> Option<&FacetContents> {
+        self.nodes.get(node_name)
+    }
+
+    pub fn insert_node(&mut self, node_name: String, contents: FacetContents) {
+        self.nodes.insert(node_name, contents);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_node_for_test(
+        node_name: impl Into<String>,
+        contents: FacetContents,
+    ) -> Self {
+        let mut resolved = Self::default();
+        resolved.insert_node(node_name.into(), contents);
+        resolved
+    }
+
+    pub fn iter_node_contents(&self) -> impl Iterator<Item = (&str, &FacetContents)> {
+        self.nodes
+            .iter()
+            .map(|(node_name, contents)| (node_name.as_str(), contents))
+    }
 }
 
 #[cfg(test)]

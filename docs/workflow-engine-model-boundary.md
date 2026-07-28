@@ -10,6 +10,7 @@
 | engine の戦略、採用判断、実行モデル | [`workflow-engine-evolution-plan.md`](./workflow-engine-evolution-plan.md) |
 | WorkflowDefinition YAML grammar | [`workflow-yaml-syntax.md`](./workflow-yaml-syntax.md) |
 | Rust layer と依存方向 | [`architecture/README.md`](./architecture/README.md) 以下 |
+| 実行時ライフサイクル不変条件 | [`../specs/workflow-lifecycle/workflow-ideal-lifecycle.md`](../specs/workflow-lifecycle/workflow-ideal-lifecycle.md) |
 
 本文書はそれらを再定義せず、モデル間と実装 layer 間の接続点を固定する。
 

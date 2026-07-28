@@ -199,10 +199,10 @@ pub(crate) mod test_support {
                 workflow_name,
             )
             .map_err(|error| match error {
-                crate::adaptor::gateway::workflow::resolver::WorkflowDefinitionResolverError::InvalidWorkflow(
+                crate::usecase::workflow::runtime_resolver::WorkflowDefinitionResolverError::InvalidWorkflow(
                     message,
                 ) => WorkflowError::validation(message),
-                crate::adaptor::gateway::workflow::resolver::WorkflowDefinitionResolverError::Infrastructure(
+                crate::usecase::workflow::runtime_resolver::WorkflowDefinitionResolverError::Infrastructure(
                     message,
                 ) => WorkflowError::external(message),
             })?;

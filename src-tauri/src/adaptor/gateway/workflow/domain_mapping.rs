@@ -32,26 +32,7 @@ pub(crate) fn workflow_schemas_to_domain(
 pub(crate) fn runtime_execution_state_to_domain(
     state: &runtime_state::RuntimeExecutionState,
 ) -> domain::RuntimeExecutionState {
-    match state {
-        runtime_state::RuntimeExecutionState::Running => domain::RuntimeExecutionState::Running,
-        runtime_state::RuntimeExecutionState::WaitingApproval => {
-            domain::RuntimeExecutionState::WaitingApproval
-        }
-        runtime_state::RuntimeExecutionState::Completed => domain::RuntimeExecutionState::Completed,
-        runtime_state::RuntimeExecutionState::Failed {
-            reason,
-            kind,
-            retry_count,
-        } => domain::RuntimeExecutionState::Failed {
-            reason: reason.clone(),
-            kind: *kind,
-            retry_count: *retry_count,
-        },
-        runtime_state::RuntimeExecutionState::Aborted => domain::RuntimeExecutionState::Aborted,
-        runtime_state::RuntimeExecutionState::Interrupted => {
-            domain::RuntimeExecutionState::Interrupted
-        }
-    }
+    state.clone()
 }
 
 pub(crate) fn artifacts_to_domain(
@@ -74,22 +55,6 @@ pub(crate) fn runtime_artifact_to_domain(
         artifact: output.artifact.clone(),
         contract: output.contract.clone(),
         token_usage: output.token_usage.as_ref().map(token_usage_to_domain),
-        completed_at: output.completed_at,
-    }
-}
-
-pub(crate) fn runtime_artifact_from_domain(
-    output: domain::RuntimeArtifact,
-) -> runtime_state::RuntimeArtifact {
-    let token_usage = output.token_usage.as_ref().map(token_usage_from_domain);
-    runtime_state::RuntimeArtifact {
-        node_name: output.node_name,
-        attempt: output.attempt,
-        session_id: output.session_id,
-        result: output.result,
-        artifact: output.artifact,
-        contract: output.contract,
-        token_usage,
         completed_at: output.completed_at,
     }
 }
@@ -119,41 +84,6 @@ fn node_history_entry_to_domain(
     }
 }
 
-pub(crate) fn node_history_entry_from_domain(
-    entry: domain::NodeHistoryEntry,
-) -> runtime_state::NodeHistoryEntry {
-    runtime_state::NodeHistoryEntry {
-        node_name: entry.node_name,
-        completed_at: entry.completed_at,
-        result: entry.result,
-        session_id: entry.session_id,
-        token_usage: entry.token_usage.as_ref().map(token_usage_from_domain),
-        artifact: entry.artifact,
-        attempt: entry.attempt,
-        fanout_children: entry
-            .fanout_children
-            .map(|children| children.into_iter().map(child_output_from_domain).collect()),
-        state: entry.state,
-    }
-}
-
-fn child_output_from_domain(
-    output: domain::FanoutChildSnapshot,
-) -> runtime_state::FanoutChildSnapshot {
-    runtime_state::FanoutChildSnapshot {
-        node_name: output.node_name,
-        session_id: output.session_id,
-        result: output.result,
-        attempt: output.attempt,
-        completed_at: output.completed_at,
-        artifact: output.artifact,
-        contract: output.contract,
-        state: output.state,
-        failure_kind: output.failure_kind,
-        failure_disposition: output.failure_disposition,
-    }
-}
-
 fn child_output_to_domain(
     output: &runtime_state::FanoutChildSnapshot,
 ) -> domain::FanoutChildSnapshot {
@@ -173,13 +103,6 @@ fn child_output_to_domain(
 
 pub(crate) fn token_usage_to_domain(usage: &runtime_state::TokenUsage) -> domain::TokenUsage {
     domain::TokenUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-    }
-}
-
-pub(crate) fn token_usage_from_domain(usage: &domain::TokenUsage) -> runtime_state::TokenUsage {
-    runtime_state::TokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
     }

@@ -403,7 +403,7 @@ fn validate_execution_id(execution_id: &str) -> Result<(), String> {
 #[cfg(test)]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
-        crate::adaptor::gateway::workflow::prompt_rendering::find_undefined_template_variables(
+        crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::find_undefined_template_variables(
             content,
         );
     if !errors.is_empty() {
@@ -423,18 +423,18 @@ mod tests {
     };
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
     use crate::adaptor::gateway::workflow::execution_store::{ExecutionOrigin, ExecutionStatus};
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-    use crate::adaptor::gateway::workflow::resolver::{
-        ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
-        WorkflowDefinitionResolverError,
-    };
     use crate::adaptor::gateway::workflow::schema::{
         FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate, SessionSpec,
     };
     use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
+    use crate::domain::workflow::services::event_replay::project_workflow_execution;
     use crate::domain::workflow::WorkflowExecution;
+    use crate::usecase::workflow::runtime_resolver::{
+        ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
+        WorkflowDefinitionResolverError,
+    };
     use std::collections::HashSet;
     use std::path::Path;
     use tempfile::TempDir;

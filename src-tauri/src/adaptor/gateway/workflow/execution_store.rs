@@ -1,11 +1,11 @@
-//! Execution Store: workflow execution metadata の active/completed 管理を担う。
+//! Gateway-owned workflow execution metadata registry and persistence procedure.
 //!
 //! 役割:
 //! - active な execution を `execution_id` キーの in-memory map で管理し、worktree_path → execution_id の
 //!   secondary index を提供する。
 //! - production は SQLite projection/obligation を authority とし、旧
 //!   `workflow_executions/*.json` は判断を反転しない derived view とする。
-//! - 状態遷移ロジックは持たず、engine からの「開始通知」「終了通知」を受けて反映するのみ。
+//! - 状態遷移ロジックは持たず、driver からの「開始通知」「終了通知」を受けて反映するのみ。
 
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
@@ -32,12 +32,14 @@ use crate::domain::local_event::{
     WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workflow::{
-    ExecutionInterruptionReason, TokenUsage, WorkflowExecution as DomainWorkflowExecution,
+    ExecutionInterruptionReason, RuntimeExecutionState, TokenUsage,
+    WorkflowExecution as DomainWorkflowExecution,
 };
 pub(crate) use crate::domain::workflow::{
     ExecutionListFilter, ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter,
     WorkflowExecutionSummary,
 };
+use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 /// `complete_execution` への入力を terminal status のみに制約する型。
 ///
@@ -1598,7 +1600,7 @@ impl ExecutionStore {
         Ok(())
     }
 
-    /// engine の active snapshot から Execution Store の active projection を同期する。
+    /// driver の active snapshot から Execution Store の active projection を同期する。
     #[cfg(test)]
     pub async fn sync_active_projection(
         &self,
@@ -1611,7 +1613,7 @@ impl ExecutionStore {
             .await
     }
 
-    /// engine の active snapshot から token usage を含む read projection を同期する。
+    /// driver の active snapshot から token usage を含む read projection を同期する。
     ///
     /// `sync_active_projection` は既存の状態-only 呼出し向けに残し、runtime の durable
     /// commit 境界ではこちらを使う。これにより stop 後の Interrupted metadata と、
@@ -2557,7 +2559,7 @@ impl ExecutionStore {
 
     pub(crate) async fn prepare_atomic_initial_snapshot_mutations(
         &self,
-        snapshot: &crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
         self.prepare_atomic_snapshot_mutations(
             snapshot,
@@ -2568,7 +2570,7 @@ impl ExecutionStore {
 
     pub(crate) async fn prepare_atomic_existing_snapshot_mutations(
         &self,
-        snapshot: &crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
         self.prepare_atomic_snapshot_mutations(
             snapshot,
@@ -2579,7 +2581,7 @@ impl ExecutionStore {
 
     async fn prepare_atomic_snapshot_mutations(
         &self,
-        snapshot: &crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot,
+        snapshot: &RuntimeCommitSnapshot,
         expectation: WorkflowProjectionMutationExpectation,
     ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
         let authority = self.authority.lock().await.clone();
@@ -2654,24 +2656,18 @@ impl ExecutionStore {
             }
         };
         execution.status = match &snapshot.state {
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Running => {
-                crate::domain::workflow::ExecutionStatus::Running
-            }
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::WaitingApproval => {
+            RuntimeExecutionState::Running => crate::domain::workflow::ExecutionStatus::Running,
+            RuntimeExecutionState::WaitingApproval => {
                 crate::domain::workflow::ExecutionStatus::WaitingApproval
             }
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Interrupted => {
+            RuntimeExecutionState::Interrupted => {
                 crate::domain::workflow::ExecutionStatus::Interrupted
             }
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Completed => {
-                crate::domain::workflow::ExecutionStatus::Completed
-            }
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Failed { .. } => {
+            RuntimeExecutionState::Completed => crate::domain::workflow::ExecutionStatus::Completed,
+            RuntimeExecutionState::Failed { .. } => {
                 crate::domain::workflow::ExecutionStatus::Failed
             }
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Aborted => {
-                crate::domain::workflow::ExecutionStatus::Aborted
-            }
+            RuntimeExecutionState::Aborted => crate::domain::workflow::ExecutionStatus::Aborted,
         };
         execution.current_node = Some(snapshot.current_node_name.clone());
         execution.updated_at = snapshot.updated_at;
@@ -2680,17 +2676,14 @@ impl ExecutionStore {
             .is_finished()
             .then_some(snapshot.updated_at);
         execution.error_reason = snapshot.error_reason.clone();
-        execution.interruption_reason = matches!(
-            &snapshot.state,
-            crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Interrupted
-        )
-        .then(|| {
-            snapshot
-                .error_reason
-                .as_deref()
-                .and_then(crate::domain::workflow::ExecutionInterruptionReason::from_reason)
-                .unwrap_or(crate::domain::workflow::ExecutionInterruptionReason::Crash)
-        });
+        execution.interruption_reason =
+            matches!(&snapshot.state, RuntimeExecutionState::Interrupted).then(|| {
+                snapshot
+                    .error_reason
+                    .as_deref()
+                    .and_then(crate::domain::workflow::ExecutionInterruptionReason::from_reason)
+                    .unwrap_or(crate::domain::workflow::ExecutionInterruptionReason::Crash)
+            });
         execution.resume_from_node = execution
             .interruption_reason
             .is_some()
@@ -2922,7 +2915,7 @@ impl ExecutionStore {
         }
     }
 
-    /// テスト・engine 内部のリストア経路から、active execution の attribute を直接設定する補助。
+    /// テスト・driver 内部のリストア経路から、active execution の attribute を直接設定する補助。
     /// 通常は `register_active_execution` / `update_active` / `complete_execution` を経由すること。
     #[cfg(test)]
     pub async fn active_len(&self) -> usize {
@@ -3315,25 +3308,22 @@ mod tests {
         repository
     }
 
-    fn snapshot(
-        execution_id: &str,
-    ) -> crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot {
-        crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot {
+    fn snapshot(execution_id: &str) -> RuntimeCommitSnapshot {
+        RuntimeCommitSnapshot {
             execution_id: execution_id.to_string(),
             workflow_name: "wf".to_string(),
             worktree_path: "/wt/canonical".to_string(),
             created_from: ExecutionOrigin::DesktopUi,
             request: String::new(),
             error_reason: None,
-            state: crate::adaptor::gateway::workflow::state::RuntimeExecutionState::Running,
+            state: RuntimeExecutionState::Running,
             current_node_index: 0,
             current_node_name: "node-1".to_string(),
             current_session_id: None,
             node_history: Vec::new(),
             node_execution_counts: HashMap::new(),
-            workflow_definition:
-                crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml::default(),
-            total_token_usage: crate::adaptor::gateway::workflow::event::TokenUsage::default(),
+            workflow_definition: crate::domain::workflow::WorkflowDefinition::default(),
+            total_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: Vec::new(),
             started_at: 100.0,
@@ -3875,7 +3865,7 @@ mod tests {
 
     /// Rule: 既に進行している worktree 上の実行は、新たな識別子を採番せずそのまま実行インスタンスとして扱われる
     ///
-    /// Execution Store は採番しないことを確認する。同じ execution_id で再登録すれば（engine 側で
+    /// Execution Store は採番しないことを確認する。同じ execution_id で再登録すれば（driver 側で
     /// `execution_id` を昇格させる経路に相当）通る。
     #[tokio::test]
     async fn register_with_same_execution_id_for_same_worktree_is_idempotent() {

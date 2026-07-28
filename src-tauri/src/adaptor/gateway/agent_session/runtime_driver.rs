@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,7 +13,8 @@ use crate::usecase::agent_session::session::{
 };
 use crate::usecase::workflow::ports::{
     WorkflowStallClearedNotification, WorkflowStallObservedNotification,
-    WorkflowTurnCompleteNotification, WorkflowTurnCompleteRecoveryCommand, WorkflowTurnTokenUsage,
+    WorkflowTurnCompleteNotification, WorkflowTurnCompleteRecoveryCommand,
+    WorkflowTurnCompleteRecoveryOutcome, WorkflowTurnTokenUsage,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -27,6 +29,30 @@ impl AgentTaskSpawner for TokioAgentTaskSpawner {
 pub(crate) struct WorkflowRuntimeAgentSessionNotifier {
     workflow_runtime: Arc<WorkflowRuntimeUsecase>,
     session_store: Arc<SessionStore>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorkflowTurnCompletionRecoveryReport {
+    pub terminal_count: usize,
+    pub transient_failures: usize,
+    pub unresolved_execution_ids: BTreeSet<String>,
+}
+
+fn classify_recovery_result(
+    result: Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError>,
+) -> Result<WorkflowTurnCompleteRecoveryOutcome, String> {
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(WorkflowError::External(message)) => Err(message),
+        Err(permanent) => {
+            log::warn!(
+                "workflow turn-completion is unrecoverable and will be retired: {permanent}"
+            );
+            Ok(WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Unrecoverable,
+            ))
+        }
+    }
 }
 
 impl WorkflowRuntimeAgentSessionNotifier {
@@ -94,11 +120,17 @@ impl WorkflowRuntimeAgentSessionNotifier {
         .map_err(|_| "workflow turn-completion read worker panicked".to_string())?
     }
 
-    async fn consume(&self, entry: PendingWorkflowTurnCompletion) -> Result<(), String> {
+    async fn settle(
+        &self,
+        entry: PendingWorkflowTurnCompletion,
+        outcome: crate::domain::local_event::WorkflowObligationTerminalOutcome,
+    ) -> Result<(), String> {
         let session_store = self.session_store.clone();
-        tokio::task::spawn_blocking(move || session_store.complete_workflow_turn_completion(&entry))
-            .await
-            .map_err(|_| "workflow turn-completion consume worker panicked".to_string())?
+        tokio::task::spawn_blocking(move || {
+            session_store.settle_workflow_turn_completion(&entry, outcome)
+        })
+        .await
+        .map_err(|_| "workflow turn-completion settle worker panicked".to_string())?
     }
 
     /// Applies one exact durable handoff using canonical workflow events and
@@ -107,36 +139,64 @@ impl WorkflowRuntimeAgentSessionNotifier {
     async fn recover_and_consume(
         &self,
         entry: PendingWorkflowTurnCompletion,
-    ) -> Result<(), String> {
-        self.workflow_runtime
-            .recover_turn_complete(Self::recovery_command(&entry))
-            .await
-            .map_err(|error| error.to_string())?;
-        self.consume(entry).await
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, String> {
+        let outcome = classify_recovery_result(
+            self.workflow_runtime
+                .recover_turn_complete(Self::recovery_command(&entry))
+                .await,
+        )?;
+        let terminal = match outcome {
+            WorkflowTurnCompleteRecoveryOutcome::Applied => {
+                crate::domain::local_event::WorkflowObligationTerminalOutcome::Applied
+            }
+            WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied => {
+                crate::domain::local_event::WorkflowObligationTerminalOutcome::AlreadyApplied
+            }
+            WorkflowTurnCompleteRecoveryOutcome::Retired(reason) => {
+                crate::domain::local_event::WorkflowObligationTerminalOutcome::Retired(reason)
+            }
+        };
+        self.settle(entry, terminal).await?;
+        Ok(outcome)
     }
 
     /// Replays only the dedicated workflow-turn-completion pending namespace.
     /// The global cap deliberately fails closed before orphan recovery instead
     /// of turning startup into an unbounded inventory scan.
-    pub(crate) async fn recover_pending_turn_completions(&self) -> Result<usize, String> {
+    pub(crate) async fn recover_pending_turn_completions(
+        &self,
+    ) -> Result<WorkflowTurnCompletionRecoveryReport, String> {
         let mut cursor = None;
-        let mut recovered = 0usize;
+        let mut inspected = 0usize;
+        let mut report = WorkflowTurnCompletionRecoveryReport::default();
         loop {
             let page = self
                 .pending_page(None, Self::RECOVERY_PAGE_LIMIT, cursor)
                 .await?;
-            if recovered.saturating_add(page.entries.len()) > Self::MAX_STARTUP_RECOVERIES {
+            if inspected.saturating_add(page.entries.len()) > Self::MAX_STARTUP_RECOVERIES {
                 return Err(format!(
                     "workflow turn-completion startup recovery exceeds the {} entry bound",
                     Self::MAX_STARTUP_RECOVERIES
                 ));
             }
             for entry in page.entries {
-                self.recover_and_consume(entry).await?;
-                recovered = recovered.saturating_add(1);
+                let execution_id = entry.workflow_context.execution_id.clone();
+                match self.recover_and_consume(entry).await {
+                    Ok(_) => {
+                        report.terminal_count = report.terminal_count.saturating_add(1);
+                    }
+                    Err(error) => {
+                        report.transient_failures = report.transient_failures.saturating_add(1);
+                        report.unresolved_execution_ids.insert(execution_id.clone());
+                        log::warn!(
+                            "workflow turn-completion transient recovery failure for {execution_id}; retaining it: {error}"
+                        );
+                    }
+                }
+                inspected = inspected.saturating_add(1);
             }
             match page.next_cursor {
-                Some(next_cursor) if recovered < Self::MAX_STARTUP_RECOVERIES => {
+                Some(next_cursor) if inspected < Self::MAX_STARTUP_RECOVERIES => {
                     cursor = Some(next_cursor);
                 }
                 Some(_) => {
@@ -145,7 +205,7 @@ impl WorkflowRuntimeAgentSessionNotifier {
                         Self::MAX_STARTUP_RECOVERIES
                     ));
                 }
-                None => return Ok(recovered),
+                None => return Ok(report),
             }
         }
     }
@@ -210,10 +270,13 @@ impl WorkflowTurnCompleteNotifier for WorkflowRuntimeAgentSessionNotifier {
                 );
             }
         }
-        if let Err(error) = self.recover_and_consume(entry).await {
-            log::warn!(
-                "workflow turn-complete durable handoff failed; retaining it for startup replay: {error}"
-            );
+        match self.recover_and_consume(entry).await {
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!(
+                    "workflow turn-complete durable handoff failed; retaining it for startup replay: {error}"
+                );
+            }
         }
     }
 }
@@ -231,5 +294,28 @@ impl WorkflowStallNotifier for WorkflowRuntimeAgentSessionNotifier {
         notification: WorkflowStallClearedNotification,
     ) -> Result<(), WorkflowError> {
         self.workflow_runtime.clear_stall(notification).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::local_event::WorkflowObligationRetirementReason;
+
+    #[test]
+    fn permanent_recovery_failures_retire_while_transient_storage_failures_retry() {
+        assert_eq!(
+            classify_recovery_result(Err(WorkflowError::invalid_state(
+                "canonical projection is unrecoverable"
+            )))
+            .unwrap(),
+            WorkflowTurnCompleteRecoveryOutcome::Retired(
+                WorkflowObligationRetirementReason::Unrecoverable
+            )
+        );
+        assert_eq!(
+            classify_recovery_result(Err(WorkflowError::external("storage unavailable"))),
+            Err("storage unavailable".to_string())
+        );
     }
 }

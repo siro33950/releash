@@ -668,7 +668,7 @@ fn temporary_log_path(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::event::TokenUsage;
+    use crate::domain::workflow::TokenUsage;
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000001";
     const OTHER_EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000002";

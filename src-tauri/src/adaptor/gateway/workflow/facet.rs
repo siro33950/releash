@@ -2,14 +2,14 @@ use super::builtin;
 use super::schema::{FacetRefs, WorkflowDefinitionYaml};
 use super::storage;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// ファセットの読み込みベースディレクトリ。
 ///
-/// [02] 境界: storage / builtin / engine の caller 全てがここを参照することで、
+/// [02] 境界: storage / builtin / driver の caller 全てがここを参照することで、
 /// builtin → storage の循環依存を生まず、facet 側を単一の owner にする。
 pub fn facets_base_dir() -> PathBuf {
     storage::workflows_dir()
@@ -91,6 +91,7 @@ impl FacetKind {
 }
 
 /// `artifact:` がある node の user message 末尾に置く完了時アクション。
+#[allow(dead_code)]
 pub fn artifact_completion_action(
     key: &str,
     execution_id: &str,
@@ -121,56 +122,16 @@ releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node
     )
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ComposedPrompt {
     pub system_prompt: Option<String>,
     pub user_message: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FacetContents {
-    pub policy: Option<String>,
-    pub knowledge: Vec<String>,
-    pub instruction: Option<String>,
-}
+pub use crate::domain::workflow::{FacetContents, WorkflowFacetContents};
 
-impl FacetContents {
-    pub fn is_empty(&self) -> bool {
-        self.policy.is_none() && self.knowledge.is_empty() && self.instruction.is_none()
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkflowFacetContents {
-    nodes: BTreeMap<String, FacetContents>,
-}
-
-impl WorkflowFacetContents {
-    pub fn for_node(&self, node_name: &str) -> Option<&FacetContents> {
-        self.nodes.get(node_name)
-    }
-
-    fn insert_node(&mut self, node_name: String, contents: FacetContents) {
-        self.nodes.insert(node_name, contents);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_node_for_test(
-        node_name: impl Into<String>,
-        contents: FacetContents,
-    ) -> Self {
-        let mut resolved = Self::default();
-        resolved.insert_node(node_name.into(), contents);
-        resolved
-    }
-
-    pub fn iter_node_contents(&self) -> impl Iterator<Item = (&str, &FacetContents)> {
-        self.nodes
-            .iter()
-            .map(|(node_name, contents)| (node_name.as_str(), contents))
-    }
-}
-
+#[allow(dead_code)]
 pub fn empty_facet_contents() -> &'static FacetContents {
     static EMPTY: std::sync::OnceLock<FacetContents> = std::sync::OnceLock::new();
     EMPTY.get_or_init(FacetContents::default)
@@ -368,6 +329,7 @@ pub fn resolve_facet_path(
 /// 唯一の参照源とする。ファイル I/O fallback は持たない。
 ///
 /// session node が対象。command / fanout node には facet 参照は存在しない。
+#[allow(dead_code)]
 pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
     match resolved {
         Some(resolved) => compose_from_parts(resolved),
@@ -375,6 +337,7 @@ pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
     }
 }
 
+#[allow(dead_code)]
 fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
     let mut system_parts: Vec<String> = Vec::new();
     if let Some(ref content) = resolved.policy {
@@ -450,10 +413,10 @@ fn resolve_refs(facets: &FacetRefs, base_dir: &Path) -> Result<FacetContents, Fa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::prompt_rendering;
     use crate::adaptor::gateway::workflow::schema::{
         FacetRefs, NodeDefinition, NodeKind, SessionSpec,
     };
+    use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
     use tempfile::TempDir;
 
     fn assert_no_deprecated_workflow_vocabulary(label: &str, content: &str) {
@@ -659,7 +622,7 @@ mod tests {
     }
 
     // `resolve_node_facets` はモジュール直下の `#[cfg(test)] pub(crate)` ヘルパーを
-    // `super::resolve_node_facets` 経由で利用する（engine.rs のテストヘルパーと共有）。
+    // `super::resolve_node_facets` 経由で利用する（driver.rs のテストヘルパーと共有）。
 
     // --- compose_facets ---
     // Gherkin: ワークフローエンジンは node 宣言から system_prompt と user_message を合成する
@@ -735,7 +698,10 @@ mod tests {
                 "contract repair prompts",
                 include_str!("../../../domain/workflow/services/contract.rs"),
             ),
-            ("prompt rendering", include_str!("prompt_rendering.rs")),
+            (
+                "prompt rendering",
+                include_str!("workflow_host/prompt_rendering.rs"),
+            ),
             ("facet rendering", include_str!("facet.rs")),
         ];
         for (label, content) in sources {
@@ -938,7 +904,7 @@ mod tests {
 
     #[test]
     fn compose_and_render_pipeline() {
-        use crate::adaptor::gateway::workflow::prompt_rendering;
+        use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 
         let tmp = TempDir::new().unwrap();
         let policies = tmp.path().join("policies");

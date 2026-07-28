@@ -1,9 +1,9 @@
 use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
-use crate::adaptor::gateway::workflow::prompt_rendering;
 use crate::adaptor::gateway::workflow::schema::{NodeDefinition, Rule, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::span_map::{DiagnosticSpan, YamlSpanMap};
+use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 use crate::domain::workflow::validation;
 use crate::domain::workflow::validation::{
     InvalidArtifactReferenceKind, InvalidRuleKind, InvalidSchemaKind,

@@ -1,13 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::workflow::resolver::{
-    ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
-    WorkflowDefinitionResolverError,
-};
 use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::workflow::runtime_resolver::{
+    ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
+    WorkflowDefinitionResolverError,
+};
 
 pub(crate) struct DefaultWorkflowDefinitionResolver;
 

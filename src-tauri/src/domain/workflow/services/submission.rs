@@ -2,6 +2,19 @@
 
 use crate::domain::workflow::value_objects::WorkflowDefinition;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmissionViolation {
+    MissingSubmitOutput,
+    InvalidSubmitOutput,
+}
+
+pub fn submission_violation_reason(violation: SubmissionViolation) -> &'static str {
+    match violation {
+        SubmissionViolation::MissingSubmitOutput => "missing_submit_output",
+        SubmissionViolation::InvalidSubmitOutput => "invalid_submit_output",
+    }
+}
+
 pub fn artifact_keys_to_clear_for_new_node_execution(
     workflow: &WorkflowDefinition,
     node_index: usize,

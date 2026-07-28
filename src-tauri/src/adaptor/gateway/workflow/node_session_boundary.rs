@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use super::runtime_events as workflow_runtime_events;
-use super::runtime_session as workflow_runtime_session;
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
+use crate::adaptor::gateway::workflow::workflow_host::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_events as workflow_runtime_events;
+use crate::adaptor::gateway::workflow::workflow_host::runtime_session as workflow_runtime_session;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
+use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 /// AgentSession 開始呼び出しを抽象化するトレイト。
 /// production では `start_agent_session_internal` を呼ぶ `RealSessionStartGate` を使い、
@@ -70,7 +70,7 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
         workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
         kind_context: workflow_runtime_session::NodeRuntimeKindContext,
-    ) -> Result<NodeSessionInfo, WorkflowEngineError>;
+    ) -> Result<NodeSessionInfo, WorkflowRuntimeError>;
 
     /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
     async fn dispatch_session_start(
@@ -80,7 +80,7 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
         permission_mode: Option<String>,
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError>;
+    ) -> Result<(), WorkflowRuntimeError>;
 
     async fn mark_node_tab_open(&self, node_session_id: &str);
 
@@ -91,7 +91,7 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
     async fn append_node_session_started(
         &self,
         snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<(), WorkflowEngineError>;
+    ) -> Result<(), WorkflowRuntimeError>;
 
     /// Runtime lock acquired by the caller variant.
     async fn start_agent_turn_locked(
@@ -102,7 +102,7 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
         prompt: &str,
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError>;
+    ) -> Result<(), WorkflowRuntimeError>;
 }
 
 /// `NodeSessionDeps::create_node_session` の戻り値。
@@ -131,9 +131,9 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
         workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
         kind_context: workflow_runtime_session::NodeRuntimeKindContext,
-    ) -> Result<NodeSessionInfo, WorkflowEngineError> {
+    ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
-            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+            .map_err(|e| WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let node_session = workflow_runtime_session::create_node_session_with_settings(
             self.agent_runtime.backend_registry(),
             self.session_store,
@@ -158,7 +158,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
         permission_mode: Option<String>,
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let gate = RealSessionStartGate { _app: self.app };
         dispatch_session_start(
             &gate,
@@ -185,7 +185,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
     async fn append_node_session_started(
         &self,
         snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let Some(event) =
             workflow_runtime_events::node_session_started_event_for_snapshot(snapshot)?
         else {
@@ -196,7 +196,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
             &[event],
         )
         .map_err(|e| {
-            WorkflowEngineError::SessionStore(format!("append NodeSessionStarted failed: {e}"))
+            WorkflowRuntimeError::SessionStore(format!("append NodeSessionStarted failed: {e}"))
         })
     }
 
@@ -208,14 +208,14 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
         prompt: &str,
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
-    ) -> Result<(), WorkflowEngineError> {
+    ) -> Result<(), WorkflowRuntimeError> {
         let _ = (
             self.app,
             self.branch_diff_context.as_ref(),
             self.session_store,
         );
         let permission_mode = PermissionMode::parse_canonical(permission_mode)
-            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+            .map_err(|e| WorkflowRuntimeError::InvalidWorkflow(e.to_string()))?;
         let _runtime_guard = self
             .agent_runtime
             .acquire_session_control_after_recovery(node_session_id)
@@ -236,7 +236,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
                 },
             )
             .await
-            .map_err(WorkflowEngineError::from)
+            .map_err(WorkflowRuntimeError::from)
     }
 }
 
@@ -249,7 +249,7 @@ pub(crate) async fn dispatch_session_start<G: SessionStartGate + ?Sized>(
     permission_mode: Option<String>,
     system_prompt: Option<String>,
     workflow_instruction: Option<String>,
-) -> Result<(), WorkflowEngineError> {
+) -> Result<(), WorkflowRuntimeError> {
     gate.start_session(
         session_id,
         worktree_path,
@@ -259,7 +259,7 @@ pub(crate) async fn dispatch_session_start<G: SessionStartGate + ?Sized>(
     )
     .await
     .map_err(|error| {
-        WorkflowEngineError::with_agent_runtime_context(
+        WorkflowRuntimeError::with_agent_runtime_context(
             format!("Failed to start AgentSession '{session_id}'"),
             error,
         )
