@@ -406,6 +406,7 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
 
 pub(crate) fn build_shutdown_coordinator(
     store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     lifecycle_operation: Arc<
@@ -415,8 +416,6 @@ pub(crate) fn build_shutdown_coordinator(
 ) -> Arc<ShutdownCoordinator> {
     let installation_id = store.installation_id().to_string();
     let process_instance_id = store.process_instance_id().to_string();
-    let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
-        store.clone();
     let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
         store.clone();
     let executor: Arc<dyn ShutdownTargetExecutor> = Arc::new(RuntimeShutdownExecutor {

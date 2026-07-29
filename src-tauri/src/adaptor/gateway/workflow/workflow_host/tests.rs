@@ -7454,6 +7454,8 @@ mod dispatch_boundary_tests {
 
     type DispatchTestApp = tauri::App<tauri::test::MockRuntime>;
 
+    struct DispatchCanonicalStore(Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>);
+
     fn make_dispatch_app() -> DispatchTestApp {
         let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
         config.app.last_repo_paths = Vec::new();
@@ -7547,9 +7549,9 @@ mod dispatch_boundary_tests {
             repository_state.clone(),
             code_usecase.clone(),
         ));
-        let workflow_usecase = Arc::new(
-            crate::adaptor::controller::wiring::build_workflow_usecase(data_dir.clone()),
-        );
+        let (workflow_usecase, canonical_store) =
+            crate::adaptor::controller::wiring::build_workflow_usecase_and_store(data_dir.clone());
+        let workflow_usecase = Arc::new(workflow_usecase);
         let app = tauri::test::mock_builder()
             .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 data_dir.clone(),
@@ -7559,6 +7561,7 @@ mod dispatch_boundary_tests {
             .manage(agent_config_repository)
             .manage(config_secret_repository)
             .manage(registry)
+            .manage(DispatchCanonicalStore(canonical_store))
             .manage(crate::adaptor::controller::state::AppState {
                 repository_usecase,
                 repository_state,
@@ -7609,18 +7612,12 @@ mod dispatch_boundary_tests {
 
     fn make_canonical_dispatch_deps(
         data_dir: std::path::PathBuf,
+        local_event_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) -> (
         Arc<crate::usecase::agent_session::session::SessionStore>,
         Arc<AgentSessionRuntimeUsecase>,
-        Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) {
         std::fs::create_dir_all(&data_dir).unwrap();
-        let local_event_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
-            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
-                data_dir.clone(),
-            ),
-        )
-        .expect("canonical dispatch store must open before legacy state is created");
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_event_store.clone();
@@ -7633,7 +7630,24 @@ mod dispatch_boundary_tests {
         );
         let agent_runtime =
             crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
-        (session_store, agent_runtime, local_event_store)
+        (session_store, agent_runtime)
+    }
+
+    fn make_canonical_dispatch_driver(
+        data_dir: std::path::PathBuf,
+        local_event_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    ) -> WorkflowRuntimeHost {
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_event_store.clone();
+        WorkflowRuntimeHost::new_canonical(
+            Arc::new(TestWorkflowDefinitionResolver),
+            Arc::new(PassthroughManagedWorktreeResolver),
+            None,
+            Arc::new(OpenTabRegistry::default()),
+            Some(data_dir),
+            repository,
+            local_event_store.installation_id().to_string(),
+        )
     }
 
     #[derive(Clone)]
@@ -10856,6 +10870,19 @@ mod dispatch_boundary_tests {
     }
 
     fn read_dispatch_events(app: &DispatchTestApp, execution_id: &str) -> Vec<WorkflowEvent> {
+        if let Some(store) =
+            app.try_state::<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
+        {
+            let store = store.inner().clone();
+            let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+                store.clone();
+            return WorkflowEventLog::with_authority(
+                repository,
+                store.installation_id().to_string(),
+            )
+            .read_log_durable_blocking(execution_id)
+            .unwrap_or_default();
+        }
         let data_dir = dispatch_data_dir(app.handle());
         WorkflowEventLog::new(&data_dir)
             .read_log(execution_id)
@@ -11069,35 +11096,28 @@ mod dispatch_boundary_tests {
         driver: &WorkflowRuntimeHost,
         execution_id: &str,
     ) {
-        let data_dir = dispatch_data_dir(app.handle());
         for _ in 0..500 {
             let execution_store_terminal = driver
                 .execution_store()
                 .get_execution(execution_id)
                 .await
                 .is_some_and(|execution| execution.status.is_terminal());
-            let log_terminal = WorkflowEventLog::new(&data_dir)
-                .read_log(execution_id)
-                .unwrap_or_default()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        event,
-                        WorkflowEvent::ExecutionCompleted { .. }
-                            | WorkflowEvent::ExecutionFailed { .. }
-                            | WorkflowEvent::ExecutionAborted { .. }
-                            | WorkflowEvent::ExecutionInterrupted { .. }
-                    )
-                });
+            let log_terminal = read_dispatch_events(app, execution_id).iter().any(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::ExecutionCompleted { .. }
+                        | WorkflowEvent::ExecutionFailed { .. }
+                        | WorkflowEvent::ExecutionAborted { .. }
+                        | WorkflowEvent::ExecutionInterrupted { .. }
+                )
+            });
             if execution_store_terminal && log_terminal {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let status = driver.execution_store().get_execution(execution_id).await;
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(execution_id)
-            .unwrap_or_default();
+        let events = read_dispatch_events(app, execution_id);
         panic!(
             "execution '{execution_id}' did not become terminal; status={status:?}; events={events:?}"
         );
@@ -11608,11 +11628,13 @@ mod dispatch_boundary_tests {
     async fn canonical_full_pipeline_executes_command_fanout_approval_loop_and_switch_path() {
         let _env_lock = crate::test_support::TEST_ENV_LOCK.lock();
         let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = make_canonical_dispatch_driver(data_dir.clone(), canonical_store.clone());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime, _canonical_store) =
-            make_canonical_dispatch_deps(data_dir.clone());
+        let (session_store, agent_runtime) =
+            make_canonical_dispatch_deps(data_dir.clone(), canonical_store);
         let worktree = TempDir::new().unwrap();
         install_full_pipeline_worktree_fixture(worktree.path());
         let _path = install_full_pipeline_cli();
@@ -17400,13 +17422,18 @@ mod dispatch_boundary_tests {
             .resolve_start_execution_worktree(worktree_path.to_string_lossy().to_string())
             .await
             .unwrap();
+        let start_worktree = format!("{}//", resolved_worktree.replace('/', "\\"));
+        let expected_worktree =
+            crate::domain::workspace_tree::WorkspaceIdentity::new(&start_worktree)
+                .as_str()
+                .to_string();
         let execution_id = driver
             .start_resolved_workflow(
                 app.handle(),
                 &session_store,
                 &handles,
                 workflow,
-                resolved_worktree,
+                start_worktree,
                 Some("start me".to_string()),
                 ExecutionOrigin::DesktopUi,
                 crate::domain::agent_session::PermissionMode::Edit,
@@ -17421,18 +17448,27 @@ mod dispatch_boundary_tests {
             driver.get_execution(&execution_id).await.is_some(),
             "StartExecution must create a Execution Store entry"
         );
-        assert!(read_dispatch_events(&app, &execution_id)
-            .iter()
-            .any(|event| {
-                matches!(
-                    event,
-                    WorkflowEvent::ExecutionStarted {
-                        workflow_name,
-                        request,
-                        ..
-                    } if workflow_name == &stem && request == "start me"
-                )
-            }));
+        let snapshot = driver
+            .get_state_by_execution_id(&execution_id)
+            .await
+            .expect("StartExecution must retain one runtime commit snapshot");
+        let metadata = driver
+            .get_execution(&execution_id)
+            .await
+            .expect("StartExecution must retain one execution metadata record");
+        let events = read_dispatch_events(&app, &execution_id);
+        let started_worktree = events.iter().find_map(|event| match event {
+            WorkflowEvent::ExecutionStarted {
+                workflow_name,
+                worktree_path,
+                request,
+                ..
+            } if workflow_name == &stem && request == "start me" => Some(worktree_path),
+            _ => None,
+        });
+        assert_eq!(snapshot.worktree_path, expected_worktree);
+        assert_eq!(metadata.worktree_path, expected_worktree);
+        assert_eq!(started_worktree, Some(&expected_worktree));
     }
 
     /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、
@@ -19246,8 +19282,13 @@ mod dispatch_boundary_tests {
         let _secret =
             crate::test_support::EnvVarGuard::set_value("RELEASH_ARBITRARY_SUBMIT_SECRET", secret);
         let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = Arc::new(make_canonical_dispatch_driver(
+            data_dir.clone(),
+            canonical_store,
+        ));
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
         driver
@@ -19280,14 +19321,13 @@ mod dispatch_boundary_tests {
         assert!(state_text.contains("[REDACTED]"));
         assert!(!state_text.contains(secret));
 
-        let ndjson = std::fs::read_to_string(
-            data_dir
-                .join("workflow_execution_logs")
-                .join(format!("{execution_id}.ndjson")),
-        )
-        .unwrap();
-        assert!(ndjson.contains("[REDACTED]"));
-        assert!(!ndjson.contains(secret));
+        let durable_events = read_dispatch_events(&app, &execution_id);
+        let durable_text = serde_json::to_string(&durable_events).unwrap();
+        assert!(
+            durable_text.contains("[REDACTED]"),
+            "durable events must contain the redacted value: {durable_text}"
+        );
+        assert!(!durable_text.contains(secret));
 
         let (router, _, _) =
             crate::adaptor::controller::api::test_support::test_router(&data_dir, "secret");

@@ -2088,17 +2088,21 @@ mod tests {
     }
 
     fn write_read_only_execution(
-        data_dir: &Path,
+        store: &Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
         execution: &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata,
     ) {
-        let executions_dir = data_dir.join("workflow_executions");
-        std::fs::create_dir_all(&executions_dir).unwrap();
-        let path = executions_dir.join(format!("{}.json", execution.execution_id));
-        let json = serde_json::to_string_pretty(execution).unwrap();
-        std::fs::write(path, json).unwrap();
+        crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
+            store,
+            execution,
+            &[],
+        );
     }
 
-    fn make_read_only_app() -> (AdapterTestApp, Arc<TestRuntimeKernel>, std::path::PathBuf) {
+    fn make_read_only_app() -> (
+        AdapterTestApp,
+        std::path::PathBuf,
+        Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    ) {
         let app = make_adapter_app();
         let engine = make_adapter_engine();
         let data_dir =
@@ -2164,7 +2168,21 @@ mod tests {
             repository_state.clone(),
             code_usecase.clone(),
         ));
-        let session_store = Arc::new(crate::test_support::build_session_store());
+        let local_event_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_dir.clone(),
+            ),
+        )
+        .unwrap();
+        let (workflow_usecase, _) =
+            crate::adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
+                data_dir.clone(),
+                repository_usecase.clone(),
+                config_repository,
+                config_secret_repository,
+                app.handle().clone(),
+                local_event_store.clone(),
+            );
         app.manage(AppState {
             repository_usecase: repository_usecase.clone(),
             repository_state,
@@ -2172,16 +2190,7 @@ mod tests {
             code_usecase,
             review_usecase,
             notion_usecase,
-            workflow_usecase: Arc::new(
-                crate::adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
-                    data_dir.clone(),
-                    repository_usecase,
-                    config_repository,
-                    config_secret_repository,
-                    session_store,
-                    app.handle().clone(),
-                ),
-            ),
+            workflow_usecase: Arc::new(workflow_usecase),
             pty_session_read_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),
             ),
@@ -2189,7 +2198,7 @@ mod tests {
                 crate::adaptor::controller::wiring::build_git_host_usecase(),
             ),
         });
-        (app, engine, data_dir)
+        (app, data_dir, local_event_store)
     }
 
     struct NoopRepoPathsNotifier;
@@ -2203,13 +2212,13 @@ mod tests {
     /// data_dir / canonical worktree path / TempDir guards（lifetime 保持用）。
     fn make_read_only_app_with_managed_worktree() -> (
         AdapterTestApp,
-        Arc<TestRuntimeKernel>,
         std::path::PathBuf,
+        Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
         String,
         TempDir,
         TempDir,
     ) {
-        let (app, engine, data_dir) = make_read_only_app();
+        let (app, data_dir, local_event_store) = make_read_only_app();
         let repo_parent = TempDir::new().unwrap();
         let worktree_parent = TempDir::new().unwrap();
         let repo_path = repo_parent.path().join("repo");
@@ -2233,8 +2242,8 @@ mod tests {
         config_repository.save(config).unwrap();
         (
             app,
-            engine,
             data_dir,
+            local_event_store,
             canonical_str,
             repo_parent,
             worktree_parent,
@@ -2253,24 +2262,22 @@ mod tests {
     /// のみに投入し、`list_completed` が拾い上げることを検証する。
     #[tokio::test]
     async fn list_workflow_executions_command_returns_active_first_filtered_by_status() {
-        let (app, engine, data_dir, worktree_path, _r, _w) =
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
         let active_id = read_only_test_uuid(1);
         let done_id = read_only_test_uuid(2);
-        engine
-            .execution_store()
-            .register_active_execution(make_read_only_execution(
+        write_read_only_execution(
+            &local_event_store,
+            &make_read_only_execution(
                 &active_id,
                 "wf-active",
                 &worktree_path,
                 ExecutionStatus::Running,
                 200.0,
-            ))
-            .await
-            .expect("register_active_execution must succeed");
+            ),
+        );
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &done_id,
                 "wf-done",
@@ -2319,26 +2326,24 @@ mod tests {
     /// CLI 経路と同じ `normalize_worktree_filter_path` を経由する境界を直接検証する。
     #[tokio::test]
     async fn list_workflow_executions_canonicalizes_worktree_path_filter() {
-        let (app, engine, data_dir, canonical_str, _r, _w) =
+        let (app, _data_dir, local_event_store, canonical_str, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
 
         // canonical な worktree_path で execution を 1 件、別 worktree で execution を 1 件登録する。
         let target_id = read_only_test_uuid(40);
         let other_id = read_only_test_uuid(41);
-        engine
-            .execution_store()
-            .register_active_execution(make_read_only_execution(
+        write_read_only_execution(
+            &local_event_store,
+            &make_read_only_execution(
                 &target_id,
                 "wf-target",
                 &canonical_str,
                 ExecutionStatus::Running,
                 200.0,
-            ))
-            .await
-            .expect("register_active_execution for target must succeed");
+            ),
+        );
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &other_id,
                 "wf-other",
@@ -2379,14 +2384,13 @@ mod tests {
     /// 観測経路ごとの unauthorized 経路を明示する境界テスト。
     #[tokio::test]
     async fn list_workflow_executions_rejects_unauthorized_worktree_observation() {
-        let (app, engine, data_dir) = make_read_only_app();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (app, _data_dir, local_event_store) = make_read_only_app();
 
         // execution は存在する。ただし caller が指定する worktree_path は
         // configured repo に紐づかない（= 観測権限を持たない）ので Err として弾かれる。
         let execution_id = read_only_test_uuid(60);
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2414,12 +2418,11 @@ mod tests {
     /// Spec [05] L104-108 / L182: caller の認可済み worktree に紐づかない execution は Ok(None)。
     #[tokio::test]
     async fn get_workflow_execution_command_returns_summary_or_none() {
-        let (app, engine, data_dir, worktree_path, _r, _w) =
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(3);
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2457,14 +2460,14 @@ mod tests {
     /// 未認可 caller に伝えない。
     #[tokio::test]
     async fn single_execution_read_only_apis_reject_unauthorized_worktree_observation() {
-        let (app, engine, data_dir, _managed, _r, _w) = make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (app, _data_dir, local_event_store, _managed, _r, _w) =
+            make_read_only_app_with_managed_worktree();
 
         // execution は別 worktree に紐づく metadata で書かれている（未認可）。
         let execution_id = read_only_test_uuid(70);
         let unauthorized_wt = "/wt/unauthorized";
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2473,9 +2476,9 @@ mod tests {
                 100.0,
             ),
         );
-        let event_log = WorkflowEventLog::new(&data_dir);
-        event_log
-            .append(&WorkflowEvent::ExecutionStarted {
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &local_event_store,
+            &[WorkflowEvent::ExecutionStarted {
                 execution_id: execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 worktree_path: unauthorized_wt.to_string(),
@@ -2490,8 +2493,9 @@ mod tests {
                     nodes: vec![],
                 },
                 timestamp: 100.0,
-            })
-            .unwrap();
+            }],
+        )
+        .unwrap();
 
         let summary = get_workflow_execution(app.state::<AppState>(), execution_id.clone())
             .await
@@ -2529,12 +2533,11 @@ mod tests {
     /// `get_workflow_execution_log` Tauri command が NDJSON から読み込んだ event 列を返す。
     #[tokio::test]
     async fn get_workflow_execution_log_command_reads_persisted_ndjson() {
-        let (app, engine, data_dir, worktree_path, _r, _w) =
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(4);
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2543,9 +2546,9 @@ mod tests {
                 400.0,
             ),
         );
-        let event_log = WorkflowEventLog::new(&data_dir);
-        event_log
-            .append(&WorkflowEvent::ExecutionStarted {
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &local_event_store,
+            &[WorkflowEvent::ExecutionStarted {
                 execution_id: execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 worktree_path: worktree_path.clone(),
@@ -2560,8 +2563,9 @@ mod tests {
                     nodes: vec![],
                 },
                 timestamp: 400.0,
-            })
-            .unwrap();
+            }],
+        )
+        .unwrap();
 
         let events = get_workflow_execution_log_impl(
             &app.state::<AppState>().workflow_usecase,
@@ -2592,12 +2596,11 @@ mod tests {
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
     async fn get_workflow_execution_state_command_projects_state_without_runtime_enrichment() {
-        let (app, engine, data_dir, worktree_path, _r, _w) =
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(5);
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2606,9 +2609,9 @@ mod tests {
                 500.0,
             ),
         );
-        let event_log = WorkflowEventLog::new(&data_dir);
-        event_log
-            .append(&WorkflowEvent::ExecutionStarted {
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &local_event_store,
+            &[WorkflowEvent::ExecutionStarted {
                 execution_id: execution_id.clone(),
                 workflow_name: "adapter-boundary".to_string(),
                 worktree_path: worktree_path.clone(),
@@ -2617,8 +2620,9 @@ mod tests {
                 permission_mode: "ask".to_string(),
                 definition: approval_only_workflow(),
                 timestamp: 500.0,
-            })
-            .unwrap();
+            }],
+        )
+        .unwrap();
 
         let view = get_workflow_execution_state_impl(
             &app.state::<AppState>().workflow_usecase,
@@ -2647,13 +2651,12 @@ mod tests {
     /// 集合外）からの invoke は canonicalize 段階で Err として弾かれる。
     #[tokio::test]
     async fn get_workflow_node_detail_enforces_current_worktree_authorization() {
-        let (app, engine, data_dir, worktree_path, _r, _w) =
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
 
         let execution_id = read_only_test_uuid(82);
         write_read_only_execution(
-            &data_dir,
+            &local_event_store,
             &make_read_only_execution(
                 &execution_id,
                 "wf",
@@ -2662,7 +2665,6 @@ mod tests {
                 100.0,
             ),
         );
-        let event_log = WorkflowEventLog::new(&data_dir);
         let snapshot = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
@@ -2682,40 +2684,40 @@ mod tests {
                 ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
             }],
         };
-        event_log
-            .append(&WorkflowEvent::ExecutionStarted {
-                execution_id: execution_id.clone(),
-                workflow_name: "wf".to_string(),
-                worktree_path: worktree_path.clone(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: String::new(),
-                permission_mode: "ask".to_string(),
-                definition: snapshot,
-                timestamp: 100.0,
-            })
-            .unwrap();
-        event_log
-            .append(&WorkflowEvent::NodeStarted {
-                execution_id: execution_id.clone(),
-                node_execution_id: "ne-plan-1".to_string(),
-                node_name: "plan".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-                fanout_parent: None,
-                timestamp: 101.0,
-            })
-            .unwrap();
-        event_log
-            .append(&WorkflowEvent::NodeCompleted {
-                execution_id: execution_id.clone(),
-                node_execution_id: "ne-plan-1".to_string(),
-                node_name: "plan".to_string(),
-                attempt: 1,
-                result_summary: Some("done".to_string()),
-                token_usage: None,
-                timestamp: 102.0,
-            })
-            .unwrap();
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &local_event_store,
+            &[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition: snapshot,
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    attempt: 1,
+                    result_summary: Some("done".to_string()),
+                    token_usage: None,
+                    timestamp: 102.0,
+                },
+            ],
+        )
+        .unwrap();
 
         // 現 worktree からの invoke は detail を返す
         let ok = get_workflow_node_detail_impl(

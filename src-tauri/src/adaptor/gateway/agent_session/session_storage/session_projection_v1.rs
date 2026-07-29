@@ -24,12 +24,12 @@ use crate::usecase::agent_session::context_meta::{
     ContextSourcePayloadCache, ContextSourceRevisionMeta,
 };
 use crate::usecase::agent_session::session::{
-    workflow_node_context_mapper, ActivityEntry, AgentSessionProjectionCodec,
-    CanonicalAgentSessionProjection, CanonicalQueuedSend, ChatMessage, ContextCarryState,
-    MessageMention, MessageRole, PendingRecoveryMessage, RecoveryPublicationClassification,
-    RecoveryPublicationList, RecoveryPublicationSnapshot, RecoveryPublicationWorkflowOwner,
-    SessionMeta, SessionState, SessionSummary, TokenUsage, TurnInterruption,
-    TurnInterruptionReason,
+    session_summary_from_record, workflow_node_context_mapper, ActivityEntry,
+    AgentSessionProjectionCodec, CanonicalAgentSessionProjection, CanonicalQueuedSend, ChatMessage,
+    ContextCarryState, MessageMention, MessageRole, PendingRecoveryMessage,
+    RecoveryPublicationClassification, RecoveryPublicationList, RecoveryPublicationSnapshot,
+    RecoveryPublicationWorkflowOwner, SessionMeta, SessionState, SessionSummary, TokenUsage,
+    TurnInterruption, TurnInterruptionReason,
 };
 
 use super::stored_event_v1::{decode_agent_session_events_v1, encode_agent_session_events_v1};
@@ -661,7 +661,7 @@ fn recovery_publication_snapshot(
 ) -> Result<RecoveryPublicationSnapshot, String> {
     Ok(RecoveryPublicationSnapshot {
         recovery_id: snapshot.recovery_id.clone(),
-        summary: session_summary(&snapshot.summary)?,
+        summary: session_summary_from_record(&snapshot.summary)?,
         classification: recovery_publication_classification(&snapshot.classification),
     })
 }
@@ -732,31 +732,6 @@ fn session_summary_record(summary: &SessionSummary) -> Result<AgentSessionSummar
             .workflow_node_context
             .clone()
             .map(workflow_node_context_mapper::to_domain),
-    })
-}
-
-fn session_summary(summary: &AgentSessionSummaryRecord) -> Result<SessionSummary, String> {
-    Ok(SessionSummary {
-        id: summary.id.clone(),
-        worktree_path: summary.worktree_path.clone(),
-        state: session_state(&summary.state),
-        error_reason: summary.error_reason.clone(),
-        created_at: finite_from_bits(summary.created_at_bits, "summary created timestamp")?,
-        updated_at: finite_from_bits(summary.updated_at_bits, "summary updated timestamp")?,
-        first_message: summary.first_message.clone(),
-        message_count: usize::try_from(summary.message_count)
-            .map_err(|_| "agent projection summary count exceeds usize".to_string())?,
-        agent_session_id: summary.agent_session_id.clone(),
-        context_carry: summary.context_carry.as_ref().map(context_carry),
-        permission_mode: summary.permission_mode.clone(),
-        plan_mode: summary.plan_mode,
-        permission_profile_id: summary.permission_profile_id.clone(),
-        backend_id: summary.backend_id.clone(),
-        workflow_node_session: summary.workflow_node_session,
-        workflow_node_context: summary
-            .workflow_node_context
-            .clone()
-            .map(workflow_node_context_mapper::to_dto),
     })
 }
 

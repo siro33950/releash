@@ -15,7 +15,6 @@ pub(crate) mod event_log_writer;
 mod event_repository;
 mod execution_archive_repository;
 mod execution_projection_repository;
-mod execution_repository;
 pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
@@ -54,7 +53,6 @@ pub(crate) use editor_gateway::TauriWorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileRepository;
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
-pub(crate) use execution_repository::WorkflowExecutionFileRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
 #[cfg(test)]
 pub(crate) use node_lifecycle_adapters::close_node_session_tab_state;
@@ -70,9 +68,7 @@ pub(crate) use runtime_resolver::resolve_workflow_by_name;
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
 pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot;
-pub(crate) use workspace_session::{
-    DurableWorkspaceNodeSessionCloseGateway, StoredWorkspaceSessionGateway,
-};
+pub(crate) use workspace_session::DurableWorkspaceNodeSessionCloseGateway;
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;

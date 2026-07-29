@@ -851,6 +851,53 @@ pub struct SessionSummary {
     pub workflow_node_context: Option<WorkflowNodeContextDto>,
 }
 
+pub(crate) fn session_summary_from_record(
+    record: &crate::domain::local_event::AgentSessionSummaryRecord,
+) -> Result<SessionSummary, String> {
+    use crate::domain::local_event::{
+        AgentContextCarryStateRecord as Carry, AgentSessionStateRecord as State,
+    };
+
+    let created_at = f64::from_bits(record.created_at_bits);
+    let updated_at = f64::from_bits(record.updated_at_bits);
+    if !created_at.is_finite() || !updated_at.is_finite() {
+        return Err("Workspace Session summary contains an invalid timestamp".to_string());
+    }
+    Ok(SessionSummary {
+        id: record.id.clone(),
+        worktree_path: record.worktree_path.clone(),
+        state: match record.state {
+            State::Active => SessionState::Active,
+            State::Idle => SessionState::Idle,
+            State::Done => SessionState::Done,
+            State::Error => SessionState::Error,
+            State::Closed => SessionState::Closed,
+            State::Archived => SessionState::Archived,
+        },
+        error_reason: record.error_reason.clone(),
+        created_at,
+        updated_at,
+        first_message: record.first_message.clone(),
+        message_count: usize::try_from(record.message_count)
+            .map_err(|_| "Workspace Session message count overflow".to_string())?,
+        agent_session_id: record.agent_session_id.clone(),
+        context_carry: record.context_carry.map(|state| match state {
+            Carry::Resumed => ContextCarryState::Resumed,
+            Carry::Reinjected => ContextCarryState::Reinjected,
+            Carry::Failed => ContextCarryState::Failed,
+        }),
+        permission_mode: record.permission_mode.clone(),
+        plan_mode: record.plan_mode,
+        permission_profile_id: record.permission_profile_id.clone(),
+        backend_id: record.backend_id.clone(),
+        workflow_node_session: record.workflow_node_session,
+        workflow_node_context: record
+            .workflow_node_context
+            .clone()
+            .map(workflow_node_context_mapper::to_dto),
+    })
+}
+
 pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
     let first_message = messages
         .first()

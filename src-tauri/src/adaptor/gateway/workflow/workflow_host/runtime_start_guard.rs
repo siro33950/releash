@@ -41,7 +41,11 @@ fn domain_validation_to_runtime_error(
         domain::WorkflowError::UnauthorizedApprovalTarget(message) => {
             WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
         }
-        domain::WorkflowError::NotFound(message) | domain::WorkflowError::External(message) => {
+        domain::WorkflowError::NotFound(message)
+        | domain::WorkflowError::External(message)
+        | domain::WorkflowError::StorageUnavailable { message, .. }
+        | domain::WorkflowError::CorruptStoredState(message)
+        | domain::WorkflowError::IncompatibleStoredEvent(message) => {
             WorkflowRuntimeError::InvalidWorkflow(message)
         }
     }

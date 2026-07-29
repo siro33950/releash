@@ -33,38 +33,9 @@ pub(crate) struct RetainedWorkflowExecutionProjection {
     pub(crate) loop_guard_reset_baselines: LoopGuardResetBaselines,
 }
 
-struct RoutingReplayState {
-    workflow: WorkflowDefinition,
-    node_execution_counts: HashMap<String, u32>,
-    loop_guard_reset_baselines: LoopGuardResetBaselines,
-}
-
-impl RoutingReplayState {
-    fn new(definition: &crate::domain::workflow::WorkflowDefinition) -> Self {
-        Self {
-            workflow: definition.clone(),
-            node_execution_counts: HashMap::new(),
-            loop_guard_reset_baselines: LoopGuardResetBaselines::default(),
-        }
-    }
-
-    fn record_node_started(&mut self, node_name: &str, attempt: u32) {
-        self.node_execution_counts
-            .entry(node_name.to_string())
-            .and_modify(|current| *current = (*current).max(attempt))
-            .or_insert(attempt);
-    }
-
-    fn record_node_completed(&mut self, node_name: &str) {
-        self.loop_guard_reset_baselines
-            .record_successful_completion(&self.workflow, node_name, &self.node_execution_counts);
-    }
-}
-
 struct ProjectedWorkflowExecution {
     execution: WorkflowExecution,
-    aggregate: Option<WorkflowExecutionAggregate>,
-    routing_replay: Option<RoutingReplayState>,
+    aggregate: WorkflowExecutionAggregate,
 }
 
 /// Projects one public workflow execution read model from its event stream.
@@ -83,59 +54,18 @@ pub(crate) fn project_retained_workflow_execution(
     execution_id: &str,
     events: &[WorkflowEvent],
 ) -> Result<Option<RetainedWorkflowExecutionProjection>, String> {
-    project_workflow_execution_with_payload_policy(
-        execution_id,
-        events,
-        ProjectionPayloadPolicy::Retained,
-    )
-    .map(|projection| {
-        projection.map(|projection| {
-            let aggregate = projection
-                .aggregate
-                .expect("retained projection must replay the aggregate");
-            let _routing_replay = projection
-                .routing_replay
-                .expect("retained projection must construct routing replay state");
-            RetainedWorkflowExecutionProjection {
-                execution: projection.execution,
-                node_execution_counts: aggregate.node_execution_counts.clone(),
-                loop_guard_reset_baselines: aggregate.loop_guard_reset_baselines.clone(),
-            }
+    project_workflow_execution_retained(execution_id, events).map(|projection| {
+        projection.map(|projection| RetainedWorkflowExecutionProjection {
+            execution: projection.execution,
+            node_execution_counts: projection.aggregate.node_execution_counts.clone(),
+            loop_guard_reset_baselines: projection.aggregate.loop_guard_reset_baselines.clone(),
         })
     })
 }
 
-/// Projects the canonical execution state without requiring retained body
-/// payloads. This is used by summary-only consumers whose event reader replaces
-/// request and Artifact values with empty sentinels before replay.
-///
-/// All lifecycle/node/fanout reduction remains shared with the canonical
-/// projector. Only the artifact-dependent resume checkpoint is omitted: a
-/// stripped Artifact cannot safely reproduce a routing decision, and Workspace
-/// summaries need the interrupted status/capability rather than that internal
-/// checkpoint.
-pub(crate) fn project_payload_stripped_workflow_execution(
+fn project_workflow_execution_retained(
     execution_id: &str,
     events: &[WorkflowEvent],
-) -> Result<Option<WorkflowExecution>, String> {
-    project_workflow_execution_with_payload_policy(
-        execution_id,
-        events,
-        ProjectionPayloadPolicy::Stripped,
-    )
-    .map(|projection| projection.map(|projection| projection.execution))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectionPayloadPolicy {
-    Retained,
-    Stripped,
-}
-
-fn project_workflow_execution_with_payload_policy(
-    execution_id: &str,
-    events: &[WorkflowEvent],
-    payload_policy: ProjectionPayloadPolicy,
 ) -> Result<Option<ProjectedWorkflowExecution>, String> {
     for event in events {
         if event.execution_id() != execution_id {
@@ -212,29 +142,19 @@ fn project_workflow_execution_with_payload_policy(
         fanouts: Vec::new(),
         approval_target: None,
     };
-    let aggregate = match payload_policy {
-        ProjectionPayloadPolicy::Retained => Some(replay_workflow_execution_aggregate(
-            execution_id,
-            definition,
-            worktree_path,
-            created_from,
-            request,
-            permission_mode,
-            started_at,
-            events,
-        )?),
-        // Stripped projections serve summary-only readers that discard the
-        // aggregate; replaying it would recompute state per execution per event
-        // just to drop it.
-        ProjectionPayloadPolicy::Stripped => None,
-    };
+    let mut aggregate = restore_workflow_execution_aggregate(
+        execution_id,
+        definition,
+        worktree_path,
+        created_from,
+        request,
+        permission_mode,
+        started_at,
+    );
     let mut authoritative_total_usage = None;
-    let mut routing_replay = match payload_policy {
-        ProjectionPayloadPolicy::Retained => Some(RoutingReplayState::new(definition)),
-        ProjectionPayloadPolicy::Stripped => None,
-    };
 
     for event in events {
+        apply_event_to_aggregate(execution_id, &mut aggregate, event)?;
         execution.updated_at = execution.updated_at.max(event.timestamp());
 
         match event {
@@ -248,9 +168,6 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
-                if let Some(routing_replay) = routing_replay.as_mut() {
-                    routing_replay.record_node_started(node_name, *attempt);
-                }
                 if execution
                     .node_executions
                     .iter()
@@ -333,9 +250,6 @@ fn project_workflow_execution_with_payload_policy(
                     token_usage.as_ref().map(token_usage_to_domain),
                     *timestamp,
                 );
-                if let Some(routing_replay) = routing_replay.as_mut() {
-                    routing_replay.record_node_completed(node_name);
-                }
             }
             WorkflowEvent::NodeFailed {
                 node_execution_id,
@@ -428,20 +342,12 @@ fn project_workflow_execution_with_payload_policy(
             WorkflowEvent::ExecutionInterrupted {
                 reason, timestamp, ..
             } => {
-                let resume_from_node = match payload_policy {
-                    ProjectionPayloadPolicy::Retained => {
-                        let routing_replay = routing_replay
-                            .as_ref()
-                            .expect("retained projection must construct routing replay state");
-                        derive_resume_from_node(
-                            &routing_replay.workflow,
-                            &execution.node_executions,
-                            &routing_replay.node_execution_counts,
-                            &routing_replay.loop_guard_reset_baselines,
-                        )?
-                    }
-                    ProjectionPayloadPolicy::Stripped => None,
-                };
+                let resume_from_node = derive_resume_from_node(
+                    &aggregate.workflow,
+                    &execution.node_executions,
+                    &aggregate.node_execution_counts,
+                    &aggregate.loop_guard_reset_baselines,
+                )?;
                 execution.status = ExecutionStatus::Interrupted;
                 execution.completed_at = None;
                 execution.error_reason = None;
@@ -495,12 +401,11 @@ fn project_workflow_execution_with_payload_policy(
     Ok(Some(ProjectedWorkflowExecution {
         execution,
         aggregate,
-        routing_replay,
     }))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn replay_workflow_execution_aggregate(
+fn restore_workflow_execution_aggregate(
     execution_id: &str,
     definition: &crate::domain::workflow::WorkflowDefinition,
     worktree_path: &str,
@@ -508,9 +413,8 @@ fn replay_workflow_execution_aggregate(
     request: &str,
     permission_mode: &str,
     started_at: f64,
-    events: &[WorkflowEvent],
-) -> Result<WorkflowExecutionAggregate, String> {
-    let mut aggregate = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
+) -> WorkflowExecutionAggregate {
+    WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
         id: execution_id.to_string(),
         workflow: definition.clone(),
         workflow_defaults: WorkflowDefaults {
@@ -523,44 +427,76 @@ fn replay_workflow_execution_aggregate(
         updated_at: started_at,
         request: (!request.is_empty()).then(|| request.to_string()),
         ..WorkflowExecutionRestore::default()
-    });
+    })
+}
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn replay_workflow_execution_aggregate(
+    execution_id: &str,
+    definition: &crate::domain::workflow::WorkflowDefinition,
+    worktree_path: &str,
+    created_from: crate::domain::workflow::ExecutionOrigin,
+    request: &str,
+    permission_mode: &str,
+    started_at: f64,
+    events: &[WorkflowEvent],
+) -> Result<WorkflowExecutionAggregate, String> {
+    let mut aggregate = restore_workflow_execution_aggregate(
+        execution_id,
+        definition,
+        worktree_path,
+        created_from,
+        request,
+        permission_mode,
+        started_at,
+    );
     for event in events {
-        match event {
-            WorkflowEvent::ExecutionStarted { .. } => require_replay(
-                execution_id,
-                "execution_started",
-                aggregate.replay_started(),
-                true,
-            )?,
-            WorkflowEvent::NodeStarted {
-                node_execution_id,
-                node_name,
-                kind,
-                attempt,
-                fanout_parent,
-                timestamp,
-                ..
-            } => {
-                if aggregate
-                    .node_executions
-                    .iter()
-                    .any(|node| node.id == *node_execution_id)
-                {
-                    return Err(format!(
+        apply_event_to_aggregate(execution_id, &mut aggregate, event)?;
+    }
+    Ok(aggregate)
+}
+
+fn apply_event_to_aggregate(
+    execution_id: &str,
+    aggregate: &mut WorkflowExecutionAggregate,
+    event: &WorkflowEvent,
+) -> Result<(), String> {
+    match event {
+        WorkflowEvent::ExecutionStarted { .. } => require_replay(
+            execution_id,
+            "execution_started",
+            aggregate.replay_started(),
+            true,
+        )?,
+        WorkflowEvent::NodeStarted {
+            node_execution_id,
+            node_name,
+            kind,
+            attempt,
+            fanout_parent,
+            timestamp,
+            ..
+        } => {
+            if aggregate
+                .node_executions
+                .iter()
+                .any(|node| node.id == *node_execution_id)
+            {
+                return Err(format!(
                         "execution {execution_id} contains duplicate node_execution_id {node_execution_id}"
                     ));
-                }
-                if let Some(index) = aggregate
-                    .workflow
-                    .nodes
-                    .iter()
-                    .position(|node| node.name == *node_name)
-                {
-                    let _ = aggregate.set_current_node(index, *timestamp);
-                }
-                if let Some(parent) = fanout_parent {
-                    let parent_node_execution_id = aggregate
+            }
+            if let Some(index) = aggregate
+                .workflow
+                .nodes
+                .iter()
+                .position(|node| node.name == *node_name)
+            {
+                let _ = aggregate.set_current_node(index, *timestamp);
+            }
+            if let Some(parent) = fanout_parent {
+                let parent_node_execution_id = aggregate
                         .node_executions
                         .iter()
                         .rev()
@@ -575,7 +511,7 @@ fn replay_workflow_execution_aggregate(
                                 "execution {execution_id} fanout child {node_execution_id} has no parent attempt"
                             )
                         })?;
-                    aggregate
+                aggregate
                         .start_fanout_child_execution(
                             parent.parent_node.clone(),
                             parent_node_execution_id,
@@ -591,8 +527,8 @@ fn replay_workflow_execution_aggregate(
                                 "execution {execution_id} rejected node_started for {node_execution_id}: {reason:?}"
                             )
                         })?;
-                } else {
-                    aggregate
+            } else {
+                aggregate
                         .begin_node_attempt(
                             node_name.clone(),
                             node_kind_to_domain(*kind),
@@ -606,257 +542,256 @@ fn replay_workflow_execution_aggregate(
                                 "execution {execution_id} rejected node_started for {node_execution_id}: {reason:?}"
                             )
                         })?;
-                }
             }
-            WorkflowEvent::SessionAttached {
-                node_execution_id,
-                session_id,
-                timestamp,
-                ..
-            } => {
-                let fanout_child = aggregate
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == *node_execution_id)
-                    .is_some_and(|node| node.fanout_parent.is_some());
-                let outcome = if fanout_child {
-                    aggregate.attach_child_node_session(
-                        node_execution_id,
-                        session_id.clone(),
-                        *timestamp,
-                    )
-                } else {
-                    aggregate.attach_node_session(node_execution_id, session_id.clone(), *timestamp)
-                };
-                require_transition(execution_id, "session_attached", outcome)?;
-            }
-            WorkflowEvent::CommandPrepared {
-                node_execution_id,
-                display_command,
-                timestamp,
-                ..
-            } => {
-                if !aggregate
-                    .node_executions
-                    .iter()
-                    .any(|node| node.id == *node_execution_id)
-                {
-                    return Err(format!(
+        }
+        WorkflowEvent::SessionAttached {
+            node_execution_id,
+            session_id,
+            timestamp,
+            ..
+        } => {
+            let fanout_child = aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == *node_execution_id)
+                .is_some_and(|node| node.fanout_parent.is_some());
+            let outcome = if fanout_child {
+                aggregate.attach_child_node_session(
+                    node_execution_id,
+                    session_id.clone(),
+                    *timestamp,
+                )
+            } else {
+                aggregate.attach_node_session(node_execution_id, session_id.clone(), *timestamp)
+            };
+            require_transition(execution_id, "session_attached", outcome)?;
+        }
+        WorkflowEvent::CommandPrepared {
+            node_execution_id,
+            display_command,
+            timestamp,
+            ..
+        } => {
+            if !aggregate
+                .node_executions
+                .iter()
+                .any(|node| node.id == *node_execution_id)
+            {
+                return Err(format!(
                         "execution {execution_id} command_prepared references unknown node_execution_id {node_execution_id}"
                     ));
-                }
-                require_transition(
-                    execution_id,
-                    "command_prepared",
-                    aggregate.record_node_display_command(
-                        node_execution_id,
-                        display_command.clone(),
-                        *timestamp,
-                    ),
-                )?;
             }
-            WorkflowEvent::ArtifactProduced {
-                node_execution_id,
-                node_name,
-                contract,
-                value,
-                timestamp,
-                ..
-            } => {
-                require_transition(
-                    execution_id,
-                    "artifact_produced",
-                    aggregate.replay_artifact_produced(
-                        node_execution_id,
-                        node_name,
-                        contract.clone(),
-                        value.clone(),
-                        *timestamp,
-                    ),
-                )?;
-            }
-            WorkflowEvent::NodeCompleted {
-                node_execution_id,
-                node_name,
-                token_usage,
-                timestamp,
-                ..
-            } => {
-                let artifact = aggregate
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == *node_execution_id)
-                    .and_then(|node| node.artifact.clone());
-                let decision = aggregate.apply_observed_turn(
+            require_transition(
+                execution_id,
+                "command_prepared",
+                aggregate.record_node_display_command(
                     node_execution_id,
-                    CanonicalNodeFact::Completed,
-                    artifact,
-                    token_usage.as_ref().map(token_usage_to_domain),
+                    display_command.clone(),
                     *timestamp,
-                );
-                if decision.application
+                ),
+            )?;
+        }
+        WorkflowEvent::ArtifactProduced {
+            node_execution_id,
+            node_name,
+            contract,
+            value,
+            timestamp,
+            ..
+        } => {
+            require_transition(
+                execution_id,
+                "artifact_produced",
+                aggregate.replay_artifact_produced(
+                    node_execution_id,
+                    node_name,
+                    contract.clone(),
+                    value.clone(),
+                    *timestamp,
+                ),
+            )?;
+        }
+        WorkflowEvent::NodeCompleted {
+            node_execution_id,
+            node_name,
+            token_usage,
+            timestamp,
+            ..
+        } => {
+            let artifact = aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == *node_execution_id)
+                .and_then(|node| node.artifact.clone());
+            let decision = aggregate.apply_observed_turn(
+                node_execution_id,
+                CanonicalNodeFact::Completed,
+                artifact,
+                token_usage.as_ref().map(token_usage_to_domain),
+                *timestamp,
+            );
+            if decision.application
                     != crate::domain::workflow::entities::workflow_execution::TurnCompletionApplication::Superseded
                 {
                     aggregate.record_successful_node_completion(node_name, *timestamp);
                 }
-                let parent_completed = aggregate
-                    .fanout_runtime
-                    .as_ref()
-                    .is_some_and(|fanout| fanout.parent_node_execution_id == *node_execution_id);
-                if parent_completed {
-                    let _ = aggregate.clear_fanout(*timestamp);
-                }
+            let parent_completed = aggregate
+                .fanout_runtime
+                .as_ref()
+                .is_some_and(|fanout| fanout.parent_node_execution_id == *node_execution_id);
+            if parent_completed {
+                let _ = aggregate.clear_fanout(*timestamp);
             }
-            WorkflowEvent::NodeFailed {
-                node_execution_id,
-                reason,
-                failure_kind,
-                timestamp,
-                ..
-            } => {
-                aggregate.apply_observed_turn(
-                    node_execution_id,
-                    CanonicalNodeFact::Failed {
-                        reason: reason.clone(),
-                        kind: *failure_kind,
-                    },
-                    None,
-                    None,
-                    *timestamp,
-                );
-            }
-            WorkflowEvent::ApprovalRequested {
-                node_execution_id,
-                timestamp,
-                ..
-            } => {
-                require_transition(
-                    execution_id,
-                    "approval_requested_node",
-                    aggregate.mark_node_waiting_approval(node_execution_id, *timestamp),
-                )?;
-                let fanout_child = aggregate
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == *node_execution_id)
-                    .is_some_and(|node| node.fanout_parent.is_some());
-                require_replay(
-                    execution_id,
-                    "approval_requested",
-                    if fanout_child {
-                        aggregate.replay_fanout_approval()
-                    } else {
-                        aggregate.replay_approval_requested()
-                    },
-                    false,
-                )?;
-            }
-            WorkflowEvent::ApprovalResolved {
-                node_execution_id,
-                timestamp,
-                ..
-            } => {
-                require_transition(
-                    execution_id,
-                    "approval_resolved_node",
-                    aggregate.mark_node_running(node_execution_id, *timestamp),
-                )?;
-                let fanout_child = aggregate
-                    .node_executions
-                    .iter()
-                    .find(|node| node.id == *node_execution_id)
-                    .is_some_and(|node| node.fanout_parent.is_some());
-                require_replay(
-                    execution_id,
-                    "approval_resolved",
-                    if fanout_child {
-                        aggregate.replay_fanout_approval()
-                    } else {
-                        aggregate.replay_approval_resolved()
-                    },
-                    false,
-                )?;
-            }
-            WorkflowEvent::StallObserved {
-                node_name,
-                attempt,
-                session_id,
-                turn_phase,
-                idle_secs,
-                signal_count,
-                cap_reached,
-                timestamp,
-                ..
-            } => {
-                let _ = aggregate.observe_node_stall(AggregateStallObservation {
-                    session_id: session_id.clone(),
-                    node_name: node_name.clone(),
-                    attempt: *attempt,
-                    turn_phase: turn_phase.clone(),
-                    idle_secs: *idle_secs,
-                    signal_count: *signal_count,
-                    cap_reached: *cap_reached,
-                    observed_at: *timestamp,
-                });
-            }
-            WorkflowEvent::StallCleared {
-                session_id,
-                timestamp,
-                ..
-            } => {
-                aggregate.clear_stalls_for_session(session_id, *timestamp);
-            }
-            WorkflowEvent::ExecutionCompleted { timestamp, .. } => {
-                require_replay(
-                    execution_id,
-                    "execution_completed",
-                    aggregate.replay_completed_at(*timestamp),
-                    true,
-                )?;
-            }
-            WorkflowEvent::ExecutionFailed {
-                reason,
-                failure_kind,
-                timestamp,
-                ..
-            } => {
-                require_replay(
-                    execution_id,
-                    "execution_failed",
-                    aggregate.replay_failed_at(reason.clone(), *failure_kind, *timestamp),
-                    true,
-                )?;
-            }
-            WorkflowEvent::ExecutionAborted { timestamp, .. } => {
-                require_replay(
-                    execution_id,
-                    "execution_aborted",
-                    aggregate.replay_aborted_at(*timestamp),
-                    true,
-                )?;
-            }
-            WorkflowEvent::ExecutionInterrupted {
-                reason, timestamp, ..
-            } => {
-                require_replay(
-                    execution_id,
-                    "execution_interrupted",
-                    aggregate.replay_interrupted_at(*reason, *timestamp),
-                    false,
-                )?;
-            }
-            WorkflowEvent::ExecutionResumed { timestamp, .. } => {
-                require_replay(
-                    execution_id,
-                    "execution_resumed",
-                    aggregate.replay_resumed_at(*timestamp),
-                    false,
-                )?;
-            }
-            WorkflowEvent::ContractViolated { .. } => {}
         }
+        WorkflowEvent::NodeFailed {
+            node_execution_id,
+            reason,
+            failure_kind,
+            timestamp,
+            ..
+        } => {
+            aggregate.apply_observed_turn(
+                node_execution_id,
+                CanonicalNodeFact::Failed {
+                    reason: reason.clone(),
+                    kind: *failure_kind,
+                },
+                None,
+                None,
+                *timestamp,
+            );
+        }
+        WorkflowEvent::ApprovalRequested {
+            node_execution_id,
+            timestamp,
+            ..
+        } => {
+            require_transition(
+                execution_id,
+                "approval_requested_node",
+                aggregate.mark_node_waiting_approval(node_execution_id, *timestamp),
+            )?;
+            let fanout_child = aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == *node_execution_id)
+                .is_some_and(|node| node.fanout_parent.is_some());
+            require_replay(
+                execution_id,
+                "approval_requested",
+                if fanout_child {
+                    aggregate.replay_fanout_approval()
+                } else {
+                    aggregate.replay_approval_requested()
+                },
+                false,
+            )?;
+        }
+        WorkflowEvent::ApprovalResolved {
+            node_execution_id,
+            timestamp,
+            ..
+        } => {
+            require_transition(
+                execution_id,
+                "approval_resolved_node",
+                aggregate.mark_node_running(node_execution_id, *timestamp),
+            )?;
+            let fanout_child = aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == *node_execution_id)
+                .is_some_and(|node| node.fanout_parent.is_some());
+            require_replay(
+                execution_id,
+                "approval_resolved",
+                if fanout_child {
+                    aggregate.replay_fanout_approval()
+                } else {
+                    aggregate.replay_approval_resolved()
+                },
+                false,
+            )?;
+        }
+        WorkflowEvent::StallObserved {
+            node_name,
+            attempt,
+            session_id,
+            turn_phase,
+            idle_secs,
+            signal_count,
+            cap_reached,
+            timestamp,
+            ..
+        } => {
+            let _ = aggregate.observe_node_stall(AggregateStallObservation {
+                session_id: session_id.clone(),
+                node_name: node_name.clone(),
+                attempt: *attempt,
+                turn_phase: turn_phase.clone(),
+                idle_secs: *idle_secs,
+                signal_count: *signal_count,
+                cap_reached: *cap_reached,
+                observed_at: *timestamp,
+            });
+        }
+        WorkflowEvent::StallCleared {
+            session_id,
+            timestamp,
+            ..
+        } => {
+            aggregate.clear_stalls_for_session(session_id, *timestamp);
+        }
+        WorkflowEvent::ExecutionCompleted { timestamp, .. } => {
+            require_replay(
+                execution_id,
+                "execution_completed",
+                aggregate.replay_completed_at(*timestamp),
+                true,
+            )?;
+        }
+        WorkflowEvent::ExecutionFailed {
+            reason,
+            failure_kind,
+            timestamp,
+            ..
+        } => {
+            require_replay(
+                execution_id,
+                "execution_failed",
+                aggregate.replay_failed_at(reason.clone(), *failure_kind, *timestamp),
+                true,
+            )?;
+        }
+        WorkflowEvent::ExecutionAborted { timestamp, .. } => {
+            require_replay(
+                execution_id,
+                "execution_aborted",
+                aggregate.replay_aborted_at(*timestamp),
+                true,
+            )?;
+        }
+        WorkflowEvent::ExecutionInterrupted {
+            reason, timestamp, ..
+        } => {
+            require_replay(
+                execution_id,
+                "execution_interrupted",
+                aggregate.replay_interrupted_at(*reason, *timestamp),
+                false,
+            )?;
+        }
+        WorkflowEvent::ExecutionResumed { timestamp, .. } => {
+            require_replay(
+                execution_id,
+                "execution_resumed",
+                aggregate.replay_resumed_at(*timestamp),
+                false,
+            )?;
+        }
+        WorkflowEvent::ContractViolated { .. } => {}
     }
-    Ok(aggregate)
+    Ok(())
 }
 
 fn require_transition(
@@ -1438,7 +1373,7 @@ mod tests {
 
         let mut live = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
             id: EXECUTION_ID.to_string(),
-            workflow: definition.clone(),
+            workflow: definition,
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,
                 permission_mode: "ask".to_string(),
@@ -1894,32 +1829,124 @@ mod tests {
             },
         ];
 
-        let retained = project_workflow_execution_with_payload_policy(
-            EXECUTION_ID,
-            &events,
-            ProjectionPayloadPolicy::Retained,
-        )
-        .unwrap()
-        .unwrap();
-        let execution = retained.execution;
+        let retained = project_workflow_execution_retained(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        let execution = &retained.execution;
 
         assert_eq!(execution.resume_from_node.as_deref(), Some("fix"));
-        assert!(retained.routing_replay.is_some());
-
-        let stripped = project_workflow_execution_with_payload_policy(
-            EXECUTION_ID,
-            &events,
-            ProjectionPayloadPolicy::Stripped,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(stripped.execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(stripped.execution.resume_from_node, None);
         assert_eq!(
-            stripped.execution.node_executions[2].status,
+            execution.node_executions[2].status,
             NodeExecutionStatus::Succeeded
         );
-        assert!(stripped.routing_replay.is_none());
+    }
+
+    #[test]
+    fn repeated_interruptions_route_from_the_aggregate_state_at_each_checkpoint() {
+        use crate::domain::workflow::Rule;
+
+        let workflow = WorkflowDefinition {
+            name: "repeated-reset-replay".to_string(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "round".to_string(),
+                    rules: vec![Rule::Next("fix".to_string())],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    rules: vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("round".to_string()),
+                    }],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "done".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let start_node =
+            |id: &str, name: &str, attempt: u32, timestamp: f64| WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: id.to_string(),
+                node_name: name.to_string(),
+                kind: EventNodeKindName::Session,
+                attempt,
+                fanout_parent: None,
+                timestamp,
+            };
+        let complete_node =
+            |id: &str, name: &str, attempt: u32, timestamp: f64| WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: id.to_string(),
+                node_name: name.to_string(),
+                attempt,
+                result_summary: None,
+                token_usage: None,
+                timestamp,
+            };
+        let interrupt = |timestamp| WorkflowEvent::ExecutionInterrupted {
+            execution_id: EXECUTION_ID.to_string(),
+            reason: ExecutionInterruptionReason::Crash,
+            timestamp,
+        };
+        let resume = |timestamp| WorkflowEvent::ExecutionResumed {
+            execution_id: EXECUTION_ID.to_string(),
+            resume_from_node: "fix".to_string(),
+            timestamp,
+        };
+        let events = vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                workflow_name: "repeated-reset-replay".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: "review".to_string(),
+                permission_mode: "ask".to_string(),
+                definition: workflow,
+                timestamp: 1.0,
+            },
+            start_node("fix-1", "fix", 1, 2.0),
+            complete_node("fix-1", "fix", 1, 3.0),
+            start_node("fix-2", "fix", 2, 4.0),
+            complete_node("fix-2", "fix", 2, 5.0),
+            start_node("round-1", "round", 1, 6.0),
+            complete_node("round-1", "round", 1, 7.0),
+            interrupt(8.0),
+            resume(9.0),
+            start_node("fix-3", "fix", 3, 10.0),
+            interrupt(11.0),
+            resume(12.0),
+            start_node("fix-4", "fix", 4, 13.0),
+            complete_node("fix-4", "fix", 4, 14.0),
+            interrupt(15.0),
+        ];
+
+        let checkpoints = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                matches!(event, WorkflowEvent::ExecutionInterrupted { .. }).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let resume_nodes = checkpoints
+            .into_iter()
+            .map(|index| {
+                project_workflow_execution(EXECUTION_ID, &events[..=index])
+                    .unwrap()
+                    .unwrap()
+                    .resume_from_node
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            resume_nodes,
+            vec![Some("fix".to_string()), Some("fix".to_string()), None,]
+        );
     }
 
     #[test]
@@ -1965,7 +1992,7 @@ mod tests {
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
             permission_mode: "ask".to_string(),
-            definition: workflow.clone(),
+            definition: workflow,
             timestamp: 1.0,
         };
         let mut events_before_child_completion = vec![start];
@@ -2047,10 +2074,16 @@ mod tests {
         let before_child = replay(&events_before_child_completion);
         let after_child = replay(&events_after_child_completion);
         let after_parent = replay(&events_after_parent_completion);
-        let domain_workflow = workflow.clone();
+        let WorkflowEvent::ExecutionStarted {
+            definition: domain_workflow,
+            ..
+        } = &events_before_child_completion[0]
+        else {
+            unreachable!("the first event is ExecutionStarted");
+        };
         let route = |projection: &RetainedWorkflowExecutionProjection| {
             routing::route_with_reset_baselines(
-                &domain_workflow,
+                domain_workflow,
                 0,
                 None,
                 &projection.node_execution_counts,

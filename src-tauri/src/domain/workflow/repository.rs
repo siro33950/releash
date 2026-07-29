@@ -1,13 +1,10 @@
 //! Persistence ports for workflow.
 //!
-//! Implementations live in `adaptor/gateway/workflow/` and preserve the current
-//! `workflow_executions/` JSON and event log shapes through mapper types.
+//! Implementations live in `adaptor/gateway/workflow/`; durable execution reads
+//! are provided by the canonical workspace query port.
 
-#[cfg(test)]
-use crate::domain::workflow::value_objects::WorkflowExecutionRecord;
 use crate::domain::workflow::value_objects::{
-    ExecutionListFilter, FacetKind, FacetSummary, WorkflowDefinition, WorkflowExecutionId,
-    WorkflowExecutionSummary, WorkflowPageRequest, WorkflowSummary,
+    FacetKind, FacetSummary, WorkflowDefinition, WorkflowExecutionId, WorkflowSummary,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -17,47 +14,6 @@ pub const WORKFLOW_ARCHIVE_REASON_MANUAL: &str = "manual";
 pub struct WorkflowExecutionManualArchiveRecord {
     pub execution_id: String,
     pub archived_at: f64,
-}
-
-pub trait WorkflowExecutionRepository: Send + Sync {
-    #[cfg(test)]
-    fn register_active(&self, execution: WorkflowExecutionRecord) -> Result<(), WorkflowError>;
-    #[cfg(test)]
-    fn complete_execution(
-        &self,
-        execution_id: &WorkflowExecutionId,
-        completed: WorkflowExecutionRecord,
-    ) -> Result<(), WorkflowError>;
-    fn list_executions(
-        &self,
-        filter: ExecutionListFilter,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError>;
-    fn list_executions_page(
-        &self,
-        filter: ExecutionListFilter,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.list_executions(filter).map(|executions| {
-            executions
-                .into_iter()
-                .skip(page.offset)
-                .take(page.limit)
-                .collect()
-        })
-    }
-    fn get_execution(
-        &self,
-        execution_id: &WorkflowExecutionId,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError>;
-    #[cfg(test)]
-    fn resolve_active_execution_by_worktree(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Option<WorkflowExecutionId>, WorkflowError>;
-    fn resolve_worktree_by_execution(
-        &self,
-        execution_id: &WorkflowExecutionId,
-    ) -> Result<Option<String>, WorkflowError>;
 }
 
 pub trait WorkflowExecutionArchiveRepository: Send + Sync {
@@ -71,9 +27,17 @@ pub trait WorkflowExecutionArchiveRepository: Send + Sync {
         execution_id: &WorkflowExecutionId,
         restored_at: f64,
     ) -> Result<(), WorkflowError>;
-    fn manual_archive_records(
+    /// Returns archive state for only the requested execution identities while
+    /// preserving the canonical binding of the same process-local snapshot.
+    fn manual_archive_snapshot_for(
         &self,
-    ) -> Result<Vec<WorkflowExecutionManualArchiveRecord>, WorkflowError>;
+        execution_ids: &[String],
+    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowExecutionArchiveSnapshot {
+    pub records: Vec<WorkflowExecutionManualArchiveRecord>,
 }
 
 pub trait WorkflowDefinitionRepository: Send + Sync {

@@ -21,6 +21,7 @@ use crate::domain::local_event::{
     SessionProjectionRecord, WorkflowExecutionProjectionRecord,
 };
 
+use super::indexed_projection_codec::encode_workflow_execution_node_v1;
 use super::state_record_codec::{StoredOperationReceiptV1, StoredOperationStatusV1};
 
 pub(crate) const PROJECTION_RECORD_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -66,6 +67,28 @@ pub(crate) fn canonical_mutation_identity_v1(
                 &mut bytes,
                 &encode_message_projection_record_v1(&mutation.projection)?,
             );
+            revision_guard(&mut bytes, mutation.expected);
+            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
+            Ok(bytes)
+        }
+        LocalStateMutation::WorkflowExecutionProjection(mutation) => {
+            text(&mut bytes, "workflow_execution_projection");
+            text(
+                &mut bytes,
+                &encode_workflow_execution_projection_record_v1(&mutation.projection)?,
+            );
+            revision_guard(&mut bytes, mutation.expected);
+            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
+            Ok(bytes)
+        }
+        LocalStateMutation::WorkflowExecutionNodeProjection(mutation) => {
+            text(&mut bytes, "workflow_execution_node_projection");
+            text(&mut bytes, &mutation.execution_id);
+            for node in &mutation.nodes {
+                let (tree, detail) = encode_workflow_execution_node_v1(node)?;
+                text(&mut bytes, &tree);
+                text(&mut bytes, &detail);
+            }
             revision_guard(&mut bytes, mutation.expected);
             bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
             Ok(bytes)

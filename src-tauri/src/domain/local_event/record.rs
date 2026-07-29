@@ -1877,6 +1877,65 @@ impl ObligationRecord {
         blocks || !known_live
     }
 
+    /// Stable identity used by owner-level recovery fences.
+    pub(crate) fn unresolved_recovery_original_identity(
+        &self,
+        obligation_id: &str,
+    ) -> Option<String> {
+        if !self.blocks_effect_admission() {
+            return None;
+        }
+        let bounded =
+            |value: &str| (!value.is_empty() && value.len() <= 512).then(|| value.to_string());
+        let identity = match self.original() {
+            Self::Send { operation_id, .. }
+            | Self::PermissionResponse { operation_id, .. }
+            | Self::StopInterrupt { operation_id, .. }
+            | Self::SessionClose { operation_id, .. }
+            | Self::TerminalCommit { operation_id, .. } => bounded(operation_id),
+            Self::BackendSessionRecovery { recovery_id, .. } => bounded(recovery_id),
+            Self::WorkflowShutdown {
+                effect_identity,
+                execution_id,
+                ..
+            } => bounded(effect_identity).or_else(|| bounded(execution_id)),
+            Self::WorkflowTurnCompletion {
+                terminal_identity, ..
+            } => bounded(terminal_identity),
+            Self::RecoveryPublication {
+                message_id,
+                recovery_id,
+                ..
+            } => bounded(message_id).or_else(|| bounded(recovery_id)),
+            Self::ProviderEstablish {
+                operation_id,
+                effect_identity,
+                ..
+            } => bounded(operation_id).or_else(|| bounded(effect_identity)),
+            Self::TurnExecution {
+                operation_id,
+                turn_id,
+                ..
+            } => bounded(operation_id).or_else(|| bounded(turn_id)),
+            Self::RecoveryReserved {
+                recovery_id,
+                effect_identity,
+                ..
+            }
+            | Self::RecoveryCompleted {
+                recovery_id,
+                effect_identity,
+                ..
+            } => bounded(recovery_id).or_else(|| bounded(effect_identity)),
+            Self::FeedbackReservation { .. }
+            | Self::Feedback { .. }
+            | Self::WorkflowExecution { .. }
+            | Self::RecoveryTransition { .. }
+            | Self::Observed { .. } => None,
+        };
+        Some(identity.unwrap_or_else(|| obligation_id.to_string()))
+    }
+
     pub(crate) fn write_canonical_identity_v1(
         &self,
         bytes: &mut Vec<u8>,

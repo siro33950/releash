@@ -3422,10 +3422,7 @@ pub(crate) fn unresolved_recovery_original_identity(
     obligation_id: &str,
     record: &ObligationRecord,
 ) -> Option<String> {
-    if !record.blocks_effect_admission() {
-        return None;
-    }
-    Some(pending_recovery_descriptor(obligation_id, record).original_identity)
+    record.unresolved_recovery_original_identity(obligation_id)
 }
 
 fn recovery_capabilities(

@@ -24,7 +24,7 @@ pub use events::{WorkflowContractViolation, WorkflowDomainEvent, WorkflowJsonPay
 pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};
 pub use repository::{
     FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
-    WorkflowExecutionManualArchiveRecord, WorkflowExecutionRepository,
+    WorkflowExecutionArchiveSnapshot, WorkflowExecutionManualArchiveRecord,
     WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{
@@ -32,13 +32,15 @@ pub use services::{
     TimeoutContext, TimeoutPolicy,
 };
 #[cfg(test)]
+pub use value_objects::ExecutionListFilter;
+#[cfg(test)]
 pub use value_objects::WorkflowExecutionRecord;
 pub use value_objects::{
     ApprovalTarget, Artifact, CommandSpec, ContractType, ContractValidationResult,
-    ContractViolationRecord, ExecutionInterruptionReason, ExecutionListFilter, ExecutionOrigin,
-    ExecutionStatus, ExecutionStatusFilter, FacetContents, FacetKey, FacetKind, FacetRefs,
-    FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutChildSnapshot,
-    FanoutParentRef, FanoutSpec, ItemsSource, NodeDefinition, NodeDefinitionName, NodeExecution,
+    ContractViolationRecord, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,
+    ExecutionStatusFilter, FacetContents, FacetKey, FacetKind, FacetRefs, FacetSummary,
+    FailureClassification, FailureDisposition, Fanout, FanoutChildSnapshot, FanoutParentRef,
+    FanoutSpec, ItemsSource, NodeDefinition, NodeDefinitionName, NodeExecution,
     NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeHistoryEntry,
     NodeKind, NodeKindName, Rule, RuntimeArtifact, RuntimeExecutionState, SchemaDef, SessionGate,
     SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition, WorkflowDefinitionName,

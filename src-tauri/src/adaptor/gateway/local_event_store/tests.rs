@@ -8,6 +8,8 @@ use std::time::Instant;
 use sha2::Digest;
 use tempfile::TempDir;
 
+use rusqlite::StatementStatus;
+
 use crate::adaptor::gateway::agent_session::session_storage::{
     AgentSessionProjectionCodecV1, FileSessionStorage,
 };
@@ -58,10 +60,16 @@ use crate::domain::local_event::{
     ShutdownTargetMutation, ShutdownTargetRecord, ShutdownTargetRecoveryRecord,
     ShutdownTargetStateRecord, StreamId, StreamVersion, TerminalRecordMutation,
     TerminalResultRecord, UncommittedDomainEvent, WorkflowExecutionMetadataRecord,
-    WorkflowExecutionProjectionRecord,
+    WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+    WorkflowExecutionProjectionRecord, WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage, WorkflowDomainEvent,
+    ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, TokenUsage as WorkflowTokenUsage,
+    WorkflowDomainEvent, WorkflowPageRequest,
+};
+use crate::domain::workspace_tree::{
+    WorkspaceIdentity, WorkspaceSessionListKind, WorkspaceStructureFact, WorkspaceTree,
+    WorkspaceTreeProjector,
 };
 use crate::usecase::agent_session::feedback::{
     FeedbackAction, FeedbackError, FeedbackResolutionPort, FeedbackRetryOutcome,
@@ -195,6 +203,15 @@ impl LocalEventPayloadCodec for TestAgentSessionCodec {
 fn test_registry() -> Arc<EventCodecRegistry> {
     let mut registry = EventCodecRegistry::new();
     registry.register(Arc::new(TestAgentSessionCodec));
+    Arc::new(registry)
+}
+
+fn test_registry_with_workflow() -> Arc<EventCodecRegistry> {
+    let mut registry = EventCodecRegistry::new();
+    registry.register(Arc::new(TestAgentSessionCodec));
+    registry.register(Arc::new(
+        crate::adaptor::gateway::local_event_store::workflow_codec::WorkflowDomainEventCodec,
+    ));
     Arc::new(registry)
 }
 
@@ -1237,6 +1254,40 @@ async fn b059_shutdown_target_lane_accepts_only_the_effect_bound_agent_session_c
         ],
     );
     close.idempotency.operation_kind = CommitOperationKind::ShutdownTarget;
+    let SessionProjectionRecord::WorkflowExecution(execution_projection) =
+        workflow_execution_projection("b059-forbidden-workflow", ExecutionStatus::Running)
+    else {
+        unreachable!("workflow execution fixture must have the workflow projection shape");
+    };
+    let forbidden = [
+        LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+            projection: execution_projection,
+            expected: RevisionGuard::Absent,
+            revision: Revision::new(0).unwrap(),
+        }),
+        LocalStateMutation::WorkflowExecutionNodeProjection(
+            WorkflowExecutionNodeProjectionMutation {
+                execution_id: "b059-forbidden-workflow".to_string(),
+                nodes: Vec::new(),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            },
+        ),
+    ];
+    for (index, mutation) in forbidden.into_iter().enumerate() {
+        let mut mixed = close.clone();
+        mixed.commit_id =
+            CommitIdentity::parse(&format!("commit-b059-forbidden-workflow-{index}")).unwrap();
+        mixed.idempotency.idempotency_key = format!("key-b059-forbidden-workflow-{index}");
+        mixed.idempotency.payload_hash = [70 + index as u8; 32];
+        mixed.state_mutations.push(mutation);
+        assert!(matches!(
+            harness.store.commit_batch(mixed).await,
+            Err(CommitBatchError::StorageUnavailable { failure })
+                if failure.kind
+                    == SessionOperationFailureKind::PreviousShutdownReconciliationRequired
+        ));
+    }
     assert!(matches!(
         harness.store.commit_batch(close).await,
         Ok(CommitBatchResult::Committed(_))
@@ -5866,10 +5917,13 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .expect("bounded prefix page");
     assert_eq!(page.entries.len(), 1);
     assert!(page.next_cursor.is_none());
-    assert!(session_store
-        .unresolved_recovery_reason(&session.id)
-        .expect("read capability recovery fence")
-        .is_some());
+    assert!(crate::domain::workspace_tree::unresolved_recovery_reason(
+        harness.store.as_ref(),
+        &session.id,
+    )
+    .await
+    .expect("read capability recovery fence")
+    .is_some());
 
     session_store
         .complete_workflow_turn_completion(&pending)
@@ -5882,9 +5936,12 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .expect("read consumed handoff")
         .is_none());
     assert_eq!(
-        session_store
-            .unresolved_recovery_reason(&session.id)
-            .expect("read settled capability recovery fence"),
+        crate::domain::workspace_tree::unresolved_recovery_reason(
+            harness.store.as_ref(),
+            &session.id,
+        )
+        .await
+        .expect("read settled capability recovery fence"),
         None
     );
 
@@ -5916,9 +5973,12 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         )
         .expect("idempotent retire replay");
     assert_eq!(
-        session_store
-            .unresolved_recovery_reason(&session.id)
-            .expect("read retired capability recovery fence"),
+        crate::domain::workspace_tree::unresolved_recovery_reason(
+            harness.store.as_ref(),
+            &session.id,
+        )
+        .await
+        .expect("read retired capability recovery fence"),
         None,
         "retired obligations remain durable history but leave effect admission"
     );
@@ -6231,6 +6291,15 @@ impl LocalEventTransactionRepository for HangingShutdownQueryRepository {
         futures_util::future::pending().await
     }
 
+    fn query_blocking(
+        &self,
+        _request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+        self.queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(LocalEventQueryError::DeadlineExceeded)
+    }
+
     fn subscribe(
         &self,
         after: crate::domain::local_event::GlobalSequence,
@@ -6281,6 +6350,25 @@ impl LocalEventTransactionRepository for RecoveryReplayOnlyRepository {
         })
     }
 
+    fn query_blocking(
+        &self,
+        request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+        if matches!(&request, LocalEventQuery::RecoveryActionByIdentity { .. }) {
+            return self.inner.query_blocking(request);
+        }
+        self.unavailable_resource_queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(LocalEventQueryError::StorageUnavailable {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::StorageUnavailable,
+                true,
+                "The current recovery resource is unavailable.",
+                "b093-current-resource-unavailable",
+            ),
+        })
+    }
+
     fn subscribe(
         &self,
         after: crate::domain::local_event::GlobalSequence,
@@ -6313,6 +6401,20 @@ impl LocalEventTransactionRepository for CurrentShutdownUnavailableRepository {
     }
 
     async fn query(
+        &self,
+        _request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
+        Err(LocalEventQueryError::StorageUnavailable {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::StorageUnavailable,
+                true,
+                "The current shutdown authority is unavailable.",
+                "b076-current-storage-unavailable",
+            ),
+        })
+    }
+
+    fn query_blocking(
         &self,
         _request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
@@ -6413,10 +6515,11 @@ impl crate::usecase::shutdown_coordinator::ShutdownTargetExecutor
                 ],
             );
             accepted_workflow.idempotency.operation_kind = CommitOperationKind::UserMutation;
-            assert!(matches!(
-                self.store.commit_batch(accepted_workflow).await,
-                Ok(CommitBatchResult::Committed(_))
-            ));
+            let accepted_result = self.store.commit_batch(accepted_workflow).await;
+            assert!(
+                matches!(&accepted_result, Ok(CommitBatchResult::Committed(_))),
+                "accept workflow before quit inventory: {accepted_result:?}"
+            );
             self.current_targets
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -13239,6 +13342,22 @@ fn downgrade_current_store_to_supported_v1(root: &std::path::Path) -> (String, S
         .execute_batch(
             "PRAGMA foreign_keys = OFF;
              BEGIN IMMEDIATE;
+             DROP TABLE workflow_execution_nodes;
+             DROP TABLE workflow_executions;
+             DROP INDEX idx_session_projection_public_list;
+             DROP INDEX idx_session_projection_public_node;
+             ALTER TABLE session_projection RENAME TO session_projection_v3;
+             CREATE TABLE session_projection (
+                 session_id TEXT PRIMARY KEY,
+                 projection TEXT NOT NULL,
+                 revision INTEGER NOT NULL CHECK (revision >= 0),
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
+             );
+             INSERT INTO session_projection
+                 (session_id, projection, revision, commit_id)
+             SELECT session_id, projection, revision, commit_id
+             FROM session_projection_v3;
+             DROP TABLE session_projection_v3;
              ALTER TABLE logical_commits RENAME COLUMN installation_id TO generation_id;
              ALTER TABLE operation_bindings RENAME COLUMN installation_id TO generation_id;
              ALTER TABLE caller_attempts RENAME COLUMN installation_id TO generation_id;
@@ -13914,7 +14033,7 @@ async fn b098_supported_schema_evolution_is_atomic_and_preserves_identity_keys_a
         match boundary {
             Boundary::BeforeBegin | Boundary::BeforeCommit => assert_eq!(user_version, 0),
             Boundary::CommitReplyLoss | Boundary::BeforeReadback => {
-                assert_eq!(user_version, 2)
+                assert_eq!(user_version, 3)
             }
         }
         drop(connection);
@@ -13947,6 +14066,1561 @@ async fn b098_supported_schema_evolution_is_atomic_and_preserves_identity_keys_a
             assert_eq!(count, 0, "obsolete schema object remained: {removed}");
         }
     }
+}
+
+fn assert_statement_uses_index_without_sort<const N: usize>(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    parameters: [&str; N],
+) {
+    let plan = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(rusqlite::params_from_iter(parameters), |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .all(|detail| !detail.contains("USE TEMP B-TREE")),
+        "query plan allocated a temporary sorter: {plan:?}"
+    );
+    let mut statement = connection.prepare(sql).unwrap();
+    {
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(parameters), |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        for row in rows {
+            row.unwrap();
+        }
+    }
+    assert_eq!(
+        statement.get_status(StatementStatus::FullscanStep),
+        0,
+        "statement performed a full table/index scan: {sql}"
+    );
+    assert_eq!(
+        statement.get_status(StatementStatus::Sort),
+        0,
+        "statement allocated a temporary sorter: {sql}"
+    );
+}
+
+async fn seed_workspace_session(
+    harness: &Harness,
+    session_id: &str,
+    workspace: &str,
+    state: AgentSessionStateRecord,
+    updated_at: f64,
+) {
+    let mut projection = agent_session_projection(session_id);
+    let SessionProjectionRecord::AgentSession(session) = &mut projection else {
+        unreachable!("agent Session fixture must be an AgentSession projection");
+    };
+    session.meta.worktree_path = workspace.to_string();
+    session.meta.state = state;
+    session.meta.created_at_bits = updated_at.to_bits();
+    session.meta.updated_at_bits = updated_at.to_bits();
+    session.meta.first_message_preview = format!("Session {session_id}");
+    let digest: [u8; 32] = sha2::Sha256::digest(session_id.as_bytes()).into();
+    let mut source = batch(
+        &format!("workspace-session-{session_id}"),
+        &format!("workspace-session-{session_id}"),
+        digest,
+        Vec::new(),
+        Vec::new(),
+        vec![LocalStateMutation::SessionProjection(
+            SessionProjectionMutation {
+                session_id: session_id.to_string(),
+                projection,
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            },
+        )],
+    );
+    source.idempotency.operation_kind = CommitOperationKind::UserMutation;
+    harness.store.commit_batch(source).await.unwrap();
+}
+
+async fn seed_workspace_execution(
+    harness: &Harness,
+    execution_id: &str,
+    workspace: &str,
+    status: ExecutionStatus,
+    updated_at: f64,
+) {
+    let record = WorkflowExecutionMetadataRecord {
+        execution_id: execution_id.to_string(),
+        workflow_name: format!("Workflow {execution_id}"),
+        status,
+        worktree_path: workspace.to_string(),
+        current_node: None,
+        created_from: ExecutionOrigin::DesktopUi,
+        started_at_bits: updated_at.to_bits(),
+        updated_at_bits: updated_at.to_bits(),
+        completed_at_bits: status.is_terminal().then(|| updated_at.to_bits()),
+        error_reason: None,
+        interruption_reason: None,
+        resume_from_node: None,
+        total_token_usage: WorkflowTokenUsage::default(),
+    };
+    let definition = crate::domain::workflow::WorkflowDefinition::default();
+    let mut tree = WorkspaceTree::empty(workspace);
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: record.workflow_name.clone(),
+                worktree_path: workspace.to_string(),
+                definition: definition.clone(),
+                timestamp: updated_at,
+            },
+            WorkspaceStructureFact::WorkflowSummaryProjected {
+                execution_id: execution_id.to_string(),
+                workflow_name: record.workflow_name.clone(),
+                status,
+                updated_at,
+            },
+        ],
+    )
+    .unwrap();
+    let stream = StreamId::workflow(execution_id).unwrap();
+    let digest: [u8; 32] = sha2::Sha256::digest(execution_id.as_bytes()).into();
+    let mut source = batch(
+        &format!("workspace-execution-{execution_id}"),
+        &format!("workspace-execution-{execution_id}"),
+        digest,
+        vec![head(stream.clone(), 0)],
+        vec![UncommittedDomainEvent {
+            stream_id: stream,
+            event: LocalDomainEvent::Workflow(WorkflowDomainEvent::WorkflowExecutionStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: record.workflow_name.clone(),
+                worktree_path: workspace.to_string(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: "{}".to_string(),
+                permission_mode: "ask".to_string(),
+                definition,
+                timestamp: updated_at,
+            }),
+            occurred_at_ms: (updated_at * 1_000.0) as i64,
+        }],
+        vec![
+            LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                session_id: format!("workflow:{execution_id}"),
+                projection: SessionProjectionRecord::WorkflowExecution(
+                    WorkflowExecutionProjectionRecord::Present(record.clone()),
+                ),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::Obligation(ObligationMutation {
+                obligation_id: format!("workflow-execution-{execution_id}"),
+                record: workflow_execution_obligation(execution_id),
+                pending: Some(PendingIndexEntry {
+                    ordered_key: format!("workflow_execution:{execution_id}"),
+                    owner: "workflow-runtime".to_string(),
+                    partition: PendingPartition::UnownedRuntime,
+                    shutdown_plan: None,
+                }),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Present(record),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::WorkflowExecutionNodeProjection(
+                WorkflowExecutionNodeProjectionMutation {
+                    execution_id: execution_id.to_string(),
+                    nodes: tree.nodes().to_vec(),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                },
+            ),
+        ],
+    );
+    source.idempotency.operation_kind = CommitOperationKind::Workflow;
+    harness.store.commit_batch(source).await.unwrap();
+}
+
+#[tokio::test]
+async fn b001_workspace_tree_query_returns_complete_display_snapshot_once() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    seed_workspace_execution(
+        &harness,
+        "workspace-b001-execution",
+        "/workspace/b001",
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b001-session",
+        "/workspace/b001",
+        AgentSessionStateRecord::Active,
+        20.0,
+    )
+    .await;
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+
+    // When
+    let snapshot = query
+        .workspace_tree(&WorkspaceIdentity::new("/workspace/b001"))
+        .unwrap();
+
+    // Then
+    assert_eq!(snapshot.nodes.len(), 2);
+    assert!(snapshot.preferred_node_id.is_some());
+    let serialized = serde_json::to_value(&snapshot).unwrap();
+    assert!(serialized["nodes"][0].get("id").is_some());
+    assert!(serialized["nodes"][0].get("status").is_some());
+    assert!(serialized["nodes"][0].get("capabilities").is_some());
+}
+
+#[tokio::test]
+async fn archived_workflow_is_hidden_while_selected_detail_remains_queryable() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::domain::workflow::{WorkflowExecutionArchiveRepository, WorkflowExecutionId};
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "00000000-0000-4000-8000-000000001492";
+    let workspace = "/workspace/archive-detail";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        workspace,
+        ExecutionStatus::Completed,
+        10.0,
+    )
+    .await;
+    let archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root));
+    let query = SqliteWorkspaceQueryService::new(harness.store.clone(), archives.clone());
+    let workspace = WorkspaceIdentity::new(workspace);
+    assert!(query
+        .node_detail(&workspace, execution_id)
+        .unwrap()
+        .is_some());
+
+    archives
+        .archive_manual(&WorkflowExecutionId::new(execution_id).unwrap(), 20.0)
+        .unwrap();
+
+    assert!(query.workspace_tree(&workspace).unwrap().nodes.is_empty());
+    assert!(query
+        .node_detail(&workspace, execution_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn b002_workspace_tree_node_and_session_binding_ignore_unrelated_accumulation() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::{
+        SqliteWorkspaceQueryService, SQL_DIRECT_NODE_ID_FOR_SESSION, SQL_EXECUTIONS_BY_WORKSPACE,
+        SQL_SESSION_NODE_DETAIL_FALLBACK, SQL_SESSION_RECORDS, SQL_WORKFLOW_NODE_DETAIL,
+        SQL_WORKFLOW_NODE_ID_FOR_SESSION, SQL_WORKSPACE_TREE_EXECUTIONS, SQL_WORKSPACE_TREE_NODES,
+    };
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    seed_workspace_execution(
+        &harness,
+        "workspace-b002-target-execution",
+        "/workspace/b002",
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b002-target-session",
+        "/workspace/b002",
+        AgentSessionStateRecord::Active,
+        20.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b002-closed-session",
+        "/workspace/b002",
+        AgentSessionStateRecord::Closed,
+        30.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b002-other-execution",
+        "/workspace/other",
+        ExecutionStatus::Completed,
+        40.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b002-other-session",
+        "/workspace/other",
+        AgentSessionStateRecord::Active,
+        50.0,
+    )
+    .await;
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+    let direct_node_id = WorkspaceTreeProjector::session_node_id("workspace-b002-target-session");
+
+    // When
+    let workspace = WorkspaceIdentity::new("/workspace/b002");
+    let tree = query.workspace_tree(&workspace).unwrap();
+    let detail = query
+        .node_detail(&workspace, "workspace-b002-target-execution")
+        .unwrap();
+    let binding = query
+        .session_node_id(&workspace, "workspace-b002-target-session")
+        .unwrap();
+
+    // Then
+    assert_eq!(tree.nodes.len(), 2);
+    assert!(detail.is_some());
+    assert_eq!(binding.as_deref(), Some(direct_node_id.as_str()));
+    let connection = harness.raw_connection();
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_WORKSPACE_TREE_NODES,
+        ["/workspace/b002"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_WORKSPACE_TREE_EXECUTIONS,
+        ["/workspace/b002"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_WORKFLOW_NODE_DETAIL,
+        ["workspace-b002-target-execution", "/workspace/b002"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_SESSION_NODE_DETAIL_FALLBACK,
+        ["/workspace/b002", direct_node_id.as_str()],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_WORKFLOW_NODE_ID_FOR_SESSION,
+        ["workspace-b002-target-session", "/workspace/b002"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_DIRECT_NODE_ID_FOR_SESSION,
+        ["workspace-b002-target-session", "/workspace/b002"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_SESSION_RECORDS,
+        ["/workspace/b002", "active"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_EXECUTIONS_BY_WORKSPACE,
+        ["/workspace/b002", "", "100", "0"],
+    );
+}
+
+#[tokio::test]
+async fn b003_session_and_execution_lists_ignore_out_of_filter_accumulation() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::{
+        SqliteWorkspaceQueryService, SQL_EXECUTIONS_ALL, SQL_EXECUTIONS_BY_KIND,
+        SQL_EXECUTIONS_BY_WORKSPACE, SQL_EXECUTIONS_BY_WORKSPACE_AND_KIND, SQL_SESSION_RECORDS,
+    };
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    seed_workspace_session(
+        &harness,
+        "workspace-b003-active-session",
+        "/workspace/b003",
+        AgentSessionStateRecord::Active,
+        10.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b003-closed-session",
+        "/workspace/b003",
+        AgentSessionStateRecord::Closed,
+        20.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b003-other-session",
+        "/workspace/other",
+        AgentSessionStateRecord::Active,
+        30.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b003-active-execution",
+        "/workspace/b003",
+        ExecutionStatus::Running,
+        40.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b003-terminal-execution",
+        "/workspace/b003",
+        ExecutionStatus::Completed,
+        50.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b003-other-execution",
+        "/workspace/other",
+        ExecutionStatus::Running,
+        60.0,
+    )
+    .await;
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+
+    // When
+    let sessions = query
+        .session_summaries(
+            &WorkspaceIdentity::new("/workspace/b003"),
+            WorkspaceSessionListKind::Active,
+        )
+        .unwrap();
+    let executions = query
+        .execution_summaries(
+            Some(&WorkspaceIdentity::new("/workspace/b003")),
+            Some(ExecutionStatusFilter::Active),
+            Some(WorkflowPageRequest::new(0, 1)),
+        )
+        .unwrap();
+
+    // Then
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["workspace-b003-active-session"]
+    );
+    assert_eq!(executions.len(), 1);
+    assert_eq!(
+        executions[0].execution_id,
+        "workspace-b003-active-execution"
+    );
+    let connection = harness.raw_connection();
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_SESSION_RECORDS,
+        ["/workspace/b003", "active"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_EXECUTIONS_BY_WORKSPACE_AND_KIND,
+        ["/workspace/b003", "active", "1", "0"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_EXECUTIONS_BY_WORKSPACE,
+        ["/workspace/b003", "", "1", "0"],
+    );
+    assert_statement_uses_index_without_sort(
+        &connection,
+        SQL_EXECUTIONS_BY_KIND,
+        ["", "active", "1", "0"],
+    );
+    assert_statement_uses_index_without_sort(&connection, SQL_EXECUTIONS_ALL, ["", "", "1", "0"]);
+}
+
+#[tokio::test]
+async fn unpublished_session_clears_public_index_columns_and_leaves_session_list() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let session_id = "workspace-unpublished-session";
+    seed_workspace_session(
+        &harness,
+        session_id,
+        "/workspace/unpublished",
+        AgentSessionStateRecord::Active,
+        10.0,
+    )
+    .await;
+    let mut projection = agent_session_projection(session_id);
+    let SessionProjectionRecord::AgentSession(session) = &mut projection else {
+        unreachable!();
+    };
+    session.meta.worktree_path = "/workspace/unpublished".to_string();
+    session
+        .reducer_events
+        .push(AgentSessionDomainEvent::BackendSessionRecoveryStarted {
+            recovery_id: "recovery".to_string(),
+            old_provider_session_generation: 0,
+            reason: BackendSessionRecoveryReason::BackendSessionLost,
+            at: 11.0,
+        });
+    let mut update = batch(
+        "workspace-unpublished-update",
+        "workspace-unpublished-update",
+        [77; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![LocalStateMutation::SessionProjection(
+            SessionProjectionMutation {
+                session_id: session_id.to_string(),
+                projection,
+                expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+                revision: Revision::new(1).unwrap(),
+            },
+        )],
+    );
+    update.idempotency.operation_kind = CommitOperationKind::Recovery;
+    harness.store.commit_batch(update).await.unwrap();
+
+    let columns: (Option<String>, Option<i64>, Option<String>) = harness
+        .raw_connection()
+        .query_row(
+            "SELECT public_list_kind, public_sort_key_bits, public_summary
+             FROM session_projection WHERE session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(columns, (None, None, None));
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+    assert!(query
+        .session_summaries(
+            &WorkspaceIdentity::new("/workspace/unpublished"),
+            WorkspaceSessionListKind::Active,
+        )
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn b004_repeated_queries_reuse_the_fixed_reader_pool() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    seed_workspace_session(
+        &harness,
+        "workspace-b004-session",
+        "/workspace/b004",
+        AgentSessionStateRecord::Active,
+        10.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b004-closed-session",
+        "/workspace/b004",
+        AgentSessionStateRecord::Closed,
+        11.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b004-execution",
+        "/workspace/b004",
+        ExecutionStatus::Running,
+        12.0,
+    )
+    .await;
+    seed_workspace_session(
+        &harness,
+        "workspace-b004-other-session",
+        "/workspace/b004-other",
+        AgentSessionStateRecord::Active,
+        13.0,
+    )
+    .await;
+    seed_workspace_execution(
+        &harness,
+        "workspace-b004-other-execution",
+        "/workspace/b004-other",
+        ExecutionStatus::Completed,
+        14.0,
+    )
+    .await;
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+    let reader_pool = harness.store.reader_pool_for_test();
+    let workers_before = reader_pool.running_worker_count_for_test();
+    let workspace = WorkspaceIdentity::new("/workspace/b004");
+    let session_node_id = WorkspaceTreeProjector::session_node_id("workspace-b004-session");
+
+    // When
+    let snapshots = (0..64)
+        .map(|_| {
+            let snapshot = query.workspace_tree(&workspace).unwrap();
+            assert!(query
+                .node_detail(&workspace, &session_node_id)
+                .unwrap()
+                .is_some());
+            assert_eq!(
+                query
+                    .session_node_id(&workspace, "workspace-b004-session")
+                    .unwrap()
+                    .as_deref(),
+                Some(session_node_id.as_str())
+            );
+            assert_eq!(
+                query
+                    .session_summaries(&workspace, WorkspaceSessionListKind::Active)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                query
+                    .execution_summaries(
+                        Some(&workspace),
+                        Some(ExecutionStatusFilter::Active),
+                        Some(WorkflowPageRequest::new(0, 10)),
+                    )
+                    .unwrap()
+                    .len(),
+                1
+            );
+            snapshot
+        })
+        .collect::<Vec<_>>();
+
+    // Then
+    assert!(snapshots.windows(2).all(|pair| pair[0] == pair[1]));
+    assert_eq!(workers_before, super::reader::READER_POOL_SIZE);
+    assert_eq!(reader_pool.running_worker_count_for_test(), workers_before);
+}
+
+#[tokio::test]
+async fn workflow_execution_mutations_enforce_source_guard_and_rollback_atomically() {
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "workspace-mutation-guard-execution";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        "/workspace/mutation",
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    let updated = WorkflowExecutionMetadataRecord {
+        execution_id: execution_id.to_string(),
+        workflow_name: "Updated workflow".to_string(),
+        status: ExecutionStatus::Completed,
+        worktree_path: "/workspace/mutation".to_string(),
+        current_node: None,
+        created_from: ExecutionOrigin::DesktopUi,
+        started_at_bits: 10.0_f64.to_bits(),
+        updated_at_bits: 20.0_f64.to_bits(),
+        completed_at_bits: Some(20.0_f64.to_bits()),
+        error_reason: None,
+        interruption_reason: None,
+        resume_from_node: None,
+        total_token_usage: WorkflowTokenUsage::default(),
+    };
+    let update_mutations = |expected, revision, replace_nodes| {
+        let mut mutations = vec![
+            LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                session_id: format!("workflow:{execution_id}"),
+                projection: SessionProjectionRecord::WorkflowExecution(
+                    WorkflowExecutionProjectionRecord::Present(updated.clone()),
+                ),
+                expected,
+                revision,
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Present(updated.clone()),
+                expected,
+                revision,
+            }),
+        ];
+        if replace_nodes {
+            mutations.push(LocalStateMutation::WorkflowExecutionNodeProjection(
+                WorkflowExecutionNodeProjectionMutation {
+                    execution_id: execution_id.to_string(),
+                    nodes: Vec::new(),
+                    expected,
+                    revision,
+                },
+            ));
+        }
+        mutations
+    };
+
+    // When
+    let mut stale = batch(
+        "workspace-mutation-stale",
+        "workspace-mutation-stale",
+        [201; 32],
+        Vec::new(),
+        Vec::new(),
+        update_mutations(
+            RevisionGuard::Expected(Revision::new(1).unwrap()),
+            Revision::new(2).unwrap(),
+            false,
+        ),
+    );
+    stale.idempotency.operation_kind = CommitOperationKind::Workflow;
+    let stale_result = harness.store.commit_batch(stale).await;
+
+    // Then
+    assert!(matches!(
+        stale_result,
+        Err(CommitBatchError::StreamHeadConflict { .. }) | Err(CommitBatchError::PayloadConflict)
+    ));
+    let before_rollback: (i64, String, i64) = harness
+        .raw_connection()
+        .query_row(
+            "SELECT execution.source_revision, execution.status,
+                    (SELECT COUNT(*) FROM workflow_execution_nodes
+                     WHERE execution_id = execution.execution_id)
+             FROM workflow_executions AS execution
+             WHERE execution.execution_id = ?1",
+            [execution_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(before_rollback, (0, "running".to_string(), 1));
+
+    // Given
+    harness.fault.arm_fail_before_commit();
+    let mut rollback = batch(
+        "workspace-mutation-rollback",
+        "workspace-mutation-rollback",
+        [202; 32],
+        Vec::new(),
+        Vec::new(),
+        update_mutations(
+            RevisionGuard::Expected(Revision::new(0).unwrap()),
+            Revision::new(1).unwrap(),
+            true,
+        ),
+    );
+    rollback.idempotency.operation_kind = CommitOperationKind::Workflow;
+
+    // When
+    let rollback_result = harness.store.commit_batch(rollback).await;
+
+    // Then
+    assert!(matches!(
+        rollback_result,
+        Err(CommitBatchError::StorageUnavailable { .. })
+    ));
+    let after_rollback: (i64, String, i64) = harness
+        .raw_connection()
+        .query_row(
+            "SELECT execution.source_revision, execution.status,
+                    (SELECT COUNT(*) FROM workflow_execution_nodes
+                     WHERE execution_id = execution.execution_id)
+             FROM workflow_executions AS execution
+             WHERE execution.execution_id = ?1",
+            [execution_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(after_rollback, before_rollback);
+}
+
+#[tokio::test]
+async fn workflow_index_projection_validation_rejects_malformed_rows_table_driven() {
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "workspace-validation-execution";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        "/workspace/validation",
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    let raw: String = harness
+        .raw_connection()
+        .query_row(
+            "SELECT tree_record FROM workflow_execution_nodes WHERE execution_id = ?1",
+            [execution_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let base =
+        super::indexed_projection_codec::decode_workflow_execution_node_tree_v1(&raw).unwrap();
+
+    let mut wrong_execution = base.clone();
+    wrong_execution.execution_id = Some("other-execution".to_string());
+    let duplicate_ids = vec![base.clone(), base.clone()];
+    let mut duplicate_occurrence = base.clone();
+    duplicate_occurrence.id = "duplicate-occurrence".to_string();
+    let mut overflow = base.clone();
+    overflow.sibling_order = u64::MAX;
+    let mut invalid_parent = base.clone();
+    invalid_parent.parent_id = Some("missing-parent".to_string());
+    let cases = [
+        ("execution-id-mismatch", vec![wrong_execution]),
+        ("duplicate-node-id", duplicate_ids),
+        (
+            "duplicate-node-occurrence",
+            vec![base.clone(), duplicate_occurrence],
+        ),
+        ("sibling-order-overflow", vec![overflow]),
+        ("aggregate-restore-failure", vec![invalid_parent]),
+    ];
+    for (case, nodes) in cases {
+        let mut source = batch(
+            &format!("workspace-validation-{case}"),
+            &format!("workspace-validation-{case}"),
+            sha2::Sha256::digest(case.as_bytes()).into(),
+            Vec::new(),
+            Vec::new(),
+            vec![LocalStateMutation::WorkflowExecutionNodeProjection(
+                WorkflowExecutionNodeProjectionMutation {
+                    execution_id: execution_id.to_string(),
+                    nodes,
+                    expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+                    revision: Revision::new(1).unwrap(),
+                },
+            )],
+        );
+        source.idempotency.operation_kind = CommitOperationKind::Workflow;
+        assert!(
+            matches!(
+                harness.store.commit_batch(source).await,
+                Err(CommitBatchError::PayloadConflict)
+            ),
+            "malformed node projection case was accepted: {case}"
+        );
+    }
+
+    let mut mismatched_workspace = WorkflowExecutionMetadataRecord {
+        execution_id: execution_id.to_string(),
+        workflow_name: "validation".to_string(),
+        status: ExecutionStatus::Running,
+        worktree_path: "/workspace/validation/".to_string(),
+        current_node: None,
+        created_from: ExecutionOrigin::DesktopUi,
+        started_at_bits: 10.0f64.to_bits(),
+        updated_at_bits: 11.0f64.to_bits(),
+        completed_at_bits: None,
+        error_reason: None,
+        interruption_reason: None,
+        resume_from_node: None,
+        total_token_usage: WorkflowTokenUsage::default(),
+    };
+    mismatched_workspace.worktree_path.push('/');
+    let mut source = batch(
+        "workspace-validation-identity",
+        "workspace-validation-identity",
+        [93; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![LocalStateMutation::WorkflowExecutionProjection(
+            WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Present(mismatched_workspace),
+                expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+                revision: Revision::new(1).unwrap(),
+            },
+        )],
+    );
+    source.idempotency.operation_kind = CommitOperationKind::Workflow;
+    assert!(matches!(
+        harness.store.commit_batch(source).await,
+        Err(CommitBatchError::PayloadConflict)
+    ));
+}
+
+#[tokio::test]
+async fn b005_live_restart_and_v2_evolution_preserve_workspace_tree() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    // Given
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "14910000-0000-4000-8000-000000000005";
+    let mut workflow_projection =
+        workflow_execution_projection(execution_id, ExecutionStatus::Running);
+    let SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
+        execution,
+    )) = &mut workflow_projection
+    else {
+        unreachable!("workflow fixture must be present");
+    };
+    execution.worktree_path = "/tmp/releash-test".to_string();
+    let execution_record = execution.clone();
+    let mut workflow_tree =
+        crate::domain::workspace_tree::WorkspaceTree::empty("/tmp/releash-test");
+    crate::domain::workspace_tree::WorkspaceTreeProjector::project(
+        &mut workflow_tree,
+        [
+            crate::domain::workspace_tree::WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_record.execution_id.clone(),
+                workflow_name: execution_record.workflow_name.clone(),
+                worktree_path: execution_record.worktree_path.clone(),
+                definition: crate::domain::workflow::WorkflowDefinition::default(),
+                timestamp: f64::from_bits(execution_record.started_at_bits),
+            },
+            crate::domain::workspace_tree::WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_record.execution_id.clone(),
+                node_execution_id: "workspace-b005-fanout".to_string(),
+                node_name: "fanout".to_string(),
+                kind: crate::domain::workflow::NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 2.0,
+            },
+            crate::domain::workspace_tree::WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_record.execution_id.clone(),
+                node_execution_id: "workspace-b005-fanout-child".to_string(),
+                node_name: "child".to_string(),
+                kind: crate::domain::workflow::NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(crate::domain::workflow::FanoutParentRef {
+                    parent_node: "fanout".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
+                timestamp: 3.0,
+            },
+            crate::domain::workspace_tree::WorkspaceStructureFact::WorkflowSummaryProjected {
+                execution_id: execution_record.execution_id.clone(),
+                workflow_name: execution_record.workflow_name.clone(),
+                status: execution_record.status,
+                updated_at: f64::from_bits(execution_record.updated_at_bits),
+            },
+        ],
+    )
+    .unwrap();
+    let mut source = batch(
+        "workspace-b005-source",
+        "workspace-b005-source",
+        [149; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![LocalStateMutation::SessionProjection(
+            SessionProjectionMutation {
+                session_id: "workspace-b005-session".to_string(),
+                projection: agent_session_projection("workspace-b005-session"),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            },
+        )],
+    );
+    source.idempotency.operation_kind = CommitOperationKind::UserMutation;
+    let projected_repository = harness.store.clone();
+    projected_repository.commit_batch(source).await.unwrap();
+    let mut workflow_source = batch(
+        "workspace-b005-workflow-source",
+        "workspace-b005-workflow-source",
+        [150; 32],
+        vec![head(StreamId::workflow(execution_id).unwrap(), 0)],
+        vec![
+            UncommittedDomainEvent {
+                stream_id: StreamId::workflow(execution_id).unwrap(),
+                event: LocalDomainEvent::Workflow(WorkflowDomainEvent::WorkflowExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "test-workflow".to_string(),
+                    worktree_path: "/tmp/releash-test".to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: "{}".to_string(),
+                    permission_mode: "ask".to_string(),
+                    definition: crate::domain::workflow::WorkflowDefinition::default(),
+                    timestamp: 1.0,
+                }),
+                occurred_at_ms: 1,
+            },
+            UncommittedDomainEvent {
+                stream_id: StreamId::workflow(execution_id).unwrap(),
+                event: LocalDomainEvent::Workflow(WorkflowDomainEvent::NodeExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "workspace-b005-fanout".to_string(),
+                    node_name: "fanout".to_string(),
+                    kind: crate::domain::workflow::NodeKindName::Fanout,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 2.0,
+                }),
+                occurred_at_ms: 2,
+            },
+            UncommittedDomainEvent {
+                stream_id: StreamId::workflow(execution_id).unwrap(),
+                event: LocalDomainEvent::Workflow(WorkflowDomainEvent::NodeExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "workspace-b005-fanout-child".to_string(),
+                    node_name: "child".to_string(),
+                    kind: crate::domain::workflow::NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: Some(crate::domain::workflow::FanoutParentRef {
+                        parent_node: "fanout".to_string(),
+                        parent_attempt: 1,
+                        item_index: Some(0),
+                        child_index: 0,
+                    }),
+                    timestamp: 3.0,
+                }),
+                occurred_at_ms: 3,
+            },
+        ],
+        vec![
+            LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                session_id: format!("workflow:{execution_id}"),
+                projection: workflow_projection,
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::Obligation(ObligationMutation {
+                obligation_id: format!("workflow-execution-{execution_id}"),
+                record: workflow_execution_obligation(execution_id),
+                pending: Some(PendingIndexEntry {
+                    ordered_key: format!("workflow_execution:{execution_id}"),
+                    owner: "workflow-runtime".to_string(),
+                    partition: PendingPartition::UnownedRuntime,
+                    shutdown_plan: None,
+                }),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(
+                crate::domain::local_event::WorkflowExecutionProjectionMutation {
+                    projection: WorkflowExecutionProjectionRecord::Present(
+                        execution_record.clone(),
+                    ),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                },
+            ),
+            LocalStateMutation::WorkflowExecutionNodeProjection(
+                crate::domain::local_event::WorkflowExecutionNodeProjectionMutation {
+                    execution_id: execution_record.execution_id.clone(),
+                    nodes: workflow_tree.nodes().to_vec(),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                },
+            ),
+        ],
+    );
+    workflow_source.idempotency.operation_kind = CommitOperationKind::Workflow;
+    projected_repository
+        .commit_batch(workflow_source)
+        .await
+        .unwrap();
+
+    // When
+    let query = SqliteWorkspaceQueryService::new(
+        harness.store.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&harness.root)),
+    );
+    let live = query
+        .workspace_tree(&WorkspaceIdentity::new("/tmp/releash-test"))
+        .unwrap();
+    let live_node_count = live.nodes.len();
+    let fanout_child_count = live
+        .nodes
+        .iter()
+        .find_map(|root| match root {
+            crate::usecase::workflow::WorkspaceTreeItemDto::Workflow(workflow) => {
+                workflow.children.iter().find_map(|child| match child {
+                    crate::usecase::workflow::WorkspaceTreeItemDto::Fanout(fanout) => {
+                        Some(&fanout.children)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("the v2 fixture must include a Workflow fanout branch")
+        .len();
+
+    let Harness {
+        _dir, root, store, ..
+    } = harness;
+    drop(query);
+    drop(projected_repository);
+    drop(store);
+
+    let restarted = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .unwrap();
+    let restarted_tree = SqliteWorkspaceQueryService::new(
+        restarted.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new("/tmp/releash-test"))
+    .unwrap();
+    drop(restarted);
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    super::schema::downgrade_workspace_query_schema_fixture_to_v2(&connection).unwrap();
+    drop(connection);
+
+    let migrated = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("the supported v2 store must evolve to v3");
+    let migrated_tree = SqliteWorkspaceQueryService::new(
+        migrated,
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new("/tmp/releash-test"))
+    .unwrap();
+
+    let post_migration_restart = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .unwrap();
+    let post_migration_tree = SqliteWorkspaceQueryService::new(
+        post_migration_restart,
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new("/tmp/releash-test"))
+    .unwrap();
+
+    // Then
+    assert_eq!(live_node_count, 2);
+    assert_eq!(fanout_child_count, 1);
+    assert_eq!(restarted_tree, live);
+    assert_eq!(migrated_tree.nodes, live.nodes);
+    assert_eq!(migrated_tree.preferred_node_id, live.preferred_node_id);
+    assert_eq!(post_migration_tree, migrated_tree);
+    drop(_dir);
+}
+
+#[tokio::test]
+async fn workspace_query_v2_evolution_normalizes_canonical_execution_and_owner_identity() {
+    use crate::adaptor::gateway::workflow::execution_store::{
+        workflow_worktree_storage_key, ExecutionStore,
+    };
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::domain::workflow::{
+        NodeDefinition, RuntimeExecutionState, TokenUsage, WorkflowDefinition,
+    };
+    use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "14910000-0000-4000-8000-000000000105";
+    let normalized_path = "//server/share/managed-worktree";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        normalized_path,
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    let Harness {
+        _dir, root, store, ..
+    } = harness;
+    drop(store);
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    super::schema::downgrade_workspace_query_schema_fixture_to_v2(&connection).unwrap();
+    let canonical_key = format!("workflow:{execution_id}");
+    let (canonical_raw, commit_id): (String, String) = connection
+        .query_row(
+            "SELECT projection, commit_id FROM session_projection WHERE session_id = ?1",
+            [&canonical_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let canonical = super::projection_record_codec::decode_session_projection_record_v1(
+        &canonical_raw,
+        &canonical_key,
+    )
+    .unwrap();
+    let SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
+        mut execution,
+    )) = canonical
+    else {
+        panic!("legacy fixture must contain one present execution");
+    };
+    let raw_windows_path = r"\\server\share\\managed-worktree\\";
+    let raw_mixed_path = "//server//share/managed-worktree/";
+    execution.worktree_path = raw_windows_path.to_string();
+    let canonical = SessionProjectionRecord::WorkflowExecution(
+        WorkflowExecutionProjectionRecord::Present(execution),
+    );
+    let canonical_raw =
+        super::projection_record_codec::encode_session_projection_record_v1(&canonical).unwrap();
+    connection
+        .execute(
+            "UPDATE session_projection SET projection = ?1 WHERE session_id = ?2",
+            rusqlite::params![canonical_raw, canonical_key],
+        )
+        .unwrap();
+    for (revision, raw_path) in [(0_i64, raw_windows_path), (1_i64, raw_mixed_path)] {
+        let owner = SessionProjectionRecord::WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord {
+            worktree_path: raw_path.to_string(),
+            execution_id: execution_id.to_string(),
+            active: true,
+        });
+        let encoded =
+            super::projection_record_codec::encode_session_projection_record_v1(&owner).unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_projection
+                    (session_id, projection, revision, commit_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    workflow_worktree_storage_key(raw_path),
+                    encoded,
+                    revision,
+                    commit_id,
+                ],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let migrated = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("legacy workspace identities must evolve");
+    let tree = SqliteWorkspaceQueryService::new(
+        migrated.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new(normalized_path))
+    .unwrap();
+    assert_eq!(tree.nodes.len(), 1);
+    let execution_store = ExecutionStore::new_canonical(
+        None,
+        migrated.clone(),
+        migrated.installation_id().to_string(),
+    );
+    execution_store
+        .prepare_atomic_existing_snapshot_mutations(&RuntimeCommitSnapshot {
+            execution_id: execution_id.to_string(),
+            workflow_name: "test-workflow".to_string(),
+            worktree_path: normalized_path.to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            error_reason: None,
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            current_node_name: "node-1".to_string(),
+            current_session_id: None,
+            node_history: Vec::new(),
+            node_execution_counts: std::collections::HashMap::new(),
+            workflow_definition: WorkflowDefinition {
+                name: "test-workflow".to_string(),
+                nodes: vec![NodeDefinition {
+                    name: "node-1".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            total_token_usage: TokenUsage::default(),
+            artifacts: std::collections::HashMap::new(),
+            node_executions: Vec::new(),
+            started_at: 10.0,
+            updated_at: 11.0,
+        })
+        .await
+        .expect("the migrated canonical identity must support an execution update");
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    let canonical_raw: String = connection
+        .query_row(
+            "SELECT projection FROM session_projection WHERE session_id = ?1",
+            [&canonical_key],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical_json: serde_json::Value = serde_json::from_str(&canonical_raw).unwrap();
+    assert_eq!(
+        canonical_json["execution"]["worktreePath"].as_str(),
+        Some(normalized_path)
+    );
+    let normalized_owner_key = workflow_worktree_storage_key(normalized_path);
+    let owner_rows: Vec<(String, String)> = connection
+        .prepare(
+            "SELECT session_id, projection FROM session_projection
+             WHERE session_id LIKE 'workflow-worktree:%' ORDER BY session_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(owner_rows.len(), 1);
+    assert_eq!(owner_rows[0].0, normalized_owner_key);
+    let owner = super::projection_record_codec::decode_session_projection_record_v1(
+        &owner_rows[0].1,
+        &owner_rows[0].0,
+    )
+    .unwrap();
+    let SessionProjectionRecord::WorkflowWorktreeOwner(owner) = owner else {
+        panic!("normalized owner row must retain the owner record");
+    };
+    assert_eq!(owner.worktree_path, normalized_path);
+    assert_eq!(owner.execution_id, execution_id);
+    assert!(owner.active);
+    assert_ne!(
+        normalized_owner_key,
+        workflow_worktree_storage_key(raw_windows_path)
+    );
+    assert_ne!(
+        normalized_owner_key,
+        workflow_worktree_storage_key(raw_mixed_path)
+    );
+    drop(migrated);
+    drop(_dir);
+}
+
+#[tokio::test]
+async fn unresolved_recovery_fence_survives_commit_restart_and_tree_read() {
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "workspace-recovery-fence-execution";
+    let workspace = "/workspace/recovery-fence";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        workspace,
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    let obligation_id = "workspace-recovery-fence-obligation";
+    let mut obligation = batch(
+        "workspace-recovery-fence-obligation-commit",
+        "workspace-recovery-fence-obligation-commit",
+        [91; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![LocalStateMutation::Obligation(ObligationMutation {
+            obligation_id: obligation_id.to_string(),
+            record: send_obligation_fixture(
+                obligation_id,
+                ObligationStateRecord::ReconciliationRequired,
+            ),
+            pending: Some(PendingIndexEntry {
+                ordered_key: format!("recovery-fence:{obligation_id}"),
+                owner: execution_id.to_string(),
+                partition: PendingPartition::Owner,
+                shutdown_plan: None,
+            }),
+            expected: RevisionGuard::Absent,
+            revision: Revision::new(0).unwrap(),
+        })],
+    );
+    obligation.idempotency.operation_kind = CommitOperationKind::Recovery;
+    harness.store.commit_batch(obligation).await.unwrap();
+    let reason = crate::domain::workspace_tree::unresolved_recovery_reason(
+        harness.store.as_ref(),
+        execution_id,
+    )
+    .await
+    .unwrap()
+    .expect("pending owner projects a recovery fence");
+
+    let record = WorkflowExecutionMetadataRecord {
+        execution_id: execution_id.to_string(),
+        workflow_name: format!("Workflow {execution_id}"),
+        status: ExecutionStatus::Interrupted,
+        worktree_path: workspace.to_string(),
+        current_node: None,
+        created_from: ExecutionOrigin::DesktopUi,
+        started_at_bits: 10.0f64.to_bits(),
+        updated_at_bits: 20.0f64.to_bits(),
+        completed_at_bits: None,
+        error_reason: None,
+        interruption_reason: Some(crate::domain::workflow::ExecutionInterruptionReason::Crash),
+        resume_from_node: None,
+        total_token_usage: WorkflowTokenUsage::default(),
+    };
+    let mut tree = WorkspaceTree::empty(workspace);
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: record.workflow_name.clone(),
+                worktree_path: workspace.to_string(),
+                definition: crate::domain::workflow::WorkflowDefinition::default(),
+                timestamp: 10.0,
+            },
+            WorkspaceStructureFact::RecoveryFenceProjected {
+                owner: execution_id.to_string(),
+                reason: Some(reason.clone()),
+            },
+            WorkspaceStructureFact::WorkflowSummaryProjected {
+                execution_id: execution_id.to_string(),
+                workflow_name: record.workflow_name.clone(),
+                status: ExecutionStatus::Interrupted,
+                updated_at: 20.0,
+            },
+        ],
+    )
+    .unwrap();
+    let revision = Revision::new(1).unwrap();
+    let expected = RevisionGuard::Expected(Revision::new(0).unwrap());
+    let mut projection_commit = batch(
+        "workspace-recovery-fence-projection-commit",
+        "workspace-recovery-fence-projection-commit",
+        [92; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![
+            LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                session_id: format!("workflow:{execution_id}"),
+                projection: SessionProjectionRecord::WorkflowExecution(
+                    WorkflowExecutionProjectionRecord::Present(record.clone()),
+                ),
+                expected,
+                revision,
+            }),
+            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+                projection: WorkflowExecutionProjectionRecord::Present(record),
+                expected,
+                revision,
+            }),
+            LocalStateMutation::WorkflowExecutionNodeProjection(
+                WorkflowExecutionNodeProjectionMutation {
+                    execution_id: execution_id.to_string(),
+                    nodes: tree.nodes().to_vec(),
+                    expected,
+                    revision,
+                },
+            ),
+        ],
+    );
+    projection_commit.idempotency.operation_kind = CommitOperationKind::Workflow;
+    harness.store.commit_batch(projection_commit).await.unwrap();
+
+    let Harness {
+        _dir, root, store, ..
+    } = harness;
+    drop(store);
+    let reopened = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .unwrap();
+    let snapshot = SqliteWorkspaceQueryService::new(
+        reopened,
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new(workspace))
+    .unwrap();
+    let workflow = snapshot
+        .nodes
+        .iter()
+        .find_map(|node| match node {
+            crate::usecase::workflow::WorkspaceTreeItemDto::Workflow(workflow) => Some(workflow),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!workflow.capabilities.can_resume);
+    assert_eq!(
+        workflow.capabilities.resume_unavailable_reason.as_deref(),
+        Some(reason.as_str())
+    );
+    drop(_dir);
+}
+
+#[tokio::test]
+async fn workspace_query_v2_evolution_restores_session_publication_constraints() {
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    seed_workspace_session(
+        &harness,
+        "workspace-schema-constraint-session",
+        "/workspace/schema-constraint",
+        AgentSessionStateRecord::Active,
+        10.0,
+    )
+    .await;
+    let Harness {
+        _dir, root, store, ..
+    } = harness;
+    drop(store);
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    super::schema::downgrade_workspace_query_schema_fixture_to_v2(&connection).unwrap();
+    drop(connection);
+    let evolved = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("supported v2 fixture evolves");
+    drop(evolved);
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    assert!(connection
+        .execute(
+            "UPDATE session_projection
+             SET workspace_identity = '/workspace/schema-constraint',
+                 public_list_kind = 'invalid',
+                 public_sort_key_bits = 1,
+                 public_summary = '{}'
+             WHERE session_id = 'workspace-schema-constraint-session'",
+            [],
+        )
+        .is_err());
+    assert!(connection
+        .execute(
+            "UPDATE session_projection
+             SET public_summary = NULL
+             WHERE session_id = 'workspace-schema-constraint-session'",
+            [],
+        )
+        .is_err());
+    drop(_dir);
 }
 
 fn send_effect_admission_projection(

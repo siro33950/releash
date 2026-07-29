@@ -15,3 +15,4 @@ pub(crate) mod repository;
 pub(crate) mod shell;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
+pub(crate) mod workspace_tree;

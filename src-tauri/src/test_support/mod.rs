@@ -106,6 +106,31 @@ pub(crate) fn build_agent_runtime_usecase_with_controller(
     )
 }
 
+pub(crate) fn build_agent_runtime_usecase_with_controller_and_workspace_query(
+    session_store: Arc<SessionStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+) -> (
+    Arc<AgentSessionRuntimeUsecase>,
+    TestAgentRuntimeController,
+    Arc<crate::usecase::workspace_tree::TestWorkspaceQueryService>,
+) {
+    let data_dir = data_dir.into();
+    let workspace_query = crate::usecase::workspace_tree::TestWorkspaceQueryService::new(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let (usecase, controller) = build_agent_runtime_usecase_with_required_workspace_query(
+        session_store,
+        data_dir,
+        Arc::new(NoopAgentSessionEventNotifier),
+        Arc::new(NoopAgentStatusNotifier),
+        Arc::new(TokioTestAgentTaskSpawner),
+        workspace_query.clone(),
+    );
+    (usecase, controller, workspace_query)
+}
+
 pub(crate) fn build_agent_runtime_usecase_with_controller_and_spawner(
     session_store: Arc<SessionStore>,
     data_dir: impl Into<std::path::PathBuf>,
@@ -142,6 +167,64 @@ fn build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
     status_notifier: Arc<dyn AgentStatusNotifier>,
     spawner: Arc<dyn AgentTaskSpawner>,
 ) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
+    let data_dir = data_dir.into();
+    let workspace_query = crate::usecase::workspace_tree::TestWorkspaceQueryService::new(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    build_agent_runtime_usecase_with_required_workspace_query(
+        session_store,
+        data_dir,
+        event_notifier,
+        status_notifier,
+        spawner,
+        workspace_query,
+    )
+}
+
+pub(crate) struct TestAgentRuntimeDependencies {
+    pub registry: Arc<AgentBackendRegistry>,
+    pub status_center: Arc<AgentStatusCenter>,
+    pub status_notifier: Arc<dyn AgentStatusNotifier>,
+    pub event_notifier: Arc<dyn AgentSessionEventNotifier>,
+    pub spawner: Arc<dyn AgentTaskSpawner>,
+    pub instruction_source: Arc<dyn InstructionSourcePort>,
+}
+
+pub(crate) fn agent_runtime_dependencies() -> TestAgentRuntimeDependencies {
+    let controller = TestAgentRuntimeController::default();
+    let mut registry = AgentBackendRegistry::new();
+    registry.register(Arc::new(TestAgentBackend {
+        id: "claude",
+        name: "Claude",
+        models: vec!["claude-sonnet-5", "claude-opus-5"],
+        controller: controller.clone(),
+    }));
+    registry.register(Arc::new(TestAgentBackend {
+        id: "codex",
+        name: "Codex",
+        models: vec!["gpt-5", "gpt-5.6-sol", "gpt-5.6-terra"],
+        controller,
+    }));
+    TestAgentRuntimeDependencies {
+        registry: Arc::new(registry),
+        status_center: Arc::new(AgentStatusCenter::new()),
+        status_notifier: Arc::new(NoopAgentStatusNotifier),
+        event_notifier: Arc::new(NoopAgentSessionEventNotifier),
+        spawner: Arc::new(TokioTestAgentTaskSpawner),
+        instruction_source: Arc::new(EmptyInstructionSource),
+    }
+}
+
+fn build_agent_runtime_usecase_with_required_workspace_query(
+    session_store: Arc<SessionStore>,
+    data_dir: std::path::PathBuf,
+    event_notifier: Arc<dyn AgentSessionEventNotifier>,
+    status_notifier: Arc<dyn AgentStatusNotifier>,
+    spawner: Arc<dyn AgentTaskSpawner>,
+    workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
     let controller = TestAgentRuntimeController::default();
     let mut registry = AgentBackendRegistry::new();
     registry.register(Arc::new(TestAgentBackend {
@@ -162,7 +245,7 @@ fn build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
         ],
         controller: controller.clone(),
     }));
-    let usecase = Arc::new(AgentSessionRuntimeUsecase::new(
+    let usecase = crate::compose_agent_session_runtime(
         session_store.clone(),
         Arc::new(registry),
         Arc::new(AgentStatusCenter::new()),
@@ -171,8 +254,9 @@ fn build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
         spawner,
         None,
         Arc::new(EmptyInstructionSource),
-        data_dir.into(),
-    ));
+        data_dir,
+        workspace_query,
+    );
     crate::adaptor::controller::event_log_recovery_wiring::register_event_log_recovery_listener(
         session_store,
         &usecase,

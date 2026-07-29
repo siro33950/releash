@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::adaptor::gateway::workflow::execution_store::ExecutionStore;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::adaptor::gateway::workflow::workflow_host::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::workflow_host::runtime_events as workflow_runtime_events;
@@ -118,6 +119,7 @@ pub(crate) struct RealNodeSessionDeps<'a, R: tauri::Runtime> {
     pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     pub(crate) agent_runtime: &'a Arc<AgentSessionRuntimeUsecase>,
     pub(crate) session_store: &'a Arc<SessionStore>,
+    pub(crate) execution_store: &'a Arc<ExecutionStore>,
     pub(crate) open_tabs: &'a Arc<OpenTabRegistry>,
 }
 
@@ -191,13 +193,27 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
         else {
             return Ok(());
         };
-        crate::adaptor::gateway::workflow::event_log_writer::append_required_events_for_app(
-            self.app,
-            &[event],
-        )
-        .map_err(|e| {
-            WorkflowRuntimeError::SessionStore(format!("append NodeSessionStarted failed: {e}"))
-        })
+        let state_mutations = self
+            .execution_store
+            .prepare_atomic_existing_snapshot_mutations(snapshot)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::SessionStore(format!(
+                    "prepare NodeSessionStarted projection failed: {error}"
+                ))
+            })?;
+        crate::adaptor::gateway::workflow::event_log_writer::
+            append_required_events_with_mutations_for_app_as(
+                self.app,
+                crate::domain::local_event::CommitOperationKind::Workflow,
+                &[event],
+                state_mutations,
+            )
+            .map_err(|e| {
+                WorkflowRuntimeError::SessionStore(format!(
+                    "append NodeSessionStarted failed: {e}"
+                ))
+            })
     }
 
     async fn start_agent_turn_locked(

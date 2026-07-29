@@ -3129,6 +3129,16 @@ mod send_execution_tests {
             self.inner.query(request).await
         }
 
+        fn query_blocking(
+            &self,
+            request: crate::domain::local_event::LocalEventQuery,
+        ) -> Result<
+            crate::domain::local_event::LocalEventQueryResult,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            self.inner.query_blocking(request)
+        }
+
         fn subscribe(
             &self,
             after: crate::domain::local_event::GlobalSequence,

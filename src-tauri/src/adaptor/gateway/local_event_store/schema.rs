@@ -7,26 +7,9 @@ use super::fault::{FaultInjector, InitialCreateFaultPoint};
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 pub const CURRENT_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS store_metadata (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 2),
-    installation_id TEXT NOT NULL,
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    cursor_hmac_key BLOB NOT NULL CHECK (length(cursor_hmac_key) = 32),
-    operation_binding_hmac_key BLOB NOT NULL
-        CHECK (length(operation_binding_hmac_key) = 32),
-    process_instance_id TEXT NOT NULL,
-    next_global_sequence INTEGER NOT NULL CHECK (next_global_sequence >= 1),
-    health TEXT NOT NULL CHECK (health = 'ok'),
-    current_shutdown_id TEXT,
-    shutdown_pointer_revision INTEGER NOT NULL CHECK (shutdown_pointer_revision >= 0),
-    FOREIGN KEY (current_shutdown_id) REFERENCES shutdown_plans (shutdown_id)
-        DEFERRABLE INITIALLY DEFERRED
-);
-
 CREATE TABLE IF NOT EXISTS logical_commits (
     commit_id TEXT PRIMARY KEY,
     installation_id TEXT NOT NULL,
@@ -114,7 +97,18 @@ CREATE TABLE IF NOT EXISTS session_projection (
     session_id TEXT PRIMARY KEY,
     projection TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
+    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+    workspace_identity TEXT,
+    public_list_kind TEXT
+        CHECK (public_list_kind IS NULL OR public_list_kind IN ('active', 'closed', 'archived')),
+    public_sort_key_bits INTEGER,
+    public_summary TEXT,
+    CHECK (
+        (public_list_kind IS NULL AND public_sort_key_bits IS NULL AND public_summary IS NULL)
+        OR
+        (workspace_identity IS NOT NULL AND public_list_kind IS NOT NULL
+         AND public_sort_key_bits IS NOT NULL AND public_summary IS NOT NULL)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS message_projection (
@@ -223,6 +217,180 @@ CREATE INDEX IF NOT EXISTS idx_operation_bindings_operation
     ON operation_bindings (installation_id, kind, operation_id, principal, caller_request_id);
 "#;
 
+const WORKSPACE_QUERY_RECORDS_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS workflow_executions (
+    execution_id TEXT PRIMARY KEY,
+    workspace_identity TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('running', 'waiting_approval', 'completed', 'failed', 'aborted', 'interrupted')
+    ),
+    list_kind TEXT NOT NULL CHECK (list_kind IN ('active', 'terminal')),
+    sort_at_bits INTEGER NOT NULL,
+    record_schema TEXT NOT NULL CHECK (record_schema = 'workflow_execution_record_v1'),
+    record TEXT NOT NULL,
+    source_revision INTEGER NOT NULL CHECK (source_revision >= 0),
+    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
+);
+CREATE TABLE IF NOT EXISTS workflow_execution_nodes (
+    execution_id TEXT NOT NULL REFERENCES workflow_executions (execution_id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    parent_id TEXT,
+    sibling_order INTEGER NOT NULL CHECK (sibling_order >= 0),
+    session_id TEXT,
+    node_execution_id TEXT,
+    record_schema TEXT NOT NULL CHECK (record_schema = 'workflow_execution_node_record_v1'),
+    tree_record TEXT NOT NULL,
+    detail_record TEXT NOT NULL,
+    source_revision INTEGER NOT NULL CHECK (source_revision >= 0),
+    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+    PRIMARY KEY (execution_id, node_id),
+    UNIQUE (execution_id, node_execution_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_executions_workspace_list
+    ON workflow_executions (
+        workspace_identity, list_kind, sort_at_bits DESC, execution_id
+    );
+CREATE INDEX IF NOT EXISTS idx_workflow_executions_global_list
+    ON workflow_executions (list_kind, sort_at_bits DESC, execution_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_node
+    ON workflow_execution_nodes (node_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_execution_nodes_occurrence
+    ON workflow_execution_nodes (execution_id, sibling_order, node_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_session
+    ON workflow_execution_nodes (session_id)
+    WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_session_projection_public_list
+    ON session_projection (
+        workspace_identity, public_list_kind, public_sort_key_bits DESC, session_id
+    );
+CREATE INDEX IF NOT EXISTS idx_session_projection_public_node
+    ON session_projection (
+        workspace_identity, json_extract(public_summary, '$.node_id')
+    )
+    WHERE public_summary IS NOT NULL;
+"#;
+
+const SESSION_PROJECTION_TABLE_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS session_projection (
+    session_id TEXT PRIMARY KEY,
+    projection TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+    workspace_identity TEXT,
+    public_list_kind TEXT
+        CHECK (public_list_kind IS NULL OR public_list_kind IN ('active', 'closed', 'archived')),
+    public_sort_key_bits INTEGER,
+    public_summary TEXT,
+    CHECK (
+        (public_list_kind IS NULL AND public_sort_key_bits IS NULL AND public_summary IS NULL)
+        OR
+        (workspace_identity IS NOT NULL AND public_list_kind IS NOT NULL
+         AND public_sort_key_bits IS NOT NULL AND public_summary IS NOT NULL)
+    )
+);
+"#;
+
+const SESSION_PROJECTION_EVOLUTION_V3: &str = r#"
+INSERT INTO session_projection (
+    session_id, projection, revision, commit_id,
+    workspace_identity, public_list_kind, public_sort_key_bits, public_summary
+)
+SELECT session_id, projection, revision, commit_id, NULL, NULL, NULL, NULL
+FROM session_projection_v2;
+DROP TABLE session_projection_v2;
+"#;
+
+fn evolve_session_projection_v3(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch("ALTER TABLE session_projection RENAME TO session_projection_v2;")?;
+    connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
+    connection.execute_batch(SESSION_PROJECTION_EVOLUTION_V3)
+}
+
+fn create_store_metadata(
+    connection: &Connection,
+    table_name: &str,
+    shutdown_plans_table: &str,
+    schema_version: i64,
+) -> Result<(), rusqlite::Error> {
+    if !matches!(table_name, "store_metadata" | "store_metadata_v2")
+        || !matches!(shutdown_plans_table, "shutdown_plans" | "shutdown_plans_v2")
+        || !matches!(schema_version, 2 | 3)
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    connection.execute_batch(&format!(
+        "CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            schema_version INTEGER NOT NULL CHECK (schema_version = {schema_version}),
+            installation_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+            cursor_hmac_key BLOB NOT NULL CHECK (length(cursor_hmac_key) = 32),
+            operation_binding_hmac_key BLOB NOT NULL
+                CHECK (length(operation_binding_hmac_key) = 32),
+            process_instance_id TEXT NOT NULL,
+            next_global_sequence INTEGER NOT NULL CHECK (next_global_sequence >= 1),
+            health TEXT NOT NULL CHECK (health = 'ok'),
+            current_shutdown_id TEXT,
+            shutdown_pointer_revision INTEGER NOT NULL
+                CHECK (shutdown_pointer_revision >= 0),
+            FOREIGN KEY (current_shutdown_id)
+                REFERENCES {shutdown_plans_table} (shutdown_id)
+                DEFERRABLE INITIALLY DEFERRED
+        );"
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn downgrade_workspace_query_schema_fixture_to_v2(
+    connection: &Connection,
+) -> Result<(), rusqlite::Error> {
+    connection.execute_batch("BEGIN IMMEDIATE;")?;
+    let downgrade = (|| {
+        connection.execute_batch(
+            "DROP TABLE workflow_execution_nodes;
+             DROP TABLE workflow_executions;
+             DROP INDEX idx_session_projection_public_list;
+             DROP INDEX idx_session_projection_public_node;
+             ALTER TABLE session_projection RENAME TO session_projection_v3;
+             CREATE TABLE session_projection (
+                 session_id TEXT PRIMARY KEY,
+                 projection TEXT NOT NULL,
+                 revision INTEGER NOT NULL CHECK (revision >= 0),
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
+             );
+             INSERT INTO session_projection
+                 (session_id, projection, revision, commit_id)
+             SELECT session_id, projection, revision, commit_id
+             FROM session_projection_v3;
+             DROP TABLE session_projection_v3;
+             ALTER TABLE store_metadata RENAME TO store_metadata_v3;",
+        )?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 2)?;
+        connection.execute(
+            "INSERT INTO store_metadata (
+                 id, schema_version, installation_id, created_at_ms,
+                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
+                 next_global_sequence, health, current_shutdown_id,
+                 shutdown_pointer_revision
+             )
+             SELECT id, 2, installation_id, created_at_ms,
+                    cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
+                    next_global_sequence, health, current_shutdown_id,
+                    shutdown_pointer_revision
+             FROM store_metadata_v3",
+            [],
+        )?;
+        connection.execute_batch("DROP TABLE store_metadata_v3; PRAGMA user_version = 2;")
+    })();
+    match downgrade {
+        Ok(()) => connection.execute_batch("COMMIT;"),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
+}
+
 pub struct InitialStoreMetadata<'a> {
     pub installation_id: &'a str,
     pub cursor_hmac_key: &'a [u8; 32],
@@ -239,13 +407,16 @@ pub fn initialize_schema(
     connection.execute_batch("BEGIN IMMEDIATE;")?;
     if let Err(error) = (|| {
         connection.execute_batch(CURRENT_SCHEMA)?;
+        connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+        connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
         connection.execute(
             "INSERT INTO store_metadata (
                 id, schema_version, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
                 next_global_sequence, health, current_shutdown_id,
                 shutdown_pointer_revision
-             ) VALUES (1, 2, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
+             ) VALUES (1, 3, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
                        NULL, 0)",
             rusqlite::params![
                 metadata.installation_id,
@@ -302,6 +473,59 @@ pub fn evolve_schema(
         validate_current_schema(connection)?;
         finish_schema_admission(connection)?;
         return Ok(false);
+    }
+
+    let is_supported_v2 = application_id == i64::from(APPLICATION_ID)
+        && user_version == 2
+        && metadata_columns
+            .iter()
+            .any(|column| column == "installation_id")
+        && !metadata_columns.iter().any(|column| column == "store_id");
+    if is_supported_v2 {
+        if fault.take_schema_fail_before_begin() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
+        let evolution = (|| {
+            connection.execute_batch("ALTER TABLE store_metadata RENAME TO store_metadata_v2;")?;
+            create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+            connection.execute_batch(
+                "INSERT INTO store_metadata (
+                     id, schema_version, installation_id, created_at_ms,
+                     cursor_hmac_key, operation_binding_hmac_key,
+                     process_instance_id, next_global_sequence, health,
+                     current_shutdown_id, shutdown_pointer_revision
+                 )
+                 SELECT id, 3, installation_id, created_at_ms,
+                        cursor_hmac_key, operation_binding_hmac_key,
+                        process_instance_id, next_global_sequence, health,
+                        current_shutdown_id, shutdown_pointer_revision
+                 FROM store_metadata_v2;
+                 DROP TABLE store_metadata_v2;",
+            )?;
+            evolve_session_projection_v3(connection)?;
+            connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
+            super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
+            connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+            if fault.take_schema_fail_before_commit() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok::<(), rusqlite::Error>(())
+        })();
+        if let Err(error) = evolution {
+            let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+            return Err(error);
+        }
+        connection.execute_batch("COMMIT; PRAGMA foreign_keys = ON;")?;
+        if fault.take_schema_commit_reply_loss() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if fault.take_schema_fail_before_readback() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        validate_current_schema(connection)?;
+        finish_schema_admission(connection)?;
+        return Ok(true);
     }
 
     let is_supported_v1 = metadata_columns.iter().any(|column| column == "store_id")
@@ -448,44 +672,17 @@ pub fn evolve_schema(
              )
              SELECT ordered_key, obligation_id, owner, partition, shutdown_plan_id, commit_id
              FROM pending_obligations;
-             CREATE TABLE store_metadata_v2 (
-                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                 schema_version INTEGER NOT NULL CHECK (schema_version = 2),
-                 installation_id TEXT NOT NULL,
-                 created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-                 cursor_hmac_key BLOB NOT NULL CHECK (length(cursor_hmac_key) = 32),
-                 operation_binding_hmac_key BLOB NOT NULL CHECK (length(operation_binding_hmac_key) = 32),
-                 process_instance_id TEXT NOT NULL,
-                 next_global_sequence INTEGER NOT NULL CHECK (next_global_sequence >= 1),
-                 health TEXT NOT NULL CHECK (health = 'ok'),
-                 current_shutdown_id TEXT,
-                 shutdown_pointer_revision INTEGER NOT NULL CHECK (shutdown_pointer_revision >= 0),
-                 FOREIGN KEY (current_shutdown_id) REFERENCES shutdown_plans_v2 (shutdown_id)
-                     DEFERRABLE INITIALLY DEFERRED
-             );
-             INSERT INTO store_metadata_v2 (
-                 id, schema_version, installation_id, created_at_ms,
-                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
-                 next_global_sequence, health, current_shutdown_id,
-                 shutdown_pointer_revision
-             )
-             SELECT id, 2, generation_id, created_at_ms,
-                    cursor_hmac_key, operation_binding_hmac_key, boot_id,
-                    next_global_sequence, 'ok', current_shutdown_plan_id,
-                    shutdown_pointer_revision
-             FROM store_metadata;
+             ALTER TABLE store_metadata RENAME TO store_metadata_v1;
              DROP TABLE pending_obligations;
              DROP TABLE shutdown_recovery_snapshots;
              DROP TABLE shutdown_targets;
              DROP TABLE shutdown_plans;
-             DROP TABLE store_metadata;
              DROP TABLE logical_commits;
              ALTER TABLE logical_commits_v2 RENAME TO logical_commits;
              ALTER TABLE shutdown_plans_v2 RENAME TO shutdown_plans;
              ALTER TABLE shutdown_targets_v2 RENAME TO shutdown_targets;
              ALTER TABLE shutdown_recovery_snapshots_v2 RENAME TO shutdown_recovery_snapshots;
              ALTER TABLE pending_obligations_v2 RENAME TO pending_obligations;
-             ALTER TABLE store_metadata_v2 RENAME TO store_metadata;
              UPDATE operation_records
                 SET receipt = json_set(
                     json_remove(receipt, '$.plan_id', '$.epoch'),
@@ -522,9 +719,27 @@ pub fn evolve_schema(
                  ON pending_obligations (shutdown_id, ordered_key);
              CREATE INDEX idx_shutdown_plans_details_state
                  ON shutdown_plans (details_state);
-             PRAGMA application_id = 0x524C5348;
-             PRAGMA user_version = 2;",
+             PRAGMA application_id = 0x524C5348;",
         )?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+        connection.execute_batch(
+            "INSERT INTO store_metadata (
+                 id, schema_version, installation_id, created_at_ms,
+                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
+                 next_global_sequence, health, current_shutdown_id,
+                 shutdown_pointer_revision
+             )
+             SELECT id, 3, generation_id, created_at_ms,
+                    cursor_hmac_key, operation_binding_hmac_key, boot_id,
+                    next_global_sequence, 'ok', current_shutdown_plan_id,
+                    shutdown_pointer_revision
+             FROM store_metadata_v1;
+             DROP TABLE store_metadata_v1;",
+        )?;
+        evolve_session_projection_v3(connection)?;
+        connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
+        super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
+        connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
         if fault.take_schema_fail_before_commit() {
             return Err(rusqlite::Error::InvalidQuery);
         }
@@ -552,7 +767,7 @@ fn finish_schema_admission(connection: &Connection) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
-pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+pub fn validate_current_schema_marker(connection: &Connection) -> Result<(), rusqlite::Error> {
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let user_version: i64 =
@@ -560,6 +775,11 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
     if application_id != i64::from(APPLICATION_ID) || user_version != CURRENT_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    Ok(())
+}
+
+pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    validate_current_schema_marker(connection)?;
     let metadata_count: i64 =
         connection.query_row("SELECT COUNT(*) FROM store_metadata", [], |row| row.get(0))?;
     if metadata_count != 1 {
@@ -688,6 +908,52 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "shutdown_recovery_snapshots",
         &["shutdown_id", "partition", "ordinal", "detail", "commit_id"],
     )?;
+    require_exact_columns(
+        connection,
+        "session_projection",
+        &[
+            "session_id",
+            "projection",
+            "revision",
+            "commit_id",
+            "workspace_identity",
+            "public_list_kind",
+            "public_sort_key_bits",
+            "public_summary",
+        ],
+    )?;
+    require_exact_columns(
+        connection,
+        "workflow_executions",
+        &[
+            "execution_id",
+            "workspace_identity",
+            "status",
+            "list_kind",
+            "sort_at_bits",
+            "record_schema",
+            "record",
+            "source_revision",
+            "commit_id",
+        ],
+    )?;
+    require_exact_columns(
+        connection,
+        "workflow_execution_nodes",
+        &[
+            "execution_id",
+            "node_id",
+            "parent_id",
+            "sibling_order",
+            "session_id",
+            "node_execution_id",
+            "record_schema",
+            "tree_record",
+            "detail_record",
+            "source_revision",
+            "commit_id",
+        ],
+    )?;
     for index in [
         "idx_pending_obligations_partition",
         "idx_pending_obligations_owner",
@@ -697,6 +963,13 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "idx_caller_attempts_scope",
         "idx_caller_attempts_pending_kind",
         "idx_operation_bindings_operation",
+        "idx_workflow_executions_workspace_list",
+        "idx_workflow_executions_global_list",
+        "idx_workflow_execution_nodes_node",
+        "idx_workflow_execution_nodes_occurrence",
+        "idx_workflow_execution_nodes_session",
+        "idx_session_projection_public_list",
+        "idx_session_projection_public_node",
     ] {
         require_index(connection, index)?;
     }

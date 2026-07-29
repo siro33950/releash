@@ -123,9 +123,13 @@ fn agent_runtime_failure_metadata(
         AgentRuntimeError::WorkflowTurnSend(error) => {
             (workflow_turn_send_failure_kind(error), None)
         }
+        AgentRuntimeError::WorkspaceQuery(
+            crate::domain::workflow::WorkflowError::StorageUnavailable { .. },
+        ) => (NodeExecutionFailureKind::InfrastructureCrash, None),
         AgentRuntimeError::BackendSelectionLocked
         | AgentRuntimeError::AcceptedEffectAdmissionDeferred
         | AgentRuntimeError::AcceptedEffectAdmissionFailed { .. }
+        | AgentRuntimeError::WorkspaceQuery(_)
         | AgentRuntimeError::Other(_) => (NodeExecutionFailureKind::ValidationFailure, None),
     }
 }
@@ -227,6 +231,11 @@ pub(crate) fn workflow_error_to_runtime_error(
         crate::domain::workflow::WorkflowError::NotFound(message)
         | crate::domain::workflow::WorkflowError::External(message) => {
             WorkflowRuntimeError::InvalidWorkflow(message)
+        }
+        crate::domain::workflow::WorkflowError::StorageUnavailable { message, .. }
+        | crate::domain::workflow::WorkflowError::CorruptStoredState(message)
+        | crate::domain::workflow::WorkflowError::IncompatibleStoredEvent(message) => {
+            WorkflowRuntimeError::SessionStore(message)
         }
     }
 }

@@ -1266,8 +1266,8 @@ mod tests {
         // helpers, so scan the full source. Its tests also must never name a
         // forbidden Session/Workflow root.
         let process_source = include_str!("../../../infrastructure/process/pid_registry.rs");
+        let workflow_module_source = include_str!("../workflow/mod.rs");
         let execution_store_source = include_str!("../workflow/execution_store.rs");
-        let execution_repository_source = include_str!("../workflow/execution_repository.rs");
         let event_repository_source = include_str!("../workflow/event_repository.rs");
         let workflow_log_source = include_str!("../workflow/log.rs");
         let session_storage_source = include_str!("../agent_session/session_storage.rs");
@@ -1338,16 +1338,6 @@ mod tests {
                 "workflow execution reverse-lookup fallback",
             ),
             (
-                execution_repository_source,
-                "Legacy(PathBuf)",
-                "workflow execution legacy repository",
-            ),
-            (
-                execution_repository_source,
-                "fn persist(&self, execution:",
-                "workflow execution legacy repository writer",
-            ),
-            (
                 event_repository_source,
                 "Legacy(PathBuf)",
                 "workflow event legacy repository",
@@ -1375,14 +1365,14 @@ mod tests {
         ] {
             assert_test_only(source, needle, label);
         }
+        assert!(
+            !workflow_module_source.contains("mod execution_repository;"),
+            "workflow execution file repository must stay removed"
+        );
 
         assert!(
             execution_store_source.contains("pub(crate) fn new_canonical("),
             "production workflow execution store must require canonical construction"
-        );
-        assert!(
-            execution_repository_source.contains("pub(crate) fn with_authority("),
-            "production workflow execution repository must require canonical authority"
         );
         assert!(
             event_repository_source.contains("pub(crate) fn with_authority("),

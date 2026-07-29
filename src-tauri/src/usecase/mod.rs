@@ -23,3 +23,4 @@ pub(crate) mod review_usecase;
 pub(crate) mod shutdown_coordinator;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
+pub(crate) mod workspace_tree;

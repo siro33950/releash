@@ -20,6 +20,7 @@ impl ExecutionStatusFilter {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecutionListFilter {
     pub status: Option<ExecutionStatusFilter>,

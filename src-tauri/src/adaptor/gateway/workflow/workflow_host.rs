@@ -934,9 +934,8 @@ impl WorkflowRuntimeHost {
             .await
             .unwrap();
         if let Some(data_dir) = self.execution_store.data_dir_for_test().await {
-            let event_log = WorkflowEventLog::new(&data_dir);
-            event_log
-                .append(&WorkflowEvent::ExecutionStarted {
+            let mut events = vec![
+                WorkflowEvent::ExecutionStarted {
                     execution_id: execution_id.clone(),
                     workflow_name: workflow.name.clone(),
                     worktree_path: worktree_path.clone(),
@@ -945,10 +944,8 @@ impl WorkflowRuntimeHost {
                     permission_mode: PermissionMode::EDIT.to_string(),
                     definition: workflow.clone(),
                     timestamp: now,
-                })
-                .unwrap();
-            event_log
-                .append(&WorkflowEvent::NodeStarted {
+                },
+                WorkflowEvent::NodeStarted {
                     execution_id: execution_id.clone(),
                     node_execution_id: node_execution_id.clone(),
                     node_name: current_node.clone(),
@@ -956,16 +953,29 @@ impl WorkflowRuntimeHost {
                     attempt: 1,
                     fanout_parent: None,
                     timestamp: now,
-                })
-                .unwrap();
+                },
+            ];
             if matches!(state, RuntimeExecutionState::WaitingApproval) {
-                event_log
-                    .append(&WorkflowEvent::ApprovalRequested {
-                        execution_id: execution_id.clone(),
-                        node_execution_id: node_execution_id.clone(),
-                        node_name: current_node.clone(),
-                        timestamp: now,
-                    })
+                events.push(WorkflowEvent::ApprovalRequested {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: current_node.clone(),
+                    timestamp: now,
+                });
+            }
+            if let Some((repository, installation_id)) =
+                self.execution_store.local_event_authority().await
+            {
+                WorkflowEventLog::with_authority(repository, installation_id)
+                    .append_batch_durable_with_mutations_blocking_as(
+                        CommitOperationKind::Workflow,
+                        &events,
+                        Vec::new(),
+                    )
+                    .unwrap();
+            } else {
+                WorkflowEventLog::new(&data_dir)
+                    .append_batch(&events)
                     .unwrap();
             }
         }
@@ -1589,6 +1599,9 @@ impl WorkflowRuntimeHost {
         created_from: ExecutionOrigin,
         permission_mode: PermissionMode,
     ) -> Result<String, WorkflowRuntimeError> {
+        let worktree_path = crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_path)
+            .as_str()
+            .to_string();
         // ===== Phase 1: 副作用なしの validation =====
         // parent ChatSession 作成・executions 登録・refs 登録の前で全 validation を実施する。
         // ここで弾けば、リトライ時に「孤立した parent session」「孤立した refs entry」
@@ -5200,6 +5213,7 @@ impl WorkflowRuntimeHost {
             branch_diff_context: self.branch_diff_context.clone(),
             agent_runtime,
             session_store,
+            execution_store: &self.execution_store,
             open_tabs: &self.open_tabs,
         };
         self.start_node_session_with_deps(&deps, worktree_path)

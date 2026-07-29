@@ -225,6 +225,8 @@ pub enum CanonicalRuntimeOwnerView {
         session_id: String,
         worktree_path: String,
         active: bool,
+        shutdown_target: bool,
+        workflow_node_session: bool,
     },
     ActiveWorkflow {
         worktree_path: String,

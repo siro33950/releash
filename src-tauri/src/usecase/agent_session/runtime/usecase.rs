@@ -240,6 +240,7 @@ pub enum AgentRuntimeError {
         effect_may_be_reserved: bool,
     },
     WorkflowTurnSend(DurableWorkflowSendError),
+    WorkspaceQuery(WorkflowError),
     Other(String),
 }
 
@@ -273,6 +274,7 @@ impl std::fmt::Display for AgentRuntimeError {
                 "Accepted effect admission failed at {stage} (effect_may_be_reserved={effect_may_be_reserved})"
             ),
             Self::WorkflowTurnSend(error) => write!(f, "{error}"),
+            Self::WorkspaceQuery(error) => write!(f, "{error}"),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -581,6 +583,7 @@ pub(super) struct RuntimeContext {
     pub(super) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     pub(super) instruction_source: Arc<dyn InstructionSourcePort>,
     pub(super) data_dir: Arc<PathBuf>,
+    pub(super) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub(super) sessions: Arc<Mutex<RuntimeSessionMap>>,
     pub(super) session_locks: SessionCommandLocks,
     pub(super) runtime_event_locks: SessionLockMap,
@@ -701,6 +704,7 @@ impl AgentSessionRuntimeUsecase {
         branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
         instruction_source: Arc<dyn InstructionSourcePort>,
         data_dir: PathBuf,
+        workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     ) -> Self {
         Self {
             ctx: RuntimeContext {
@@ -713,6 +717,7 @@ impl AgentSessionRuntimeUsecase {
                 branch_diff_context,
                 instruction_source,
                 data_dir: Arc::new(data_dir),
+                workspace_query,
                 sessions: Arc::new(Mutex::new(RuntimeSessionMap::new())),
                 session_locks: SessionCommandLocks::default(),
                 runtime_event_locks: SessionLockMap::default(),
@@ -2307,10 +2312,42 @@ impl AgentSessionRuntimeUsecase {
         &self,
         worktree_path: &str,
     ) -> Result<Vec<SessionSummary>, AgentRuntimeError> {
-        self.ctx
-            .session_store
-            .list_published_sessions(&self.ctx.data_dir, worktree_path)
-            .map_err(AgentRuntimeError::Other)
+        self.workspace_session_summaries(
+            worktree_path,
+            crate::domain::workspace_tree::WorkspaceSessionListKind::Active,
+        )
+        .await
+    }
+
+    pub async fn list_closed_sessions(
+        &self,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, AgentRuntimeError> {
+        self.workspace_session_summaries(
+            worktree_path,
+            crate::domain::workspace_tree::WorkspaceSessionListKind::Closed,
+        )
+        .await
+    }
+
+    async fn workspace_session_summaries(
+        &self,
+        worktree_path: &str,
+        list: crate::domain::workspace_tree::WorkspaceSessionListKind,
+    ) -> Result<Vec<SessionSummary>, AgentRuntimeError> {
+        let workspace_identity =
+            crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_path);
+        let workspace_query = Arc::clone(&self.ctx.workspace_query);
+        tokio::task::spawn_blocking(move || {
+            workspace_query.session_summaries(&workspace_identity, list)
+        })
+        .await
+        .map_err(|error| {
+            AgentRuntimeError::Other(format!(
+                "Workspace Session query worker failed to join: {error}"
+            ))
+        })?
+        .map_err(AgentRuntimeError::WorkspaceQuery)
     }
 
     #[cfg(test)]
@@ -9204,7 +9241,6 @@ mod tests {
         AgentSessionProjectionCodecV1, FileSessionStorage,
     };
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-    use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
     use crate::domain::agent_session::gateway::{AgentBackend, AgentSessionRuntime};
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, SkillEntry,
@@ -9218,7 +9254,8 @@ mod tests {
     use crate::test_support::{
         build_agent_runtime_usecase_with_controller,
         build_agent_runtime_usecase_with_controller_and_notifiers,
-        build_agent_runtime_usecase_with_controller_and_spawner, build_session_store,
+        build_agent_runtime_usecase_with_controller_and_spawner,
+        build_agent_runtime_usecase_with_controller_and_workspace_query, build_session_store,
         TestRuntimeCallKind,
     };
     use crate::usecase::agent_session::runtime::ports::{
@@ -9236,7 +9273,6 @@ mod tests {
     use crate::usecase::workflow::ports::{
         WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     };
-    use crate::usecase::workflow::{WorkspaceSessionGateway, WorkspaceSessionState};
     use std::future::Future;
     use std::path::Path;
     use std::pin::Pin;
@@ -9806,8 +9842,14 @@ mod tests {
             calls,
         }));
         registry.set_default(Some(default_id.to_string()));
+        let session_store = Arc::new(build_session_store());
+        let workspace_query = crate::usecase::workspace_tree::TestWorkspaceQueryService::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         AgentSessionRuntimeUsecase::new(
-            Arc::new(build_session_store()),
+            session_store,
             Arc::new(registry),
             Arc::new(AgentStatusCenter::new()),
             Arc::new(RecordingStatusNotifier::default()),
@@ -9816,6 +9858,7 @@ mod tests {
             None,
             Arc::new(EmptyInstructionSource),
             data_dir,
+            workspace_query,
         )
     }
 
@@ -16991,8 +17034,8 @@ mod tests {
     async fn test_init_sessionsは_workflow_node_tabを復元し_active_session_modeを返す() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, _controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
+        let (usecase, _controller, workspace_query) =
+            build_agent_runtime_usecase_with_controller_and_workspace_query(
                 session_store.clone(),
                 tmp.path(),
             );
@@ -17024,6 +17067,8 @@ mod tests {
             },
         )
         .unwrap();
+        workspace_query
+            .replace_session_summaries(vec![regular.to_summary(), step.to_summary()], Vec::new());
         let open_tabs = OpenTabRegistry::default();
 
         let response = usecase
@@ -17834,7 +17879,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let (usecase, controller) =
-            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
         let session = provider_establish_test_session(&session_store, tmp.path(), None);
         let commit_attempts = Arc::new(AtomicUsize::new(0));
         session_store.set_backend_established_hook_for_test(Arc::new({
@@ -20855,8 +20903,11 @@ mod tests {
     async fn recovery_reopens_with_latest_persisted_configuration_and_generation_two() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let (usecase, controller, workspace_query) =
+            build_agent_runtime_usecase_with_controller_and_workspace_query(
+                session_store.clone(),
+                tmp.path(),
+            );
         let session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -20973,39 +21024,31 @@ mod tests {
         assert_eq!(opens[1].2, PermissionMode::Full);
         assert!(opens[1].3);
 
+        let recovering_publication = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .recovery_publication_snapshot
+            .expect("recovery publishes the last stable summary")
+            .summary;
+        workspace_query.replace_session_summaries(
+            vec![recovering_publication, normal_before_recovery.clone()],
+            Vec::new(),
+        );
         let worktree_path = tmp.path().to_string_lossy().to_string();
         let tauri_sessions = usecase.list_sessions(&worktree_path).await.unwrap();
-        let workspace_sessions =
-            StoredWorkspaceSessionGateway::new(session_store.clone(), tmp.path().to_path_buf())
-                .list_active_sessions(&worktree_path)
-                .unwrap();
         let tauri_recovering = tauri_sessions
-            .iter()
-            .find(|summary| summary.id == session.id)
-            .unwrap();
-        let workspace_recovering = workspace_sessions
             .iter()
             .find(|summary| summary.id == session.id)
             .unwrap();
         assert_eq!(tauri_recovering.state, SessionState::Active);
         assert_eq!(tauri_recovering.updated_at, before_recovery.updated_at);
-        assert_eq!(workspace_recovering.state, WorkspaceSessionState::Active);
-        assert_eq!(workspace_recovering.updated_at, before_recovery.updated_at);
         let tauri_normal = tauri_sessions
-            .iter()
-            .find(|summary| summary.id == normal_session.id)
-            .unwrap();
-        let workspace_normal = workspace_sessions
             .iter()
             .find(|summary| summary.id == normal_session.id)
             .unwrap();
         assert_eq!(tauri_normal.state, normal_before_recovery.state);
         assert_eq!(tauri_normal.updated_at, normal_before_recovery.updated_at);
-        assert_eq!(workspace_normal.state, WorkspaceSessionState::Idle);
-        assert_eq!(
-            workspace_normal.updated_at,
-            normal_before_recovery.updated_at
-        );
 
         let events_during_recovery = session_store
             .load_session_events(tmp.path(), &session.id)
@@ -21092,8 +21135,8 @@ mod tests {
     async fn test_codex_resume失敗はfresh_sessionで復活しdead_threadを再利用しない() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
+        let (usecase, controller, workspace_query) =
+            build_agent_runtime_usecase_with_controller_and_workspace_query(
                 session_store.clone(),
                 tmp.path(),
             );
@@ -21177,6 +21220,17 @@ mod tests {
                 AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
             )));
 
+        let recovering_publication = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .recovery_publication_snapshot
+            .expect("recovery publishes the last stable summary")
+            .summary;
+        workspace_query.replace_session_summaries(
+            vec![recovering_publication, unaffected_session.to_summary()],
+            Vec::new(),
+        );
         let worktree_path = tmp.path().to_string_lossy().to_string();
         let listed_during_recovery = tokio::time::timeout(
             Duration::from_secs(1),
@@ -21223,6 +21277,15 @@ mod tests {
             .unwrap();
         config_update.await.unwrap().unwrap();
         wait_for_start_prompt_count(&controller, &session.id, 1).await;
+        let recovered_publication = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .to_summary();
+        workspace_query.replace_session_summaries(
+            vec![recovered_publication, unaffected_session.to_summary()],
+            Vec::new(),
+        );
         let listed = usecase.list_sessions(&worktree_path).await.unwrap();
         let listed_session = listed
             .iter()
@@ -21298,7 +21361,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let (usecase, controller) =
-            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
         let mut session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -22186,8 +22252,11 @@ mod tests {
     async fn recovery_notice_persistence_failure_does_not_demote_completed_recovery() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let (usecase, controller, workspace_query) =
+            build_agent_runtime_usecase_with_controller_and_workspace_query(
+                session_store.clone(),
+                tmp.path(),
+            );
         let mut session = create_session_internal_with_attributes(
             &session_store,
             tmp.path(),
@@ -22294,6 +22363,7 @@ mod tests {
         assert_ne!(committed.state, SessionState::Error);
         assert_eq!(committed.agent_session_id.as_deref(), Some("fresh-thread"));
         assert!(committed.pending_recovery_message.is_some());
+        workspace_query.replace_session_summaries(vec![committed.to_summary()], Vec::new());
         let listed = usecase
             .list_sessions(tmp.path().to_string_lossy().as_ref())
             .await

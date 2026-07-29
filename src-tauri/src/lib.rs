@@ -22,6 +22,35 @@ use tauri::Manager;
 
 type LocalApiShutdownTarget = Arc<parking_lot::RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_agent_session_runtime(
+    session_store: Arc<usecase::agent_session::session::SessionStore>,
+    registry: Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>,
+    status_center: Arc<usecase::agent_session::status::AgentStatusCenter>,
+    status_notifier: Arc<dyn usecase::agent_session::status::AgentStatusNotifier>,
+    event_notifier: Arc<dyn usecase::agent_session::runtime::ports::AgentSessionEventNotifier>,
+    spawner: Arc<dyn usecase::agent_session::runtime::ports::AgentTaskSpawner>,
+    branch_diff_context: Option<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>,
+    instruction_source: Arc<dyn usecase::agent_session::context::InstructionSourcePort>,
+    data_dir: std::path::PathBuf,
+    workspace_query: Arc<dyn usecase::workspace_tree::WorkspaceQueryService>,
+) -> Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase> {
+    Arc::new(
+        usecase::agent_session::runtime::AgentSessionRuntimeUsecase::new(
+            session_store,
+            registry,
+            status_center,
+            status_notifier,
+            event_notifier,
+            spawner,
+            branch_diff_context,
+            instruction_source,
+            data_dir,
+            workspace_query,
+        ),
+    )
+}
+
 fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
@@ -794,6 +823,9 @@ pub fn run() {
                 usecase::application_startup::ApplicationStartupAuthority::ready(),
             );
             app.manage(local_event_store.clone());
+            let projected_local_event_repository: Arc<
+                dyn domain::local_event::LocalEventTransactionRepository,
+            > = local_event_store.clone();
             let pty_gateway = Arc::new(
                 adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
             );
@@ -807,7 +839,7 @@ pub fn run() {
             app.manage(pty_gateway);
             let session_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
-            > = local_event_store.clone();
+            > = projected_local_event_repository.clone();
             let session_store = Arc::new(
                 usecase::agent_session::session::SessionStore::new_canonical(
                     session_event_repository,
@@ -841,7 +873,7 @@ pub fn run() {
             ));
             let session_feedback_usecase = Arc::new(
                 usecase::agent_session::feedback::SessionFeedbackUsecase::new(
-                    local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                     local_event_store.installation_id().to_string(),
                 ),
             );
@@ -999,22 +1031,17 @@ pub fn run() {
                     repository_state.clone(),
                     code_usecase.clone(),
                 ));
-                let session_store_state = app
-                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                    .inner()
-                    .clone();
-                let (workflow_usecase, workspace_tree_query_service) =
+                let (workflow_usecase, workspace_query_service) =
                     adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
                         data_dir.clone(),
                         repository_usecase.clone(),
                         config_repository.clone(),
                         config_secret_repository.clone(),
-                        session_store_state,
                         app.handle().clone(),
                         local_event_store.clone(),
                     );
                 let workflow_usecase = Arc::new(workflow_usecase);
-                app.manage(Arc::new(workspace_tree_query_service));
+                app.manage(workspace_query_service);
                 let notion_usecase = Arc::new(usecase::notion::usecase::NotionUsecase::new(
                     notion_config_repository.clone(),
                     notion_api_gateway.clone(),
@@ -1132,18 +1159,21 @@ pub fn run() {
                 // the startup boundary above. Reuse that authority instead of
                 // introducing a later unclassified resolution/panic path.
                 let runtime_data_dir = data_dir.clone();
-                let runtime_usecase = Arc::new(
-                    usecase::agent_session::runtime::AgentSessionRuntimeUsecase::new(
-                        runtime_session_store.clone(),
-                        runtime_registry,
-                        agent_status_center.clone(),
-                        agent_status_notifier.clone(),
-                        runtime_notifier,
-                        runtime_spawner,
-                        Some(runtime_branch_diff_context),
-                        runtime_instruction_source,
-                        runtime_data_dir,
-                    ),
+                let workspace_query = app
+                    .state::<Arc<dyn usecase::workspace_tree::WorkspaceQueryService>>()
+                    .inner()
+                    .clone();
+                let runtime_usecase = compose_agent_session_runtime(
+                    runtime_session_store.clone(),
+                    runtime_registry,
+                    agent_status_center.clone(),
+                    agent_status_notifier.clone(),
+                    runtime_notifier,
+                    runtime_spawner,
+                    Some(runtime_branch_diff_context),
+                    runtime_instruction_source,
+                    runtime_data_dir,
+                    workspace_query,
                 );
                 adaptor::controller::event_log_recovery_wiring::register_event_log_recovery_listener(
                     runtime_session_store.clone(),
@@ -1206,7 +1236,7 @@ pub fn run() {
             );
             let operation_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
-            > = local_event_store.clone();
+            > = projected_local_event_repository.clone();
             let operation_authority: Arc<
                 dyn usecase::agent_session::operation::OperationBindingAuthority,
             > = local_event_store.clone();
@@ -1263,7 +1293,7 @@ pub fn run() {
             app.manage(stop_operation.clone());
             let send_operation = Arc::new(
                 usecase::agent_session::operation::AgentSendOperationUsecase::new(
-                    local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                     local_event_store.clone(),
                     send_gate,
                     local_event_store.installation_id().to_string(),
@@ -1353,7 +1383,7 @@ pub fn run() {
             app.manage(permission_response_operation.clone());
             let recovery_operation = Arc::new(
                 usecase::agent_session::operation::RecoveryActionUsecase::new(
-                    local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                     local_event_store.clone(),
                     Arc::new(
                         adaptor::controller::agent_session_operation_wiring::ConservativeRecoveryExecutor::new(
@@ -1375,7 +1405,7 @@ pub fn run() {
             app.manage(recovery_operation.clone());
             let caller_journal = Arc::new(
                 usecase::agent_session::operation::CallerAttemptJournal::new(
-                    local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                     local_event_store.clone(),
                     local_event_store.installation_id().to_string(),
                 ),
@@ -1400,7 +1430,7 @@ pub fn run() {
                         open_tabs,
                         branch_diff_context: branch_diff_context.clone(),
                         data_dir: Some(data_dir.clone()),
-                        local_event_repository: local_event_store.clone(),
+                        local_event_repository: projected_local_event_repository.clone(),
                         local_event_installation_id: local_event_store
                             .installation_id()
                             .to_string(),
@@ -1469,6 +1499,7 @@ pub fn run() {
             let shutdown_coordinator =
                 adaptor::controller::application_lifecycle::build_shutdown_coordinator(
                     local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                     agent_runtime.clone(),
                     workflow_runtime_usecase.clone(),
                     lifecycle_operation,
@@ -1516,7 +1547,7 @@ pub fn run() {
                 adaptor::controller::wiring::spawn_startup_app_data_gc(
                     app_data.clone(),
                     shared_repo_paths.clone(),
-                    local_event_store.clone(),
+                    projected_local_event_repository.clone(),
                 );
                 let local_api_binding =
                     infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())

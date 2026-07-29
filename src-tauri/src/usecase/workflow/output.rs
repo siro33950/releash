@@ -129,10 +129,9 @@ fn contract_lookup_error_to_workflow_error(error: contract::ContractLookupError)
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionListFilter, FacetKind, FacetRefs, FacetRepository, FacetSummary, NodeDefinition,
-        NodeKind, SchemaDef, SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository,
-        WorkflowExecution, WorkflowExecutionId, WorkflowExecutionRecord,
-        WorkflowExecutionRepository, WorkflowExecutionSummary, WorkflowSummary,
+        FacetKind, FacetRefs, FacetRepository, FacetSummary, NodeDefinition, NodeKind, SchemaDef,
+        SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowExecution,
+        WorkflowExecutionId, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
         WorkflowEventRepository, WorkflowExecutionProjectionRepository,
@@ -140,54 +139,6 @@ mod tests {
     use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct NoopExecutionRepository;
-
-    impl WorkflowExecutionRepository for NoopExecutionRepository {
-        fn register_active(
-            &self,
-            _execution: WorkflowExecutionRecord,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn complete_execution(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-            _completed: WorkflowExecutionRecord,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn list_executions(
-            &self,
-            _filter: ExecutionListFilter,
-        ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-            Ok(Vec::new())
-        }
-
-        fn get_execution(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-            Ok(None)
-        }
-
-        fn resolve_active_execution_by_worktree(
-            &self,
-            _worktree_path: &str,
-        ) -> Result<Option<WorkflowExecutionId>, WorkflowError> {
-            Ok(None)
-        }
-
-        fn resolve_worktree_by_execution(
-            &self,
-            _execution_id: &WorkflowExecutionId,
-        ) -> Result<Option<String>, WorkflowError> {
-            Ok(None)
-        }
-    }
 
     struct NoopDefinitionRepository;
 
@@ -315,7 +266,6 @@ mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let query = WorkflowQueryService::new(
-                Arc::new(NoopExecutionRepository),
                 Arc::new(NoopDefinitionRepository),
                 Arc::new(NoopDefinitionSourceGateway),
                 facets.clone(),

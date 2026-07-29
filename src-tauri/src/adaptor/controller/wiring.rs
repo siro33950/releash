@@ -26,9 +26,10 @@ use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
 use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache};
-#[cfg(not(test))]
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
+#[cfg(test)]
+use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
 #[cfg(test)]
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
@@ -40,13 +41,12 @@ use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::adaptor::gateway::workflow::{
     DurableWorkspaceNodeSessionCloseGateway, RepoPathsManagedWorktreeGateway,
-    RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
-    TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
-    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
-    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
-    WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
+    RepositoryManagedWorktreeGateway, TauriNodeExecutionLifecycleGateway,
+    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
+    TauriWorkflowRuntimeCommandGatewayDeps, WorkflowConfigPathFileGateway,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
+    WorkflowExecutionArchiveFileRepository, WorkflowExecutionProjectionLogRepository,
     WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
 #[cfg(test)]
@@ -81,9 +81,9 @@ use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::{
     NodeExecutionLifecycleUsecase, WorkflowReadUsecase, WorkflowRuntimeUsecase, WorkflowUsecase,
-    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceSessionGateway,
-    WorkspaceTreeQueryService,
+    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase,
 };
+use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) fn build_agent_backend_registry(
     config: Arc<dyn AgentConfigRepository>,
@@ -181,16 +181,6 @@ pub(crate) fn build_canonical_session_read_store(
     ))
 }
 
-#[derive(Clone)]
-enum WorkflowReadComposition {
-    #[cfg(test)]
-    Legacy,
-    Canonical {
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
-    },
-}
-
 pub(crate) fn build_agent_prompt_suggestion_usecase(
     session_reader: Arc<SessionReaderPort>,
 ) -> AgentPromptSuggestionUsecase {
@@ -253,80 +243,36 @@ pub(crate) fn build_workspace_node_command_usecase(
     )
 }
 
-/// workflow usecase を既定の file gateway 実装で構築する。
-/// 既存の workflow YAML / facet markdown / run metadata / event log 形式を保持しつつ、
-/// controller の read-only 経路を `WorkflowUsecase` に寄せる。
+/// Test helper using the same mandatory canonical store wiring as production.
 #[cfg(test)]
 pub(crate) fn build_workflow_usecase(data_dir: impl Into<std::path::PathBuf>) -> WorkflowUsecase {
-    build_workflow_usecase_with_workspace_sessions(data_dir, Arc::new(EmptyWorkspaceSessionGateway))
+    build_workflow_usecase_and_store(data_dir).0
 }
 
+/// Test composition hook that exposes the single writer owned by the workflow
+/// services. Integration tests that exercise canonical runtime commits must
+/// reuse this writer instead of opening a competing writer for the same DB.
 #[cfg(test)]
-pub(crate) fn build_workflow_usecase_with_workspace_sessions(
+pub(crate) fn build_workflow_usecase_and_store(
     data_dir: impl Into<std::path::PathBuf>,
-    sessions: Arc<dyn WorkspaceSessionGateway>,
-) -> WorkflowUsecase {
-    build_workflow_usecase_with_gateways(
+) -> (WorkflowUsecase, Arc<LocalEventStore>) {
+    let data_dir = data_dir.into();
+    let local_event_store =
+        LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
+            .expect("test workflow composition requires the canonical local event store");
+    let installation_id = local_event_store.installation_id().to_string();
+    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
+    let workflow_usecase = build_workflow_services_with_gateways(
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(NoopWorkflowExternalEditorGateway),
         Arc::new(EmptySecretSourceGateway),
-        sessions,
+        repository,
+        installation_id,
+        local_event_store.clone(),
     )
-}
-
-#[cfg(test)]
-struct EmptyWorkspaceSessionGateway;
-
-#[cfg(test)]
-impl WorkspaceSessionGateway for EmptyWorkspaceSessionGateway {
-    fn list_active_sessions(
-        &self,
-        _worktree_path: &str,
-    ) -> Result<
-        Vec<crate::usecase::workflow::WorkspaceSessionInput>,
-        crate::domain::workflow::WorkflowError,
-    > {
-        Ok(Vec::new())
-    }
-
-    fn list_closed_sessions(
-        &self,
-        _worktree_path: &str,
-    ) -> Result<
-        Vec<crate::usecase::workflow::WorkspaceSessionInput>,
-        crate::domain::workflow::WorkflowError,
-    > {
-        Ok(Vec::new())
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime + 'static>(
-    data_dir: impl Into<std::path::PathBuf>,
-    repository_usecase: Arc<RepositoryUsecase>,
-    app_config: Arc<dyn ConfigRepository>,
-    config_secrets: Arc<dyn ConfigSecretRepository>,
-    session_store: Arc<SessionStore>,
-    app: tauri::AppHandle<R>,
-) -> WorkflowUsecase {
-    let data_dir = data_dir.into();
-    let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
-        session_store,
-        data_dir.clone(),
-    ));
-    build_workflow_services_with_gateways(
-        data_dir,
-        Arc::new(RepositoryManagedWorktreeGateway::new(
-            repository_usecase,
-            app_config.clone(),
-        )),
-        Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
-        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
-        sessions,
-        WorkflowReadComposition::Legacy,
-    )
-    .0
+    .0;
+    (workflow_usecase, local_event_store)
 }
 
 pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtime + 'static>(
@@ -334,17 +280,16 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
     repository_usecase: Arc<RepositoryUsecase>,
     app_config: Arc<dyn ConfigRepository>,
     config_secrets: Arc<dyn ConfigSecretRepository>,
-    session_store: Arc<SessionStore>,
     app: tauri::AppHandle<R>,
     local_event_store: Arc<LocalEventStore>,
-) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
+) -> (
+    WorkflowUsecase,
+    Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+) {
     let data_dir = data_dir.into();
-    let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
-        session_store,
-        data_dir.clone(),
-    ));
-    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
     let installation_id = local_event_store.installation_id().to_string();
+    let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
+        local_event_store.clone();
     build_workflow_services_with_gateways(
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
@@ -353,11 +298,9 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
         )),
         Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
-        sessions,
-        WorkflowReadComposition::Canonical {
-            repository,
-            installation_id,
-        },
+        local_event_repository,
+        installation_id,
+        local_event_store,
     )
 }
 
@@ -366,12 +309,9 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
-    #[cfg(not(test))]
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
-    #[cfg(not(test))]
     let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
         local_event_store.clone();
-    #[cfg(not(test))]
     let installation_id = local_event_store.installation_id().to_string();
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
@@ -389,12 +329,6 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     let secrets: Arc<dyn SecretSourceGateway> =
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets));
 
-    #[cfg(not(test))]
-    let executions = Arc::new(WorkflowExecutionFileRepository::with_authority(
-        local_event_repository.clone(),
-    ));
-    #[cfg(test)]
-    let executions = Arc::new(WorkflowExecutionFileRepository::new(data_dir.clone()));
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         workflows_dir.clone(),
@@ -404,48 +338,32 @@ pub(crate) fn build_canonical_workflow_read_usecase(
         workflows_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
-    #[cfg(not(test))]
     let events = Arc::new(WorkflowEventLogRepository::with_authority(
         local_event_repository.clone(),
         installation_id.clone(),
     ));
-    #[cfg(test)]
-    let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
-    #[cfg(not(test))]
     let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
         local_event_repository,
         installation_id,
     ));
-    #[cfg(test)]
-    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
     let query = WorkflowQueryService::new(
-        executions,
         definitions,
         definition_sources,
         facets,
         events,
         execution_projection,
     );
-    Ok(WorkflowReadUsecase::new(query, worktrees, secrets))
-}
-
-#[cfg(test)]
-fn build_workflow_usecase_with_gateways(
-    data_dir: impl Into<std::path::PathBuf>,
-    worktrees: Arc<dyn ManagedWorktreeGateway>,
-    editors: Arc<dyn ExternalEditorGateway>,
-    secrets: Arc<dyn SecretSourceGateway>,
-    sessions: Arc<dyn WorkspaceSessionGateway>,
-) -> WorkflowUsecase {
-    build_workflow_services_with_gateways(
-        data_dir,
+    let workspace_query: Arc<dyn WorkspaceQueryService> =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new_read_only(
+            local_event_store,
+            Arc::new(WorkflowExecutionArchiveFileRepository::new(data_dir)),
+        );
+    Ok(WorkflowReadUsecase::new(
+        query,
         worktrees,
-        editors,
         secrets,
-        sessions,
-        WorkflowReadComposition::Legacy,
-    )
-    .0
+        workspace_query,
+    ))
 }
 
 fn build_workflow_services_with_gateways(
@@ -453,22 +371,21 @@ fn build_workflow_services_with_gateways(
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
     secrets: Arc<dyn SecretSourceGateway>,
-    sessions: Arc<dyn WorkspaceSessionGateway>,
-    read_composition: WorkflowReadComposition,
-) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
+    repository: Arc<dyn LocalEventTransactionRepository>,
+    installation_id: String,
+    store: Arc<LocalEventStore>,
+) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
-    let executions = Arc::new(match &read_composition {
-        #[cfg(test)]
-        WorkflowReadComposition::Legacy => WorkflowExecutionFileRepository::new(data_dir.clone()),
-        WorkflowReadComposition::Canonical { repository, .. } => {
-            WorkflowExecutionFileRepository::with_authority(repository.clone())
-        }
-    });
     let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
         data_dir.clone(),
     ));
+    let workspace_query: Arc<dyn WorkspaceQueryService> =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(
+            store,
+            execution_archives.clone(),
+        );
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         facets_base_dir.clone(),
@@ -478,31 +395,20 @@ fn build_workflow_services_with_gateways(
         facets_base_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
-    let events = Arc::new(match &read_composition {
-        #[cfg(test)]
-        WorkflowReadComposition::Legacy => WorkflowEventLogRepository::new(data_dir.clone()),
-        WorkflowReadComposition::Canonical {
-            repository,
-            installation_id,
-        } => {
-            WorkflowEventLogRepository::with_authority(repository.clone(), installation_id.clone())
-        }
-    });
-    let execution_projection = Arc::new(match read_composition {
-        #[cfg(test)]
-        WorkflowReadComposition::Legacy => WorkflowExecutionProjectionLogRepository::new(data_dir),
-        WorkflowReadComposition::Canonical {
-            repository,
-            installation_id,
-        } => WorkflowExecutionProjectionLogRepository::with_authority(repository, installation_id),
-    });
+    let events = Arc::new(WorkflowEventLogRepository::with_authority(
+        repository.clone(),
+        installation_id.clone(),
+    ));
+    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
+        repository,
+        installation_id,
+    ));
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
         facets_base_dir,
     ));
     let config_paths = Arc::new(WorkflowConfigPathFileGateway::new(workflows_dir));
     let query = WorkflowQueryService::new(
-        executions,
         definitions.clone(),
         definition_sources.clone(),
         facets.clone(),
@@ -519,12 +425,10 @@ fn build_workflow_services_with_gateways(
         diagnostics,
         config_paths,
         secrets,
-        sessions.clone(),
         execution_archives.clone(),
+        workspace_query.clone(),
     );
-    let workspace_tree_query_service =
-        WorkspaceTreeQueryService::new(query, worktrees, sessions, execution_archives);
-    (workflow_usecase, workspace_tree_query_service)
+    (workflow_usecase, workspace_query)
 }
 
 pub(crate) fn build_workflow_runtime_usecase(
@@ -574,4 +478,218 @@ pub(crate) fn spawn_startup_app_data_gc(
             log::error!("{error}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
+        use crate::domain::local_event::{
+            CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
+            LocalStateMutation, Revision, RevisionGuard, WorkflowExecutionMetadataRecord,
+            WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+            WorkflowExecutionProjectionRecord,
+        };
+        use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+        use crate::domain::workspace_tree::{
+            WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeProjector,
+        };
+
+        let execution_id = "00000000-0000-4000-8000-000000001491";
+        let record = WorkflowExecutionMetadataRecord {
+            execution_id: execution_id.to_string(),
+            workflow_name: "B006 workflow".to_string(),
+            status: ExecutionStatus::Running,
+            worktree_path: workspace.to_string(),
+            current_node: None,
+            created_from: ExecutionOrigin::DesktopUi,
+            started_at_bits: 1.0f64.to_bits(),
+            updated_at_bits: 2.0f64.to_bits(),
+            completed_at_bits: None,
+            error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
+            total_token_usage: TokenUsage::default(),
+        };
+        let mut tree = WorkspaceTree::empty(workspace);
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: record.workflow_name.clone(),
+                    worktree_path: workspace.to_string(),
+                    definition: crate::domain::workflow::WorkflowDefinition::default(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::WorkflowSummaryProjected {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: record.workflow_name.clone(),
+                    status: record.status,
+                    updated_at: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        store
+            .commit_batch(LocalAtomicBatch {
+                commit_id: CommitIdentity::parse("b006-production-seed").unwrap(),
+                idempotency: IdempotencyBinding {
+                    installation_id: store.installation_id().to_string(),
+                    operation_kind: CommitOperationKind::Workflow,
+                    idempotency_key: "b006-production-seed".to_string(),
+                    payload_hash: [149; 32],
+                },
+                expected_heads: Vec::new(),
+                events: Vec::new(),
+                state_mutations: vec![
+                    LocalStateMutation::WorkflowExecutionProjection(
+                        WorkflowExecutionProjectionMutation {
+                            projection: WorkflowExecutionProjectionRecord::Present(record),
+                            expected: RevisionGuard::Absent,
+                            revision: Revision::new(0).unwrap(),
+                        },
+                    ),
+                    LocalStateMutation::WorkflowExecutionNodeProjection(
+                        WorkflowExecutionNodeProjectionMutation {
+                            execution_id: execution_id.to_string(),
+                            nodes: tree.nodes().to_vec(),
+                            expected: RevisionGuard::Absent,
+                            revision: Revision::new(0).unwrap(),
+                        },
+                    ),
+                ],
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn b006_all_client_surfaces_use_the_production_workspace_query_contract() {
+        // Given: the production composition root owns one live query object,
+        // and the standalone loopback composition opens the same SQLite
+        // authority through its read-only backend.
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                root.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let workspace = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        seed_b006_execution(&store, &workspace).await;
+        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
+        let (workflow, query) = build_workflow_services_with_gateways(
+            root.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(EmptySecretSourceGateway),
+            repository,
+            store.installation_id().to_string(),
+            store.clone(),
+        );
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        session_store.set_local_event_repository(
+            store.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let active = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            root.path(),
+            &workspace,
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let closed = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            root.path(),
+            &workspace,
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        session_store
+            .set_session_state(
+                root.path(),
+                &closed.id,
+                crate::usecase::agent_session::session::SessionState::Closed,
+            )
+            .unwrap();
+        let runtime_dependencies = crate::test_support::agent_runtime_dependencies();
+        let runtime = crate::compose_agent_session_runtime(
+            session_store,
+            runtime_dependencies.registry,
+            runtime_dependencies.status_center,
+            runtime_dependencies.status_notifier,
+            runtime_dependencies.event_notifier,
+            runtime_dependencies.spawner,
+            None,
+            runtime_dependencies.instruction_source,
+            root.path().to_path_buf(),
+            query.clone(),
+        );
+        let standalone =
+            build_canonical_workflow_read_usecase(root.path(), Some(root.path().join("workflows")))
+                .unwrap();
+
+        // When
+        let page = crate::domain::workflow::WorkflowPageRequest::new(0, 10);
+        let direct_executions = query
+            .execution_summaries(None, None, Some(page))
+            .unwrap()
+            .into_iter()
+            .map(crate::usecase::workflow::dto::workflow_execution_summary_to_dto)
+            .collect::<Vec<_>>();
+        let live_loopback_executions = workflow
+            .read_usecase()
+            .list_executions_filtered(None, None, page)
+            .unwrap();
+        let standalone_executions = standalone
+            .list_executions_filtered(None, None, page)
+            .unwrap();
+        let workspace_identity = crate::domain::workspace_tree::WorkspaceIdentity::new(&workspace);
+        let direct_tree = query.workspace_tree(&workspace_identity).unwrap();
+        let tauri_tree = workflow.list_workspace_tree_nodes(&workspace).unwrap();
+        let direct_sessions = query
+            .session_summaries(
+                &workspace_identity,
+                crate::domain::workspace_tree::WorkspaceSessionListKind::Active,
+            )
+            .unwrap();
+        let runtime_sessions = runtime.list_sessions(&workspace).await.unwrap();
+        let direct_closed = query
+            .session_summaries(
+                &workspace_identity,
+                crate::domain::workspace_tree::WorkspaceSessionListKind::Closed,
+            )
+            .unwrap();
+        let runtime_closed = runtime.list_closed_sessions(&workspace).await.unwrap();
+
+        // Then
+        assert_eq!(direct_executions.len(), 1);
+        assert_eq!(direct_sessions.len(), 1);
+        assert_eq!(direct_sessions[0].id, active.id);
+        assert_eq!(direct_closed.len(), 1);
+        assert_eq!(direct_closed[0].id, closed.id);
+        assert!(!direct_tree.nodes.is_empty());
+        assert_eq!(live_loopback_executions, direct_executions);
+        assert_eq!(standalone_executions, direct_executions);
+        assert_eq!(tauri_tree, direct_tree);
+        assert_eq!(
+            serde_json::to_value(runtime_sessions).unwrap(),
+            serde_json::to_value(direct_sessions).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(runtime_closed).unwrap(),
+            serde_json::to_value(direct_closed).unwrap()
+        );
+    }
 }

@@ -345,6 +345,7 @@ fn apply_runtime_owner(
             session_id,
             worktree_path,
             active,
+            ..
         } => {
             let projection_id_was_live = unresolved_live_process_session_ids.remove(&projection_id);
             let metadata_id_was_live = unresolved_live_process_session_ids.remove(&session_id);
@@ -617,6 +618,8 @@ mod tests {
                 session_id: "active-session".to_string(),
                 worktree_path: "/worktrees/active".to_string(),
                 active: true,
+                shutdown_target: true,
+                workflow_node_session: false,
             },
             &mut owners,
             &mut unresolved_live_process_session_ids,
@@ -653,6 +656,8 @@ mod tests {
                 session_id: "live-process-session".to_string(),
                 worktree_path: "/worktrees/live-process".to_string(),
                 active: false,
+                shutdown_target: true,
+                workflow_node_session: false,
             },
             &mut owners,
             &mut unresolved_live_process_session_ids,

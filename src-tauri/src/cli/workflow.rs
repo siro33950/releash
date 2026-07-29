@@ -360,11 +360,11 @@ fn event_kind_display_name(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::common::test_support::{
-        execution_started_event, make_execution, test_uuid, write_execution_file,
+        append_workflow_event, execution_started_event, initialize_canonical_store, make_execution,
+        test_uuid, write_execution_file,
     };
     use super::super::Cli;
     use super::*;
-    use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
     use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
     use clap::Parser;
@@ -375,9 +375,10 @@ mod tests {
             data_dir,
             &make_execution(execution_id, "/repo", status, 100.0),
         );
-        WorkflowEventLog::new(data_dir)
-            .append(&execution_started_event(execution_id, "wf", "/repo"))
-            .unwrap();
+        append_workflow_event(
+            data_dir,
+            &execution_started_event(execution_id, "wf", "/repo"),
+        );
     }
 
     #[test]
@@ -589,6 +590,7 @@ mod tests {
     #[test]
     fn missing_execution_is_reported_without_creating_state() {
         let temp = TempDir::new().unwrap();
+        initialize_canonical_store(temp.path());
         let execution_id = test_uuid(5);
         let error = cmd_status(temp.path(), &execution_id, false).unwrap_err();
         assert_eq!(
