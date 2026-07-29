@@ -5,8 +5,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+use crate::domain::agent_session::aggregates::session::StopCommandRejection;
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, InterruptReason, ObligationKind, ObligationState, StopResolution,
+};
+use crate::domain::agent_session::repository::{
+    AgentSessionLifecycleRepository, AgentSessionLifecycleRepositoryError,
 };
 use crate::domain::local_event::{
     CallerOperationKey, CommitBatchError, CommitBatchResult, CommitIdentity, CommitOperationKind,
@@ -24,8 +28,8 @@ use crate::domain::local_event::{
 use super::identity::{constant_time_eq_32, validate_operation_identity};
 use super::ports::{
     AcceptedStopEffect, OperationBindingAuthority, RecoveryEffectResult, RecoveryOwnerBatch,
-    StopAdmissionGate, StopEffectObservation, StopRecoveryReadbackPort,
-    StopRecoveryReadbackRequest, TerminalParticipants,
+    StopEffectObservation, StopEffectPort, StopRecoveryReadbackPort, StopRecoveryReadbackRequest,
+    TerminalParticipants,
 };
 use super::record::hex_encode;
 use super::send::principal_material;
@@ -187,6 +191,37 @@ fn storage_failure(label: &str) -> SafeOperationFailure {
         true,
         "The Stop operation could not reach the local event store.",
         correlation(label),
+    )
+}
+
+fn lifecycle_repository_failure(
+    error: AgentSessionLifecycleRepositoryError,
+    label: &str,
+) -> SafeOperationFailure {
+    let (kind, correlation_id) = match error {
+        AgentSessionLifecycleRepositoryError::Corrupt(_) => (
+            SessionOperationFailureKind::StorageCorrupt,
+            correlation(label),
+        ),
+        AgentSessionLifecycleRepositoryError::Unavailable(correlation_id)
+            if !correlation_id.is_empty() =>
+        {
+            (
+                SessionOperationFailureKind::StorageUnavailable,
+                correlation_id,
+            )
+        }
+        AgentSessionLifecycleRepositoryError::NotFound
+        | AgentSessionLifecycleRepositoryError::Unavailable(_) => (
+            SessionOperationFailureKind::StorageUnavailable,
+            correlation(label),
+        ),
+    };
+    SafeOperationFailure::new(
+        kind,
+        true,
+        "The Stop session snapshot is unavailable.",
+        correlation_id,
     )
 }
 
@@ -381,7 +416,8 @@ fn status_identity_material(state: &StopOperationState) -> Vec<u8> {
 pub struct StopOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
-    gate: Arc<dyn StopAdmissionGate>,
+    lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+    effect: Arc<dyn StopEffectPort>,
     installation_id: String,
 }
 
@@ -389,13 +425,15 @@ impl StopOperationUsecase {
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
-        gate: Arc<dyn StopAdmissionGate>,
+        lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+        effect: Arc<dyn StopEffectPort>,
         installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
-            gate,
+            lifecycle_repository,
+            effect,
             installation_id,
         }
     }
@@ -671,7 +709,7 @@ impl StopOperationUsecase {
         ),
         SafeOperationFailure,
     > {
-        let observation = self.gate.interrupt(effect).await?;
+        let observation = self.effect.interrupt(effect).await?;
         // Test and compatibility gates may still return an explicit terminal
         // observation. The production runtime gate always returns `None`: a
         // successful provider write is only a handoff, never terminal proof.
@@ -1171,18 +1209,21 @@ impl StopOperationUsecase {
                     .await;
             }
         }
-        let snapshot = self
-            .gate
-            .target_snapshot(&request.session_id)
+        let mut session = self
+            .lifecycle_repository
+            .restore_session(&request.session_id)
             .await
-            .map_err(|_| StopOperationError::Internal {
-                correlation_id: correlation("snapshot"),
+            .map_err(|error| StopOperationError::StorageUnavailable {
+                failure: lifecycle_repository_failure(error, "snapshot"),
             })?;
-        if snapshot.session_revision != request.expected_session_revision
-            || snapshot.active_turn_id != request.turn_id
-        {
-            return Err(StopOperationError::StaleTarget);
-        }
+        let stop_transition = session
+            .apply_stop_command(request.expected_session_revision, &request.turn_id)
+            .map_err(|rejection| match rejection {
+                StopCommandRejection::InvalidTurnIdentity => StopOperationError::InvalidRequest,
+                StopCommandRejection::Transition(_) => StopOperationError::StaleTarget,
+            })?;
+        let turn_id = stop_transition.turn_id;
+        let queue_was_paused = stop_transition.queue_was_paused;
 
         let stream_id = StreamId::agent_session(&request.session_id)
             .map_err(|_| StopOperationError::InvalidRequest)?;
@@ -1201,10 +1242,6 @@ impl StopOperationUsecase {
             turn_id: request.turn_id.clone(),
             accepted_revision: request.expected_session_revision,
         };
-        let turn_id = request
-            .turn_id
-            .parse::<u64>()
-            .map_err(|_| StopOperationError::InvalidRequest)?;
         let mut events = vec![
             UncommittedDomainEvent {
                 stream_id: stream_id.clone(),
@@ -1240,7 +1277,7 @@ impl StopOperationUsecase {
                 occurred_at_ms: at,
             },
         ];
-        if !snapshot.queue_paused {
+        if !queue_was_paused {
             events.push(UncommittedDomainEvent {
                 stream_id: stream_id.clone(),
                 event: LocalDomainEvent::AgentSession(AgentSessionDomainEvent::QueuePaused {
@@ -1261,18 +1298,21 @@ impl StopOperationUsecase {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let Some(mut state_mutations) = self
-            .gate
-            .acceptance_state_mutations(
+        let Some(change) = self
+            .lifecycle_repository
+            .prepare_session_change(
                 &request.session_id,
                 request.expected_session_revision,
                 &acceptance_events,
             )
             .await
-            .map_err(|failure| StopOperationError::StorageUnavailable { failure })?
+            .map_err(|error| StopOperationError::StorageUnavailable {
+                failure: lifecycle_repository_failure(error, "aggregate-change"),
+            })?
         else {
             return Err(StopOperationError::StaleTarget);
         };
+        let mut state_mutations = change.into_atomic_participant();
         state_mutations.extend([
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
@@ -1364,15 +1404,22 @@ impl StopOperationUsecase {
                             .await;
                     }
                 }
-                return match self.gate.target_snapshot(&request.session_id).await {
-                    Ok(latest)
-                        if latest.session_revision != request.expected_session_revision
-                            || latest.active_turn_id != request.turn_id =>
-                    {
-                        Err(StopOperationError::StaleTarget)
+                return match self
+                    .lifecycle_repository
+                    .restore_session(&request.session_id)
+                    .await
+                {
+                    Ok(mut latest) => {
+                        match latest
+                            .apply_stop_command(request.expected_session_revision, &request.turn_id)
+                        {
+                            Ok(_) => Err(StopOperationError::PayloadConflict),
+                            Err(_) => Err(StopOperationError::StaleTarget),
+                        }
                     }
-                    Ok(_) => Err(StopOperationError::PayloadConflict),
-                    Err(failure) => Err(StopOperationError::StorageUnavailable { failure }),
+                    Err(error) => Err(StopOperationError::StorageUnavailable {
+                        failure: lifecycle_repository_failure(error, "concurrent-snapshot"),
+                    }),
                 };
             }
             Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
@@ -1478,7 +1525,7 @@ impl StopOperationUsecase {
                 })
                 .await;
             if terminal_commit.own_timeout_committed() {
-                self.gate.timeout_terminal_committed(&effect).await;
+                self.effect.timeout_terminal_committed(&effect).await;
             }
             if !terminal_commit.is_committed()
                 && matches!(state, StopOperationState::Completed { .. })
@@ -1487,7 +1534,7 @@ impl StopOperationUsecase {
                     let recovered_commit =
                         StopTerminalCommitOutcome::for_stored(&saved, own_timeout_candidate);
                     if recovered_commit.own_timeout_committed() {
-                        self.gate.timeout_terminal_committed(&effect).await;
+                        self.effect.timeout_terminal_committed(&effect).await;
                     }
                     if recovered_commit.is_committed() {
                         return Ok(StopCommandOutcome::Accepted {
@@ -1789,7 +1836,7 @@ impl StopOperationUsecase {
             })
             .collect::<Vec<_>>();
         let Ok(projection_mutations) = self
-            .gate
+            .effect
             .terminal_state_mutations(&receipt.session_id, &projection_events)
             .await
         else {
@@ -1797,7 +1844,7 @@ impl StopOperationUsecase {
         };
         mutations.extend(projection_mutations);
         if let Some(terminal) = terminal_candidate.as_ref() {
-            let Ok(participants) = self.gate.terminal_participants(terminal).await else {
+            let Ok(participants) = self.effect.terminal_participants(terminal).await else {
                 return StopTerminalCommitOutcome::NotCommitted;
             };
             let Ok(stream_id) = StreamId::agent_session(&receipt.session_id) else {
@@ -2044,7 +2091,7 @@ impl StopOperationUsecase {
                 })
                 .await;
             if terminal_commit.own_timeout_committed() {
-                self.gate.timeout_terminal_committed(&effect).await;
+                self.effect.timeout_terminal_committed(&effect).await;
             }
             return if terminal_commit.is_committed() {
                 Ok(())
@@ -2097,7 +2144,7 @@ impl StopOperationUsecase {
             })
             .await;
         if terminal_commit.own_timeout_committed() {
-            self.gate.timeout_terminal_committed(&effect).await;
+            self.effect.timeout_terminal_committed(&effect).await;
         }
         if terminal_commit.is_committed() {
             Ok(())
@@ -2219,7 +2266,7 @@ impl StopRecoveryReadbackPort for StopOperationUsecase {
                     }
                 }
                 let projection_mutations = self
-                    .gate
+                    .effect
                     .terminal_state_mutations(&request.session_id, &participants.events)
                     .await?;
                 participants.mutations.extend(projection_mutations);

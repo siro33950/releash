@@ -1,8 +1,6 @@
 mod attachment;
-mod message;
 mod message_part;
 mod permission_request;
-mod session;
 mod turn;
 
 pub use attachment::Attachment;
@@ -15,5 +13,4 @@ pub use permission_request::{
     PermissionQuestionOption, PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
     PermissionResponse, PermissionResponseDecision,
 };
-pub(crate) use session::SessionState;
-pub use turn::{InterruptReason, TokenUsage, TurnResult, TurnStopReason};
+pub use turn::{InterruptReason, TokenUsage, Turn, TurnResult, TurnStopReason};

@@ -1,9 +1,16 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::domain::agent_session::aggregates::session::TerminalOutcome;
+use crate::domain::agent_session::entities::{
+    PermissionRequest, TokenUsage as DomainTokenUsage, TurnResult,
+};
 use crate::domain::agent_session::gateway::AgentRuntimeEvent;
 use crate::domain::workflow::WorkflowError;
-use crate::usecase::agent_session::event_log::AgentSessionEvent;
+use crate::usecase::agent_session::event_log::{
+    AgentSessionEvent, InterruptReason as EventInterruptReason,
+    TurnStopReason as EventTurnStopReason, TurnTokenUsage, WorkflowTurnCompleteInput,
+};
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, ContextCarryState, GetSessionResponse, ModelInfo,
     PermissionRequestMsg, SessionState, TokenUsage,
@@ -13,6 +20,57 @@ use crate::usecase::workflow::ports::{
     WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     WorkflowTurnCompleteNotification,
 };
+
+#[derive(Debug, Clone)]
+pub(crate) struct TerminalProjection {
+    pub(crate) exit_code: i64,
+    pub(crate) interrupted: bool,
+    pub(crate) pause_queue: bool,
+    pub(crate) session_state: SessionState,
+    pub(crate) event: TerminalEventProjection,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum TerminalEventProjection {
+    Completed {
+        stop_reason: Option<EventTurnStopReason>,
+        token_usage: Option<TurnTokenUsage>,
+    },
+    Interrupted {
+        reason: EventInterruptReason,
+        error: Option<String>,
+    },
+}
+
+pub(crate) trait AgentRuntimeProjectionGateway: Send + Sync {
+    fn terminal_projection(
+        &self,
+        result: &TurnResult,
+        outcome: TerminalOutcome,
+    ) -> TerminalProjection;
+
+    fn token_usage(&self, usage: DomainTokenUsage) -> TokenUsage;
+
+    fn permission_request(&self, request: &PermissionRequest) -> PermissionRequestMsg;
+
+    fn pending_permission_request(
+        &self,
+        request: &PermissionRequest,
+    ) -> Option<PermissionRequestMsg>;
+
+    fn workflow_turn_complete(
+        &self,
+        session_id: &str,
+        input: &WorkflowTurnCompleteInput,
+    ) -> WorkflowTurnCompleteNotification;
+
+    fn workflow_stall_observed(
+        &self,
+        payload: &AgentStallObservedPayload,
+    ) -> WorkflowStallObservedNotification;
+
+    fn workflow_stall_cleared(&self, session_id: &str) -> WorkflowStallClearedNotification;
+}
 
 pub(crate) trait AgentTaskSpawner: Send + Sync {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);

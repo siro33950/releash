@@ -1,7 +1,7 @@
 # Agent セッションライフサイクルの理想形
 
 作成日: 2026-07-07
-更新日: 2026-07-24
+更新日: 2026-07-29
 
 本書は Session、turn、permission、queue、configuration、Goal、close、quit が、正常、failure、crash、restart の各経路で守る lifecycle invariant を定義する。型、schema、内部処理順は定義しない。
 
@@ -26,6 +26,7 @@ Phase 0、F2、F3、D3などの計画labelと、廃止したfile-storeの物理�
 - **L-P4（backend parity）**: Stop、liveness、permission、terminal の保証水準は provider に依存しない。
 - **L-P5（Rust authority）**: configuration、Goal、available action、recovery、shutdown の判断は Rust が所有する。
 - **L-P6（atomic visibility）**: 一つの利用者操作として不可分な state は一括して可視になり、partial read model を公開しない。
+- **L-P7（domain lifecycle authority）**: Session のライフサイクル（状態・遷移・受理条件・不変条件）は domain の集約がメソッドとして表現する。状態遷移は集約の操作経由でのみ起き、他層が状態を直接書き換える経路を作らない。usecase は駆動手順とトランザクション境界、gateway は外部世界の都合と内側の言語の相互変換、infrastructure は外部世界の都合をその形のまま扱うことに限り、controller は入口に留まる。adaptor / usecase の手続きに受理判定の独自解釈を置かない。
 
 ## 不変条件
 

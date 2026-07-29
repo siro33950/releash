@@ -10,8 +10,7 @@ pub(crate) fn register_agent_status_listener(
 ) {
     session_store.register_state_change_listener(Arc::new(
         move |session_id, _worktree_path, new_state, state_revision| {
-            let changes =
-                center.on_session_state_changed(session_id, new_state.clone(), state_revision);
+            let changes = center.on_session_state_changed(session_id, *new_state, state_revision);
             notifier.status_changed(changes);
         },
     ));

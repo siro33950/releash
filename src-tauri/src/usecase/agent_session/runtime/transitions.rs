@@ -5,14 +5,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 
-#[cfg(test)]
-use crate::domain::agent_session::entities::{
-    InterruptReason as DomainInterruptReason, TurnResult,
-};
-use crate::usecase::agent_session::event_log::AgentSessionEvent;
-use crate::usecase::agent_session::status::TurnPhase;
-
-use super::session_state::{RuntimeSessionPhase, RuntimeSessionState};
+use super::session_state::RuntimeSessionState;
 use super::usecase::{
     acquire_session_control_after_recovery, append_user_session_events_blocking,
     emit_session_state_change, ensure_backend_recovery_operation_allowed, required_backend_id,
@@ -23,6 +16,12 @@ use super::usecase::{
     append_session_events_blocking, complete_turn, run_runtime_event_post_actions,
     turn_completion_post_actions, RuntimeContext,
 };
+use crate::domain::agent_session::aggregates::session::{TransitionOutcome, TransitionRejection};
+#[cfg(test)]
+use crate::domain::agent_session::entities::{
+    InterruptReason as DomainInterruptReason, TurnResult,
+};
+use crate::usecase::agent_session::event_log::AgentSessionEvent;
 
 #[cfg(test)]
 pub(super) const INTERRUPT_FORCE_FINALIZE_DELAY: std::time::Duration =
@@ -380,14 +379,14 @@ impl AgentSessionRuntimeUsecase {
             let Some(state) = sessions.get_mut(session_id) else {
                 return Ok(());
             };
-            if state.phase == RuntimeSessionPhase::Idle || state.current_turn_id != Some(turn_id) {
+            if !state.owns_active_turn_id(turn_id) {
                 return Ok(());
             }
-            state.queue_paused = true;
-            state.queue_paused_at = projected_queue_paused_at
-                .or(state.queue_paused_at)
-                .or_else(|| Some(crate::usecase::agent_session::session::now_timestamp()));
-            state.interrupt_requested_generation = Some(state.generation);
+            state.merge_durable_queue_pause(projected_queue_paused_at);
+            if !state.queue_is_paused() {
+                state.pause_queue_at(crate::usecase::agent_session::session::now_timestamp());
+            }
+            let _ = state.request_interrupt();
             state.runtime.clone()
         };
         durable_queue_paused_at.map_err(AgentRuntimeError::Other)?;
@@ -409,15 +408,14 @@ impl AgentSessionRuntimeUsecase {
             let Some(state) = sessions.get_mut(session_id) else {
                 return;
             };
-            if state.phase == RuntimeSessionPhase::Idle || state.current_turn_id != Some(turn_id) {
+            if !state.owns_active_turn_id(turn_id) {
                 return;
             }
 
             let runtime = state.runtime.take();
             state.bump_runtime_epoch();
             state.rollback_started_turn();
-            state.terminal_turn_id = Some(turn_id);
-            state.interrupt_requested_generation = None;
+            let _ = state.seal_terminal(turn_id);
             runtime
         };
         if let Some(runtime) = runtime {
@@ -446,10 +444,10 @@ impl AgentSessionRuntimeUsecase {
                 let Some(state) = sessions.get(session_id) else {
                     return Ok(());
                 };
-                if state.phase == RuntimeSessionPhase::Idle {
+                if !state.has_active_turn_lease() {
                     return Ok(());
                 }
-                state.current_turn_id.ok_or_else(|| {
+                state.active_turn_id().ok_or_else(|| {
                     AgentRuntimeError::Other(format!(
                         "Cannot durably stop a session without an active turn id: {session_id}"
                     ))
@@ -473,12 +471,11 @@ impl AgentSessionRuntimeUsecase {
                 let Some(state) = sessions.get_mut(session_id) else {
                     return Ok(());
                 };
-                if state.phase == RuntimeSessionPhase::Idle {
+                if !state.has_active_turn_lease() {
                     return Ok(());
                 }
-                let generation = state.generation;
-                let repeated =
-                    state.interrupt_requested_generation == Some(generation) && state.queue_paused;
+                let generation = state.generation();
+                let repeated = state.repeated_interrupt(generation);
                 let pause_accepted_at =
                     (!repeated).then(crate::usecase::agent_session::session::now_timestamp);
                 (
@@ -486,7 +483,7 @@ impl AgentSessionRuntimeUsecase {
                     generation,
                     repeated,
                     pause_accepted_at,
-                    state.current_turn_id,
+                    state.active_turn_id(),
                 )
             };
 
@@ -517,18 +514,17 @@ impl AgentSessionRuntimeUsecase {
                         "Runtime state disappeared while accepting interrupt for session {session_id}"
                     ))
                 })?;
-                    if state.phase == RuntimeSessionPhase::Idle || state.generation != generation {
+                    if !state.owns_generation(generation) {
                         return Err(AgentRuntimeError::Other(format!(
                             "Turn changed while accepting interrupt for session {session_id}"
                         )));
                     }
-                    state.queue_paused = true;
-                    state.queue_paused_at = Some(at);
-                    state.interrupt_requested_generation = Some(generation);
+                    state.pause_queue_at(at);
+                    let _ = state.request_interrupt();
                     (
-                        TurnPhase::from(state.phase),
-                        state.pending_permission_request.clone(),
-                        state.pending_permission_state_revision,
+                        state.projected_turn_phase(),
+                        state.permission_request_cache.clone(),
+                        state.pending_permission_state_revision(),
                     )
                 };
                 spawn_interrupt_watchdog_task(
@@ -572,18 +568,40 @@ impl AgentSessionRuntimeUsecase {
     pub async fn resume_queue(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
         let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        self.ctx
-            .session_store
-            .ensure_no_unresolved_recovery(session_id)
-            .await
-            .map_err(|failure| {
-                AgentRuntimeError::Other(format!(
-                    "unresolved recovery {} blocks queue resume: {failure}",
-                    failure.correlation_id
-                ))
-            })?;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let transition_guard = self.ctx.transitions.acquire(session_id).await;
+        let lifecycle_repository = self.ctx.lifecycle_repository();
+        if lifecycle_repository.is_none() {
+            #[cfg(not(test))]
+            return Err(AgentRuntimeError::Other(
+                "agent-session lifecycle repository is not configured".to_string(),
+            ));
+        }
+        if let Some(repository) = lifecycle_repository {
+            let mut aggregate = repository
+                .restore_session(session_id)
+                .await
+                .map_err(|error| {
+                    AgentRuntimeError::Other(format!(
+                        "failed to restore queue session aggregate: {error:?}"
+                    ))
+                })?;
+            match aggregate.resume_queue() {
+                TransitionOutcome::Applied => {}
+                TransitionOutcome::AlreadyApplied => return Ok(()),
+                TransitionOutcome::Rejected(TransitionRejection::UnresolvedRecovery) => {
+                    return Err(AgentRuntimeError::Other(
+                        "unresolved recovery requires reconciliation before queue resume"
+                            .to_string(),
+                    ));
+                }
+                TransitionOutcome::NotApplicable | TransitionOutcome::Rejected(_) => {
+                    return Err(AgentRuntimeError::Other(
+                        "The session aggregate rejected queue resume.".to_string(),
+                    ));
+                }
+            }
+        }
         let session = self
             .ctx
             .session_store
@@ -601,10 +619,10 @@ impl AgentSessionRuntimeUsecase {
             let state = sessions.entry(session_id.to_string()).or_insert_with(|| {
                 RuntimeSessionState::with_queue_pause(backend_id, durable_paused_at)
             });
-            if !state.queue_paused {
+            if !state.queue_is_paused() {
                 return Ok(());
             }
-            state.queue_paused_at.ok_or_else(|| {
+            state.queue_paused_at().ok_or_else(|| {
                 AgentRuntimeError::Other(format!(
                     "Paused queue for session {session_id} is missing its durable revision"
                 ))
@@ -626,16 +644,14 @@ impl AgentSessionRuntimeUsecase {
             let Some(state) = sessions.get_mut(session_id) else {
                 return Ok(());
             };
-            if !state.queue_paused || state.queue_paused_at != Some(paused_at) {
+            if !state.resume_queue_if_matches(paused_at) {
                 return Ok(());
             }
-            state.queue_paused = false;
-            state.queue_paused_at = None;
             (
-                TurnPhase::from(state.phase),
-                state.pending_permission_request.clone(),
-                state.pending_permission_state_revision,
-                state.phase == RuntimeSessionPhase::Idle && !state.pending_queue.is_empty(),
+                state.projected_turn_phase(),
+                state.permission_request_cache.clone(),
+                state.pending_permission_state_revision(),
+                !state.has_active_turn_lease() && !state.accepted_input_effects.is_empty(),
             )
         };
         drop(transition_guard);
@@ -692,7 +708,7 @@ pub(super) async fn force_finalize_interrupted_turn(
             let Some(state) = sessions.get_mut(session_id) else {
                 return;
             };
-            if state.phase == RuntimeSessionPhase::Idle || state.generation != generation {
+            if !state.owns_generation(generation) {
                 return;
             }
             let runtime = state.runtime.take();

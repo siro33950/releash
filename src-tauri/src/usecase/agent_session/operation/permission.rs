@@ -11,10 +11,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::domain::agent_session::aggregates::session::{TransitionOutcome, TransitionRejection};
 use crate::domain::agent_session::entities::{PermissionResponse, PermissionResponseDecision};
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, ObligationKind, ObligationState, PermissionDecision,
 };
+use crate::domain::agent_session::repository::AgentSessionLifecycleRepository;
 use crate::domain::local_event::mutation::RECOVERY_RESULT_MAX_BYTES;
 use crate::domain::local_event::{
     CallerOperationKey, CommitBatchError, CommitBatchResult, CommitIdentity, CommitOperationKind,
@@ -29,7 +31,7 @@ use crate::domain::local_event::{
 
 use super::identity::{constant_time_eq_32, validate_operation_identity};
 use super::ports::{
-    AcceptedPermissionResponseEffect, OperationBindingAuthority, PermissionResponseGate,
+    AcceptedPermissionResponseEffect, OperationBindingAuthority, PermissionResponseEffectPort,
     PermissionResponsePlan,
 };
 use super::record::hex_encode;
@@ -134,7 +136,8 @@ struct StoredPermissionObligation {
 pub struct PermissionResponseOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
-    gate: Arc<dyn PermissionResponseGate>,
+    lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+    effect: Arc<dyn PermissionResponseEffectPort>,
     installation_id: String,
 }
 
@@ -471,13 +474,15 @@ impl PermissionResponseOperationUsecase {
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
-        gate: Arc<dyn PermissionResponseGate>,
+        lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+        effect: Arc<dyn PermissionResponseEffectPort>,
         installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
-            gate,
+            lifecycle_repository,
+            effect,
             installation_id,
         }
     }
@@ -696,12 +701,56 @@ impl PermissionResponseOperationUsecase {
             }
         }
 
-        let plan = match self
-            .gate
-            .plan_response(&request.session_id, &request.response)
+        let session = match self
+            .lifecycle_repository
+            .restore_session(&request.session_id)
             .await
         {
-            Ok(plan) => plan,
+            Ok(session) => session,
+            Err(_) => {
+                return self
+                    .converge_or_reject(
+                        &request.operation_id,
+                        &principal_mac,
+                        &binding_hmac,
+                        SafeOperationFailure::new(
+                            SessionOperationFailureKind::InvalidEffectIntent,
+                            true,
+                            "The permission request is no longer available for this response.",
+                            correlation("aggregate-restore"),
+                        ),
+                    )
+                    .await;
+            }
+        };
+        let turn_id = match session.admit_permission_response(&request.response.request_id) {
+            Ok(turn_id) => turn_id,
+            Err(rejection) => {
+                let correlation_label = match rejection {
+                    TransitionRejection::NoActiveTurn => "aggregate-turn",
+                    _ => "aggregate-permission",
+                };
+                return self
+                    .converge_or_reject(
+                        &request.operation_id,
+                        &principal_mac,
+                        &binding_hmac,
+                        SafeOperationFailure::new(
+                            SessionOperationFailureKind::InvalidEffectIntent,
+                            true,
+                            "The permission request is no longer available for this response.",
+                            correlation(correlation_label),
+                        ),
+                    )
+                    .await;
+            }
+        };
+        let from_runtime_state = match self
+            .effect
+            .request_is_runtime_owned(&request.session_id, &request.response.request_id)
+            .await
+        {
+            Ok(value) => value,
             Err(failure) => {
                 return self
                     .converge_or_reject(
@@ -713,12 +762,13 @@ impl PermissionResponseOperationUsecase {
                     .await;
             }
         };
-        if plan.session_id != request.session_id
-            || plan.request_id != request.response.request_id
-            || plan.response != request.response
-        {
-            return Err(internal("plan-binding"));
-        }
+        let plan = PermissionResponsePlan {
+            session_id: request.session_id.clone(),
+            request_id: request.response.request_id.clone(),
+            turn_id,
+            response: request.response.clone(),
+            from_runtime_state,
+        };
         let stream_id =
             StreamId::agent_session(&plan.session_id).map_err(|_| internal("stream-id"))?;
         let head = match self.current_stream_head(&stream_id).await {
@@ -1258,7 +1308,7 @@ impl PermissionResponseOperationUsecase {
             obligation_id: view.obligation_id,
             plan: obligation.plan,
         };
-        if let Err(failure) = self.gate.execute(&effect).await {
+        if let Err(failure) = self.effect.execute(&effect).await {
             let persisted = self
                 .record_reconciliation(&record, &effect, failure.clone())
                 .await;
@@ -1431,6 +1481,33 @@ impl PermissionResponseOperationUsecase {
             }
         };
         let at = now_ms();
+        let mut session = match self
+            .lifecycle_repository
+            .restore_session(&effect.plan.session_id)
+            .await
+        {
+            Ok(session) => session,
+            Err(_) => {
+                return AcceptedPermissionResponseOperation {
+                    receipt: original.receipt,
+                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
+                        failure: storage_failure("completion-aggregate-restore"),
+                    },
+                };
+            }
+        };
+        let expected_session_revision = session.revision();
+        match session.resolve_permission(effect.plan.turn_id, &effect.plan.response) {
+            TransitionOutcome::Applied | TransitionOutcome::AlreadyApplied => {}
+            TransitionOutcome::NotApplicable | TransitionOutcome::Rejected(_) => {
+                return AcceptedPermissionResponseOperation {
+                    receipt: original.receipt,
+                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
+                        failure: reconciliation_failure("completion-aggregate-transition"),
+                    },
+                };
+            }
+        }
         let event_values = vec![
             resolved_event(&effect.plan),
             AgentSessionDomainEvent::ObligationRecorded {
@@ -1441,11 +1518,16 @@ impl PermissionResponseOperationUsecase {
             },
         ];
         let mut state_mutations = match self
-            .gate
-            .completion_state_mutations(&effect, &event_values)
+            .lifecycle_repository
+            .prepare_session_change(
+                &effect.plan.session_id,
+                expected_session_revision,
+                &event_values,
+            )
             .await
         {
-            Ok(mutations) => mutations,
+            Ok(Some(change)) => change.into_atomic_participant(),
+            Ok(None) => Vec::new(),
             Err(_) => {
                 return AcceptedPermissionResponseOperation {
                     receipt: original.receipt,
@@ -1455,6 +1537,22 @@ impl PermissionResponseOperationUsecase {
                 };
             }
         };
+        #[cfg(test)]
+        match self
+            .effect
+            .completion_state_mutations(&effect, &event_values)
+            .await
+        {
+            Ok(mutations) => state_mutations.extend(mutations),
+            Err(_) => {
+                return AcceptedPermissionResponseOperation {
+                    receipt: original.receipt,
+                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
+                        failure: storage_failure("completion-test-participants"),
+                    },
+                };
+            }
+        }
         let Some(operation_revision) = current.revision.next() else {
             return AcceptedPermissionResponseOperation {
                 receipt: original.receipt,
@@ -1548,7 +1646,7 @@ impl PermissionResponseOperationUsecase {
                         saved.latest_status,
                         PermissionResponseExecutionStatus::Completed { .. }
                     ) {
-                        self.gate.after_completion(&effect).await;
+                        self.effect.after_completion(&effect).await;
                         return Self::public_operation(saved);
                     }
                 }

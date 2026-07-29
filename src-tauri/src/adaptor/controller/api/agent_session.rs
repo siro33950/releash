@@ -2847,7 +2847,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for PublicIdentitySendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for PublicIdentitySendGate {
         async fn plan_send(
             &self,
             _principal: &str,
@@ -2934,7 +2934,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for ConcurrentPublicSendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for ConcurrentPublicSendGate {
         async fn plan_send(
             &self,
             _principal: &str,
@@ -3184,23 +3184,41 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::StopAdmissionGate for DurableStopGate {
-        async fn target_snapshot(
+    impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository for DurableStopGate {
+        async fn restore_session(
             &self,
-            _session_id: &str,
+            session_id: &str,
         ) -> Result<
-            crate::usecase::agent_session::operation::StopTargetSnapshot,
-            crate::domain::local_event::SafeOperationFailure,
+            crate::domain::agent_session::aggregates::session::Session,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
         > {
-            Ok(
-                crate::usecase::agent_session::operation::StopTargetSnapshot {
-                    session_revision: self.session_revision,
-                    active_turn_id: self.turn_id.clone(),
-                    queue_paused: false,
-                },
-            )
+            crate::usecase::agent_session::operation::StopTargetSnapshot {
+                session_revision: self.session_revision,
+                active_turn_id: self.turn_id.clone(),
+                queue_paused: false,
+            }
+            .restore_session(session_id)
         }
 
+        async fn prepare_session_change(
+            &self,
+            _session_id: &str,
+            _expected_revision: u64,
+            _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+        ) -> Result<
+            Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+        > {
+            Ok(Some(
+                crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                    Vec::new(),
+                ),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::usecase::agent_session::operation::StopEffectPort for DurableStopGate {
         async fn interrupt(
             &self,
             _effect: &crate::usecase::agent_session::operation::AcceptedStopEffect,
@@ -6415,6 +6433,7 @@ mod tests {
                     repository,
                     authority,
                     gate.clone(),
+                    gate.clone(),
                     store.installation_id().to_string(),
                 ),
             );
@@ -6496,6 +6515,7 @@ mod tests {
             crate::usecase::agent_session::operation::StopOperationUsecase::new(
                 repository,
                 authority,
+                gate.clone(),
                 gate.clone(),
                 store.installation_id().to_string(),
             ),

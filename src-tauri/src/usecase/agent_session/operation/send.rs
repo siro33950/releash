@@ -8,9 +8,14 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::domain::agent_session::aggregates::session::{
+    SendCommandRejection, Session, SessionSendCommand, TransitionRejection,
+};
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, ObligationKind, ObligationState, SendDisposition,
 };
+use crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError;
+use crate::domain::agent_session::services::workflow_turn_principal_is_authorized;
 use crate::domain::local_event::{
     AgentTurnTerminalResultRecord, CallerAttemptResolution, CallerOperationKey, CommitBatchError,
     CommitBatchResult, CommitIdentity, CommitOperationKind, CommitResolution, ExpectedStreamHead,
@@ -27,8 +32,9 @@ use crate::domain::local_event::{
 use super::identity::{constant_time_eq_32, validate_operation_identity};
 use super::ports::{
     AcceptedSendEffect, LegacyProviderEstablishRecovery, OperationBindingAuthority,
-    RecoveryEffectResult, SendAdmissionGate, SendEffectDispatch, SendRecoveryReadbackKind,
-    SendRecoveryReadbackPort, SendRecoveryReadbackRequest, TerminalParticipants,
+    RecoveryEffectResult, SendAcceptancePort, SendEffectDispatch, SendPlan,
+    SendRecoveryReadbackKind, SendRecoveryReadbackPort, SendRecoveryReadbackRequest,
+    TerminalParticipants,
 };
 use super::record::hex_encode;
 use super::recovery::unresolved_recovery_original_identity;
@@ -159,7 +165,7 @@ pub struct SendOperationRequest {
 pub struct AgentSendOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
-    gate: Arc<dyn SendAdmissionGate>,
+    port: Arc<dyn SendAcceptancePort>,
     installation_id: String,
     pending_recovery_wakeup: Arc<tokio::sync::Notify>,
 }
@@ -588,13 +594,13 @@ impl AgentSendOperationUsecase {
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
-        gate: Arc<dyn SendAdmissionGate>,
+        port: Arc<dyn SendAcceptancePort>,
         installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
-            gate,
+            port,
             installation_id,
             pending_recovery_wakeup: Arc::new(tokio::sync::Notify::new()),
         }
@@ -606,6 +612,95 @@ impl AgentSendOperationUsecase {
 
     pub(crate) fn wake_pending_recovery(&self) {
         self.pending_recovery_wakeup.notify_one();
+    }
+
+    fn admission_failure(label: &str) -> SafeOperationFailure {
+        SafeOperationFailure::new(
+            SessionOperationFailureKind::PersistFailure,
+            true,
+            label,
+            format!("send-admission-{}", uuid_like()),
+        )
+    }
+
+    async fn apply_domain_admission(
+        &self,
+        principal: &str,
+        plan: &mut SendPlan,
+    ) -> Result<(), SafeOperationFailure> {
+        let Some(repository) = self.port.lifecycle_repository() else {
+            #[cfg(test)]
+            return Ok(());
+            #[cfg(not(test))]
+            return Err(Self::admission_failure(
+                "The session lifecycle repository is unavailable.",
+            ));
+        };
+        let mut session = if plan.initial_session.is_some() {
+            Session::new(plan.session_id.clone())
+                .map_err(|_| Self::admission_failure("The new send target is invalid."))?
+        } else {
+            repository
+                .restore_session(&plan.session_id)
+                .await
+                .map_err(|error| match error {
+                    AgentSessionLifecycleRepositoryError::NotFound => {
+                        Self::admission_failure("The send target does not exist.")
+                    }
+                    AgentSessionLifecycleRepositoryError::Corrupt(_)
+                    | AgentSessionLifecycleRepositoryError::Unavailable(_) => {
+                        Self::admission_failure("The send target is unavailable.")
+                    }
+                })?
+        };
+        let workflow_turn = workflow_turn_principal_is_authorized(principal);
+        let transition = session
+            .apply_send(SessionSendCommand {
+                expected_session_id: plan.session_id.clone(),
+                workflow_turn,
+                reserved_turn_id: plan.reserved_turn_id.clone(),
+                disposition: plan.disposition.clone(),
+                human_message_id: plan.human_message_id.clone(),
+                input_ref: plan.input_ref.clone(),
+            })
+            .map_err(|rejection| match rejection {
+                SendCommandRejection::IdentityMismatch => {
+                    Self::admission_failure("The send target identity is invalid.")
+                }
+                SendCommandRejection::TurnIdentityUnavailable => {
+                    Self::admission_failure("The turn identity is unavailable.")
+                }
+                SendCommandRejection::InvalidTurnIdentity => {
+                    Self::admission_failure("The turn identity is invalid.")
+                }
+                SendCommandRejection::TransitionNotApplied => {
+                    Self::admission_failure("The send target changed during admission.")
+                }
+                SendCommandRejection::Transition(rejection) if workflow_turn => match rejection {
+                    TransitionRejection::SessionClosed => {
+                        Self::admission_failure("The workflow turn target is not open.")
+                    }
+                    TransitionRejection::NotQuiescent => Self::admission_failure(
+                        "The workflow turn target already has pending work.",
+                    ),
+                    TransitionRejection::UnresolvedRecovery => Self::admission_failure(
+                        "Unresolved recovery blocks the workflow turn target.",
+                    ),
+                    _ => Self::admission_failure("The workflow turn target state is invalid."),
+                },
+                SendCommandRejection::Transition(rejection) => match rejection {
+                    TransitionRejection::SessionClosed => {
+                        Self::admission_failure("The send target is not open.")
+                    }
+                    TransitionRejection::UnresolvedRecovery => {
+                        Self::admission_failure("Unresolved recovery blocks the send target.")
+                    }
+                    _ => Self::admission_failure("The send target is unavailable."),
+                },
+            })?;
+        plan.disposition = transition.disposition;
+        plan.reserved_turn_id = transition.reserved_turn_id;
+        Ok(())
     }
 
     fn commit_identity(&self, operation_id: &str) -> Result<CommitIdentity, SendAgentMessageError> {
@@ -735,7 +830,7 @@ impl AgentSendOperationUsecase {
         let turn_id = turn_id
             .parse::<u64>()
             .map_err(|_| internal_error("dispatchability-turn-identity"))?;
-        self.gate
+        self.port
             .canonical_immediate_turn_is_current(&effect.session_id, turn_id)
             .await
             .map_err(|_| internal_error("dispatchability-canonical-turn"))
@@ -871,8 +966,8 @@ impl AgentSendOperationUsecase {
         }
 
         // Plan the one-shot disposition; no provider I/O yet.
-        let plan = match self
-            .gate
+        let mut plan = match self
+            .port
             .plan_send(
                 &request.principal,
                 &request.operation_id,
@@ -901,6 +996,19 @@ impl AgentSendOperationUsecase {
                     .await;
             }
         };
+        if let Err(failure) = self
+            .apply_domain_admission(&request.principal, &mut plan)
+            .await
+        {
+            return self
+                .converge_or_reject(
+                    &request.operation_id,
+                    &principal_mac,
+                    &binding_hmac,
+                    failure,
+                )
+                .await;
+        }
 
         let stream_id =
             StreamId::agent_session(&plan.session_id).map_err(|_| internal_error("stream-id"))?;
@@ -994,7 +1102,7 @@ impl AgentSendOperationUsecase {
             })
             .collect::<Vec<_>>();
         let mut mutations = match self
-            .gate
+            .port
             .acceptance_state_mutations(&plan, &acceptance_events)
             .await
         {
@@ -1133,7 +1241,7 @@ impl AgentSendOperationUsecase {
                         }));
                     }
                 };
-                let dispatch = self.gate.start_provider_effect(&accepted_effect).await;
+                let dispatch = self.port.start_provider_effect(&accepted_effect).await;
                 let latest_status = if let Err(failure) = dispatch {
                     if self
                         .mark_turn_reconciliation_required(
@@ -1391,12 +1499,12 @@ impl AgentSendOperationUsecase {
             .await?;
         }
 
-        // For a Queued disposition the gate's post-accept path only restores
+        // For a Queued disposition the adapter's post-accept path only restores
         // the exact queue item. Omitting the establishment identity and leaving
         // TurnExecution Pending prevents provider I/O before the item becomes
         // executable.
         let dispatch = self
-            .gate
+            .port
             .start_provider_effect(&AcceptedSendEffect {
                 operation_id: record.receipt.operation_id.clone(),
                 session_id: obligation.session_id.clone(),
@@ -1556,7 +1664,7 @@ impl AgentSendOperationUsecase {
             | ObligationStateRecord::Cancelled => true,
             ObligationStateRecord::EffectReserved
             | ObligationStateRecord::ReconciliationRequired => {
-                self.gate
+                self.port
                     .classify_legacy_provider_establish(&obligation.session_id)
                     .await
                     .map_err(|_| internal_error("legacy-provider-classification"))?
@@ -1681,7 +1789,7 @@ impl AgentSendOperationUsecase {
         let turn_id = turn_id
             .parse::<u64>()
             .map_err(|_| internal_error("recovery-canonical-turn-identity"))?;
-        self.gate
+        self.port
             .canonical_immediate_turn_is_current(&obligation.session_id, turn_id)
             .await
             .map_err(|_| internal_error("recovery-canonical-turn"))
@@ -1924,7 +2032,7 @@ impl AgentSendOperationUsecase {
                     record.latest_status.clone()
                 };
                 if self
-                    .gate
+                    .port
                     .owns_current_process_turn_execution(
                         &obligation.session_id,
                         operation_id,
@@ -2064,13 +2172,13 @@ impl AgentSendOperationUsecase {
                             processed = processed.saturating_add(1);
                             continue;
                         };
-                        // The gate performs the one canonical Pending ->
+                        // The effect adapter performs the one canonical Pending ->
                         // EffectReserved CAS immediately before handoff. Both
                         // startup recovery and the post-accept worker enter
                         // through that same claim, so only its commit winner
                         // may execute the accepted turn.
                         let dispatch = self
-                            .gate
+                            .port
                             .start_provider_effect(&AcceptedSendEffect {
                                 operation_id: operation_id.to_string(),
                                 session_id: obligation.session_id.clone(),

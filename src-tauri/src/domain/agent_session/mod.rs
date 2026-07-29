@@ -1,14 +1,15 @@
+pub mod aggregates;
 pub mod entities;
 pub mod events;
 pub mod gateway;
+pub mod repository;
 pub(crate) mod services;
 pub(crate) mod storage;
 pub(crate) mod value_objects;
 
 pub(crate) use services::{
-    decide_workflow_turn_admission, dedup_instructions, latest_revisions_by_kind,
-    next_epoch_for_identity, normalize_path_components, replacement_action, snapshot_is_stale,
-    WorkflowTurnAdmissionFacts, WorkflowTurnAdmissionRejection,
+    dedup_instructions, latest_revisions_by_kind, next_epoch_for_identity,
+    normalize_path_components, replacement_action, snapshot_is_stale,
 };
 #[cfg(test)]
 pub(crate) use storage::AgentSessionProjectionPreparer;

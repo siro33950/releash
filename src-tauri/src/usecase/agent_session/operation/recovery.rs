@@ -8,6 +8,15 @@ use sha2::Digest;
 use crate::domain::agent_session::events::{
     RecoveryActionKind, RecoveryResultClassification, SendDisposition,
 };
+use crate::domain::agent_session::services::{
+    bounded_recovery_owner_component, decide_recovery_capabilities, pending_recovery_descriptor,
+    recovery_classification_is_allowed, recovery_result_outcome,
+    workflow_node_recovery_owner_target, RecoveryCapabilities, RecoveryObservationFact,
+};
+pub use crate::domain::agent_session::services::{
+    PendingRecoveryCategory, PendingRecoveryKnownStatus, PendingRecoveryOwnerTarget,
+    RecoveryActionIdentity, RecoveryResourceState,
+};
 use crate::domain::local_event::{
     AuthoritativeEffectObservationRecord, CommitBatchError, CommitBatchResult, CommitIdentity,
     CommitOperationKind, IdempotencyBinding, LocalAtomicBatch, LocalEventQuery,
@@ -17,10 +26,9 @@ use crate::domain::local_event::{
     PendingIndexEntry, PendingPartition, QueryCursor, RecoveryActionMutation,
     RecoveryActionResultRecord, RecoveryActionView, RecoveryAttemptRecord,
     RecoveryResourceViewRecord, RecoveryResultOutcomeRecord, RecoveryResultRecord, Revision,
-    RevisionGuard, SafeOperationFailure, SendObligationDispositionRecord, SendObligationKindRecord,
-    SessionLifecycleRecordAction, SessionProjectionOwnerState, ShutdownTargetRecord,
-    StopResolutionKind, TerminalRecordMutation, TerminalResultRecord,
-    WorkflowTurnCompletionObligationRecord,
+    RevisionGuard, SafeOperationFailure, SendObligationKindRecord, SessionLifecycleRecordAction,
+    SessionProjectionOwnerState, ShutdownTargetRecord, StopResolutionKind, TerminalRecordMutation,
+    TerminalResultRecord,
 };
 
 use super::identity::{constant_time_eq_32, validate_operation_identity};
@@ -79,127 +87,8 @@ pub struct PendingRecoveryEntry {
     pub(crate) continuation_cursor: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingRecoveryOwnerTarget {
-    Session {
-        session_id: String,
-    },
-    WorkflowExecution {
-        execution_id: String,
-    },
-    WorkflowNode {
-        execution_id: String,
-        node_execution_id: String,
-        workflow_name: String,
-        node_name: String,
-        attempt: u32,
-    },
-    ClosedSession {
-        session_id: String,
-    },
-    ArchivedSession {
-        session_id: String,
-    },
-    UnownedRuntime {
-        runtime_id: String,
-    },
-    UnknownOwner {
-        owner: String,
-    },
-}
-
-fn bounded_owner_component(value: &str) -> Option<String> {
-    (!value.is_empty() && value.len() <= 512).then(|| value.to_string())
-}
-
 fn original_obligation(record: &ObligationRecord) -> &ObligationRecord {
-    match record {
-        ObligationRecord::RecoveryTransition { original, .. }
-        | ObligationRecord::Observed { original, .. } => original_obligation(original),
-        ObligationRecord::Send { .. }
-        | ObligationRecord::PermissionResponse { .. }
-        | ObligationRecord::StopInterrupt { .. }
-        | ObligationRecord::SessionClose { .. }
-        | ObligationRecord::BackendSessionRecovery { .. }
-        | ObligationRecord::WorkflowShutdown { .. }
-        | ObligationRecord::WorkflowTurnCompletion { .. }
-        | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::ProviderEstablish { .. }
-        | ObligationRecord::TurnExecution { .. }
-        | ObligationRecord::TerminalCommit { .. }
-        | ObligationRecord::RecoveryReserved { .. }
-        | ObligationRecord::RecoveryCompleted { .. }
-        | ObligationRecord::FeedbackReservation { .. }
-        | ObligationRecord::Feedback { .. }
-        | ObligationRecord::WorkflowExecution { .. } => record,
-    }
-}
-
-fn workflow_node_owner_target(record: &ObligationRecord) -> Option<PendingRecoveryOwnerTarget> {
-    let ObligationRecord::WorkflowTurnCompletion {
-        detail:
-            WorkflowTurnCompletionObligationRecord::Pending {
-                workflow_context, ..
-            },
-        ..
-    } = original_obligation(record)
-    else {
-        return None;
-    };
-    let context = workflow_context.as_ref();
-    let execution_id = bounded_owner_component(&context.execution_id)?;
-    let node_execution_id = bounded_owner_component(&context.node_execution_id)?;
-    let workflow_name = bounded_owner_component(&context.workflow_name)?;
-    let node_name = bounded_owner_component(&context.node_name)?;
-    Some(PendingRecoveryOwnerTarget::WorkflowNode {
-        execution_id,
-        node_execution_id,
-        workflow_name,
-        node_name,
-        attempt: context.attempt,
-    })
-}
-
-/// Public pending-recovery categories. These mirror the closed obligation
-/// family while retaining `Unknown` for incompatible/older local records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PendingRecoveryCategory {
-    TurnExecution,
-    QueueExecution,
-    PermissionDelivery,
-    ProviderEstablish,
-    TerminalCommit,
-    BackendRecovery,
-    SessionClose,
-    WorkflowShutdown,
-    RecoveryPublication,
-    Unknown,
-}
-
-/// Bounded, non-inferential lifecycle exposed by startup discovery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PendingRecoveryKnownStatus {
-    Prepared,
-    Pending,
-    EffectReserved,
-    Running,
-    WaitingApproval,
-    ReconciliationRequired,
-    Failed,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryResourceState {
-    Pending,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoveryActionIdentity {
-    pub action_id: String,
-    pub action: RecoveryActionKind,
-    pub origin_revision: u64,
+    record.original()
 }
 
 #[derive(Debug, Clone)]
@@ -401,7 +290,7 @@ impl RecoveryActionUsecase {
             PendingPartition::Owner => {}
         }
 
-        if let Some(target) = workflow_node_owner_target(record) {
+        if let Some(target) = workflow_node_recovery_owner_target(record) {
             return Ok(target);
         }
         let workflow_execution_id = match original_obligation(record) {
@@ -426,7 +315,8 @@ impl RecoveryActionUsecase {
             | ObligationRecord::RecoveryTransition { .. }
             | ObligationRecord::Observed { .. } => None,
         };
-        if let Some(execution_id) = workflow_execution_id.and_then(bounded_owner_component) {
+        if let Some(execution_id) = workflow_execution_id.and_then(bounded_recovery_owner_component)
+        {
             return Ok(PendingRecoveryOwnerTarget::WorkflowExecution { execution_id });
         }
 
@@ -1141,7 +1031,7 @@ impl RecoveryActionUsecase {
             immutable_obligation: obligation.record.clone(),
             authoritative_observation: None,
         };
-        let (mut classification, mut resource_view) = match obligation_state(&obligation.record) {
+        let (mut classification, mut resource_view) = match obligation.record.state() {
             Some(ObligationStateRecord::Pending)
                 if obligation.pending.is_some()
                     && matches!(
@@ -1180,7 +1070,7 @@ impl RecoveryActionUsecase {
         };
 
         let current = self.obligation(&request.obligation_id).await?;
-        if obligation_state(&current.record) == Some(ObligationStateRecord::Completed) {
+        if current.record.state() == Some(ObligationStateRecord::Completed) {
             classification = RecoveryResultClassification::Succeeded;
             resource_view = "The exact permission response was delivered.".to_string();
         }
@@ -3198,222 +3088,6 @@ fn action_label(action: RecoveryActionKind) -> &'static str {
     }
 }
 
-struct RecoveryCapabilities {
-    state: RecoveryResourceState,
-    safe_label: String,
-    actions: Vec<RecoveryActionKind>,
-    active_action: Option<RecoveryActionIdentity>,
-}
-
-struct PendingRecoveryDescriptor {
-    category: PendingRecoveryCategory,
-    original_identity: String,
-    known_status: PendingRecoveryKnownStatus,
-    safe_label: &'static str,
-}
-
-fn bounded_original_identity(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.is_empty() && value.len() <= 512)
-        .map(str::to_string)
-}
-
-fn pending_recovery_known_status(
-    state: Option<ObligationStateRecord>,
-) -> PendingRecoveryKnownStatus {
-    match state {
-        Some(ObligationStateRecord::Prepared) => PendingRecoveryKnownStatus::Prepared,
-        Some(ObligationStateRecord::Pending) => PendingRecoveryKnownStatus::Pending,
-        Some(ObligationStateRecord::EffectReserved) => PendingRecoveryKnownStatus::EffectReserved,
-        Some(ObligationStateRecord::Running) => PendingRecoveryKnownStatus::Running,
-        Some(ObligationStateRecord::WaitingApproval) => PendingRecoveryKnownStatus::WaitingApproval,
-        Some(ObligationStateRecord::ReconciliationRequired) => {
-            PendingRecoveryKnownStatus::ReconciliationRequired
-        }
-        Some(ObligationStateRecord::Failed) => PendingRecoveryKnownStatus::Failed,
-        Some(ObligationStateRecord::OutcomeUnknown)
-        | Some(ObligationStateRecord::Completed)
-        | Some(ObligationStateRecord::Cancelled)
-        | None => PendingRecoveryKnownStatus::Unknown,
-    }
-}
-
-fn obligation_state(record: &ObligationRecord) -> Option<ObligationStateRecord> {
-    match original_obligation(record) {
-        ObligationRecord::Send { state, .. }
-        | ObligationRecord::PermissionResponse { state, .. }
-        | ObligationRecord::StopInterrupt { state, .. }
-        | ObligationRecord::SessionClose { state, .. }
-        | ObligationRecord::BackendSessionRecovery { state, .. }
-        | ObligationRecord::WorkflowShutdown { state, .. }
-        | ObligationRecord::WorkflowTurnCompletion { state, .. }
-        | ObligationRecord::RecoveryPublication { state, .. }
-        | ObligationRecord::ProviderEstablish { state, .. }
-        | ObligationRecord::TurnExecution { state, .. }
-        | ObligationRecord::TerminalCommit { state, .. }
-        | ObligationRecord::RecoveryReserved { state, .. }
-        | ObligationRecord::RecoveryCompleted { state, .. } => Some(*state),
-        ObligationRecord::FeedbackReservation { .. }
-        | ObligationRecord::Feedback { .. }
-        | ObligationRecord::WorkflowExecution { .. }
-        | ObligationRecord::RecoveryTransition { .. }
-        | ObligationRecord::Observed { .. } => None,
-    }
-}
-
-fn descriptor(
-    category: PendingRecoveryCategory,
-    identity: Option<String>,
-    known_status: PendingRecoveryKnownStatus,
-    safe_label: &'static str,
-    obligation_id: &str,
-) -> PendingRecoveryDescriptor {
-    match identity {
-        Some(original_identity) => PendingRecoveryDescriptor {
-            category,
-            original_identity,
-            known_status,
-            safe_label,
-        },
-        None => PendingRecoveryDescriptor {
-            category: PendingRecoveryCategory::Unknown,
-            original_identity: obligation_id.to_string(),
-            known_status: PendingRecoveryKnownStatus::Unknown,
-            safe_label: "Pending local operation",
-        },
-    }
-}
-
-fn pending_recovery_descriptor(
-    obligation_id: &str,
-    record: &ObligationRecord,
-) -> PendingRecoveryDescriptor {
-    let known_status = pending_recovery_known_status(obligation_state(record));
-    let identity = |value: &str| bounded_original_identity(Some(value));
-    let (category, original_identity, safe_label) = match original_obligation(record) {
-        ObligationRecord::Send {
-            operation_id,
-            kind: SendObligationKindRecord::ProviderEstablish,
-            ..
-        } => (
-            PendingRecoveryCategory::ProviderEstablish,
-            identity(operation_id),
-            "Provider session establishment",
-        ),
-        ObligationRecord::Send {
-            operation_id,
-            kind: SendObligationKindRecord::TurnExecution,
-            disposition,
-            ..
-        } => match disposition {
-            SendObligationDispositionRecord::Queued => (
-                PendingRecoveryCategory::QueueExecution,
-                identity(operation_id),
-                "Queued agent execution",
-            ),
-            SendObligationDispositionRecord::StartedTurn => (
-                PendingRecoveryCategory::TurnExecution,
-                identity(operation_id),
-                "Agent turn execution",
-            ),
-        },
-        ObligationRecord::PermissionResponse { operation_id, .. } => (
-            PendingRecoveryCategory::PermissionDelivery,
-            identity(operation_id),
-            "Permission response delivery",
-        ),
-        ObligationRecord::StopInterrupt { operation_id, .. }
-        | ObligationRecord::TerminalCommit { operation_id, .. } => (
-            PendingRecoveryCategory::TerminalCommit,
-            identity(operation_id),
-            "Agent turn terminalization",
-        ),
-        ObligationRecord::SessionClose { operation_id, .. } => (
-            PendingRecoveryCategory::SessionClose,
-            identity(operation_id),
-            "Session lifecycle action",
-        ),
-        ObligationRecord::BackendSessionRecovery { recovery_id, .. } => (
-            PendingRecoveryCategory::BackendRecovery,
-            identity(recovery_id),
-            "Backend session recovery",
-        ),
-        ObligationRecord::WorkflowShutdown {
-            effect_identity,
-            execution_id,
-            ..
-        } => (
-            PendingRecoveryCategory::WorkflowShutdown,
-            identity(effect_identity).or_else(|| identity(execution_id)),
-            "Workflow shutdown",
-        ),
-        ObligationRecord::WorkflowTurnCompletion {
-            terminal_identity, ..
-        } => (
-            PendingRecoveryCategory::TurnExecution,
-            identity(terminal_identity),
-            "Workflow turn completion handoff",
-        ),
-        ObligationRecord::RecoveryPublication {
-            message_id,
-            recovery_id,
-            ..
-        } => (
-            PendingRecoveryCategory::RecoveryPublication,
-            identity(message_id).or_else(|| identity(recovery_id)),
-            "Recovery message publication",
-        ),
-        ObligationRecord::ProviderEstablish {
-            operation_id,
-            effect_identity,
-            ..
-        } => (
-            PendingRecoveryCategory::ProviderEstablish,
-            identity(operation_id).or_else(|| identity(effect_identity)),
-            "Provider session establishment",
-        ),
-        ObligationRecord::TurnExecution {
-            operation_id,
-            turn_id,
-            ..
-        } => (
-            PendingRecoveryCategory::TurnExecution,
-            identity(operation_id).or_else(|| identity(turn_id)),
-            "Agent turn execution",
-        ),
-        ObligationRecord::RecoveryReserved {
-            recovery_id,
-            effect_identity,
-            ..
-        }
-        | ObligationRecord::RecoveryCompleted {
-            recovery_id,
-            effect_identity,
-            ..
-        } => (
-            PendingRecoveryCategory::BackendRecovery,
-            identity(recovery_id).or_else(|| identity(effect_identity)),
-            "Recovery reconciliation",
-        ),
-        ObligationRecord::FeedbackReservation { .. }
-        | ObligationRecord::Feedback { .. }
-        | ObligationRecord::WorkflowExecution { .. }
-        | ObligationRecord::RecoveryTransition { .. }
-        | ObligationRecord::Observed { .. } => (
-            PendingRecoveryCategory::Unknown,
-            Some(obligation_id.to_string()),
-            "Pending local operation",
-        ),
-    };
-    descriptor(
-        category,
-        original_identity,
-        known_status,
-        safe_label,
-        obligation_id,
-    )
-}
-
 /// Returns the same immutable identity exposed by pending-recovery discovery
 /// when a record must fence new mutation/effect admission. Normal live work
 /// remains queueable; explicit reconciliation, recovery-owned handoffs, and
@@ -3427,130 +3101,42 @@ pub(crate) fn unresolved_recovery_original_identity(
 
 fn recovery_capabilities(
     obligation_id: &str,
-    _revision: u64,
+    revision: u64,
     record: &ObligationRecord,
     observation: Option<&AuthoritativeEffectObservation>,
     authority: &dyn OperationBindingAuthority,
     installation_id: &str,
     supports_read_again: bool,
 ) -> RecoveryCapabilities {
-    let original = original_obligation(record);
-    let permission_payload_valid = matches!(
-        original,
+    let permission_payload_encodable = match original_obligation(record) {
         ObligationRecord::PermissionResponse {
-            operation_id,
-            effect_identity,
             session_id,
-            turn_id,
             response,
-            owner_access: true,
-            state: ObligationStateRecord::Pending,
             ..
-        } if !operation_id.is_empty()
-            && !session_id.is_empty()
-            && !turn_id.is_empty()
-            && !response.request_id.is_empty()
-            && effect_identity == &format!("permission-response:{operation_id}")
-            && super::permission::canonical_payload(session_id, response).is_ok()
-    );
-    if matches!(
-        original,
-        ObligationRecord::PermissionResponse {
-            state: ObligationStateRecord::Pending,
-            ..
-        }
-    ) && !permission_payload_valid
-    {
-        return RecoveryCapabilities {
-            state: RecoveryResourceState::Failed,
-            safe_label: "Permission response payload is unavailable".to_string(),
-            actions: vec![RecoveryActionKind::KeepForManualResolution],
-            active_action: None,
-        };
-    }
-
-    let has_nonterminal_action_claim = recovery_action(record).is_some_and(|active| {
-        matches!(
-            active.state,
-            ObligationStateRecord::Prepared
-                | ObligationStateRecord::EffectReserved
-                | ObligationStateRecord::OutcomeUnknown
-                | ObligationStateRecord::ReconciliationRequired
+        } => super::permission::canonical_payload(session_id, response).is_ok(),
+        _ => false,
+    };
+    let derived_active_action_id = recovery_action(record).map(|active| {
+        derive_recovery_action_id(
+            authority,
+            installation_id,
+            obligation_id,
+            active.origin_revision,
+            active.action,
         )
     });
-    let active_action = recovery_action(record).and_then(|active| {
-        if !matches!(
-            active.state,
-            ObligationStateRecord::Prepared
-                | ObligationStateRecord::EffectReserved
-                | ObligationStateRecord::OutcomeUnknown
-                | ObligationStateRecord::ReconciliationRequired
-        ) {
-            return None;
-        }
-        (active.effect_identity == obligation_id
-            && active.action_id
-                == derive_recovery_action_id(
-                    authority,
-                    installation_id,
-                    obligation_id,
-                    active.origin_revision,
-                    active.action,
-                ))
-        .then_some(RecoveryActionIdentity {
-            action_id: active.action_id.clone(),
-            action: active.action,
-            origin_revision: active.origin_revision,
-        })
-    });
-    if has_nonterminal_action_claim && active_action.is_none() {
-        return RecoveryCapabilities {
-            state: RecoveryResourceState::Failed,
-            safe_label: "Recovery action identity is incompatible".to_string(),
-            actions: Vec::new(),
-            active_action: None,
-        };
-    }
-    if let Some(active_action) = active_action {
-        return RecoveryCapabilities {
-            state: RecoveryResourceState::Pending,
-            safe_label: safe_obligation_label(obligation_id, record),
-            actions: vec![active_action.action],
-            active_action: Some(active_action),
-        };
-    }
-
-    let mut actions = Vec::new();
-    if supports_read_again {
-        actions.push(RecoveryActionKind::ReadAgain);
-    }
-    // Permission retry is allowed only before the provider effect is claimed
-    // and only from the saved exact payload. `effect_reserved` is ambiguous
-    // and deliberately never exposes blind retry.
-    if permission_payload_valid {
-        actions.push(RecoveryActionKind::RetrySameEffect);
-    }
-    if observation.is_some() {
-        actions.push(RecoveryActionKind::UseObservedResult);
-    }
-    if observation.is_some_and(|proof| {
-        proof.classification == RecoveryResultClassification::ConfirmedNoEffect && proof.cancellable
-    }) {
-        actions.push(RecoveryActionKind::CancelIfSafe);
-    }
-    actions.push(RecoveryActionKind::KeepForManualResolution);
-    RecoveryCapabilities {
-        state: RecoveryResourceState::Pending,
-        safe_label: safe_obligation_label(obligation_id, record),
-        actions,
-        active_action: None,
-    }
-}
-
-fn safe_obligation_label(obligation_id: &str, record: &ObligationRecord) -> String {
-    pending_recovery_descriptor(obligation_id, record)
-        .safe_label
-        .to_string()
+    decide_recovery_capabilities(
+        obligation_id,
+        revision,
+        record,
+        observation.map(|observation| RecoveryObservationFact {
+            classification: observation.classification,
+            cancellable: observation.cancellable,
+        }),
+        supports_read_again,
+        permission_payload_encodable,
+        derived_active_action_id.as_deref(),
+    )
 }
 
 /// Decode and verify the proof captured by the backend at effect readback.
@@ -3685,34 +3271,11 @@ fn classification_allowed_for_action(
     observation: Option<&AuthoritativeEffectObservation>,
     classification: RecoveryResultClassification,
 ) -> bool {
-    match action {
-        RecoveryActionKind::ReadAgain => matches!(
-            classification,
-            RecoveryResultClassification::Pending
-                | RecoveryResultClassification::Succeeded
-                | RecoveryResultClassification::ConfirmedNoEffect
-                | RecoveryResultClassification::Ambiguous
-        ),
-        RecoveryActionKind::RetrySameEffect => matches!(
-            classification,
-            RecoveryResultClassification::Pending
-                | RecoveryResultClassification::Succeeded
-                | RecoveryResultClassification::Ambiguous
-        ),
-        RecoveryActionKind::UseObservedResult => {
-            observation.is_some_and(|observation| observation.classification == classification)
-        }
-        RecoveryActionKind::CancelIfSafe => {
-            classification == RecoveryResultClassification::CancelledBeforeEffect
-                && observation.is_some_and(|observation| {
-                    observation.classification == RecoveryResultClassification::ConfirmedNoEffect
-                        && observation.cancellable
-                })
-        }
-        RecoveryActionKind::KeepForManualResolution => {
-            classification == RecoveryResultClassification::Unchanged
-        }
-    }
+    recovery_classification_is_allowed(
+        action,
+        observation.map(|observation| (observation.classification, observation.cancellable)),
+        classification,
+    )
 }
 
 fn decode_saved_status(saved: &RecoveryActionView) -> Option<RecoveryActionStatus> {
@@ -3815,15 +3378,10 @@ pub(crate) fn decode_recovery_completed_result(
 }
 
 fn result_outcome(classification: RecoveryResultClassification) -> RecoveryActionResultOutcome {
-    match classification {
-        RecoveryResultClassification::Pending
-        | RecoveryResultClassification::ConfirmedNoEffect
-        | RecoveryResultClassification::Ambiguous => RecoveryActionResultOutcome::Pending,
-        RecoveryResultClassification::Succeeded
-        | RecoveryResultClassification::CancelledBeforeEffect => {
-            RecoveryActionResultOutcome::Terminal
-        }
-        RecoveryResultClassification::Unchanged => RecoveryActionResultOutcome::Unchanged,
+    match recovery_result_outcome(classification) {
+        RecoveryResultOutcomeRecord::Pending => RecoveryActionResultOutcome::Pending,
+        RecoveryResultOutcomeRecord::Terminal => RecoveryActionResultOutcome::Terminal,
+        RecoveryResultOutcomeRecord::Unchanged => RecoveryActionResultOutcome::Unchanged,
     }
 }
 

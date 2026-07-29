@@ -3,9 +3,10 @@ use std::path::Path;
 
 use serde::Serialize;
 
+#[cfg(test)]
+use super::SessionState;
 use super::{
-    ActivityEntry, ChatMessage, ChatSession, MessagePart, MessageRole, SessionState, SessionStore,
-    SessionSummary,
+    ActivityEntry, ChatMessage, ChatSession, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -512,7 +513,7 @@ fn search_sessions(
         if !include_workflow && session.is_workflow_node_session() {
             continue;
         }
-        if session.state == SessionState::Archived {
+        if session.state.is_archived() {
             continue;
         }
         let Some((message, text)) = session.messages.iter().find_map(|message| {

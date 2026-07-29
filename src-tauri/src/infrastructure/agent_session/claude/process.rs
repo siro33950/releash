@@ -2,14 +2,12 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use crate::domain::agent_session::gateway::SessionSpec;
 use crate::infrastructure::agent_session::stdout_line_reader::StdoutLineReader;
 use crate::infrastructure::agent_session::wire_record::{WireBackend, WireRecorder};
 use crate::infrastructure::process::child_env::AgentChildEnv;
@@ -19,8 +17,6 @@ use crate::infrastructure::process::pid_registry::{
     save_pgid, wait_for_cleanup_gate, PidRegistration,
 };
 
-use super::wire::{claude_wire_mode, ClaudeWireMode};
-
 const CLAUDE_SCRUBBED_ENV: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,17 +25,21 @@ pub(crate) struct ClaudeProcessConfig {
     pub cwd: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub session_id: String,
+    pub base_branch: Option<String>,
+    pub extra_env: Vec<(String, String)>,
+    pub system_prompt: Option<String>,
 }
 
-fn claude_child_env(spec: &SessionSpec, config: &ClaudeProcessConfig) -> AgentChildEnv {
+fn claude_child_env(config: &ClaudeProcessConfig) -> AgentChildEnv {
     AgentChildEnv::for_session(
-        &spec.session_id,
-        spec.base_branch.as_deref(),
+        &config.session_id,
+        config.base_branch.as_deref(),
         config
             .env
             .iter()
             .cloned()
-            .chain(spec.extra_env.iter().cloned()),
+            .chain(config.extra_env.iter().cloned()),
         CLAUDE_SCRUBBED_ENV.iter().copied(),
     )
 }
@@ -86,10 +86,10 @@ impl ClaudeStdioHandle {
 }
 
 impl ClaudeStdioProcess {
-    pub(crate) async fn spawn(cli_path: String, spec: &SessionSpec) -> Result<Self, String> {
-        verify_claude_cli_version(&cli_path).await?;
+    pub(crate) async fn spawn(mut config: ClaudeProcessConfig) -> Result<Self, String> {
+        verify_claude_cli_version(&config.cli_path).await?;
         let mut system_prompt_file = None;
-        if let Some(system_prompt) = spec
+        if let Some(system_prompt) = config
             .system_prompt
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -98,16 +98,10 @@ impl ClaudeStdioProcess {
                 .map_err(|error| format!("failed to create claude system prompt file: {error}"))?;
             file.write_all(system_prompt.as_bytes())
                 .map_err(|error| format!("failed to write claude system prompt file: {error}"))?;
+            config.args.push("--append-system-prompt-file".to_string());
+            config.args.push(file.path().to_string_lossy().to_string());
             system_prompt_file = Some(file);
         }
-
-        let config = build_process_config(
-            cli_path,
-            spec,
-            system_prompt_file
-                .as_ref()
-                .map(tempfile::NamedTempFile::path),
-        );
         wait_for_cleanup_gate().await;
 
         let mut command = Command::new(&config.cli_path);
@@ -117,7 +111,7 @@ impl ClaudeStdioProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        claude_child_env(spec, &config).apply(&mut command);
+        claude_child_env(&config).apply(&mut command);
         configure_process_group(&mut command);
 
         let mut child = command
@@ -125,7 +119,7 @@ impl ClaudeStdioProcess {
             .map_err(|error| format!("failed to spawn claude CLI: {error}"))?;
         let pid_registration = child
             .id()
-            .and_then(|pid| save_pgid(None, &spec.session_id, "claude", pid));
+            .and_then(|pid| save_pgid(None, &config.session_id, "claude", pid));
         let stdin = child
             .stdin
             .take()
@@ -184,78 +178,6 @@ mod child_env_tests {
     }
 }
 
-pub(crate) fn build_process_config(
-    cli_path: impl Into<String>,
-    spec: &SessionSpec,
-    system_prompt_file: Option<&std::path::Path>,
-) -> ClaudeProcessConfig {
-    ClaudeProcessConfig {
-        cli_path: cli_path.into(),
-        cwd: PathBuf::from(&spec.cwd),
-        args: build_args(spec, system_prompt_file),
-        env: watchdog_env(spec.stale_timeout),
-    }
-}
-
-pub(crate) fn build_args(
-    spec: &SessionSpec,
-    system_prompt_file: Option<&std::path::Path>,
-) -> Vec<String> {
-    let mut args = vec![
-        "--input-format".to_string(),
-        "stream-json".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--include-partial-messages".to_string(),
-        "--permission-prompt-tool".to_string(),
-        "stdio".to_string(),
-        "--allow-dangerously-skip-permissions".to_string(),
-        "--setting-sources".to_string(),
-        "user,project".to_string(),
-        "--permission-mode".to_string(),
-        wire_mode_for_spec(spec).as_str().to_string(),
-        "--model".to_string(),
-        spec.model.as_str().to_string(),
-    ];
-    if let Some(resume) = spec.resume.as_deref().filter(|value| !value.is_empty()) {
-        args.push("--resume".to_string());
-        args.push(resume.to_string());
-    }
-    if let Some(path) = system_prompt_file {
-        args.push("--append-system-prompt-file".to_string());
-        args.push(path.to_string_lossy().to_string());
-    }
-    args
-}
-
-pub(crate) fn watchdog_env(stale_timeout: Option<Duration>) -> Vec<(String, String)> {
-    let mut env = vec![
-        ("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string()),
-        ("API_TIMEOUT_MS".to_string(), "600000".to_string()),
-    ];
-    if let Some(stale_timeout) = stale_timeout {
-        env.extend([
-            ("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string()),
-            ("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string()),
-            (
-                "CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string(),
-                stale_timeout.as_millis().to_string(),
-            ),
-        ]);
-    } else {
-        env.extend([
-            ("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "0".to_string()),
-            ("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "0".to_string()),
-        ]);
-    }
-    env
-}
-
-pub(crate) fn wire_mode_for_spec(spec: &SessionSpec) -> ClaudeWireMode {
-    claude_wire_mode(spec.permission_mode, spec.plan_mode)
-}
-
 async fn verify_claude_cli_version(cli_path: &str) -> Result<(), String> {
     let output = Command::new(cli_path)
         .arg("--version")
@@ -298,72 +220,30 @@ fn first_semver(text: &str) -> Option<(u64, u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use crate::domain::agent_session::gateway::SessionSpec;
-    use crate::domain::agent_session::value_objects::{ModelId, PermissionMode};
-
     use super::*;
-
-    fn spec() -> SessionSpec {
-        SessionSpec {
-            session_id: "s1".to_string(),
-            cwd: "/repo".to_string(),
-            permission_mode: PermissionMode::Edit,
-            plan_mode: false,
-            permission_profile_id: None,
-            model: ModelId::parse("claude-sonnet-4-5").unwrap(),
-            system_prompt: Some("system".to_string()),
-            resume: Some("backend-session".to_string()),
-            base_branch: Some("main".to_string()),
-            startup_timeout: None,
-            startup_max_retries: None,
-            stale_timeout: Some(Duration::from_secs(42)),
-            extra_env: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn test_build_args_design_必須フラグを含む() {
-        let args = build_args(&spec(), Some(std::path::Path::new("/tmp/system.txt")));
-
-        assert!(args.contains(&"--input-format".to_string()));
-        assert!(args.contains(&"--include-partial-messages".to_string()));
-        assert!(args.contains(&"--permission-prompt-tool".to_string()));
-        assert!(args.contains(&"stdio".to_string()));
-        assert!(args.contains(&"--allow-dangerously-skip-permissions".to_string()));
-        assert!(args.contains(&"--resume".to_string()));
-        assert!(args.contains(&"backend-session".to_string()));
-        assert!(args.contains(&"--append-system-prompt-file".to_string()));
-    }
-
-    #[test]
-    fn test_watchdog_env_stale_timeout_ms() {
-        let env = watchdog_env(Some(Duration::from_secs(42)));
-        assert!(env.contains(&(
-            "CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string(),
-            "42000".to_string()
-        )));
-        assert!(env.contains(&("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string())));
-        assert!(env.contains(&("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string())));
-        assert!(env.contains(&("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string())));
-    }
 
     #[test]
     fn claude_child_env_includes_workflow_execution_ids() {
-        let mut spec = spec();
-        spec.extra_env = vec![
-            (
-                "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
-                "run-1".to_string(),
-            ),
-            (
-                "RELEASH_NODE_EXECUTION_ID".to_string(),
-                "node-1".to_string(),
-            ),
-        ];
-        let config = build_process_config("claude".to_string(), &spec, None);
-        let env = claude_child_env(&spec, &config);
+        let config = ClaudeProcessConfig {
+            cli_path: "claude".to_string(),
+            cwd: PathBuf::from("/repo"),
+            args: Vec::new(),
+            env: Vec::new(),
+            session_id: "session-1".to_string(),
+            base_branch: Some("main".to_string()),
+            extra_env: vec![
+                (
+                    "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+                    "run-1".to_string(),
+                ),
+                (
+                    "RELEASH_NODE_EXECUTION_ID".to_string(),
+                    "node-1".to_string(),
+                ),
+            ],
+            system_prompt: None,
+        };
+        let env = claude_child_env(&config);
 
         assert!(env.envs().contains(&(
             "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
@@ -373,18 +253,6 @@ mod tests {
             "RELEASH_NODE_EXECUTION_ID".to_string(),
             "node-1".to_string()
         )));
-    }
-
-    #[test]
-    fn test_watchdog_env_none_disables_stream_watchdogs() {
-        let env = watchdog_env(None);
-
-        assert!(!env
-            .iter()
-            .any(|(key, _)| key == "CLAUDE_STREAM_IDLE_TIMEOUT_MS"));
-        assert!(env.contains(&("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "0".to_string())));
-        assert!(env.contains(&("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "0".to_string())));
-        assert!(env.contains(&("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string())));
     }
 
     #[test]

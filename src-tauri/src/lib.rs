@@ -42,6 +42,9 @@ pub(crate) fn compose_agent_session_runtime(
             status_center,
             status_notifier,
             event_notifier,
+            Arc::new(
+                adaptor::gateway::agent_session::runtime_projection::AgentRuntimeProjectionGatewayV1,
+            ),
             spawner,
             branch_diff_context,
             instruction_source,
@@ -1228,7 +1231,7 @@ pub fn run() {
             );
             app.manage(session_feedback_load_usecase.clone());
             let operation_gate = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimeAgentSessionOperationGate::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimeAgentSessionOperationAdapter::new(
                     agent_runtime.clone(),
                     session_store.clone(),
                     data_dir.clone(),
@@ -1241,23 +1244,39 @@ pub fn run() {
                 dyn usecase::agent_session::operation::OperationBindingAuthority,
             > = local_event_store.clone();
             let lifecycle_gate: Arc<
-                dyn usecase::agent_session::operation::SessionLifecycleGate,
+                dyn usecase::agent_session::operation::SessionLifecycleEffectPort,
             > = operation_gate.clone();
-            let stop_gate: Arc<dyn usecase::agent_session::operation::StopAdmissionGate> =
+            let session_lifecycle_repository: Arc<
+                dyn domain::agent_session::repository::AgentSessionLifecycleRepository,
+            > = Arc::new(
+                adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
+                    operation_repository.clone(),
+                    session_store.clone(),
+                ),
+            );
+            agent_runtime
+                .set_lifecycle_repository(session_lifecycle_repository.clone());
+            let stop_gate: Arc<dyn usecase::agent_session::operation::StopEffectPort> =
                 operation_gate.clone();
             let send_operation_gate = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimeSendOperationGate::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimeSendOperationAdapter::new_with_codec(
                     agent_runtime.clone(),
                     session_store.clone(),
                     data_dir.clone(),
+                    Arc::new(
+                        adaptor::gateway::agent_session::operation::CanonicalSendCommandCodecV1,
+                    ),
                 ),
             );
-            let send_gate: Arc<dyn usecase::agent_session::operation::SendAdmissionGate> =
+            send_operation_gate
+                .bind_lifecycle_repository(session_lifecycle_repository.clone());
+            let send_gate: Arc<dyn usecase::agent_session::operation::SendAcceptancePort> =
                 send_operation_gate.clone();
             let lifecycle_operation = Arc::new(
                 usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
                     operation_repository.clone(),
                     operation_authority.clone(),
+                    session_lifecycle_repository.clone(),
                     lifecycle_gate,
                     local_event_store.installation_id().to_string(),
                 ),
@@ -1281,6 +1300,7 @@ pub fn run() {
                 usecase::agent_session::operation::StopOperationUsecase::new(
                     operation_repository.clone(),
                     operation_authority.clone(),
+                    session_lifecycle_repository.clone(),
                     stop_gate,
                     local_event_store.installation_id().to_string(),
                 ),
@@ -1352,9 +1372,9 @@ pub fn run() {
             });
             app.manage(send_operation.clone());
             let permission_response_gate: Arc<
-                dyn usecase::agent_session::operation::PermissionResponseGate,
+                dyn usecase::agent_session::operation::PermissionResponseEffectPort,
             > = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimePermissionResponseOperationGate::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimePermissionResponseOperationAdapter::new(
                     agent_runtime.clone(),
                     session_store.clone(),
                 ),
@@ -1363,6 +1383,7 @@ pub fn run() {
                 usecase::agent_session::operation::PermissionResponseOperationUsecase::new(
                     operation_repository.clone(),
                     operation_authority.clone(),
+                    session_lifecycle_repository,
                     permission_response_gate,
                     local_event_store.installation_id().to_string(),
                 ),

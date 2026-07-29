@@ -106,7 +106,7 @@ fn plan_inactive_session_eviction(sessions: &[HydratedSessionObservation]) -> Ve
 fn plan_active_window_eviction(
     observation: &ActiveMessageWindowObservation,
 ) -> Option<ActiveMessageEvictionPlan> {
-    if observation.turn_phase != TurnPhase::Idle {
+    if !observation.turn_phase.is_idle() {
         return None;
     }
     if observation.message_count <= RETAINED_MESSAGE_CAP {

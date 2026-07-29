@@ -1,98 +1,9 @@
 use crate::domain::agent_session::entities::{
-    MessagePart as DomainMessagePart, PermissionRequest, PermissionRequestBody,
-    PermissionRequestStatus, TokenUsage as DomainTokenUsage,
+    PermissionAllowedPrompt, PermissionQuestion, PermissionQuestionOption, PermissionRequest,
+    PermissionRequestBody, PermissionRequestStatus,
 };
-#[cfg(test)]
-use crate::domain::agent_session::entities::{
-    PermissionAllowedPrompt, PermissionQuestion, PermissionQuestionOption,
-};
-#[cfg(test)]
 use crate::domain::agent_session::value_objects::JsonPayload;
-use crate::usecase::agent_session::session::{
-    MessagePart, PermissionAllowedPromptMsg, PermissionQuestionMsg, PermissionQuestionOptionMsg,
-    PermissionRequestKindMsg, PermissionRequestMsg, TokenUsage,
-};
-
-pub(crate) fn token_usage_from_domain(usage: DomainTokenUsage) -> TokenUsage {
-    TokenUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        total_tokens: usage.total_tokens,
-        context_window_tokens: usage.context_window_tokens,
-    }
-}
-
-pub(crate) fn parts_from_domain(parts: Vec<DomainMessagePart>) -> Vec<MessagePart> {
-    parts
-}
-
-pub(crate) fn permission_request_msg(request: &PermissionRequest) -> PermissionRequestMsg {
-    let mut msg = PermissionRequestMsg {
-        id: request.id.clone(),
-        tool_use_id: request.tool_use_id.clone(),
-        tool_name: request.tool_name.clone(),
-        kind: PermissionRequestKindMsg::ToolApproval,
-        input: None,
-        plan: None,
-        allowed_prompts: Vec::new(),
-        questions: Vec::new(),
-        title: request.title.clone(),
-        display_name: request.display_name.clone(),
-        description: request.description.clone(),
-        decision_reason: request.decision_reason.clone(),
-    };
-    match &request.body {
-        PermissionRequestBody::ToolApproval { input } => {
-            msg.kind = PermissionRequestKindMsg::ToolApproval;
-            msg.input = Some(json_payload(input.as_str()));
-        }
-        PermissionRequestBody::PlanApproval {
-            plan,
-            allowed_prompts,
-        } => {
-            msg.kind = PermissionRequestKindMsg::PlanApproval;
-            msg.plan = Some(plan.clone());
-            msg.allowed_prompts = allowed_prompts
-                .iter()
-                .map(|prompt| PermissionAllowedPromptMsg {
-                    tool: prompt.tool.clone(),
-                    prompt: prompt.prompt.clone(),
-                })
-                .collect();
-        }
-        PermissionRequestBody::Question { questions } => {
-            msg.kind = PermissionRequestKindMsg::Question;
-            msg.questions = questions
-                .iter()
-                .map(|question| PermissionQuestionMsg {
-                    question: question.question.clone(),
-                    header: question.header.clone(),
-                    options: question
-                        .options
-                        .iter()
-                        .map(|option| PermissionQuestionOptionMsg {
-                            label: option.label.clone(),
-                            description: option.description.clone(),
-                        })
-                        .collect(),
-                    multi_select: question.multi_select,
-                })
-                .collect();
-        }
-        PermissionRequestBody::PermissionGrant { requested } => {
-            msg.kind = PermissionRequestKindMsg::PermissionGrant;
-            msg.input = Some(json_payload(requested.as_str()));
-        }
-    }
-    msg
-}
-
-pub(crate) fn pending_permission_request_msg(
-    request: &PermissionRequest,
-) -> Option<PermissionRequestMsg> {
-    matches!(request.status, PermissionRequestStatus::Pending)
-        .then(|| permission_request_msg(request))
-}
+use crate::usecase::agent_session::session::{PermissionRequestKindMsg, PermissionRequestMsg};
 
 #[cfg(test)]
 pub(crate) fn pending_permission_request_from_msg(
@@ -161,10 +72,6 @@ pub(crate) fn pending_permission_request_from_msg(
     })
 }
 
-fn json_payload(payload: &str) -> serde_json::Value {
-    serde_json::from_str(payload).expect("domain JsonPayload must be validated at its boundary")
-}
-
 #[cfg(test)]
 fn json_value_payload(value: serde_json::Value) -> JsonPayload {
     JsonPayload::new_unchecked(
@@ -179,7 +86,13 @@ mod tests {
         PermissionAllowedPrompt, PermissionQuestion, PermissionQuestionOption,
     };
     use crate::domain::agent_session::value_objects::JsonPayload;
+    use crate::usecase::agent_session::runtime::ports::AgentRuntimeProjectionGateway;
     use serde_json::json;
+
+    fn permission_request_msg(request: &PermissionRequest) -> PermissionRequestMsg {
+        crate::adaptor::gateway::agent_session::runtime_projection::AgentRuntimeProjectionGatewayV1
+            .permission_request(request)
+    }
 
     fn request(body: PermissionRequestBody) -> PermissionRequest {
         PermissionRequest {

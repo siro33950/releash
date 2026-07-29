@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for CompositionSendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for CompositionSendGate {
         async fn plan_send(
             &self,
             _principal: &str,

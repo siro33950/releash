@@ -32,17 +32,18 @@ use crate::adaptor::gateway::local_event_store::state_record_codec::{
 };
 use crate::domain::local_event::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,
-    AgentSessionStateRecord, CallerAttemptResolution, CallerAttemptView, CanonicalRuntimeOwnerView,
-    CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId, LoadStreamRequest,
-    LoadedDomainEvent, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
-    MessageProjectionPageEntryView, MessageProjectionPageView, MessageProjectionRecord,
-    MessageProjectionView, ObligationView, OperationBindingView, OperationKind,
-    OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingPartition,
-    PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView,
-    SafeOperationFailure, SessionOperationFailureKind, SessionProjectionOwnerState,
-    SessionProjectionRecord, SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey,
-    ShutdownPlanPageView, ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView,
-    StopResolutionKind, StopResolutionMutation, StopResolutionView, StreamSequence, StreamVersion,
+    AgentSessionLifecycleSnapshotView, AgentSessionStateRecord, CallerAttemptResolution,
+    CallerAttemptView, CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent,
+    DomainEventPage, EventId, LoadStreamRequest, LoadedDomainEvent, LocalEventQuery,
+    LocalEventQueryError, LocalEventQueryResult, MessageProjectionPageEntryView,
+    MessageProjectionPageView, MessageProjectionRecord, MessageProjectionView, ObligationView,
+    OperationBindingView, OperationKind, OperationRecordView, PendingIndexEntryView,
+    PendingObligationView, PendingPartition, PendingRecoveryPageView,
+    PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView, SafeOperationFailure,
+    SessionOperationFailureKind, SessionProjectionOwnerState, SessionProjectionRecord,
+    SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey, ShutdownPlanPageView,
+    ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StopResolutionKind,
+    StopResolutionMutation, StopResolutionView, StreamSequence, StreamVersion,
     TerminalRecordMutation, TerminalRecordView, WorkflowExecutionProjectionRecord,
 };
 use crate::domain::local_event::{
@@ -384,6 +385,11 @@ pub(crate) fn run_query_in_recovery_snapshot(
         LocalEventQuery::SessionProjectionByIdentity { session_id } => {
             Ok(LocalEventQueryResult::SessionProjectionByIdentity(
                 session_projection_by_identity(connection, session_id)?,
+            ))
+        }
+        LocalEventQuery::AgentSessionLifecycleSnapshot { session_id } => {
+            Ok(LocalEventQueryResult::AgentSessionLifecycleSnapshot(
+                agent_session_lifecycle_snapshot(connection, session_id)?,
             ))
         }
         LocalEventQuery::SessionProjectionPage {
@@ -1032,6 +1038,65 @@ fn session_projection_by_identity(
         })
     })
     .transpose()
+}
+
+fn agent_session_lifecycle_snapshot(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<AgentSessionLifecycleSnapshotView>, LocalEventQueryError> {
+    const MAX_OWNER_OBLIGATIONS: usize = 200;
+    let mut statement = connection
+        .prepare(
+            "SELECT sp.projection, sp.revision, po.obligation_id, o.record
+             FROM session_projection sp
+             LEFT JOIN pending_obligations po
+               ON po.owner = sp.session_id
+             LEFT JOIN obligations o
+               ON o.obligation_id = po.obligation_id
+             WHERE sp.session_id = ?1
+             ORDER BY po.ordered_key
+             LIMIT 201",
+        )
+        .map_err(|error| storage_unavailable(&error))?;
+    let mut rows = statement
+        .query(params![session_id])
+        .map_err(|error| storage_unavailable(&error))?;
+    let mut session = None;
+    let mut pending_obligations = Vec::new();
+    while let Some(row) = rows.next().map_err(|error| storage_unavailable(&error))? {
+        if session.is_none() {
+            let projection: String = row.get(0).map_err(|error| storage_unavailable(&error))?;
+            let revision: i64 = row.get(1).map_err(|error| storage_unavailable(&error))?;
+            session = Some(SessionProjectionView {
+                session_id: session_id.to_string(),
+                projection: session_projection_record(
+                    projection,
+                    session_id,
+                    "agent session lifecycle projection",
+                )?,
+                revision: crate::domain::local_event::Revision::new(revision)
+                    .map_err(|_| corrupt("agent session lifecycle projection revision"))?,
+            });
+        }
+        let obligation_id: Option<String> =
+            row.get(2).map_err(|error| storage_unavailable(&error))?;
+        let record: Option<String> = row.get(3).map_err(|error| storage_unavailable(&error))?;
+        match (obligation_id, record) {
+            (Some(obligation_id), Some(record)) => pending_obligations.push((
+                obligation_id,
+                obligation_record(&record, "agent session lifecycle obligation")?,
+            )),
+            (None, None) => {}
+            _ => return Err(corrupt("agent session lifecycle owner index")),
+        }
+    }
+    if pending_obligations.len() > MAX_OWNER_OBLIGATIONS {
+        return Err(LocalEventQueryError::ResponseTooLarge);
+    }
+    Ok(session.map(|session| AgentSessionLifecycleSnapshotView {
+        session,
+        pending_obligations,
+    }))
 }
 
 fn session_projection_page(
