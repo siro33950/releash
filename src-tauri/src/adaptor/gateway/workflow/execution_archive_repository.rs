@@ -104,6 +104,25 @@ impl WorkflowExecutionArchiveFileRepository {
         })
     }
 
+    fn resolve_state<'a>(
+        &self,
+        state: &'a mut Result<WorkflowExecutionArchiveState, String>,
+    ) -> Result<&'a WorkflowExecutionArchiveState, WorkflowError> {
+        if state.is_err() {
+            match self.load_index_unlocked() {
+                Ok(index) => *state = Ok(WorkflowExecutionArchiveState { index }),
+                Err(error) => {
+                    let error = error.to_string();
+                    *state = Err(error.clone());
+                    return Err(WorkflowError::external(error));
+                }
+            }
+        }
+        state
+            .as_ref()
+            .map_err(|error| WorkflowError::external(error.clone()))
+    }
+
     fn update_index(
         &self,
         update: impl FnOnce(&mut WorkflowExecutionArchiveIndex),
@@ -112,9 +131,7 @@ impl WorkflowExecutionArchiveFileRepository {
             .state
             .lock()
             .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
-        let current = state
-            .as_ref()
-            .map_err(|error| WorkflowError::external(error.clone()))?;
+        let current = self.resolve_state(&mut state)?;
         let mut index = current.index.clone();
         update(&mut index);
         self.save_index_unlocked(&index)?;
@@ -134,6 +151,7 @@ impl WorkflowExecutionArchiveFileRepository {
             .state
             .lock()
             .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
+        let mut index = self.resolve_state(&mut state)?.index.clone();
         let path = self.archive_index_path();
         let before = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
@@ -145,11 +163,6 @@ impl WorkflowExecutionArchiveFileRepository {
                 )));
             }
         };
-        let mut index = state
-            .as_ref()
-            .map_err(|error| WorkflowError::external(error.clone()))?
-            .index
-            .clone();
         let mut removed = 0;
         for execution_id in execution_ids {
             if index.executions.remove(execution_id).is_some() {
@@ -207,13 +220,11 @@ impl WorkflowExecutionArchiveRepository for WorkflowExecutionArchiveFileReposito
         &self,
         execution_ids: &[String],
     ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
-        let state = state
-            .as_ref()
-            .map_err(|error| WorkflowError::external(error.clone()))?;
+        let state = self.resolve_state(&mut state)?;
         let mut records = execution_ids
             .iter()
             .filter_map(|execution_id| {
@@ -330,6 +341,85 @@ mod tests {
                 first
             );
         }
+    }
+
+    #[test]
+    fn archive_operations_recover_after_startup_io_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let blocked_data_dir = temp.path().join("blocked");
+        std::fs::write(&blocked_data_dir, b"not a directory").unwrap();
+        let repo = WorkflowExecutionArchiveFileRepository::new(&blocked_data_dir);
+        let execution_id =
+            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
+
+        std::fs::remove_file(&blocked_data_dir).unwrap();
+        std::fs::create_dir(&blocked_data_dir).unwrap();
+
+        repo.archive_manual(&execution_id, 10.0).unwrap();
+        assert_eq!(
+            repo.manual_archive_snapshot_for(&[execution_id.to_string()])
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
+        repo.restore_manual(&execution_id, 20.0).unwrap();
+        assert!(repo
+            .manual_archive_snapshot_for(&[execution_id.to_string()])
+            .unwrap()
+            .records
+            .is_empty());
+    }
+
+    #[test]
+    fn archive_operations_keep_reporting_an_unrepaired_parse_error() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE),
+            b"not valid JSON",
+        )
+        .unwrap();
+        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
+        let execution_id =
+            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
+
+        for result in [
+            repo.archive_manual(&execution_id, 10.0),
+            repo.restore_manual(&execution_id, 20.0),
+            repo.manual_archive_snapshot_for(&[execution_id.to_string()])
+                .map(|_| ()),
+        ] {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to parse workflow execution archives"));
+        }
+    }
+
+    #[test]
+    fn archive_snapshot_recovers_after_parse_error_is_repaired() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(WORKFLOW_EXECUTION_ARCHIVES_FILE);
+        std::fs::write(&path, b"not valid JSON").unwrap();
+        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
+        let execution_id = "11111111-1111-4111-8111-111111111111".to_string();
+        assert!(repo
+            .manual_archive_snapshot_for(std::slice::from_ref(&execution_id))
+            .is_err());
+
+        std::fs::write(
+            &path,
+            r#"{"executions":{"11111111-1111-4111-8111-111111111111":{"archivedAt":10.0,"archiveReason":"manual"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            repo.manual_archive_snapshot_for(&[execution_id])
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
     }
 
     #[test]

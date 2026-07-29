@@ -1068,11 +1068,11 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
                     return Ok(false);
                 }
             }
-            LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_) => {}
             LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::RecoveryAction(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
+            | LocalStateMutation::WorkflowExecutionProjection(_)
+            | LocalStateMutation::WorkflowExecutionNodeProjection(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)

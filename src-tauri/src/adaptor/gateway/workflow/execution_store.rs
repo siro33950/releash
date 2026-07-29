@@ -235,7 +235,11 @@ impl From<&DomainWorkflowExecution> for WorkflowExecutionMetadata {
             execution_id: execution.id.clone(),
             workflow_name: execution.workflow_name.clone(),
             status: execution.status,
-            worktree_path: execution.worktree_path.clone(),
+            worktree_path: crate::domain::workspace_tree::WorkspaceIdentity::new(
+                &execution.worktree_path,
+            )
+            .as_str()
+            .to_string(),
             current_node: execution.current_node.clone(),
             created_from: execution.created_from,
             started_at: execution.started_at,
@@ -746,15 +750,15 @@ enum WorkflowMetadataTransition<'a> {
     },
 }
 
+pub(crate) fn workflow_worktree_storage_key(worktree_path: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(worktree_path.as_bytes());
+    format!("workflow-worktree:{}", hex::encode(digest))
+}
+
 impl WorkflowExecutionAuthority {
     fn storage_key(execution_id: &str) -> String {
         format!("workflow:{execution_id}")
-    }
-
-    fn worktree_storage_key(worktree_path: &str) -> String {
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(worktree_path.as_bytes());
-        format!("workflow-worktree:{}", hex::encode(digest))
     }
 
     async fn load(&self, execution_id: &str) -> Result<WorkflowExecutionAuthorityRead, String> {
@@ -813,7 +817,7 @@ impl WorkflowExecutionAuthority {
                     .ok_or_else(|| "workflow projection revision exhausted".to_string())?,
             ),
         };
-        let worktree_key = Self::worktree_storage_key(&execution.worktree_path);
+        let worktree_key = workflow_worktree_storage_key(&execution.worktree_path);
         let worktree_current = match self
             .repository
             .query(LocalEventQuery::SessionProjectionByIdentity {
@@ -900,7 +904,7 @@ impl WorkflowExecutionAuthority {
         let next_revision = revision
             .next()
             .ok_or_else(|| "workflow projection revision exhausted".to_string())?;
-        let worktree_key = Self::worktree_storage_key(&execution.worktree_path);
+        let worktree_key = workflow_worktree_storage_key(&execution.worktree_path);
         let worktree_current = match self
             .repository
             .query(LocalEventQuery::SessionProjectionByIdentity {
@@ -2177,11 +2181,15 @@ impl ExecutionStore {
                 field: "execution_id".to_string(),
             });
         }
-        if projection.worktree_path != metadata.worktree_path {
+        let projected_worktree_path =
+            crate::domain::workspace_tree::WorkspaceIdentity::new(&projection.worktree_path)
+                .as_str()
+                .to_string();
+        if projected_worktree_path != metadata.worktree_path {
             return Err(ExecutionStoreError::ExecutionIdWorktreeMismatch {
                 execution_id: metadata.execution_id,
                 existing_worktree_path: metadata.worktree_path,
-                new_worktree_path: projection.worktree_path.clone(),
+                new_worktree_path: projected_worktree_path,
             });
         }
         if projection.status.is_active() {
@@ -3103,6 +3111,43 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn legacy_event_worktree_paths_reconcile_as_one_workspace_identity() {
+        for raw_path in [
+            r"C:\repo\\managed-worktree\\",
+            r"\\server\share\\managed-worktree\\",
+            "//server//share/managed-worktree/",
+        ] {
+            let execution_id = test_uuid(raw_path.len() as u8);
+            let normalized = crate::domain::workspace_tree::WorkspaceIdentity::new(raw_path)
+                .as_str()
+                .to_string();
+            let mut current =
+                make_execution(&execution_id, &normalized, ExecutionStatus::Running, 100.0);
+            current.updated_at = 100.0;
+            let mut projected = projected_execution(&current);
+            projected.worktree_path = raw_path.to_string();
+            projected.status = ExecutionStatus::Interrupted;
+            projected.updated_at = 101.0;
+            projected.interruption_reason = Some(ExecutionInterruptionReason::Crash);
+            projected.resume_from_node = Some("node-1".to_string());
+
+            let projected_metadata = WorkflowExecutionMetadata::from(&projected);
+            assert_eq!(projected_metadata.worktree_path, normalized);
+            assert!(valid_event_reconciliation_transition(
+                &current,
+                &projected_metadata
+            ));
+
+            let reconciled = ExecutionStore::new_in_memory_for_tests()
+                .reconcile_orphan_from_projection(current, &projected)
+                .await
+                .unwrap();
+            assert_eq!(reconciled.worktree_path, normalized);
+            assert_eq!(reconciled.status, ExecutionStatus::Interrupted);
+        }
+    }
+
     #[derive(Clone)]
     enum CanonicalProjectionFixture {
         Absent,
@@ -3489,6 +3534,65 @@ mod tests {
                 .await,
             Err(ExecutionStoreError::ExecutionAlreadyExists { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn initial_snapshot_mutations_share_one_normalized_workspace_identity() {
+        let execution_id = test_uuid(212);
+        let store = ExecutionStore::new_in_memory_for_tests();
+        install_canonical_projection_fixture(
+            &store,
+            &execution_id,
+            CanonicalProjectionFixture::Absent,
+        )
+        .await;
+        let raw_path = r"\\server\share\\managed-worktree\\";
+        let normalized = crate::domain::workspace_tree::WorkspaceIdentity::new(raw_path)
+            .as_str()
+            .to_string();
+        let mut runtime = snapshot(&execution_id);
+        runtime.worktree_path = normalized.clone();
+
+        let mutations = store
+            .prepare_atomic_initial_snapshot_mutations(&runtime)
+            .await
+            .unwrap();
+        let mut execution_paths = Vec::new();
+        let mut owner = None;
+        for mutation in &mutations {
+            match mutation {
+                LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                    projection:
+                        SessionProjectionRecord::WorkflowExecution(
+                            WorkflowExecutionProjectionRecord::Present(execution),
+                        ),
+                    ..
+                })
+                | LocalStateMutation::WorkflowExecutionProjection(
+                    WorkflowExecutionProjectionMutation {
+                        projection: WorkflowExecutionProjectionRecord::Present(execution),
+                        ..
+                    },
+                ) => execution_paths.push(execution.worktree_path.as_str()),
+                LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                    session_id,
+                    projection: SessionProjectionRecord::WorkflowWorktreeOwner(record),
+                    ..
+                }) => owner = Some((session_id.as_str(), record)),
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            execution_paths,
+            vec![normalized.as_str(), normalized.as_str()]
+        );
+        let (owner_key, owner) = owner.expect("initial snapshot must include one owner mutation");
+        assert_eq!(owner.worktree_path, normalized);
+        assert_eq!(
+            owner_key,
+            workflow_worktree_storage_key(&owner.worktree_path)
+        );
     }
 
     #[tokio::test]

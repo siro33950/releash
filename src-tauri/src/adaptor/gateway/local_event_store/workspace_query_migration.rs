@@ -11,10 +11,13 @@ use super::envelope::{DecodedStoredEvent, EventCodecRegistry};
 use super::indexed_projection_codec::{
     indexed_execution_node_row, indexed_execution_row, indexed_session_public_columns,
 };
-use super::projection_record_codec::decode_session_projection_record_v1;
+use super::projection_record_codec::{
+    decode_session_projection_record_v1, encode_session_projection_record_v1,
+};
+use crate::adaptor::gateway::workflow::execution_store::workflow_worktree_storage_key;
 use crate::domain::local_event::{
     LocalDomainEvent, Revision, SessionProjectionRecord, WorkflowExecutionMetadataRecord,
-    WorkflowExecutionProjectionRecord,
+    WorkflowExecutionProjectionRecord, WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workspace_tree::{
     recovery_reason, workflow_fact, WorkspaceSessionPublicationPolicy, WorkspaceStructureFact,
@@ -24,6 +27,7 @@ use crate::domain::workspace_tree::{
 struct CanonicalProjection {
     key: String,
     revision: Revision,
+    commit_id: String,
     record: SessionProjectionRecord,
 }
 
@@ -44,6 +48,7 @@ pub(crate) fn rebuild_workspace_query_records(
 ) -> Result<(), rusqlite::Error> {
     let recovery_by_owner = recovery_reasons(connection)?;
     let projections = canonical_projections(connection)?;
+    normalize_canonical_workspace_projections(connection, &projections)?;
     let mut execution_paths = execution_paths(&projections);
     let mut changes = BTreeMap::<String, WorkspaceRebuild>::new();
 
@@ -221,26 +226,114 @@ fn canonical_projections(
 ) -> Result<Vec<CanonicalProjection>, rusqlite::Error> {
     let mut projections = Vec::new();
     let mut statement = connection.prepare(
-        "SELECT session_id, projection, revision FROM session_projection ORDER BY session_id",
+        "SELECT session_id, projection, revision, commit_id
+         FROM session_projection ORDER BY session_id",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     for row in rows {
-        let (key, raw, revision) = row?;
+        let (key, raw, revision, commit_id) = row?;
         projections.push(CanonicalProjection {
             record: decode_session_projection_record_v1(&raw, &key)
                 .map_err(|error| invalid("canonical projection decode", error))?,
             key,
             revision: Revision::new(revision)
                 .map_err(|_| invalid("canonical projection revision", revision))?,
+            commit_id,
         });
     }
     Ok(projections)
+}
+
+fn normalize_canonical_workspace_projections(
+    connection: &Connection,
+    projections: &[CanonicalProjection],
+) -> Result<(), rusqlite::Error> {
+    for projection in projections {
+        if matches!(
+            projection.record,
+            SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
+                _
+            ))
+        ) {
+            let encoded = encode_session_projection_record_v1(&projection.record)
+                .map_err(|error| invalid("canonical execution encode", error))?;
+            connection.execute(
+                "UPDATE session_projection SET projection = ?1 WHERE session_id = ?2",
+                params![encoded, projection.key],
+            )?;
+        }
+    }
+
+    let mut owners = BTreeMap::<String, Vec<&CanonicalProjection>>::new();
+    for projection in projections {
+        let SessionProjectionRecord::WorkflowWorktreeOwner(owner) = &projection.record else {
+            continue;
+        };
+        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(&owner.worktree_path);
+        owners
+            .entry(workspace.as_str().to_string())
+            .or_default()
+            .push(projection);
+    }
+
+    for (worktree_path, group) in owners {
+        let winner = group
+            .iter()
+            .copied()
+            .max_by(|left, right| {
+                let SessionProjectionRecord::WorkflowWorktreeOwner(left_owner) = &left.record
+                else {
+                    unreachable!("owner group contains only owner records");
+                };
+                let SessionProjectionRecord::WorkflowWorktreeOwner(right_owner) = &right.record
+                else {
+                    unreachable!("owner group contains only owner records");
+                };
+                left_owner
+                    .active
+                    .cmp(&right_owner.active)
+                    .then_with(|| left.revision.value().cmp(&right.revision.value()))
+                    .then_with(|| left.key.cmp(&right.key))
+            })
+            .expect("owner group is non-empty");
+        let SessionProjectionRecord::WorkflowWorktreeOwner(winner_owner) = &winner.record else {
+            unreachable!("owner winner is an owner record");
+        };
+        let normalized =
+            SessionProjectionRecord::WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord {
+                worktree_path: worktree_path.clone(),
+                execution_id: winner_owner.execution_id.clone(),
+                active: winner_owner.active,
+            });
+        let encoded = encode_session_projection_record_v1(&normalized)
+            .map_err(|error| invalid("canonical owner encode", error))?;
+        for projection in group {
+            connection.execute(
+                "DELETE FROM session_projection WHERE session_id = ?1",
+                [&projection.key],
+            )?;
+        }
+        connection.execute(
+            "INSERT INTO session_projection
+                (session_id, projection, revision, commit_id, workspace_identity,
+                 public_list_kind, public_sort_key_bits, public_summary)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL)",
+            params![
+                workflow_worktree_storage_key(&worktree_path),
+                encoded,
+                winner.revision.value(),
+                winner.commit_id,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn execution_paths(projections: &[CanonicalProjection]) -> HashMap<String, String> {

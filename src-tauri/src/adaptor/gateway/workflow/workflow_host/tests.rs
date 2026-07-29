@@ -17422,13 +17422,18 @@ mod dispatch_boundary_tests {
             .resolve_start_execution_worktree(worktree_path.to_string_lossy().to_string())
             .await
             .unwrap();
+        let start_worktree = format!("{}//", resolved_worktree.replace('/', "\\"));
+        let expected_worktree =
+            crate::domain::workspace_tree::WorkspaceIdentity::new(&start_worktree)
+                .as_str()
+                .to_string();
         let execution_id = driver
             .start_resolved_workflow(
                 app.handle(),
                 &session_store,
                 &handles,
                 workflow,
-                resolved_worktree,
+                start_worktree,
                 Some("start me".to_string()),
                 ExecutionOrigin::DesktopUi,
                 crate::domain::agent_session::PermissionMode::Edit,
@@ -17443,18 +17448,27 @@ mod dispatch_boundary_tests {
             driver.get_execution(&execution_id).await.is_some(),
             "StartExecution must create a Execution Store entry"
         );
-        assert!(read_dispatch_events(&app, &execution_id)
-            .iter()
-            .any(|event| {
-                matches!(
-                    event,
-                    WorkflowEvent::ExecutionStarted {
-                        workflow_name,
-                        request,
-                        ..
-                    } if workflow_name == &stem && request == "start me"
-                )
-            }));
+        let snapshot = driver
+            .get_state_by_execution_id(&execution_id)
+            .await
+            .expect("StartExecution must retain one runtime commit snapshot");
+        let metadata = driver
+            .get_execution(&execution_id)
+            .await
+            .expect("StartExecution must retain one execution metadata record");
+        let events = read_dispatch_events(&app, &execution_id);
+        let started_worktree = events.iter().find_map(|event| match event {
+            WorkflowEvent::ExecutionStarted {
+                workflow_name,
+                worktree_path,
+                request,
+                ..
+            } if workflow_name == &stem && request == "start me" => Some(worktree_path),
+            _ => None,
+        });
+        assert_eq!(snapshot.worktree_path, expected_worktree);
+        assert_eq!(metadata.worktree_path, expected_worktree);
+        assert_eq!(started_worktree, Some(&expected_worktree));
     }
 
     /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、

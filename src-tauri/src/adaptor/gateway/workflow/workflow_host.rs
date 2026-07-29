@@ -1599,6 +1599,9 @@ impl WorkflowRuntimeHost {
         created_from: ExecutionOrigin,
         permission_mode: PermissionMode,
     ) -> Result<String, WorkflowRuntimeError> {
+        let worktree_path = crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_path)
+            .as_str()
+            .to_string();
         // ===== Phase 1: 副作用なしの validation =====
         // parent ChatSession 作成・executions 登録・refs 登録の前で全 validation を実施する。
         // ここで弾けば、リトライ時に「孤立した parent session」「孤立した refs entry」

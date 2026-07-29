@@ -262,7 +262,7 @@ pub(super) fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
             inner.code,
             rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
         ) {
-            return codec_query_error(error.to_string());
+            return store_corruption_query_error(error);
         }
     }
     match error {
@@ -286,6 +286,12 @@ pub(super) fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
     }
 }
 
+fn store_corruption_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    log::error!("Workspace indexed store corruption [{correlation_id}]: {error}");
+    LocalEventQueryError::Corrupt { correlation_id }
+}
+
 pub(super) fn codec_query_error(error: String) -> LocalEventQueryError {
     let correlation_id = uuid::Uuid::new_v4().to_string();
     log::error!("Workspace indexed record codec failure [{correlation_id}]: {error}");
@@ -303,6 +309,10 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::local_event_store::indexed_projection_codec::encode_session_public_summary_v1;
     use crate::domain::local_event::{AgentSessionStateRecord, AgentSessionSummaryRecord};
+
+    fn sqlite_failure(code: i32) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+    }
 
     fn summary(updated_at: f64) -> AgentSessionSummaryRecord {
         AgentSessionSummaryRecord {
@@ -352,6 +362,37 @@ mod tests {
         assert!(matches!(
             direct_session_tree(Some(raw), "/repo".to_string()),
             Err(LocalEventQueryError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn sqlite_query_errors_preserve_store_and_record_failure_classification() {
+        for code in [rusqlite::ffi::SQLITE_CORRUPT, rusqlite::ffi::SQLITE_NOTADB] {
+            assert!(matches!(
+                sql_query_error(sqlite_failure(code)),
+                LocalEventQueryError::Corrupt { .. }
+            ));
+        }
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            assert!(matches!(
+                sql_query_error(sqlite_failure(code)),
+                LocalEventQueryError::QueryBusy
+            ));
+        }
+        assert!(matches!(
+            sql_query_error(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid value",
+                )),
+            )),
+            LocalEventQueryError::IncompatibleStoredEvent { .. }
+        ));
+        assert!(matches!(
+            sql_query_error(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
+            LocalEventQueryError::StorageUnavailable { .. }
         ));
     }
 

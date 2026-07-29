@@ -115,14 +115,7 @@ impl SqliteWorkspaceQueryService {
             ExecutionStatusFilter::Active => "active".to_string(),
             ExecutionStatusFilter::Terminal => "terminal".to_string(),
         });
-        let (limit, offset) = page
-            .map(|page| {
-                (
-                    i64::try_from(page.limit).unwrap_or(i64::MAX),
-                    i64::try_from(page.offset).unwrap_or(i64::MAX),
-                )
-            })
-            .unwrap_or((i64::MAX, 0));
+        let (limit, offset) = sqlite_page_bounds(page);
         self.repository
             .run_indexed(move |connection| {
                 let (sql, first, second) = match (&workspace, &list_kind) {
@@ -456,6 +449,16 @@ fn session_summary(record: AgentSessionSummaryRecord) -> Result<SessionSummary, 
     session_summary_from_record(&record).map_err(|error| record_projection_error(&error))
 }
 
+fn sqlite_page_bounds(page: Option<WorkflowPageRequest>) -> (i64, i64) {
+    page.map(|page| {
+        (
+            i64::try_from(page.limit).unwrap_or(i64::MAX),
+            i64::try_from(page.offset).unwrap_or(0),
+        )
+    })
+    .unwrap_or((i64::MAX, 0))
+}
+
 fn execution_summary(
     record: crate::domain::local_event::WorkflowExecutionMetadataRecord,
 ) -> Result<WorkflowExecutionSummary, WorkflowError> {
@@ -633,5 +636,14 @@ mod tests {
             execution_summary(record),
             Err(WorkflowError::CorruptStoredState(_))
         ));
+    }
+
+    #[test]
+    fn unrepresentable_page_offset_falls_back_to_the_first_record() {
+        assert_eq!(
+            sqlite_page_bounds(Some(WorkflowPageRequest::new(usize::MAX, usize::MAX))),
+            (i64::MAX, 0)
+        );
+        assert_eq!(sqlite_page_bounds(None), (i64::MAX, 0));
     }
 }

@@ -767,7 +767,7 @@ fn finish_schema_admission(connection: &Connection) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
-pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+pub fn validate_current_schema_marker(connection: &Connection) -> Result<(), rusqlite::Error> {
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let user_version: i64 =
@@ -775,6 +775,11 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
     if application_id != i64::from(APPLICATION_ID) || user_version != CURRENT_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    Ok(())
+}
+
+pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    validate_current_schema_marker(connection)?;
     let metadata_count: i64 =
         connection.query_row("SELECT COUNT(*) FROM store_metadata", [], |row| row.get(0))?;
     if metadata_count != 1 {

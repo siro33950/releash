@@ -61,7 +61,7 @@ use crate::domain::local_event::{
     ShutdownTargetStateRecord, StreamId, StreamVersion, TerminalRecordMutation,
     TerminalResultRecord, UncommittedDomainEvent, WorkflowExecutionMetadataRecord,
     WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
-    WorkflowExecutionProjectionRecord,
+    WorkflowExecutionProjectionRecord, WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, TokenUsage as WorkflowTokenUsage,
@@ -1254,6 +1254,40 @@ async fn b059_shutdown_target_lane_accepts_only_the_effect_bound_agent_session_c
         ],
     );
     close.idempotency.operation_kind = CommitOperationKind::ShutdownTarget;
+    let SessionProjectionRecord::WorkflowExecution(execution_projection) =
+        workflow_execution_projection("b059-forbidden-workflow", ExecutionStatus::Running)
+    else {
+        unreachable!("workflow execution fixture must have the workflow projection shape");
+    };
+    let forbidden = [
+        LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
+            projection: execution_projection,
+            expected: RevisionGuard::Absent,
+            revision: Revision::new(0).unwrap(),
+        }),
+        LocalStateMutation::WorkflowExecutionNodeProjection(
+            WorkflowExecutionNodeProjectionMutation {
+                execution_id: "b059-forbidden-workflow".to_string(),
+                nodes: Vec::new(),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            },
+        ),
+    ];
+    for (index, mutation) in forbidden.into_iter().enumerate() {
+        let mut mixed = close.clone();
+        mixed.commit_id =
+            CommitIdentity::parse(&format!("commit-b059-forbidden-workflow-{index}")).unwrap();
+        mixed.idempotency.idempotency_key = format!("key-b059-forbidden-workflow-{index}");
+        mixed.idempotency.payload_hash = [70 + index as u8; 32];
+        mixed.state_mutations.push(mutation);
+        assert!(matches!(
+            harness.store.commit_batch(mixed).await,
+            Err(CommitBatchError::StorageUnavailable { failure })
+                if failure.kind
+                    == SessionOperationFailureKind::PreviousShutdownReconciliationRequired
+        ));
+    }
     assert!(matches!(
         harness.store.commit_batch(close).await,
         Ok(CommitBatchResult::Committed(_))
@@ -15194,6 +15228,192 @@ async fn b005_live_restart_and_v2_evolution_preserve_workspace_tree() {
     assert_eq!(migrated_tree.nodes, live.nodes);
     assert_eq!(migrated_tree.preferred_node_id, live.preferred_node_id);
     assert_eq!(post_migration_tree, migrated_tree);
+    drop(_dir);
+}
+
+#[tokio::test]
+async fn workspace_query_v2_evolution_normalizes_canonical_execution_and_owner_identity() {
+    use crate::adaptor::gateway::workflow::execution_store::{
+        workflow_worktree_storage_key, ExecutionStore,
+    };
+    use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService;
+    use crate::domain::workflow::{
+        NodeDefinition, RuntimeExecutionState, TokenUsage, WorkflowDefinition,
+    };
+    use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
+    use crate::usecase::workspace_tree::WorkspaceQueryService;
+
+    let harness = Harness::open_with_registry(test_registry_with_workflow());
+    let execution_id = "14910000-0000-4000-8000-000000000105";
+    let normalized_path = "//server/share/managed-worktree";
+    seed_workspace_execution(
+        &harness,
+        execution_id,
+        normalized_path,
+        ExecutionStatus::Running,
+        10.0,
+    )
+    .await;
+    let Harness {
+        _dir, root, store, ..
+    } = harness;
+    drop(store);
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    super::schema::downgrade_workspace_query_schema_fixture_to_v2(&connection).unwrap();
+    let canonical_key = format!("workflow:{execution_id}");
+    let (canonical_raw, commit_id): (String, String) = connection
+        .query_row(
+            "SELECT projection, commit_id FROM session_projection WHERE session_id = ?1",
+            [&canonical_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let canonical = super::projection_record_codec::decode_session_projection_record_v1(
+        &canonical_raw,
+        &canonical_key,
+    )
+    .unwrap();
+    let SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
+        mut execution,
+    )) = canonical
+    else {
+        panic!("legacy fixture must contain one present execution");
+    };
+    let raw_windows_path = r"\\server\share\\managed-worktree\\";
+    let raw_mixed_path = "//server//share/managed-worktree/";
+    execution.worktree_path = raw_windows_path.to_string();
+    let canonical = SessionProjectionRecord::WorkflowExecution(
+        WorkflowExecutionProjectionRecord::Present(execution),
+    );
+    let canonical_raw =
+        super::projection_record_codec::encode_session_projection_record_v1(&canonical).unwrap();
+    connection
+        .execute(
+            "UPDATE session_projection SET projection = ?1 WHERE session_id = ?2",
+            rusqlite::params![canonical_raw, canonical_key],
+        )
+        .unwrap();
+    for (revision, raw_path) in [(0_i64, raw_windows_path), (1_i64, raw_mixed_path)] {
+        let owner = SessionProjectionRecord::WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord {
+            worktree_path: raw_path.to_string(),
+            execution_id: execution_id.to_string(),
+            active: true,
+        });
+        let encoded =
+            super::projection_record_codec::encode_session_projection_record_v1(&owner).unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_projection
+                    (session_id, projection, revision, commit_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    workflow_worktree_storage_key(raw_path),
+                    encoded,
+                    revision,
+                    commit_id,
+                ],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let migrated = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("legacy workspace identities must evolve");
+    let tree = SqliteWorkspaceQueryService::new(
+        migrated.clone(),
+        Arc::new(WorkflowExecutionArchiveFileRepository::new(&root)),
+    )
+    .workspace_tree(&WorkspaceIdentity::new(normalized_path))
+    .unwrap();
+    assert_eq!(tree.nodes.len(), 1);
+    let execution_store = ExecutionStore::new_canonical(
+        None,
+        migrated.clone(),
+        migrated.installation_id().to_string(),
+    );
+    execution_store
+        .prepare_atomic_existing_snapshot_mutations(&RuntimeCommitSnapshot {
+            execution_id: execution_id.to_string(),
+            workflow_name: "test-workflow".to_string(),
+            worktree_path: normalized_path.to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            error_reason: None,
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            current_node_name: "node-1".to_string(),
+            current_session_id: None,
+            node_history: Vec::new(),
+            node_execution_counts: std::collections::HashMap::new(),
+            workflow_definition: WorkflowDefinition {
+                name: "test-workflow".to_string(),
+                nodes: vec![NodeDefinition {
+                    name: "node-1".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            total_token_usage: TokenUsage::default(),
+            artifacts: std::collections::HashMap::new(),
+            node_executions: Vec::new(),
+            started_at: 10.0,
+            updated_at: 11.0,
+        })
+        .await
+        .expect("the migrated canonical identity must support an execution update");
+
+    let connection = rusqlite::Connection::open(StoreLayout::new(&root).database_path()).unwrap();
+    let canonical_raw: String = connection
+        .query_row(
+            "SELECT projection FROM session_projection WHERE session_id = ?1",
+            [&canonical_key],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical_json: serde_json::Value = serde_json::from_str(&canonical_raw).unwrap();
+    assert_eq!(
+        canonical_json["execution"]["worktreePath"].as_str(),
+        Some(normalized_path)
+    );
+    let normalized_owner_key = workflow_worktree_storage_key(normalized_path);
+    let owner_rows: Vec<(String, String)> = connection
+        .prepare(
+            "SELECT session_id, projection FROM session_projection
+             WHERE session_id LIKE 'workflow-worktree:%' ORDER BY session_id",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(owner_rows.len(), 1);
+    assert_eq!(owner_rows[0].0, normalized_owner_key);
+    let owner = super::projection_record_codec::decode_session_projection_record_v1(
+        &owner_rows[0].1,
+        &owner_rows[0].0,
+    )
+    .unwrap();
+    let SessionProjectionRecord::WorkflowWorktreeOwner(owner) = owner else {
+        panic!("normalized owner row must retain the owner record");
+    };
+    assert_eq!(owner.worktree_path, normalized_path);
+    assert_eq!(owner.execution_id, execution_id);
+    assert!(owner.active);
+    assert_ne!(
+        normalized_owner_key,
+        workflow_worktree_storage_key(raw_windows_path)
+    );
+    assert_ne!(
+        normalized_owner_key,
+        workflow_worktree_storage_key(raw_mixed_path)
+    );
+    drop(migrated);
     drop(_dir);
 }
 
