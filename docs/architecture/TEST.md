@@ -67,7 +67,7 @@ mod branch_repository_impl_tests {
 | `adaptor/controller/command/` | 柔軟 | Tauri 依存で書きにくい場合は省略可 |
 | `adaptor/controller/handler/` | 柔軟 | WebSocket 依存で書きにくい場合は省略可 |
 | `adaptor/presenter/` | 柔軟 | 表示整形のみ、必要に応じて |
-| `infrastructure/` | 柔軟 | 外部システムへの薄いラッパー、統合テストで検証 |
+| `infrastructure/` | 柔軟 | 外部世界の都合をそのまま扱う層。判断も変換も持たないため、統合テストで検証 |
 | `other/` | 柔軟 | 横断的関心事 |
 
 「柔軟」のレイヤーも、テストを書ける範囲では書く。書きにくいから書かない判断は許容するが、書きやすくする工夫（インターフェース抽出等）も検討する。

@@ -62,7 +62,7 @@ src-tauri/src/              # バックエンド
 ├── domain/                 # domain logic
 ├── usecase/                # application workflow / usecase
 ├── adaptor/                # controller, gateway, presenter, protocol adapter
-├── infrastructure/         # filesystem, process, network client 等
+├── infrastructure/         # 外部世界の都合をその形のまま扱う（変換しない）
 ├── protocol/               # WebSocket protocol type
 ├── ws_server/              # WebSocket server
 ├── ws_bridge.rs            # WebSocket / app bridge

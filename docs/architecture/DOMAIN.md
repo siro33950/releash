@@ -141,6 +141,16 @@ impl WorkflowStatus {
 }
 ```
 
+## port（Repository / Gateway trait）
+
+port を domain 層に置くのは依存関係逆転のためである。domain は外側を知らないまま、必要な能力を trait として宣言し、adaptor/gateway がそれを実装する。
+
+**domain 層に置く port は、ドメインの言語だけで書く。** 引数・戻り値・エラーに外部世界の語彙（`git2` の型、SQL の行、wire の形式、外部システム固有のコード）を出さない。
+
+port のシグネチャに外部世界の語彙が現れたら、それは**変換が gateway で完了しておらず内側へ漏れている**というサインである。port の型付けは、変換が境界で閉じているかの判定になる。
+
+読み取り要求の出力仕様（DTO）を返す port は、ドメインの言語をスキップするために存在するので usecase 層に置く（[USECASE.md](./USECASE.md) QueryService）。domain 層の port と混同しない。
+
 ## Repository trait
 
 - データアクセスの抽象化

@@ -45,11 +45,14 @@ src-tauri/src/
 │   │       └── service_models.rs
 │   ├── presenter/                      # レスポンス整形
 │   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
-├── infrastructure/                     # 外部リソースクライアント
-│   ├── external/                       # GitHub, Notion, Webhook(Slack/Discord)
-│   ├── middleware/
-│   ├── persistence/                    # ファイルシステム, TOML, JSON
-│   └── git/                            # git2 クライアント
+├── infrastructure/                     # 外部世界の都合をその形のまま扱う
+│   ├── agent_session/                  # Agent CLI のプロセスと wire
+│   ├── file_watcher/                   # ファイル監視
+│   ├── git/                            # git2 クライアント
+│   ├── local_api/                      # ローカル HTTP サーバ / クライアント
+│   ├── platform/                       # OS・Tauri プラットフォーム連携
+│   ├── process/                        # 子プロセス起動と管理
+│   └── telemetry/                      # テレメトリ送出
 └── other/                              # 横断的関心事
     ├── error.rs                        # AppError（thiserror + serde::Serialize）
     └── logging/
@@ -58,17 +61,18 @@ src-tauri/src/
 ### 依存方向
 
 ```
-infrastructure → adaptor（controller / gateway / presenter）→ usecase → domain
+infrastructure ← adaptor（controller / gateway / presenter）→ usecase → domain
 ```
 
-依存は内向き（外側の層が内側の層に依存する）にのみ許される。
+依存は内向き（外側の層が内側の層に依存する）にのみ許される。adaptor/gateway だけは、変換の材料を得るために外側の infrastructure にも依存する。gateway が外部世界と内側を橋渡しする層だからである。
 
 - ドメインは外側を一切知らない（依存を持たない）
 - usecase は domain にのみ依存する
 - adaptor（gateway / controller / presenter）は usecase と domain に依存してよい（依存は内向き）
 - adaptor/gateway は domain が定義する trait（repository 等）を実装し、集約読み取り等では usecase の DTO / query ポートにも依存してよい
 - adaptor/controller は usecase を呼ぶ
-- infrastructure は外部ライブラリの薄いラッパーに徹する
+- adaptor/gateway は infrastructure が提供する外部世界への接触能力を使う（[INFRASTRUCTURE.md](./INFRASTRUCTURE.md)）
+- infrastructure は内側のどの層にも依存しない。domain 型を import せず、domain の trait を実装しない
 
 **逆依存（内側の層が外側の層に依存すること）に例外はない。** 例えば domain → usecase、usecase → adaptor のような向きは禁止する。利便性（例:「ステートレスだから任意のエントリポイントから生成できる」）は逆依存を正当化しない。逆依存したくなった場合は、設計自体に問題があるサインとして扱う。なお DI 配線（composition root）は controller の責務とし、gateway や任意のエントリポイントへ配線責務を漏らさない。
 
@@ -100,5 +104,6 @@ infrastructure → adaptor（controller / gateway / presenter）→ usecase → 
 - [DOMAIN.md](./DOMAIN.md) — ドメイン層
 - [USECASE.md](./USECASE.md) — ユースケース層
 - [GATEWAY.md](./GATEWAY.md) — ゲートウェイ層
+- [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) — インフラストラクチャ層
 - [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Tauriコマンド／WebSocketハンドラ）
 - [TEST.md](./TEST.md) — テスト方針

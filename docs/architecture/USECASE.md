@@ -71,6 +71,8 @@ impl RepositoryUsecase {
 
 読み込み専用のクエリサービス。**Usecase ではない**（「Query 側ユースケース」ではない）。表示向けに整形した DTO を返す。
 
+**Query 側の port が usecase 層にあるのは、ドメインの言語をスキップするためである。** DTO は読み取り要求の出力仕様であり、その言語はフロント側の都合で決まる。domain 層の port がドメインの言語で書かれる（[DOMAIN.md](./DOMAIN.md) port）のに対し、Query 側の port はフロントの言語で書かれる。port の置き場所が、その port の話す言語を決めている。
+
 **Query 側は読み取り要求に応えて、データソースから read model（DTO / `query_models`）を直接組み立てて返す。** DTO は読み取り要求の出力仕様であり、その形は要求の都合で決まる。Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えてはならない——向きが逆である（DTO は要求起点であって Entity 起点ではない）。1:1 写像に見える場合も例外ではない。表示・集計向けの読み取り専用モデルは `adaptor/gateway` の `query_models`（[GATEWAY.md](./GATEWAY.md)）として QueryService 実装（`query_service_impl`）が直接構築する。
 
 ```rust

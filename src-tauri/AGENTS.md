@@ -16,7 +16,7 @@
 ### レイヤーの責務
 
 ```
-infrastructure → adaptor/gateway → domain ← usecase ← adaptor/controller
+infrastructure ← adaptor/gateway → domain ← usecase ← adaptor/controller
 ```
 
 | レイヤー | 役割 |
@@ -24,10 +24,10 @@ infrastructure → adaptor/gateway → domain ← usecase ← adaptor/controller
 | `domain/` | ビジネスロジック。外部依存を持たない |
 | `usecase/` | アプリケーションの業務手順。ドメインのみに依存 |
 | `adaptor/controller/` | Tauri コマンド（`command/`）と WebSocket ハンドラ（`handler/`） |
-| `adaptor/gateway/` | Repository / Gateway trait の具体実装 |
+| `adaptor/gateway/` | Repository / Gateway trait の具体実装。外部世界の都合と内側の言語を相互に変換する |
 | `adaptor/presenter/` | レスポンス整形 |
 | `adaptor/protocol/` | WebSocket メッセージ・DTO |
-| `infrastructure/` | git2 / reqwest / ファイル I/O 等の外部クライアント |
+| `infrastructure/` | 外部世界の都合をその形のまま扱う。変換せず、内側の層を知らない |
 | `other/` | エラー型・ログ等の横断的関心事 |
 
 ### ロジック配置の原則
