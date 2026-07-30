@@ -35,11 +35,10 @@ pub use part_events::PartEventMode;
 pub(crate) use projector::apply_event_to_queue_pause;
 #[cfg(test)]
 pub(crate) use projector::session_error_message;
+#[cfg(test)]
+pub use projector::BackendSessionRecoveryProjection;
 pub(crate) use projector::SessionReadModel;
-pub use projector::{
-    latest_turn_interruption, AgentTurnFailureSignal, BackendSessionRecoveryProjection,
-    WorkflowTurnCompleteInput,
-};
+pub use projector::{latest_turn_interruption, AgentTurnFailureSignal, WorkflowTurnCompleteInput};
 
 #[cfg(test)]
 mod tests;

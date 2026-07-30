@@ -4,17 +4,13 @@
 //! this module deliberately has no serde, filesystem, database, or transport dependency.
 
 use crate::domain::agent_session::entities::{Attachment, MessagePart, PermissionRequest};
+pub use crate::domain::agent_session::entities::{InterruptReason, TurnStopReason};
 use crate::domain::agent_session::value_objects::{
     JsonPayload, SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary,
 };
 use crate::domain::code::MentionReference;
 
 pub type TurnId = u64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnStopReason {
-    Refusal,
-}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PromptInput {
@@ -23,24 +19,6 @@ pub struct PromptInput {
     pub attachment_refs: Vec<Attachment>,
     pub parts: Vec<MessagePart>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InterruptReason {
-    Abort,
-    Timeout,
-    Crash,
-    SessionClosed,
-}
-impl InterruptReason {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Abort => "abort",
-            Self::Timeout => "timeout",
-            Self::Crash => "crash",
-            Self::SessionClosed => "session_closed",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allowed,
@@ -71,6 +49,12 @@ impl PermissionDecision {
 pub struct TurnTokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+impl TurnTokenUsage {
+    pub fn total_tokens(self) -> Option<u64> {
+        self.input_tokens.checked_add(self.output_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

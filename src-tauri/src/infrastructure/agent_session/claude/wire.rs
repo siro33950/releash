@@ -1,7 +1,5 @@
 use serde_json::{json, Value};
 
-use crate::domain::agent_session::value_objects::PermissionMode;
-
 /// Claude CLI wire contract used by this backend:
 /// - Official headless docs require stream-json output with --verbose and support
 ///   --include-partial-messages for partial assistant stream events.
@@ -54,27 +52,6 @@ impl ClaudeWireMode {
             Self::BypassPermissions => "bypassPermissions",
             Self::Plan => "plan",
         }
-    }
-}
-
-pub(crate) fn claude_wire_mode(mode: PermissionMode, plan_mode: bool) -> ClaudeWireMode {
-    if plan_mode {
-        return ClaudeWireMode::Plan;
-    }
-    match mode {
-        PermissionMode::Ask => ClaudeWireMode::Default,
-        PermissionMode::Edit => ClaudeWireMode::AcceptEdits,
-        PermissionMode::Full => ClaudeWireMode::BypassPermissions,
-    }
-}
-
-pub(crate) fn permission_mode_from_wire(mode: &str) -> Option<PermissionMode> {
-    match mode {
-        "default" => Some(PermissionMode::Ask),
-        "acceptEdits" => Some(PermissionMode::Edit),
-        "bypassPermissions" => Some(PermissionMode::Full),
-        "plan" => None,
-        _ => None,
     }
 }
 
@@ -173,14 +150,6 @@ pub(crate) fn user_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_claude_wire_mode_plan_優先() {
-        assert_eq!(
-            claude_wire_mode(PermissionMode::Full, true),
-            ClaudeWireMode::Plan
-        );
-    }
 
     #[test]
     fn test_claude_user_message画像をstream_json形式にする() {

@@ -1210,7 +1210,7 @@ mod tests {
     struct CrossSurfaceReplaySendGate;
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for CrossSurfaceReplaySendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for CrossSurfaceReplaySendGate {
         async fn plan_send(
             &self,
             _principal: &str,
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for JournalResolveFaultSendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for JournalResolveFaultSendGate {
         async fn plan_send(
             &self,
             _principal: &str,
@@ -1321,7 +1321,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAdmissionGate for RealStoreNewSessionSendGate {
+    impl crate::usecase::agent_session::operation::SendAcceptancePort for RealStoreNewSessionSendGate {
         async fn plan_send(
             &self,
             _principal: &str,
@@ -1444,23 +1444,43 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::StopAdmissionGate for PublicTauriStopGate {
-        async fn target_snapshot(
+    impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository
+        for PublicTauriStopGate
+    {
+        async fn restore_session(
             &self,
-            _session_id: &str,
+            session_id: &str,
         ) -> Result<
-            crate::usecase::agent_session::operation::StopTargetSnapshot,
-            crate::domain::local_event::SafeOperationFailure,
+            crate::domain::agent_session::aggregates::session::Session,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
         > {
-            Ok(
-                crate::usecase::agent_session::operation::StopTargetSnapshot {
-                    session_revision: self.session_revision,
-                    active_turn_id: self.turn_id.clone(),
-                    queue_paused: false,
-                },
-            )
+            crate::usecase::agent_session::operation::StopTargetSnapshot {
+                session_revision: self.session_revision,
+                active_turn_id: self.turn_id.clone(),
+                queue_paused: false,
+            }
+            .restore_session(session_id)
         }
 
+        async fn prepare_session_change(
+            &self,
+            _session_id: &str,
+            _expected_revision: u64,
+            _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+        ) -> Result<
+            Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+        > {
+            Ok(Some(
+                crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                    Vec::new(),
+                ),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::usecase::agent_session::operation::StopEffectPort for PublicTauriStopGate {
         async fn interrupt(
             &self,
             _effect: &crate::usecase::agent_session::operation::AcceptedStopEffect,
@@ -1499,43 +1519,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SessionLifecycleGate for RealStoreLifecycleGate {
-        async fn session_snapshot(
+    impl crate::usecase::agent_session::operation::SessionLifecycleEffectPort
+        for RealStoreLifecycleGate
+    {
+        async fn has_live_runtime(
             &self,
             _session_id: &str,
-        ) -> Result<
-            crate::usecase::agent_session::operation::SessionLifecycleSnapshot,
-            crate::domain::local_event::SafeOperationFailure,
-        > {
-            Ok(self.snapshot.clone())
-        }
-
-        async fn acceptance_state_mutations(
-            &self,
-            session_id: &str,
-            _action: &crate::usecase::agent_session::operation::SessionLifecycleAction,
-            events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
-        ) -> Result<
-            Vec<crate::domain::local_event::LocalStateMutation>,
-            crate::domain::local_event::SafeOperationFailure,
-        > {
-            self.session_store
-                .prepare_lifecycle_acceptance_mutations(
-                    session_id,
-                    events,
-                    self.projected_state.clone(),
-                    self.backend_selection
-                        .as_ref()
-                        .map(|(backend_id, model_id)| (backend_id.as_str(), model_id.as_str())),
-                )
-                .map_err(|_| {
-                    crate::domain::local_event::SafeOperationFailure::new(
-                        crate::domain::local_event::SessionOperationFailureKind::PersistFailure,
-                        true,
-                        "The lifecycle projection could not be prepared.",
-                        "b095-projection",
-                    )
-                })
+        ) -> Result<bool, crate::domain::local_event::SafeOperationFailure> {
+            Ok(self.snapshot.has_runtime)
         }
 
         async fn execute(
@@ -1557,6 +1548,68 @@ mod tests {
                 | LifecycleCrashBoundary::AfterAcceptance => {}
             }
             Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository
+        for RealStoreLifecycleGate
+    {
+        async fn restore_session(
+            &self,
+            session_id: &str,
+        ) -> Result<
+            crate::domain::agent_session::aggregates::session::Session,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+        > {
+            self.snapshot.restore_session(session_id)
+        }
+
+        async fn prepare_session_change(
+            &self,
+            _session_id: &str,
+            _expected_revision: u64,
+            _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+        ) -> Result<
+            Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+        > {
+            Ok(Some(
+                crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                    Vec::new(),
+                ),
+            ))
+        }
+
+        async fn prepare_lifecycle_change(
+            &self,
+            session_id: &str,
+            expected_revision: u64,
+            _final_state: crate::domain::agent_session::value_objects::SessionState,
+            _backend_selection: Option<&crate::domain::agent_session::repository::BackendSelection>,
+            events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+        ) -> Result<
+            Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+        > {
+            self.session_store
+                .prepare_lifecycle_acceptance_mutations(
+                    session_id,
+                    expected_revision,
+                    events,
+                    self.projected_state,
+                    self.backend_selection
+                        .as_ref()
+                        .map(|(backend_id, model_id)| (backend_id.as_str(), model_id.as_str())),
+                )
+                .map(|participant| {
+                    participant.map(
+                        crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant,
+                    )
+                })
+                .map_err(
+                    crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Unavailable,
+                )
         }
     }
 
@@ -1667,6 +1720,7 @@ mod tests {
                     let usecase = crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
                         store.clone(),
                         store.clone(),
+                        gate.clone(),
                         gate,
                         store.installation_id().to_string(),
                     );
@@ -1826,6 +1880,7 @@ mod tests {
                     crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
                         store.clone(),
                         store.clone(),
+                        restart_gate.clone(),
                         restart_gate,
                         store.installation_id().to_string(),
                     );
@@ -1915,7 +1970,7 @@ mod tests {
             false,
             None,
         );
-        session.state = initial_state.clone();
+        session.state = initial_state;
         session_store
             .save_full_session_for_restore(data.path(), &session)
             .unwrap();
@@ -1984,6 +2039,7 @@ mod tests {
             crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
                 store.clone(),
                 store.clone(),
+                gate.clone(),
                 gate,
                 store.installation_id().to_string(),
             );
@@ -2059,7 +2115,7 @@ mod tests {
             },
             active,
             action,
-            expected_state.clone(),
+            expected_state,
             None,
             |_| {},
         )
@@ -2557,6 +2613,7 @@ mod tests {
                 crate::usecase::agent_session::operation::StopOperationUsecase::new(
                     repository,
                     authority,
+                    gate.clone(),
                     gate.clone(),
                     store.installation_id().to_string(),
                 ),
@@ -3080,7 +3137,7 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
-                crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
+                crate::adaptor::gateway::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_node_session: false,
             workflow_node_context: None,

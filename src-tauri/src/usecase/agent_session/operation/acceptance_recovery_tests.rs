@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::adaptor::controller::agent_session_operation_wiring::{
-    ActiveSendRecoveryContext, ConservativeRecoveryExecutor, RuntimeAgentSessionOperationGate,
-    RuntimePermissionResponseOperationGate, RuntimeSendOperationGate,
+    ActiveSendRecoveryContext, ConservativeRecoveryExecutor, RuntimeAgentSessionOperationAdapter,
+    RuntimePermissionResponseOperationAdapter, RuntimeSendOperationAdapter,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::domain::agent_session::entities::{
@@ -13,6 +13,9 @@ use crate::domain::agent_session::entities::{
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, BackendSessionRecoveryReason, RecoveryActionKind,
     RecoveryResultClassification, SendDisposition, StopResolution,
+};
+use crate::domain::agent_session::repository::{
+    AgentSessionLifecycleRepository, AgentSessionLifecycleRepositoryError, PreparedSessionChange,
 };
 use crate::domain::local_event::{
     AgentMessageProjectionRecord, AgentMessageRoleRecord, AgentSessionStateRecord,
@@ -36,8 +39,8 @@ use super::{
     PendingRecoveryOwnerTarget, PendingRecoveryQuery, RecoveryActionError, RecoveryActionOutcome,
     RecoveryActionRejection, RecoveryActionRequest, RecoveryActionResultOutcome,
     RecoveryActionStatus, RecoveryActionUsecase, RecoveryEffectExecutor, RecoveryEffectRequest,
-    RecoveryEffectResult, SendAdmissionGate, SendPlan, SessionLifecycleOperationUsecase,
-    StopAdmissionGate, StopCommandOutcome, StopEffectObservation, StopOperationRequest,
+    RecoveryEffectResult, SendAcceptancePort, SendPlan, SessionLifecycleOperationUsecase,
+    StopCommandOutcome, StopEffectObservation, StopEffectPort, StopOperationRequest,
     StopOperationState, StopOperationUsecase, StopTargetSnapshot,
 };
 use crate::domain::local_event::SafeOperationFailure;
@@ -237,7 +240,7 @@ impl RecordingStartupSendGate {
 }
 
 #[async_trait::async_trait]
-impl SendAdmissionGate for RecordingStartupSendGate {
+impl SendAcceptancePort for RecordingStartupSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
@@ -981,7 +984,7 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
                     session_id: (*session_id).to_string(),
                     projection: canonical_agent_session_projection_with_state(
                         session_id,
-                        session_state.clone(),
+                        *session_state,
                     ),
                     expected: RevisionGuard::Absent,
                     revision: Revision::new(0).unwrap(),
@@ -1515,18 +1518,36 @@ struct ReconciliationStopGate {
 }
 
 #[async_trait::async_trait]
-impl StopAdmissionGate for ReconciliationStopGate {
-    async fn target_snapshot(
+impl AgentSessionLifecycleRepository for ReconciliationStopGate {
+    async fn restore_session(
         &self,
-        _session_id: &str,
-    ) -> Result<StopTargetSnapshot, SafeOperationFailure> {
-        Ok(StopTargetSnapshot {
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
+        StopTargetSnapshot {
             session_revision: 0,
             active_turn_id: "1".to_string(),
             queue_paused: false,
-        })
+        }
+        .restore_session(session_id)
     }
 
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl StopEffectPort for ReconciliationStopGate {
     async fn interrupt(
         &self,
         _effect: &AcceptedStopEffect,
@@ -1574,6 +1595,7 @@ async fn b079_real_store_keeps_normal_fatal_and_close_superseded_terminal_unique
         let stop = StopOperationUsecase::new(
             store.clone(),
             store.clone(),
+            gate.clone(),
             gate.clone(),
             store.installation_id().to_string(),
         );
@@ -1657,6 +1679,7 @@ async fn b079_real_store_keeps_normal_fatal_and_close_superseded_terminal_unique
         let restarted = StopOperationUsecase::new(
             store.clone(),
             store.clone(),
+            gate.clone(),
             gate.clone(),
             store.installation_id().to_string(),
         );
@@ -1763,25 +1786,38 @@ fn f05_production_session_close_recovery_graph(
         session_store.clone(),
         data_dir,
     );
-    let operation_gate = Arc::new(RuntimeAgentSessionOperationGate::new(
+    let operation_gate = Arc::new(RuntimeAgentSessionOperationAdapter::new(
         runtime.clone(),
         session_store.clone(),
         data_dir.to_path_buf(),
     ));
+    let lifecycle_repository = Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
+            repository.clone(),
+            session_store.clone(),
+        ),
+    );
     let lifecycle = Arc::new(SessionLifecycleOperationUsecase::new(
         repository.clone(),
         authority.clone(),
+        lifecycle_repository,
         operation_gate.clone(),
         store.installation_id().to_string(),
     ));
     let stop = Arc::new(StopOperationUsecase::new(
         repository.clone(),
         authority.clone(),
+        Arc::new(
+            crate::adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
+                repository.clone(),
+                session_store.clone(),
+            ),
+        ),
         operation_gate.clone(),
         store.installation_id().to_string(),
     ));
     operation_gate.bind_stop_operation(Arc::downgrade(&stop));
-    let send_gate = Arc::new(RuntimeSendOperationGate::new(
+    let send_gate = Arc::new(RuntimeSendOperationAdapter::new(
         runtime.clone(),
         session_store.clone(),
         data_dir.to_path_buf(),
@@ -1797,7 +1833,13 @@ fn f05_production_session_close_recovery_graph(
     let permission = Arc::new(PermissionResponseOperationUsecase::new(
         repository,
         authority,
-        Arc::new(RuntimePermissionResponseOperationGate::new(
+        Arc::new(
+            crate::adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
+                store.clone(),
+                session_store.clone(),
+            ),
+        ),
+        Arc::new(RuntimePermissionResponseOperationAdapter::new(
             runtime.clone(),
             session_store,
         )),

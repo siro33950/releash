@@ -11,6 +11,7 @@ pub mod events;
 pub mod failure;
 pub mod identifiers;
 pub mod mutation;
+pub mod operation_identity;
 pub mod operation_record;
 pub mod query;
 pub mod record;
@@ -40,17 +41,33 @@ pub use mutation::{
     ShutdownTargetMutation, StopResolutionKind, StopResolutionMutation, TerminalRecordMutation,
     WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
 };
+pub use operation_identity::{
+    agent_atomic_event_payload_identity, agent_event_payload_identity,
+    backend_recovery_readback_participant_identity, constant_time_eq_32,
+    decide_workflow_turn_completion_identity, decide_workflow_turn_completion_settlement,
+    hash_event_projection_meta_patch, hash_terminal_message_projection_patch, hex_lower,
+    runtime_terminal_identity, session_closed_terminal_identity_material,
+    session_projection_binding_identity, session_projection_rollback_identity, sha256,
+    validate_operation_identity, validate_pending_workflow_turn_completion,
+    validate_workflow_turn_completion_notification, validate_workflow_turn_completion_terminal,
+    workflow_turn_completion_consume_commit_identity, workflow_turn_completion_ordered_key_prefix,
+    DurableIdentityBuilder, EventProjectionMetaIdentityFacts,
+    PendingWorkflowTurnCompletionRejection, RecoveryPublicationMessageIdentityFacts,
+    ValidatedPendingWorkflowTurnCompletion, WorkflowTurnCompletionIdentityFacts,
+    WorkflowTurnCompletionSettlementDecision, WorkflowTurnCompletionSettlementFacts,
+    WorkflowTurnCompletionSettlementRejection,
+};
 pub use operation_record::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,
 };
 pub use query::{
-    CallerAttemptView, CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryError,
-    LocalEventQueryResult, MessageProjectionPageEntryView, MessageProjectionPageView,
-    MessageProjectionView, ObligationView, OperationBindingSummaryView, OperationBindingView,
-    OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingRecoveryPageView,
-    PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView, SessionProjectionOwnerState,
-    SessionProjectionView, ShutdownPlanPageView, ShutdownPlanView, ShutdownSnapshotEntryView,
-    ShutdownTargetView, StopResolutionView, TerminalRecordView,
+    AgentSessionLifecycleSnapshotView, CallerAttemptView, CanonicalRuntimeOwnerView,
+    LocalEventQuery, LocalEventQueryError, LocalEventQueryResult, MessageProjectionPageEntryView,
+    MessageProjectionPageView, MessageProjectionView, ObligationView, OperationBindingSummaryView,
+    OperationBindingView, OperationRecordView, PendingIndexEntryView, PendingObligationView,
+    PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView,
+    SessionProjectionOwnerState, SessionProjectionView, ShutdownPlanPageView, ShutdownPlanView,
+    ShutdownSnapshotEntryView, ShutdownTargetView, StopResolutionView, TerminalRecordView,
 };
 pub use record::{
     AgentContentBlobRecord, AgentContextCarryStateRecord, AgentContextEpochRecord,

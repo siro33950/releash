@@ -95,6 +95,14 @@ pub enum LocalEventQuery {
     SessionProjectionByIdentity {
         session_id: String,
     },
+    /// One bounded owner snapshot for agent-session lifecycle decisions.
+    ///
+    /// The projection and its owner-scoped pending obligations are returned
+    /// from one SQLite statement so recovery classification and aggregate
+    /// admission observe the same revision.
+    AgentSessionLifecycleSnapshot {
+        session_id: String,
+    },
     SessionProjectionPage {
         limit: usize,
         after_session_id: Option<String>,
@@ -213,6 +221,12 @@ pub struct SessionProjectionView {
     pub session_id: String,
     pub projection: SessionProjectionRecord,
     pub revision: Revision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentSessionLifecycleSnapshotView {
+    pub session: SessionProjectionView,
+    pub pending_obligations: Vec<(String, ObligationRecord)>,
 }
 
 /// Lightweight runtime-ownership facts extracted from one canonical SQLite
@@ -386,6 +400,7 @@ pub enum LocalEventQueryResult {
     StopResolutionByOperation(Option<StopResolutionView>),
     ObligationByIdentity(Option<ObligationView>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
+    AgentSessionLifecycleSnapshot(Option<AgentSessionLifecycleSnapshotView>),
     SessionProjectionPage(Vec<SessionProjectionView>),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
     MessageProjectionByIdentity(Option<MessageProjectionView>),

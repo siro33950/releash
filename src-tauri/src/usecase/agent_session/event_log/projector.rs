@@ -5,8 +5,8 @@ use super::events::{
     BackendSessionRecoveryReason, InterruptReason, PromptInput, TurnId, TurnStopReason,
     TurnTokenUsage,
 };
-use super::finalization::has_unresolved_permissions;
 use super::part_events::permission_request_id;
+use crate::domain::agent_session::aggregates::session::Session as SessionAggregate;
 use crate::domain::agent_session::entities::{PermissionRequest, ToolResultUpdate};
 use crate::domain::agent_session::value_objects::JsonPayload;
 use crate::usecase::agent_session::session::{
@@ -87,6 +87,9 @@ pub struct SessionReadModel {
     #[allow(dead_code)]
     // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
     pub tool_retries: Vec<ToolRetryProjection>,
+    #[allow(dead_code)]
+    // Read-model replay DTO only. Runtime/repository admission uses the domain
+    // recovery aggregate and never consults this presentation projection.
     pub backend_recovery: Option<BackendSessionRecoveryProjection>,
 }
 
@@ -124,8 +127,6 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let mut turn_index: HashMap<TurnId, usize> = HashMap::new();
     let mut terminal_by_turn: HashMap<TurnId, TerminalEvent> = HashMap::new();
     let mut tool_retries = Vec::new();
-    let mut session_closed = false;
-    let mut session_archived = false;
     let mut backend_recovery = None;
     let mut session_errored_reason = None;
     let mut session_error_messages = Vec::new();
@@ -519,15 +520,11 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                     session_error_message(message_id.clone(), reason.clone(), *at),
                 ));
             }
-            AgentSessionEvent::SessionClosed { .. } => {
-                session_closed = true;
-            }
+            AgentSessionEvent::SessionClosed { .. } => {}
             AgentSessionEvent::SessionLifecycleOperationAccepted {
                 kind: crate::domain::agent_session::events::SessionLifecycleKind::Archive,
                 ..
-            } => {
-                session_archived = true;
-            }
+            } => {}
             // issues-1499: operation / obligation / resolution facts do not
             // change the streamed chat read model.
             AgentSessionEvent::SendOperationAccepted { .. }
@@ -559,14 +556,14 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
         .into_iter()
         .map(|(_, _, message)| message)
         .collect::<Vec<_>>();
-    let status = project_status(
-        events,
-        session_closed,
-        session_archived,
-        &terminal_by_turn,
-        session_errored_reason.as_deref(),
-    );
-    let error_reason = (status.session_state == SessionState::Error)
+    let lifecycle = SessionAggregate::project_lifecycle(events);
+    let status = ProjectedStatus {
+        session_state: lifecycle.state,
+        turn_phase: lifecycle.turn_phase,
+    };
+    let error_reason = status
+        .session_state
+        .is_error()
         .then(|| {
             session_errored_reason.clone().or_else(|| {
                 turns.last().and_then(|turn| {
@@ -1068,78 +1065,6 @@ fn push_or_update_system_notification(
         detail: detail.clone(),
         hook_id: hook_id.clone(),
     });
-}
-
-fn project_status(
-    events: &[AgentSessionEvent],
-    session_closed: bool,
-    session_archived: bool,
-    terminal_by_turn: &HashMap<TurnId, TerminalEvent>,
-    session_errored_reason: Option<&str>,
-) -> ProjectedStatus {
-    if session_archived {
-        return ProjectedStatus {
-            session_state: SessionState::Archived,
-            turn_phase: TurnPhase::Idle,
-        };
-    }
-    if session_closed {
-        return ProjectedStatus {
-            session_state: SessionState::Closed,
-            turn_phase: TurnPhase::Idle,
-        };
-    }
-    if session_errored_reason.is_some() {
-        return ProjectedStatus {
-            session_state: SessionState::Error,
-            turn_phase: TurnPhase::Idle,
-        };
-    }
-    let Some(turn_id) = events.iter().rev().find_map(|event| match event {
-        AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
-        _ => None,
-    }) else {
-        return ProjectedStatus {
-            session_state: SessionState::Idle,
-            turn_phase: TurnPhase::Idle,
-        };
-    };
-
-    if let Some(terminal) = terminal_by_turn.get(&turn_id) {
-        return match terminal {
-            TerminalEvent::Completed { exit_code, .. } if *exit_code == 0 => ProjectedStatus {
-                session_state: SessionState::Done,
-                turn_phase: TurnPhase::Idle,
-            },
-            TerminalEvent::Completed { .. } => ProjectedStatus {
-                session_state: SessionState::Error,
-                turn_phase: TurnPhase::Idle,
-            },
-            TerminalEvent::Interrupted {
-                reason: InterruptReason::Abort | InterruptReason::SessionClosed,
-                ..
-            } => ProjectedStatus {
-                session_state: SessionState::Idle,
-                turn_phase: TurnPhase::Idle,
-            },
-            TerminalEvent::Interrupted { .. } => ProjectedStatus {
-                session_state: SessionState::Error,
-                turn_phase: TurnPhase::Idle,
-            },
-        };
-    }
-
-    if has_unresolved_permissions(events, turn_id) {
-        return ProjectedStatus {
-            session_state: SessionState::Active,
-            turn_phase: TurnPhase::WaitingPermission,
-        };
-    }
-
-    ProjectedStatus {
-        session_state: SessionState::Active,
-        turn_phase: TurnPhase::Streaming,
-    }
 }
 
 fn project_workflow_turn_complete(

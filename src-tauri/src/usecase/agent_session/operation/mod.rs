@@ -5,7 +5,8 @@
 //! attempt journal, and the session lifecycle command contract on top of
 //! the `LocalEventTransactionRepository` domain port. It never talks to
 //! SQLite, files, Tauri, or WebSocket directly; adapters provide the
-//! binding authority and runtime gates through the ports in `ports.rs`.
+//! binding authority, projection preparation, and post-commit effects through
+//! the ports in `ports.rs`.
 
 pub(crate) mod binding;
 pub(crate) mod caller_journal;
@@ -15,6 +16,8 @@ pub(crate) mod permission;
 pub(crate) mod ports;
 pub(crate) mod record;
 pub(crate) mod recovery;
+pub(crate) mod runtime_adapter;
+pub(crate) mod runtime_drivers;
 pub(crate) mod send;
 pub(crate) mod stop;
 
@@ -45,22 +48,29 @@ pub(crate) use permission::{
 pub(crate) use ports::{
     AcceptedPermissionResponseEffect, AcceptedSendEffect, AcceptedStopEffect,
     BackendRecoveryReadbackPort, BackendRecoveryReadbackRequest, LegacyProviderEstablishRecovery,
-    OperationBindingAuthority, PermissionResponseGate, PermissionResponsePlan,
-    RecoveryEffectExecutor, RecoveryEffectHandoff, RecoveryEffectRequest, RecoveryEffectResult,
-    RecoveryOwnerBatch, RecoveryResultCanonicalizer, SendAdmissionGate, SendEffectDispatch,
-    SendPlan, SendRecoveryReadbackKind, SendRecoveryReadbackPort, SendRecoveryReadbackRequest,
+    OperationBindingAuthority, PermissionResponseEffectPort, RecoveryEffectExecutor,
+    RecoveryEffectHandoff, RecoveryEffectRequest, RecoveryEffectResult, RecoveryOwnerBatch,
+    RecoveryResultCanonicalizer, SendAcceptancePort, SendEffectDispatch, SendPlan,
+    SendRecoveryReadbackKind, SendRecoveryReadbackPort, SendRecoveryReadbackRequest,
     SessionCloseRecoveryReadbackPort, SessionCloseRecoveryReadbackRequest, SessionLifecycleEffect,
-    SessionLifecycleGate, SessionLifecycleSnapshot, SessionLifecycleState,
-    StableRecoveryEffectIdentity, StopAdmissionGate, StopEffectObservation,
-    StopRecoveryReadbackPort, StopRecoveryReadbackRequest, StopTargetSnapshot,
-    TerminalParticipants,
+    SessionLifecycleEffectPort, StableRecoveryEffectIdentity, StopEffectObservation,
+    StopEffectPort, StopRecoveryReadbackPort, StopRecoveryReadbackRequest, TerminalParticipants,
 };
+#[cfg(test)]
+pub(crate) use ports::{SessionLifecycleSnapshot, SessionLifecycleState, StopTargetSnapshot};
 pub(crate) use recovery::{
     decode_recovery_completed_result, derive_recovery_action_id, PendingRecoveryCategory,
     PendingRecoveryEntry, PendingRecoveryKnownStatus, PendingRecoveryOwnerTarget,
     PendingRecoveryPage, PendingRecoveryQuery, PendingRecoverySnapshotQuery, RecoveryActionError,
     RecoveryActionIdentity, RecoveryActionOutcome, RecoveryActionRejection, RecoveryActionRequest,
     RecoveryActionResultOutcome, RecoveryActionStatus, RecoveryActionUsecase,
+};
+pub(crate) use runtime_adapter::{
+    CanonicalSendCommandCodec, DecodedSendCommand, DecodedSendTarget,
+};
+pub(crate) use runtime_drivers::{
+    bind_runtime_durable_stop_driver, bind_runtime_durable_workflow_send_driver,
+    bind_runtime_terminal_operation_participant_provider,
 };
 pub(crate) use send::{
     AcceptedSendOperation, AgentSendOperationUsecase, GetSendOperationError,

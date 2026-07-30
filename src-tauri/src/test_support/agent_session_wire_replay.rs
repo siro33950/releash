@@ -1,5 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+use crate::adaptor::gateway::agent_session::fixtures::{
+    assert_golden, pretty_json, projection_backend, replay_backend, FixtureBackend,
+    ProjectionFixture, ReplayedFixture,
+};
 use crate::adaptor::gateway::agent_session::session_storage::{
     AgentSessionProjectionCodecV1, FileSessionStorage,
 };
@@ -10,10 +14,6 @@ use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::domain::agent_session::value_objects::PermissionMode;
-use crate::infrastructure::agent_session::fixtures::{
-    assert_golden, pretty_json, projection_backend, replay_backend, FixtureBackend,
-    ProjectionFixture, ReplayedFixture,
-};
 use crate::usecase::agent_session::event_log::TurnEventLog;
 use crate::usecase::agent_session::runtime::SendAgentMessageRequest;
 use crate::usecase::agent_session::session::{MessageRole, SessionStore};

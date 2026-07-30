@@ -7,12 +7,15 @@ use std::hash::Hasher;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::domain::agent_session::entities::{
-    InterruptReason as TurnInterruptReason, PermissionResponse, PermissionResponseDecision,
-    TurnResult,
+    InterruptReason as TurnInterruptReason, PermissionRequest, PermissionRequestBody,
+    PermissionRequestStatus, PermissionResponse, PermissionResponseDecision, Turn, TurnResult,
 };
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, InterruptReason, ObligationState, RecoveryActionKind,
     RecoveryResultClassification, SendDisposition, StopResolution,
+};
+use crate::domain::agent_session::repository::{
+    AgentSessionLifecycleRepository, AgentSessionLifecycleRepositoryError, PreparedSessionChange,
 };
 use crate::domain::local_event::{
     AgentTerminalKind, AgentTurnTerminalResultRecord, AuthoritativeEffectObservationRecord,
@@ -43,11 +46,11 @@ use super::permission::{
 };
 use super::ports::{
     AcceptedPermissionResponseEffect, AcceptedSendEffect, AcceptedStopEffect,
-    LegacyProviderEstablishRecovery, OperationBindingAuthority, PermissionResponseGate,
+    LegacyProviderEstablishRecovery, OperationBindingAuthority, PermissionResponseEffectPort,
     PermissionResponsePlan, RecoveryEffectExecutor, RecoveryEffectHandoff, RecoveryEffectRequest,
-    RecoveryEffectResult, SendAdmissionGate, SendEffectDispatch, SendPlan, SessionLifecycleEffect,
-    SessionLifecycleGate, SessionLifecycleSnapshot, SessionLifecycleState, StopAdmissionGate,
-    StopEffectObservation, StopTargetSnapshot,
+    RecoveryEffectResult, SendAcceptancePort, SendEffectDispatch, SendPlan, SessionLifecycleEffect,
+    SessionLifecycleEffectPort, SessionLifecycleSnapshot, SessionLifecycleState,
+    StopEffectObservation, StopEffectPort, StopTargetSnapshot,
 };
 use super::recovery::{
     PendingRecoveryCategory, PendingRecoveryKnownStatus, RecoveryActionOutcome,
@@ -953,7 +956,7 @@ impl FakeSendGate {
 }
 
 #[async_trait::async_trait]
-impl SendAdmissionGate for FakeSendGate {
+impl SendAcceptancePort for FakeSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
@@ -1056,7 +1059,7 @@ impl RacingSendGate {
 }
 
 #[async_trait::async_trait]
-impl SendAdmissionGate for RacingSendGate {
+impl SendAcceptancePort for RacingSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
@@ -1106,6 +1109,10 @@ struct FakePermissionGate {
     plan: Mutex<Result<PermissionResponsePlan, SafeOperationFailure>>,
     mode: Mutex<PermissionExecuteMode>,
     effects: Mutex<Vec<AcceptedPermissionResponseEffect>>,
+    prepare_stale_remaining: Mutex<usize>,
+    session_revision: Mutex<u64>,
+    terminal_after_effect: Mutex<bool>,
+    projected_reducer_event_sets: Mutex<Vec<Vec<AgentSessionDomainEvent>>>,
     completion_event_sets: Mutex<Vec<Vec<AgentSessionDomainEvent>>>,
     after_completion: Mutex<Vec<AcceptedPermissionResponseEffect>>,
 }
@@ -1122,6 +1129,10 @@ impl FakePermissionGate {
             })),
             mode: Mutex::new(PermissionExecuteMode::Succeed),
             effects: Mutex::new(Vec::new()),
+            prepare_stale_remaining: Mutex::new(0),
+            session_revision: Mutex::new(0),
+            terminal_after_effect: Mutex::new(false),
+            projected_reducer_event_sets: Mutex::new(Vec::new()),
             completion_event_sets: Mutex::new(Vec::new()),
             after_completion: Mutex::new(Vec::new()),
         })
@@ -1131,8 +1142,20 @@ impl FakePermissionGate {
         *self.mode.lock().unwrap() = mode;
     }
 
+    fn set_prepare_stale_count(&self, count: usize) {
+        *self.prepare_stale_remaining.lock().unwrap() = count;
+    }
+
+    fn set_terminal_after_effect(&self) {
+        *self.terminal_after_effect.lock().unwrap() = true;
+    }
+
     fn effect_count(&self) -> usize {
         self.effects.lock().unwrap().len()
+    }
+
+    fn projected_reducer_event_sets(&self) -> Vec<Vec<AgentSessionDomainEvent>> {
+        self.projected_reducer_event_sets.lock().unwrap().clone()
     }
 
     fn after_completion_count(&self) -> usize {
@@ -1140,14 +1163,128 @@ impl FakePermissionGate {
     }
 }
 
+fn permission_session(
+    session_id: &str,
+    plan: &PermissionResponsePlan,
+    revision: u64,
+) -> Result<
+    crate::domain::agent_session::aggregates::session::Session,
+    AgentSessionLifecycleRepositoryError,
+> {
+    use crate::domain::agent_session::aggregates::session::{
+        QueueState, RecoveryFact, Session, SessionRestore,
+    };
+    use crate::domain::agent_session::value_objects::{JsonPayload, SessionState, TurnPhase};
+
+    Session::restore(SessionRestore {
+        id: session_id.to_string(),
+        revision,
+        state: SessionState::Active,
+        has_messages: true,
+        has_provider_session: true,
+        current_turn: Some(Turn::restore(
+            plan.turn_id,
+            TurnPhase::WaitingPermission,
+            Some(PermissionRequest {
+                id: plan.request_id.clone(),
+                tool_use_id: None,
+                parent_tool_use_id: None,
+                tool_name: "test-tool".into(),
+                body: PermissionRequestBody::ToolApproval {
+                    input: JsonPayload::new_unchecked("{}".into()),
+                },
+                title: None,
+                display_name: None,
+                description: None,
+                decision_reason: None,
+                status: PermissionRequestStatus::Pending,
+            }),
+        )),
+        last_terminal: None,
+        queue: QueueState::restore(Vec::new(), false),
+        recovery_fact: RecoveryFact::Resolved,
+    })
+    .map_err(|error| AgentSessionLifecycleRepositoryError::Corrupt(format!("{error:?}")))
+}
+
 #[async_trait::async_trait]
-impl PermissionResponseGate for FakePermissionGate {
-    async fn plan_response(
+impl AgentSessionLifecycleRepository for FakePermissionGate {
+    async fn restore_session(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
+        let effect_plan = self
+            .effects
+            .lock()
+            .unwrap()
+            .last()
+            .map(|effect| effect.plan.clone());
+        let plan = match effect_plan {
+            Some(plan) => plan,
+            None => self.plan.lock().unwrap().clone().map_err(|error| {
+                AgentSessionLifecycleRepositoryError::Unavailable(error.to_string())
+            })?,
+        };
+        let revision = *self.session_revision.lock().unwrap();
+        if !self.effects.lock().unwrap().is_empty() && *self.terminal_after_effect.lock().unwrap() {
+            use crate::domain::agent_session::aggregates::session::{
+                QueueState, RecoveryFact, Session, SessionRestore,
+            };
+            use crate::domain::agent_session::value_objects::SessionState;
+
+            return Session::restore(SessionRestore {
+                id: session_id.to_string(),
+                revision,
+                state: SessionState::Idle,
+                has_messages: true,
+                has_provider_session: true,
+                current_turn: None,
+                last_terminal: None,
+                queue: QueueState::restore(Vec::new(), false),
+                recovery_fact: RecoveryFact::Resolved,
+            })
+            .map_err(|error| AgentSessionLifecycleRepositoryError::Corrupt(format!("{error:?}")));
+        }
+        permission_session(session_id, &plan, revision)
+    }
+
+    async fn prepare_session_change(
         &self,
         _session_id: &str,
-        _response: &PermissionResponse,
-    ) -> Result<PermissionResponsePlan, SafeOperationFailure> {
-        self.plan.lock().unwrap().clone()
+        _expected_revision: u64,
+        events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        let mut stale_remaining = self.prepare_stale_remaining.lock().unwrap();
+        if *stale_remaining != 0 {
+            *stale_remaining -= 1;
+            *self.session_revision.lock().unwrap() += 1;
+            return Ok(None);
+        }
+        self.projected_reducer_event_sets
+            .lock()
+            .unwrap()
+            .push(events.to_vec());
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionResponseEffectPort for FakePermissionGate {
+    async fn request_is_runtime_owned(
+        &self,
+        _session_id: &str,
+        _request_id: &str,
+    ) -> Result<bool, SafeOperationFailure> {
+        self.plan
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|plan| plan.from_runtime_state)
     }
 
     async fn completion_state_mutations(
@@ -1192,26 +1329,47 @@ struct RacingPermissionGate {
 }
 
 #[async_trait::async_trait]
-impl PermissionResponseGate for RacingPermissionGate {
-    async fn plan_response(
+impl AgentSessionLifecycleRepository for RacingPermissionGate {
+    async fn restore_session(
         &self,
-        _session_id: &str,
-        _response: &PermissionResponse,
-    ) -> Result<PermissionResponsePlan, SafeOperationFailure> {
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
         let call = self
             .plan_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if call == 0 {
             self.first_entered.notify_one();
             self.release_first.notified().await;
-            return Err(SafeOperationFailure::new(
-                SessionOperationFailureKind::ExternalEffectFailed,
-                true,
-                "stale permission admission snapshot",
-                "permission-race-first",
+            return Err(AgentSessionLifecycleRepositoryError::Unavailable(
+                "stale permission admission snapshot".into(),
             ));
         }
-        Ok(self.plan.clone())
+        permission_session(session_id, &self.plan, 0)
+    }
+
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionResponseEffectPort for RacingPermissionGate {
+    async fn request_is_runtime_owned(
+        &self,
+        _session_id: &str,
+        _request_id: &str,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(self.plan.from_runtime_state)
     }
 
     async fn execute(
@@ -1232,25 +1390,43 @@ struct RacingLifecycleGate {
 }
 
 #[async_trait::async_trait]
-impl SessionLifecycleGate for RacingLifecycleGate {
-    async fn session_snapshot(
+impl AgentSessionLifecycleRepository for RacingLifecycleGate {
+    async fn restore_session(
         &self,
-        _session_id: &str,
-    ) -> Result<SessionLifecycleSnapshot, SafeOperationFailure> {
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
         let call = self
             .snapshot_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if call == 0 {
             self.first_entered.notify_one();
             self.release_first.notified().await;
-            return Err(SafeOperationFailure::new(
-                SessionOperationFailureKind::ExternalEffectFailed,
-                true,
-                "stale lifecycle admission snapshot",
-                "lifecycle-race-first",
+            return Err(AgentSessionLifecycleRepositoryError::Unavailable(
+                "stale lifecycle admission snapshot".into(),
             ));
         }
-        Ok(self.snapshot.clone())
+        self.snapshot.restore_session(session_id)
+    }
+
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionLifecycleEffectPort for RacingLifecycleGate {
+    async fn has_live_runtime(&self, _session_id: &str) -> Result<bool, SafeOperationFailure> {
+        Ok(self.snapshot.has_runtime)
     }
 
     async fn execute(&self, effect: &SessionLifecycleEffect) -> Result<(), SafeOperationFailure> {
@@ -1325,12 +1501,44 @@ fn open_active_snapshot(revision: i64, turn_id: u64) -> SessionLifecycleSnapshot
 }
 
 #[async_trait::async_trait]
-impl SessionLifecycleGate for FakeLifecycleGate {
-    async fn session_snapshot(
+impl AgentSessionLifecycleRepository for FakeLifecycleGate {
+    async fn restore_session(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
+        self.snapshot
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(|error| AgentSessionLifecycleRepositoryError::Unavailable(error.to_string()))?
+            .restore_session(session_id)
+    }
+
+    async fn prepare_session_change(
         &self,
         _session_id: &str,
-    ) -> Result<SessionLifecycleSnapshot, SafeOperationFailure> {
-        self.snapshot.lock().unwrap().clone()
+        _expected_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionLifecycleEffectPort for FakeLifecycleGate {
+    async fn has_live_runtime(&self, _session_id: &str) -> Result<bool, SafeOperationFailure> {
+        Ok(self
+            .snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|snapshot| snapshot.has_runtime)
+            .unwrap_or(false))
     }
 
     async fn execute(&self, effect: &SessionLifecycleEffect) -> Result<(), SafeOperationFailure> {
@@ -1383,12 +1591,33 @@ impl LateLifecycleGate {
 }
 
 #[async_trait::async_trait]
-impl SessionLifecycleGate for LateLifecycleGate {
-    async fn session_snapshot(
+impl AgentSessionLifecycleRepository for LateLifecycleGate {
+    async fn restore_session(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
+        self.snapshot.restore_session(session_id)
+    }
+
+    async fn prepare_session_change(
         &self,
         _session_id: &str,
-    ) -> Result<SessionLifecycleSnapshot, SafeOperationFailure> {
-        Ok(self.snapshot.clone())
+        _expected_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionLifecycleEffectPort for LateLifecycleGate {
+    async fn has_live_runtime(&self, _session_id: &str) -> Result<bool, SafeOperationFailure> {
+        Ok(self.snapshot.has_runtime)
     }
 
     async fn execute(&self, effect: &SessionLifecycleEffect) -> Result<(), SafeOperationFailure> {
@@ -1474,23 +1703,32 @@ impl FakeStopGate {
 }
 
 #[async_trait::async_trait]
-impl StopAdmissionGate for FakeStopGate {
-    async fn target_snapshot(
+impl AgentSessionLifecycleRepository for FakeStopGate {
+    async fn restore_session(
         &self,
-        _session_id: &str,
-    ) -> Result<StopTargetSnapshot, SafeOperationFailure> {
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        AgentSessionLifecycleRepositoryError,
+    > {
         if let Some(failure) = self.snapshot_failure.lock().unwrap().as_ref() {
-            return Err(failure.clone());
+            return Err(AgentSessionLifecycleRepositoryError::Unavailable(
+                failure.correlation_id.clone(),
+            ));
         }
-        Ok(self.snapshot.lock().unwrap().clone())
+        self.snapshot
+            .lock()
+            .unwrap()
+            .clone()
+            .restore_session(session_id)
     }
 
-    async fn acceptance_state_mutations(
+    async fn prepare_session_change(
         &self,
         _session_id: &str,
         _expected_session_revision: u64,
         _events: &[AgentSessionDomainEvent],
-    ) -> Result<Option<Vec<LocalStateMutation>>, SafeOperationFailure> {
+    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
         if *self.stale_on_acceptance.lock().unwrap() {
             return Ok(None);
         }
@@ -1500,9 +1738,14 @@ impl StopAdmissionGate for FakeStopGate {
         if let Some(failure) = self.failure_after_acceptance.lock().unwrap().take() {
             *self.snapshot_failure.lock().unwrap() = Some(failure);
         }
-        Ok(Some(Vec::new()))
+        Ok(Some(PreparedSessionChange::from_atomic_participant(
+            Vec::new(),
+        )))
     }
+}
 
+#[async_trait::async_trait]
+impl StopEffectPort for FakeStopGate {
     async fn interrupt(
         &self,
         effect: &AcceptedStopEffect,
@@ -1797,7 +2040,7 @@ fn send_usecase(repo: &Arc<FakeRepo>, gate: &Arc<FakeSendGate>) -> AgentSendOper
     AgentSendOperationUsecase::new(
         repo.clone() as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn SendAdmissionGate>,
+        gate.clone() as Arc<dyn SendAcceptancePort>,
         GENERATION.to_string(),
     )
 }
@@ -1809,7 +2052,8 @@ fn lifecycle_usecase(
     SessionLifecycleOperationUsecase::new(
         repo.clone() as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn SessionLifecycleGate>,
+        gate.clone() as Arc<dyn AgentSessionLifecycleRepository>,
+        gate.clone() as Arc<dyn SessionLifecycleEffectPort>,
         GENERATION.to_string(),
     )
 }
@@ -1818,7 +2062,8 @@ fn stop_usecase(repo: &Arc<FakeRepo>, gate: &Arc<FakeStopGate>) -> StopOperation
     StopOperationUsecase::new(
         repo.clone() as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn StopAdmissionGate>,
+        gate.clone() as Arc<dyn AgentSessionLifecycleRepository>,
+        gate.clone() as Arc<dyn StopEffectPort>,
         GENERATION.to_string(),
     )
 }
@@ -2643,7 +2888,7 @@ async fn b004_concurrent_same_installation_send_retries_converge_on_one_receipt(
     let usecase = Arc::new(AgentSendOperationUsecase::new(
         repo.clone() as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn SendAdmissionGate>,
+        gate.clone() as Arc<dyn SendAcceptancePort>,
         GENERATION.to_string(),
     ));
     let first_usecase = usecase.clone();
@@ -5771,7 +6016,8 @@ async fn b056_late_runtime_results_are_fenced_for_the_full_lifecycle_matrix() {
         let usecase = SessionLifecycleOperationUsecase::new(
             repo.clone() as Arc<dyn LocalEventTransactionRepository>,
             Arc::new(FakeAuthority),
-            gate.clone() as Arc<dyn SessionLifecycleGate>,
+            gate.clone() as Arc<dyn AgentSessionLifecycleRepository>,
+            gate.clone() as Arc<dyn SessionLifecycleEffectPort>,
             GENERATION.to_string(),
         );
         let request_id = format!("b056-late-{label}");
@@ -5975,7 +6221,8 @@ async fn concurrent_same_lifecycle_identity_converges_after_stale_admission_fail
     let usecase = Arc::new(SessionLifecycleOperationUsecase::new(
         repo.clone() as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn SessionLifecycleGate>,
+        gate.clone() as Arc<dyn AgentSessionLifecycleRepository>,
+        gate.clone() as Arc<dyn SessionLifecycleEffectPort>,
         GENERATION.to_string(),
     ));
     let request = lifecycle_request(
@@ -8130,6 +8377,7 @@ fn permission_usecase(
         repo.clone(),
         Arc::new(FakeAuthority),
         gate.clone(),
+        gate.clone(),
         GENERATION.to_string(),
     )
 }
@@ -8277,6 +8525,143 @@ async fn permission_response_acceptance_and_completion_are_atomic_and_replay_eff
 }
 
 #[tokio::test]
+async fn permission_completion_reprepares_projection_after_one_stale_session_revision() {
+    let response = permission_allow("permission-request-stale-once", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_prepare_stale_count(1);
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-stale-once",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::Completed { .. }
+    ));
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 1);
+    let projected = gate.projected_reducer_event_sets();
+    assert_eq!(projected.len(), 1);
+    assert!(projected[0].iter().any(|event| matches!(
+        event,
+        AgentSessionDomainEvent::PermissionResolved {
+            request_id: Some(request_id),
+            ..
+        } if request_id == "permission-request-stale-once"
+    )));
+}
+
+#[tokio::test]
+async fn permission_completion_second_stale_is_durable_and_visible_to_recovery_inventory() {
+    let response = permission_allow("permission-request-stale-twice", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_prepare_stale_count(2);
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-stale-twice",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::ReconciliationRequired { .. }
+    ));
+    let saved = usecase
+        .get_operation("local-app", "permission-operation-stale-twice")
+        .await
+        .unwrap();
+    assert!(matches!(
+        saved.latest_status,
+        PermissionResponseExecutionStatus::ReconciliationRequired { .. }
+    ));
+    repo.with_state(|state| {
+        let (obligation, pending, _) = state
+            .obligations
+            .values()
+            .find(|(obligation, _, _)| {
+                matches!(
+                    obligation,
+                    ObligationRecord::PermissionResponse { operation_id, .. }
+                        if operation_id == "permission-operation-stale-twice"
+                )
+            })
+            .expect("permission reconciliation obligation");
+        assert!(matches!(
+            obligation,
+            ObligationRecord::PermissionResponse {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+        assert!(*pending);
+    });
+    assert_eq!(
+        usecase
+            .recover_pending_permission_responses_pass()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 0);
+}
+
+#[tokio::test]
+async fn late_permission_result_after_turn_terminal_completes_only_its_operation() {
+    let response = permission_allow("permission-request-late-terminal", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_terminal_after_effect();
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-late-terminal",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::Completed { .. }
+    ));
+    repo.with_state(|state| {
+        let completion = state
+            .committed_batches
+            .iter()
+            .find(|batch| {
+                batch.idempotency.idempotency_key == "permission-operation-late-terminal.complete"
+            })
+            .expect("late permission completion batch");
+        assert!(completion.events.is_empty());
+        assert!(completion
+            .state_mutations
+            .iter()
+            .all(|mutation| !matches!(mutation, LocalStateMutation::SessionProjection(_))));
+    });
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 1);
+}
+
+#[tokio::test]
 async fn concurrent_permission_precommit_failure_converges_on_the_winning_same_identity() {
     let response = permission_allow("permission-request-race", "{}", "{}");
     let repo = FakeRepo::new();
@@ -8296,7 +8681,8 @@ async fn concurrent_permission_precommit_failure_converges_on_the_winning_same_i
     let usecase = Arc::new(PermissionResponseOperationUsecase::new(
         repo as Arc<dyn LocalEventTransactionRepository>,
         Arc::new(FakeAuthority),
-        gate.clone() as Arc<dyn PermissionResponseGate>,
+        gate.clone() as Arc<dyn AgentSessionLifecycleRepository>,
+        gate.clone() as Arc<dyn PermissionResponseEffectPort>,
         GENERATION.to_string(),
     ));
     let first_usecase = usecase.clone();

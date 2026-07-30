@@ -21,6 +21,7 @@ use crate::domain::repository::normalize_repo_path;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
+pub use crate::domain::agent_session::value_objects::{ContextCarryState, SessionState};
 pub use crate::usecase::agent_session::status::TurnPhase;
 pub(crate) use image_attachment::{
     prepare_image_attachment_data, prepare_image_attachments_from_paths_usecase, ImageAttachment,
@@ -45,11 +46,12 @@ pub(crate) use read_paths::{
 };
 pub(crate) use store::{
     AcceptedQueuedTurnStartCommitOutcome, AgentSessionProjectionCodec,
-    BackendSessionRecoveryStartOutcome, CanonicalAgentSessionProjection, CanonicalQueuedSend,
-    ContextRestoreCompletionRequest, ErrorEpisodeInput, NextTurnIdError,
-    PendingWorkflowTurnCompletion, PendingWorkflowTurnCompletionPage,
-    ProviderSessionEstablishmentOutcome, RuntimeTerminalParticipantProvider,
-    RuntimeTerminalParticipants, SendAcceptanceAllocation, SendAcceptanceProjectionInput,
+    BackendSessionRecoveryStartOutcome, CanonicalAgentSessionProjection, CanonicalContentBlob,
+    CanonicalQueuedSend, ContextRestoreCompletionRequest, ErrorEpisodeInput,
+    EventProjectionMetaPatch, NextTurnIdError, PendingWorkflowTurnCompletion,
+    PendingWorkflowTurnCompletionPage, ProviderSessionEstablishmentOutcome,
+    RuntimeTerminalParticipantProvider, RuntimeTerminalParticipants, SendAcceptanceAllocation,
+    SendAcceptanceProjectionInput, TerminalMessageProjectionPatch,
 };
 #[cfg(test)]
 pub(crate) use store::{
@@ -150,25 +152,6 @@ pub enum MessageRole {
     Human,
     Agent,
     System,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionState {
-    Active,
-    Idle,
-    Done,
-    Error,
-    Closed,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextCarryState {
-    Resumed,
-    Reinjected,
-    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -936,14 +919,17 @@ impl SessionMeta {
     /// `workflow_node_session` フラグは context を持つ場合も必ず立つ正典だが、
     /// context の有無も合わせて見て ChatSession 側の判定と一致させる。
     pub fn is_workflow_node_session(&self) -> bool {
-        self.workflow_node_session || self.workflow_node_context.is_some()
+        crate::domain::agent_session::services::is_workflow_node_session(
+            self.workflow_node_session,
+            self.workflow_node_context.is_some(),
+        )
     }
 
     pub fn from_session(session: &ChatSession) -> Self {
         Self {
             id: session.id.clone(),
             worktree_path: normalize_repo_path(&session.worktree_path),
-            state: session.state.clone(),
+            state: session.state,
             error_reason: error_reason_for_state(&session.state, &session.error_reason),
             state_revision: 0,
             created_at: session.created_at,
@@ -952,7 +938,7 @@ impl SessionMeta {
             provider_session_generation: 0,
             provider_session_observation_id: None,
             context_reinjection_generation: None,
-            context_carry: session.context_carry.clone(),
+            context_carry: session.context_carry,
             pending_recovery_message: None,
             recovery_publication_snapshot: None,
             permission_mode: session.permission_mode.clone(),
@@ -978,12 +964,12 @@ impl SessionMeta {
             id: self.id.clone(),
             worktree_path: normalize_repo_path(&self.worktree_path),
             messages,
-            state: self.state.clone(),
+            state: self.state,
             error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             agent_session_id: self.agent_session_id.clone(),
-            context_carry: self.context_carry.clone(),
+            context_carry: self.context_carry,
             permission_mode: self.permission_mode.clone(),
             plan_mode: self.plan_mode,
             selected_model: self.selected_model.clone(),
@@ -999,14 +985,14 @@ impl SessionMeta {
         SessionSummary {
             id: self.id.clone(),
             worktree_path: normalize_repo_path(&self.worktree_path),
-            state: self.state.clone(),
+            state: self.state,
             error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             first_message: self.first_message_preview.clone(),
             message_count: self.message_count,
             agent_session_id: self.agent_session_id.clone(),
-            context_carry: self.context_carry.clone(),
+            context_carry: self.context_carry,
             permission_mode: self.permission_mode.clone(),
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
@@ -1019,21 +1005,24 @@ impl SessionMeta {
 
 impl ChatSession {
     pub fn is_workflow_node_session(&self) -> bool {
-        self.workflow_node_session || self.workflow_node_context.is_some()
+        crate::domain::agent_session::services::is_workflow_node_session(
+            self.workflow_node_session,
+            self.workflow_node_context.is_some(),
+        )
     }
 
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
             worktree_path: normalize_repo_path(&self.worktree_path),
-            state: self.state.clone(),
+            state: self.state,
             error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             first_message: first_message_preview(&self.messages),
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
-            context_carry: self.context_carry.clone(),
+            context_carry: self.context_carry,
             permission_mode: self.permission_mode.clone(),
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
@@ -1048,14 +1037,18 @@ pub(super) fn error_reason_for_state(
     state: &SessionState,
     error_reason: &Option<String>,
 ) -> Option<String> {
-    (state == &SessionState::Error)
+    state
+        .retains_error_reason()
         .then(|| error_reason.clone())
         .flatten()
 }
 
 impl SessionSummary {
     pub fn is_workflow_node_session(&self) -> bool {
-        self.workflow_node_session || self.workflow_node_context.is_some()
+        crate::domain::agent_session::services::is_workflow_node_session(
+            self.workflow_node_session,
+            self.workflow_node_context.is_some(),
+        )
     }
 }
 

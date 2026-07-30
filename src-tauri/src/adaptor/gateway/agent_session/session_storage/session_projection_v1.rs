@@ -6,8 +6,17 @@
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use crate::domain::agent_session::aggregates::backend_recovery_projection::BackendRecoveryProjection;
+use crate::domain::agent_session::aggregates::session::{
+    QueueItem, QueueState, Session, SessionRestore,
+};
 use crate::domain::agent_session::entities::TokenUsage as DomainTokenUsage;
+use crate::domain::agent_session::services::{
+    classify_recovery_fact, detect_image_mime, DefaultToolOutputExternalizationPolicy,
+    RecoveryPublicationDecision, ToolOutputExternalizationPolicy,
+};
 use crate::domain::agent_session::value_objects::{ContextRevision, JsonPayload};
 use crate::domain::local_event::{
     AgentContentBlobRecord, AgentContextCarryStateRecord, AgentContextEpochRecord,
@@ -17,19 +26,22 @@ use crate::domain::local_event::{
     AgentRecoveryPublicationSnapshotRecord, AgentRecoveryPublicationWorkflowOwnerRecord,
     AgentSessionMetadataRecord, AgentSessionProjectionRecord, AgentSessionStateRecord,
     AgentSessionSummaryRecord, AgentTurnInterruptionRecord, MessageProjectionRecord,
-    SessionProjectionRecord,
+    SessionProjectionRecord, ValidatedPendingWorkflowTurnCompletion,
 };
 use crate::usecase::agent_session::context_meta::{
     context_source_kind_from_key, context_source_kind_key, ContextEpochMeta,
     ContextSourcePayloadCache, ContextSourceRevisionMeta,
 };
+use crate::usecase::agent_session::event_log::{AgentTurnFailureSignal, WorkflowTurnCompleteInput};
 use crate::usecase::agent_session::session::{
     session_summary_from_record, workflow_node_context_mapper, ActivityEntry,
-    AgentSessionProjectionCodec, CanonicalAgentSessionProjection, CanonicalQueuedSend, ChatMessage,
-    ContextCarryState, MessageMention, MessageRole, PendingRecoveryMessage,
+    AgentSessionProjectionCodec, AttachmentRef, CanonicalAgentSessionProjection,
+    CanonicalContentBlob, CanonicalQueuedSend, ChatMessage, ContextCarryState,
+    EventProjectionMetaPatch, MessageMention, MessagePart, MessageRole, PendingRecoveryMessage,
     RecoveryPublicationClassification, RecoveryPublicationList, RecoveryPublicationSnapshot,
-    RecoveryPublicationWorkflowOwner, SessionMeta, SessionState, SessionSummary, TokenUsage,
-    TurnInterruption, TurnInterruptionReason,
+    RecoveryPublicationWorkflowOwner, SessionMeta, SessionState, SessionSummary,
+    TerminalMessageProjectionPatch, TokenUsage, ToolOutputRef, ToolOutputSummary, TurnInterruption,
+    TurnInterruptionReason,
 };
 
 use super::stored_event_v1::{decode_agent_session_events_v1, encode_agent_session_events_v1};
@@ -87,6 +99,43 @@ impl AgentSessionProjectionCodec for AgentSessionProjectionCodecV1 {
         canonical_from_agent_projection_record(projection)
     }
 
+    fn restore_session_aggregate(
+        &self,
+        projection: &CanonicalAgentSessionProjection,
+        pending_obligations: &[(String, crate::domain::local_event::ObligationRecord)],
+    ) -> Result<Session, String> {
+        let state = projection.meta.state;
+        let current_turn =
+            Session::current_turn_from_events(&projection.reducer_events, state.is_closed());
+        let queue = projection
+            .pending_send_queue
+            .iter()
+            .map(|item| QueueItem {
+                id: item.queue_item_id.clone(),
+                operation_id: item.input_ref.clone(),
+                reserved_turn_id: Some(item.reserved_turn_id.clone()),
+                human_message_id: Some(item.human_message_id.clone()),
+            })
+            .collect();
+        Session::restore(SessionRestore {
+            id: projection.meta.id.clone(),
+            revision: projection.meta.state_revision,
+            state,
+            has_messages: projection.meta.message_count != 0,
+            has_provider_session: projection.meta.agent_session_id.is_some(),
+            current_turn,
+            last_terminal: None,
+            queue: QueueState::restore(queue, projection.queue_paused_at.is_some()),
+            recovery_fact: classify_recovery_fact(
+                projection.meta.pending_recovery_message.is_some(),
+                pending_obligations
+                    .iter()
+                    .map(|(identity, record)| (identity.as_str(), record)),
+            ),
+        })
+        .map_err(|error| format!("invalid canonical Session aggregate: {error:?}"))
+    }
+
     fn encode_message(&self, message: &ChatMessage) -> Result<MessageProjectionRecord, String> {
         Ok(MessageProjectionRecord::AgentMessage(
             agent_message_record_from_chat_message(message)?,
@@ -98,6 +147,298 @@ impl AgentSessionProjectionCodec for AgentSessionProjectionCodecV1 {
             return Err("projection is not an agent message".to_string());
         };
         chat_message_from_agent_message_record(message)
+    }
+
+    fn externalize_message_content(
+        &self,
+        messages: &mut [ChatMessage],
+    ) -> Result<Vec<CanonicalContentBlob>, String> {
+        let mut blobs = Vec::new();
+        let tool_output_policy = DefaultToolOutputExternalizationPolicy;
+        for message in messages {
+            let Some(parts) = message.parts.as_mut() else {
+                continue;
+            };
+            for part in parts {
+                match part {
+                    MessagePart::Image { data, media_type } => {
+                        let data = data.clone();
+                        let media_type = media_type.clone();
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(data.as_bytes())
+                            .map_err(|_| "canonical attachment is not valid base64".to_string())?;
+                        let detected = detect_image_mime(&bytes).ok_or_else(|| {
+                            "canonical attachment is not a supported image".to_string()
+                        })?;
+                        if detected != media_type.as_str() {
+                            return Err(
+                                "canonical attachment media type does not match bytes".to_string()
+                            );
+                        }
+                        let mut hasher = Sha256::new();
+                        hasher.update(media_type.as_bytes());
+                        hasher.update([0]);
+                        hasher.update(&bytes);
+                        let id = hex::encode(hasher.finalize());
+                        let byte_size = bytes.len() as u64;
+                        blobs.push(CanonicalContentBlob {
+                            identity: format!("attachment:{id}"),
+                            projection: AgentContentBlobRecord::Attachment {
+                                id: id.clone(),
+                                media_type: media_type.clone(),
+                                bytes,
+                            },
+                        });
+                        *part = MessagePart::ImageRef {
+                            attachment: AttachmentRef {
+                                id,
+                                media_type,
+                                byte_size,
+                            },
+                        };
+                    }
+                    MessagePart::ToolResult {
+                        content,
+                        is_error,
+                        tool_use_id,
+                        parent_tool_use_id,
+                        content_ref,
+                        summary,
+                    } if content_ref.is_none()
+                        && tool_output_policy.should_externalize_tool_output(content) =>
+                    {
+                        let content = content.clone();
+                        let id = hex::encode(Sha256::digest(content.as_bytes()));
+                        blobs.push(CanonicalContentBlob {
+                            identity: format!("tool_output:{id}"),
+                            projection: AgentContentBlobRecord::ToolOutput {
+                                id: id.clone(),
+                                content: content.clone(),
+                            },
+                        });
+                        let projected_summary = summary.clone().unwrap_or_else(|| {
+                            let summary =
+                                tool_output_policy.tool_output_summary(&content, *is_error, true);
+                            ToolOutputSummary {
+                                line_count: summary.line_count,
+                                byte_size: summary.byte_size,
+                                is_error: summary.is_error,
+                                truncated: summary.truncated,
+                            }
+                        });
+                        *part = MessagePart::ToolResult {
+                            content: tool_output_policy.tool_output_preview(&content),
+                            is_error: *is_error,
+                            tool_use_id: tool_use_id.clone(),
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            content_ref: Some(ToolOutputRef {
+                                id,
+                                byte_size: content.len() as u64,
+                            }),
+                            summary: Some(projected_summary),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(blobs)
+    }
+
+    fn backend_recovery_from_projection(
+        &self,
+        projection: &CanonicalAgentSessionProjection,
+    ) -> BackendRecoveryProjection {
+        backend_recovery_from_meta(&projection.meta, projection.queue_paused_at.is_some())
+    }
+
+    fn backend_recovery_from_meta(
+        &self,
+        meta: &SessionMeta,
+        queue_paused: bool,
+    ) -> BackendRecoveryProjection {
+        backend_recovery_from_meta(meta, queue_paused)
+    }
+
+    fn apply_backend_recovery_to_projection(
+        &self,
+        projection: &mut CanonicalAgentSessionProjection,
+        state: BackendRecoveryProjection,
+    ) {
+        apply_backend_recovery_to_meta(&mut projection.meta, state);
+    }
+
+    fn apply_backend_recovery_to_meta(
+        &self,
+        meta: &mut SessionMeta,
+        state: BackendRecoveryProjection,
+    ) {
+        apply_backend_recovery_to_meta(meta, state);
+    }
+
+    fn recovery_publication_snapshot(
+        &self,
+        recovery_id: &str,
+        meta: &SessionMeta,
+        decision: RecoveryPublicationDecision,
+    ) -> RecoveryPublicationSnapshot {
+        let list = match decision.list {
+            crate::domain::agent_session::services::RecoveryPublicationListDecision::Sessions => {
+                RecoveryPublicationList::SessionList
+            }
+            crate::domain::agent_session::services::RecoveryPublicationListDecision::ClosedHistory => {
+                RecoveryPublicationList::ClosedHistory
+            }
+            crate::domain::agent_session::services::RecoveryPublicationListDecision::ArchivedHistory => {
+                RecoveryPublicationList::ArchivedHistory
+            }
+        };
+        let workflow_owner =
+            meta.is_workflow_node_session()
+                .then(|| RecoveryPublicationWorkflowOwner {
+                    execution_id: meta
+                        .workflow_node_context
+                        .as_ref()
+                        .map(|context| context.execution_id.clone()),
+                    node_execution_id: meta
+                        .workflow_node_context
+                        .as_ref()
+                        .map(|context| context.node_execution_id.clone()),
+                });
+        let mut summary = meta.to_summary();
+        summary.state = decision.published_state;
+        RecoveryPublicationSnapshot {
+            recovery_id: recovery_id.to_string(),
+            summary,
+            classification: RecoveryPublicationClassification {
+                list,
+                workflow_owner,
+            },
+        }
+    }
+
+    fn recovery_publication_message_record(
+        &self,
+        message: &PendingRecoveryMessage,
+    ) -> crate::domain::local_event::RecoveryPublicationMessageRecord {
+        match message {
+            PendingRecoveryMessage::Notice {
+                recovery_id,
+                message_id,
+            } => crate::domain::local_event::RecoveryPublicationMessageRecord {
+                kind: crate::domain::local_event::RecoveryPublicationMessageKindRecord::Notice,
+                recovery_id: recovery_id.clone(),
+                message_id: message_id.clone(),
+                error: None,
+            },
+            PendingRecoveryMessage::Error {
+                recovery_id,
+                message_id,
+                error,
+            } => crate::domain::local_event::RecoveryPublicationMessageRecord {
+                kind: crate::domain::local_event::RecoveryPublicationMessageKindRecord::Error,
+                recovery_id: recovery_id.clone(),
+                message_id: message_id.clone(),
+                error: Some(error.clone()),
+            },
+        }
+    }
+
+    fn workflow_context(
+        &self,
+        context: &crate::usecase::agent_session::session::WorkflowNodeContextDto,
+    ) -> crate::domain::workflow::WorkflowNodeContext {
+        workflow_node_context_mapper::to_domain(context.clone())
+    }
+
+    fn workflow_failure_signal(
+        &self,
+        signal: Option<AgentTurnFailureSignal>,
+    ) -> Option<crate::domain::local_event::WorkflowTurnFailureSignalRecord> {
+        signal.map(|signal| match signal {
+            AgentTurnFailureSignal::ModelRefusal => {
+                crate::domain::local_event::WorkflowTurnFailureSignalRecord::ModelRefusal
+            }
+        })
+    }
+
+    fn workflow_turn_complete_input(
+        &self,
+        pending: &ValidatedPendingWorkflowTurnCompletion,
+        final_text_parts: Vec<String>,
+    ) -> WorkflowTurnCompleteInput {
+        WorkflowTurnCompleteInput {
+            turn_id: pending.turn_id,
+            exit_code: pending.exit_code,
+            final_text_parts,
+            failure_signal: pending.failure_signal.map(|signal| match signal {
+                crate::domain::local_event::WorkflowTurnFailureSignalRecord::ModelRefusal => {
+                    AgentTurnFailureSignal::ModelRefusal
+                }
+            }),
+            token_usage: pending.token_usage,
+            interrupted: pending.interrupted,
+        }
+    }
+
+    fn workflow_final_text_parts(
+        &self,
+        message: &ChatMessage,
+        expected_message_id: &str,
+    ) -> Result<Vec<String>, String> {
+        if message.id != expected_message_id || message.role != MessageRole::Agent {
+            return Err("workflow turn-completion message projection is inconsistent".to_string());
+        }
+        Ok(message
+            .parts
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    fn context_restore_completion_facts(
+        &self,
+        meta: &SessionMeta,
+    ) -> crate::domain::agent_session::services::ContextRestoreCompletionFacts {
+        crate::domain::agent_session::services::ContextRestoreCompletionFacts {
+            session_state: meta.state,
+            pending_recovery_failure: matches!(
+                meta.pending_recovery_message,
+                Some(PendingRecoveryMessage::Error { .. })
+            ),
+            has_recovery_publication_snapshot: meta.recovery_publication_snapshot.is_some(),
+            provider_session_generation: meta.provider_session_generation,
+            context_reinjection_generation: meta.context_reinjection_generation,
+            last_turn_id: meta.last_turn_id,
+            backend_recovery_observation: meta
+                .provider_session_observation_id
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("backend-recovery/v1:")),
+            has_pending_recovery_message: meta.pending_recovery_message.is_some(),
+            context_carry: meta.context_carry,
+        }
+    }
+
+    fn apply_context_restore_completion_decision(
+        &self,
+        meta: &mut SessionMeta,
+        decision: crate::domain::agent_session::services::ContextRestoreCompletionDecision,
+        at: f64,
+    ) {
+        if decision.clear_context_reinjection_generation {
+            meta.context_reinjection_generation = None;
+        }
+        if let crate::domain::agent_session::services::ContextCarryChange::Replace(context_carry) =
+            decision.context_carry
+        {
+            meta.context_carry = context_carry;
+        }
+        meta.updated_at = at;
     }
 
     fn encode_session_identity_v1(
@@ -135,6 +476,154 @@ impl AgentSessionProjectionCodec for AgentSessionProjectionCodecV1 {
         encode_stored_message_parts_v1(parts)
             .map_err(|error| format!("agent identity parts encode failed: {error}"))
     }
+
+    fn hash_terminal_message_projection_patch(
+        &self,
+        identity: &mut crate::domain::local_event::DurableIdentityBuilder,
+        patch: &TerminalMessageProjectionPatch,
+    ) -> Result<(), String> {
+        let encoded_parts = patch
+            .parts
+            .as_deref()
+            .map(|parts| self.encode_parts_for_identity(parts))
+            .transpose()?;
+        crate::domain::local_event::hash_terminal_message_projection_patch(
+            identity,
+            &patch.message_id,
+            patch.streaming_final_seq,
+            patch.timestamp.map(f64::to_bits),
+            encoded_parts.as_deref(),
+        );
+        Ok(())
+    }
+
+    fn hash_event_projection_meta_patch(
+        &self,
+        identity: &mut crate::domain::local_event::DurableIdentityBuilder,
+        patch: &EventProjectionMetaPatch,
+    ) -> Result<(), String> {
+        use crate::domain::local_event::EventProjectionMetaIdentityFacts;
+
+        let encoded_snapshot;
+        let facts = match patch {
+            EventProjectionMetaPatch::Started {
+                expected_generation,
+                publication_snapshot,
+                at,
+            } => {
+                encoded_snapshot = serde_json::to_vec(publication_snapshot).map_err(|error| {
+                    format!("recovery publication snapshot encode failed: {error}")
+                })?;
+                EventProjectionMetaIdentityFacts::RecoveryStarted {
+                    expected_generation: *expected_generation,
+                    publication_snapshot: &encoded_snapshot,
+                    at_bits: at.to_bits(),
+                }
+            }
+            EventProjectionMetaPatch::Completed {
+                expected_generation,
+                provider_session_generation,
+                backend_session_id,
+                pending_recovery_message,
+                at,
+            } => EventProjectionMetaIdentityFacts::RecoveryCompleted {
+                expected_generation: *expected_generation,
+                provider_session_generation: *provider_session_generation,
+                backend_session_id,
+                pending_message: recovery_message_identity(pending_recovery_message),
+                at_bits: at.to_bits(),
+            },
+            EventProjectionMetaPatch::ReadbackCompleted {
+                old_provider_session_generation,
+                provider_session_generation,
+                backend_session_id,
+                pending_recovery_message,
+                at,
+            } => EventProjectionMetaIdentityFacts::RecoveryReadbackCompleted {
+                old_provider_session_generation: *old_provider_session_generation,
+                provider_session_generation: *provider_session_generation,
+                backend_session_id,
+                pending_message: recovery_message_identity(pending_recovery_message),
+                at_bits: at.to_bits(),
+            },
+            EventProjectionMetaPatch::Failed {
+                pending_recovery_message,
+                at,
+            } => EventProjectionMetaIdentityFacts::RecoveryFailed {
+                pending_message: recovery_message_identity(pending_recovery_message),
+                at_bits: at.to_bits(),
+            },
+            EventProjectionMetaPatch::ContextRestoreCompleted {
+                expected_provider_session_generation,
+                expected_turn_id,
+                reinjected,
+                clear_context_carry,
+                recovery_restore_required,
+                at,
+            } => EventProjectionMetaIdentityFacts::ContextRestoreCompleted {
+                expected_provider_session_generation: *expected_provider_session_generation,
+                expected_turn_id: *expected_turn_id,
+                reinjected: *reinjected,
+                clear_context_carry: *clear_context_carry,
+                recovery_restore_required: *recovery_restore_required,
+                at_bits: at.to_bits(),
+            },
+        };
+        crate::domain::local_event::hash_event_projection_meta_patch(identity, facts);
+        Ok(())
+    }
+}
+
+fn recovery_message_identity(
+    message: &PendingRecoveryMessage,
+) -> crate::domain::local_event::RecoveryPublicationMessageIdentityFacts<'_> {
+    match message {
+        PendingRecoveryMessage::Notice {
+            recovery_id,
+            message_id,
+        } => crate::domain::local_event::RecoveryPublicationMessageIdentityFacts::Notice {
+            recovery_id,
+            message_id,
+        },
+        PendingRecoveryMessage::Error {
+            recovery_id,
+            message_id,
+            error,
+        } => crate::domain::local_event::RecoveryPublicationMessageIdentityFacts::Error {
+            recovery_id,
+            message_id,
+            error,
+        },
+    }
+}
+
+fn backend_recovery_from_meta(meta: &SessionMeta, queue_paused: bool) -> BackendRecoveryProjection {
+    BackendRecoveryProjection {
+        session_state: meta.state,
+        error_reason: meta.error_reason.clone(),
+        queue_paused,
+        provider_session_id: meta.agent_session_id.clone(),
+        provider_session_generation: meta.provider_session_generation,
+        provider_session_observation_id: meta.provider_session_observation_id.clone(),
+        context_reinjection_generation: meta.context_reinjection_generation,
+        context_carry: meta.context_carry,
+        has_recovery_publication_snapshot: meta.recovery_publication_snapshot.is_some(),
+        has_pending_recovery_message: meta.pending_recovery_message.is_some(),
+        pending_recovery_failure: matches!(
+            meta.pending_recovery_message,
+            Some(PendingRecoveryMessage::Error { .. })
+        ),
+    }
+}
+
+fn apply_backend_recovery_to_meta(meta: &mut SessionMeta, state: BackendRecoveryProjection) {
+    meta.state = state.session_state;
+    meta.error_reason = state.error_reason;
+    meta.agent_session_id = state.provider_session_id;
+    meta.provider_session_generation = state.provider_session_generation;
+    meta.provider_session_observation_id = state.provider_session_observation_id;
+    meta.context_reinjection_generation = state.context_reinjection_generation;
+    meta.context_carry = state.context_carry;
 }
 
 pub(crate) fn encode_agent_session_projection_record_v1(

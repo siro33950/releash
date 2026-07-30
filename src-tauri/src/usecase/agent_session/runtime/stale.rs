@@ -6,21 +6,27 @@
 //! words, stale detection causes stall observation, but stale is the timeout
 //! condition/watchdog boundary while stall is the active intervention signal.
 
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
-use super::session_state::RuntimeSessionPhase;
-use crate::domain::agent_session::entities::MessagePart;
+use crate::domain::agent_session::services::stale_timeout_from_secs;
+pub(crate) use crate::domain::agent_session::services::{
+    effective_stale_timeout, has_in_flight_tool_use, remaining_until_stale,
+    stale_watchdog_should_continue_waiting, turn_is_stale,
+};
+#[cfg(test)]
+pub(crate) use crate::domain::agent_session::services::{
+    recovery_cap_reached, stall_cap_reached, MAX_STALL_RECOVERY_ATTEMPTS, MAX_STALL_SIGNALS,
+};
 use crate::usecase::agent_session::session::ChatSession;
-
-const DEFAULT_STALE_TIMEOUT: Duration = Duration::from_secs(180);
-const MAX_STALE_TIMEOUT: Duration = Duration::from_secs(1_800);
-
-pub(crate) const MAX_STALL_SIGNALS: u32 = 3;
-pub(crate) const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 3;
+#[cfg(test)]
+use crate::{
+    domain::agent_session::entities::MessagePart, domain::agent_session::value_objects::TurnPhase,
+};
 
 pub(crate) fn stale_timeout_for_session(session: &ChatSession) -> Duration {
-    timeout_from_secs(
+    stale_timeout_from_secs(
         session
             .workflow_node_context
             .as_ref()
@@ -28,82 +34,9 @@ pub(crate) fn stale_timeout_for_session(session: &ChatSession) -> Duration {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn timeout_from_secs(value: Option<u64>) -> Duration {
-    value
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_STALE_TIMEOUT)
-        .min(MAX_STALE_TIMEOUT)
-}
-
-/// ToolResult が未到着の ToolUse が残っている（= backend 側でツール実行中）か。
-pub(crate) fn has_in_flight_tool_use(parts: &[MessagePart]) -> bool {
-    let resolved: HashSet<&str> = parts
-        .iter()
-        .filter_map(|part| match part {
-            MessagePart::ToolResult {
-                tool_use_id: Some(id),
-                ..
-            } => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
-    parts.iter().any(
-        |part| matches!(part, MessagePart::ToolUse { id, .. } if !resolved.contains(id.as_str())),
-    )
-}
-
-/// ツール実行中は backend が無出力でも正常（cargo test 等の長時間コマンド）のため、
-/// stale timeout を上限値まで延長する。
-pub(crate) fn effective_stale_timeout(base: Duration, tool_in_flight: bool) -> Duration {
-    if tool_in_flight {
-        base.max(MAX_STALE_TIMEOUT)
-    } else {
-        base
-    }
-}
-
-pub(crate) fn turn_is_stale(
-    phase: RuntimeSessionPhase,
-    expected_generation: u64,
-    actual_generation: u64,
-    last_progress_at: Option<Instant>,
-    timeout: Duration,
-    now: Instant,
-) -> bool {
-    phase == RuntimeSessionPhase::Streaming
-        && expected_generation == actual_generation
-        && last_progress_at
-            .map(|last_progress_at| now.duration_since(last_progress_at) >= timeout)
-            .unwrap_or(false)
-}
-
-pub(crate) fn stale_watchdog_should_continue_waiting(
-    phase: RuntimeSessionPhase,
-    expected_generation: u64,
-    actual_generation: u64,
-) -> bool {
-    expected_generation == actual_generation
-        && matches!(
-            phase,
-            RuntimeSessionPhase::Streaming | RuntimeSessionPhase::WaitingPermission
-        )
-}
-
-pub(crate) fn remaining_until_stale(
-    last_progress_at: Option<Instant>,
-    timeout: Duration,
-    now: Instant,
-) -> Option<Duration> {
-    let elapsed = now.duration_since(last_progress_at?);
-    Some(timeout.saturating_sub(elapsed))
-}
-
-pub(crate) fn stall_cap_reached(signal_count: u32) -> bool {
-    signal_count >= MAX_STALL_SIGNALS
-}
-
-pub(crate) fn recovery_cap_reached(recovery_attempts: u32) -> bool {
-    recovery_attempts >= MAX_STALL_RECOVERY_ATTEMPTS
+    stale_timeout_from_secs(value)
 }
 
 pub(crate) fn startup_timeout_for_session(session: &ChatSession) -> Option<Duration> {
@@ -152,7 +85,7 @@ mod tests {
 
         // When / Then: only the matching generation streaming turn is stale.
         assert!(turn_is_stale(
-            RuntimeSessionPhase::Streaming,
+            TurnPhase::Streaming,
             7,
             7,
             Some(last_progress_at),
@@ -160,7 +93,7 @@ mod tests {
             Instant::now(),
         ));
         assert!(!turn_is_stale(
-            RuntimeSessionPhase::Idle,
+            TurnPhase::Idle,
             7,
             7,
             Some(last_progress_at),
@@ -168,7 +101,7 @@ mod tests {
             Instant::now(),
         ));
         assert!(!turn_is_stale(
-            RuntimeSessionPhase::Streaming,
+            TurnPhase::Streaming,
             7,
             8,
             Some(last_progress_at),
@@ -243,17 +176,17 @@ mod tests {
     #[test]
     fn test_stale_watchdog_should_continue_waiting_permission() {
         assert!(stale_watchdog_should_continue_waiting(
-            RuntimeSessionPhase::WaitingPermission,
+            TurnPhase::WaitingPermission,
             1,
             1,
         ));
         assert!(!stale_watchdog_should_continue_waiting(
-            RuntimeSessionPhase::Idle,
+            TurnPhase::Idle,
             1,
             1,
         ));
         assert!(!stale_watchdog_should_continue_waiting(
-            RuntimeSessionPhase::WaitingPermission,
+            TurnPhase::WaitingPermission,
             1,
             2,
         ));

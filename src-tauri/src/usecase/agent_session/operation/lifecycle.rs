@@ -12,18 +12,24 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::domain::agent_session::aggregates::session::{
+    LifecycleCommandRejection, SessionLifecycleCommand, TransitionRejection,
+};
 use crate::domain::agent_session::events::{
-    AgentSessionDomainEvent, InterruptReason as EventInterruptReason, ObligationKind,
-    ObligationState, SessionLifecycleKind,
+    AgentSessionDomainEvent, ObligationKind, ObligationState, SessionLifecycleKind,
+};
+use crate::domain::agent_session::repository::{
+    AgentSessionLifecycleRepository, AgentSessionLifecycleRepositoryError,
 };
 use crate::domain::local_event::{
-    CallerOperationKey, CommitBatchError, CommitBatchResult, CommitIdentity, CommitOperationKind,
-    CommitResolution, ExpectedStreamHead, IdempotencyBinding, LoadStreamRequest, LocalAtomicBatch,
-    LocalDomainEvent, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
-    LocalEventTransactionRepository, LocalStateMutation, ObligationMutation, ObligationRecord,
-    ObligationStateRecord, OperationBindingMutation, OperationKind, OperationReceiptRecord,
-    OperationRecordMutation, OperationStatusRecord, OperationStatusValue, PendingIndexEntry,
-    PendingPartition, RecordAuthentication, Revision, RevisionGuard, SafeOperationFailure,
+    session_closed_terminal_identity_material, CallerOperationKey, CommitBatchError,
+    CommitBatchResult, CommitIdentity, CommitOperationKind, CommitResolution, ExpectedStreamHead,
+    IdempotencyBinding, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery,
+    LocalEventQueryError, LocalEventQueryResult, LocalEventTransactionRepository,
+    LocalStateMutation, ObligationMutation, ObligationRecord, ObligationStateRecord,
+    OperationBindingMutation, OperationKind, OperationReceiptRecord, OperationRecordMutation,
+    OperationStatusRecord, OperationStatusValue, PendingIndexEntry, PendingPartition,
+    RecordAuthentication, Revision, RevisionGuard, SafeOperationFailure,
     SessionLifecycleRecordAction, SessionOperationFailureKind, StreamId, StreamVersion,
     TerminalInterruptReasonRecord, TerminalRecordMutation, TerminalResultRecord,
     UncommittedDomainEvent,
@@ -32,8 +38,7 @@ use crate::domain::local_event::{
 use super::identity::{constant_time_eq_32, validate_operation_identity};
 use super::ports::{
     OperationBindingAuthority, RecoveryEffectResult, SessionCloseRecoveryReadbackPort,
-    SessionCloseRecoveryReadbackRequest, SessionLifecycleEffect, SessionLifecycleGate,
-    SessionLifecycleState,
+    SessionCloseRecoveryReadbackRequest, SessionLifecycleEffect, SessionLifecycleEffectPort,
 };
 use super::record::hex_encode;
 use super::send::principal_material;
@@ -210,6 +215,40 @@ fn storage_rejection(context: &str) -> SessionLifecycleRejection {
             "The local event store is unavailable.",
             correlation(context),
         ),
+    }
+}
+
+fn lifecycle_repository_failure(
+    error: AgentSessionLifecycleRepositoryError,
+    context: &str,
+) -> SafeOperationFailure {
+    let kind = match error {
+        AgentSessionLifecycleRepositoryError::Corrupt(_) => {
+            SessionOperationFailureKind::StorageCorrupt
+        }
+        AgentSessionLifecycleRepositoryError::NotFound
+        | AgentSessionLifecycleRepositoryError::Unavailable(_) => {
+            SessionOperationFailureKind::StorageUnavailable
+        }
+    };
+    SafeOperationFailure::new(
+        kind,
+        true,
+        "The session lifecycle snapshot is unavailable.",
+        correlation(context),
+    )
+}
+
+fn admission_rejection(
+    action: &SessionLifecycleAction,
+    rejection: TransitionRejection,
+) -> SessionLifecycleRejection {
+    match (action, rejection) {
+        (
+            SessionLifecycleAction::SwitchBackend { .. },
+            TransitionRejection::NotQuiescent | TransitionRejection::QueueNotEmpty,
+        ) => SessionLifecycleRejection::Busy,
+        _ => SessionLifecycleRejection::InvalidState,
     }
 }
 
@@ -455,7 +494,8 @@ fn lifecycle_obligation_record(
 pub struct SessionLifecycleOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
-    gate: Arc<dyn SessionLifecycleGate>,
+    lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+    effect: Arc<dyn SessionLifecycleEffectPort>,
     installation_id: String,
 }
 
@@ -463,13 +503,15 @@ impl SessionLifecycleOperationUsecase {
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
-        gate: Arc<dyn SessionLifecycleGate>,
+        lifecycle_repository: Arc<dyn AgentSessionLifecycleRepository>,
+        effect: Arc<dyn SessionLifecycleEffectPort>,
         installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
-            gate,
+            lifecycle_repository,
+            effect,
             installation_id,
         }
     }
@@ -1034,9 +1076,100 @@ impl SessionLifecycleOperationUsecase {
             },
         };
 
-        // Admission against the current bounded snapshot.
-        let snapshot = match self.gate.session_snapshot(&request.session_id).await {
-            Ok(snapshot) => snapshot,
+        // The repository restores one bounded aggregate and its recovery fact
+        // from a single owner-scoped SQLite snapshot. The aggregate is the
+        // only lifecycle admission authority.
+        let mut session = match self
+            .lifecycle_repository
+            .restore_session(&request.session_id)
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                return self
+                    .converge_or_reject(
+                        &request,
+                        &operation_id,
+                        &principal_mac,
+                        &binding_hmac,
+                        SessionLifecycleRejection::Failed {
+                            failure: lifecycle_repository_failure(error, "aggregate-restore"),
+                        },
+                    )
+                    .await;
+            }
+        };
+        let expected_aggregate_revision = session.revision();
+        let command = match &request.action {
+            SessionLifecycleAction::Close => SessionLifecycleCommand::Close,
+            SessionLifecycleAction::ArchiveOpen => SessionLifecycleCommand::ArchiveOpen,
+            SessionLifecycleAction::ArchiveClosed => SessionLifecycleCommand::ArchiveClosed,
+            SessionLifecycleAction::SwitchBackend { backend_id } => {
+                SessionLifecycleCommand::SwitchBackend {
+                    backend_id: backend_id.clone(),
+                }
+            }
+        };
+        let lifecycle_transition =
+            match session.apply_lifecycle_at_revision(request.expected_session_revision, command) {
+                Ok(transition) => transition,
+                Err(LifecycleCommandRejection::RevisionUnrepresentable) => {
+                    return self
+                        .converge_or_reject(
+                            &request,
+                            &operation_id,
+                            &principal_mac,
+                            &binding_hmac,
+                            storage_rejection("aggregate-revision"),
+                        )
+                        .await;
+                }
+                Err(LifecycleCommandRejection::RevisionConflict { current_revision }) => {
+                    return self
+                        .converge_or_reject(
+                            &request,
+                            &operation_id,
+                            &principal_mac,
+                            &binding_hmac,
+                            SessionLifecycleRejection::RevisionConflict { current_revision },
+                        )
+                        .await;
+                }
+                Err(LifecycleCommandRejection::Transition(rejection)) => {
+                    return self
+                        .converge_or_reject(
+                            &request,
+                            &operation_id,
+                            &principal_mac,
+                            &binding_hmac,
+                            admission_rejection(&request.action, rejection),
+                        )
+                        .await;
+                }
+            };
+        let active_turn_id = lifecycle_transition
+            .terminal
+            .as_ref()
+            .map(|(turn_id, _)| *turn_id);
+        let backend_selection = match lifecycle_transition.backend_id.as_deref() {
+            Some(backend_id) => match self.effect.resolve_backend_selection(backend_id).await {
+                Ok(selection) => Some(selection),
+                Err(failure) => {
+                    return self
+                        .converge_or_reject(
+                            &request,
+                            &operation_id,
+                            &principal_mac,
+                            &binding_hmac,
+                            SessionLifecycleRejection::Failed { failure },
+                        )
+                        .await;
+                }
+            },
+            None => None,
+        };
+        let has_runtime = match self.effect.has_live_runtime(&request.session_id).await {
+            Ok(has_runtime) => has_runtime,
             Err(failure) => {
                 return self
                     .converge_or_reject(
@@ -1049,73 +1182,7 @@ impl SessionLifecycleOperationUsecase {
                     .await;
             }
         };
-        if snapshot.session_revision != request.expected_session_revision {
-            return self
-                .converge_or_reject(
-                    &request,
-                    &operation_id,
-                    &principal_mac,
-                    &binding_hmac,
-                    SessionLifecycleRejection::RevisionConflict {
-                        current_revision: snapshot.session_revision,
-                    },
-                )
-                .await;
-        }
-        let active_turn_id = match (&request.action, &snapshot.lifecycle) {
-            (
-                SessionLifecycleAction::Close | SessionLifecycleAction::ArchiveOpen,
-                SessionLifecycleState::Open { active_turn_id, .. },
-            ) => *active_turn_id,
-            (SessionLifecycleAction::ArchiveClosed, SessionLifecycleState::Closed) => None,
-            (
-                SessionLifecycleAction::SwitchBackend { .. },
-                SessionLifecycleState::Open {
-                    idle,
-                    active_turn_id,
-                },
-            ) => {
-                if active_turn_id.is_some() || !*idle {
-                    return self
-                        .converge_or_reject(
-                            &request,
-                            &operation_id,
-                            &principal_mac,
-                            &binding_hmac,
-                            SessionLifecycleRejection::Busy,
-                        )
-                        .await;
-                }
-                if snapshot.has_pending_permission
-                    || snapshot.has_pending_recovery
-                    || snapshot.has_pending_provider_operation
-                {
-                    return self
-                        .converge_or_reject(
-                            &request,
-                            &operation_id,
-                            &principal_mac,
-                            &binding_hmac,
-                            SessionLifecycleRejection::InvalidState,
-                        )
-                        .await;
-                }
-                None
-            }
-            _ => {
-                return self
-                    .converge_or_reject(
-                        &request,
-                        &operation_id,
-                        &principal_mac,
-                        &binding_hmac,
-                        SessionLifecycleRejection::InvalidState,
-                    )
-                    .await;
-            }
-        };
-        let requires_runtime_effect = snapshot.has_runtime
-            && !matches!(request.action, SessionLifecycleAction::ArchiveClosed);
+        let requires_runtime_effect = lifecycle_transition.requires_runtime_effect(has_runtime);
         let accepted_state = if requires_runtime_effect {
             SessionLifecycleOperationState::Accepted
         } else {
@@ -1155,6 +1222,16 @@ impl SessionLifecycleOperationUsecase {
             ),
             occurred_at_ms: at,
         }];
+        events.extend(
+            lifecycle_transition
+                .lifecycle_events(at as f64)
+                .into_iter()
+                .map(|event| UncommittedDomainEvent {
+                    stream_id: stream_id.clone(),
+                    event: LocalDomainEvent::AgentSession(event),
+                    occurred_at_ms: at,
+                }),
+        );
         let mut mutations: Vec<LocalStateMutation> = vec![
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
@@ -1184,68 +1261,32 @@ impl SessionLifecycleOperationUsecase {
         // Active normal close / open archive terminate the running turn with
         // a SessionClosed terminal; Idle close / archive and closed archive
         // add no synthetic terminal.
-        let terminal_candidate = if let Some(turn_id) = active_turn_id {
-            events.push(UncommittedDomainEvent {
-                stream_id: stream_id.clone(),
-                event: LocalDomainEvent::AgentSession(AgentSessionDomainEvent::TurnInterrupted {
-                    turn_id,
-                    reason: EventInterruptReason::SessionClosed,
-                    exit_code: -1,
-                    error: None,
-                }),
-                occurred_at_ms: at,
-            });
-            let terminal_result = TerminalResultRecord::SessionClosed {
-                operation_id: operation_id.clone(),
-                reason: TerminalInterruptReasonRecord::SessionClosed,
-                result: crate::domain::agent_session::entities::TurnResult::Interrupted {
-                    reason: crate::domain::agent_session::entities::InterruptReason::SessionClosed,
-                    error: None,
-                },
+        let terminal_candidate =
+            if let Some((turn_id, result)) = lifecycle_transition.terminal.as_ref() {
+                let terminal_result = TerminalResultRecord::SessionClosed {
+                    operation_id: operation_id.clone(),
+                    reason: TerminalInterruptReasonRecord::SessionClosed,
+                    result: result.clone(),
+                };
+                let participant_digest =
+                    self.authority
+                        .digest(&session_closed_terminal_identity_material(
+                            &operation_id,
+                            &request.session_id,
+                            *turn_id,
+                        ));
+                let terminal = TerminalRecordMutation {
+                    session_id: request.session_id.clone(),
+                    turn_id: turn_id.to_string(),
+                    terminal_identity: operation_id.clone(),
+                    result: terminal_result,
+                    participant_digest,
+                };
+                mutations.push(LocalStateMutation::TerminalRecord(terminal.clone()));
+                Some(terminal)
+            } else {
+                None
             };
-            let participant_digest = self.authority.digest(
-                format!(
-                    "session-closed-terminal-semantic/v1\0{}\0{}\0{turn_id}",
-                    operation_id, request.session_id
-                )
-                .as_bytes(),
-            );
-            let terminal = TerminalRecordMutation {
-                session_id: request.session_id.clone(),
-                turn_id: turn_id.to_string(),
-                terminal_identity: operation_id.clone(),
-                result: terminal_result,
-                participant_digest,
-            };
-            mutations.push(LocalStateMutation::TerminalRecord(terminal.clone()));
-            Some(terminal)
-        } else {
-            None
-        };
-        if matches!(
-            request.action,
-            SessionLifecycleAction::Close | SessionLifecycleAction::ArchiveOpen
-        ) {
-            events.push(UncommittedDomainEvent {
-                stream_id: stream_id.clone(),
-                event: LocalDomainEvent::AgentSession(AgentSessionDomainEvent::SessionClosed {
-                    at: at as f64,
-                }),
-                occurred_at_ms: at,
-            });
-        }
-        // Queue pause: content-preserving pause for close / open archive /
-        // backend switch; a closed-session archive leaves the queue as-is.
-        let pauses_queue = !matches!(request.action, SessionLifecycleAction::ArchiveClosed);
-        if pauses_queue && !snapshot.queue_paused {
-            events.push(UncommittedDomainEvent {
-                stream_id: stream_id.clone(),
-                event: LocalDomainEvent::AgentSession(AgentSessionDomainEvent::QueuePaused {
-                    at: at as f64,
-                }),
-                occurred_at_ms: at,
-            });
-        }
         // A runtime close obligation exists only when there is a concrete
         // live runtime to close. Closed archive and lifecycle mutations for a
         // runtime-free session complete in the acceptance batch with no fake
@@ -1290,26 +1331,81 @@ impl SessionLifecycleOperationUsecase {
             })
             .collect::<Vec<_>>();
         let projection_mutations = match self
-            .gate
-            .acceptance_state_mutations(&request.session_id, &request.action, &projection_events)
+            .lifecycle_repository
+            .prepare_lifecycle_change(
+                &request.session_id,
+                expected_aggregate_revision,
+                session.state(),
+                backend_selection.as_ref(),
+                &projection_events,
+            )
             .await
         {
-            Ok(mutations) => mutations,
-            Err(failure) => {
+            Ok(Some(change)) => change.into_atomic_participant(),
+            Ok(None) => {
+                let current_revision = self
+                    .lifecycle_repository
+                    .restore_session(&request.session_id)
+                    .await
+                    .ok()
+                    .and_then(|latest| i64::try_from(latest.revision()).ok())
+                    .unwrap_or(request.expected_session_revision);
                 return self
                     .converge_or_reject(
                         &request,
                         &operation_id,
                         &principal_mac,
                         &binding_hmac,
-                        SessionLifecycleRejection::Failed { failure },
+                        SessionLifecycleRejection::RevisionConflict { current_revision },
+                    )
+                    .await;
+            }
+            Err(error) => {
+                return self
+                    .converge_or_reject(
+                        &request,
+                        &operation_id,
+                        &principal_mac,
+                        &binding_hmac,
+                        SessionLifecycleRejection::Failed {
+                            failure: lifecycle_repository_failure(
+                                error,
+                                "lifecycle-change-preparation",
+                            ),
+                        },
                     )
                     .await;
             }
         };
         mutations.extend(projection_mutations);
+        #[cfg(test)]
+        {
+            let fixture_mutations = match self
+                .effect
+                .acceptance_state_mutations(
+                    &request.session_id,
+                    &request.action,
+                    &projection_events,
+                )
+                .await
+            {
+                Ok(mutations) => mutations,
+                Err(failure) => {
+                    return self
+                        .converge_or_reject(
+                            &request,
+                            &operation_id,
+                            &principal_mac,
+                            &binding_hmac,
+                            SessionLifecycleRejection::Failed { failure },
+                        )
+                        .await;
+                }
+            };
+            mutations.extend(fixture_mutations);
+        }
         if let Some(terminal) = terminal_candidate.as_ref() {
-            let participants = match self.gate.terminal_participants(terminal).await {
+            let participants = match self.effect.terminal_participants(terminal).await {
                 Ok(participants) => participants,
                 Err(failure) => {
                     return self
@@ -1487,7 +1583,7 @@ impl SessionLifecycleOperationUsecase {
             action: request.action.clone(),
             active_turn_id,
         };
-        let outcome = tokio::time::timeout(LIFECYCLE_DEADLINE, self.gate.execute(&effect)).await;
+        let outcome = tokio::time::timeout(LIFECYCLE_DEADLINE, self.effect.execute(&effect)).await;
         let state = match outcome {
             Ok(Ok(())) => SessionLifecycleOperationState::Completed,
             Ok(Err(failure)) => SessionLifecycleOperationState::ReconciliationRequired { failure },
@@ -1749,9 +1845,9 @@ impl SessionCloseRecoveryReadbackPort for SessionLifecycleOperationUsecase {
         let durable_close_completed = if record.receipt.action == SessionLifecycleAction::Close
             && !matches!(record.state, SessionLifecycleOperationState::Completed)
         {
-            let snapshot = self
-                .gate
-                .session_snapshot(&request.session_id)
+            let session = self
+                .lifecycle_repository
+                .restore_session(&request.session_id)
                 .await
                 .map_err(|_| {
                     SafeOperationFailure::new(
@@ -1761,7 +1857,7 @@ impl SessionCloseRecoveryReadbackPort for SessionLifecycleOperationUsecase {
                         correlation("readback-owner"),
                     )
                 })?;
-            matches!(snapshot.lifecycle, SessionLifecycleState::Closed)
+            session.is_closed()
         } else {
             false
         };

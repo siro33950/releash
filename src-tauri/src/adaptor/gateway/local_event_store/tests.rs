@@ -4764,21 +4764,43 @@ struct OutcomeUnknownStopGate {
 }
 
 #[async_trait::async_trait]
-impl crate::usecase::agent_session::operation::StopAdmissionGate for PerformanceStopGate {
-    async fn target_snapshot(
+impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository
+    for PerformanceStopGate
+{
+    async fn restore_session(
         &self,
-        _session_id: &str,
-    ) -> Result<crate::usecase::agent_session::operation::StopTargetSnapshot, SafeOperationFailure>
-    {
-        Ok(
-            crate::usecase::agent_session::operation::StopTargetSnapshot {
-                session_revision: 0,
-                active_turn_id: "1".to_string(),
-                queue_paused: false,
-            },
-        )
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        crate::usecase::agent_session::operation::StopTargetSnapshot {
+            session_revision: 0,
+            active_turn_id: "1".to_string(),
+            queue_paused: false,
+        }
+        .restore_session(session_id)
     }
 
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+    ) -> Result<
+        Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        Ok(Some(
+            crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                Vec::new(),
+            ),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::operation::StopEffectPort for PerformanceStopGate {
     async fn interrupt(
         &self,
         _effect: &crate::usecase::agent_session::operation::AcceptedStopEffect,
@@ -4795,21 +4817,43 @@ impl crate::usecase::agent_session::operation::StopAdmissionGate for Performance
 }
 
 #[async_trait::async_trait]
-impl crate::usecase::agent_session::operation::StopAdmissionGate for OutcomeUnknownStopGate {
-    async fn target_snapshot(
+impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository
+    for OutcomeUnknownStopGate
+{
+    async fn restore_session(
         &self,
-        _session_id: &str,
-    ) -> Result<crate::usecase::agent_session::operation::StopTargetSnapshot, SafeOperationFailure>
-    {
-        Ok(
-            crate::usecase::agent_session::operation::StopTargetSnapshot {
-                session_revision: 0,
-                active_turn_id: "1".to_string(),
-                queue_paused: false,
-            },
-        )
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        crate::usecase::agent_session::operation::StopTargetSnapshot {
+            session_revision: 0,
+            active_turn_id: "1".to_string(),
+            queue_paused: false,
+        }
+        .restore_session(session_id)
     }
 
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+    ) -> Result<
+        Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        Ok(Some(
+            crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                Vec::new(),
+            ),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::operation::StopEffectPort for OutcomeUnknownStopGate {
     async fn interrupt(
         &self,
         _effect: &crate::usecase::agent_session::operation::AcceptedStopEffect,
@@ -4836,6 +4880,7 @@ async fn stop_terminal_outcome_unknown_resolves_committed_without_reconciliation
     let usecase = crate::usecase::agent_session::operation::StopOperationUsecase::new(
         harness.store.clone(),
         harness.store.clone(),
+        gate.clone(),
         gate.clone(),
         harness.store.installation_id().to_string(),
     );
@@ -4915,7 +4960,7 @@ struct PerformanceSendMetrics {
 }
 
 #[async_trait::async_trait]
-impl crate::usecase::agent_session::operation::SendAdmissionGate for PerformanceSendGate {
+impl crate::usecase::agent_session::operation::SendAcceptancePort for PerformanceSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
@@ -5117,6 +5162,7 @@ async fn sample_terminal_usecase(harness: &Harness, identity: &str) -> Performan
     let usecase = crate::usecase::agent_session::operation::StopOperationUsecase::new(
         harness.store.clone(),
         authority,
+        gate.clone(),
         gate.clone(),
         harness.store.installation_id().to_string(),
     );
@@ -5897,7 +5943,10 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         .expect("read exact handoff")
         .expect("pending handoff");
     assert_eq!(pending.session_id, session.id);
-    assert_eq!(pending.workflow_context, context);
+    assert_eq!(
+        pending.workflow_context,
+        crate::usecase::agent_session::session::workflow_node_context_mapper::to_domain(context)
+    );
     assert_eq!(pending.input.turn_id, 7);
     assert_eq!(pending.input.exit_code, 0);
     assert_eq!(
@@ -10845,11 +10894,10 @@ use crate::domain::agent_session::entities::{
 use crate::usecase::agent_session::operation::{
     AcceptedPermissionResponseEffect as SqliteAcceptedPermissionResponseEffect,
     PermissionResponseCommandOutcome as SqlitePermissionResponseCommandOutcome,
+    PermissionResponseEffectPort as SqlitePermissionResponseEffectPort,
     PermissionResponseExecutionStatus as SqlitePermissionResponseExecutionStatus,
-    PermissionResponseGate as SqlitePermissionResponseGate,
     PermissionResponseOperationRequest as SqlitePermissionResponseOperationRequest,
     PermissionResponseOperationUsecase as SqlitePermissionResponseOperationUsecase,
-    PermissionResponsePlan as SqlitePermissionResponsePlan,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -10892,6 +10940,7 @@ impl PermissionAcceptanceFault {
 }
 
 struct SqlitePermissionGate {
+    request_id: String,
     effects: std::sync::Mutex<Vec<SqliteAcceptedPermissionResponseEffect>>,
     after_completion: std::sync::Mutex<Vec<SqliteAcceptedPermissionResponseEffect>>,
     completion_fault: Option<Arc<FaultInjector>>,
@@ -10899,8 +10948,9 @@ struct SqlitePermissionGate {
 }
 
 impl SqlitePermissionGate {
-    fn normal() -> Arc<Self> {
+    fn normal(request_id: String) -> Arc<Self> {
         Arc::new(Self {
+            request_id,
             effects: std::sync::Mutex::new(Vec::new()),
             after_completion: std::sync::Mutex::new(Vec::new()),
             completion_fault: None,
@@ -10908,8 +10958,9 @@ impl SqlitePermissionGate {
         })
     }
 
-    fn crash_after_completion_commit(fault: Arc<FaultInjector>) -> Arc<Self> {
+    fn crash_after_completion_commit(fault: Arc<FaultInjector>, request_id: String) -> Arc<Self> {
         Arc::new(Self {
+            request_id,
             effects: std::sync::Mutex::new(Vec::new()),
             after_completion: std::sync::Mutex::new(Vec::new()),
             completion_fault: Some(fault),
@@ -10930,19 +10981,83 @@ impl SqlitePermissionGate {
 }
 
 #[async_trait::async_trait]
-impl SqlitePermissionResponseGate for SqlitePermissionGate {
-    async fn plan_response(
+impl crate::domain::agent_session::repository::AgentSessionLifecycleRepository
+    for SqlitePermissionGate
+{
+    async fn restore_session(
         &self,
         session_id: &str,
-        response: &SqlitePermissionResponse,
-    ) -> Result<SqlitePermissionResponsePlan, SafeOperationFailure> {
-        Ok(SqlitePermissionResponsePlan {
-            session_id: session_id.to_string(),
-            request_id: response.request_id.clone(),
-            turn_id: 17,
-            response: response.clone(),
-            from_runtime_state: true,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        use crate::domain::agent_session::aggregates::session::{
+            QueueState, RecoveryFact, Session, SessionRestore,
+        };
+        use crate::domain::agent_session::entities::{
+            PermissionRequest, PermissionRequestBody, PermissionRequestStatus, Turn,
+        };
+        use crate::domain::agent_session::value_objects::{JsonPayload, SessionState, TurnPhase};
+        Session::restore(SessionRestore {
+            id: session_id.to_string(),
+            revision: 0,
+            state: SessionState::Active,
+            has_messages: true,
+            has_provider_session: true,
+            current_turn: Some(Turn::restore(
+                17,
+                TurnPhase::WaitingPermission,
+                Some(PermissionRequest {
+                    id: self.request_id.clone(),
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
+                    tool_name: "test-tool".into(),
+                    body: PermissionRequestBody::ToolApproval {
+                        input: JsonPayload::new_unchecked("{}".into()),
+                    },
+                    title: None,
+                    display_name: None,
+                    description: None,
+                    decision_reason: None,
+                    status: PermissionRequestStatus::Pending,
+                }),
+            )),
+            last_terminal: None,
+            queue: QueueState::restore(Vec::new(), false),
+            recovery_fact: RecoveryFact::Resolved,
         })
+        .map_err(|error| {
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Corrupt(
+                format!("{error:?}"),
+            )
+        })
+    }
+
+    async fn prepare_session_change(
+        &self,
+        _session_id: &str,
+        _expected_revision: u64,
+        _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
+    ) -> Result<
+        Option<crate::domain::agent_session::repository::PreparedSessionChange>,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        Ok(Some(
+            crate::domain::agent_session::repository::PreparedSessionChange::from_atomic_participant(
+                Vec::new(),
+            ),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl SqlitePermissionResponseEffectPort for SqlitePermissionGate {
+    async fn request_is_runtime_owned(
+        &self,
+        _session_id: &str,
+        request_id: &str,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(request_id == self.request_id)
     }
 
     async fn execute(
@@ -11028,6 +11143,7 @@ fn sqlite_permission_usecase(
     SqlitePermissionResponseOperationUsecase::new(
         repository,
         authority,
+        gate.clone(),
         gate,
         store.installation_id().to_string(),
     )
@@ -11270,7 +11386,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
         let installation_id = harness.store.installation_id().to_string();
         let response = sqlite_permission_response(&format!("permission-request-{label}"));
         let request = sqlite_permission_request(&format!("permission-operation-{label}"), response);
-        let gate = SqlitePermissionGate::normal();
+        let gate = SqlitePermissionGate::normal(request.response.request_id.clone());
         let usecase = sqlite_permission_usecase(&harness.store, Arc::clone(&gate));
         acceptance_fault.arm(&harness.fault);
 
@@ -11392,7 +11508,10 @@ async fn b015_permission_response_completion_post_commit_crash_reopens_exact_res
     let response = sqlite_permission_response("permission-request-completion-crash");
     let request =
         sqlite_permission_request("permission-operation-completion-crash", response.clone());
-    let gate = SqlitePermissionGate::crash_after_completion_commit(Arc::clone(&harness.fault));
+    let gate = SqlitePermissionGate::crash_after_completion_commit(
+        Arc::clone(&harness.fault),
+        request.response.request_id.clone(),
+    );
     let usecase = sqlite_permission_usecase(&harness.store, Arc::clone(&gate));
 
     let first = usecase

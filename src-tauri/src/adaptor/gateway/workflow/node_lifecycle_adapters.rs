@@ -224,7 +224,7 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some(
-                crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
+                crate::adaptor::gateway::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
             workflow_node_session: true,
             workflow_node_context: None,

@@ -94,22 +94,26 @@ pub enum SendEffectDispatch {
     AlreadyScheduled,
 }
 
-/// Adapter-owned classification for ProviderEstablish obligations written by
-/// the superseded two-flight send protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyProviderEstablishRecovery {
-    /// The old establish reservation cannot have submitted this turn's input,
-    /// and the turn may continue without replaying that reservation.
-    ContinueTurnExecution,
-    /// Repeating provider establishment could create another remote identity;
-    /// keep the old reservation available for explicit reconciliation.
-    RequiresManualResolution,
-}
+pub use crate::domain::agent_session::services::LegacyProviderEstablishRecovery;
 
 /// Runtime-side admission gate for normal sends.
 #[async_trait::async_trait]
-pub trait SendAdmissionGate: Send + Sync {
-    /// Resolve the target session and decide the one-shot disposition.
+pub trait SendAcceptancePort: Send + Sync {
+    /// Canonical bounded Session repository used by the command usecase for
+    /// final admission. Production adapters must provide it; behavior-test
+    /// fixtures may omit it when exercising only the #1499 protocol.
+    fn lifecycle_repository(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn crate::domain::agent_session::repository::AgentSessionLifecycleRepository,
+        >,
+    > {
+        None
+    }
+
+    /// Resolve the target, canonical input, and allocation identities.
+    /// The command usecase applies final Session admission after this returns.
     /// Must not start provider I/O; failures reject before commit.
     async fn plan_send(
         &self,
@@ -198,13 +202,16 @@ pub struct AcceptedPermissionResponseEffect {
 /// Runtime-side port for permission response operations. Only `execute` may
 /// contact the provider, and it receives no caller-owned mutable input.
 #[async_trait::async_trait]
-pub trait PermissionResponseGate: Send + Sync {
-    async fn plan_response(
+pub trait PermissionResponseEffectPort: Send + Sync {
+    /// Reports only whether the process-local mirror owns the pending request.
+    /// Session/Turn admission is decided by the domain aggregate.
+    async fn request_is_runtime_owned(
         &self,
         session_id: &str,
-        response: &crate::domain::agent_session::entities::PermissionResponse,
-    ) -> Result<PermissionResponsePlan, SafeOperationFailure>;
+        request_id: &str,
+    ) -> Result<bool, SafeOperationFailure>;
 
+    #[cfg(test)]
     async fn completion_state_mutations(
         &self,
         _effect: &AcceptedPermissionResponseEffect,
@@ -225,7 +232,7 @@ pub trait PermissionResponseGate: Send + Sync {
     async fn after_completion(&self, _effect: &AcceptedPermissionResponseEffect) {}
 }
 
-/// Lifecycle classification of the target session at snapshot time.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionLifecycleState {
     Open {
@@ -236,19 +243,79 @@ pub enum SessionLifecycleState {
     Archived,
 }
 
-/// Bounded snapshot the lifecycle command validates admission against.
+/// Legacy test fixture shape. Production lifecycle code cannot depend on
+/// this DTO; behavior tests convert it to the domain aggregate.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionLifecycleSnapshot {
     pub session_revision: i64,
     pub lifecycle: SessionLifecycleState,
     pub queue_paused: bool,
-    /// Whether a live runtime exists and therefore requires a post-commit
-    /// close effect. A stored provider session identity alone is not a live
-    /// runtime and must not cause an eager resume merely to close it again.
     pub has_runtime: bool,
     pub has_pending_permission: bool,
     pub has_pending_recovery: bool,
     pub has_pending_provider_operation: bool,
+}
+
+#[cfg(test)]
+impl SessionLifecycleSnapshot {
+    pub fn restore_session(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        use crate::domain::agent_session::aggregates::session::{
+            QueueState, RecoveryFact, Session, SessionRestore,
+        };
+        use crate::domain::agent_session::entities::Turn;
+        use crate::domain::agent_session::value_objects::{SessionState, TurnPhase};
+
+        let (state, current_turn) = match self.lifecycle {
+            SessionLifecycleState::Open { active_turn_id, .. } => {
+                let current_turn = active_turn_id
+                    .map(|turn_id| Turn::restore(turn_id, TurnPhase::Streaming, None));
+                (
+                    if current_turn.is_some() {
+                        SessionState::Active
+                    } else {
+                        SessionState::Idle
+                    },
+                    current_turn,
+                )
+            }
+            SessionLifecycleState::Closed => (SessionState::Closed, None),
+            SessionLifecycleState::Archived => (SessionState::Archived, None),
+        };
+        Session::restore(SessionRestore {
+            id: session_id.to_string(),
+            revision: u64::try_from(self.session_revision).map_err(|_| {
+                crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Corrupt(
+                    "negative session revision".into(),
+                )
+            })?,
+            state,
+            has_messages: false,
+            has_provider_session: false,
+            current_turn,
+            last_terminal: None,
+            queue: QueueState::restore(Vec::new(), self.queue_paused),
+            recovery_fact: if self.has_pending_recovery
+                || self.has_pending_permission
+                || self.has_pending_provider_operation
+            {
+                RecoveryFact::Unresolved
+            } else {
+                RecoveryFact::Resolved
+            },
+        })
+        .map_err(|error| {
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Corrupt(
+                format!("{error:?}"),
+            )
+        })
+    }
 }
 
 /// The runtime effect of an accepted session lifecycle operation.
@@ -266,19 +333,29 @@ pub struct TerminalParticipants {
     pub mutations: Vec<crate::domain::local_event::LocalStateMutation>,
 }
 
-/// Runtime-side gate for session lifecycle commands.
+/// Post-commit runtime effects for session lifecycle commands.
 #[async_trait::async_trait]
-pub trait SessionLifecycleGate: Send + Sync {
-    /// Read the current bounded snapshot of the target session. `Err` maps
-    /// to a pre-acceptance `Failed { failure }` rejection with zero effects.
-    async fn session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionLifecycleSnapshot, SafeOperationFailure>;
+pub trait SessionLifecycleEffectPort: Send + Sync {
+    /// Whether a live runtime requires a post-commit close/archive effect.
+    /// Stored provider identity alone does not count as a live runtime.
+    async fn has_live_runtime(&self, session_id: &str) -> Result<bool, SafeOperationFailure>;
 
-    /// Derive all bounded session/message/permission/queue projection rows
-    /// for the acceptance event set. Active close/archive terminal closure is
-    /// prepared here but committed only by the lifecycle usecase batch.
+    /// Resolve provider configuration for a backend switch without mutating
+    /// either the provider or durable session state.
+    async fn resolve_backend_selection(
+        &self,
+        backend_id: &str,
+    ) -> Result<crate::domain::agent_session::repository::BackendSelection, SafeOperationFailure>
+    {
+        Ok(crate::domain::agent_session::repository::BackendSelection {
+            backend_id: backend_id.to_string(),
+            model_id: backend_id.to_string(),
+        })
+    }
+
+    /// Legacy behavior-test probe. Production projection preparation is
+    /// owned by `AgentSessionLifecycleRepository`.
+    #[cfg(test)]
     async fn acceptance_state_mutations(
         &self,
         _session_id: &str,
@@ -302,12 +379,53 @@ pub trait SessionLifecycleGate: Send + Sync {
     async fn execute(&self, effect: &SessionLifecycleEffect) -> Result<(), SafeOperationFailure>;
 }
 
-/// Bounded runtime snapshot used to accept a Stop without starting an effect.
+/// Legacy Stop fixture shape retained for behavior tests. Production
+/// admission restores the Session aggregate.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StopTargetSnapshot {
     pub session_revision: u64,
     pub active_turn_id: String,
     pub queue_paused: bool,
+}
+
+#[cfg(test)]
+impl StopTargetSnapshot {
+    pub fn restore_session(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::session::Session,
+        crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError,
+    > {
+        use crate::domain::agent_session::aggregates::session::{
+            QueueState, RecoveryFact, Session, SessionRestore,
+        };
+        use crate::domain::agent_session::entities::Turn;
+        use crate::domain::agent_session::value_objects::SessionState;
+
+        let turn_id = self.active_turn_id.parse::<u64>().map_err(|_| {
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Corrupt(
+                "invalid active turn identity".into(),
+            )
+        })?;
+        Session::restore(SessionRestore {
+            id: session_id.to_string(),
+            revision: self.session_revision,
+            state: SessionState::Active,
+            has_messages: true,
+            has_provider_session: true,
+            current_turn: Some(Turn::start(turn_id)),
+            last_terminal: None,
+            queue: QueueState::restore(Vec::new(), self.queue_paused),
+            recovery_fact: RecoveryFact::Resolved,
+        })
+        .map_err(|error| {
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepositoryError::Corrupt(
+                format!("{error:?}"),
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,25 +442,7 @@ pub struct StopEffectObservation {
 }
 
 #[async_trait::async_trait]
-pub trait StopAdmissionGate: Send + Sync {
-    async fn target_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<StopTargetSnapshot, SafeOperationFailure>;
-
-    /// Build the session/message/queue projection participants for Stop
-    /// acceptance. The returned mutations are committed in the same batch as
-    /// `TurnInterruptRequested`, `QueuePaused`, the receipt, and obligation.
-    async fn acceptance_state_mutations(
-        &self,
-        _session_id: &str,
-        _expected_session_revision: u64,
-        _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
-    ) -> Result<Option<Vec<crate::domain::local_event::LocalStateMutation>>, SafeOperationFailure>
-    {
-        Ok(Some(Vec::new()))
-    }
-
+pub trait StopEffectPort: Send + Sync {
     /// Build the final message/session/permission/queue projection
     /// participants for the terminal candidate. The terminal CAS and Stop
     /// resolution remain owned by the Stop usecase; this gate only derives

@@ -14,6 +14,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use crate::adaptor::gateway::agent_session::FileSessionStorage;
 use crate::adaptor::gateway::agent_session::GitAgentPromptSuggestionGateway;
+use crate::adaptor::gateway::agent_session::{
+    claude::ClaudeBackend as NewClaudeBackend, codex::CodexBackend as NewCodexBackend,
+};
 use crate::adaptor::gateway::app_config::{read_config_if_exists, AppConfig, ReleashConfig};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
@@ -57,9 +60,6 @@ use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigS
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
-use crate::infrastructure::agent_session::{
-    claude::ClaudeBackend as NewClaudeBackend, codex::CodexBackend as NewCodexBackend,
-};
 use crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{

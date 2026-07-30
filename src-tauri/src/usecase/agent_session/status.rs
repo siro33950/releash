@@ -1,3 +1,4 @@
+pub use crate::domain::agent_session::value_objects::TurnPhase;
 use crate::domain::repository::normalize_repo_path;
 use crate::domain::workflow::services::node_session_projection::NodeSessionProjection;
 use crate::domain::workflow::status_aggregation::{
@@ -28,14 +29,6 @@ impl From<AgentState> for SessionActivity {
             AgentState::Waiting => Self::Waiting,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnPhase {
-    Idle,
-    Streaming,
-    WaitingPermission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,14 +289,14 @@ impl AgentStatusCenter {
     /// turn_phase が Idle の場合は session_state=Error → Error、Idle → Waiting、
     /// それ以外 → Done として個別 Session の agent_state を決定する。
     pub fn derive_agent_state(turn_phase: TurnPhase, session_state: SessionState) -> AgentState {
-        match turn_phase {
-            TurnPhase::Streaming => AgentState::Running,
-            TurnPhase::WaitingPermission => AgentState::Waiting,
-            TurnPhase::Idle => match session_state {
-                SessionState::Error => AgentState::Error,
-                SessionState::Idle => AgentState::Waiting,
-                _ => AgentState::Done,
-            },
+        match crate::domain::agent_session::services::classify_session_activity(
+            turn_phase,
+            session_state,
+        ) {
+            crate::domain::agent_session::services::SessionActivity::Running => AgentState::Running,
+            crate::domain::agent_session::services::SessionActivity::Waiting => AgentState::Waiting,
+            crate::domain::agent_session::services::SessionActivity::Error => AgentState::Error,
+            crate::domain::agent_session::services::SessionActivity::Done => AgentState::Done,
         }
     }
 
@@ -403,7 +396,7 @@ impl AgentStatusCenter {
     }
 
     fn is_live_session_state(state: &SessionState) -> bool {
-        !matches!(state, SessionState::Closed | SessionState::Archived)
+        state.is_open()
     }
 
     /// Workspace 集約時の `last_activity_at` は、Open session と集約対象 Workflow の最大値にする。
@@ -1170,10 +1163,7 @@ impl AgentStatusCenter {
         if existing.session_state == new_state {
             return None;
         }
-        let normalize_to_idle = matches!(
-            new_state,
-            SessionState::Closed | SessionState::Archived | SessionState::Idle
-        );
+        let normalize_to_idle = new_state.normalizes_turn_phase_to_idle();
         let (turn_phase_repr, pending_permission, pending_permission_request) = if normalize_to_idle
         {
             (TurnPhaseRepr::Idle, false, None)
@@ -1184,7 +1174,7 @@ impl AgentStatusCenter {
                 existing.pending_permission_request.clone(),
             )
         };
-        let agent_state = Self::derive_agent_state(turn_phase_repr.into(), new_state.clone());
+        let agent_state = Self::derive_agent_state(turn_phase_repr.into(), new_state);
         Some(SessionStatus {
             session_state: new_state,
             agent_state,
@@ -1288,7 +1278,7 @@ mod tests {
         turn_phase: TurnPhase,
         session_state: SessionState,
     ) -> SessionStatus {
-        let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state.clone());
+        let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state);
         SessionStatus {
             chat_session_id: id.to_string(),
             worktree_id: worktree.to_string(),

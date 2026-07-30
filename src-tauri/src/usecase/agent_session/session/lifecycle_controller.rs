@@ -29,7 +29,12 @@ impl<'a> SessionLifecycleController<'a> {
 
     pub fn restore_session_state(&self, session: ChatSession) -> Result<(), String> {
         let projected_state = self.project_session_state(&session.id)?;
-        if projected_state != session.state {
+        let decision =
+            crate::domain::agent_session::aggregates::session::Session::decide_restart_recovery(
+                session.state,
+                projected_state,
+            );
+        if let Some(projected_state) = decision.reconcile_projection {
             self.session_store.set_session_state_from_user(
                 self.data_dir,
                 &session.id,
@@ -39,7 +44,7 @@ impl<'a> SessionLifecycleController<'a> {
         self.session_store.set_session_state_from_user(
             self.data_dir,
             &session.id,
-            SessionState::Idle,
+            decision.settled_state,
         )?;
         Ok(())
     }
@@ -211,7 +216,7 @@ mod tests {
         let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let captured_for_listener = captured.clone();
         store.register_state_change_listener(Arc::new(move |_, _, state, _| {
-            captured_for_listener.lock().push(state.clone());
+            captured_for_listener.lock().push(*state);
         }));
 
         controller.restore_session_state(session).unwrap();

@@ -60,6 +60,12 @@ pub enum PermissionRequestStatus {
     },
 }
 
+impl PermissionRequest {
+    pub fn is_pending(&self) -> bool {
+        matches!(self.status, PermissionRequestStatus::Pending)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allowed,

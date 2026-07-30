@@ -1,4 +1,5 @@
 pub(crate) mod context_restore;
+#[cfg(test)]
 pub(crate) mod event_apply;
 pub(crate) mod ports;
 pub(crate) mod queue;
@@ -13,5 +14,6 @@ pub(crate) use usecase::SendAgentMessageRequest;
 pub(crate) use usecase::{
     durable_workflow_turn_operation_id, AcceptedQueueDrainOutcome, AcceptedQueueRedriveReadiness,
     AcceptedSendExecution, AgentSessionRuntimeUsecase, DurableStopDriver,
-    DurableWorkflowSendDriver, DurableWorkflowSendError, DurableWorkflowTurnRequest,
+    DurableWorkflowSendDriver, DurableWorkflowSendError, DurableWorkflowSendPayloadEncoder,
+    DurableWorkflowTurnRequest,
 };

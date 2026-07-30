@@ -242,7 +242,7 @@ fn chat_session_for_test(
         permission_profile_id: None,
         selected_model: None,
         backend_id: Some(
-            crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
+            crate::adaptor::gateway::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
         ),
         workflow_node_session,
         workflow_node_context: None,
@@ -7480,12 +7480,13 @@ mod dispatch_boundary_tests {
         // 供給する mock backend を登録する。builtin workflow が使う claude-opus-5 /
         // gpt-5.6-sol が production と同一経路で解決され、dispatch フロー検証を維持できる。
         let mut registry = AgentBackendRegistry::new();
-        let claude_models = crate::infrastructure::agent_session::claude::ClaudeBackend::new(None)
-            .available_models()
-            .into_iter()
-            .map(|model| model.id.as_str().to_string())
-            .collect();
-        let codex_models = crate::infrastructure::agent_session::codex::CodexBackend::new(None)
+        let claude_models =
+            crate::adaptor::gateway::agent_session::claude::ClaudeBackend::new(None)
+                .available_models()
+                .into_iter()
+                .map(|model| model.id.as_str().to_string())
+                .collect();
+        let codex_models = crate::adaptor::gateway::agent_session::codex::CodexBackend::new(None)
             .available_models()
             .into_iter()
             .map(|model| model.id.as_str().to_string())
