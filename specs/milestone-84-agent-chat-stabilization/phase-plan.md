@@ -28,7 +28,7 @@ Phaseは0から8までの直列である。Phase NはPhase N-1までが完了し
 | 0 | #1499 | command受理、terminal、recovery、Session lifecycle、shutdown、canonical message semantics、恒久SQLite authorityを一つのcontractとして完成させる |
 | 1 | #1491（F8） | #1499を利用し、追加のbounded projectionとID-based queryでdetail取得の性能退行を解消する |
 | 2 | #1561 | session ライフサイクルのDomain整理（集約確立・usecase 3分解）と、audit台帳・本書のrouting再構築 |
-| 3 | #1386（F4）、#1387（F5）、#1446（F7）、#1497（F10）、#1413（P1）、#1521、#1525、#1526、#1529、#1555、#1556、#1562 | provider adapter、設定domain、presentation、frontend subscription lifecycleを拡張し、storage保全を修復する |
+| 3 | #1386（F4）、#1387（F5）、#1446（F7）、#1497（F10）、#1413（P1）、#1521、#1525、#1526、#1529、#1555、#1556、#1562、#1571、#1572、#1573 | provider adapter、設定domain、presentation、frontend subscription lifecycleを拡張し、storage・commit / projection 整合の保全を修復する |
 | 4 | #1388（F6）、#1389（S1）、#1390（S2）、#1391（S3）、#1392（S4）、#1393（S5）、#1394（S6）、#1397（S9）、#1400（S11）、#1404（L3）、#1406（L5）、#1516 | semantic domain語彙、queue / recovery、background activity / Workspace quiescenceを拡張する |
 | 5 | #1395（S7）、#1396（S8）、#1399（S10b）、#1401（S12）、#1410（L9）、#1415（P3）、#1447（S13）、#1448（S14）、#1449（S15）、#1470（L13）、#1472（L14）、#1498（L15） | protocol拡張、診断、activity表示、Agent設定、provider runtime healthを拡張する |
 | 6 | #1450（L12） | Phase 5までの設定・capability契約をworkflow、queue、restartへ継承する |
@@ -55,16 +55,19 @@ Phase 3以降の各Issueが解消する問題である。ID付きの値は台帳
 | #1555 | 3 | NF-006 |
 | #1556 | 3 | NF-007 |
 | #1562 | 3 | NF-008 |
+| #1571 | 3 | NF-015 |
+| #1572 | 3 | NF-016 |
+| #1573 | 3 | RT-8 |
 | #1388（F6） | 4 | SD-5、RG-4、RG-7、RG-8、CL-6 |
 | #1389（S1） | 4 | CX-3、RG-1、SD-4 |
 | #1390（S2） | 4 | CX-5、RG-2、RG-5 |
 | #1391（S3） | 4 | RG-9、FE-4 |
-| #1392（S4） | 4 | CL-3、CL-4、RG-3、RT-5 |
+| #1392（S4） | 4 | CL-3、CL-4、RG-3、RT-5、NF-011 |
 | #1393（S5） | 4 | CL-5、CX-7、RG-6、SD-7 |
 | #1394（S6） | 4 | CL-1、CX-1 |
 | #1397（S9） | 4 | CL-2、CX-6 |
 | #1400（S11） | 4 | CL-7 |
-| #1404（L3） | 4 | OB-4（スコープはdurable cancel・rebase / retry・NeedsResolution表現。enqueueの永続化と再起動復元は#1499の契約） |
+| #1404（L3） | 4 | OB-4、NF-012（スコープはdurable cancel・rebase / retry・NeedsResolution表現・queued claimのcommit回復。enqueueの永続化と再起動復元は#1499の契約） |
 | #1406（L5） | 4 | RT-2 |
 | #1516 | 4 | NF-010 |
 | #1395（S7） | 5 | CX-2 |
@@ -90,7 +93,7 @@ Phase 3以降の各Issueが解消する問題である。ID付きの値は台帳
 | #1491 | #1499 |
 | #1561 | #1491 |
 | #1521 | #1491 |
-| #1525 / #1526 / #1529 / #1555 / #1556 / #1562 | #1499 |
+| #1525 / #1526 / #1529 / #1555 / #1556 / #1562 / #1571 / #1572 / #1573 | #1499 |
 | #1386 / #1387 | #1383、#1445 |
 | #1516 | #1499、#1386、#1387 |
 | #1404 | #1499、#1497 |

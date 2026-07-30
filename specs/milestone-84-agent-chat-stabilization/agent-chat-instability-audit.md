@@ -26,7 +26,7 @@
 
 - 「現存する問題」の根拠列は現行の原因経路を、「解消済み」の根拠列は現行構造でその問題が成立しない理由を記す。
 - 解消済みの behavior 共通根拠: 本更新時点で `cargo test` 3471 passed / 0 failed / 1 ignored。#1499 契約テスト（`issue_1499_contract_tests`）と Session 集約の遷移・受理・terminal・recovery 単体テストを含む。
-- Owner は現存する問題の解消先 Issue（各 finding につき一つ）。owner が Phase 3 以降の Issue である finding は [phase-plan.md](phase-plan.md) の Issue 対応と双方向に一致する。owner が #1561 の finding は Phase 2 の構造整理自身が是正を所有する。owner が「未割当」の finding は割当の裁定待ちであり、phase-plan の更新規則（owner と hard dependency を確定してから吸収先または独立 Issue 化を決める）に従って確定後に phase-plan へ反映する。
+- Owner は現存する問題の解消先 Issue（各 finding につき一つ）。[phase-plan.md](phase-plan.md) の Issue 対応と双方向に一致する。
 
 ## 現状サマリ
 
@@ -87,7 +87,7 @@ installed codex-cli 0.145.0 の生成スキーマと現行変換を突合した�
 | --- | --- | --- | --- | --- |
 | RT-2 | crash recovery が dangling turn を閉じない | spinner / permission 残骸が残る | pending obligation は fail-closed に fence され可視化されるが、crash 中断 turn の event log 終端を書く startup 経路がなく、未終端 turn が Active 表示・Pending permission・queue 保留として session close まで残る | #1406 |
 | RT-5 | workflow terminal に failure reason が届かない | workflow 判断材料が欠ける | failure kind の型付き分類・exit code・interrupted は届くが、turn failure の理由文言が projection 変換で脱落し、node failure record が汎用文言になる | #1392 |
-| RT-8 | partial projection が完全な parts を上書きする | 保存済み本文が欠落する | terminal 確定前に予約された遅延 stream flush が terminal 後に発火すると、persist 判定は経過時間のみで（terminal・lease の検査なし）、reset 済みの空 parts と初期 seq を確定済み message projection へ無条件上書きする。message projection はリロード表示の正本で、後続 send は旧 turn を bounding して project するため修復 commit が発生しない | 未割当 |
+| RT-8 | partial projection が完全な parts を上書きする | 保存済み本文が欠落する | terminal 確定前に予約された遅延 stream flush が terminal 後に発火すると、persist 判定は経過時間のみで（terminal・lease の検査なし）、reset 済みの空 parts と初期 seq を確定済み message projection へ無条件上書きする。message projection はリロード表示の正本で、後続 send は旧 turn を bounding して project するため修復 commit が発生しない | #1573 |
 
 ### FE: Presentation の不整合
 
@@ -136,10 +136,10 @@ installed codex-cli 0.145.0 の生成スキーマと現行変換を突合した�
 | NF-008 | message projection の行全体リライトと activities 重複導出で書き込みが増幅する | 長い応答で書き込み量が O(L²) となり NF-006 の成長を増幅する | additive merge が全 parse + 全再 serialize で差分経路がなく、activities が parts から重複導出されて blob 外部化が無効化される | #1562 |
 | NF-009 | active-turn steer が write-ahead されない | response loss で入力消失または二重適用 | steering 対応 backend では provider steer 成功後に human message を永続化する経路であり、provider 受理直後の切断・crash では input も intent も残らない。production backend は steering を広告していない | #1498 |
 | NF-010 | parent turn と background activity が混在 | workflow が workspace 安定前に進む | provider Result で親 Turn が完了した後も background activity が継続し得るが、activity の durable inventory と terminal outcome がなく、Turn 完了だけを根拠に workflow が次の workspace 依存処理へ進む | #1516 |
-| NF-011 | Stop deadline の Timeout terminal が workflow turn 完了 handoff を生成しない | workflow node が Running のまま進行せず、再起動時は orphan 中断へ劣化する | workflow handoff の生成は runtime terminal 経路の 1 箇所のみで、Stop の 10 秒 deadline 自己終端は handoff を含まない別 batch を commit する。exit 124 の interrupted terminal は handoff 要求条件（requires_workflow_turn_completion）を満たすが、live 通知も durable outbox entry の存在に依存するため何も配送されない | 未割当 |
-| NF-012 | queued turn claim が自分の commit 成功を Blocked と誤分類し provider effect を放棄する | durable には Active な turn が provider 未開始のまま残り（phantom turn）、queue 全体が停止して自己修復しない | claim commit の OutcomeUnknown に resolve_commit の失敗が重なると Err で抜け、retry が自己 commit 済み集約への start_queue_head の Rejected(NotQuiescent) を一括で Blocked へ写像して claim を破棄する。Blocked は log のみで、dispatch marker の park が recovery の再駆動も抑止する。immediate send 経路にある commit readback 防御が queued 経路にない | 未割当 |
-| NF-015 | session projection の snapshot commit が呼び出し元の読みからの不変を保証しない | 並行 commit（terminal・turn 開始・streaming）が巻き戻り、terminal 消失による session 停止や state_revision の逆行が起きる | rename と provider 確立記録は lock なしで projection を読み、commit は worker 内の再読の revision を guard に使うため、読みと commit の間に入った変更を検知せず読んだ時点の reducer_events / meta で上書きする。provider 確立記録は turn 開始直後に detached task で走るため並行 commit と恒常的に重なる | 未割当 |
-| NF-016 | close と in-flight terminal の競合が同一 turn の二重 terminal を受理する | 1 turn 1 terminal の不変条件が破れる。workflow session では存在しない terminal identity に束縛された pending obligation が復旧 query を恒久に失敗させ、effect admission を全面封鎖する | terminal writer は収束判定と mutation 構築を最初に一度だけ行い、retry loop は additional_mutations を clone で再利用して fresh 状態の上に commit する。TerminalRecord は ON CONFLICT DO NOTHING で黙って捨てられるが、イベントと workflow obligation は成功し、retry 成功経路に再収束判定がない | 未割当 |
+| NF-011 | Stop deadline の Timeout terminal が workflow turn 完了 handoff を生成しない | workflow node が Running のまま進行せず、再起動時は orphan 中断へ劣化する | workflow handoff の生成は runtime terminal 経路の 1 箇所のみで、Stop の 10 秒 deadline 自己終端は handoff を含まない別 batch を commit する。exit 124 の interrupted terminal は handoff 要求条件（requires_workflow_turn_completion）を満たすが、live 通知も durable outbox entry の存在に依存するため何も配送されない | #1392 |
+| NF-012 | queued turn claim が自分の commit 成功を Blocked と誤分類し provider effect を放棄する | durable には Active な turn が provider 未開始のまま残り（phantom turn）、queue 全体が停止して自己修復しない | claim commit の OutcomeUnknown に resolve_commit の失敗が重なると Err で抜け、retry が自己 commit 済み集約への start_queue_head の Rejected(NotQuiescent) を一括で Blocked へ写像して claim を破棄する。Blocked は log のみで、dispatch marker の park が recovery の再駆動も抑止する。immediate send 経路にある commit readback 防御が queued 経路にない | #1404 |
+| NF-015 | session projection の snapshot commit が呼び出し元の読みからの不変を保証しない | 並行 commit（terminal・turn 開始・streaming）が巻き戻り、terminal 消失による session 停止や state_revision の逆行が起きる | rename と provider 確立記録は lock なしで projection を読み、commit は worker 内の再読の revision を guard に使うため、読みと commit の間に入った変更を検知せず読んだ時点の reducer_events / meta で上書きする。provider 確立記録は turn 開始直後に detached task で走るため並行 commit と恒常的に重なる | #1571 |
+| NF-016 | close と in-flight terminal の競合が同一 turn の二重 terminal を受理する | 1 turn 1 terminal の不変条件が破れる。workflow session では存在しない terminal identity に束縛された pending obligation が復旧 query を恒久に失敗させ、effect admission を全面封鎖する | terminal writer は収束判定と mutation 構築を最初に一度だけ行い、retry loop は additional_mutations を clone で再利用して fresh 状態の上に commit する。TerminalRecord は ON CONFLICT DO NOTHING で黙って捨てられるが、イベントと workflow obligation は成功し、retry 成功経路に再収束判定がない | #1572 |
 
 ## 解消済み
 
