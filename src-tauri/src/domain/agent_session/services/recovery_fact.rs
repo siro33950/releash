@@ -354,6 +354,29 @@ mod tests {
     }
 
     #[test]
+    fn consumed_publication_and_cleared_obligations_resolve_recovery() {
+        let obligations: Vec<(String, ObligationRecord)> = Vec::new();
+        assert_eq!(
+            classify_recovery_fact(
+                false,
+                obligations
+                    .iter()
+                    .map(|(identity, record)| (identity.as_str(), record)),
+            ),
+            RecoveryFact::Resolved
+        );
+        assert_eq!(
+            classify_recovery_fact(
+                true,
+                obligations
+                    .iter()
+                    .map(|(identity, record)| (identity.as_str(), record)),
+            ),
+            RecoveryFact::Unresolved
+        );
+    }
+
+    #[test]
     fn backend_recovery_completion_requires_the_matching_start() {
         let completed = AgentSessionDomainEvent::BackendSessionRecoveryCompleted {
             recovery_id: "recovery".into(),

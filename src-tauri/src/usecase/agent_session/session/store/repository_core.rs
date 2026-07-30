@@ -1199,20 +1199,23 @@ impl SessionStore {
                                 let mut state_mutations = Vec::new();
                                 {
                                     let codec = authority.projection_codec.as_ref();
+                                    // Projection, revision, and recovery inputs come from one
+                                    // SQLite reader snapshot; the projection mutation below
+                                    // retains that revision as its commit fence.
                                     let result = authority
                                         .repository
-                                        .query(crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
+                                        .query(crate::domain::local_event::LocalEventQuery::AgentSessionLifecycleSnapshot {
                                             session_id: session_id.clone(),
                                         })
                                         .await
                                         .map_err(|error| {
-                                            format!("agent SQLite projection read failed: {error}")
+                                            format!("agent SQLite lifecycle snapshot read failed: {error}")
                                         })?;
-                                    let crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(
+                                    let crate::domain::local_event::LocalEventQueryResult::AgentSessionLifecycleSnapshot(
                                         stored,
                                     ) = result
                                     else {
-                                        return Err("agent SQLite projection query returned the wrong shape".to_string());
+                                        return Err("agent SQLite lifecycle snapshot query returned the wrong shape".to_string());
                                     };
                                     let (
                                         mut meta,
@@ -1225,10 +1228,15 @@ impl SessionStore {
                                         revision,
                                     ) =
                                         match stored {
-                                        Some(stored) => {
+                                        Some(snapshot) => {
+                                            let pending_obligations = snapshot.pending_obligations;
+                                            let stored = snapshot.session;
                                             let decoded = codec.decode(&stored.projection)?;
-                                            let session_aggregate =
-                                                codec.restore_session_aggregate(&decoded)?;
+                                            let session_aggregate = codec
+                                                .restore_session_aggregate(
+                                                    &decoded,
+                                                    &pending_obligations,
+                                                )?;
                                             let next = stored.revision.next().ok_or_else(|| {
                                                 "agent projection revision exhausted".to_string()
                                             })?;

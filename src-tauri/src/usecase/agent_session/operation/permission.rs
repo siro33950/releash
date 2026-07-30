@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::domain::agent_session::aggregates::session::{TransitionOutcome, TransitionRejection};
+use crate::domain::agent_session::aggregates::session::{
+    PermissionEffectCompletion, TransitionRejection,
+};
 use crate::domain::agent_session::entities::{PermissionResponse, PermissionResponseDecision};
 use crate::domain::agent_session::events::{
     AgentSessionDomainEvent, ObligationKind, ObligationState, PermissionDecision,
@@ -1420,6 +1422,29 @@ impl PermissionResponseOperationUsecase {
             .is_some_and(|saved| saved.latest_status == status)
     }
 
+    async fn reconcile_after_provider(
+        &self,
+        original: &StoredPermissionResponseOperation,
+        effect: &AcceptedPermissionResponseEffect,
+        failure: SafeOperationFailure,
+    ) -> AcceptedPermissionResponseOperation {
+        if self
+            .record_reconciliation(original, effect, failure.clone())
+            .await
+        {
+            if let Ok(Some(saved)) = self.lookup_record(&effect.operation_id).await {
+                return Self::public_operation(saved);
+            }
+        }
+        if let Ok(Some(saved)) = self.lookup_record(&effect.operation_id).await {
+            return Self::public_operation(saved);
+        }
+        AcceptedPermissionResponseOperation {
+            receipt: original.receipt.clone(),
+            latest_status: PermissionResponseExecutionStatus::ReconciliationRequired { failure },
+        }
+    }
+
     async fn complete_after_provider(
         &self,
         original: StoredPermissionResponseOperation,
@@ -1461,81 +1486,100 @@ impl PermissionResponseOperationUsecase {
         let stream_id = match StreamId::agent_session(&effect.plan.session_id) {
             Ok(stream_id) => stream_id,
             Err(_) => {
-                return AcceptedPermissionResponseOperation {
-                    receipt: original.receipt,
-                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
-                        failure: storage_failure("completion-stream"),
-                    },
-                };
-            }
-        };
-        let head = match self.current_stream_head(&stream_id).await {
-            Ok(head) => head,
-            Err(_) => {
-                return AcceptedPermissionResponseOperation {
-                    receipt: original.receipt,
-                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
-                        failure: storage_failure("completion-head"),
-                    },
-                };
+                return self
+                    .reconcile_after_provider(
+                        &original,
+                        &effect,
+                        storage_failure("completion-stream"),
+                    )
+                    .await;
             }
         };
         let at = now_ms();
-        let mut session = match self
-            .lifecycle_repository
-            .restore_session(&effect.plan.session_id)
-            .await
-        {
-            Ok(session) => session,
-            Err(_) => {
-                return AcceptedPermissionResponseOperation {
-                    receipt: original.receipt,
-                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
-                        failure: storage_failure("completion-aggregate-restore"),
-                    },
+        let (event_values, mut state_mutations) = {
+            let mut prepared = None;
+            for attempt in 0..2 {
+                let mut session = match self
+                    .lifecycle_repository
+                    .restore_session(&effect.plan.session_id)
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(_) => {
+                        return self
+                            .reconcile_after_provider(
+                                &original,
+                                &effect,
+                                storage_failure("completion-aggregate-restore"),
+                            )
+                            .await;
+                    }
                 };
+                let expected_session_revision = session.revision();
+                match session
+                    .apply_accepted_permission_result(effect.plan.turn_id, &effect.plan.response)
+                {
+                    PermissionEffectCompletion::ProjectResolution => {
+                        let event_values = vec![
+                            resolved_event(&effect.plan),
+                            AgentSessionDomainEvent::ObligationRecorded {
+                                obligation_id: effect.obligation_id.clone(),
+                                kind: ObligationKind::PermissionResponse,
+                                state: ObligationState::Completed,
+                                at: at as f64,
+                            },
+                        ];
+                        match self
+                            .lifecycle_repository
+                            .prepare_session_change(
+                                &effect.plan.session_id,
+                                expected_session_revision,
+                                &event_values,
+                            )
+                            .await
+                        {
+                            Ok(Some(change)) => {
+                                prepared = Some((event_values, change.into_atomic_participant()));
+                                break;
+                            }
+                            Ok(None) if attempt == 0 => continue,
+                            Ok(None) => {
+                                return self
+                                    .reconcile_after_provider(
+                                        &original,
+                                        &effect,
+                                        reconciliation_failure("completion-session-stale"),
+                                    )
+                                    .await;
+                            }
+                            Err(_) => {
+                                return self
+                                    .reconcile_after_provider(
+                                        &original,
+                                        &effect,
+                                        storage_failure("completion-participants"),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                    PermissionEffectCompletion::AlreadySettled
+                    | PermissionEffectCompletion::Superseded => {
+                        prepared = Some((Vec::new(), Vec::new()));
+                        break;
+                    }
+                    PermissionEffectCompletion::Rejected(_) => {
+                        return self
+                            .reconcile_after_provider(
+                                &original,
+                                &effect,
+                                reconciliation_failure("completion-aggregate-transition"),
+                            )
+                            .await;
+                    }
+                }
             }
-        };
-        let expected_session_revision = session.revision();
-        match session.resolve_permission(effect.plan.turn_id, &effect.plan.response) {
-            TransitionOutcome::Applied | TransitionOutcome::AlreadyApplied => {}
-            TransitionOutcome::NotApplicable | TransitionOutcome::Rejected(_) => {
-                return AcceptedPermissionResponseOperation {
-                    receipt: original.receipt,
-                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
-                        failure: reconciliation_failure("completion-aggregate-transition"),
-                    },
-                };
-            }
-        }
-        let event_values = vec![
-            resolved_event(&effect.plan),
-            AgentSessionDomainEvent::ObligationRecorded {
-                obligation_id: effect.obligation_id.clone(),
-                kind: ObligationKind::PermissionResponse,
-                state: ObligationState::Completed,
-                at: at as f64,
-            },
-        ];
-        let mut state_mutations = match self
-            .lifecycle_repository
-            .prepare_session_change(
-                &effect.plan.session_id,
-                expected_session_revision,
-                &event_values,
-            )
-            .await
-        {
-            Ok(Some(change)) => change.into_atomic_participant(),
-            Ok(None) => Vec::new(),
-            Err(_) => {
-                return AcceptedPermissionResponseOperation {
-                    receipt: original.receipt,
-                    latest_status: PermissionResponseExecutionStatus::ReconciliationRequired {
-                        failure: storage_failure("completion-participants"),
-                    },
-                };
-            }
+            prepared.expect("permission completion preparation has a bounded terminal outcome")
         };
         #[cfg(test)]
         match self
@@ -1597,6 +1641,26 @@ impl PermissionResponseOperationUsecase {
                 revision: obligation_revision,
             }),
         ]);
+        let expected_heads = if event_values.is_empty() {
+            Vec::new()
+        } else {
+            let head = match self.current_stream_head(&stream_id).await {
+                Ok(head) => head,
+                Err(_) => {
+                    return self
+                        .reconcile_after_provider(
+                            &original,
+                            &effect,
+                            storage_failure("completion-head"),
+                        )
+                        .await;
+                }
+            };
+            vec![ExpectedStreamHead {
+                stream_id: stream_id.clone(),
+                expected: StreamVersion::new(head).expect("nonnegative stream head"),
+            }]
+        };
         let events = event_values
             .into_iter()
             .map(|event| UncommittedDomainEvent {
@@ -1627,10 +1691,7 @@ impl PermissionResponseOperationUsecase {
                 idempotency_key: format!("{}.complete", effect.operation_id),
                 payload_hash: self.authority.digest(&status_identity_material(&status)),
             },
-            expected_heads: vec![ExpectedStreamHead {
-                stream_id,
-                expected: StreamVersion::new(head).expect("nonnegative stream head"),
-            }],
+            expected_heads,
             events,
             state_mutations,
         };

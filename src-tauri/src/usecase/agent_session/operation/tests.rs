@@ -1109,6 +1109,10 @@ struct FakePermissionGate {
     plan: Mutex<Result<PermissionResponsePlan, SafeOperationFailure>>,
     mode: Mutex<PermissionExecuteMode>,
     effects: Mutex<Vec<AcceptedPermissionResponseEffect>>,
+    prepare_stale_remaining: Mutex<usize>,
+    session_revision: Mutex<u64>,
+    terminal_after_effect: Mutex<bool>,
+    projected_reducer_event_sets: Mutex<Vec<Vec<AgentSessionDomainEvent>>>,
     completion_event_sets: Mutex<Vec<Vec<AgentSessionDomainEvent>>>,
     after_completion: Mutex<Vec<AcceptedPermissionResponseEffect>>,
 }
@@ -1125,6 +1129,10 @@ impl FakePermissionGate {
             })),
             mode: Mutex::new(PermissionExecuteMode::Succeed),
             effects: Mutex::new(Vec::new()),
+            prepare_stale_remaining: Mutex::new(0),
+            session_revision: Mutex::new(0),
+            terminal_after_effect: Mutex::new(false),
+            projected_reducer_event_sets: Mutex::new(Vec::new()),
             completion_event_sets: Mutex::new(Vec::new()),
             after_completion: Mutex::new(Vec::new()),
         })
@@ -1134,8 +1142,20 @@ impl FakePermissionGate {
         *self.mode.lock().unwrap() = mode;
     }
 
+    fn set_prepare_stale_count(&self, count: usize) {
+        *self.prepare_stale_remaining.lock().unwrap() = count;
+    }
+
+    fn set_terminal_after_effect(&self) {
+        *self.terminal_after_effect.lock().unwrap() = true;
+    }
+
     fn effect_count(&self) -> usize {
         self.effects.lock().unwrap().len()
+    }
+
+    fn projected_reducer_event_sets(&self) -> Vec<Vec<AgentSessionDomainEvent>> {
+        self.projected_reducer_event_sets.lock().unwrap().clone()
     }
 
     fn after_completion_count(&self) -> usize {
@@ -1146,6 +1166,7 @@ impl FakePermissionGate {
 fn permission_session(
     session_id: &str,
     plan: &PermissionResponsePlan,
+    revision: u64,
 ) -> Result<
     crate::domain::agent_session::aggregates::session::Session,
     AgentSessionLifecycleRepositoryError,
@@ -1157,7 +1178,7 @@ fn permission_session(
 
     Session::restore(SessionRestore {
         id: session_id.to_string(),
-        revision: 0,
+        revision,
         state: SessionState::Active,
         has_messages: true,
         has_provider_session: true,
@@ -1207,15 +1228,45 @@ impl AgentSessionLifecycleRepository for FakePermissionGate {
                 AgentSessionLifecycleRepositoryError::Unavailable(error.to_string())
             })?,
         };
-        permission_session(session_id, &plan)
+        let revision = *self.session_revision.lock().unwrap();
+        if !self.effects.lock().unwrap().is_empty() && *self.terminal_after_effect.lock().unwrap() {
+            use crate::domain::agent_session::aggregates::session::{
+                QueueState, RecoveryFact, Session, SessionRestore,
+            };
+            use crate::domain::agent_session::value_objects::SessionState;
+
+            return Session::restore(SessionRestore {
+                id: session_id.to_string(),
+                revision,
+                state: SessionState::Idle,
+                has_messages: true,
+                has_provider_session: true,
+                current_turn: None,
+                last_terminal: None,
+                queue: QueueState::restore(Vec::new(), false),
+                recovery_fact: RecoveryFact::Resolved,
+            })
+            .map_err(|error| AgentSessionLifecycleRepositoryError::Corrupt(format!("{error:?}")));
+        }
+        permission_session(session_id, &plan, revision)
     }
 
     async fn prepare_session_change(
         &self,
         _session_id: &str,
         _expected_revision: u64,
-        _events: &[AgentSessionDomainEvent],
+        events: &[AgentSessionDomainEvent],
     ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
+        let mut stale_remaining = self.prepare_stale_remaining.lock().unwrap();
+        if *stale_remaining != 0 {
+            *stale_remaining -= 1;
+            *self.session_revision.lock().unwrap() += 1;
+            return Ok(None);
+        }
+        self.projected_reducer_event_sets
+            .lock()
+            .unwrap()
+            .push(events.to_vec());
         Ok(Some(PreparedSessionChange::from_atomic_participant(
             Vec::new(),
         )))
@@ -1296,7 +1347,7 @@ impl AgentSessionLifecycleRepository for RacingPermissionGate {
                 "stale permission admission snapshot".into(),
             ));
         }
-        permission_session(session_id, &self.plan)
+        permission_session(session_id, &self.plan, 0)
     }
 
     async fn prepare_session_change(
@@ -8471,6 +8522,143 @@ async fn permission_response_acceptance_and_completion_are_atomic_and_replay_eff
         Err(PermissionResponseOperationError::PayloadConflict)
     );
     assert_eq!(gate.effect_count(), 1);
+}
+
+#[tokio::test]
+async fn permission_completion_reprepares_projection_after_one_stale_session_revision() {
+    let response = permission_allow("permission-request-stale-once", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_prepare_stale_count(1);
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-stale-once",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::Completed { .. }
+    ));
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 1);
+    let projected = gate.projected_reducer_event_sets();
+    assert_eq!(projected.len(), 1);
+    assert!(projected[0].iter().any(|event| matches!(
+        event,
+        AgentSessionDomainEvent::PermissionResolved {
+            request_id: Some(request_id),
+            ..
+        } if request_id == "permission-request-stale-once"
+    )));
+}
+
+#[tokio::test]
+async fn permission_completion_second_stale_is_durable_and_visible_to_recovery_inventory() {
+    let response = permission_allow("permission-request-stale-twice", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_prepare_stale_count(2);
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-stale-twice",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::ReconciliationRequired { .. }
+    ));
+    let saved = usecase
+        .get_operation("local-app", "permission-operation-stale-twice")
+        .await
+        .unwrap();
+    assert!(matches!(
+        saved.latest_status,
+        PermissionResponseExecutionStatus::ReconciliationRequired { .. }
+    ));
+    repo.with_state(|state| {
+        let (obligation, pending, _) = state
+            .obligations
+            .values()
+            .find(|(obligation, _, _)| {
+                matches!(
+                    obligation,
+                    ObligationRecord::PermissionResponse { operation_id, .. }
+                        if operation_id == "permission-operation-stale-twice"
+                )
+            })
+            .expect("permission reconciliation obligation");
+        assert!(matches!(
+            obligation,
+            ObligationRecord::PermissionResponse {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+        assert!(*pending);
+    });
+    assert_eq!(
+        usecase
+            .recover_pending_permission_responses_pass()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 0);
+}
+
+#[tokio::test]
+async fn late_permission_result_after_turn_terminal_completes_only_its_operation() {
+    let response = permission_allow("permission-request-late-terminal", "{}", "{}");
+    let repo = FakeRepo::new();
+    let gate = FakePermissionGate::accepting(response.clone());
+    gate.set_terminal_after_effect();
+    let usecase = permission_usecase(&repo, &gate);
+
+    let operation = expect_permission_accepted(
+        usecase
+            .request(permission_request(
+                "permission-operation-late-terminal",
+                response,
+            ))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        operation.latest_status,
+        PermissionResponseExecutionStatus::Completed { .. }
+    ));
+    repo.with_state(|state| {
+        let completion = state
+            .committed_batches
+            .iter()
+            .find(|batch| {
+                batch.idempotency.idempotency_key == "permission-operation-late-terminal.complete"
+            })
+            .expect("late permission completion batch");
+        assert!(completion.events.is_empty());
+        assert!(completion
+            .state_mutations
+            .iter()
+            .all(|mutation| !matches!(mutation, LocalStateMutation::SessionProjection(_))));
+    });
+    assert_eq!(gate.effect_count(), 1);
+    assert_eq!(gate.after_completion_count(), 1);
 }
 
 #[tokio::test]

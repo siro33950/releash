@@ -422,16 +422,19 @@ impl SessionStore {
                         .build()
                         .map_err(|error| format!("failed to create send projection runtime: {error}"))?
                         .block_on(async move {
+                            // Projection, revision, and recovery inputs come from one SQLite
+                            // reader snapshot; the projection mutation below retains that revision
+                            // as its commit fence.
                             let stored = match authority
                                 .repository
-                                .query(crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
+                                .query(crate::domain::local_event::LocalEventQuery::AgentSessionLifecycleSnapshot {
                                     session_id: session_id.clone(),
                                 })
                                 .await
                                 .map_err(|error| format!("send projection read failed: {error}"))?
                             {
-                                crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(stored) => stored,
-                                _ => return Err("send projection query returned the wrong shape".to_string()),
+                                crate::domain::local_event::LocalEventQueryResult::AgentSessionLifecycleSnapshot(stored) => stored,
+                                _ => return Err("send lifecycle snapshot query returned the wrong shape".to_string()),
                             };
                             let (
                                 mut meta,
@@ -442,7 +445,9 @@ impl SessionStore {
                                 expected,
                                 revision,
                             ) = match stored {
-                                Some(stored) => {
+                                Some(snapshot) => {
+                                    let pending_obligations = snapshot.pending_obligations;
+                                    let stored = snapshot.session;
                                     if initial_meta.is_some() {
                                         return Err("new send target already exists".to_string());
                                     }
@@ -457,8 +462,8 @@ impl SessionStore {
                                         );
                                     }
                                     let decoded = codec.decode(&stored.projection)?;
-                                    let session_aggregate =
-                                        codec.restore_session_aggregate(&decoded)?;
+                                    let session_aggregate = codec
+                                        .restore_session_aggregate(&decoded, &pending_obligations)?;
                                     (
                                         decoded.meta,
                                         decoded.title,

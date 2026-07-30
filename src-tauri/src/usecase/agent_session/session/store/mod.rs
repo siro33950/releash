@@ -322,6 +322,7 @@ pub(crate) trait AgentSessionProjectionCodec: Send + Sync {
     fn restore_session_aggregate(
         &self,
         projection: &CanonicalAgentSessionProjection,
+        pending_obligations: &[(String, crate::domain::local_event::ObligationRecord)],
     ) -> Result<SessionAggregate, String>;
 
     fn encode_message(

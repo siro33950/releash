@@ -364,27 +364,44 @@ fn queued_turn_start_validates_the_exact_head_and_recovery_fence() {
 }
 
 #[test]
-fn recovery_fact_projection_is_domain_owned() {
-    let started = AgentSessionDomainEvent::BackendSessionRecoveryStarted {
-        recovery_id: "recovery".into(),
-        old_provider_session_generation: 1,
-        reason: crate::domain::agent_session::events::BackendSessionRecoveryReason::ResumeMismatch,
-        at: 1.0,
+fn accepted_permission_result_projects_once_and_late_results_only_settle_the_operation() {
+    let response = crate::domain::agent_session::entities::PermissionResponse {
+        request_id: "permission-1".to_string(),
+        decision: crate::domain::agent_session::entities::PermissionResponseDecision::Allow {
+            updated_input: None,
+            answers: None,
+        },
     };
-    assert_eq!(
-        Session::recovery_fact_from_events(std::slice::from_ref(&started)),
-        RecoveryFact::Unresolved
+    let mut pending = restored(
+        SessionState::Active,
+        Some(Turn::restore(
+            9,
+            crate::domain::agent_session::value_objects::TurnPhase::WaitingPermission,
+            Some(permission("permission-1")),
+        )),
+        Vec::new(),
+        false,
+        RecoveryFact::Resolved,
     );
     assert_eq!(
-        Session::recovery_fact_from_events(&[
-            started,
-            AgentSessionDomainEvent::BackendSessionRecoveryCompleted {
-                recovery_id: "recovery".into(),
-                provider_session_generation: 2,
-                at: 2.0,
-            },
-        ]),
-        RecoveryFact::Resolved
+        pending.apply_accepted_permission_result(9, &response),
+        PermissionEffectCompletion::ProjectResolution
+    );
+    assert_eq!(
+        pending.apply_accepted_permission_result(9, &response),
+        PermissionEffectCompletion::AlreadySettled
+    );
+
+    let mut terminal = restored(
+        SessionState::Idle,
+        None,
+        Vec::new(),
+        false,
+        RecoveryFact::Resolved,
+    );
+    assert_eq!(
+        terminal.apply_accepted_permission_result(9, &response),
+        PermissionEffectCompletion::Superseded
     );
 }
 

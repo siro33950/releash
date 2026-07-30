@@ -28,6 +28,59 @@ mod tests {
         }
     }
 
+    fn completed_recovery_after_failure() -> Vec<AgentSessionEvent> {
+        vec![
+            AgentSessionEvent::BackendSessionRecoveryStarted {
+                recovery_id: "recovery-a".to_string(),
+                old_provider_session_generation: 0,
+                reason: BackendSessionRecoveryReason::BackendSessionLost,
+                at: 1.0,
+            },
+            AgentSessionEvent::BackendSessionRecoveryFailed {
+                recovery_id: "recovery-a".to_string(),
+                error: "first recovery failed".to_string(),
+                at: 2.0,
+            },
+            AgentSessionEvent::BackendSessionRecoveryStarted {
+                recovery_id: "recovery-b".to_string(),
+                old_provider_session_generation: 0,
+                reason: BackendSessionRecoveryReason::BackendSessionLost,
+                at: 3.0,
+            },
+            AgentSessionEvent::BackendSessionRecoveryCompleted {
+                recovery_id: "recovery-b".to_string(),
+                provider_session_generation: 1,
+                at: 4.0,
+            },
+        ]
+    }
+
+    fn publish_recovery_message(
+        writer: &SessionStore,
+        app_data_dir: &Path,
+        session_id: &str,
+        pending: &PendingRecoveryMessage,
+    ) {
+        let message_id = match pending {
+            PendingRecoveryMessage::Notice { message_id, .. }
+            | PendingRecoveryMessage::Error { message_id, .. } => message_id.clone(),
+        };
+        let message = ChatMessage {
+            id: message_id,
+            role: MessageRole::Agent,
+            content: String::new(),
+            thinking: None,
+            activities: None,
+            parts: Some(Vec::new()),
+            streaming_final_seq: 0,
+            timestamp: now_timestamp(),
+            mentions: None,
+        };
+        assert!(writer
+            .publish_pending_recovery_message(app_data_dir, session_id, pending, message)
+            .unwrap());
+    }
+
     fn stop_resolution(turn_id: u64) -> AgentSessionEvent {
         AgentSessionEvent::StopResolutionRecorded {
             operation_id: format!("stop-{turn_id}"),
@@ -920,6 +973,261 @@ mod tests {
             fresh.session_projection_guard,
             stale.session_projection_guard
         );
+    }
+
+    #[tokio::test]
+    async fn completed_recovery_after_failure_allows_immediate_and_queued_turn_cas() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository.clone(),
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+
+        let immediate = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let mut immediate_projection = writer
+            .read_session_projection(&immediate.id)
+            .unwrap()
+            .unwrap();
+        immediate_projection.reducer_events = completed_recovery_after_failure();
+        writer
+            .commit_session_projection_snapshot(immediate_projection)
+            .unwrap();
+        let allocation = writer.send_acceptance_allocation(&immediate.id).unwrap();
+        let prompt = crate::domain::agent_session::events::PromptInput {
+            content: "resend after recovery".to_string(),
+            ..Default::default()
+        };
+        let disposition =
+            crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                turn_id: "1".to_string(),
+            };
+        let mutations = writer
+            .prepare_send_acceptance_mutations(SendAcceptanceProjectionInput {
+                session_id: &immediate.id,
+                initial_session: None,
+                session_projection_guard: allocation.session_projection_guard,
+                human_message_id: "human-1",
+                prompt: &prompt,
+                disposition: &disposition,
+                reserved_turn_id: Some("1"),
+                input_ref: "input-1",
+                events: &[turn_started(1)],
+            })
+            .unwrap();
+        assert!(!mutations.is_empty());
+        writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &immediate.id,
+                "recovery-after-send-prepare",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        let conflict = repository
+            .commit_batch(crate::domain::local_event::LocalAtomicBatch {
+                commit_id: crate::domain::local_event::CommitIdentity::parse(
+                    "send-recovery-snapshot-fence",
+                )
+                .unwrap(),
+                idempotency: crate::domain::local_event::IdempotencyBinding {
+                    installation_id: local_store.installation_id().to_string(),
+                    operation_kind: crate::domain::local_event::CommitOperationKind::Projection,
+                    idempotency_key: "send-recovery-snapshot-fence".to_string(),
+                    payload_hash: [31; 32],
+                },
+                expected_heads: Vec::new(),
+                events: Vec::new(),
+                state_mutations: mutations,
+            })
+            .await
+            .expect_err("recovery revision must fence a send prepared from an older snapshot");
+        assert!(matches!(
+            conflict,
+            crate::domain::local_event::CommitBatchError::PayloadConflict
+                | crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. }
+        ));
+
+        let queued = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let mut queued_projection = writer
+            .read_session_projection(&queued.id)
+            .unwrap()
+            .unwrap();
+        queued_projection.reducer_events = completed_recovery_after_failure();
+        queued_projection
+            .pending_send_queue
+            .push(CanonicalQueuedSend {
+                queue_item_id: "queue-1".to_string(),
+                human_message_id: "human-1".to_string(),
+                reserved_turn_id: "1".to_string(),
+                input_ref: "input-1".to_string(),
+            });
+        writer
+            .commit_session_projection_snapshot(queued_projection)
+            .unwrap();
+        writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &queued.id,
+                "queue-1",
+                turn_started(1),
+            )
+            .unwrap();
+        let started = writer
+            .read_session_projection(&queued.id)
+            .unwrap()
+            .unwrap();
+        assert!(started.pending_send_queue.is_empty());
+        assert!(started.reducer_events.iter().any(
+            |event| matches!(event, AgentSessionEvent::TurnStarted { turn_id: 1, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_recovery_publication_then_success_publication_allows_resend() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository.clone(),
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+
+        writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-a",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        let failed = writer
+            .fail_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-a",
+                "first recovery failed",
+            )
+            .unwrap();
+        let failure_publication = failed
+            .pending_recovery_message
+            .expect("failure publication is durable");
+        publish_recovery_message(
+            &writer,
+            app_data_dir.path(),
+            &session.id,
+            &failure_publication,
+        );
+
+        writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-b",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        let completed = writer
+            .complete_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-b",
+                0,
+                "replacement-provider".to_string(),
+            )
+            .unwrap();
+        let success_publication = completed
+            .pending_recovery_message
+            .expect("success publication is durable");
+        publish_recovery_message(
+            &writer,
+            app_data_dir.path(),
+            &session.id,
+            &success_publication,
+        );
+
+        let lifecycle =
+            crate::adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
+                repository,
+                writer.clone(),
+            );
+        let restored =
+            crate::domain::agent_session::repository::AgentSessionLifecycleRepository::restore_session(
+                &lifecycle,
+                &session.id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.admit_send(),
+            Ok(
+                crate::domain::agent_session::aggregates::session::SendDispositionDecision::StartImmediately
+            )
+        );
+
+        let allocation = writer.send_acceptance_allocation(&session.id).unwrap();
+        let prompt = crate::domain::agent_session::events::PromptInput {
+            content: "resend after published recovery".to_string(),
+            ..Default::default()
+        };
+        let disposition =
+            crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                turn_id: "1".to_string(),
+            };
+        let mutations = writer
+            .prepare_send_acceptance_mutations(SendAcceptanceProjectionInput {
+                session_id: &session.id,
+                initial_session: None,
+                session_projection_guard: allocation.session_projection_guard,
+                human_message_id: "human-1",
+                prompt: &prompt,
+                disposition: &disposition,
+                reserved_turn_id: Some("1"),
+                input_ref: "input-1",
+                events: &[turn_started(1)],
+            })
+            .unwrap();
+        assert!(!mutations.is_empty());
     }
 
     #[test]

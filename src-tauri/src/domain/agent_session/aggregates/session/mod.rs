@@ -120,6 +120,14 @@ pub enum TransitionOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionEffectCompletion {
+    ProjectResolution,
+    AlreadySettled,
+    Superseded,
+    Rejected(TransitionRejection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionRejection {
     SessionClosed,
     NotQuiescent,
@@ -757,31 +765,6 @@ impl Session {
             && projected_last_turn_id == Some(expected_turn_id)
     }
 
-    pub fn recovery_fact_from_events(events: &[AgentSessionDomainEvent]) -> RecoveryFact {
-        let mut recovery_id: Option<&str> = None;
-        for event in events {
-            match event {
-                AgentSessionDomainEvent::BackendSessionRecoveryStarted {
-                    recovery_id: started,
-                    ..
-                } => recovery_id = Some(started),
-                AgentSessionDomainEvent::BackendSessionRecoveryCompleted {
-                    recovery_id: completed,
-                    ..
-                } if recovery_id == Some(completed.as_str()) => recovery_id = None,
-                AgentSessionDomainEvent::BackendSessionRecoveryFailed { .. } => {
-                    return RecoveryFact::Unresolved;
-                }
-                _ => {}
-            }
-        }
-        if recovery_id.is_some() {
-            RecoveryFact::Unresolved
-        } else {
-            RecoveryFact::Resolved
-        }
-    }
-
     pub fn projection_allows_queue_start(
         state: SessionState,
         events: &[AgentSessionDomainEvent],
@@ -1359,6 +1342,28 @@ impl Session {
             self.bump_revision();
         }
         outcome
+    }
+
+    pub fn apply_accepted_permission_result(
+        &mut self,
+        turn_id: u64,
+        response: &PermissionResponse,
+    ) -> PermissionEffectCompletion {
+        match self.resolve_permission(turn_id, response) {
+            TransitionOutcome::Applied => PermissionEffectCompletion::ProjectResolution,
+            TransitionOutcome::AlreadyApplied => PermissionEffectCompletion::AlreadySettled,
+            TransitionOutcome::Rejected(
+                TransitionRejection::NoActiveTurn
+                | TransitionRejection::PermissionNotPending
+                | TransitionRejection::StaleTarget,
+            ) => PermissionEffectCompletion::Superseded,
+            TransitionOutcome::NotApplicable => {
+                PermissionEffectCompletion::Rejected(TransitionRejection::InvalidLifecycle)
+            }
+            TransitionOutcome::Rejected(rejection) => {
+                PermissionEffectCompletion::Rejected(rejection)
+            }
+        }
     }
 
     pub fn apply_terminal(&mut self, turn_id: u64, result: TurnResult) -> TerminalDecision {

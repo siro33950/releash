@@ -14,8 +14,8 @@ use crate::domain::agent_session::aggregates::session::{
 };
 use crate::domain::agent_session::entities::TokenUsage as DomainTokenUsage;
 use crate::domain::agent_session::services::{
-    detect_image_mime, DefaultToolOutputExternalizationPolicy, RecoveryPublicationDecision,
-    ToolOutputExternalizationPolicy,
+    classify_recovery_fact, detect_image_mime, DefaultToolOutputExternalizationPolicy,
+    RecoveryPublicationDecision, ToolOutputExternalizationPolicy,
 };
 use crate::domain::agent_session::value_objects::{ContextRevision, JsonPayload};
 use crate::domain::local_event::{
@@ -102,6 +102,7 @@ impl AgentSessionProjectionCodec for AgentSessionProjectionCodecV1 {
     fn restore_session_aggregate(
         &self,
         projection: &CanonicalAgentSessionProjection,
+        pending_obligations: &[(String, crate::domain::local_event::ObligationRecord)],
     ) -> Result<Session, String> {
         let state = projection.meta.state;
         let current_turn =
@@ -125,7 +126,12 @@ impl AgentSessionProjectionCodec for AgentSessionProjectionCodecV1 {
             current_turn,
             last_terminal: None,
             queue: QueueState::restore(queue, projection.queue_paused_at.is_some()),
-            recovery_fact: Session::recovery_fact_from_events(&projection.reducer_events),
+            recovery_fact: classify_recovery_fact(
+                projection.meta.pending_recovery_message.is_some(),
+                pending_obligations
+                    .iter()
+                    .map(|(identity, record)| (identity.as_str(), record)),
+            ),
         })
         .map_err(|error| format!("invalid canonical Session aggregate: {error:?}"))
     }
