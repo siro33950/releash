@@ -2568,6 +2568,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_presents_backend_selection_as_changeable_until_the_first_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-sonnet-5".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+
+        let loaded = usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .expect("session");
+
+        assert!(loaded.session.messages.is_empty());
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert!(loaded.can_change_backend);
+    }
+
+    #[tokio::test]
+    async fn get_session_locks_backend_selection_once_a_message_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session_id = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap()
+            .session
+            .id;
+
+        let loaded = usecase
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .expect("session");
+
+        assert!(!loaded.session.messages.is_empty());
+        assert!(!loaded.can_change_backend);
+    }
+
+    #[tokio::test]
     async fn get_session_ignores_event_log_pending_when_runtime_state_is_clear() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
