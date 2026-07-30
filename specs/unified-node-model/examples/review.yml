@@ -517,7 +517,7 @@ nodes:
 
   verify_fix:
     session:
-      model: claude-fable-5
+      model: claude-opus-5
       permission: edit
       facets:
         policy: reviewing
@@ -530,7 +530,7 @@ nodes:
 
   merge_fixes:
     session:
-      model: claude-fable-5
+      model: claude-opus-5
       permission: full
       facets:
         policy: coding

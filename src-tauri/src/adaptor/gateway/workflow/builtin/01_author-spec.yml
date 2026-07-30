@@ -231,7 +231,7 @@ nodes:
 # IntakeSequence
 - name: spec_intake
   session:
-    model: claude-fable-5
+    model: claude-opus-5
     permission: full
     gate: auto
     facets:
@@ -255,7 +255,7 @@ nodes:
 # RequirementsSequence: 作成 -> 検証 -> 検討 -> 修正 -> 再検証
 - name: requirements_author
   session:
-    model: claude-fable-5
+    model: claude-opus-5
     permission: full
     gate: auto
     facets:
@@ -281,7 +281,7 @@ nodes:
 
 - name: requirements_validate
   session:
-    model: claude-fable-5
+    model: claude-opus-5
     permission: full
     gate: auto
     facets:
@@ -323,7 +323,7 @@ nodes:
 
 - name: requirements_repair
   session:
-    model: claude-fable-5
+    model: claude-opus-5
     permission: full
     gate: auto
     facets:
@@ -587,7 +587,7 @@ nodes:
 # FullSpecSequence: 3文書全体の検証 -> 検討 -> owner文書の修正Sequenceへ戻す
 - name: full_spec_validate
   session:
-    model: claude-fable-5
+    model: claude-opus-5
     permission: full
     gate: auto
     facets:
