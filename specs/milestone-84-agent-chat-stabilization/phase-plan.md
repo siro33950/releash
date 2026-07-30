@@ -6,7 +6,7 @@
 
 本書はmilestone 84「Agentチャット安定化」のIssue間の順序、依存関係、吸収済みIssue、および各Issueが解消する問題を定める。Phase名とIssue分類子は計画上のlabelであり、runtime module、type、table、physical store identityではない。
 
-Phaseは0から8までの直列である。Phase NはPhase N-1までが完了してから開始し、同じPhase内のIssue同士には依存辺を置かない。現在はPhase 2まで完了しており、Phase 3以降は着手可能である。
+Phaseは0から8までの直列である。Phase NはPhase N-1までが完了してから開始し、同じPhase内のIssue同士には依存辺を置かない。同一Phase内で同時に着手できる組み合わせは、契約依存とは別にコード接触に基づく実装レーン（後述）が定める。現在はPhase 2まで完了しており、Phase 3以降は着手可能である。
 
 各Issueが解消する問題の正本は[agent-chat-instability-audit.md](agent-chat-instability-audit.md)（調査基準 `be37b7d2e`）であり、本書のIssue対応と台帳のownerは双方向に一致する。
 
@@ -86,6 +86,45 @@ Phase 3以降の各Issueが解消する問題である。ID付きの値は台帳
 | #1451（P4） | 7 | —（S9a / S9b / S9cのUI完成） |
 | #1416（T1） | 8 | ST-7 |
 
+## Phase内の実装レーン（コード接触）
+
+同一Phase内のIssueは契約依存を持たないが、修正対象コードが重なるものは並列に実装できない。本節はコード接触に基づく並列不可集合（レーン）を定める。同一レーン内のIssueは直列に実装し（順序はレーン内で自由。明示の先頭固定がある場合を除く）、レーン間は並列に着手できる。粒度は保守的（ファイル接触があれば同一レーン）とする。
+
+### Phase 3（6レーン）
+
+| レーン | Issue | 共有コード |
+| --- | --- | --- |
+| W1 | #1386 | infrastructure/codex と gateway/codex（wire全面置換） |
+| W2 | #1387 | infrastructure/claude と gateway/claude（同） |
+| S | #1525、#1526、#1529、#1555、#1556、#1562 | adaptor/gateway/local_event_store（state_record_codec / commit / reader / store / projection_record_codec を横断共有） |
+| C | #1571、#1572、#1573 | usecase/agent_session/session/store（repository_core / persistence / event_projection）と runtime の streaming・event_dispatch |
+| F | #1413、#1521 | frontend の session 購読・読込 hooks（useAgentChat ほか） |
+| D | #1446 | 設定 domain の新設中心。他レーンとの接触は session projection の additive 拡張のみ |
+
+#1497 はスコープ要否の確認のみでレーンに属さない。
+
+### Phase 4（3レーン）
+
+| レーン | Issue | 共有コード |
+| --- | --- | --- |
+| 変換 | #1388（先頭固定）、#1389、#1390、#1391、#1392、#1393、#1394、#1400 | domain の part / turn / todo / usage / notice / permission 語彙、event projector、gateway claude・codex の convert、frontend レンダラ。#1388（ToolCall統合）が全件とファイルを共有するため先頭固定 |
+| queue / recovery | #1404、#1406 | operation の send / recovery、runtime の queue_driver・recovery |
+| runtime / 設定 | #1397、#1516 | runtime の driver・event_dispatch（設定 ack と activity 配線が接触） |
+
+### Phase 5（7レーン）
+
+| レーン | Issue | 共有コード |
+| --- | --- | --- |
+| permission | #1395、#1396 | permission 往復（operation の permission、PermissionDialog） |
+| codex 変換 | #1399、#1401、#1472 | gateway/codex の convert・session |
+| 設定 | #1447、#1448、#1449 | 設定 domain / capability（相互接触） |
+| claude runtime | #1470 | gateway/claude の session・process 健全性 |
+| 診断 | #1410 | watchdog / stall 診断 |
+| task 表示 | #1415 | frontend の ActivityLog / Task 表示 |
+| steer | #1498 | operation send の steer write-ahead |
+
+Phase 6〜8 は各1件でレーン分割はない。
+
 ## Hard dependencies
 
 | Consumer | Predecessor |
@@ -112,4 +151,5 @@ Phase 3以降の各Issueが解消する問題である。ID付きの値は台帳
 - 吸収する場合は統合先のacceptanceへ含め、独立Phaseへ重複配置しない。
 - 独立Issueは全predecessorより後の最初のPhaseへ置く。
 - 同じPhase内に依存辺を作らず、必要ならconsumerを後のPhaseへ移す。
+- 実装レーンは修正対象コードの接触に基づく運用情報であり、Issueの対象コードが変わったら更新する。
 - 本書は順序とroutingだけを所有し、実装型、schema、処理順、test decompositionを定義しない。
