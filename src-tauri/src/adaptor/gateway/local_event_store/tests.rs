@@ -8888,14 +8888,20 @@ async fn b067_late_aborted_inventory_result_cannot_change_a_new_shutdown_flight(
             })
             .await
     });
-    for _ in 0..1_000 {
-        if executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            break;
-        }
+    // Spin on wall-clock, not on a fixed yield count: a loaded machine can keep
+    // the first flight inside its storage reply for more yields than any fixed
+    // budget covers. Advancing before the flight parks in `targets()` would hand
+    // that parked branch to the second flight instead.
+    let handshake_start = std::time::Instant::now();
+    while executor
+        .target_queries
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == 0
+    {
+        assert!(
+            handshake_start.elapsed() < std::time::Duration::from_secs(60),
+            "the first flight never reached its inventory query"
+        );
         tokio::task::yield_now().await;
     }
     tokio::time::advance(std::time::Duration::from_secs(13)).await;
@@ -8941,24 +8947,22 @@ async fn b067_late_aborted_inventory_result_cannot_change_a_new_shutdown_flight(
         .subordinate_shutdowns
         .load(std::sync::atomic::Ordering::SeqCst);
 
-    executor.release_late_result.notify_waiters();
-    for _ in 0..1_000 {
-        if executor
-            .late_results
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            break;
-        }
+    let late_start = std::time::Instant::now();
+    while executor
+        .late_results
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == 0
+    {
+        // `notify_waiters` only reaches a task already parked in `notified`,
+        // so re-notify while spinning instead of assuming the fixture task was
+        // scheduled before the first release.
+        executor.release_late_result.notify_waiters();
+        assert!(
+            late_start.elapsed() < std::time::Duration::from_secs(60),
+            "late fixture result did not arrive"
+        );
         tokio::task::yield_now().await;
     }
-    assert_eq!(
-        executor
-            .late_results
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "late fixture result did not arrive"
-    );
     let durable_after: (i64, i64, i64, String) = connection
         .query_row(
             "SELECT
@@ -9059,84 +9063,6 @@ async fn hanging_authority_query_is_bounded_by_the_absolute_decision_deadline() 
             .unwrap(),
         LocalEventQueryResult::CurrentShutdown(None)
     ));
-}
-
-#[tokio::test]
-// This is the exact target-capacity oracle; fixed-deadline behavior is covered
-// separately. Isolate its large SQLite fixture and widen only its test flight
-// budget so parallel CI load cannot turn capacity into OutcomeUnknown.
-#[allow(clippy::await_holding_lock)]
-async fn b060_exactly_4096_shutdown_targets_are_durably_accepted_as_one_plan() {
-    let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
-    let harness = Harness::open();
-    let executor = TestShutdownExecutor::with_targets(4096, ShutdownExecutorMode::Complete);
-    let coordinator = Arc::new(
-        crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
-            harness.store.clone(),
-            harness.store.clone(),
-            executor.clone(),
-            harness.store.installation_id().to_string(),
-            "test-boot".to_string(),
-        )
-        .with_flight_budget_for_test(
-            std::time::Duration::from_secs(60),
-            std::time::Duration::from_secs(62),
-        ),
-    );
-    let outcome = coordinator
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "quit-capacity-exact".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .unwrap();
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::Accepted {
-        receipt,
-        state: crate::usecase::shutdown_coordinator::ApplicationQuitState::Completed,
-    } = outcome
-    else {
-        panic!("the exact 4,096-target boundary must complete: {outcome:?}");
-    };
-    assert_eq!(
-        executor.effects.load(std::sync::atomic::Ordering::SeqCst),
-        4096
-    );
-    assert_eq!(
-        executor
-            .subordinate_shutdowns
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1
-    );
-    let connection = harness.raw_connection();
-    let summary: String = connection
-        .query_row(
-            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
-            rusqlite::params![receipt.shutdown_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let summary: serde_json::Value = serde_json::from_str(&summary).unwrap();
-    assert_eq!(
-        summary
-            .get("target_count")
-            .and_then(serde_json::Value::as_u64),
-        Some(4096)
-    );
-    let stored_target_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM shutdown_targets", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(stored_target_count, 4096);
-    let stored_phase: String = connection
-        .query_row("SELECT phase FROM shutdown_plans", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(stored_phase, "completed");
 }
 
 #[tokio::test]

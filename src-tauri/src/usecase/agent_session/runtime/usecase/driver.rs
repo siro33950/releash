@@ -1523,7 +1523,7 @@ impl AgentSessionRuntimeUsecase {
         let available_models = self.available_models_for_session(&session)?;
         let total_count = page.total_count;
         let can_change_backend = backend_selection_is_presented_as_changeable(
-            session.messages.is_empty(),
+            !session.messages.is_empty(),
             session.agent_session_id.is_some(),
             turn_phase,
         );
