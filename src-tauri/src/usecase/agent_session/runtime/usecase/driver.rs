@@ -2052,21 +2052,10 @@ impl AgentSessionRuntimeUsecase {
         operation_id: &str,
         obligation_id: &str,
     ) -> AcceptedQueueRedriveReadiness {
-        let canonical_queue = match self
+        let canonical_queue = self
             .ctx
             .session_store
-            .canonical_pending_send_queue(session_id)
-        {
-            Ok(queue) => queue,
-            Err(_) => {
-                #[cfg(not(test))]
-                return AcceptedQueueRedriveReadiness::Blocked;
-                #[cfg(test)]
-                {
-                    Vec::new()
-                }
-            }
-        };
+            .canonical_pending_send_queue(session_id).unwrap_or_default();
         let requires_durable_idle = {
             let sessions = self.ctx.sessions.lock().await;
             let Some(state) = sessions.get(session_id) else {

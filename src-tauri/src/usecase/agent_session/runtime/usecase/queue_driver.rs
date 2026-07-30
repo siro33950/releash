@@ -395,11 +395,11 @@ fn next_cached_input_effect<'a>(
     }
     #[cfg(test)]
     {
-        return accepted_input_effects.values().min_by(|left, right| {
+        accepted_input_effects.values().min_by(|left, right| {
             left.created_at
                 .total_cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
-        });
+        })
     }
     #[cfg(not(test))]
     None

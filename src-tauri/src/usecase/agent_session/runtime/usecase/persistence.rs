@@ -114,7 +114,7 @@ async fn append_session_event_and_project_state_with_retry(
     .await?;
     persist_with_retry(ctx, session_id, kind, || {
         ctx.session_store
-            .set_session_state(&ctx.data_dir, session_id, projected_state.clone())
+            .set_session_state(&ctx.data_dir, session_id, projected_state)
     })
     .await?;
     Ok(projected_state)

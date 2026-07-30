@@ -310,7 +310,7 @@ impl SessionStore {
                     app_data_dir,
                     session_id,
                     &mut |meta| {
-                        let previous_state = meta.state.clone();
+                        let previous_state = meta.state;
                         update.take().expect("legacy meta update runs once")(meta)?;
                         meta.state_revision =
                             next_sqlite_counter(meta.state_revision, "session state revision")?;
@@ -452,7 +452,7 @@ impl SessionStore {
         if let Some(hook) = self.event_projection_hook.read().clone() {
             hook(session_id, last_turn_id)?;
         }
-        let state_for_notify = state.clone();
+        let state_for_notify = state;
         let projected_error_reason = error_reason_for_state(&state, &error_reason);
         let mut previous_error_reason = None;
         let (meta, state_changed) = self.update_meta_only(app_data_dir, session_id, |meta| {

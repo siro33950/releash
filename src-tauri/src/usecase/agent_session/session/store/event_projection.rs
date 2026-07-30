@@ -430,7 +430,7 @@ impl SessionStore {
                         projected_meta.state_revision =
                             next_sqlite_counter(meta.state_revision, "session state revision")?;
                         previous_projection = Some(PreviousSessionProjection {
-                            state: meta.state.clone(),
+                            state: meta.state,
                             error_reason: meta.error_reason.clone(),
                             worktree_path: meta.worktree_path.clone(),
                             state_revision: projected_meta.state_revision,
@@ -688,11 +688,11 @@ impl SessionStore {
             _ => None,
         });
         let projected = TurnEventLog::from_events(events.to_vec()).project();
-        let projected_state = projected.status.session_state.clone();
+        let projected_state = projected.status.session_state;
         self.set_event_projection(
             app_data_dir,
             session_id,
-            projected_state.clone(),
+            projected_state,
             projected.error_reason,
             last_turn_interruption,
             last_turn_id,

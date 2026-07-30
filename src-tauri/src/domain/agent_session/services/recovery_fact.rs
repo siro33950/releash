@@ -384,7 +384,7 @@ mod tests {
             at: 2.0,
         };
         assert_eq!(
-            classify_backend_recovery(&[completed.clone()], "recovery"),
+            classify_backend_recovery(std::slice::from_ref(&completed), "recovery"),
             BackendRecoveryObservation::Missing
         );
         let started = AgentSessionDomainEvent::BackendSessionRecoveryStarted {

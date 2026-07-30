@@ -2333,7 +2333,7 @@ mod tests {
         let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let notifications_for_listener = Arc::clone(&notifications);
         store.register_state_change_listener(Arc::new(move |_, _, state, _| {
-            notifications_for_listener.lock().push(state.clone());
+            notifications_for_listener.lock().push(*state);
         }));
 
         store

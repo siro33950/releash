@@ -3999,7 +3999,7 @@ fn state_change_listener_fires_on_close_and_restore() {
             events_for_listener.lock().push((
                 session_id.to_string(),
                 worktree_path.to_string(),
-                new_state.clone(),
+                *new_state,
             ));
         },
     ));
@@ -4470,7 +4470,7 @@ fn assert_append_projection_rollback(stage: ProjectionCommitStage) {
     let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
     store.register_state_change_listener({
         let notifications = notifications.clone();
-        Arc::new(move |_, _, state, _| notifications.lock().push(state.clone()))
+        Arc::new(move |_, _, state, _| notifications.lock().push(*state))
     });
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let snapshots = capture_projection_files(&dir, message_file_in_dir(&dir, 2));
@@ -4567,7 +4567,7 @@ fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
     let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
     store.register_state_change_listener({
         let notifications = notifications.clone();
-        Arc::new(move |_, _, state, _| notifications.lock().push(state.clone()))
+        Arc::new(move |_, _, state, _| notifications.lock().push(*state))
     });
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let snapshots = capture_projection_files(&dir, message_file_in_dir(&dir, 2));

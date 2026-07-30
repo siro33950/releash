@@ -1278,7 +1278,7 @@ mod tests {
         turn_phase: TurnPhase,
         session_state: SessionState,
     ) -> SessionStatus {
-        let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state.clone());
+        let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state);
         SessionStatus {
             chat_session_id: id.to_string(),
             worktree_id: worktree.to_string(),

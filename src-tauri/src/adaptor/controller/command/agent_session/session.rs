@@ -1970,7 +1970,7 @@ mod tests {
             false,
             None,
         );
-        session.state = initial_state.clone();
+        session.state = initial_state;
         session_store
             .save_full_session_for_restore(data.path(), &session)
             .unwrap();
@@ -2115,7 +2115,7 @@ mod tests {
             },
             active,
             action,
-            expected_state.clone(),
+            expected_state,
             None,
             |_| {},
         )

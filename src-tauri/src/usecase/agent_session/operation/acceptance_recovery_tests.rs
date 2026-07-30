@@ -984,7 +984,7 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
                     session_id: (*session_id).to_string(),
                     projection: canonical_agent_session_projection_with_state(
                         session_id,
-                        session_state.clone(),
+                        *session_state,
                     ),
                     expected: RevisionGuard::Absent,
                     revision: Revision::new(0).unwrap(),
