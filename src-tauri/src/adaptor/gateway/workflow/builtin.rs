@@ -290,23 +290,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-consider-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-design",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-full",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-full.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-requirements.md"),
+        key: "author-spec-consider-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -325,38 +310,13 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-repair-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-behavior.md"),
+        key: "author-spec-repair-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-repair-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-repair-design",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-repair-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-requirements.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-design",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-full",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-full.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-requirements.md"),
+        key: "author-spec-validate-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,

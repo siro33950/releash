@@ -2,7 +2,7 @@
 
 ## 目的
 
-Issue、Story、または自由文Requestから、`requirements.md`、`behavior.md`、`design.md`を作成する。各文書を個別に「作成・検証・検討・修正」し、3文書全体の整合確認を通した後、最後に人間が完成文書をレビューする。
+Issue、Story、または自由文Requestから、`requirements.md`、`behavior.md`、`design.md`を作成する。3文書を上流から順に作成し、その後は3文書を1単位として「検証・検討・修正」を収束させ、最後に人間が完成文書をレビューする。
 
 各文書に何を書くか、何を書かないか、書式と完成条件は、Nodeへ注入された既存のRequirements、Behavior、Design Knowledgeを正本とする。このPolicyやInstructionへ文書規約を複製しない。
 
@@ -15,15 +15,13 @@ Issue、Story、または自由文Requestから、`requirements.md`、`behavior.
 
 ## Sequence
 
-Requirements、Behavior、Designはそれぞれ独立した次のSequenceで管理する。
-
-1. Authorが対象文書だけを作成する。
-2. ValidatorがKnowledge、入力、上流文書へ照合してFindingを列挙する。
-3. ConsidererがFindingの成立、重複、修正ownerを検討する。
-4. FindingがあればRepairがowner文書だけを修正する。
+1. Authorが`requirements.md`、`behavior.md`、`design.md`を上流から順に作成する。この段階では検証しない。
+2. Validatorが3文書を1単位として、Knowledge、入力、文書間整合、対象コードへ照合し、Findingをすべて列挙する。各Findingには根本原因を持つ文書のownerを付ける。
+3. FindingがなければFinalReviewへ進む。あればConsidererがFindingの成立を検討し、成立したものをownerで絞らずに確定する。
+4. Repairが確定Findingをowner文書へ反映する。上流文書を変更した場合は、その周回のうちに下流文書を追随させる。
 5. 修正後はValidatorへ戻り、Findingがなくなるまで繰り返す。
 
-3文書が個別に通過した後、Full Specでも同じく検証・検討し、問題があればowner文書のRepairへ戻す。
+3文書は独立していない。下流文書を書いて初めて上流文書の不足が見えるため、検証・検討・修正は常に3文書を対象に行い、1文書だけを固めてから次へ進まない。
 
 検証はKnowledgeと入力への適合確認であり、敵対的監査や要求外の改善提案ではない。好み、nit、将来の拡張、要求外のリファクタリングをFindingにしない。
 

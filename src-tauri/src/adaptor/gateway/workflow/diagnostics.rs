@@ -2628,6 +2628,23 @@ nodes:
     }
 
     #[test]
+    fn builtin_workflows_produce_no_diagnostic_errors() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        let errors: Vec<_> = report
+            .items
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "ビルトインワークフローに診断エラー: {errors:?}"
+        );
+    }
+
+    #[test]
     fn diagnose_builtin_facet_info() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();

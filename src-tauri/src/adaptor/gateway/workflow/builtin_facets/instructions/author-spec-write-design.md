@@ -6,7 +6,7 @@
 
 - Requirements、Behavior、全R/B-IDを読む。
 - リポジトリ規約、architecture文書、関連コード、型、state owner、永続化、failure、retry、restart、concurrency、既存テストを必要な範囲で調査する。
-- 有効なHumanDecisionと、Designを対象とするFinalReview feedbackがあれば反映する。
+- 有効なHumanDecisionがあれば反映する。
 - Design Knowledgeを正本として、書くべき内容、書かない内容、固定見出し、完成条件を守る。
 - 実装者が追加判断なしで各対象を特定できるようにし、粒度はKnowledgeの粒度境界に従う。境界の「書かない」側へ踏み込まない。
 - Requirements／Behaviorにない外部挙動を追加しない。
