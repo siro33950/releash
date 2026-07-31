@@ -63,22 +63,38 @@ schemas:
   implement-tasks:
     type: object
     properties:
+      status:
+        type: string
+        enum:
+        - READY
+        - NO_TASKS
       tasks:
         type: array
         items: implement-task
+      summary: string
     required:
+    - status
     - tasks
+    - summary
   implementation-verification:
     type: object
     properties:
-      complete:
-        type: boolean
+      status:
+        type: string
+        enum:
+        - COMPLETE
+        - INCOMPLETE
+        - UNVERIFIABLE
       issues:
         type: array
         items: workflow-text
+      unverifiable:
+        type: array
+        items: workflow-text
     required:
-    - complete
+    - status
     - issues
+    - unverifiable
 
 nodes:
 
@@ -118,7 +134,11 @@ nodes:
       max_iterations: 3
       on_exhausted: implementation_confirmation
       reset_on: verify_implementation
-  - next: implement_fanout
+  - switch:
+      on: status
+      cases:
+        READY: implement_fanout
+        NO_TASKS: implementation_confirmation
 - name: implement_fanout
   fanout:
     child: implement_task
@@ -151,10 +171,12 @@ nodes:
   - resolve_request
   - create_detailed_design
   rules:
-  - when:
-      on: complete
-      then: implementation_confirmation
-    next: create_detailed_design
+  - switch:
+      on: status
+      cases:
+        COMPLETE: implementation_confirmation
+        INCOMPLETE: create_detailed_design
+        UNVERIFIABLE: implementation_confirmation
 - name: implementation_confirmation
   session:
     model: claude-opus-5
