@@ -16,8 +16,8 @@
 2. 現在の差分と関連実装を読む。
 3. Requirement、Behavior、Designごとに実装との対応を確認する。
 4. Open Threadがあれば、指摘、最新方針、未解消理由を確認する。
-5. `verify_implementation` Artifactの`status`と`unverifiable`を読む。`UNVERIFIABLE`で到達した場合は、実装の不備は残っていないが、この環境では判定できない検証が残っている状態である。
-6. `create_detailed_design` Artifactの`status`が`NO_TASKS`で到達した場合は、検証が不成立を報告したにもかかわらず実装で解消すべきTaskが導出されなかった状態である。その`summary`を確認する。
+5. `verify_implementation` Artifactの`issues`と`unverifiable`を読む。`issues`が空で`unverifiable`が残っている場合は、実装の不備は解消したが、この環境では判定できない検証が残っている状態である。
+6. `create_detailed_design` Artifactの`tasks`が空で到達した場合は、実装で解消すべきTaskが導出されなかった状態である。その`summary`を確認する。
 7. 実際に確認できた内容だけを人間へ提示する。
 
 ## 提示内容
@@ -41,7 +41,7 @@
 
 ## この環境で判定できなかった検証
 - `unverifiable`の各項目と、満たせなかった実行前提
-- 到達理由（UNVERIFIABLE / NO_TASKS / loop_guard上限）
+- 到達理由（`issues`が空 / `tasks`が空 / loop_guard上限）
 ```
 
 Open Threadの件数だけで完了可否を決めない。存在する場合は内容を提示し、人間の判断材料にする。

@@ -550,16 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn implement_task_parallel_uses_boolean_vocabulary() {
-        let knowledge = get_builtin_facet(FacetKind::Knowledge, "implement-task").unwrap();
-
-        assert!(!knowledge.contains("`yes`"));
-        assert!(!knowledge.contains("`no`"));
-        assert!(knowledge.contains("`true`"));
-        assert!(knowledge.contains("`false`"));
-    }
-
-    #[test]
     fn full_review_uses_current_opus_model() {
         let source = builtin_workflow_source("03_full-review").unwrap();
 

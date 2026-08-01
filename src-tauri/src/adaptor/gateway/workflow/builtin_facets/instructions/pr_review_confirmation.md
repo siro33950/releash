@@ -22,7 +22,7 @@
 - commit対象ファイルが今回の修正Taskに限定されている。
 - 必要な検証が完了している。未実施の場合は理由が明確である。
 
-一件でも未解消または不明なThreadがあれば`ready: false`とし、commit、push、reply、Resolveを実行対象にしない。
+一件でも未解消または不明なThreadがあれば`replies`を空配列にする。commit、push、reply、Resolveは実行対象にならない。
 
 ## 人間との確認
 
@@ -40,8 +40,6 @@
 
 ```json
 {
-  "ready": true,
-  "commit_required": true,
   "commit_message": "fix: address PR review feedback",
   "replies": [{
     "thread_id": "<Releash Thread ID>",
@@ -54,9 +52,11 @@
 }
 ```
 
-コード変更がない場合は`commit_required: false`、`commit_message: ""`とする。
+コード変更がない場合は`commit_message`を空文字列にする。
 
-完了できない場合は`ready: false`とし、`replies: []`、`summary`へ理由を書く。
+完了できない場合は`replies`を空配列にし、`summary`へ理由を書く。
+
+`replies`の件数が後続の分岐を決める。空配列にすればcommit、push、replyは実行されない。
 
 ## 禁止事項
 

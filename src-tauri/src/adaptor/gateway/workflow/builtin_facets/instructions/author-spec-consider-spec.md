@@ -9,4 +9,6 @@ Spec Validatorの結果を検討し、修正へ進めるFindingを確定する�
 - Findingのownerが根本原因の文書として妥当か確認し、妥当でなければ棄却する。ownerの付け替えはValidatorの次の周回に委ねる。
 - 成立したFindingをownerで絞り込まない。owner文書が複数にまたがっていても、成立したものはすべて`accepted_finding_ids`へ入れる。
 
-成立したFindingが一つでもあれば`FIX`、なければ`PASS`にする。正本から解けない判断だけ、一つの質問を付けて`NEEDS_HUMAN`にする。accepted／rejected ID、digest、一つの質問または空文字列を提出する。
+accepted／rejected ID、digest、一つの質問または空文字列を提出する。正本から解けない判断だけ`question`へ一つの質問を入れ、それ以外は空文字列にする。
+
+`accepted_finding_ids`の件数と`question`の有無が後続の分岐を決める。受理が一件でもあればRepairへ、なければFinalReviewへ進む。`question`が空でなければ、受理の有無によらずHumanDecisionへ送られる。

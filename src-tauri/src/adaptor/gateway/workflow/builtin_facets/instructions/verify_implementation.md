@@ -36,10 +36,11 @@ Taskの意味と各項目の扱いは`implement-task` Knowledgeに従う。
 
 `implementation-verification` Artifactを提出する。
 
-- 全TaskのOutputとVerifyが成立し、かつ品質ゲートのcommandが全て成功した場合は`status: COMPLETE`とし、`issues`と`unverifiable`を空配列にする。
-- 実装の不備が一件でもある場合は`status: INCOMPLETE`とし、`issues`へ「どのTaskのどの`condition`、またはどのcommandが、何を根拠に不成立か」を一件ずつ、再分解担当が問題を特定できる形で記載する。
-- 実装の不備はないが判定不能が残る場合は`status: UNVERIFIABLE`とする。
-- 判定不能は`status`によらず`unverifiable`へ記載する。どのcommandまたは`condition`が、何を実行前提として満たせなかったために判定できないかを一件ずつ書く。
+- `issues`へ実装の不備を、「どのTaskのどの`condition`、またはどのcommandが、何を根拠に不成立か」の形で一件ずつ、再分解担当が問題を特定できるように記載する。
+- `unverifiable`へ判定不能を、どのcommandまたは`condition`が、何を実行前提として満たせなかったために判定できないかの形で一件ずつ記載する。
+- 全TaskのOutputとVerifyが成立し、かつ品質ゲートのcommandが全て成功した場合は、`issues`と`unverifiable`をどちらも空配列にする。
+
+`issues`の件数が後続の分岐を決める。空配列にすれば再分解へ戻らず、Human checkpointへ送られる。実装で解消できないものを`issues`へ入れない。
 
 ## 禁止事項
 

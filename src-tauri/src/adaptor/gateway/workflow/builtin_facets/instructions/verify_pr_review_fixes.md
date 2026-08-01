@@ -19,8 +19,8 @@ PR review修正の実装後の一括検証ゲートとして、修正計画の�
 
 `fix-verification` Artifactを提出する。
 
-- 全Taskの`acceptance_criteria`が成立し、かつ検証commandが全て成功した場合だけ`complete: true`、`issues`は空配列にする。
-- それ以外は`complete: false`とし、`issues`へ「どのTaskのどの条件、またはどのcommandが、何を根拠に不成立か」を一件ずつ、修正担当が特定できる形で記載する。
+- 全Taskの`acceptance_criteria`が成立し、かつ検証commandが全て成功した場合だけ`issues`を空配列にする。
+- それ以外は`issues`へ「どのTaskのどの条件、またはどのcommandが、何を根拠に不成立か」を一件ずつ、修正担当が特定できる形で記載する。
 
 ## 禁止事項
 

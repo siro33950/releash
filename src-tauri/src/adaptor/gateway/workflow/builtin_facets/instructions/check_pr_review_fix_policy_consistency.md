@@ -44,7 +44,6 @@
 
 ```json
 {
-  "verdict": "CONSISTENT",
   "tasks": [],
   "summary": "全方針が元commentおよび相互に整合しています。"
 }
@@ -54,7 +53,6 @@
 
 ```json
 {
-  "verdict": "NEEDS_CORRECTION",
   "tasks": [{
     "task_id": "policy-task-001",
     "thread_ids": ["<thread-id>"],

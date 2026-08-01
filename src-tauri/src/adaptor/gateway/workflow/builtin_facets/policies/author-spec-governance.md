@@ -40,4 +40,4 @@ Designの完了は、実装者が追加の仕様判断をせず、Design Knowled
 - 書き込める成果物は、検証済み`spec_dir`内の`requirements.md`、`behavior.md`、`design.md`だけである。
 - コード、設定、テスト、参照文書、Knowledgeを変更しない。
 - 文書本文をArtifactへ複製しない。Artifactには入力参照、Finding、判断、digest、要約だけを記録する。
-- 既存文書を更新する場合は、意味が変わらないIDを維持し、人間のFinalReview feedbackを該当文書の修正入力として扱う。
+- 既存文書を更新する場合は、意味が変わらないIDを維持する。

@@ -80,14 +80,18 @@ schemas:
   fix-verification:
     type: object
     properties:
-      complete:
-        type: boolean
       issues:
         type: array
         items: workflow-text
     required:
-    - complete
     - issues
+  fix-verification-scan:
+    type: object
+    properties:
+      has_issues:
+        type: boolean
+    required:
+    - has_issues
 
 nodes:
 
@@ -166,10 +170,18 @@ nodes:
   inputs:
   - create_fix_plan
   rules:
+  - next: check_fix_verification
+- name: check_fix_verification
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node verify_fixes --json |
+    jq '{has_issues: (.artifact.issues | length > 0)}'
+  artifact: fix-verification-scan
+  rules:
   - when:
-      on: complete
-      then: check_open_threads
-    next: implement_fix_plan
+      on: has_issues
+      then: implement_fix_plan
+    next: check_open_threads
 - name: fix_confirmation
   session:
     model: claude-opus-5

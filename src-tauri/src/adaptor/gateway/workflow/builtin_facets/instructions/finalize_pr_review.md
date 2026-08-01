@@ -10,18 +10,18 @@
 
 ## 事前確認
 
-1. `ready`が`true`であることを確認する。
+1. `replies`が空でないことを確認する。
 2. 各replyのThread ID、database ID、返信文、outcome、summaryが欠落していないことを確認する。
 
 入力が人間の確認内容と一致しない場合は、何も実行せず報告する。
 
 ## CommitとPush
 
-`commit_required: true`の場合だけ、現在の作業ツリーの変更をstageし、`commit_message`をそのまま使ってcommitする。
+`commit_message`が空でない場合だけ、現在の作業ツリーの変更をstageし、`commit_message`をそのまま使ってcommitする。
 
 commit成功後にpushする。commitまたはpushが失敗した場合はGitHubへreplyせず、ThreadもResolveしない。
 
-`commit_required: false`の場合はcommitとpushを行わない。
+`commit_message`が空の場合はcommitとpushを行わない。
 
 ## GitHub reply
 

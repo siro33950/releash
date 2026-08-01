@@ -31,11 +31,6 @@ schemas:
   spec-input:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - READY
-        - NEEDS_HUMAN
       spec_dir: string
       primary_sources:
         type: array
@@ -49,7 +44,6 @@ schemas:
       question: string
       summary: string
     required:
-    - status
     - spec_dir
     - primary_sources
     - additional_sources
@@ -60,24 +54,11 @@ schemas:
   document-result:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - READY
-        - NEEDS_HUMAN
-      document:
-        type: string
-        enum:
-        - REQUIREMENTS
-        - BEHAVIOR
-        - DESIGN
       path: string
       digest: string
       question: string
       summary: string
     required:
-    - status
-    - document
     - path
     - digest
     - question
@@ -86,12 +67,6 @@ schemas:
   validation-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - CLEAR
-        - FINDINGS
-        - NEEDS_HUMAN
       digest: string
       findings:
         type: array
@@ -99,7 +74,6 @@ schemas:
       question: string
       summary: string
     required:
-    - verdict
     - digest
     - findings
     - question
@@ -108,12 +82,6 @@ schemas:
   consideration-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - PASS
-        - FIX
-        - NEEDS_HUMAN
       digest: string
       accepted_finding_ids:
         type: array
@@ -124,7 +92,6 @@ schemas:
       question: string
       summary: string
     required:
-    - verdict
     - digest
     - accepted_finding_ids
     - rejected_finding_ids
@@ -134,12 +101,6 @@ schemas:
   repair-result:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - CHANGED
-        - NO_CHANGE
-        - NEEDS_HUMAN
       changed_documents:
         type: array
         items: document-reference
@@ -150,7 +111,6 @@ schemas:
       question: string
       summary: string
     required:
-    - status
     - changed_documents
     - digest
     - addressed_finding_ids
@@ -160,15 +120,9 @@ schemas:
   human-decision-result:
     type: object
     properties:
-      state:
-        type: string
-        enum:
-        - AWAITING
-        - RESOLVED
       resume:
         type: string
         enum:
-        - AWAITING
         - INTAKE
         - REQUIREMENTS
         - BEHAVIOR
@@ -179,28 +133,43 @@ schemas:
       decision: string
       summary: string
     required:
-    - state
     - resume
     - question
     - answer
     - decision
     - summary
 
-  final-review-result:
+  question-scan:
+    type: object
+    properties:
+      needs_human:
+        type: boolean
+    required:
+    - needs_human
+
+  validation-scan:
     type: object
     properties:
       verdict:
         type: string
         enum:
-        - AWAITING
-        - APPROVED
-        - REVISE
-      feedback: string
-      summary: string
+        - CLEAR
+        - FINDINGS
+        - NEEDS_HUMAN
     required:
     - verdict
-    - feedback
-    - summary
+
+  consideration-scan:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - PASS
+        - FIX
+        - NEEDS_HUMAN
+    required:
+    - verdict
 
 nodes:
 # IntakeSequence
@@ -221,11 +190,19 @@ nodes:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: requirements_author
-        NEEDS_HUMAN: human_decision
+  - next: check_intake
+
+- name: check_intake
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_intake --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: requirements_author
 
 # AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
 - name: requirements_author
@@ -247,11 +224,19 @@ nodes:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: behavior_author
-        NEEDS_HUMAN: human_decision
+  - next: check_requirements
+
+- name: check_requirements
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node requirements_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: behavior_author
 
 - name: behavior_author
   session:
@@ -275,11 +260,19 @@ nodes:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: design_author
-        NEEDS_HUMAN: human_decision
+  - next: check_behavior
+
+- name: check_behavior
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node behavior_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: design_author
 
 - name: design_author
   session:
@@ -305,11 +298,19 @@ nodes:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: spec_validate
-        NEEDS_HUMAN: human_decision
+  - next: check_design
+
+- name: check_design
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node design_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: spec_validate
 
 # SpecSequence: 3文書を1単位として検証 -> 検討 -> 修正し、Findingがなくなるまで繰り返す。
 - name: spec_validate
@@ -333,18 +334,27 @@ nodes:
   - design_author
   - spec_repair
   - human_decision
-  - final_review
   rules:
   - loop_guard:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
+  - next: check_validation
+
+- name: check_validation
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_validate --json |
+    jq '{verdict: (if (.artifact.question | length > 0) then "NEEDS_HUMAN"
+    elif (.artifact.findings | length > 0) then "FINDINGS" else "CLEAR" end)}'
+  artifact: validation-scan
+  rules:
   - switch:
       on: verdict
       cases:
         CLEAR: final_review
         FINDINGS: spec_consider
-        NEEDS_HUMAN: human_decision
+    next: human_decision
 
 - name: spec_consider
   session:
@@ -364,12 +374,22 @@ nodes:
   - spec_intake
   - spec_validate
   rules:
+  - next: check_consideration
+
+- name: check_consideration
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_consider --json |
+    jq '{verdict: (if (.artifact.question | length > 0) then "NEEDS_HUMAN"
+    elif (.artifact.accepted_finding_ids | length > 0) then "FIX" else "PASS" end)}'
+  artifact: consideration-scan
+  rules:
   - switch:
       on: verdict
       cases:
         PASS: final_review
         FIX: spec_repair
-        NEEDS_HUMAN: human_decision
+    next: human_decision
 
 - name: spec_repair
   session:
@@ -390,18 +410,24 @@ nodes:
   - spec_validate
   - spec_consider
   - human_decision
-  - final_review
   rules:
   - loop_guard:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        CHANGED: spec_validate
-        NO_CHANGE: spec_validate
-        NEEDS_HUMAN: human_decision
+  - next: check_repair
+
+- name: check_repair
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_repair --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: spec_validate
 
 # HumanDecisionSequence: 文書レビューではなく、自動判断不能な一点だけを解決する。
 - name: human_decision
@@ -422,7 +448,6 @@ nodes:
   - spec_validate
   - spec_consider
   - spec_repair
-  - final_review
   rules:
   - loop_guard:
       max_iterations: 64
@@ -430,14 +455,13 @@ nodes:
   - switch:
       on: resume
       cases:
-        AWAITING: human_decision
         INTAKE: spec_intake
         REQUIREMENTS: requirements_author
         BEHAVIOR: behavior_author
         DESIGN: design_author
         SPEC: spec_validate
 
-# FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。
+# FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
 - name: final_review
   session:
     model: claude-opus-5
@@ -450,7 +474,6 @@ nodes:
       - spec-behavior
       - spec-design
       instruction: author-spec-final-review
-  artifact: final-review-result
   inputs:
   - request
   - spec_intake
@@ -460,17 +483,3 @@ nodes:
   - spec_validate
   - spec_consider
   - spec_repair
-  rules:
-  - loop_guard:
-      max_iterations: 64
-      on_exhausted: human_decision
-      reset_on: spec_repair
-  - switch:
-      on: verdict
-      cases:
-        AWAITING: final_review
-        APPROVED: authoring_complete
-        REVISE: spec_repair
-
-- name: authoring_complete
-  command: "true"

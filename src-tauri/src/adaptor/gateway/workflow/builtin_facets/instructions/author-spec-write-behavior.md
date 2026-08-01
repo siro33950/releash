@@ -12,6 +12,6 @@
 - Requirementsにない挙動、内部実装方式、偶発的な現行値を仕様化しない。
 - `spec_dir/behavior.md`以外を変更しない。
 
-Requirementsが不足してBehaviorを一意に書けない場合は、必要なRequirements判断を一問にして`NEEDS_HUMAN`にする。内部実装の選択を人間へ送らない。
+Requirementsが不足してBehaviorを一意に書けない場合は、必要なRequirements判断を一問にして`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。内部実装の選択を人間へ送らない。
 
-完成時は`document: BEHAVIOR`、`status: READY`、path、現在digest、空の`question`を提出する。
+完成時はpath、現在digest、空の`question`を提出する。

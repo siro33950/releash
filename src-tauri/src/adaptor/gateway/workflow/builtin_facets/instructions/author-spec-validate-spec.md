@@ -19,4 +19,6 @@
 - 同じ根本原因の問題を複数Findingへ分割しない。
 - `spec_repair`から戻った場合は、前周で扱ったFindingが解消したかを確認したうえで、3文書全体を改めて検証する。
 
-Findingがなければ`CLEAR`、あれば`FINDINGS`にする。正本の矛盾や必須資料・権限の不足で自動判断不能な場合だけ、一つの質問を付けて`NEEDS_HUMAN`にする。3文書のcombined digestを提出し、文書を変更しない。
+発見した全Findingと3文書のcombined digestを提出し、文書を変更しない。正本の矛盾や必須資料・権限の不足で自動判断不能な場合だけ、一つの質問を`question`へ入れる。それ以外は`question`を空文字列にする。
+
+`findings`の件数と`question`の有無が後続の分岐を決める。`question`が空でなければ、Findingの有無によらずHumanDecisionへ送られる。

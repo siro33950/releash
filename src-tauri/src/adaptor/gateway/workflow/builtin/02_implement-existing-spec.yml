@@ -24,7 +24,6 @@ schemas:
     - reference_documents
     - directives
   requirement-id: string
-  implement-task-id: string
   implement-task-verification:
     type: object
     properties:
@@ -38,11 +37,6 @@ schemas:
       requirements:
         type: array
         items: requirement-id
-      depends_on:
-        type: array
-        items: implement-task-id
-      parallel:
-        type: boolean
       files:
         type: array
         items: document-reference
@@ -55,36 +49,29 @@ schemas:
     required:
     - task_id
     - requirements
-    - depends_on
-    - parallel
     - files
     - outputs
     - verify
   implement-tasks:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - READY
-        - NO_TASKS
       tasks:
         type: array
         items: implement-task
       summary: string
     required:
-    - status
     - tasks
     - summary
+  task-scan:
+    type: object
+    properties:
+      has_tasks:
+        type: boolean
+    required:
+    - has_tasks
   implementation-verification:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - COMPLETE
-        - INCOMPLETE
-        - UNVERIFIABLE
       issues:
         type: array
         items: workflow-text
@@ -92,9 +79,15 @@ schemas:
         type: array
         items: workflow-text
     required:
-    - status
     - issues
     - unverifiable
+  verification-scan:
+    type: object
+    properties:
+      has_issues:
+        type: boolean
+    required:
+    - has_issues
 
 nodes:
 
@@ -134,11 +127,18 @@ nodes:
       max_iterations: 3
       on_exhausted: implementation_confirmation
       reset_on: verify_implementation
-  - switch:
-      on: status
-      cases:
-        READY: implement_fanout
-        NO_TASKS: implementation_confirmation
+  - next: check_tasks
+- name: check_tasks
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node create_detailed_design --json |
+    jq '{has_tasks: (.artifact.tasks | length > 0)}'
+  artifact: task-scan
+  rules:
+  - when:
+      on: has_tasks
+      then: implement_fanout
+    next: implementation_confirmation
 - name: implement_fanout
   fanout:
     child: implement_task
@@ -171,12 +171,18 @@ nodes:
   - resolve_request
   - create_detailed_design
   rules:
-  - switch:
-      on: status
-      cases:
-        COMPLETE: implementation_confirmation
-        INCOMPLETE: create_detailed_design
-        UNVERIFIABLE: implementation_confirmation
+  - next: check_verification
+- name: check_verification
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node verify_implementation --json |
+    jq '{has_issues: (.artifact.issues | length > 0)}'
+  artifact: verification-scan
+  rules:
+  - when:
+      on: has_issues
+      then: create_detailed_design
+    next: implementation_confirmation
 - name: implementation_confirmation
   session:
     model: claude-opus-5

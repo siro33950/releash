@@ -47,7 +47,6 @@
 
 ```json
 {
-  "verdict": "CONSISTENT",
   "tasks": [],
   "summary": "全Open Threadの修正方針がSpecと相互に整合しています。"
 }
@@ -57,7 +56,6 @@
 
 ```json
 {
-  "verdict": "NEEDS_CORRECTION",
   "tasks": [
     {
       "task_id": "policy-task-001",

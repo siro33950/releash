@@ -12,6 +12,6 @@
 - 既存文書を更新する場合、意味が変わらないRequirement IDを維持する。
 - `spec_dir/requirements.md`以外を変更しない。
 
-入力から決められない観測可能な要求または権威衝突がある場合は推測せず、具体的な一問を`question`へ入れて`NEEDS_HUMAN`にする。
+入力から決められない観測可能な要求または権威衝突がある場合は推測せず、具体的な一問を`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。
 
-完成時は`document: REQUIREMENTS`、`status: READY`、path、現在digest、空の`question`を提出する。
+完成時はpath、現在digest、空の`question`を提出する。
