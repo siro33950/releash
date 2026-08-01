@@ -29,7 +29,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "01_author-spec.yml",
         content: BUILTIN_01_AUTHOR_SPEC,
-        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、文書ごとの検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
+        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、3文書を1単位として検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
     },
     BuiltinEntry {
         filename: "02_implement-existing-spec.yml",
