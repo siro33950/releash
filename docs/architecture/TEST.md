@@ -118,18 +118,3 @@ pub fn create_test_branch() -> Branch { /* ... */ }
 ## CI
 
 CI と同じコマンドをローカルでも使う。詳細はプロジェクト root の `CLAUDE.md` を参照。
-
-## Agent TUI test harness
-
-Agent TUI cutoverの外部保証とscenario ownerは[`specs/milestone-87-agent-tui-cutover/acceptance-contract.md`](../../specs/milestone-87-agent-tui-cutover/acceptance-contract.md)を正本とする。
-
-mock IPCとは別に、実PTYとout-of-band lifecycle signalを通るfixtureを次で実行する。
-
-```bash
-cd src-tauri
-cargo test --locked --test agent_tui_harness
-```
-
-この入口は実PTY入出力、backend readerの継続、resize、provider process終了、lifecycle signalの欠落・重複・逆順・遅延・scope混入・不正payloadと、integration branchのrelease境界をself-testする。これはproduct acceptanceではない。
-
-共通fixtureは`src-tauri/tests/support/agent_tui_fixture.rs`に置く。後続Issueはfixtureを利用したproduct acceptanceを別targetへ追加し、担当scenarioを実装前に失敗、実装後に成功させる。
