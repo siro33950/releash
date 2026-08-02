@@ -100,8 +100,12 @@ schemas:
       issues:
         type: array
         items: workflow-text
+      unverifiable:
+        type: array
+        items: workflow-text
     required:
     - issues
+    - unverifiable
   fix-verification-scan:
     type: object
     properties:
@@ -299,6 +303,7 @@ nodes:
   inputs:
   - import_pr_review_comments
   - create_pr_review_fix_plan
+  - verify_pr_review_fixes
   rules:
   - next: check_finalization
 

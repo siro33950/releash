@@ -8,6 +8,7 @@
 
 - `import_pr_review_comments` Artifactの全Thread ID
 - `create_pr_review_fix_plan` Artifact
+- `verify_pr_review_fixes` Artifactの`issues`と`unverifiable`
 - 各Threadの本文と全履歴
 - 最新の`[FIX_POLICY]`、`[PR_REVIEW_REPLY]`、`[FIX_RESULT]`
 - 現在のgit差分と検証結果
@@ -20,7 +21,7 @@
 - `[PR_REVIEW_REPLY]`がある場合、reasonとreplyが元commentに対応している。
 - 全Threadについてdatabase IDが取得できる。
 - commit対象ファイルが今回の修正Taskに限定されている。
-- 必要な検証が完了している。未実施の場合は理由が明確である。
+- `verify_pr_review_fixes`の`issues`が空である。
 
 一件でも未解消または不明なThreadがあれば`replies`を空配列にする。commit、push、reply、Resolveは実行対象にならない。
 
@@ -30,7 +31,7 @@
 
 - Threadごとの元commentと対応結果
 - 現在のgit差分とcommit message
-- 実行した検証と結果
+- 検証結果（`issues`の各項目、およびこの環境で判定できなかった`unverifiable`の各項目と満たせなかった実行前提）
 - GitHubへ投稿する正確な返信文
 - reply成功後のReleash Thread outcomeとsummary
 

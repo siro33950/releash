@@ -2,13 +2,13 @@
 
 修正確認Checkpointとして、検証結果と修正差分を人間へ提示し、明示的な承認を待つ。
 
-このNodeは提示だけを行う。検証をやり直さない。コードとThreadを変更しない。
+このNodeは検証をやり直さない。渡された結果を提示し、人間と合意した修正だけを行う。合意前にコードとThreadを変更しない。
 
 ## 入力
 
 - `resolve_request` Artifactの`spec_dir`
 - `create_fix_plan` Artifactの`tasks`
-- `verify_fixes` Artifactの`issues`
+- `verify_fixes` Artifactの`issues`と`unverifiable`
 - 現在の修正差分
 - 残っているOpen Threadの本文と履歴
 
@@ -24,13 +24,14 @@
 
 ## 検証結果
 - `issues`の各項目（空の場合はその旨）
+- この環境で判定できなかった検証（`unverifiable`の各項目と、満たせなかった実行前提）
 
 ## Thread
 - Resolve済みThreadの対応
 - Open Threadが残っている場合はその内容と未解消理由
 ```
 
-`issues`は要約せず、記載された内容をそのまま提示する。Open Threadの件数だけで完了可否を決めない。
+`issues`と`unverifiable`は要約せず、記載された内容をそのまま提示する。判定できなかった検証を、成立とも不成立とも言い換えない。Open Threadの件数だけで完了可否を決めない。
 
 ## 人間との対話
 

@@ -83,8 +83,12 @@ schemas:
       issues:
         type: array
         items: workflow-text
+      unverifiable:
+        type: array
+        items: workflow-text
     required:
     - issues
+    - unverifiable
   fix-verification-scan:
     type: object
     properties:
@@ -193,5 +197,6 @@ nodes:
       instruction: fix-confirmation
   inputs:
   - resolve_request
+  - check_open_threads
   - create_fix_plan
   - verify_fixes

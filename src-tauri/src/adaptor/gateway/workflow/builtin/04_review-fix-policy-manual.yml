@@ -188,4 +188,5 @@ nodes:
       instruction: policy-confirmation
   inputs:
   - resolve_request
+  - check_open_threads
   - check_fix_policy_consistency

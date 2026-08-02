@@ -4,7 +4,7 @@
 
 ## 手順
 
-1. `releash workflow status "$RELEASH_WORKFLOW_EXECUTION_ID" --json`を読み、現在Nodeの直前に完了したNodeと、そのArtifactの`question`を対象にする。古い質問や別Sequenceの質問を混ぜない。
+1. `releash workflow status "$RELEASH_WORKFLOW_EXECUTION_ID" --json`を読み、直近で空でない`question`を提出したNodeのArtifactを対象にする。判定用のCommand Nodeは`question`を持たないため対象にしない。古い質問や別Sequenceの質問を混ぜない。
 2. 確認済み事実、選択が必要な点、各選択の影響を簡潔に示し、一度に一つだけ質問する。
 3. 明示回答を得るまでArtifactを提出しない。回答を待つ間に暫定値を提出しない。
 4. 明示回答を得たら、回答を狭めたり拡張したりせず`answer`と`decision`へ記録する。
