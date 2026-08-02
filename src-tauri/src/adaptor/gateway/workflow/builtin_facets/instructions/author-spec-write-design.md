@@ -14,4 +14,4 @@
 
 公開契約を正本から選べない、canonical architectureが矛盾する、必須資料・権限が不足する場合だけ、具体的な一問を`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。既存規約から決められる内部設計はこのNodeで決める。
 
-完成時はpath、現在digest、空の`question`を提出する。
+完成時は空の`question`を提出する。

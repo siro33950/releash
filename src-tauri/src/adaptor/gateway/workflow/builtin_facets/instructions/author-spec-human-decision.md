@@ -8,7 +8,7 @@
 2. 確認済み事実、選択が必要な点、各選択の影響を簡潔に示し、一度に一つだけ質問する。
 3. 明示回答を得るまでArtifactを提出しない。回答を待つ間に暫定値を提出しない。
 4. 明示回答を得たら、回答を狭めたり拡張したりせず`answer`と`decision`へ記録する。
-5. 解決対象に応じて`INTAKE`、`REQUIREMENTS`、`BEHAVIOR`、`DESIGN`、`SPEC`の再開先を`resume`へ入れる。3文書が揃っている場合は`SPEC`を選び、Validatorから再開する。
+5. `question`を提出したNodeに対応する再開先を`resume`へ入れる。`spec_intake`なら`INTAKE`、各Authorなら`REQUIREMENTS`／`BEHAVIOR`／`DESIGN`、`spec_validate`なら`VALIDATE`、`spec_consider`なら`CONSIDER`、`spec_repair`なら`REPAIR`。人間がより上流からのやり直しを明示した場合だけ、その地点を選ぶ。
 6. 記録内容を人間に確認可能な形で示してからApprovalを求める。
 
 曖昧な回答を決定扱いにしない。文書全体への感想やレビューを求めない。Secret値そのものを質問・Artifactへ保存しない。

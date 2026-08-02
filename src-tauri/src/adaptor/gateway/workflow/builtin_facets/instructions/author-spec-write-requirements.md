@@ -14,4 +14,4 @@
 
 入力から決められない観測可能な要求または権威衝突がある場合は推測せず、具体的な一問を`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。
 
-完成時はpath、現在digest、空の`question`を提出する。
+完成時は空の`question`を提出する。

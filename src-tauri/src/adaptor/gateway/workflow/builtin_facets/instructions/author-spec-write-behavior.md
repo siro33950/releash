@@ -14,4 +14,4 @@
 
 Requirementsが不足してBehaviorを一意に書けない場合は、必要なRequirements判断を一問にして`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。内部実装の選択を人間へ送らない。
 
-完成時はpath、現在digest、空の`question`を提出する。
+完成時は空の`question`を提出する。

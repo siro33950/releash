@@ -54,15 +54,9 @@ schemas:
   document-result:
     type: object
     properties:
-      path: string
-      digest: string
       question: string
-      summary: string
     required:
-    - path
-    - digest
     - question
-    - summary
 
   validation-result:
     type: object
@@ -127,7 +121,9 @@ schemas:
         - REQUIREMENTS
         - BEHAVIOR
         - DESIGN
-        - SPEC
+        - VALIDATE
+        - CONSIDER
+        - REPAIR
       question: string
       answer: string
       decision: string
@@ -459,7 +455,9 @@ nodes:
         REQUIREMENTS: requirements_author
         BEHAVIOR: behavior_author
         DESIGN: design_author
-        SPEC: spec_validate
+        VALIDATE: spec_validate
+        CONSIDER: spec_consider
+        REPAIR: spec_repair
 
 # FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
 - name: final_review
