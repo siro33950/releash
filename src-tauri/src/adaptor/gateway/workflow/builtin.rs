@@ -347,8 +347,23 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "existing-spec-confirmation",
-        content: include_str!("builtin_facets/instructions/existing-spec-confirmation.md"),
+        key: "fix-confirmation",
+        content: include_str!("builtin_facets/instructions/fix-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implementation-confirmation",
+        content: include_str!("builtin_facets/instructions/implementation-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "policy-confirmation",
+        content: include_str!("builtin_facets/instructions/policy-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-confirmation",
+        content: include_str!("builtin_facets/instructions/review-confirmation.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,

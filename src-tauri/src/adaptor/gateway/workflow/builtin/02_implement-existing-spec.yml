@@ -191,6 +191,8 @@ nodes:
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: existing-spec-confirmation
+      instruction: implementation-confirmation
   inputs:
   - resolve_request
+  - create_detailed_design
+  - verify_implementation

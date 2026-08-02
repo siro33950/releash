@@ -251,6 +251,7 @@ nodes:
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: existing-spec-confirmation
+      instruction: review-confirmation
   inputs:
   - resolve_request
+  - check_full_review_threads

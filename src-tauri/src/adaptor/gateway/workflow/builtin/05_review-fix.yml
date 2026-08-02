@@ -190,6 +190,8 @@ nodes:
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: existing-spec-confirmation
+      instruction: fix-confirmation
   inputs:
   - resolve_request
+  - create_fix_plan
+  - verify_fixes
