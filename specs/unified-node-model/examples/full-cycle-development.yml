@@ -1,13 +1,18 @@
-# 統一 Node モデルの例: 開発フロー全体の親 WorkflowDefinition。
-# collect_inputs で spec_dir を確定し、部品 authoring-spec / implementation / review を ref で束ねる。
-# 元は builtin workflow full-cycle-development。構文の正本は ../syntax.md。
-
+# 統一 Node モデルの実例: 開発フロー全体を単一の WorkflowDefinition で書いたもの。
+# collect_inputs で spec_dir を確定し、authoring（仕様策定）→ implementation（実装）→
+# review（レビューと修正）を子 sequence として束ねる。定義を跨ぐ参照は持たず、部品は
+# input パラメータを持つ sequence として親の children に置く。構文の正本は ../syntax.md。
 name: full-cycle-development
-description: 入力収集で spec_dir を確定し、authoring-spec（仕様策定）→ implementation（実装）→ review（full-review・fix-policy・review-fix）を Human checkpoint 付きで一気通貫に実行する。
+description: 入力収集で spec_dir を確定し、authoring（仕様策定）→ implementation（実装）→ review（full-review・fix-policy・review-fix）を Human checkpoint 付きで一気通貫に実行する。
 
 schemas:
   document-reference: string
   request-text: string
+  workflow-text: string
+  requirement-id: string
+  thread-id: string
+  implement-task-id: string
+
   collected-inputs:
     type: object
     properties:
@@ -23,7 +28,203 @@ schemas:
     - requests
     - spec_dir
 
+  # ---- authoring ----
+
+  behavior-authoring-result:
+    type: object
+    properties:
+      behavior_complete:
+        type: boolean
+    required:
+    - behavior_complete
+
+  design-authoring-result:
+    type: object
+    properties:
+      design_complete:
+        type: boolean
+    required:
+    - design_complete
+
+  # ---- implementation ----
+
+  implement-task-verification:
+    type: object
+    properties:
+      condition: string
+    required:
+    - condition
+
+  implement-task:
+    type: object
+    properties:
+      task_id: string
+      requirements:
+        type: array
+        items: requirement-id
+      depends_on:
+        type: array
+        items: implement-task-id
+      parallel:
+        type: boolean
+      files:
+        type: array
+        items: document-reference
+      outputs:
+        type: array
+        items: workflow-text
+      verify:
+        type: array
+        items: implement-task-verification
+    required:
+    - task_id
+    - requirements
+    - depends_on
+    - parallel
+    - files
+    - outputs
+    - verify
+
+  implement-tasks:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: implement-task
+    required:
+    - tasks
+
+  implement-task-check-result:
+    type: object
+    properties:
+      task_id: string
+      complete:
+        type: boolean
+      reason: string
+    required:
+    - task_id
+    - complete
+    - reason
+
+  integration-check:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      issues:
+        type: array
+        items: workflow-text
+    required:
+    - complete
+    - issues
+
+  # ---- review ----
+
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+
+  policy-correction-task:
+    type: object
+    properties:
+      task_id: string
+      thread_ids:
+        type: array
+        items: thread-id
+      problem: string
+      required_changes:
+        type: array
+        items: workflow-text
+    required:
+    - task_id
+    - thread_ids
+    - problem
+    - required_changes
+
+  policy-consistency-result:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - CONSISTENT
+        - NEEDS_CORRECTION
+      tasks:
+        type: array
+        items: policy-correction-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+
+  fix-plan-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      target_files:
+        type: array
+        items: document-reference
+      implementation_steps:
+        type: array
+        items: workflow-text
+      acceptance_criteria:
+        type: array
+        items: workflow-text
+      non_goals:
+        type: array
+        items: workflow-text
+      source_policy: string
+    required:
+    - task_id
+    - thread_id
+    - target_files
+    - implementation_steps
+    - acceptance_criteria
+    - non_goals
+    - source_policy
+
+  fix-plan:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: fix-plan-task
+      summary: string
+    required:
+    - tasks
+    - summary
+
+  fix-verification:
+    type: object
+    properties:
+      task_id: string
+      fixed:
+        type: boolean
+      reason: string
+    required:
+    - task_id
+    - fixed
+    - reason
+
 nodes:
+  # spec_dir を collect_inputs で確定し、以降の3部品へ input パラメータ spec として配る。
   main:
     sequence:
       children:
@@ -32,13 +233,13 @@ nodes:
             goal: request
       - authoring:
           inputs:
-            request: collect_inputs.spec_dir
+            spec: collect_inputs.spec_dir
       - implementation:
           inputs:
-            request: collect_inputs.spec_dir
+            spec: collect_inputs.spec_dir
       - review:
           inputs:
-            request: collect_inputs.spec_dir
+            spec: collect_inputs.spec_dir
 
   # 導入 node: spec_dir をここで確定し、収集した documents / requests の
   # 実体は spec_dir 配下のファイルとして worktree に書く
@@ -53,14 +254,880 @@ nodes:
     - goal
     artifact: collected-inputs
 
-  # Spec 作成（authoring-spec.yml）
+  # ==== authoring: spec_dir 配下に要求・振る舞い・設計の Spec 文書を作る ====
+
+  # 要求 → 振る舞い → 設計 → 承認 → Thread 整理。各 authoring ステージは
+  # 「書く → 不備なら前段を直して書き直す」のループを自分のスコープに閉じる。
   authoring:
-    ref: authoring-spec
+    sequence:
+      children:
+      - write_requirements:
+          inputs:
+            spec: spec
+          rules:
+          - next: authoring_behavior
+      - authoring_behavior:
+          inputs:
+            spec: spec
+          rules:
+          - next: authoring_design
+      - authoring_design:
+          inputs:
+            spec: spec
+            behavior: authoring_behavior
+          rules:
+          - next: spec_confirmation
+      - spec_confirmation:
+          inputs:
+            spec: spec
+          rules:
+          - next: resolve_open_threads
+      - resolve_open_threads
+    input:
+    - spec
 
-  # 実装（implementation.yml）
+  # 振る舞い作成ステージ: 書く → 不備なら要求を直し behavior を消して書き直す（loop_guard 2）。
+  # 終端はステージの結果報告（complete で確定したか、上限到達で妥協したかを報告する）。
+  authoring_behavior:
+    sequence:
+      output: write_behavior
+      children:
+      - write_behavior:
+          inputs:
+            spec: spec
+          rules:
+          - when:
+              on: behavior_complete
+              then: behavior_report
+            next: refine_requirements
+      - refine_requirements:
+          inputs:
+            spec: spec
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: behavior_report
+          - next: delete_behavior
+      - delete_behavior:
+          command: "rm -f -- '{{ spec }}/behavior.md'"
+          input:
+          - spec
+          inputs:
+            spec: spec
+          rules:
+          - next: write_behavior
+      - behavior_report:
+          inputs:
+            spec: spec
+            result: write_behavior
+    input:
+    - spec
+    artifact: behavior-authoring-result
+
+  # 設計作成ステージ: 書く → 不備なら振る舞いを直し design を消して書き直す（loop_guard 2）。
+  authoring_design:
+    sequence:
+      output: write_design
+      children:
+      - write_design:
+          inputs:
+            spec: spec
+            behavior: behavior
+          rules:
+          - when:
+              on: design_complete
+              then: design_report
+            next: refine_behavior
+      - refine_behavior:
+          inputs:
+            spec: spec
+            behavior: behavior
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: design_report
+          - next: delete_design
+      - delete_design:
+          command: "rm -f -- '{{ spec }}/design.md'"
+          input:
+          - spec
+          inputs:
+            spec: spec
+          rules:
+          - next: write_design
+      - design_report:
+          inputs:
+            spec: spec
+            result: write_design
+    input:
+    - spec
+    - behavior
+    artifact: design-authoring-result
+
+  # ---- authoring の葉 ----
+
+  write_requirements:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge: spec-requirements
+        instruction: write_requirements
+    input:
+    - spec
+
+  write_behavior:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - releash-thread-cli
+        instruction: write_behavior
+    input:
+    - spec
+    artifact: behavior-authoring-result
+
+  refine_requirements:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - releash-thread-cli
+        instruction: refine_requirements
+    input:
+    - spec
+
+  behavior_report:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        instruction: behavior_report
+    input:
+    - spec
+    - result
+
+  write_design:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: write_design
+    input:
+    - spec
+    - behavior
+    artifact: design-authoring-result
+
+  refine_behavior:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - releash-thread-cli
+        instruction: refine_behavior
+    input:
+    - spec
+    - behavior
+
+  design_report:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        instruction: design_report
+    input:
+    - spec
+    - result
+
+  spec_confirmation:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: spec_confirmation
+    input:
+    - spec
+    completion: approval
+
+  resolve_open_threads:
+    command: >-
+      set -o pipefail;
+      releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+      jq -r '.[].id' |
+      while IFS= read -r thread_id; do
+      releash review resolve "$thread_id" --session-id "$RELEASH_SESSION_ID"
+      --outcome resolved --summary "実装開始前のThread整理" --json >/dev/null || exit $?;
+      done
+
+  # ==== implementation: 詳細設計 → タスクごとの隔離実装 → 統合 → 整合確認 ====
+
   implementation:
-    ref: implementation
+    sequence:
+      children:
+      - create_detailed_design:
+          inputs:
+            spec: spec
+          rules:
+          - next: implement_all
+      - implement_all:
+          inputs:
+            spec: spec
+          rules:
+          - next: merge_implementations
+      - merge_implementations:
+          inputs:
+            spec: spec
+            results: implement_all
+          rules:
+          - next: check_integration
+      - check_integration:
+          inputs:
+            spec: spec
+            results: implement_all
+          rules:
+          - when:
+              on: complete
+              then: implementation_report
+            next: fix_integration
+      - fix_integration:
+          inputs:
+            spec: spec
+            check: check_integration
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: implementation_report
+          - next: check_integration
+      - implementation_report:
+          inputs:
+            spec: spec
+            check: check_integration
+    input:
+    - spec
 
-  # レビューと修正（review.yml）
+  create_detailed_design:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - implement-task
+        instruction: create_detailed_design
+    input:
+    - spec
+    artifact: implement-tasks
+
+  # タスクごとに「実装 → 検証」の一連の流れを隔離 worktree で並走させる。
+  # 各子の diff は branch に残り、統合は merge_implementations が明示的に行う。
+  implement_all:
+    fanout:
+      children:
+      - implement_and_verify:
+          inputs:
+            task: items
+            spec: spec
+      items: create_detailed_design.tasks
+    input:
+    - spec
+    worktree: isolated
+
+  # 部品 sequence: 1 タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  implement_and_verify:
+    sequence:
+      output: verify_task
+      children:
+      - implement_task:
+          inputs:
+            task: task
+            spec: spec
+          rules:
+          - next: verify_task
+      - verify_task:
+          inputs:
+            task: task
+            spec: spec
+    input:
+    - task: implement-task
+    - spec
+    artifact: implement-task-check-result
+
+  implement_task:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        knowledge: implement-task
+        instruction: implement
+    input:
+    - task
+    - spec
+
+  verify_task:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: coding
+        knowledge: implement-task
+        instruction: check_implementation_task
+    input:
+    - task
+    - spec
+    artifact: implement-task-check-result
+
+  # 検証結果（implement_all の子 Artifact 配列）と各 task branch の diff を確認し、
+  # 親 worktree へ統合する。統合は通常の Git 操作（専用構文は持たない）。
+  merge_implementations:
+    session:
+      model: claude-opus-5
+      permission: full
+      facets:
+        policy: coding
+        instruction: merge_implementations
+    input:
+    - spec
+    - results
+
+  check_integration:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: coding
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: check_integration
+    input:
+    - spec
+    - results
+    artifact: integration-check
+
+  fix_integration:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        instruction: fix_integration
+    input:
+    - spec
+    - check
+
+  implementation_report:
+    session:
+      model: gpt-5.6-sol
+      permission: edit
+      facets:
+        policy: coding
+        instruction: implementation_report
+    input:
+    - spec
+    - check
+
+  # ==== review: full-review → review-fix-policy → review-fix のレビューサイクル ====
+
+  # レビューラウンド: review_scan（レビュー実施 + open 判定）と fix_round（修正）を、
+  # クリーンになるかラウンド上限まで繰り返す。整合ループは fix_round 内に閉じ、
+  # ラウンドごとにカウントがリセットされる（loop_guard のリセット境界 = スコープ）。
   review:
-    ref: review
+    sequence:
+      children:
+      - review_scan:
+          inputs:
+            spec: spec
+          rules:
+          - when:
+              on: has_open_threads
+              then: fix_round
+            next: implementation_confirmation
+      - fix_round:
+          inputs:
+            spec: spec
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: implementation_confirmation
+          - next: review_scan
+      - implementation_confirmation:
+          inputs:
+            spec: spec
+    input:
+    - spec
+
+  # 1ラウンドのレビュー実施と open thread 判定（純直列・隣接辺のみ）
+  review_scan:
+    sequence:
+      output: check_full_review_threads
+      children:
+      - full_review_fanout:
+          inputs:
+            spec: spec
+      - verify_full_review_fanout:
+          inputs:
+            spec: spec
+      - check_full_review_threads
+    input:
+    - spec
+    artifact: thread-scan
+
+  # 修正ラウンド: 方針決定 → 整合確認ループ → 修正計画 →
+  # タスクごとに隔離 worktree で修正 + 検証 → 統合
+  fix_round:
+    sequence:
+      children:
+      - scan_open_threads:
+          command: >-
+            releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+            jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+          artifact: thread-scan
+          rules:
+          - next: fix_policy_fanout
+      - fix_policy_fanout:
+          inputs:
+            spec: spec
+          rules:
+          - next: check_fix_policy_consistency
+      - check_fix_policy_consistency:
+          inputs:
+            spec: spec
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: create_fix_plan
+          - switch:
+              on: verdict
+              cases:
+                NEEDS_CORRECTION: fix_policy_conflict_fanout
+                CONSISTENT: create_fix_plan
+      - fix_policy_conflict_fanout:
+          inputs:
+            spec: spec
+          rules:
+          - next: check_fix_policy_consistency
+      - create_fix_plan:
+          inputs:
+            spec: spec
+            consistency: check_fix_policy_consistency
+          rules:
+          - next: fix_all
+      - fix_all:
+          inputs:
+            spec: spec
+          rules:
+          - next: merge_fixes
+      - merge_fixes:
+          inputs:
+            spec: spec
+            results: fix_all
+    input:
+    - spec
+
+  # ---- full-review（12 観点 = 6 分野 × 2 モデル）----
+
+  full_review_fanout:
+    fanout:
+      children:
+      - full_review_acceptance_opus:
+          inputs:
+            spec: spec
+      - full_review_acceptance_codex:
+          inputs:
+            spec: spec
+      - full_review_structure_opus:
+          inputs:
+            spec: spec
+      - full_review_structure_codex:
+          inputs:
+            spec: spec
+      - full_review_quality_opus:
+          inputs:
+            spec: spec
+      - full_review_quality_codex:
+          inputs:
+            spec: spec
+      - full_review_test_opus:
+          inputs:
+            spec: spec
+      - full_review_test_codex:
+          inputs:
+            spec: spec
+      - full_review_security_opus:
+          inputs:
+            spec: spec
+      - full_review_security_codex:
+          inputs:
+            spec: spec
+      - full_review_architecture_opus:
+          inputs:
+            spec: spec
+      - full_review_architecture_codex:
+          inputs:
+            spec: spec
+    input:
+    - spec
+
+  full_review_acceptance_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-acceptance
+    input:
+    - spec
+  full_review_acceptance_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-acceptance
+    input:
+    - spec
+  full_review_structure_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-structure
+    input:
+    - spec
+  full_review_structure_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-structure
+    input:
+    - spec
+  full_review_quality_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-quality
+    input:
+    - spec
+  full_review_quality_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-quality
+    input:
+    - spec
+  full_review_test_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-test
+    input:
+    - spec
+  full_review_test_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-test
+    input:
+    - spec
+  full_review_security_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-security
+    input:
+    - spec
+  full_review_security_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-security
+    input:
+    - spec
+  full_review_architecture_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-architecture
+    input:
+    - spec
+  full_review_architecture_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-architecture
+    input:
+    - spec
+
+  # ---- verify（レビュー結果の検証・分類）----
+
+  verify_full_review_fanout:
+    fanout:
+      children:
+      - verify_full_review_opus:
+          inputs:
+            spec: spec
+      - verify_full_review_codex:
+          inputs:
+            spec: spec
+    input:
+    - spec
+
+  verify_full_review_opus:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: full-review-verify-and-classify
+    input:
+    - spec
+  verify_full_review_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: full-review-verify-and-classify
+    input:
+    - spec
+
+  check_full_review_threads:
+    command: >-
+      releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+      jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+    artifact: thread-scan
+
+  # ---- review-fix-policy ----
+
+  fix_policy_fanout:
+    fanout:
+      children:
+      - decide_fix_policy:
+          inputs:
+            thread: items
+            spec: spec
+      items: scan_open_threads.threads
+    input:
+    - spec
+
+  decide_fix_policy:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: triage
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: decide_fix_policy
+    input:
+    - thread: thread-reference
+    - spec
+
+  check_fix_policy_consistency:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: check_fix_policy_consistency
+    input:
+    - spec
+    artifact: policy-consistency-result
+
+  fix_policy_conflict_fanout:
+    fanout:
+      children:
+      - correct_fix_policy:
+          inputs:
+            task: items
+            spec: spec
+      items: check_fix_policy_consistency.tasks
+    input:
+    - spec
+
+  correct_fix_policy:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: triage
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: correct_fix_policy
+    input:
+    - task: policy-correction-task
+    - spec
+
+  # ---- review-fix（タスクごとに隔離 worktree で修正 + 検証 → 統合）----
+
+  create_fix_plan:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: create_fix_plan
+    input:
+    - spec
+    - consistency
+    artifact: fix-plan
+
+  fix_all:
+    fanout:
+      children:
+      - fix_and_verify:
+          inputs:
+            task: items
+            spec: spec
+      items: create_fix_plan.tasks
+    input:
+    - spec
+    worktree: isolated
+
+  # 部品 sequence: 1 修正タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  fix_and_verify:
+    sequence:
+      output: verify_fix
+      children:
+      - fix_task:
+          inputs:
+            task: task
+            spec: spec
+          rules:
+          - next: verify_fix
+      - verify_fix:
+          inputs:
+            task: task
+            spec: spec
+    input:
+    - task: fix-plan-task
+    - spec
+    artifact: fix-verification
+
+  fix_task:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        knowledge: releash-thread-cli
+        instruction: implement_fix_task
+    input:
+    - task
+    - spec
+
+  verify_fix:
+    session:
+      model: claude-opus-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: verify_fix
+    input:
+    - task
+    - spec
+    artifact: fix-verification
+
+  merge_fixes:
+    session:
+      model: claude-opus-5
+      permission: full
+      facets:
+        policy: coding
+        instruction: merge_fixes
+    input:
+    - spec
+    - results
+
+  implementation_confirmation:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reporting
+        knowledge: releash-thread-cli
+        instruction: implementation_confirmation
+    input:
+    - spec
+    completion: approval
