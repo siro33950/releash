@@ -139,6 +139,7 @@ nodes:
   artifact: policy-consistency-result
   inputs:
   - resolve_request
+  - check_open_threads
   rules:
   - loop_guard:
       max_iterations: 2

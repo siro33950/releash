@@ -18,13 +18,17 @@ schemas:
       threads:
         type: array
         items: thread-reference
-      has_open_threads:
-        type: boolean
       summary: string
     required:
     - threads
-    - has_open_threads
     - summary
+  import-scan:
+    type: object
+    properties:
+      has_open_threads:
+        type: boolean
+    required:
+    - has_open_threads
   policy-correction-task:
     type: object
     properties:
@@ -159,7 +163,18 @@ nodes:
       instruction: import_pr_review_comments
   artifact: thread-scan
   rules:
-  - when: { on: has_open_threads, then: pr_review_fix_policy_fanout }
+  - next: check_imported_threads
+
+- name: check_imported_threads
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node import_pr_review_comments --json |
+    jq '{has_open_threads: (.artifact.threads | length > 0)}'
+  artifact: import-scan
+  rules:
+  - when:
+      on: has_open_threads
+      then: pr_review_fix_policy_fanout
     next: report_no_pr_review_comments
 
 - name: report_no_pr_review_comments

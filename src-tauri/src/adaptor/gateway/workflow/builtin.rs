@@ -39,12 +39,12 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "03_full-review.yml",
         content: BUILTIN_03_FULL_REVIEW,
-        description: "既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示してHuman checkpointで承認する。",
+        description: "既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示して完了する。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy.yml",
         content: BUILTIN_04_REVIEW_FIX_POLICY,
-        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証して完了する。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy-manual.yml",
@@ -54,7 +54,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "05_review-fix.yml",
         content: BUILTIN_05_REVIEW_FIX,
-        description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返してHuman checkpointで承認する。",
+        description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返して完了する。",
     },
     BuiltinEntry {
         filename: "06_handle-pr-review.yml",
@@ -347,8 +347,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "fix-confirmation",
-        content: include_str!("builtin_facets/instructions/fix-confirmation.md"),
+        key: "fix-report",
+        content: include_str!("builtin_facets/instructions/fix-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -362,8 +362,13 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-confirmation",
-        content: include_str!("builtin_facets/instructions/review-confirmation.md"),
+        key: "policy-report",
+        content: include_str!("builtin_facets/instructions/policy-report.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-report",
+        content: include_str!("builtin_facets/instructions/review-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,

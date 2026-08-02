@@ -1,5 +1,5 @@
 name: 03_full-review
-description: 既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示してHuman checkpointで承認する。
+description: 既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示して完了する。
 
 schemas:
   document-reference: string
@@ -242,16 +242,16 @@ nodes:
     jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
   artifact: thread-scan
   rules:
-  - next: review_confirmation
-- name: review_confirmation
+  - next: review_report
+- name: review_report
   session:
     model: claude-opus-5
     permission: edit
-    gate: approval
+    gate: auto
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: review-confirmation
+      instruction: review-report
   inputs:
   - resolve_request
   - check_full_review_threads

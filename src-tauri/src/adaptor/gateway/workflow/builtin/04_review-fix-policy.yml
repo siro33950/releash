@@ -1,5 +1,5 @@
 name: 04_review-fix-policy
-description: open Review Threadごとに修正方針を決定し、方針間の整合性を検証してHuman checkpointで承認する。
+description: open Review Threadごとに修正方針を決定し、方針間の整合性を検証して完了する。
 
 schemas:
   document-reference: string
@@ -100,7 +100,7 @@ nodes:
   - when:
       on: has_open_threads
       then: fix_policy_fanout
-    next: policy_confirmation
+    next: policy_report
 - name: fix_policy_fanout
   fanout:
     child: decide_fix_policy
@@ -139,10 +139,11 @@ nodes:
   artifact: policy-consistency-result
   inputs:
   - resolve_request
+  - check_open_threads
   rules:
   - loop_guard:
       max_iterations: 2
-      on_exhausted: policy_confirmation
+      on_exhausted: policy_report
   - next: check_policy_tasks
 - name: check_policy_tasks
   command: >-
@@ -154,7 +155,7 @@ nodes:
   - when:
       on: needs_correction
       then: fix_policy_conflict_fanout
-    next: policy_confirmation
+    next: policy_report
 - name: fix_policy_conflict_fanout
   fanout:
     child: correct_fix_policy
@@ -177,15 +178,15 @@ nodes:
   input: policy-correction-task
   inputs:
   - resolve_request
-- name: policy_confirmation
+- name: policy_report
   session:
     model: claude-opus-5
     permission: edit
-    gate: approval
+    gate: auto
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: policy-confirmation
+      instruction: policy-report
   inputs:
   - resolve_request
   - check_open_threads
