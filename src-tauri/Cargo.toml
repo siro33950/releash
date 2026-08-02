@@ -1,6 +1,6 @@
 [package]
 name = "releash"
-version = "0.3.86"
+version = "0.3.87"
 description = "A Tauri App"
 authors = ["you"]
 license = "MIT OR Apache-2.0"
