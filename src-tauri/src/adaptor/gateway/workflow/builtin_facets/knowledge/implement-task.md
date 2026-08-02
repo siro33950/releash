@@ -12,8 +12,6 @@ Task群は確認済みSpecの実装内容を完全に表し、Specにない要�
     {
       "task_id": "T-001",
       "requirements": ["R-001", "R-003"],
-      "depends_on": [],
-      "parallel": true,
       "files": ["src-tauri/src/usecase/..."],
       "outputs": [
         "rejectionを処理するusecase",
@@ -45,18 +43,6 @@ Task群は確認済みSpecの実装内容を完全に表し、Specにない要�
 - 複数ある場合はすべて列挙する。
 - Requirementに対応しないTaskを作らない。
 
-### Depends on
-
-- 先に完了していなければ実装または検証できないTask IDを列挙する。
-- 依存がない場合は空配列にする。
-- Task群の依存関係を循環させない。
-
-### Parallel
-
-- 依存Taskの完了後、他の実行可能なTaskと並列に実装できる場合は`true`、できない場合は`false`と記載する。
-- 同じファイル、同じ状態、同じ生成物への競合する変更があるTaskを`true`にしない。
-- `true`は並列実行可能であることを表し、実際にFanoutする指示ではない。
-
 ### Files
 
 - 変更または追加する正確なリポジトリ相対パスを列挙する。
@@ -81,5 +67,4 @@ Task群は確認済みSpecの実装内容を完全に表し、Specにない要�
 
 - すべてのRequirement IDが一つ以上のTaskに対応する。
 - 各Taskは単独でOutputとVerifyの成否を判定できる。
-- 依存関係から実装順序を決定できる。
 - Task間で要求の重複、矛盾、未割り当てを作らない。

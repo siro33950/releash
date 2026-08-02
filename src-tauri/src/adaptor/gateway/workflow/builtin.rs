@@ -29,7 +29,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "01_author-spec.yml",
         content: BUILTIN_01_AUTHOR_SPEC,
-        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、文書ごとの検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
+        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、3文書を1単位として検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
     },
     BuiltinEntry {
         filename: "02_implement-existing-spec.yml",
@@ -39,12 +39,12 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "03_full-review.yml",
         content: BUILTIN_03_FULL_REVIEW,
-        description: "既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示してHuman checkpointで承認する。",
+        description: "既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示して完了する。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy.yml",
         content: BUILTIN_04_REVIEW_FIX_POLICY,
-        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証して完了する。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy-manual.yml",
@@ -54,7 +54,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "05_review-fix.yml",
         content: BUILTIN_05_REVIEW_FIX,
-        description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返してHuman checkpointで承認する。",
+        description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返して完了する。",
     },
     BuiltinEntry {
         filename: "06_handle-pr-review.yml",
@@ -290,23 +290,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-consider-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-design",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-full",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-full.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-consider-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-requirements.md"),
+        key: "author-spec-consider-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -325,38 +310,13 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-repair-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-behavior.md"),
+        key: "author-spec-repair-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-repair-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-repair-design",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-repair-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-requirements.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-design",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-full",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-full.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "author-spec-validate-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-requirements.md"),
+        key: "author-spec-validate-spec",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-spec.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -387,8 +347,28 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "existing-spec-confirmation",
-        content: include_str!("builtin_facets/instructions/existing-spec-confirmation.md"),
+        key: "fix-report",
+        content: include_str!("builtin_facets/instructions/fix-report.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implementation-confirmation",
+        content: include_str!("builtin_facets/instructions/implementation-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "policy-confirmation",
+        content: include_str!("builtin_facets/instructions/policy-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "policy-report",
+        content: include_str!("builtin_facets/instructions/policy-report.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-report",
+        content: include_str!("builtin_facets/instructions/review-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -587,16 +567,6 @@ mod tests {
         assert!(instruction.contains("pageInfo.endCursor"));
         assert!(instruction.contains("全件取得できない場合はArtifactを提出せず"));
         assert!(instruction.contains("Nodeを失敗扱いにする"));
-    }
-
-    #[test]
-    fn implement_task_parallel_uses_boolean_vocabulary() {
-        let knowledge = get_builtin_facet(FacetKind::Knowledge, "implement-task").unwrap();
-
-        assert!(!knowledge.contains("`yes`"));
-        assert!(!knowledge.contains("`no`"));
-        assert!(knowledge.contains("`true`"));
-        assert!(knowledge.contains("`false`"));
     }
 
     #[test]

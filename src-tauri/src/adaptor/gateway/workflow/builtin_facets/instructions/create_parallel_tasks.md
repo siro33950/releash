@@ -14,7 +14,7 @@
 
 `resolve_request` Artifactの`reference_documents`を実際に読み、`directives`を原文どおり遵守する。関連する既存実装、プロジェクト規約、設計ドキュメントも必ず実際に読む。
 
-`verify_implementation` Artifactが存在する場合は再分解であり、その`issues`を必ず全件読む。
+`verify_implementation` Artifactが存在する場合は再分解であり、その`issues`を必ず全件読む。`unverifiable`はこの環境で判定できなかった項目であり、実装で解消する対象ではない。Taskを作る根拠にしない。
 
 Implement Taskの意味、フォーマット、必須項目は`implement-task` Knowledgeに従う。
 
@@ -24,7 +24,7 @@ Implement Taskの意味、フォーマット、必須項目は`implement-task` K
 
 - 各Taskは他Taskと変更ファイルが重ならない。
 - 各Taskは他Taskの成果に依存せず、単独で実装と検証を完了できる。
-- `depends_on`は空にし、`parallel`はtrueにする。この制約を満たせない分割は行わず、Taskを統合する。
+- この制約を満たせない分割は行わず、Taskを統合する。
 
 ## 手順（初回）
 
@@ -40,6 +40,7 @@ Implement Taskの意味、フォーマット、必須項目は`implement-task` K
 2. 各issueの根本原因を特定し、解消に必要なTaskだけを作り直す。
 3. 解消済みの範囲を作り直さない。issueと無関係なTaskの改名・再分割をしない。
 4. 再分解後のTask群も並列実装可能性の制約を満たすことを確認する。
+5. 全`issues`を検討した結果、実装で解消すべきものが一つも残らない場合はTaskを作らない。
 
 ## 禁止事項
 
@@ -49,4 +50,10 @@ Implement Taskの意味、フォーマット、必須項目は`implement-task` K
 
 ## 出力
 
-`implement-tasks` Artifactを提出する。`tasks`には`implement-task` Knowledgeの形式に従った全Taskを入れる。
+`implement-tasks` Artifactを提出する。
+
+- `tasks`へ`implement-task` Knowledgeの形式に従った全Taskを入れる。
+- 実装で解消すべきものが残らずTaskを作らなかった場合は`tasks`を空配列にする。
+- `summary`へ、今回分解した範囲、またはTaskを作らなかった根拠を記載する。
+
+`tasks`の件数が後続の分岐を決める。空配列にすればfanoutへ進まず、Human checkpointへ送られる。件数と矛盾する記述を`summary`へ書かない。

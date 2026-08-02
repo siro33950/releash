@@ -69,7 +69,6 @@ Diff hunk:
 ```json
 {
   "threads": [{"thread_id": "<Releash Thread ID>"}],
-  "has_open_threads": true,
   "summary": "PR番号、取得件数、新規作成件数、重複スキップ件数"
 }
 ```
@@ -79,10 +78,11 @@ Diff hunk:
 ```json
 {
   "threads": [],
-  "has_open_threads": false,
   "summary": "対象がない理由"
 }
 ```
+
+`threads`の件数が後続の分岐を決める。対象がない場合は空配列にする。空配列にすれば方針決定へ進まず、対象がない旨を報告して終了する。
 
 ## 禁止事項
 

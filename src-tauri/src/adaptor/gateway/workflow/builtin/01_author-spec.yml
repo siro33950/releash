@@ -1,5 +1,5 @@
 name: 01_author-spec
-description: Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、文書ごとの検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。
+description: Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、3文書を1単位として検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。
 
 schemas:
   workflow-text: string
@@ -31,11 +31,6 @@ schemas:
   spec-input:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - READY
-        - NEEDS_HUMAN
       spec_dir: string
       primary_sources:
         type: array
@@ -49,7 +44,6 @@ schemas:
       question: string
       summary: string
     required:
-    - status
     - spec_dir
     - primary_sources
     - additional_sources
@@ -60,45 +54,13 @@ schemas:
   document-result:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - READY
-        - NEEDS_HUMAN
-      document:
-        type: string
-        enum:
-        - REQUIREMENTS
-        - BEHAVIOR
-        - DESIGN
-      path: string
-      digest: string
       question: string
-      summary: string
     required:
-    - status
-    - document
-    - path
-    - digest
     - question
-    - summary
 
   validation-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - CLEAR
-        - FINDINGS
-        - NEEDS_HUMAN
-      target:
-        type: string
-        enum:
-        - REQUIREMENTS
-        - BEHAVIOR
-        - DESIGN
-        - FULL_SPEC
       digest: string
       findings:
         type: array
@@ -106,8 +68,6 @@ schemas:
       question: string
       summary: string
     required:
-    - verdict
-    - target
     - digest
     - findings
     - question
@@ -116,21 +76,6 @@ schemas:
   consideration-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - PASS
-        - FIX_REQUIREMENTS
-        - FIX_BEHAVIOR
-        - FIX_DESIGN
-        - NEEDS_HUMAN
-      target:
-        type: string
-        enum:
-        - REQUIREMENTS
-        - BEHAVIOR
-        - DESIGN
-        - FULL_SPEC
       digest: string
       accepted_finding_ids:
         type: array
@@ -141,8 +86,6 @@ schemas:
       question: string
       summary: string
     required:
-    - verdict
-    - target
     - digest
     - accepted_finding_ids
     - rejected_finding_ids
@@ -152,19 +95,9 @@ schemas:
   repair-result:
     type: object
     properties:
-      status:
-        type: string
-        enum:
-        - CHANGED
-        - NO_CHANGE
-        - NEEDS_HUMAN
-      document:
-        type: string
-        enum:
-        - REQUIREMENTS
-        - BEHAVIOR
-        - DESIGN
-      path: string
+      changed_documents:
+        type: array
+        items: document-reference
       digest: string
       addressed_finding_ids:
         type: array
@@ -172,9 +105,7 @@ schemas:
       question: string
       summary: string
     required:
-    - status
-    - document
-    - path
+    - changed_documents
     - digest
     - addressed_finding_ids
     - question
@@ -183,49 +114,58 @@ schemas:
   human-decision-result:
     type: object
     properties:
-      state:
-        type: string
-        enum:
-        - AWAITING
-        - RESOLVED
       resume:
         type: string
         enum:
-        - AWAITING
         - INTAKE
         - REQUIREMENTS
         - BEHAVIOR
         - DESIGN
-        - FULL_SPEC
+        - VALIDATE
+        - CONSIDER
+        - REPAIR
       question: string
       answer: string
       decision: string
       summary: string
     required:
-    - state
     - resume
     - question
     - answer
     - decision
     - summary
 
-  final-review-result:
+  question-scan:
+    type: object
+    properties:
+      needs_human:
+        type: boolean
+    required:
+    - needs_human
+
+  validation-scan:
     type: object
     properties:
       verdict:
         type: string
         enum:
-        - AWAITING
-        - APPROVED
-        - REVISE_REQUIREMENTS
-        - REVISE_BEHAVIOR
-        - REVISE_DESIGN
-      feedback: string
-      summary: string
+        - CLEAR
+        - FINDINGS
+        - NEEDS_HUMAN
     required:
     - verdict
-    - feedback
-    - summary
+
+  consideration-scan:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - PASS
+        - FIX
+        - NEEDS_HUMAN
+    required:
+    - verdict
 
 nodes:
 # IntakeSequence
@@ -246,13 +186,21 @@ nodes:
       max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: requirements_author
-        NEEDS_HUMAN: human_decision
+  - next: check_intake
 
-# RequirementsSequence: 作成 -> 検証 -> 検討 -> 修正 -> 再検証
+- name: check_intake
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_intake --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: requirements_author
+
+# AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
 - name: requirements_author
   session:
     model: claude-opus-5
@@ -267,92 +215,25 @@ nodes:
   - request
   - spec_intake
   - human_decision
-  - final_review
   rules:
   - loop_guard:
-      max_iterations: 16
+      max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: requirements_validate
-        NEEDS_HUMAN: human_decision
+  - next: check_requirements
 
-- name: requirements_validate
-  session:
-    model: claude-opus-5
-    permission: full
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge: spec-requirements
-      instruction: author-spec-validate-requirements
-  artifact: validation-result
-  inputs:
-  - request
-  - spec_intake
-  - requirements_author
-  - requirements_repair
+- name: check_requirements
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node requirements_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
   rules:
-  - next: requirements_consider
+  - when:
+      on: needs_human
+      then: human_decision
+    next: behavior_author
 
-- name: requirements_consider
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge: spec-requirements
-      instruction: author-spec-consider-requirements
-  artifact: consideration-result
-  inputs:
-  - request
-  - spec_intake
-  - requirements_validate
-  rules:
-  - switch:
-      on: verdict
-      cases:
-        PASS: behavior_author
-        FIX_REQUIREMENTS: requirements_repair
-        FIX_BEHAVIOR: human_decision
-        FIX_DESIGN: human_decision
-        NEEDS_HUMAN: human_decision
-
-- name: requirements_repair
-  session:
-    model: claude-opus-5
-    permission: full
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge: spec-requirements
-      instruction: author-spec-repair-requirements
-  artifact: repair-result
-  inputs:
-  - request
-  - spec_intake
-  - requirements_validate
-  - requirements_consider
-  - full_spec_validate
-  - full_spec_consider
-  - human_decision
-  - final_review
-  rules:
-  - loop_guard:
-      max_iterations: 16
-      on_exhausted: human_decision
-      reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        CHANGED: requirements_validate
-        NO_CHANGE: requirements_validate
-        NEEDS_HUMAN: human_decision
-
-# BehaviorSequence: 作成 -> 検証 -> 検討 -> 修正 -> 再検証
 - name: behavior_author
   session:
     model: gpt-5.6-sol
@@ -369,102 +250,26 @@ nodes:
   - request
   - spec_intake
   - requirements_author
-  - requirements_repair
   - human_decision
-  - final_review
   rules:
   - loop_guard:
-      max_iterations: 16
+      max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: behavior_validate
-        NEEDS_HUMAN: human_decision
+  - next: check_behavior
 
-- name: behavior_validate
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      instruction: author-spec-validate-behavior
-  artifact: validation-result
-  inputs:
-  - request
-  - spec_intake
-  - requirements_author
-  - requirements_repair
-  - behavior_author
-  - behavior_repair
+- name: check_behavior
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node behavior_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
   rules:
-  - next: behavior_consider
+  - when:
+      on: needs_human
+      then: human_decision
+    next: design_author
 
-- name: behavior_consider
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      instruction: author-spec-consider-behavior
-  artifact: consideration-result
-  inputs:
-  - request
-  - spec_intake
-  - behavior_validate
-  rules:
-  - switch:
-      on: verdict
-      cases:
-        PASS: design_author
-        FIX_REQUIREMENTS: requirements_repair
-        FIX_BEHAVIOR: behavior_repair
-        FIX_DESIGN: human_decision
-        NEEDS_HUMAN: human_decision
-
-- name: behavior_repair
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      instruction: author-spec-repair-behavior
-  artifact: repair-result
-  inputs:
-  - request
-  - spec_intake
-  - behavior_validate
-  - behavior_consider
-  - full_spec_validate
-  - full_spec_consider
-  - human_decision
-  - final_review
-  rules:
-  - loop_guard:
-      max_iterations: 16
-      on_exhausted: human_decision
-      reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        CHANGED: behavior_validate
-        NO_CHANGE: behavior_validate
-        NEEDS_HUMAN: human_decision
-
-# DesignSequence: 作成 -> 検証 -> 検討 -> 修正 -> 再検証
 - name: design_author
   session:
     model: gpt-5.6-sol
@@ -482,110 +287,29 @@ nodes:
   - request
   - spec_intake
   - requirements_author
-  - requirements_repair
   - behavior_author
-  - behavior_repair
   - human_decision
-  - final_review
   rules:
   - loop_guard:
-      max_iterations: 16
+      max_iterations: 8
       on_exhausted: human_decision
       reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        READY: design_validate
-        NEEDS_HUMAN: human_decision
+  - next: check_design
 
-- name: design_validate
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-validate-design
-  artifact: validation-result
-  inputs:
-  - request
-  - spec_intake
-  - requirements_author
-  - requirements_repair
-  - behavior_author
-  - behavior_repair
-  - design_author
-  - design_repair
+- name: check_design
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node design_author --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
   rules:
-  - next: design_consider
+  - when:
+      on: needs_human
+      then: human_decision
+    next: spec_validate
 
-- name: design_consider
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-consider-design
-  artifact: consideration-result
-  inputs:
-  - request
-  - spec_intake
-  - design_validate
-  rules:
-  - switch:
-      on: verdict
-      cases:
-        PASS: full_spec_validate
-        FIX_REQUIREMENTS: requirements_repair
-        FIX_BEHAVIOR: behavior_repair
-        FIX_DESIGN: design_repair
-        NEEDS_HUMAN: human_decision
-
-- name: design_repair
-  session:
-    model: gpt-5.6-sol
-    permission: edit
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-repair-design
-  artifact: repair-result
-  inputs:
-  - request
-  - spec_intake
-  - design_validate
-  - design_consider
-  - full_spec_validate
-  - full_spec_consider
-  - human_decision
-  - final_review
-  rules:
-  - loop_guard:
-      max_iterations: 16
-      on_exhausted: human_decision
-      reset_on: human_decision
-  - switch:
-      on: status
-      cases:
-        CHANGED: design_validate
-        NO_CHANGE: design_validate
-        NEEDS_HUMAN: human_decision
-
-# FullSpecSequence: 3文書全体の検証 -> 検討 -> owner文書の修正Sequenceへ戻す
-- name: full_spec_validate
+# SpecSequence: 3文書を1単位として検証 -> 検討 -> 修正し、Findingがなくなるまで繰り返す。
+- name: spec_validate
   session:
     model: claude-opus-5
     permission: full
@@ -596,21 +320,39 @@ nodes:
       - spec-requirements
       - spec-behavior
       - spec-design
-      instruction: author-spec-validate-full
+      instruction: author-spec-validate-spec
   artifact: validation-result
   inputs:
   - request
   - spec_intake
   - requirements_author
-  - requirements_repair
   - behavior_author
-  - behavior_repair
   - design_author
-  - design_repair
+  - spec_repair
+  - human_decision
   rules:
-  - next: full_spec_consider
+  - loop_guard:
+      max_iterations: 8
+      on_exhausted: human_decision
+      reset_on: human_decision
+  - next: check_validation
 
-- name: full_spec_consider
+- name: check_validation
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_validate --json |
+    jq '{verdict: (if (.artifact.question | length > 0) then "NEEDS_HUMAN"
+    elif (.artifact.findings | length > 0) then "FINDINGS" else "CLEAR" end)}'
+  artifact: validation-scan
+  rules:
+  - switch:
+      on: verdict
+      cases:
+        CLEAR: final_review
+        FINDINGS: spec_consider
+    next: human_decision
+
+- name: spec_consider
   session:
     model: gpt-5.6-sol
     permission: edit
@@ -621,21 +363,67 @@ nodes:
       - spec-requirements
       - spec-behavior
       - spec-design
-      instruction: author-spec-consider-full
+      instruction: author-spec-consider-spec
   artifact: consideration-result
   inputs:
   - request
   - spec_intake
-  - full_spec_validate
+  - spec_validate
+  rules:
+  - next: check_consideration
+
+- name: check_consideration
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_consider --json |
+    jq '{verdict: (if (.artifact.question | length > 0) then "NEEDS_HUMAN"
+    elif (.artifact.accepted_finding_ids | length > 0) then "FIX" else "PASS" end)}'
+  artifact: consideration-scan
   rules:
   - switch:
       on: verdict
       cases:
         PASS: final_review
-        FIX_REQUIREMENTS: requirements_repair
-        FIX_BEHAVIOR: behavior_repair
-        FIX_DESIGN: design_repair
-        NEEDS_HUMAN: human_decision
+        FIX: spec_repair
+    next: human_decision
+
+- name: spec_repair
+  session:
+    model: claude-opus-5
+    permission: full
+    gate: auto
+    facets:
+      policy: author-spec-governance
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      instruction: author-spec-repair-spec
+  artifact: repair-result
+  inputs:
+  - request
+  - spec_intake
+  - spec_validate
+  - spec_consider
+  - human_decision
+  rules:
+  - loop_guard:
+      max_iterations: 8
+      on_exhausted: human_decision
+      reset_on: human_decision
+  - next: check_repair
+
+- name: check_repair
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node spec_repair --json |
+    jq '{needs_human: (.artifact.question | length > 0)}'
+  artifact: question-scan
+  rules:
+  - when:
+      on: needs_human
+      then: human_decision
+    next: spec_validate
 
 # HumanDecisionSequence: 文書レビューではなく、自動判断不能な一点だけを解決する。
 - name: human_decision
@@ -651,16 +439,11 @@ nodes:
   - request
   - spec_intake
   - requirements_author
-  - requirements_consider
-  - requirements_repair
   - behavior_author
-  - behavior_consider
-  - behavior_repair
   - design_author
-  - design_consider
-  - design_repair
-  - full_spec_consider
-  - final_review
+  - spec_validate
+  - spec_consider
+  - spec_repair
   rules:
   - loop_guard:
       max_iterations: 64
@@ -668,14 +451,15 @@ nodes:
   - switch:
       on: resume
       cases:
-        AWAITING: human_decision
         INTAKE: spec_intake
         REQUIREMENTS: requirements_author
         BEHAVIOR: behavior_author
         DESIGN: design_author
-        FULL_SPEC: full_spec_validate
+        VALIDATE: spec_validate
+        CONSIDER: spec_consider
+        REPAIR: spec_repair
 
-# FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。
+# FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
 - name: final_review
   session:
     model: claude-opus-5
@@ -688,30 +472,12 @@ nodes:
       - spec-behavior
       - spec-design
       instruction: author-spec-final-review
-  artifact: final-review-result
   inputs:
   - request
   - spec_intake
   - requirements_author
-  - requirements_repair
   - behavior_author
-  - behavior_repair
   - design_author
-  - design_repair
-  - full_spec_consider
-  rules:
-  - loop_guard:
-      max_iterations: 64
-      on_exhausted: human_decision
-      reset_on: full_spec_consider
-  - switch:
-      on: verdict
-      cases:
-        AWAITING: final_review
-        APPROVED: authoring_complete
-        REVISE_REQUIREMENTS: requirements_repair
-        REVISE_BEHAVIOR: behavior_repair
-        REVISE_DESIGN: design_repair
-
-- name: authoring_complete
-  command: "true"
+  - spec_validate
+  - spec_consider
+  - spec_repair

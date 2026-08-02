@@ -18,13 +18,17 @@ schemas:
       threads:
         type: array
         items: thread-reference
-      has_open_threads:
-        type: boolean
       summary: string
     required:
     - threads
-    - has_open_threads
     - summary
+  import-scan:
+    type: object
+    properties:
+      has_open_threads:
+        type: boolean
+    required:
+    - has_open_threads
   policy-correction-task:
     type: object
     properties:
@@ -44,19 +48,20 @@ schemas:
   policy-consistency-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - CONSISTENT
-        - NEEDS_CORRECTION
       tasks:
         type: array
         items: policy-correction-task
       summary: string
     required:
-    - verdict
     - tasks
     - summary
+  policy-scan:
+    type: object
+    properties:
+      needs_correction:
+        type: boolean
+    required:
+    - needs_correction
   fix-plan-task:
     type: object
     properties:
@@ -96,14 +101,22 @@ schemas:
   fix-verification:
     type: object
     properties:
-      complete:
-        type: boolean
       issues:
         type: array
         items: workflow-text
+      unverifiable:
+        type: array
+        items: workflow-text
     required:
-    - complete
     - issues
+    - unverifiable
+  fix-verification-scan:
+    type: object
+    properties:
+      has_issues:
+        type: boolean
+    required:
+    - has_issues
   pr-review-reply:
     type: object
     properties:
@@ -121,21 +134,22 @@ schemas:
   pr-review-finalization:
     type: object
     properties:
-      ready:
-        type: boolean
-      commit_required:
-        type: boolean
       commit_message: string
       replies:
         type: array
         items: pr-review-reply
       summary: string
     required:
-    - ready
-    - commit_required
     - commit_message
     - replies
     - summary
+  finalization-scan:
+    type: object
+    properties:
+      ready:
+        type: boolean
+    required:
+    - ready
 
 nodes:
 - name: import_pr_review_comments
@@ -149,7 +163,18 @@ nodes:
       instruction: import_pr_review_comments
   artifact: thread-scan
   rules:
-  - when: { on: has_open_threads, then: pr_review_fix_policy_fanout }
+  - next: check_imported_threads
+
+- name: check_imported_threads
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node import_pr_review_comments --json |
+    jq '{has_open_threads: (.artifact.threads | length > 0)}'
+  artifact: import-scan
+  rules:
+  - when:
+      on: has_open_threads
+      then: pr_review_fix_policy_fanout
     next: report_no_pr_review_comments
 
 - name: report_no_pr_review_comments
@@ -188,11 +213,19 @@ nodes:
   - import_pr_review_comments
   rules:
   - loop_guard: { max_iterations: 2, on_exhausted: create_pr_review_fix_plan }
-  - switch:
-      on: verdict
-      cases:
-        NEEDS_CORRECTION: pr_review_fix_policy_correction_fanout
-        CONSISTENT: create_pr_review_fix_plan
+  - next: check_pr_review_policy_tasks
+
+- name: check_pr_review_policy_tasks
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node check_pr_review_fix_policy_consistency --json |
+    jq '{needs_correction: (.artifact.tasks | length > 0)}'
+  artifact: policy-scan
+  rules:
+  - when:
+      on: needs_correction
+      then: pr_review_fix_policy_correction_fanout
+    next: create_pr_review_fix_plan
 
 - name: pr_review_fix_policy_correction_fanout
   fanout:
@@ -258,10 +291,19 @@ nodes:
   inputs:
   - create_pr_review_fix_plan
   rules:
+  - next: check_pr_review_verification
+
+- name: check_pr_review_verification
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node verify_pr_review_fixes --json |
+    jq '{has_issues: (.artifact.issues | length > 0)}'
+  artifact: fix-verification-scan
+  rules:
   - when:
-      on: complete
-      then: pr_review_confirmation
-    next: implement_pr_review_fix_plan
+      on: has_issues
+      then: implement_pr_review_fix_plan
+    next: pr_review_confirmation
 
 - name: pr_review_confirmation
   session:
@@ -276,8 +318,20 @@ nodes:
   inputs:
   - import_pr_review_comments
   - create_pr_review_fix_plan
+  - verify_pr_review_fixes
   rules:
-  - when: { on: ready, then: finalize_pr_review }
+  - next: check_finalization
+
+- name: check_finalization
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node pr_review_confirmation --json |
+    jq '{ready: (.artifact.replies | length > 0)}'
+  artifact: finalization-scan
+  rules:
+  - when:
+      on: ready
+      then: finalize_pr_review
     next: report_incomplete_pr_review
 
 - name: report_incomplete_pr_review

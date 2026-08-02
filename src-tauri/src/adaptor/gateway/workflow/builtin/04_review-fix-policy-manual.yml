@@ -60,19 +60,20 @@ schemas:
   policy-consistency-result:
     type: object
     properties:
-      verdict:
-        type: string
-        enum:
-        - CONSISTENT
-        - NEEDS_CORRECTION
       tasks:
         type: array
         items: policy-correction-task
       summary: string
     required:
-    - verdict
     - tasks
     - summary
+  policy-scan:
+    type: object
+    properties:
+      needs_correction:
+        type: boolean
+    required:
+    - needs_correction
 
 nodes:
 
@@ -138,15 +139,23 @@ nodes:
   artifact: policy-consistency-result
   inputs:
   - resolve_request
+  - check_open_threads
   rules:
   - loop_guard:
       max_iterations: 2
       on_exhausted: policy_confirmation
-  - switch:
-      on: verdict
-      cases:
-        NEEDS_CORRECTION: fix_policy_conflict_fanout
-        CONSISTENT: policy_confirmation
+  - next: check_policy_tasks
+- name: check_policy_tasks
+  command: >-
+    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+    --node check_fix_policy_consistency --json |
+    jq '{needs_correction: (.artifact.tasks | length > 0)}'
+  artifact: policy-scan
+  rules:
+  - when:
+      on: needs_correction
+      then: fix_policy_conflict_fanout
+    next: policy_confirmation
 - name: fix_policy_conflict_fanout
   fanout:
     child: correct_fix_policy_manual
@@ -177,6 +186,8 @@ nodes:
     facets:
       policy: reporting
       knowledge: releash-thread-cli
-      instruction: existing-spec-confirmation
+      instruction: policy-confirmation
   inputs:
   - resolve_request
+  - check_open_threads
+  - check_fix_policy_consistency
