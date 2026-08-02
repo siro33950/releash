@@ -2,9 +2,7 @@
 
 この文書は、Session / Command / Fanout / Sequence を単一の Node 概念に統一し、Worktree 配下の実行木として実行・観測・永続化するモデルを定義する。本モデルのマイルストーン・ISSUE は本書を元に作る。
 
-構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[examples/](examples/)（実例: full-cycle-development を新構文で書いたもの）。
-
-> **改訂中**: `ref`（サブワークフロー参照）は不採用となった（[#1464](https://github.com/siro33950/releash/issues/1464) close）。部品化は定義言語の外（Lua・[#1591](https://github.com/siro33950/releash/issues/1591)）で行い、engine は単一の WorkflowDefinition を受け取る。`examples/full-cycle-development.yml` は ref を前提にした構成のままであり、扱いは別途検討する。
+構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[examples/](examples/)（実例: full-cycle-development を新構文で書いた単一定義）。
 
 語彙は [`architecture/GLOSSARY.md`](../../docs/architecture/GLOSSARY.md) を正とする。本書が導入する語彙は §語彙 に定義し、GLOSSARY への反映は実装マイルストーンで行う。
 
