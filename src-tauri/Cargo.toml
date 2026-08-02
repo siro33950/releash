@@ -96,7 +96,7 @@ opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 proptest = "1"
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 # [04] / spec [04] テスト境界: production `WorkflowEngine::dispatch` を直接呼ぶ harness で
 # 実 `AppHandle` を構築するために tauri の test feature を有効化する。
 tauri = { version = "2.11", features = ["tray-icon", "image-png", "test"] }
