@@ -2,7 +2,9 @@
 
 この文書は、Session / Command / Fanout / Sequence を単一の Node 概念に統一し、Worktree 配下の実行木として実行・観測・永続化するモデルを定義する。本モデルのマイルストーン・ISSUE は本書を元に作る。
 
-構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[examples/](examples/)（実例: full-cycle-development を新構文で書いた親 + ref 部品3つ）。
+構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[examples/](examples/)（実例: full-cycle-development を新構文で書いたもの）。
+
+> **改訂中**: `ref`（サブワークフロー参照）は不採用となった（[#1464](https://github.com/siro33950/releash/issues/1464) close）。部品化は定義言語の外（Lua・[#1591](https://github.com/siro33950/releash/issues/1591)）で行い、engine は単一の WorkflowDefinition を受け取る。`examples/full-cycle-development.yml` は ref を前提にした構成のままであり、扱いは別途検討する。
 
 語彙は [`architecture/GLOSSARY.md`](../../docs/architecture/GLOSSARY.md) を正とする。本書が導入する語彙は §語彙 に定義し、GLOSSARY への反映は実装マイルストーンで行う。
 
@@ -19,7 +21,7 @@ Releash は Claude の Dynamic Workflows を決定論的な実行レールとし
 
 「Workflow」の語は木全体の単位（WorkflowDefinition / WorkflowExecution）に残し、木の中の合成子とは区別する。WorkflowDefinition のトップレベルは root の Sequence を定義する。
 
-Node は好きなように組み合わせられる。Sequence の子に別の WorkflowDefinition を参照すればサブワークフロー、Fanout の子に Sequence を置けば並列パイプラインになる。WorkflowExecution に属さない単独の Session も、1ノードの実行木として同じモデルに載る。
+Node は好きなように組み合わせられる。Sequence の子に Sequence を置けば部品化、Fanout の子に Sequence を置けば並列パイプラインになる。WorkflowExecution に属さない単独の Session も、1ノードの実行木として同じモデルに載る。
 
 ## プロダクト方針
 
@@ -79,16 +81,16 @@ Sequence  -> 終端 node への到達
 ### 定義と展開
 
 - 合成子の子には任意の Node を書ける。fanout 先・子 Node を制限する子専用型は持たない。
-- サブワークフローは `ref: <WorkflowDefinition 名>` の名前参照で書く。参照先の中身を inline に展開して書くことはできない（同一 WorkflowDefinition 内の Node のインライン宣言は可。syntax.md「children の要素」参照）。
-- ref の入口は `request` のみ: 親は配線（inputs の宛先 `request`・String 値）で参照先の起動時入力を渡せる。人間が起動時に request を書くのと同じ入口であり、Workflow の「人間起動の単位」という性格を変えない。**出口は持たない**（成果は worktree の状態変化と実行木の観測で受け取る。親側で値の判定が必要なら、判定 node を親スコープに置く）。
-- 定義の健全性は load 時に検証する: 参照循環（A が B を含み B が A を含む）の拒否、最大深さ制限、未定義参照の Diagnostic。
+- **WorkflowDefinition を跨ぐ参照（サブワークフロー参照）は持たない。** 部品化と再利用は定義言語の外で行い、engine が受け取るのは常に単一の WorkflowDefinition である。部品は `input` パラメータと `output` を持つ Sequence として書き、親の children に置く。実行木にも子 Sequence として現れるため、折り畳み・`completion: approval` の単位は失われない。
+- 定義言語の外での合成手段は Lua とする（[#1591](https://github.com/siro33950/releash/issues/1591)）。ファイル分割と再利用は Lua の `require` が担い、生成時に解決される。engine・永続化・resume は Lua を知らない。
+- 定義の健全性は load 時に検証する: 合成子の包含循環（Sequence の children に自分自身が現れる）の拒否、未定義参照の Diagnostic。深さの上限は `MAX_NODES_PER_WORKFLOW` が与えるため、別途の深さ制限は設けない。
 - ループの有界化ガード（loop_guard）は必須にしない。「条件が成立するまで回り続ける」定義は正当であり、その監督は実行中の観測・abort で行う。
 
 実行木の有界性:
 
 | 成長の経路 | 有界化の手段 |
 | --- | --- |
-| 定義の静的構造（サブワークフロー参照） | load 時の参照循環検出 + 最大深さ制限 |
+| 定義の静的構造（合成子の入れ子） | load 時の包含循環検出 + `MAX_NODES_PER_WORKFLOW`（定義は単一なので、これが静的構造全体の上限になる） |
 | 辺の後方参照ループ | loop_guard（オプショナル） |
 | 実行時の子展開（Fanout items / delegate） | 実行時に決まるのは幅のみ（items の件数 / delegate の発火回数）。深さは定義の静的構造で固定され、展開された子が定義に無い子を生むことはない。delegate の child はさらに delegate できない |
 | 反復 | agent の判断。ターン境界ごとに記録・観測・中断可能 |
@@ -151,7 +153,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | 実行木 | 実行インスタンスのみが木を成す。Worktree に所属。単独 Session も1ノードの木。 |
 | completion | 完了の定義は Node 自身が持つ（Session: auto / approval 等）。gate から改名、意味論は現行維持。 |
 | 辺 = 条件分岐のみ | 辺（rules）は Sequence が所有し、条件分岐（when / switch / next / loop_guard）のみ。承認は辺に置かない。 |
-| 再帰定義 | 合成子の子に任意の Node。サブワークフローは名前参照。循環検出 + 深さ制限で防御。 |
+| 再帰定義 | 合成子の子に任意の Node。定義を跨ぐ参照は持たず、部品化は定義言語の外（Lua）で行う。包含循環の検出で防御。 |
 | worktree 継承 | 実行コンテキストとして親から継承。隔離の宣言は関心の所有者に置く（単独 Node は自身の定義、並走の隔離は Fanout ブロック）。出自2種を分離。 |
 | 台帳突合 | 永続化された実行状態を台帳に、起動時に実体と突合。未統合成果は機械的に削除しない。 |
 | 木ごとイベントログ | per-execution ログの一般化。実行木は replay projection。 |
@@ -163,7 +165,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | --- | --- |
 | 「forest」の命名 | Worktree（木）の下に森は比喩が逆立ちする。「Worktree 配下の実行木」で足りる。 |
 | 「gate」の命名と辺の approval | gate は完了の定義（Node の関心）と進行（Sequence の関心）の混同を招いた。completion に改名し、辺には承認を置かない。 |
-| inline サブワークフロー定義 | 深い YAML を促す。名前参照で始め、必要なら後から追加する（逆は互換破壊）。 |
+| 定義を跨ぐ参照（`ref`） | 合成機構を engine に持ち込むと、合成子境界で loop_guard 検知・ステップ計算・静的検証・再開位置が壊れることが先行実装で実証されている（TAKT / Argo Workflows）。合成は定義言語の外に置き、engine には常に単一定義を渡す。部品 Sequence は `input` / `output` を持つため、`ref`（入口 `request` の String 1個・出口なし）の上位互換になる。 |
 | loop_guard の必須化 | 「終わるまでやれ」が正当なユースケース。監督は観測・abort で行う。 |
 | merge の typed command 化 | merge はフローに影響しない作業状態への操作。通常の Git 操作でよい。 |
 | workspace 横断監督 view | 実行木の所属が root Worktree に固定されるため、Worktree 単位の view で監督が完結する。 |
@@ -179,7 +181,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | milestone 85（delegate + worktree 隔離） | **#85 は本モデル完了後に着手する（依存: children 構文・completion・合成子の再帰解禁）**。delegate の発火は親 session の Artifact 提出、child は任意の Node、completion の条件合成（when / and / or）は #85 の文法追記。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。 |
 | milestone 84（Agent チャット安定化） | 制御フローは独立。ただし **session の実行設定の語彙は MS84 の AgentSessionConfiguration に従う**: permission の値域 = AgentMode（ask / edit / plan / auto / bypass）、goal = AgentGoal（省略可）、effort = ReasoningEffort（省略可）。node session 生成経路は MS84 の設定型を組み立てる。 |
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
-| `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
+| `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree ほか）。改訂は同上。 |
 | `docs/architecture/GLOSSARY.md` | §語彙 の反映。同上。 |
 | [`../workflow-lifecycle/workflow-ideal-lifecycle.md`](../workflow-lifecycle/workflow-ideal-lifecycle.md) | 実行時ライフサイクル不変条件(W-I 群)の正本。本モデルの実行木にも同じ invariant を適用し、実装時に状態語彙の対応(ExecutionStatus → Node 実行木の状態)を確定する。 |
 

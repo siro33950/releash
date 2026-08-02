@@ -2,7 +2,7 @@
 
 作成日: 2026-07-16
 
-統一 Node モデルの構文の確定事項を記録する。モデルの決定は [decisions.md](decisions.md)。例は [examples/](examples/)（実際に使う開発フロー full-cycle-development を新構文で書いたもの。親 + ref 部品3つ）。現行正本 [`docs/workflow-yaml-syntax.md`](../../docs/workflow-yaml-syntax.md) からの変更点を中心に書き、変更のない部分は現行を参照する。未確定の論点は末尾に列挙する。
+統一 Node モデルの構文の確定事項を記録する。モデルの決定は [decisions.md](decisions.md)。例は [examples/](examples/)（実際に使う開発フロー full-cycle-development を新構文で書いたもの）。現行正本 [`docs/workflow-yaml-syntax.md`](../../docs/workflow-yaml-syntax.md) からの変更点を中心に書き、変更のない部分は現行を参照する。未確定の論点は末尾に列挙する。
 
 記法: YAML はフロースタイル（`{}`）を使わず、常にブロックスタイルで書く。
 
@@ -27,7 +27,7 @@ nodes:
 
 - 全 Node のカタログ。**名前をキーにしたマップ**（リスト + `name` フィールドではない）。合成子（fanout / sequence）も葉（command / session）と同格に並ぶ。
 - 単一名前空間。名前の一意性はマップ構造が保証する。
-- Node の値は **kind ブロックちょうど1つ**（`command` / `session` / `fanout` / `sequence` / `ref`）+ Node 共通フィールド。
+- Node の値は **kind ブロックちょうど1つ**（`command` / `session` / `fanout` / `sequence`）+ Node 共通フィールド。
 - **Node 共通フィールド（`input` / `artifact` / `completion` / `worktree`）は kind ブロックの外（node レベル）に書く。kind ブロックの中は kind 固有の設定のみ**（session: model / permission / facets、fanout: children / items、sequence: entry / output / children）。
 - **Node は遷移を持たない**。配線は合成子の `children` にのみ存在する。
 
@@ -75,7 +75,7 @@ main:
         - command: "cargo clippy -- -D warnings"
     ```
 
-  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、`request`（起動時入力。**定義スコープの予約供給元であり、定義内のどの合成子の配線からも直接参照できる** — 兄弟名の解決が children に閉じるのとは別扱い）、fanout では `items`（展開の各要素）。**ref node への供給は宛先 `request` のみ**（参照先 workflow の起動時入力 — 人間が起動時に書くのと同じ入口を親が配線する）。供給値は String（scalar Contract の Artifact または String の field パス）であることを load 時に検証する（参照先の内部は見ない — request の型は定義によらず String 固定のため検証が閉じる）。未配線なら空 request で走る（人間が空入力で起動したのと同じ）。
+  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、`request`（起動時入力。**定義スコープの予約供給元であり、定義内のどの合成子の配線からも直接参照できる** — 兄弟名の解決が children に閉じるのとは別扱い）、fanout では `items`（展開の各要素）。
   - `rules`: 辺定義のリスト。中身（`when` / `switch` / `next` / `loop_guard`）と検証（排他・網羅・ループ健全性）は現行のまま。**辺に承認は置かない**（human が進行を止めたい箇所は Node 側の `completion: approval`）。**`rules: []`（空リスト）は出る辺なしの明示 = 終端**（リスト中間に終端を置く場合に使う）。
   - `on_failure`: この子が失敗したときの扱い。**省略時は中断**（resume で失敗した node を再実行 — 失敗は直すべきもの、が既定）。`ignore` = 失敗しても続行する（fanout では失敗子を結果の配列から除く。失敗 node の artifact に依存する下流があれば load 時 Diagnostic）。`retry: <n>` = 新しい attempt で最大 n 回自動再実行し（isolated なら attempt ごとに worktree 再生成）、尽きたら既定（中断）へ。失敗の重要度は文脈の性質なので、Node 定義ではなく扱い（children エントリ）に書く。
 - **終端 = 出る辺（rules またはリストの次）が無い node**。children に載らず行き先参照だけされる node は次を持たないため終端。
@@ -95,8 +95,7 @@ children:
         - next: run_tests
   - quick_check:                 # ③ インライン宣言（kind ありのマップ、キーが新名）
       command: "cargo check"
-  - ref: test-and-fix            # ④ 無名エントリ（kind キーで始まるマップ）
-  - session:                     # ④ 無名のインライン宣言も同形
+  - session:                     # ④ 無名エントリ（kind キーで始まるマップ）
       model: claude-opus-5
       permission: read
       facets:
@@ -105,9 +104,9 @@ children:
 ```
 
 - **名前は配線（entry / rules / inputs）から参照されるためにある。参照されないエントリは無名でよい**。fanout の子は配線されないため④が自然に書ける（無名の子でも `artifact` は fanout の子 artifact 配列に集約されるため意味を持つ）。sequence 内の無名エントリも、隣接辺（リストの次へ）で到達できるため合法。
-- 判別: マップ要素のキーが単一の非予約語なら名前付き（②③。kind ブロックの有無で判別）、予約語で始まれば無名（④）。**予約語 = kind 名（`command` / `session` / `fanout` / `sequence` / `ref`）とフィールド名（`input` / `artifact` / `completion` / `worktree` / `inputs` / `rules` / `on_failure` / `items` / `entry` / `output` / `children`）。予約語は node 名として使用禁止**。
+- 判別: マップ要素のキーが単一の非予約語なら名前付き（②③。kind ブロックの有無で判別）、予約語で始まれば無名（④）。**予約語 = kind 名（`command` / `session` / `fanout` / `sequence`）とフィールド名（`input` / `artifact` / `completion` / `worktree` / `inputs` / `rules` / `on_failure` / `items` / `entry` / `output` / `children`）。予約語は node 名として使用禁止**。
 - ③は**純粋な糖衣**である。インライン宣言された node の名前は、カタログに置いたのと同じ定義内の単一名前空間に登録され、load 時に「カタログ + 参照」へ正規化される。意味論は1つ。名前衝突は Diagnostic。
-- インラインで書けるのは普通の Node のみ。`ref` の参照先（別 WorkflowDefinition）の中身を展開して書くことはできない（decisions.md「inline サブワークフロー定義は持たない」のまま）。
+- 別の WorkflowDefinition を参照する構文は持たない。定義を跨ぐ部品化は定義言語の外（Lua・[#1591](https://github.com/siro33950/releash/issues/1591)）で行い、load 時には単一の WorkflowDefinition になっている（decisions.md「定義と展開」）。
 
 ## fanout
 
@@ -156,9 +155,9 @@ fix_each:
 
 | 空間 | スコープ |
 | --- | --- |
-| WorkflowDefinition 名 | アプリ内グローバル（builtin + user 定義）。`ref` の解決対象 |
-| node 名 | WorkflowDefinition 内フラット単一。`ref` は境界（参照先の node 名は親から見えない） |
-| Contract（schemas）名 | WorkflowDefinition ローカル。定義を跨ぐ型は名前ではなく構造的互換で検証する |
+| WorkflowDefinition 名 | アプリ内グローバル（builtin + user 定義）。人間が起動する単位 |
+| node 名 | WorkflowDefinition 内フラット単一 |
+| Contract（schemas）名 | WorkflowDefinition ローカル |
 | facets 名 | アプリ管理の共有空間（現行のまま） |
 
 ## 未確定
