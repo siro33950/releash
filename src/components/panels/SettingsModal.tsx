@@ -3,9 +3,7 @@ import {
 	Bell,
 	BookOpen,
 	Bot,
-	Check,
 	Code,
-	Copy,
 	GitBranch,
 	Loader2,
 	Monitor,
@@ -60,26 +58,6 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { NotionSettingsSection } from "./NotionSettingsSection";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
-
-interface HooksState {
-	config: string;
-	loading: boolean;
-	applying: boolean;
-	status: "active" | "token_mismatch" | "not_configured";
-	copied: boolean;
-	error: string | null;
-	success: boolean;
-}
-
-const initialHooksState: HooksState = {
-	config: "",
-	loading: false,
-	applying: false,
-	status: "not_configured",
-	copied: false,
-	error: null,
-	success: false,
-};
 
 interface WorkflowConfig {
 	approval_auto_approve: boolean;
@@ -136,53 +114,6 @@ function useWorkflowSettings(open: boolean) {
 	}, [draft]);
 
 	return { draft, setDraft, isDirty, loading, saving, error, save };
-}
-
-type HooksAction =
-	| { type: "LOAD_START" }
-	| {
-			type: "LOAD_SUCCESS";
-			config: string;
-			status: HooksState["status"];
-	  }
-	| { type: "LOAD_ERROR"; error: string }
-	| { type: "APPLY_START" }
-	| { type: "APPLY_SUCCESS" }
-	| { type: "APPLY_ERROR"; error: string }
-	| { type: "SET_COPIED"; copied: boolean }
-	| { type: "COPY_ERROR"; error: string };
-
-function hooksReducer(state: HooksState, action: HooksAction): HooksState {
-	switch (action.type) {
-		case "LOAD_START":
-			return { ...state, loading: true, error: null, success: false };
-		case "LOAD_SUCCESS":
-			return {
-				...state,
-				loading: false,
-				error: null,
-				config: action.config,
-				status: action.status,
-			};
-		case "LOAD_ERROR":
-			return { ...state, loading: false, error: action.error };
-		case "APPLY_START":
-			return { ...state, applying: true, error: null, success: false };
-		case "APPLY_SUCCESS":
-			return {
-				...state,
-				applying: false,
-				status: "active",
-				success: true,
-				error: null,
-			};
-		case "APPLY_ERROR":
-			return { ...state, applying: false, error: action.error };
-		case "SET_COPIED":
-			return { ...state, copied: action.copied };
-		case "COPY_ERROR":
-			return { ...state, error: action.error };
-	}
 }
 
 type SettingsSection =
@@ -663,28 +594,10 @@ function AgentSection({
 	draft,
 	updateDraft,
 	workflow,
-	hooksConfig,
-	hooksLoading,
-	hooksApplying,
-	hooksStatus,
-	hooksCopied,
-	hooksError,
-	hooksSuccess,
-	onApplyHooks,
-	onCopyHooks,
 }: {
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
 	workflow: ReturnType<typeof useWorkflowSettings>;
-	hooksConfig: string;
-	hooksLoading: boolean;
-	hooksApplying: boolean;
-	hooksStatus: "active" | "token_mismatch" | "not_configured";
-	hooksCopied: boolean;
-	hooksError: string | null;
-	hooksSuccess: boolean;
-	onApplyHooks: () => void;
-	onCopyHooks: () => void;
 }) {
 	const showAutoApprove =
 		draft.agent !== "none" &&
@@ -815,82 +728,6 @@ function AgentSection({
 					<p className="text-[10px] text-muted-foreground">
 						Optional: pre-launch setup command.
 					</p>
-				</div>
-			)}
-
-			{draft.agent === "claude" && (
-				<div className="flex flex-col gap-2">
-					<h4 className="text-xs font-semibold text-muted-foreground">
-						Claude Code Hooks
-					</h4>
-
-					{hooksLoading ? (
-						<div className="flex items-center justify-center py-4">
-							<Loader2 className="size-4 animate-spin text-muted-foreground" />
-						</div>
-					) : (
-						<>
-							<div className="flex items-center gap-2">
-								<span className="text-xs font-medium">
-									Status:{" "}
-									{hooksStatus === "active" && (
-										<span className="text-success">Enabled</span>
-									)}
-									{hooksStatus === "token_mismatch" && (
-										<span className="text-warning">
-											Token mismatch — Reconfiguration required
-										</span>
-									)}
-									{hooksStatus === "not_configured" && (
-										<span className="text-muted-foreground">
-											Not configured
-										</span>
-									)}
-								</span>
-							</div>
-
-							<div className="relative">
-								<pre className="max-h-40 overflow-auto rounded border border-border bg-muted/50 p-2 text-[10px] font-mono whitespace-pre-wrap break-all">
-									{hooksConfig}
-								</pre>
-								<button
-									type="button"
-									className="absolute top-1.5 right-1.5 p-1 rounded bg-background/80 border border-border hover:bg-muted transition-colors"
-									onClick={onCopyHooks}
-								>
-									{hooksCopied ? (
-										<Check className="size-3 text-success" />
-									) : (
-										<Copy className="size-3 text-muted-foreground" />
-									)}
-								</button>
-							</div>
-
-							{hooksError && (
-								<p className="text-xs text-destructive">{hooksError}</p>
-							)}
-
-							{hooksSuccess && (
-								<p className="text-xs text-success">
-									Settings applied. Restart Claude Code to take effect.
-								</p>
-							)}
-
-							<div className="flex justify-end">
-								<Button
-									size="sm"
-									variant={hooksStatus === "active" ? "ghost" : "default"}
-									onClick={onApplyHooks}
-									disabled={hooksApplying || !hooksConfig}
-								>
-									{hooksApplying ? (
-										<Loader2 className="size-3.5 mr-1 animate-spin" />
-									) : null}
-									{hooksStatus === "active" ? "Reconfigure" : "Apply Settings"}
-								</Button>
-							</div>
-						</>
-					)}
 				</div>
 			)}
 		</div>
@@ -1297,9 +1134,6 @@ export function SettingsModal({
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
 
-	// Hooks state
-	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
-
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
@@ -1315,58 +1149,6 @@ export function SettingsModal({
 		},
 		[],
 	);
-
-	// Load hooks config when agent is claude and dialog is open
-	useEffect(() => {
-		if (!open || draft.agent !== "claude") return;
-		let cancelled = false;
-		dispatchHooks({ type: "LOAD_START" });
-
-		Promise.all([
-			invoke<string>("generate_hooks_config"),
-			invoke<string>("get_hooks_status"),
-		])
-			.then(([json, status]) => {
-				if (!cancelled) {
-					dispatchHooks({
-						type: "LOAD_SUCCESS",
-						config: json,
-						status: status as HooksState["status"],
-					});
-				}
-			})
-			.catch((e) => {
-				if (!cancelled) {
-					dispatchHooks({ type: "LOAD_ERROR", error: String(e) });
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, draft.agent]);
-
-	const handleApplyHooks = useCallback(async () => {
-		dispatchHooks({ type: "APPLY_START" });
-		try {
-			await invoke("apply_hooks_config", { configJson: hooks.config });
-			dispatchHooks({ type: "APPLY_SUCCESS" });
-		} catch (e) {
-			dispatchHooks({ type: "APPLY_ERROR", error: String(e) });
-		}
-	}, [hooks.config]);
-
-	const handleCopyHooks = useCallback(async () => {
-		try {
-			await navigator.clipboard.writeText(hooks.config);
-			dispatchHooks({ type: "SET_COPIED", copied: true });
-			setTimeout(
-				() => dispatchHooks({ type: "SET_COPIED", copied: false }),
-				2000,
-			);
-		} catch (e) {
-			dispatchHooks({ type: "COPY_ERROR", error: `Copy failed: ${String(e)}` });
-		}
-	}, [hooks.config]);
 
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
@@ -1474,15 +1256,6 @@ export function SettingsModal({
 						draft={draft}
 						updateDraft={updateDraft}
 						workflow={workflow}
-						hooksConfig={hooks.config}
-						hooksLoading={hooks.loading}
-						hooksApplying={hooks.applying}
-						hooksStatus={hooks.status}
-						hooksCopied={hooks.copied}
-						hooksError={hooks.error}
-						hooksSuccess={hooks.success}
-						onApplyHooks={handleApplyHooks}
-						onCopyHooks={handleCopyHooks}
 					/>
 				);
 			case "background":

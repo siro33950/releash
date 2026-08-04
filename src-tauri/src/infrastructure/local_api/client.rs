@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::{local_api_discovery_path, LocalApiDiscovery};
+use super::{local_api_discovery_path, process_start_time, LocalApiDiscovery};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalApiClientError {
@@ -22,7 +22,7 @@ pub(crate) enum LocalApiClientError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("local API discovery file が不正です ({}): port と token が必要です", path.display())]
+    #[error("local API discovery file が不正または古いです ({})", path.display())]
     InvalidDiscovery { path: PathBuf },
     #[error("local API URL が不正です: {0}")]
     InvalidUrl(#[source] url::ParseError),
@@ -73,10 +73,20 @@ impl LocalApiHttpClient {
                 source,
             }
         })?;
-        if discovery.port == 0 || discovery.token.trim().is_empty() {
+        if discovery.port == 0
+            || discovery.token.trim().is_empty()
+            || discovery.instance_id.trim().is_empty()
+            || discovery.process_started_at == 0
+            || process_start_time(discovery.pid) != Some(discovery.process_started_at)
+        {
             return Err(LocalApiClientError::InvalidDiscovery { path });
         }
-        Self::new(discovery).map(Some)
+        let instance_id = discovery.instance_id.clone();
+        let client = Self::new(discovery)?;
+        if !client.matches_server_instance(&instance_id) {
+            return Err(LocalApiClientError::InvalidDiscovery { path });
+        }
+        Ok(Some(client))
     }
 
     fn new(discovery: LocalApiDiscovery) -> Result<Self, LocalApiClientError> {
@@ -114,30 +124,22 @@ impl LocalApiHttpClient {
         self.send(self.client.post(url).json(body))
     }
 
-    pub(crate) fn post_json_with_timeout<B: Serialize + ?Sized, T: DeserializeOwned>(
-        &self,
-        segments: &[&str],
-        body: &B,
-        timeout: Duration,
-    ) -> Result<T, LocalApiClientError> {
-        let url = self.endpoint(segments)?;
-        self.send(self.client.post(url).timeout(timeout).json(body))
-    }
-
-    pub(crate) fn post_empty<T: DeserializeOwned>(
-        &self,
-        segments: &[&str],
-    ) -> Result<T, LocalApiClientError> {
-        let url = self.endpoint(segments)?;
-        self.send(self.client.post(url))
-    }
-
     fn endpoint(&self, segments: &[&str]) -> Result<Url, LocalApiClientError> {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .map_err(|_| LocalApiClientError::InvalidEndpoint)?
             .extend(segments);
         Ok(url)
+    }
+
+    fn matches_server_instance(&self, instance_id: &str) -> bool {
+        let Ok(url) = self.endpoint(&[".well-known", "releash-local-api", instance_id]) else {
+            return false;
+        };
+        self.client
+            .get(url)
+            .send()
+            .is_ok_and(|response| response.status() == reqwest::StatusCode::NO_CONTENT)
     }
 
     fn send<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, LocalApiClientError> {
@@ -174,184 +176,5 @@ fn classify_transport_error(error: reqwest::Error) -> LocalApiClientError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::Arc;
-
-    use tempfile::TempDir;
-
-    use super::*;
-    use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
-
-    fn write_discovery(data_dir: &Path, port: u16, token: &str) {
-        std::fs::write(
-            local_api_discovery_path(data_dir),
-            serde_json::json!({"port": port, "token": token, "pid": 42}).to_string(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn every_request_receives_the_discovered_bearer_token() {
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), 43123, "secret");
-        let client = LocalApiHttpClient::discover(temp.path()).unwrap().unwrap();
-        let request = client
-            .authenticated(client.client.get(client.base_url.clone()))
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            request
-                .headers()
-                .get(reqwest::header::AUTHORIZATION)
-                .unwrap(),
-            "Bearer secret"
-        );
-    }
-
-    #[test]
-    fn client_ignores_environment_proxy_and_connects_to_loopback() {
-        let _lock = TEST_ENV_LOCK.lock();
-        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        proxy.set_nonblocking(true).unwrap();
-        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
-        let _http_proxy = EnvVarGuard::set_value("HTTP_PROXY", &proxy_url);
-        let _http_proxy_lower = EnvVarGuard::set_value("http_proxy", &proxy_url);
-        let _all_proxy = EnvVarGuard::set_value("ALL_PROXY", &proxy_url);
-        let _all_proxy_lower = EnvVarGuard::set_value("all_proxy", &proxy_url);
-        let _no_proxy = EnvVarGuard::set_value("NO_PROXY", "");
-        let _no_proxy_lower = EnvVarGuard::set_value("no_proxy", "");
-        let target_port = target.local_addr().unwrap().port();
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let received_for_server = received.clone();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        request.extend_from_slice(&buffer[..read]);
-                        if request
-                            .windows(b"proxy-secret-marker".len())
-                            .any(|window| window == b"proxy-secret-marker")
-                        {
-                            break;
-                        }
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        break;
-                    }
-                    Err(error) => panic!("failed to read direct request: {error}"),
-                }
-            }
-            *received_for_server.lock().unwrap() = request;
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
-                )
-                .unwrap();
-        });
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), target_port, "proxy-secret-token");
-        let client = LocalApiHttpClient::discover(temp.path()).unwrap().unwrap();
-
-        let response: serde_json::Value = client
-            .post_json(
-                &["v1", "test"],
-                &serde_json::json!({"marker": "proxy-secret-marker"}),
-            )
-            .unwrap();
-
-        assert_eq!(response, serde_json::json!({"ok": true}));
-        server.join().unwrap();
-        let direct_request = String::from_utf8_lossy(&received.lock().unwrap()).into_owned();
-        assert!(direct_request
-            .to_ascii_lowercase()
-            .contains("authorization: bearer proxy-secret-token"));
-        assert!(direct_request.contains("proxy-secret-marker"));
-        assert!(
-            matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-        );
-    }
-
-    #[test]
-    fn response_body_timeout_is_a_request_error() {
-        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let target_port = target.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n[",
-                )
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-        });
-        let client = LocalApiHttpClient {
-            base_url: Url::parse(&format!("http://127.0.0.1:{target_port}/")).unwrap(),
-            token: "secret".to_string(),
-            client: Client::builder()
-                .no_proxy()
-                .connect_timeout(Duration::from_millis(100))
-                .timeout(Duration::from_millis(100))
-                .build()
-                .unwrap(),
-        };
-
-        let error = client
-            .get_json::<serde_json::Value>(&["v1", "test"], &[])
-            .unwrap_err();
-
-        assert!(matches!(error, LocalApiClientError::Request(_)));
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn post_json_with_timeout_returns_a_committed_id_after_more_than_five_seconds() {
-        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let target_port = target.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            std::thread::sleep(Duration::from_millis(5_100));
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 54\r\nConnection: close\r\n\r\n{\"executionId\":\"00000000-0000-4000-8000-000000000777\"}",
-                )
-                .unwrap();
-        });
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), target_port, "secret");
-        let client = LocalApiHttpClient::discover(temp.path()).unwrap().unwrap();
-
-        let response: serde_json::Value = client
-            .post_json_with_timeout(
-                &["v1", "workflow", "executions"],
-                &serde_json::json!({"workflowName": "slow-start"}),
-                Duration::from_secs(305),
-            )
-            .unwrap();
-
-        assert_eq!(
-            response["executionId"],
-            "00000000-0000-4000-8000-000000000777"
-        );
-        server.join().unwrap();
-    }
-}
+#[path = "client_test.rs"]
+mod client_tests;

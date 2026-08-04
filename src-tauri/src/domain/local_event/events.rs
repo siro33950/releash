@@ -10,6 +10,7 @@ use crate::domain::agent_session::events::AgentSessionDomainEvent;
 use crate::domain::local_event::identifiers::{
     CommitIdentity, EventId, GlobalSequence, StreamId, StreamSequence, StreamVersion,
 };
+use crate::domain::provider_lifecycle::ProviderLifecycleEvent;
 use crate::domain::workflow::events::WorkflowDomainEvent;
 
 /// Shutdown / quit intent fixed by the first accepted quit request.
@@ -57,6 +58,7 @@ pub enum ApplicationDomainEvent {
 pub enum LocalDomainEvent {
     AgentSession(AgentSessionDomainEvent),
     Workflow(WorkflowDomainEvent),
+    ProviderLifecycle(ProviderLifecycleEvent),
     Application(ApplicationDomainEvent),
 }
 

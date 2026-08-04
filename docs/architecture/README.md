@@ -67,7 +67,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 依存は内向き（外側の層が内側の層に依存する）にのみ許される。adaptor/gateway だけは、変換の材料を得るために外側の infrastructure にも依存する。gateway が外部世界と内側を橋渡しする層だからである。
 
 - ドメインは外側を一切知らない（依存を持たない）
-- usecase は domain にのみ依存する
+- usecase の業務依存は domain に限る。Usecase自身が所有する非同期排他・通知等の実行制御primitiveは使用してよいが、外部世界との接続やその型を持ち込まない
 - adaptor（gateway / controller / presenter）は usecase と domain に依存してよい（依存は内向き）
 - adaptor/gateway は domain が定義する trait（repository 等）を実装し、集約読み取り等では usecase の DTO / query ポートにも依存してよい
 - adaptor/controller は usecase を呼ぶ
@@ -92,7 +92,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 | `pty_session` | PTY 管理全般 |
 | `app_config` | 現 config.rs を分解 |
 | `workspace_state` | ワークスペース状態保存 |
-| `hooks` | フック設定・適用 |
+| `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |
 | `notification` | webhook (Slack/Discord)、将来の他チャネル |
 | `remote_access` | vpn_detect、qr_code、tls |
 | `git_host` | GitHub PR/Issue |

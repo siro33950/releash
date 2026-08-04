@@ -125,18 +125,6 @@ impl WorkflowReadUsecase {
         self.workspace_query.execution_summary(execution_id)
     }
 
-    pub(crate) fn get_execution_log(
-        &self,
-        execution_id: &str,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.query.get_execution_log(execution_id)
-    }
-
     pub(crate) fn get_execution_log_page(
         &self,
         execution_id: &str,

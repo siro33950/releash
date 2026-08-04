@@ -12,6 +12,7 @@ pub(crate) mod hmac_sha256;
 pub(crate) mod indexed_projection_codec;
 pub(crate) mod layout;
 pub(crate) mod projection_record_codec;
+pub(crate) mod provider_lifecycle_codec;
 pub(crate) mod read_only;
 pub(crate) mod reader;
 pub(crate) mod schema;

@@ -112,11 +112,11 @@ domain に型や関数があることと、それが効いていることは別�
 
 - `domain/pty_session/entities/pty_session_registry.rs` — 集約が cap 判定・退避選択・予約の commit/rollback を所有し、gateway は集約を保持して判断を委ねる。
 - `domain/comment/mod.rs` — 状態型・イベント・遷移適用（`ThreadAccumulator::apply`）・受理判定（`ensure_thread_open`）がすべて domain にあり、usecase は port 呼び出しの手順のみ。
+- `domain/provider_lifecycle/entities/provider_lifecycle_slot.rs` — Slotごとのcurrent launch binding、bindingの失効、capability検証、signalの受理判定をdomainが持ち、usecaseはSlot単位の排他と永続化の手順のみを担う。
 
 状態を持たない概念:
 
 - `domain/code/services/`、`domain/code/value_objects/review.rs` — hunk 区切り・patch 生成・閾値判定という規則を domain が所有する。usecase が薄いのは、判断が domain にあるからである。
-- `domain/hooks/services.rs` — 既存のユーザー設定を壊さないマージ規則と状態判定を domain が持ち、usecase は転送のみ。
 
 ## 値オブジェクト
 

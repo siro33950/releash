@@ -30,7 +30,6 @@ pub(crate) mod git;
 
 mod agent_session_wire_replay;
 
-#[allow(dead_code)]
 #[path = "../../tests/support/agent_tui_fixture.rs"]
 pub(crate) mod agent_tui_fixture;
 

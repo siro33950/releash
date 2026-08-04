@@ -16,5 +16,4 @@ pub mod template_preview;
 pub mod transition;
 pub mod validation;
 
-pub use approval_rules::ApprovalInputError;
 pub use failure_policy::{RetryPolicy, TimeoutContext, TimeoutPolicy};

@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::domain::workflow::{approval_rules, ApprovalInputError};
-
 pub(super) fn cli_result_exit_code(result: Result<String, CliError>) -> i32 {
     match result {
         Ok(stdout) => {
@@ -82,21 +80,6 @@ pub(super) fn ensure_existing_data_dir(path: &Path) -> Result<(), CliError> {
         )));
     }
     Ok(())
-}
-
-/// 任意の自由記述テキスト（例: `--comment`）の長さを CLI 入口で検証する。
-///
-/// 文字数上限はドメイン pure helper に集約（review R2-01）。
-pub(super) fn validate_optional_cli_text_len(
-    value: Option<&str>,
-    label: &'static str,
-) -> Result<(), CliError> {
-    approval_rules::validate_optional_comment_text(value, label)
-        .map_err(approval_input_error_to_cli_error)
-}
-
-pub(super) fn approval_input_error_to_cli_error(err: ApprovalInputError) -> CliError {
-    CliError::InvalidInput(err.to_string())
 }
 
 pub(super) fn validate_execution_id(execution_id: &str) -> Result<(), CliError> {

@@ -5,7 +5,6 @@ pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
-pub(crate) mod hooks;
 pub(crate) mod menu;
 pub(crate) mod notification;
 pub(crate) mod notion;
@@ -115,7 +114,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     comment::register(&mut router);
     external_editor::register(&mut router);
     git_host::register(&mut router);
-    hooks::register(&mut router);
     menu::register(&mut router);
     notification::register(&mut router);
     notion::register(&mut router);
@@ -168,7 +166,6 @@ mod tests {
                 external_editor::register,
             ),
             ("git_host", git_host::COMMAND_NAMES, git_host::register),
-            ("hooks", hooks::COMMAND_NAMES, hooks::register),
             ("menu", menu::COMMAND_NAMES, menu::register),
             (
                 "notification",
@@ -202,7 +199,7 @@ mod tests {
         ]
     }
 
-    fn registered_command_names() -> Vec<&'static str> {
+    pub(super) fn registered_command_names() -> Vec<&'static str> {
         command_domains()
             .into_iter()
             .flat_map(|(_, command_names, _)| command_names.iter().copied())
@@ -355,7 +352,6 @@ mod tests {
             "acknowledge_agent_attempt",
             "add_repo_path",
             "append_review_comment",
-            "apply_hooks_config",
             "approve_workspace_node",
             "approve_workflow_node",
             "attach_pty",
@@ -398,7 +394,6 @@ mod tests {
             "fetch_pr_status",
             "fork_session",
             "gc_ptys_for_worktree",
-            "generate_hooks_config",
             "get_agent_session_display_window",
             "get_agent_session_notice",
             "list_agent_session_feedback",
@@ -431,7 +426,6 @@ mod tests {
             "get_git_status",
             "get_git_status_snapshot",
             "get_head_diff_file_tree_snapshot",
-            "get_hooks_status",
             "get_language_from_path",
             "get_main_repo_path",
             "get_notion_config",
@@ -668,3 +662,7 @@ mod tests {
         assert_eq!(router.domain_route_index("get_git_status"), None);
     }
 }
+
+#[cfg(test)]
+#[path = "legacy_hook_registration_test.rs"]
+mod legacy_hook_registration_tests;

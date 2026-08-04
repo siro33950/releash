@@ -89,7 +89,7 @@ usecase 同士を相互依存させず、**controller 層でオーケストレ�
 ## データモデルまたは型
 
 ### app_config（domain 値オブジェクト、serde なし）
-- `ServerConfig`（bind, port, hook_port, token, mcp_port, mcp_token, tls, notify）
+- `ServerConfig`（bind, port, token, mcp_port, mcp_token, tls, notify）
 - `TlsConfig`、`NotifyConfig`（既存 `domain/notification` の `NotifyConfig` と重複しないよう所有を整理）、`DesktopNotifyMode`
 - `TelemetryConfig`（crash_reporting）、`AppSettings`、`AgentShortcutConfig`、`AgentsConfig`、`RemoteConfig`、`WorkflowConfig`
 - domain サービス: `generate_token() -> String`

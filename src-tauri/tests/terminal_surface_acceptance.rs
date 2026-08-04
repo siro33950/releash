@@ -1,5 +1,4 @@
 #[path = "support/agent_tui_fixture.rs"]
-#[allow(dead_code)]
 mod agent_tui_fixture;
 
 use std::time::Duration;

@@ -28,8 +28,7 @@ pub use repository::{
     WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{
-    approval_rules, contract, secret_masker, validation, ApprovalInputError, RetryPolicy,
-    TimeoutContext, TimeoutPolicy,
+    approval_rules, contract, secret_masker, validation, RetryPolicy, TimeoutContext, TimeoutPolicy,
 };
 #[cfg(test)]
 pub use value_objects::ExecutionListFilter;
