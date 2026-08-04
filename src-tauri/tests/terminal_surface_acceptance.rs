@@ -161,7 +161,26 @@ async fn wait_surface_contains(
     }
 }
 
-fn surface_text(surface: &TerminalSurfaceV1) -> String {
+async fn wait_surface_cursor(
+    runtime: &TerminalSurfaceRuntime,
+    owner: &TerminalSurfaceOwnerV1,
+    expected: (usize, usize),
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let surface = runtime.get(owner.clone()).expect("read Terminal Surface");
+            let terminal = restore_surface(&surface);
+            if terminal.cursor() == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for Terminal Surface cursor: {expected:?}"));
+}
+
+fn restore_surface(surface: &TerminalSurfaceV1) -> avt::Vt {
     let mut terminal = avt::Vt::builder()
         .size(
             usize::from(surface.terminal_surface.cols),
@@ -170,7 +189,11 @@ fn surface_text(surface: &TerminalSurfaceV1) -> String {
         .scrollback_limit(RECONSTRUCTION_SCROLLBACK_ROWS)
         .build();
     terminal.feed_str(&surface.terminal_surface.replay);
-    terminal.text().join("\n")
+    terminal
+}
+
+fn surface_text(surface: &TerminalSurfaceV1) -> String {
+    restore_surface(surface).text().join("\n")
 }
 
 fn snapshot(items: &[TerminalSurfaceStreamItemV1]) -> TerminalSurfaceV1 {
@@ -412,11 +435,11 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
 
     faults.arm(TerminalSurfaceEventFault::ReverseNextTwo);
     runtime
-        .write(owner.clone(), "fault-reversal-a\r")
-        .expect("write first reversed production event");
+        .resize(owner.clone(), 24, 241)
+        .expect("publish first reversed production event");
     runtime
-        .write(owner.clone(), "fault-reversal-b\r")
-        .expect("write second reversed production event");
+        .write(owner.clone(), "fault-reversal\r")
+        .expect("publish second reversed production event through real PTY");
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(10), attached.next())
             .await
@@ -466,6 +489,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
         .write(owner.clone(), "style-probe\r")
         .expect("write styled frame");
     receive_until(&mut monitor, "received-0:style-probe").await;
+    wait_surface_cursor(&runtime, &owner, (0, 3)).await;
     let mut attached = runtime
         .attach("atui-011-checkpoint".to_string(), owner.clone())
         .expect("attach checkpoint");
@@ -691,10 +715,10 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
             .expect("write restart scrollback frame");
         receive_until(&mut monitor, &format!("received-{index}:{marker}")).await;
     }
-    first_runtime
-        .flush_checkpoints()
-        .expect("flush production checkpoints");
     drop(monitor);
+    first_runtime
+        .shutdown()
+        .expect("stop, drain, and checkpoint first app process");
     drop(first_runtime);
     drop(first_app);
     #[cfg(unix)]
