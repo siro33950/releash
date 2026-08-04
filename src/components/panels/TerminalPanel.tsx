@@ -17,7 +17,7 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
-import { useTerminal } from "@/hooks/useTerminal";
+import { type TerminalSurfaceOwner, useTerminal } from "@/hooks/useTerminal";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -30,11 +30,11 @@ export interface TerminalPanelProps {
 	cwd?: string | null;
 	theme?: Theme;
 	terminalStartupCommand?: string;
-	sessionKey?: string;
+	owner?: TerminalSurfaceOwner;
 	label?: string;
-	onPtyReady?: (ptyId: number, sessionKey: string) => void;
-	onPtyError?: (message: string) => void;
-	shouldKillPendingPty?: () => boolean;
+	onTerminalReady?: (sessionKey: string) => void;
+	onTerminalError?: (message: string) => void;
+	shouldKillPendingTerminal?: () => boolean;
 	onSplitVertical?: () => void;
 	onSplitHorizontal?: () => void;
 	onBreakToTab?: () => void;
@@ -51,11 +51,11 @@ export const TerminalPanel = forwardRef<
 		cwd,
 		theme,
 		terminalStartupCommand,
-		sessionKey,
+		owner,
 		label,
-		onPtyReady,
-		onPtyError,
-		shouldKillPendingPty,
+		onTerminalReady,
+		onTerminalError,
+		shouldKillPendingTerminal,
 		onSplitVertical,
 		onSplitHorizontal,
 		onBreakToTab,
@@ -66,31 +66,37 @@ export const TerminalPanel = forwardRef<
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const { terminalRef, ptyIdRef, writeToTerminal, requestKill } = useTerminal(
+	const {
+		terminalRef,
+		terminalOwner,
+		isRunningRef,
+		writeToTerminal,
+		requestKill,
+	} = useTerminal(
 		containerRef,
 		cwd,
 		theme,
 		terminalStartupCommand,
-		sessionKey,
+		owner,
 		label,
-		onPtyReady,
-		onPtyError,
-		shouldKillPendingPty,
+		onTerminalReady,
+		onTerminalError,
+		shouldKillPendingTerminal,
 	);
 	const [isDragOver, setIsDragOver] = useState(false);
 	const isDragOverRef = useRef(false);
 
 	const writePathsToTerminal = useCallback(
 		(paths: string[]) => {
-			if (ptyIdRef.current === null || paths.length === 0) return;
+			if (!isRunningRef.current || paths.length === 0) return;
 			invoke("write_paths_to_pty", {
-				ptyId: ptyIdRef.current,
+				owner: terminalOwner,
 				paths,
 			}).catch((error) => {
 				console.error("Failed to write paths to PTY:", error);
 			});
 		},
-		[ptyIdRef],
+		[isRunningRef, terminalOwner],
 	);
 
 	useImperativeHandle(

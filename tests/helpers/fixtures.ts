@@ -125,16 +125,28 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Terminal (PTY) — モック上は何もしない
 	get_or_spawn_pty: {
-		pty_id: 1,
 		session_key: "mock-session",
-		buffered_output: "",
+		restored_from_checkpoint: false,
 		is_new: true,
 		is_exited: false,
 		exit_code: null,
-		label: null,
 	},
+	get_terminal_surface: {
+		session_key: "mock-session",
+		terminal_surface: {
+			replay: "",
+			sequence: 0,
+			cols: 80,
+			rows: 24,
+		},
+		is_exited: false,
+		exit_code: null,
+	},
+	attach_pty: { __mockTerminalAttachment: true },
+	detach_pty: null,
 	write_pty: null,
 	resize_pty: null,
+	kill_pty: null,
 	kill_ptys_by_worktree: null,
 
 	// MCP config

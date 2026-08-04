@@ -2,7 +2,10 @@ mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
+mod terminal;
 mod workflow;
+
+pub(crate) use terminal::TerminalApiDeps;
 
 use std::sync::Arc;
 
@@ -19,6 +22,7 @@ struct LocalApiState {
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     agent_session: Option<AgentSessionApiDeps>,
+    terminal: Option<TerminalApiDeps>,
 }
 
 #[derive(Clone)]
@@ -83,9 +87,11 @@ pub(crate) fn build_router(
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
     agent_session: Option<AgentSessionApiDeps>,
+    terminal: Option<TerminalApiDeps>,
 ) -> Router {
     workflow::router()
         .merge(agent_session::router())
+        .merge(terminal::router())
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
@@ -94,6 +100,7 @@ pub(crate) fn build_router(
             workflow,
             runtime,
             agent_session,
+            terminal,
         })
 }
 
@@ -401,6 +408,26 @@ pub(crate) mod test_support {
         Arc<WorkflowRuntimeUsecase>,
         Arc<RecordingRuntimeGateway>,
     ) {
+        test_router_with_optional_terminal(data_dir, token, None)
+    }
+
+    pub(crate) fn test_router_with_terminal(
+        data_dir: &Path,
+        token: &str,
+        terminal: TerminalApiDeps,
+    ) -> Router {
+        test_router_with_optional_terminal(data_dir, token, Some(terminal)).0
+    }
+
+    fn test_router_with_optional_terminal(
+        data_dir: &Path,
+        token: &str,
+        terminal: Option<TerminalApiDeps>,
+    ) -> (
+        Router,
+        Arc<WorkflowRuntimeUsecase>,
+        Arc<RecordingRuntimeGateway>,
+    ) {
         let gateway = Arc::new(RecordingRuntimeGateway::default());
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway.clone()));
         let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
@@ -429,6 +456,7 @@ pub(crate) mod test_support {
             runtime.clone(),
             Arc::<str>::from(token),
             None,
+            terminal,
         );
         (router, runtime, gateway)
     }

@@ -3,6 +3,16 @@ pub mod cli;
 mod domain;
 mod infrastructure;
 mod other;
+pub mod terminal_surface {
+    pub use crate::adaptor::controller::terminal_surface_runtime::{
+        TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
+        TerminalSurfaceWireAttachment,
+    };
+    pub use crate::adaptor::protocol::terminal::{
+        GetOrSpawnTerminalV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+        TerminalSurfaceV1,
+    };
+}
 // Test-only helpers are intentionally kept as a root module.
 #[cfg(test)]
 mod test_support;
@@ -829,17 +839,9 @@ pub fn run() {
             let projected_local_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
             > = local_event_store.clone();
-            let pty_gateway = Arc::new(
-                adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
-            );
-            let pty_read_gateway: Arc<
-                dyn usecase::pty_session::ports::PtySessionReadGateway + Send + Sync,
-            > = pty_gateway.clone();
-            let pty_session_read_usecase = Arc::new(
-                usecase::pty_session::read_usecase::PtySessionReadUsecase::new(pty_read_gateway),
-            );
-            pty_gateway.start_idle_sweeper(app.handle().clone());
-            app.manage(pty_gateway);
+            let terminal_surface_runtime =
+                terminal_surface::TerminalSurfaceRuntime::new(app.handle().clone());
+            let terminal_surface = terminal_surface_runtime.application();
             let session_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
             > = projected_local_event_repository.clone();
@@ -1058,7 +1060,7 @@ pub fn run() {
                     review_usecase,
                     notion_usecase,
                     workflow_usecase,
-                    pty_session_read_usecase,
+                    terminal_surface: terminal_surface.clone(),
                     git_host_usecase,
                 });
             }
@@ -1524,6 +1526,7 @@ pub fn run() {
                     agent_runtime.clone(),
                     workflow_runtime_usecase.clone(),
                     lifecycle_operation,
+                    terminal_surface.clone(),
                     shutdown_local_api,
                 );
             let process_actions = Arc::new(
@@ -1589,6 +1592,9 @@ pub fn run() {
                         local_event_store.clone(),
                         caller_journal.clone(),
                         app.handle().clone(),
+                    )),
+                    Some(adaptor::controller::api::TerminalApiDeps::new(
+                        terminal_surface.clone(),
                     )),
                 );
                 let local_api =

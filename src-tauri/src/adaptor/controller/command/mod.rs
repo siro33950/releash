@@ -9,9 +9,9 @@ pub(crate) mod hooks;
 pub(crate) mod menu;
 pub(crate) mod notification;
 pub(crate) mod notion;
-pub(crate) mod pty_session;
 pub(crate) mod repository;
 pub(crate) mod telemetry;
+pub(crate) mod terminal_surface;
 pub(crate) mod watcher;
 pub(crate) mod workflow;
 pub(crate) mod workspace_state;
@@ -119,7 +119,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     menu::register(&mut router);
     notification::register(&mut router);
     notion::register(&mut router);
-    pty_session::register(&mut router);
+    terminal_surface::register(&mut router);
     repository::register(&mut router);
     telemetry::register(&mut router);
     watcher::register(&mut router);
@@ -177,9 +177,9 @@ mod tests {
             ),
             ("notion", notion::COMMAND_NAMES, notion::register),
             (
-                "pty_session",
-                pty_session::COMMAND_NAMES,
-                pty_session::register,
+                "terminal_surface",
+                terminal_surface::COMMAND_NAMES,
+                terminal_surface::register,
             ),
             (
                 "repository",
@@ -358,6 +358,7 @@ mod tests {
             "apply_hooks_config",
             "approve_workspace_node",
             "approve_workflow_node",
+            "attach_pty",
             "archive_workspace_workflow_execution",
             "build_agent_edit_preview",
             "build_agent_edited_multi_edit_tool_input",
@@ -386,6 +387,7 @@ mod tests {
             "delete_notion_config",
             "delete_review_thread",
             "delete_workflow",
+            "detach_pty",
             "detect_editors",
             "diagnose_all_cmd",
             "duplicate_facet",
@@ -437,7 +439,7 @@ mod tests {
             "get_or_spawn_pty",
             "get_performance_telemetry_enabled",
             "get_pending_recovery_snapshot",
-            "get_pty_buffered_output",
+            "get_terminal_surface",
             "get_relative_path",
             "get_releash_base",
             "get_repo_git_dir",
@@ -486,7 +488,7 @@ mod tests {
             "list_mentionable_files",
             "list_pending_agent_attempts",
             "list_pending_agent_recovery",
-            "list_pty_sessions",
+            "list_terminal_surfaces",
             "list_review_threads",
             "list_session_statuses",
             "list_sessions",
@@ -511,8 +513,7 @@ mod tests {
             "sync_worktree_node_statuses",
             "query_notion_tasks",
             "quit_after_startup_failure",
-            "reconcile_pty_sessions",
-            "register_active_terminal",
+            "reconcile_terminal_surfaces",
             "remove_repo_path",
             "remove_worktree",
             "render_facet_preview",
@@ -557,7 +558,6 @@ mod tests {
             "stop_workflow",
             "stop_watching",
             "sync_mentions_with_text",
-            "unregister_active_terminal",
             "update_agent_session_notice",
             "dismiss_agent_session_feedback",
             "update_app_settings",

@@ -144,6 +144,43 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (cmd in cfg.ipcHandler) {
 				let value = cfg.ipcHandler[cmd];
 				if (
+					cmd === "attach_pty" &&
+					value &&
+					typeof value === "object" &&
+					"__mockTerminalAttachment" in (value as Record<string, unknown>)
+				) {
+					const rawChannel = args.onEvent;
+					const channel =
+						typeof rawChannel === "string"
+							? rawChannel
+							: rawChannel &&
+									typeof rawChannel === "object" &&
+									"id" in rawChannel
+								? `__CHANNEL__:${String((rawChannel as { id: unknown }).id)}`
+								: "";
+					const channelId = /^__CHANNEL__:(\d+)$/.exec(channel)?.[1];
+					if (!channelId) {
+						throw new Error("attach_pty requires a Tauri Channel");
+					}
+					const attachment = value as {
+						messages?: unknown[];
+					};
+					const messages = Array.isArray(attachment.messages)
+						? attachment.messages
+						: [
+								{
+									type: "snapshot",
+									surface: cfg.ipcHandler.get_terminal_surface,
+								},
+							];
+					queueMicrotask(() => {
+						for (const [index, message] of messages.entries()) {
+							runCallback(Number(channelId), { index, message });
+						}
+					});
+					return null;
+				}
+				if (
 					value &&
 					typeof value === "object" &&
 					"__mockAcceptedPermissionResponse" in

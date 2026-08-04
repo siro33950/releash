@@ -78,6 +78,7 @@ impl FixtureLifecycleEmission {
 pub struct FixturePlan {
     pub label: String,
     pub input_lines: usize,
+    pub alternate_screen: bool,
     pub report_terminal_size: bool,
     pub(crate) lifecycle_endpoint: String,
     pub lifecycle: Vec<FixtureLifecycleEmission>,
@@ -89,6 +90,7 @@ impl FixturePlan {
         Self {
             label: label.to_string(),
             input_lines: 1,
+            alternate_screen: true,
             report_terminal_size: false,
             lifecycle_endpoint: String::new(),
             lifecycle,
@@ -136,7 +138,10 @@ fn agent_tui_fixture_process() {
     };
     let plan: FixturePlan = serde_json::from_str(&plan_json).expect("parse Agent TUI fixture plan");
 
-    print!("\x1b[?1049h\x1b[2J\x1b[H{} 日本語🙂\r\n", plan.label);
+    if plan.alternate_screen {
+        print!("\x1b[?1049h");
+    }
+    print!("\x1b[2J\x1b[H{} 日本語🙂\r\n", plan.label);
     std::io::stdout().flush().expect("flush fixture header");
 
     for index in 0..plan.input_lines {
@@ -161,7 +166,9 @@ fn agent_tui_fixture_process() {
         send_fixture_payload(&plan.lifecycle_endpoint, &emission.payload);
     }
 
-    print!("\x1b[?1049l");
+    if plan.alternate_screen {
+        print!("\x1b[?1049l");
+    }
     std::io::stdout().flush().expect("flush fixture footer");
     if plan.exit_code != 0 {
         std::process::exit(i32::from(plan.exit_code));
@@ -231,7 +238,7 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         .expect("open real PTY for Agent TUI fixture");
     let mut command = CommandBuilder::new(env::current_exe().expect("resolve test executable"));
     command.arg("--exact");
-    command.arg("agent_tui_fixture::agent_tui_fixture_process");
+    command.arg(fixture_process_test_name());
     command.arg("--nocapture");
     command.arg("--test-threads=1");
     command.env(
@@ -291,6 +298,31 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         terminal_output: String::from_utf8_lossy(&terminal_bytes).into_owned(),
         lifecycle,
     }
+}
+
+pub fn fixture_process_shell_command(plan: &FixturePlan) -> String {
+    assert!(
+        plan.lifecycle.is_empty(),
+        "shell-launched fixture requires an independently prepared lifecycle endpoint"
+    );
+    let plan_json = serde_json::to_string(plan).expect("serialize Agent TUI fixture plan");
+    let executable = env::current_exe().expect("resolve test executable");
+    format!(
+        "{FIXTURE_PLAN_ENV}={} {} --exact {} --nocapture --test-threads=1",
+        shell_quote(&plan_json),
+        shell_quote(&executable.to_string_lossy()),
+        shell_quote(&fixture_process_test_name()),
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn fixture_process_test_name() -> String {
+    let module = module_path!();
+    let module_without_crate = module.split_once("::").map_or(module, |(_, rest)| rest);
+    format!("{module_without_crate}::agent_tui_fixture_process")
 }
 
 fn read_pty_to_end(reader: &mut impl Read) -> Vec<u8> {

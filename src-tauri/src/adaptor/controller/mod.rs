@@ -8,4 +8,5 @@ pub(crate) mod command;
 pub(crate) mod event_log_recovery_wiring;
 pub(crate) mod notification_wiring;
 pub(crate) mod state;
+pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;
