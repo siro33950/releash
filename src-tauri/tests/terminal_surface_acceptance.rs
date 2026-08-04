@@ -470,6 +470,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
         .expect("spawn production PTY");
     let fixture = FixturePlan {
         input_lines: 2,
+        cursor_after_input: Some((0, 4, 1)),
         ..FixturePlan::new("atui-011-wide-日本語🙂", vec![])
     };
     runtime

@@ -79,6 +79,7 @@ pub struct FixturePlan {
     pub label: String,
     pub input_lines: usize,
     pub alternate_screen: bool,
+    pub cursor_after_input: Option<(usize, u16, u16)>,
     pub report_terminal_size: bool,
     pub(crate) lifecycle_endpoint: String,
     pub lifecycle: Vec<FixtureLifecycleEmission>,
@@ -91,6 +92,7 @@ impl FixturePlan {
             label: label.to_string(),
             input_lines: 1,
             alternate_screen: true,
+            cursor_after_input: None,
             report_terminal_size: false,
             lifecycle_endpoint: String::new(),
             lifecycle,
@@ -150,6 +152,11 @@ fn agent_tui_fixture_process() {
             .read_line(&mut input)
             .expect("read fixture PTY input");
         print!("\x1b[1;32mreceived-{index}:{}\x1b[0m\r\n", input.trim());
+        if let Some((target_input, row, col)) = plan.cursor_after_input {
+            if target_input == index {
+                print!("\x1b[{row};{col}H");
+            }
+        }
         std::io::stdout().flush().expect("flush fixture response");
     }
 
