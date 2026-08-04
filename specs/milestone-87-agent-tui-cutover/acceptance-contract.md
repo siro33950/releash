@@ -15,6 +15,17 @@
 
 frontendはbackend-owned stateのprojectionであり、workflow遷移またはterminal継続性の正本にならない。
 
+## Terminal Surface identity
+
+Terminal SurfaceのownerはRust backendが型として解決し、frontendが生成する一時的なPTY IDやsession keyをdurable identityにしない。
+
+| Owner | Workspace内のcardinality | Surface identity |
+|---|---:|---|
+| Workspace terminal | 1 | `WorkspaceIdentity` |
+| AgentSession | 1:N | `WorkspaceIdentity + SessionId` |
+
+Workflow、Fanout、Command executionはTerminal Surfaceを所有しない。Command executionは現行どおり非PTYで実行し、分離したstdout、stderr、exit code、durationをworkflow stateの正本として維持する。
+
 ## 外部保証
 
 1. ClaudeとCodexのCLI TUIで対話、permission応答、再指示を行える。

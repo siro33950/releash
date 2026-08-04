@@ -509,6 +509,7 @@ mod tests {
             runtime.clone(),
             binding.bearer_token(),
             None,
+            None,
         );
         let server_runtime = tokio::runtime::Runtime::new().unwrap();
         let server = binding.start(router, server_runtime.handle());

@@ -7571,8 +7571,8 @@ mod dispatch_boundary_tests {
                 review_usecase,
                 notion_usecase,
                 workflow_usecase,
-                pty_session_read_usecase: Arc::new(
-                    crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),
+                terminal_surface: Arc::new(
+                    crate::adaptor::controller::wiring::build_terminal_surface_application_for_tests(),
                 ),
                 git_host_usecase: Arc::new(
                     crate::adaptor::controller::wiring::build_git_host_usecase(),

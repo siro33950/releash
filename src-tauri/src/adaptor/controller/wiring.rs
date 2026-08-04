@@ -33,8 +33,6 @@ use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(test)]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
-#[cfg(test)]
-use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
@@ -42,6 +40,8 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+#[cfg(test)]
+use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGateway;
 use crate::adaptor::gateway::workflow::{
     DurableWorkspaceNodeSessionCloseGateway, RepoPathsManagedWorktreeGateway,
     RepositoryManagedWorktreeGateway, TauriNodeExecutionLifecycleGateway,
@@ -72,10 +72,10 @@ use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
 use crate::usecase::git_host::GitHostUsecase;
-#[cfg(test)]
-use crate::usecase::pty_session::read_usecase::PtySessionReadUsecase;
 use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
+#[cfg(test)]
+use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
@@ -156,8 +156,13 @@ pub(crate) fn build_code_usecase_with_app<R: tauri::Runtime + 'static>(
 }
 
 #[cfg(test)]
-pub(crate) fn build_pty_session_read_usecase_for_tests() -> PtySessionReadUsecase {
-    PtySessionReadUsecase::new(Arc::new(PtySessionRuntimeGateway::default()))
+pub(crate) fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplication {
+    TerminalSurfaceApplication::new(
+        Arc::new(TerminalSurfaceRuntimeGateway::default()),
+        Arc::new(
+            crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
+        ),
+    )
 }
 
 #[cfg(test)]

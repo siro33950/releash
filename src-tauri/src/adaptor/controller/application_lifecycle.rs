@@ -114,7 +114,18 @@ struct RuntimeShutdownExecutor {
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     lifecycle_operation:
         Arc<crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase>,
+    terminal_surface:
+        Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
+}
+
+fn shutdown_terminal_surface_before_local_api(
+    shutdown_terminal_surface: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    shutdown_local_api: &(dyn Fn() + Send + Sync),
+) -> Result<(), String> {
+    shutdown_terminal_surface()?;
+    shutdown_local_api();
+    Ok(())
 }
 
 fn shutdown_effect_request_id(effect_identity: &str) -> String {
@@ -399,8 +410,22 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
     async fn shutdown_subordinates(
         &self,
     ) -> Result<(), crate::domain::local_event::SafeOperationFailure> {
-        (self.shutdown_local_api)();
-        Ok(())
+        shutdown_terminal_surface_before_local_api(
+            &|| {
+                self.terminal_surface
+                    .shutdown()
+                    .map_err(|error| error.to_string())
+            },
+            self.shutdown_local_api.as_ref(),
+        )
+        .map_err(|_| {
+            crate::domain::local_event::SafeOperationFailure::new(
+                crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable,
+                true,
+                "Terminal Surface processes could not be stopped and persisted before shutdown.",
+                uuid::Uuid::new_v4().to_string(),
+            )
+        })
     }
 }
 
@@ -412,6 +437,9 @@ pub(crate) fn build_shutdown_coordinator(
     lifecycle_operation: Arc<
         crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase,
     >,
+    terminal_surface: Arc<
+        crate::usecase::terminal_surface::application::TerminalSurfaceApplication,
+    >,
     shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
 ) -> Arc<ShutdownCoordinator> {
     let installation_id = store.installation_id().to_string();
@@ -422,6 +450,7 @@ pub(crate) fn build_shutdown_coordinator(
         runtime,
         workflow_runtime,
         lifecycle_operation,
+        terminal_surface,
         shutdown_local_api,
     });
     Arc::new(ShutdownCoordinator::new(
@@ -465,6 +494,10 @@ pub(crate) fn request_application_quit(
         }
     });
 }
+
+#[cfg(test)]
+#[path = "application_lifecycle_test.rs"]
+mod application_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

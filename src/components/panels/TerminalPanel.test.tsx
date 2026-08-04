@@ -6,11 +6,13 @@ import { TerminalPanel } from "./TerminalPanel";
 
 const mockWriteToTerminal = vi.fn();
 const mockTerminalRef = { current: null };
-const mockPtyIdRef: { current: number | null } = { current: 7 };
+const mockIsRunningRef = { current: true };
+const mockTerminalOwner = { kind: "workspace", workspacePath: "" } as const;
 const mockRequestKill = vi.fn();
 const mockUseTerminal = vi.fn().mockReturnValue({
 	terminalRef: mockTerminalRef,
-	ptyIdRef: mockPtyIdRef,
+	terminalOwner: mockTerminalOwner,
+	isRunningRef: mockIsRunningRef,
 	writeToTerminal: mockWriteToTerminal,
 	requestKill: mockRequestKill,
 });
@@ -26,7 +28,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 describe("TerminalPanel", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockPtyIdRef.current = 7;
+		mockIsRunningRef.current = true;
 		mockInvoke.mockResolvedValue(undefined);
 		mockListen.mockResolvedValue(vi.fn());
 	});
@@ -54,9 +56,9 @@ describe("TerminalPanel", () => {
 		);
 	});
 
-	it("onPtyReady を useTerminal に中継する", () => {
-		const onPtyReady = vi.fn();
-		render(<TerminalPanel onPtyReady={onPtyReady} />);
+	it("onTerminalReady を useTerminal に中継する", () => {
+		const onTerminalReady = vi.fn();
+		render(<TerminalPanel onTerminalReady={onTerminalReady} />);
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
@@ -65,7 +67,7 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			undefined,
-			onPtyReady,
+			onTerminalReady,
 			undefined,
 			undefined,
 		);
@@ -85,13 +87,13 @@ describe("TerminalPanel", () => {
 
 		expect(mockWriteToTerminal).not.toHaveBeenCalled();
 		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_pty", {
-			ptyId: 7,
+			owner: mockTerminalOwner,
 			paths: ["/tmp/my file.txt"],
 		});
 	});
 
-	it("PTY id 未確定時は drop path を書き込まない", () => {
-		mockPtyIdRef.current = null;
+	it("Terminal process が実行中でない場合は drop path を書き込まない", () => {
+		mockIsRunningRef.current = false;
 		const { container } = render(<TerminalPanel />);
 		const dropTarget = container.querySelector('[role="application"]');
 
@@ -131,7 +133,7 @@ describe("TerminalPanel", () => {
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_pty", {
-			ptyId: 7,
+			owner: mockTerminalOwner,
 			paths,
 		});
 	});

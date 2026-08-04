@@ -30,6 +30,10 @@ pub(crate) mod git;
 
 mod agent_session_wire_replay;
 
+#[allow(dead_code)]
+#[path = "../../tests/support/agent_tui_fixture.rs"]
+pub(crate) mod agent_tui_fixture;
+
 /// Process-global environment tests must remain serialized even if one test
 /// panics. `parking_lot::Mutex` deliberately has no poison state, so a failed
 /// integration test cannot turn unrelated CLI/wire tests into lock failures.
