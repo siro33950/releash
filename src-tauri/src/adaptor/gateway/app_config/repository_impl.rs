@@ -334,7 +334,6 @@ mod tests {
     };
     use super::*;
     use crate::domain::app_config::services::TOKEN_LENGTH;
-    use crate::domain::hooks::services::build_hooks_json;
     use tempfile::TempDir;
 
     fn config_path(dir: &TempDir) -> PathBuf {
@@ -1095,51 +1094,6 @@ token = "existing_token_value_here_with_enough_length_!!"
             model.property_mapping.branch_prefix
         );
         assert_eq!(notion_to_domain(model_again), domain);
-    }
-
-    #[test]
-    fn build_hooks_json_no_python3_or_session_id() {
-        let json = build_hooks_json(19700, "test-token");
-        let hooks = json.get("hooks").expect("hooks key should exist");
-        let event_keys = [
-            "UserPromptSubmit",
-            "Stop",
-            "Notification",
-            "PostToolUse",
-            "PostToolUseFailure",
-            "SessionStart",
-        ];
-
-        for key in &event_keys {
-            let entries = hooks
-                .get(*key)
-                .unwrap_or_else(|| panic!("{key} should exist"));
-            let arr = entries
-                .as_array()
-                .unwrap_or_else(|| panic!("{key} should be array"));
-            for entry in arr {
-                let cmd = entry["hooks"][0]["command"]
-                    .as_str()
-                    .expect("command should be string");
-                assert!(
-                    !cmd.contains("python3"),
-                    "{key} command should not contain python3"
-                );
-                assert!(
-                    !cmd.contains("session_id"),
-                    "{key} command should not contain session_id"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn build_hooks_json_has_7_event_entries() {
-        let json = build_hooks_json(19700, "test-token");
-        let hooks = json.get("hooks").unwrap().as_object().unwrap();
-        // 6 keys, but Notification has 2 entries
-        let total_entries: usize = hooks.values().map(|v| v.as_array().unwrap().len()).sum();
-        assert_eq!(total_entries, 7);
     }
 
     #[test]

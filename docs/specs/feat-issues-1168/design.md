@@ -2,7 +2,7 @@
 
 GitHub Issue: [#1168](https://github.com/siro33950/releash/issues/1168) / 親マイルストーン: [[12] クリーンアーキテクチャ移行](https://github.com/siro33950/releash/milestone/72)
 
-本ドキュメントは [`docs/architecture/`](../../architecture/) の規約（README / DOMAIN / USECASE / GATEWAY / CONTROLLER / TEST）と、先行移行事例 `agent_session`（#977）/ `workflow`（#978, PR #1167）を前提に、**互いに型を共有しない 6 つの leaf ドメイン**を 1 バッチ（1 goal / 1 PR）で新クリーンアーキテクチャへ移行する際の **移行後のあるべき姿** を定義する。実装そのものではなく、ターゲット構造・責務境界・移行順序・設計判断を確定させることを目的とする。
+本ドキュメントは [`docs/architecture/`](../../architecture/) の規約（README / DOMAIN / USECASE / GATEWAY / CONTROLLER / TEST）と、先行移行事例 `agent_session`（#977）/ `workflow`（#978, PR #1167）を前提に、**互いに型を共有しない 5 つの leaf ドメイン**を 1 バッチ（1 goal / 1 PR）で新クリーンアーキテクチャへ移行する際の **移行後のあるべき姿** を定義する。実装そのものではなく、ターゲット構造・責務境界・移行順序・設計判断を確定させることを目的とする。
 
 > **本ドキュメントは Codex への実装計画である。** 記載はすべて確定済みの指示であり、§9 の当初未決 4 点も「最も正しい配置」で確定済み（合意取得済み）。本書の指示どおり実装すること。§1 の「スコープ境界」だけは越えてはならない（他 Issue の担当領域）。
 
@@ -12,8 +12,8 @@ GitHub Issue: [#1168](https://github.com/siro33950/releash/issues/1168) / 親マ
 
 | 用語 | 本ドキュメントでの意味 |
 |---|---|
-| **本バッチ** | 本 Issue #1168 で 1 PR にまとめる作業範囲。下記 6 ドメインのみ。 |
-| **対象 6 ドメイン** | `pty_session` / `external_editor` / `workspace_state` / `remote_access` / `hooks` / `notification` |
+| **本バッチ** | 本 Issue #1168 で 1 PR にまとめる作業範囲。下記 5 ドメインのみ。 |
+| **対象 5 ドメイン** | `pty_session` / `external_editor` / `workspace_state` / `remote_access` / `notification` |
 | **no-shim** | 旧モジュールに互換用の re-export / ラッパーを一切残さず**物理削除**する方針（#977 / #978 を踏襲）。 |
 | **外部契約** | Tauri command 名・WebSocket message 名・主要 request/response の JSON shape。 |
 | **register_all** | `src-tauri/src/adaptor/controller/command/mod.rs` に存在するコマンド一括登録関数。各ドメインの `register` を集約する。 |
@@ -26,11 +26,11 @@ GitHub Issue: [#1168](https://github.com/siro33950/releash/issues/1168) / 親マ
 
 ### 目的
 
-- 結合度が低く互いに型を共有しない 6 つの leaf ドメインを、クリーンアーキテクチャの層構成（`domain` / `usecase` / `adaptor` / `infrastructure`）へ移行する。
+- 結合度が低く互いに型を共有しない 5 つの leaf ドメインを、クリーンアーキテクチャの層構成（`domain` / `usecase` / `adaptor` / `infrastructure`）へ移行する。
 - 旧モジュールを **compatibility shim を残さず完全に削除** する（no-shim）。
 - 外部契約（Tauri command 名・WS message 名・JSON shape）は**維持する**（純粋リファクタリング。振る舞いを変えない）。
 
-### スコープに含む（対象 6 ドメインと現行の主な所在）
+### スコープに含む（対象 5 ドメインと現行の主な所在）
 
 | ドメイン | 子 Issue | 現行の主な所在（実ファイル:行数） |
 |---|---|---|
@@ -38,26 +38,25 @@ GitHub Issue: [#1168](https://github.com/siro33950/releash/issues/1168) / 親マ
 | `external_editor` | #987 | `src-tauri/src/external_editor.rs`(201) |
 | `workspace_state` | #981 | `src-tauri/src/workspace_state_store.rs`(368) |
 | `remote_access` | #984 | `src-tauri/src/vpn_detect.rs`(307), `qr_code.rs`(89), `tls.rs`(138) |
-| `hooks` | #982 | `src-tauri/src/config.rs` の hooks 系 3 コマンド（`generate_hooks_config` L561 / `apply_hooks_config` L631 / `get_hooks_status` L666） |
 | `notification` | #983 | `src-tauri/src/webhook.rs`(377), `config.rs` の `NotifySection`(L189-219) と notify 系 3 コマンド |
 
 ### スコープ境界（**本バッチに含めない** — 誤って手を出さないこと）
 
 以下は他 Issue の担当範囲、または本バッチの no-shim 移行を成立させるための最小限の差し替えに留める。**構造を再設計してはならない。**
 
-1. **`config.rs` 本体の分解は #1169（config 系）の担当。** 本バッチでは `config.rs` を**分解しない**。hooks / notification / external_editor / remote_access(TLS) は `config.rs` の設定を読むが、その読み取りは各ドメインの **gateway 経由**にする一方、`AppConfig` / `ReleashConfig` / `*Section` 構造体そのものの再配置・分割は #1169 に委ねる。本バッチでは「`config.rs` の関数を呼ぶ薄い gateway 実装」を置くに留める。
+1. **`config.rs` 本体の分解は #1169（config 系）の担当。** 本バッチでは `config.rs` を**分解しない**。notification / external_editor / remote_access(TLS) は `config.rs` の設定を読むが、その読み取りは各ドメインの **gateway 経由**にする一方、`AppConfig` / `ReleashConfig` / `*Section` 構造体そのものの再配置・分割は #1169 に委ねる。本バッチでは「`config.rs` の関数を呼ぶ薄い gateway 実装」を置くに留める。
 2. **`ws_server/` 基盤（session / routing / http / commands）の構造変更は #1172 の担当。** `remote_access` の `vpn_detect` / `qr_code` / `tls` を domain/gateway 化し、`ws_server/commands.rs` の `start_server` 等からの呼び出しを **gateway 経由に差し替える**が、`ws_server/` のディレクトリ構造・セッション設計は変更しない。
-3. **`shell_integration.rs`（163 行）は `pty_session` ドメインの infrastructure として移動する（確定）。** `pty/mod.rs` と密結合し PTY の OSC 統合を担うため `infrastructure/pty_session/shell_integration.rs` へ物理移動する。hooks ドメインには含めない（責務が別 — §6.5）。
+3. **`shell_integration.rs`（163 行）は `pty_session` ドメインの infrastructure として移動する（確定）。** `pty/mod.rs` と密結合し PTY の OSC 統合を担うため `infrastructure/pty_session/shell_integration.rs` へ物理移動する（§6.5）。
 4. **フロントエンド（`src/`）の構造変更**はマイルストーン全体のスコープ外。`invoke(...)` の呼び出し名が変わらない限りフロントは一切変更しない。
-5. **永続化フォーマットの変更**をしない。`workspace_state/*.json`、TLS 証明書（`$data_dir/tls/`）、`~/.claude/settings.json` への hooks マージ形式は現行を維持し、domain model とは gateway の mapper で変換する。
+5. **永続化フォーマットの変更**をしない。`workspace_state/*.json`、TLS 証明書（`$data_dir/tls/`）は現行を維持し、domain model とは gateway の mapper で変換する。
 
 ---
 
 ## 2. 現状の問題点（共通）
 
-- 6 ドメインのロジックが `src-tauri/src/` 直下のフラットなファイル（`webhook.rs`, `vpn_detect.rs`, `workspace_state_store.rs` 等）に置かれ、`domain` / `usecase` / `adaptor` の層が存在しない。
+- 5 ドメインのロジックが `src-tauri/src/` 直下のフラットなファイル（`webhook.rs`, `vpn_detect.rs`, `workspace_state_store.rs` 等）に置かれ、`domain` / `usecase` / `adaptor` の層が存在しない。
 - ビジネスロジック（VPN 判定、証明書有効期限、通知要否、エディタ検出、ワークスペース復元時のファイル削除フィルタ）が OS 呼び出し・HTTP・ファイル I/O と密結合し、純粋ロジックとして独立していない。
-- Tauri コマンドが `config.rs`（hooks/notify/editor 設定）や各 leaf ファイルに散在し、`controller` 層に集約されていない。
+- Tauri コマンドが `config.rs`（notify/editor 設定）や各 leaf ファイルに散在し、`controller` 層に集約されていない。
 - 通知送信（`notification`）が `infrastructure/agent_session/runtime/bridge_common.rs:1424` の `notify_status_transition` 内に埋め込まれ、agent_session の infra が通知の業務手順を抱えている。
 
 ---
@@ -247,46 +246,9 @@ adaptor/controller/command/remote_access/
 - **ws_server との接続（§1 スコープ境界 2）:** `ws_server/commands.rs:39`（VPN 検出 → connection_mode 決定）と `:56`（TLS 証明書生成）、`ws_server/http.rs:74`（TLS アクセプタ構築）は、本ドメインの **usecase / gateway を呼ぶ形に差し替える**。`ws_server/commands.rs` の `start_server` / `stop_server` / `get_server_status` / `get_server_info` / `update_terminal_startup_command` の 5 コマンドは **#1172 の担当であり本バッチでは移動しない**（呼び出し先だけを gateway 経由に置換）。
 - **`config.rs` の `TlsSection`(L177-229):** §1 スコープ境界 1 により本バッチでは分解せず、gateway が読み取る。
 
-### 3.5 `hooks`（#982）
+### 3.5 `notification`（#983）
 
-**Ubiquitous language:** 「Claude Code agent から Releash へ inbound でイベント通知させるための統合設定」。`~/.claude/settings.json` はその実体ファイルにすぎず、ドメインの本質は「agent → Releash 通知経路の設定」。`app_config`（Releash 自身の環境設定）とは別概念。
-
-**集約根: `HooksSettings`（Claude Code agent の hooks 設定全体）。** 1 ユーザ環境につき 1 集約。集約内の不変条件:
-- 期待する hook event の集合（UserPromptSubmit / Stop / Notification ×2 / PostToolUse / PostToolUseFailure / SessionStart）と、それぞれが指す endpoint（`http://localhost:{hook_port}/hooks/agent`）・Bearer token は整合していなければならない。
-- `HooksStatus`（`active` / `not_configured` / `token_mismatch`）はこの不変条件の判定結果（read model）。
-
-現状 `config.rs` 内の 3 コマンドのみ。`~/.claude/settings.json` への Claude Code フック定義の生成・マージ・状態確認。
-
-```text
-domain/hooks/
-├── mod.rs
-├── value_objects/
-│   ├── hook_event.rs           # UserPromptSubmit/Stop/Notification/PostToolUse/PostToolUseFailure/SessionStart
-│   └── hooks_status.rs         # "active" | "not_configured" | "token_mismatch"
-├── services.rs                 # フック定義 JSON の生成ルール・settings.json マージ規則・status 判定（純粋ロジック）
-└── error.rs
-
-usecase/hooks/
-├── mod.rs
-├── usecase.rs                  # apply_hooks_config（settings.json へマージ）
-└── query_service.rs            # generate_hooks_config（定義生成）/ get_hooks_status（状態確認）
-
-adaptor/gateway/hooks/
-├── mod.rs
-└── settings_repository_impl.rs # ~/.claude/settings.json の読み取り・アトミックマージ書き込み
-
-adaptor/controller/command/hooks/
-├── mod.rs                      # register(builder) -> Builder（3 コマンド）
-└── commands.rs                 # generate_hooks_config / apply_hooks_config / get_hooks_status
-```
-
-- **`hook_port`（`config.rs` の `ServerSection.hook_port` L160）と Bearer token は gateway/services が読み取る。** `config.rs` 本体は分解しない（§1 スコープ境界 1）。
-- **WebSocket / protocol 型は無い。** hook 受信 HTTP サーバ（`/hooks/agent` エンドポイント）は現状未実装であり、**本バッチで新規実装しない**（純粋リファクタリングのため）。
-- **`shell_integration.rs` は hooks に含めない**（§6.5 / §9-A）。
-
-### 3.6 `notification`（#983）
-
-**Ubiquitous language:** 「agent 状態変化を外部チャネル（Slack / Discord、将来は他チャネル）へ outbound に配信する」。`hooks`（inbound）とは方向と相手システムが違うので別ドメイン。
+**Ubiquitous language:** 「agent 状態変化を外部チャネル（Slack / Discord、将来は他チャネル）へ outbound に配信する」。Provider lifecycleの受信とは方向と相手システムが違うので別ドメイン。
 
 **集約根: なし（ステートレスドメイン）。** 永続化される設定（`NotifyConfig` = 現 `NotifySection`）は value object。1 件の通知イベントの判定・配信は単発の usecase 呼び出しで完結し、トランザクション境界としての集約を持たない。状態を持つのは外部（agent_session の `AgentStatusCenter` / `FocusTracker`）であり、notification ドメインはそれらをスナップショット入力として受ける。
 
@@ -346,10 +308,9 @@ adaptor/controller/command/notification/
 |---|---|---|---|
 | 1 | `workspace_state` | 368 行・WS 無し・config 非依存 | 最も独立。パターン確立用 |
 | 2 | `external_editor` | 201 行・WS 無し | workflow 既存 gateway との接続（§3.2）に注意 |
-| 3 | `hooks` | 3 コマンド | config 読み取りを gateway 化 |
-| 4 | `notification` | 377 行 | agent_session トリガー差し替え（§3.6） |
-| 5 | `remote_access` | 534 行（3 ファイル） | ws_server 呼び出し差し替え（§3.4） |
-| 6 | `pty_session` | 1,758 行・WS 有り | 最大。最後に実施 |
+| 3 | `notification` | 377 行 | agent_session トリガー差し替え（§3.5） |
+| 4 | `remote_access` | 534 行（3 ファイル） | ws_server 呼び出し差し替え（§3.4） |
+| 5 | `pty_session` | 1,758 行・WS 有り | 最大。最後に実施 |
 
 ### no-shim 移行の実施手順（各ドメイン共通）
 
@@ -365,7 +326,7 @@ adaptor/controller/command/notification/
 
 ## 6. 主要な設計判断（確定事項）
 
-### 6.1 6 ドメインは互いに型を共有しない
+### 6.1 5 ドメインは互いに型を共有しない
 
 leaf ゆえ相互依存が無い。共通の値オブジェクト・エラー型を作って束ねない。各ドメインは独立した `domain/<d>/` を持つ。横断する唯一の接点は `AppState`（DI 受け皿）のみ。
 
@@ -375,20 +336,20 @@ Tauri command 名・WS message 名・JSON shape を維持する。内部で新 u
 
 ### 6.3 `config.rs` を分解しない（#1169 との境界）
 
-hooks / notification / external_editor(設定) / remote_access(TLS) は `config.rs` の `*Section` を読むが、本バッチでは **gateway が `config.rs` の既存関数を呼ぶ**に留める。`config.rs` の構造分割は #1169。これにより本バッチと #1169 のコンフリクトを避ける。
+notification / external_editor(設定) / remote_access(TLS) は `config.rs` の `*Section` を読むが、本バッチでは **gateway が `config.rs` の既存関数を呼ぶ**に留める。`config.rs` の構造分割は #1169。これにより本バッチと #1169 のコンフリクトを避ける。
 
 ### 6.4 `ws_server/` 基盤を再設計しない（#1172 との境界）
 
 `remote_access` と `pty_session` は `ws_server/` から参照されるが、`ws_server/` の構造変更は #1172。本バッチは **呼び出し先を gateway/usecase 経由に差し替える**のみ。`ws_server/commands.rs` の 5 コマンド・`session.rs`・`routing.rs`・`http.rs` の構造は不変。
 
-### 6.5 `shell_integration.rs` は `pty_session` の infrastructure（hooks ではない）
+### 6.5 `shell_integration.rs` は `pty_session` の infrastructure
 
-`shell_integration.rs`(163) は Claude Code のフック設定生成ではなく、**PTY シェルの OSC 統合（`__releash_precmd` / `strip_osc_cmd_done`）**で、責務が hooks と異なり `pty/mod.rs` と密結合する。よって hooks ドメインには含めず、`infrastructure/pty_session/shell_integration.rs` へ物理移動する（§3.1）。
+`shell_integration.rs`(163) は **PTY シェルの OSC 統合（`__releash_precmd` / `strip_osc_cmd_done`）**を担い、`pty/mod.rs` と密結合する。よって `infrastructure/pty_session/shell_integration.rs` へ物理移動する（§3.1）。
 
 ### 6.6 read model と Entity の区別
 
 - domain Entity / VO: `WorkspaceState`、`PtySession`、`DetectedInterface`、通知要否ルール、証明書ポリシー（アプリの都合で意味が決まるもの）。
-- read model / DTO: `PtySessionInfo`、`WorkspaceState` の転送 DTO、`QrCodeResult`、`HooksStatus`（表示・転送の都合で形が決まるもの）。query_service が直接構築し、`Entity → DTO` の機械的詰め替えはしない。
+- read model / DTO: `PtySessionInfo`、`WorkspaceState` の転送 DTO、`QrCodeResult`（表示・転送の都合で形が決まるもの）。query_service が直接構築し、`Entity → DTO` の機械的詰め替えはしない。
 
 ---
 
@@ -403,14 +364,14 @@ hooks / notification / external_editor(設定) / remote_access(TLS) は `config.
 | gateway | 一時リソース | trait 実装の正しさ。例: workspace_state の JSON ラウンドトリップ、TLS 証明書生成・再利用、settings.json マージ |
 | controller | — | 薄さを保つ（ロジックを持たない） |
 
-- **既存テストは移植する**（消さない）。現状のテスト所在: `pty/mod.rs:701+`(13), `external_editor.rs:108-200`(10), `workspace_state_store.rs:182-368`(8), `vpn_detect.rs:189+`/`qr_code.rs:54+`/`tls.rs:99+`(計 17), `config.rs` hooks テスト(L1202-1340), `webhook.rs:132-377`(24)。これらを新しい層配置に対応させて移す。
+- **既存テストは移植する**（消さない）。現状のテスト所在: `pty/mod.rs:701+`(13), `external_editor.rs:108-200`(10), `workspace_state_store.rs:182-368`(8), `vpn_detect.rs:189+`/`qr_code.rs:54+`/`tls.rs:99+`(計 17), `webhook.rs:132-377`(24)。これらを新しい層配置に対応させて移す。
 - 旧 edge case を固定しているテストは、仕様として残すか旧実装由来として整理するか個別判断する（振る舞い不変が原則のため、原則は残す）。
 
 ---
 
 ## 8. 受け入れ条件（Issue より / 完了判定チェックリスト）
 
-- [ ] 6 ドメインすべてが `domain` / `usecase` / `adaptor`（/ `infrastructure`）へ配置され、依存方向が内向きのみ。
+- [ ] 5 ドメインすべてが `domain` / `usecase` / `adaptor`（/ `infrastructure`）へ配置され、依存方向が内向きのみ。
 - [ ] 旧モジュール（`pty/`, `external_editor.rs`, `workspace_state_store.rs`, `vpn_detect.rs`, `qr_code.rs`, `tls.rs`, `webhook.rs` および移設分）を**完全削除**（no-shim）。
 - [ ] domain / usecase / gateway 層のテストを追加（既存テストを移植）。
 - [ ] `lib.rs` のコマンド登録を `register_all` 経由に統一。
@@ -427,7 +388,7 @@ hooks / notification / external_editor(設定) / remote_access(TLS) は `config.
 |---|---|---|
 | **9-A** `shell_integration.rs` の配置 | `infrastructure/pty_session/shell_integration.rs` へ物理移動。`lib.rs` の `mod` 宣言・全参照を更新。 | §1-3, §3.1, §6.5 |
 | **9-B** editor 設定コマンドの帰属 | `get_external_editor` / `update_external_editor` を external_editor ドメインの controller に凝集（計 5 コマンド）。設定読み書きは `EditorSettingsGateway` 経由。 | §3.2 |
-| **9-C** notification トリガー接続 | 通知ロジックを `bridge_common.rs` から完全に剥がし、agent_session の状態変更リスナーへ `notification` usecase を購読登録する疎結合方式。agent_session infra は通知業務知識を持たない。 | §3.6, §4 |
+| **9-C** notification トリガー接続 | 通知ロジックを `bridge_common.rs` から完全に剥がし、agent_session の状態変更リスナーへ `notification` usecase を購読登録する疎結合方式。agent_session infra は通知業務知識を持たない。 | §3.5, §4 |
 | **9-D** `protocol/pty.rs` の移設 | `adaptor/protocol/pty.rs` へ移設し `protocol/mod.rs` の再エクスポートを廃止。#1171 に先行して本バッチで完結。 | §3.1 |
 
 > いずれも「振る舞いを変えない（外部契約維持）」制約は保ったまま、**内部の責務境界・ファイル配置のみを理想形へ寄せる**。差分が増えること・他 Issue 領域（agent_session / protocol / config）へ最小限踏み込むことは許容する。ただし §1 スコープ境界 1（`config.rs` 本体の構造分割）・2（`ws_server/` 基盤の構造変更）は #1169 / #1172 の担当として侵さない — これは「正しさ」ではなく**責務分担の境界**であり、本バッチで分割すると二重実装・コンフリクトを生むため。
@@ -498,18 +459,7 @@ hooks / notification / external_editor(設定) / remote_access(TLS) は `config.
 | `ws_server/http.rs:74` TLS アクセプタ構築 | 同上 | remote_access gateway 呼び出しに差し替え |
 | `config.rs` `TlsSection`(L177-229) 読み取り | TLS 設定読み取り | remote_access gateway が `config.rs` の既存関数を呼ぶ薄いラッパー |
 
-### 10.5 `hooks`
-
-| 現所在 | 責務 | 移動先 |
-|---|---|---|
-| `config.rs:561` `generate_hooks_config` 内 フック定義 JSON 生成（6 event type） | 集約不変条件の生成ルール | `domain/hooks/services.rs`（純粋ロジック） |
-| `config.rs:631` `apply_hooks_config` 内 settings.json マージ規則 | 集約マージの純粋ロジック | `domain/hooks/services.rs` |
-| `config.rs:631` settings.json の atomic 読み書き | ファイル I/O | `adaptor/gateway/hooks/settings_repository_impl.rs` |
-| `config.rs:666` `get_hooks_status` 判定（`active` / `not_configured` / `token_mismatch`） | 集約状態の判定（read model） | `domain/hooks/services.rs` + `value_objects/hooks_status.rs` |
-| `config.rs` hooks 3 Tauri commands | 入口 | `adaptor/controller/command/hooks/commands.rs` |
-| `config.rs` `ServerSection.hook_port`(L160) 読み取り | hook port 取得 | hooks gateway が `config.rs` の既存関数を呼ぶ薄いラッパー |
-
-### 10.6 `notification`
+### 10.5 `notification`
 
 | 現所在 | 責務 | 移動先 |
 |---|---|---|

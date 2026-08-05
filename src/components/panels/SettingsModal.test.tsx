@@ -60,10 +60,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve({
 						approval_auto_approve: false,
 					});
-				case "generate_hooks_config":
-					return Promise.resolve('{"hooks":{}}');
-				case "get_hooks_status":
-					return Promise.resolve("not_configured");
 				case "update_workflow_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -131,6 +127,25 @@ describe("SettingsModal", () => {
 					String(command).includes("agent_shortcut"),
 				),
 		).toBe(false);
+	});
+
+	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
+
+		render(<SettingsModal {...defaultProps} settings={claudeSettings} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		expect(screen.queryByText("Claude Code Hooks")).not.toBeInTheDocument();
+		for (const removed of [
+			"generate_hooks_config",
+			"get_hooks_status",
+			"apply_hooks_config",
+		]) {
+			expect(
+				vi.mocked(invoke).mock.calls.some(([command]) => command === removed),
+			).toBe(false);
+		}
 	});
 
 	it("Save button is disabled when no changes", () => {
@@ -419,16 +434,6 @@ describe("SettingsModal", () => {
 		expect(await screen.findByText("Base branch")).toBeInTheDocument();
 	});
 
-	it("should resolve hooks loading spinner when agent is claude", async () => {
-		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
-		render(<SettingsModal {...defaultProps} settings={claudeSettings} />);
-		const nav = screen.getByRole("navigation");
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
-		});
-	});
-
 	it("should load and save approval gate auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
@@ -448,10 +453,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve({
 						approval_auto_approve: true,
 					});
-				case "generate_hooks_config":
-					return Promise.resolve('{"hooks":{}}');
-				case "get_hooks_status":
-					return Promise.resolve("not_configured");
 				case "update_workflow_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -488,48 +489,6 @@ describe("SettingsModal", () => {
 
 		expect(invoke).toHaveBeenCalledWith("update_workflow_config", {
 			workflow: { approval_auto_approve: false },
-		});
-	});
-
-	it("should not show permanent spinner when dialog is re-opened with claude agent", async () => {
-		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
-		const onOpenChange = vi.fn();
-
-		const { rerender } = render(
-			<SettingsModal
-				{...defaultProps}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-		const nav = screen.getByRole("navigation");
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
-		});
-
-		// Close dialog
-		rerender(
-			<SettingsModal
-				{...defaultProps}
-				open={false}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-
-		// Re-open dialog
-		rerender(
-			<SettingsModal
-				{...defaultProps}
-				open={true}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
 		});
 	});
 

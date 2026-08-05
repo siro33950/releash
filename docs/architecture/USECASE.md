@@ -4,7 +4,7 @@
 
 - **アプリケーション固有の業務手順**を表現する
 - ドメイン層の trait のみに依存（具体実装は知らない）
-- 外部依存禁止（`tauri`, `git2` 等を直接 `use` しない）
+- 外部世界との接続を担う依存禁止（`tauri`, `git2`, `reqwest`, `sqlx` 等を直接 `use` しない）。Usecase自身が所有する非同期排他・通知・タスク協調には`tokio::sync`等の実行制御primitiveを使用してよいが、I/O、時刻、process、transport、永続化をUsecaseへ持ち込む理由にはならない
 - CQRS に従い、Command（Usecase）と Query（QueryService）を別ファイルで分離する
 - **QueryService は Usecase ではない。** Usecase はアプリケーション固有の業務手順（オーケストレーション）を表現する唯一の単位であり、QueryService は読み取りクエリのサービスにすぎない。「ユースケース」と呼んでよいのは Usecase のみ。QueryService を「Query 側ユースケース」等と呼んで usecase 扱いしない
 - **usecase は状態機械を持たない**: 状態・ライフサイクルの表現主体は domain の集約である（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。usecase が持つのは「何を、どの順で呼ぶか」であり、「この状態でこの操作を受理してよいか」は domain に問う。domain の状態型を usecase で再定義しない

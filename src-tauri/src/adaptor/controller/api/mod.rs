@@ -2,6 +2,7 @@ mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
+mod provider_lifecycle;
 mod terminal;
 mod workflow;
 
@@ -88,20 +89,28 @@ pub(crate) fn build_router(
     token: Arc<str>,
     agent_session: Option<AgentSessionApiDeps>,
     terminal: Option<TerminalApiDeps>,
+    provider_lifecycle: Option<Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>>,
 ) -> Router {
-    workflow::router()
+    let application_router = workflow::router()
         .merge(agent_session::router())
         .merge(terminal::router())
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
-        .layer(middleware::from_fn_with_state(token, auth::require_bearer))
         .with_state(LocalApiState {
             workflow,
             runtime,
             agent_session,
             terminal,
-        })
+        });
+    authenticated(
+        application_router.merge(provider_lifecycle::router(provider_lifecycle)),
+        token,
+    )
+}
+
+fn authenticated(router: Router, token: Arc<str>) -> Router {
+    router.layer(middleware::from_fn_with_state(token, auth::require_bearer))
 }
 
 #[cfg(test)]
@@ -419,10 +428,33 @@ pub(crate) mod test_support {
         test_router_with_optional_terminal(data_dir, token, Some(terminal)).0
     }
 
+    pub(crate) fn test_router_with_provider_lifecycle(
+        data_dir: &Path,
+        token: &str,
+        provider_lifecycle: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
+    ) -> Router {
+        test_router_with_optional_deps(data_dir, token, None, Some(provider_lifecycle)).0
+    }
+
     fn test_router_with_optional_terminal(
         data_dir: &Path,
         token: &str,
         terminal: Option<TerminalApiDeps>,
+    ) -> (
+        Router,
+        Arc<WorkflowRuntimeUsecase>,
+        Arc<RecordingRuntimeGateway>,
+    ) {
+        test_router_with_optional_deps(data_dir, token, terminal, None)
+    }
+
+    fn test_router_with_optional_deps(
+        data_dir: &Path,
+        token: &str,
+        terminal: Option<TerminalApiDeps>,
+        provider_lifecycle: Option<
+            Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
+        >,
     ) -> (
         Router,
         Arc<WorkflowRuntimeUsecase>,
@@ -457,6 +489,7 @@ pub(crate) mod test_support {
             Arc::<str>::from(token),
             None,
             terminal,
+            provider_lifecycle,
         );
         (router, runtime, gateway)
     }

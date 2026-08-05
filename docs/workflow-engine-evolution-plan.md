@@ -118,20 +118,11 @@ engine は状態遷移を append-only event log に記録する。event log は�
 
 ## CLI / Local API
 
-CLI は Tauri アプリ内の token-authenticated localhost API を介して、UI と同じ usecase を呼ぶ。
+CLI の更新操作は Tauri アプリ内の token-authenticated localhost API を介して、UI と同じ usecase を呼ぶ。read-only query はアプリ未起動時に backend-owned read model を直接読む fallback を許可する。
 
 ```sh
-releash workflow list
-releash workflow executions
-releash workflow start <workflow-name> "<request>"
 releash workflow status <execution-id>
-releash workflow logs <execution-id>
-releash workflow approve <execution-id> --node <node-name> [--node-execution <id>]
-releash workflow abort <execution-id>
-releash workflow stop <execution-id>
-releash workflow resume <execution-id>
 releash workflow output submit <execution-id> --node <node-name> [--node-execution <id>] --type <contract> --json '<json>'
-releash workflow output validate <execution-id> --node <node-name> --type <contract> --file <path>
 releash workflow output get <execution-id> --node <node-name>
 ```
 

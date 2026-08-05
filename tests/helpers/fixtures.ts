@@ -53,11 +53,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_releash_base: null,
 	get_default_branch: "main",
 
-	// SettingsPanel hooks
-	generate_hooks_config: "{}",
-	get_hooks_status: "not_configured",
-	apply_hooks_config: null,
-
 	// Webhook notifications
 	get_notify_config: {
 		webhook_url: "",

@@ -1,12 +1,19 @@
+#![allow(
+    dead_code,
+    reason = "shared support is compiled independently by multiple integration test targets"
+)]
+
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const FIXTURE_PLAN_ENV: &str = "RELEASH_AGENT_TUI_FIXTURE_PLAN";
+const LIFECYCLE_COMMAND_RESULT_PREFIX: &str = "releash-fixture-lifecycle-command-result:";
 pub const FIXTURE_SESSION_KEY: &str = "fixture-session";
 pub const FIXTURE_ATTEMPT_KEY: &str = "fixture-attempt";
 pub const FIXTURE_TRANSCRIPT_REF: &str = "provider://fixture/transcript";
@@ -43,6 +50,13 @@ pub enum FixtureLifecyclePayload {
 pub struct FixtureLifecycleEmission {
     pub delay_before_ms: u64,
     pub payload: FixtureLifecyclePayload,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FixtureLifecycleCommand {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, String)>,
 }
 
 impl FixtureLifecycleEmission {
@@ -82,6 +96,7 @@ pub struct FixturePlan {
     pub cursor_after_input: Option<(usize, u16, u16)>,
     pub report_terminal_size: bool,
     pub(crate) lifecycle_endpoint: String,
+    pub lifecycle_command: Option<FixtureLifecycleCommand>,
     pub lifecycle: Vec<FixtureLifecycleEmission>,
     pub exit_code: u8,
 }
@@ -95,6 +110,7 @@ impl FixturePlan {
             cursor_after_input: None,
             report_terminal_size: false,
             lifecycle_endpoint: String::new(),
+            lifecycle_command: None,
             lifecycle,
             exit_code: 0,
         }
@@ -117,6 +133,14 @@ pub struct FixtureRun {
     pub exit_code: u32,
     pub terminal_output: String,
     pub lifecycle: Vec<CapturedLifecycleFrame>,
+    pub lifecycle_commands: Vec<FixtureLifecycleCommandResult>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FixtureLifecycleCommandResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 pub struct FixtureRunOptions {
@@ -170,7 +194,14 @@ fn agent_tui_fixture_process() {
 
     for emission in &plan.lifecycle {
         thread::sleep(Duration::from_millis(emission.delay_before_ms));
-        send_fixture_payload(&plan.lifecycle_endpoint, &emission.payload);
+        match &plan.lifecycle_command {
+            Some(command) => run_lifecycle_command(command, &emission.payload),
+            None => send_fixture_payload(&plan.lifecycle_endpoint, &emission.payload),
+        }
+    }
+
+    if plan.lifecycle_command.is_some() {
+        print!("provider-alive-after-lifecycle\r\n");
     }
 
     if plan.alternate_screen {
@@ -218,6 +249,50 @@ fn send_fixture_payload(endpoint: &str, payload: &FixtureLifecyclePayload) {
     stream.flush().expect("flush lifecycle fixture payload");
 }
 
+fn run_lifecycle_command(command: &FixtureLifecycleCommand, payload: &FixtureLifecyclePayload) {
+    let mut child = Command::new(&command.executable)
+        .args(&command.arguments)
+        .envs(command.environment.iter().map(|(key, value)| (key, value)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn product lifecycle command");
+    let stdin = child.stdin.as_mut().expect("open lifecycle command stdin");
+    match payload {
+        FixtureLifecyclePayload::Signal { signal } => {
+            serde_json::to_writer(&mut *stdin, signal).expect("serialize lifecycle fixture signal");
+        }
+        FixtureLifecyclePayload::Raw { value } => stdin
+            .write_all(value.as_bytes())
+            .expect("write raw product lifecycle payload"),
+    }
+    stdin
+        .write_all(b"\n")
+        .expect("terminate product lifecycle payload");
+    drop(child.stdin.take());
+    let output = child
+        .wait_with_output()
+        .expect("wait for product lifecycle command");
+    assert!(
+        output.status.success(),
+        "product lifecycle command failed: status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .expect("product lifecycle command stdout must be valid JSON");
+    let result = FixtureLifecycleCommandResult {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    };
+    println!(
+        "{LIFECYCLE_COMMAND_RESULT_PREFIX}{}",
+        serde_json::to_string(&result).expect("serialize lifecycle command result")
+    );
+}
+
 pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> FixtureRun {
     assert_eq!(plan.input_lines, options.input_lines.len());
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind lifecycle fixture transport");
@@ -229,7 +304,11 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         .expect("read lifecycle fixture address")
         .to_string();
 
-    let expected_lifecycle_count = plan.lifecycle.len();
+    let expected_lifecycle_count = if plan.lifecycle_command.is_some() {
+        0
+    } else {
+        plan.lifecycle.len()
+    };
     let started_at = Instant::now();
     let capture_thread = thread::spawn(move || {
         collect_fixture_lifecycle(listener, expected_lifecycle_count, started_at)
@@ -300,10 +379,23 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         .join()
         .expect("join Agent TUI lifecycle capture");
 
+    let terminal_output = String::from_utf8_lossy(&terminal_bytes).into_owned();
+    let lifecycle_commands = terminal_output
+        .lines()
+        .filter_map(|line| {
+            line.find(LIFECYCLE_COMMAND_RESULT_PREFIX).map(|start| {
+                let encoded = &line[start + LIFECYCLE_COMMAND_RESULT_PREFIX.len()..];
+                serde_json::from_str(encoded.trim_end_matches('\r'))
+                    .expect("decode lifecycle command result")
+            })
+        })
+        .collect();
+
     FixtureRun {
         exit_code,
-        terminal_output: String::from_utf8_lossy(&terminal_bytes).into_owned(),
+        terminal_output,
         lifecycle,
+        lifecycle_commands,
     }
 }
 

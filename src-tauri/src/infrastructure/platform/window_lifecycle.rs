@@ -501,7 +501,6 @@ mod tests {
             server: ServerConfig {
                 bind: "127.0.0.1".to_string(),
                 port: 0,
-                hook_port: 0,
                 token: String::new(),
                 tls: TlsConfig {
                     enabled: false,

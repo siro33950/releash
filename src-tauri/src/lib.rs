@@ -3,6 +3,8 @@ pub mod cli;
 mod domain;
 mod infrastructure;
 mod other;
+#[cfg(debug_assertions)]
+pub mod provider_lifecycle_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
@@ -839,6 +841,20 @@ pub fn run() {
             let projected_local_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
             > = local_event_store.clone();
+            let provider_lifecycle_usecase = Arc::new(
+                usecase::provider_lifecycle::ProviderLifecycleUsecase::new(
+                    Arc::new(
+                        adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+                    ),
+                    Arc::new(
+                        adaptor::gateway::provider_lifecycle::LocalProviderLifecycleEventRepository::new(
+                            projected_local_event_repository.clone(),
+                            local_event_store.installation_id().to_string(),
+                        ),
+                    ),
+                ),
+            );
+            app.manage(provider_lifecycle_usecase.clone());
             let terminal_surface_runtime =
                 terminal_surface::TerminalSurfaceRuntime::new(app.handle().clone());
             let terminal_surface = terminal_surface_runtime.application();
@@ -1596,6 +1612,7 @@ pub fn run() {
                     Some(adaptor::controller::api::TerminalApiDeps::new(
                         terminal_surface.clone(),
                     )),
+                    Some(provider_lifecycle_usecase.clone()),
                 );
                 let local_api =
                     local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());

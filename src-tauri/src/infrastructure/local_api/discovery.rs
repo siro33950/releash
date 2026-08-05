@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -17,7 +18,23 @@ pub(crate) fn local_api_discovery_path(data_dir: &Path) -> PathBuf {
 pub(crate) struct LocalApiDiscovery {
     pub(crate) port: u16,
     pub(crate) token: String,
+    pub(crate) instance_id: String,
     pub(crate) pid: u32,
+    pub(crate) process_started_at: u64,
+}
+
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    system
+        .process(pid)
+        .map(|process| process.start_time())
+        .filter(|started_at| *started_at > 0)
 }
 
 #[derive(Debug, Clone)]
@@ -85,56 +102,5 @@ impl LocalApiDiscoveryFile {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovery_file_is_private_and_removed_by_its_owner() {
-        let directory = tempfile::tempdir().unwrap();
-        let discovery = LocalApiDiscovery {
-            port: 43123,
-            token: "secret-token".to_string(),
-            pid: 42,
-        };
-        let file = LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
-
-        let decoded: LocalApiDiscovery =
-            serde_json::from_slice(&fs::read(file.path()).unwrap()).unwrap();
-        assert_eq!(decoded, discovery);
-        #[cfg(unix)]
-        assert_eq!(
-            fs::metadata(file.path()).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-
-        file.remove_if_owned().unwrap();
-        assert!(!file.path().exists());
-    }
-
-    #[test]
-    fn stale_owner_does_not_remove_newer_discovery() {
-        let directory = tempfile::tempdir().unwrap();
-        let stale = LocalApiDiscoveryFile::create(
-            directory.path(),
-            LocalApiDiscovery {
-                port: 40001,
-                token: "stale".to_string(),
-                pid: 1,
-            },
-        )
-        .unwrap();
-        let current = LocalApiDiscoveryFile::create(
-            directory.path(),
-            LocalApiDiscovery {
-                port: 40002,
-                token: "current".to_string(),
-                pid: 2,
-            },
-        )
-        .unwrap();
-
-        stale.remove_if_owned().unwrap();
-        assert!(current.path().exists());
-        current.remove_if_owned().unwrap();
-    }
-}
+#[path = "discovery_test.rs"]
+mod discovery_tests;

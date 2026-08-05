@@ -132,6 +132,9 @@ impl EventCodecRegistry {
         registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::workflow_codec::WorkflowDomainEventCodec,
         ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::ProviderLifecycleEventCodec,
+        ));
         registry
     }
 
@@ -154,6 +157,7 @@ impl EventCodecRegistry {
                 description: match event {
                     LocalDomainEvent::AgentSession(_) => "agent-session".to_string(),
                     LocalDomainEvent::Workflow(_) => "workflow".to_string(),
+                    LocalDomainEvent::ProviderLifecycle(_) => "provider-lifecycle".to_string(),
                     LocalDomainEvent::Application(_) => "application".to_string(),
                 },
             })?;
