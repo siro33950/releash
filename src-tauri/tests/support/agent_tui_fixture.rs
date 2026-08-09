@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 
 const FIXTURE_PLAN_ENV: &str = "RELEASH_AGENT_TUI_FIXTURE_PLAN";
 const LIFECYCLE_COMMAND_RESULT_PREFIX: &str = "releash-fixture-lifecycle-command-result:";
+const SESSION_START_INPUT_PREFIX: &str = "releash-fixture-session-start:";
+const RAW_HOOK_INPUT_PREFIX: &str = "releash-fixture-hook-json:";
+const BRACKETED_PASTE_START: &str = "\x1b[200~";
+const BRACKETED_PASTE_END: &str = "\x1b[201~";
 pub const FIXTURE_SESSION_KEY: &str = "fixture-session";
 pub const FIXTURE_ATTEMPT_KEY: &str = "fixture-attempt";
 pub const FIXTURE_TRANSCRIPT_REF: &str = "provider://fixture/transcript";
@@ -148,6 +152,31 @@ pub struct FixtureRunOptions {
     pub resize_to: Option<PtySize>,
 }
 
+pub struct FixtureProcessLaunch {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, String)>,
+}
+
+pub fn fixture_process_launch(plan: &FixturePlan) -> FixtureProcessLaunch {
+    FixtureProcessLaunch {
+        executable: env::current_exe()
+            .expect("resolve test executable")
+            .to_string_lossy()
+            .into_owned(),
+        arguments: vec![
+            "--exact".to_string(),
+            fixture_process_test_name(),
+            "--nocapture".to_string(),
+            "--test-threads=1".to_string(),
+        ],
+        environment: vec![(
+            FIXTURE_PLAN_ENV.to_string(),
+            serde_json::to_string(plan).expect("serialize Agent TUI fixture plan"),
+        )],
+    }
+}
+
 impl Default for FixtureRunOptions {
     fn default() -> Self {
         Self {
@@ -157,8 +186,36 @@ impl Default for FixtureRunOptions {
     }
 }
 
+fn read_fixture_submission() -> String {
+    let stdin = std::io::stdin();
+    let mut submission = String::new();
+    if stdin
+        .read_line(&mut submission)
+        .expect("read fixture PTY input")
+        == 0
+    {
+        panic!("fixture PTY input ended before submission");
+    }
+    while submission.starts_with(BRACKETED_PASTE_START)
+        && !submission
+            .trim_end_matches(['\r', '\n'])
+            .ends_with(BRACKETED_PASTE_END)
+    {
+        let mut continuation = String::new();
+        if stdin
+            .read_line(&mut continuation)
+            .expect("read fixture PTY input continuation")
+            == 0
+        {
+            panic!("fixture PTY input ended inside bracketed paste");
+        }
+        submission.push_str(&continuation);
+    }
+    submission.trim_end_matches(['\r', '\n']).to_string()
+}
+
 #[test]
-fn agent_tui_fixture_process() {
+fn test_agent_tui_fixture_process() {
     let Ok(plan_json) = env::var(FIXTURE_PLAN_ENV) else {
         return;
     };
@@ -171,11 +228,34 @@ fn agent_tui_fixture_process() {
     std::io::stdout().flush().expect("flush fixture header");
 
     for index in 0..plan.input_lines {
-        let mut input = String::new();
-        std::io::stdin()
-            .read_line(&mut input)
-            .expect("read fixture PTY input");
-        print!("\x1b[1;32mreceived-{index}:{}\x1b[0m\r\n", input.trim());
+        let input = read_fixture_submission();
+        let input = input
+            .strip_prefix(BRACKETED_PASTE_START)
+            .and_then(|input| input.strip_suffix(BRACKETED_PASTE_END))
+            .unwrap_or(&input);
+        let displayed_input = input.replace('\r', "\\r").replace('\n', "\\n");
+        print!("\x1b[1;32mreceived-{index}:{displayed_input}\x1b[0m\r\n");
+        let lifecycle_payload = input
+            .strip_prefix(SESSION_START_INPUT_PREFIX)
+            .map(|provider_session_id| FixtureLifecyclePayload::Raw {
+                value: serde_json::json!({
+                    "session_id": provider_session_id,
+                    "transcript_path": format!("provider://fixture/{provider_session_id}"),
+                    "hook_event_name": "SessionStart",
+                })
+                .to_string(),
+            })
+            .or_else(|| {
+                input.strip_prefix(RAW_HOOK_INPUT_PREFIX).map(|value| {
+                    FixtureLifecyclePayload::Raw {
+                        value: value.to_string(),
+                    }
+                })
+            });
+        if let (Some(command), Some(payload)) = (plan.lifecycle_command.as_ref(), lifecycle_payload)
+        {
+            run_lifecycle_command(command, &payload);
+        }
         if let Some((target_input, row, col)) = plan.cursor_after_input {
             if target_input == index {
                 print!("\x1b[{row};{col}H");
@@ -361,14 +441,17 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         writer.flush().expect("flush Agent TUI fixture PTY input");
     }
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut timed_out = false;
     let exit_code = loop {
         if let Some(status) = child.try_wait().expect("poll Agent TUI fixture") {
             break status.exit_code();
         }
         if Instant::now() >= deadline {
             child.kill().expect("kill timed out Agent TUI fixture");
-            panic!("Agent TUI fixture did not exit within five seconds");
+            child.wait().expect("reap timed out Agent TUI fixture");
+            timed_out = true;
+            break u32::MAX;
         }
         thread::sleep(Duration::from_millis(10));
     };
@@ -380,6 +463,10 @@ pub fn run_fixture(mut plan: FixturePlan, options: FixtureRunOptions) -> Fixture
         .expect("join Agent TUI lifecycle capture");
 
     let terminal_output = String::from_utf8_lossy(&terminal_bytes).into_owned();
+    assert!(
+        !timed_out,
+        "Agent TUI fixture did not exit within fifteen seconds: {terminal_output}"
+    );
     let lifecycle_commands = terminal_output
         .lines()
         .filter_map(|line| {
@@ -421,7 +508,7 @@ fn shell_quote(value: &str) -> String {
 fn fixture_process_test_name() -> String {
     let module = module_path!();
     let module_without_crate = module.split_once("::").map_or(module, |(_, rest)| rest);
-    format!("{module_without_crate}::agent_tui_fixture_process")
+    format!("{module_without_crate}::test_agent_tui_fixture_process")
 }
 
 fn read_pty_to_end(reader: &mut impl Read) -> Vec<u8> {

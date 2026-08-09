@@ -575,7 +575,14 @@ fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
                 crate::domain::local_event::SessionProjectionRecord::WorkflowWorktreeOwner(
                     owner,
                 ) => owner.execution_id == execution_id,
-                crate::domain::local_event::SessionProjectionRecord::AgentSession(_) => false,
+                crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
+                | crate::domain::local_event::SessionProjectionRecord::ProviderAgentSession(_)
+                | crate::domain::local_event::SessionProjectionRecord::ProviderSessionOwnership(
+                    _,
+                )
+                | crate::domain::local_event::SessionProjectionRecord::ProviderHookHealth(_) => {
+                    false
+                }
             },
             LocalStateMutation::WorkflowExecutionProjection(projection) => {
                 prepared.batch.state_mutations.iter().any(|candidate| {

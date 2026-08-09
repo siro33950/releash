@@ -395,6 +395,7 @@ pub fn session_projection_binding_identity<'a>(
     }
 }
 
+#[cfg(test)]
 pub fn session_projection_rollback_identity(
     session_id: &str,
     revision: i64,

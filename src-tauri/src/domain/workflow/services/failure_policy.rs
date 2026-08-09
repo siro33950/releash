@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::time::Duration;
 
-use crate::domain::workflow::value_objects::{NodeExecutionFailureKind, NodeKindName};
+use crate::domain::workflow::value_objects::NodeExecutionFailureKind;
+#[cfg(test)]
+use crate::domain::workflow::value_objects::NodeKindName;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -29,6 +32,7 @@ impl Default for RetryPolicy {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TimeoutContext {
     pub model: Option<String>,
@@ -37,6 +41,7 @@ pub struct TimeoutContext {
     pub workflow_template: Option<String>,
 }
 
+#[cfg(test)]
 impl TimeoutContext {
     pub fn new(
         model: Option<String>,
@@ -57,6 +62,7 @@ impl TimeoutContext {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutPolicy {
     startup_timeout: Duration,
@@ -67,6 +73,7 @@ pub struct TimeoutPolicy {
     stale_timeout_by_template: HashMap<String, Duration>,
 }
 
+#[cfg(test)]
 impl TimeoutPolicy {
     pub fn startup_timeout(&self, _ctx: &TimeoutContext) -> Duration {
         self.startup_timeout
@@ -130,6 +137,7 @@ impl TimeoutPolicy {
     }
 }
 
+#[cfg(test)]
 impl Default for TimeoutPolicy {
     fn default() -> Self {
         Self {

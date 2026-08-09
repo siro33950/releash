@@ -4,9 +4,8 @@ use std::sync::Arc;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot};
-use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
-use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
+use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
@@ -43,12 +42,16 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) app_config: Arc<dyn ConfigRepository>,
     pub(crate) session_store: Arc<SessionStore>,
     pub(crate) agent_runtime: Arc<AgentSessionRuntimeUsecase>,
-    pub(crate) open_tabs: Arc<OpenTabRegistry>,
-    pub(crate) branch_diff_context: Arc<dyn BranchDiffContextPort>,
     pub(crate) data_dir: Option<PathBuf>,
     pub(crate) local_event_repository:
         Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     pub(crate) local_event_installation_id: String,
+    pub(crate) provider_agent_session_launch:
+        Arc<crate::usecase::agent_session::ProviderAgentSessionLaunchUsecase>,
+    pub(crate) provider_agent_initial_instruction:
+        Arc<crate::usecase::agent_session::ProviderAgentInitialInstructionUsecase>,
+    pub(crate) provider_availability:
+        Arc<dyn crate::domain::agent_session::ProviderAvailabilityGateway>,
 }
 
 struct WorkflowShutdownRecord<'a> {
@@ -204,11 +207,12 @@ impl TauriWorkflowRuntimeCommandGateway {
             app_config,
             session_store,
             agent_runtime,
-            open_tabs,
-            branch_diff_context,
             data_dir,
             local_event_repository,
             local_event_installation_id,
+            provider_agent_session_launch,
+            provider_agent_initial_instruction,
+            provider_availability,
         } = deps;
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(DefaultWorkflowDefinitionResolver),
@@ -216,11 +220,12 @@ impl TauriWorkflowRuntimeCommandGateway {
                 repository_usecase,
                 app_config,
             )),
-            Some(branch_diff_context),
-            open_tabs,
             data_dir,
             local_event_repository.clone(),
             local_event_installation_id.clone(),
+            provider_agent_session_launch,
+            provider_agent_initial_instruction,
+            provider_availability,
         ));
         Ok(Self {
             app,

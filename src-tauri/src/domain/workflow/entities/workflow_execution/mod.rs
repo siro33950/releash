@@ -476,11 +476,6 @@ pub enum ExecutionAdvanceDecision {
     TransitionAndStart,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RetryCurrentNodeDecision {
-    pub completed_session_id: Option<String>,
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoopGuardResult {
@@ -888,10 +883,9 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn retry_current_node_at(&mut self, timestamp: f64) -> RetryCurrentNodeDecision {
+    pub fn retry_current_node_at(&mut self, timestamp: f64) {
         let node_index = self.runtime.current_node_index;
         let node_name = self.runtime.workflow.nodes[node_index].name.clone();
-        let completed_session_id = self.runtime.current_session_id.clone();
         let _ = self.transition_running();
         *self
             .runtime
@@ -904,9 +898,6 @@ impl WorkflowExecution {
         self.clear_artifacts_for_new_execution(node_index);
         self.runtime.updated_at = timestamp;
         self.start_current_node_execution(timestamp);
-        RetryCurrentNodeDecision {
-            completed_session_id,
-        }
     }
 
     #[cfg(test)]

@@ -64,10 +64,6 @@ impl TerminalSurfaceGateway for FakePtyGateway {
         Vec::new()
     }
 
-    fn select_gc_targets(&self, _worktree_path: &str, _keep_session_keys: &[String]) -> Vec<u64> {
-        Vec::new()
-    }
-
     fn remove_surface(&self, _runtime_generation: u64) -> Option<TerminalSurface> {
         None
     }
@@ -86,6 +82,20 @@ impl TerminalSurfaceGateway for FakePtyGateway {
     fn complete_spawn_slot(&self, _reservation: &TerminalSurfaceSpawnReservation) {}
 
     fn rollback_spawn_slot(&self, _reservation: &TerminalSurfaceSpawnReservation) {}
+
+    fn activate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+
+    fn deactivate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+
+    fn write_attached(
+        &self,
+        session_key: &str,
+        _attachment_id: &str,
+        _sequence: u64,
+        data: &str,
+    ) -> Result<(), TerminalSurfaceGatewayError> {
+        self.write(session_key, data)
+    }
 
     fn write(&self, session_key: &str, data: &str) -> Result<(), TerminalSurfaceGatewayError> {
         self.writes
@@ -116,7 +126,7 @@ impl TerminalSurfaceGateway for FakePtyGateway {
 #[test]
 fn test_ターミナル画面_パス入力_引用符処理して結合後に書き込む() {
     let gateway = FakePtyGateway::new();
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
 
     write_paths(
         &gateway,
@@ -141,7 +151,7 @@ fn test_ターミナル画面_パス入力_引用符処理して結合後に書�
 #[test]
 fn test_ターミナル画面_パス入力_空配列では何もしない() {
     let gateway = FakePtyGateway::new();
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
 
     write_paths(&gateway, &owner, &[]).unwrap();
 

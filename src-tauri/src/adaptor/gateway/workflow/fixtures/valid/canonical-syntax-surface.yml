@@ -48,8 +48,7 @@ nodes:
     input: target
   - name: judge
     session:
-      model: claude-opus-5
-      permission: full
+      provider: claude
       gate: auto
       facets:
         policy: reviewing
@@ -65,13 +64,13 @@ nodes:
         next: review
   - name: approved
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: approved
   - name: review
     session:
-      permission: ask
+      provider: claude
       gate: approval
       facets:
         instruction: review

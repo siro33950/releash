@@ -5,7 +5,8 @@ use crate::domain::terminal_surface::gateway::{
     TerminalRuntimeSpawnRequest, TerminalSurfaceGateway,
 };
 use crate::domain::terminal_surface::{
-    TerminalSurfaceCheckpoint, TerminalSurfaceOwner, TerminalSurfaceStartupCommand,
+    TerminalProcessLaunch, TerminalSurfaceCheckpoint, TerminalSurfaceOwner,
+    TerminalSurfaceStartupCommand,
 };
 use crate::usecase::terminal_surface::error::UsecaseError;
 
@@ -25,6 +26,7 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     owner: TerminalSurfaceOwner,
     label: Option<String>,
     startup_command: Option<String>,
+    process: Option<TerminalProcessLaunch>,
     initial_terminal_surface: Option<TerminalSurfaceCheckpoint>,
 ) -> Result<TerminalSurfaceSummary, UsecaseError> {
     let session_key = owner.stable_key();
@@ -51,7 +53,7 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         rows: backend_rows,
         cols: backend_cols,
         cwd,
-        exec_command: None,
+        process,
         initial_terminal_surface,
     }) {
         manager.rollback_spawn_slot(&reservation);
@@ -62,11 +64,15 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         TerminalSurface::with_checkpoint(runtime_generation, owner, label, initial_checkpoint);
     let surface_summary = surface.summary();
     manager.insert_surface(surface);
+    let output_reader_ready = crate::other::telemetry::start_terminal_launch_phase(
+        crate::other::telemetry::TerminalLaunch::OutputReaderReady,
+    );
     if let Err(error) = manager.start_output_reader(runtime_generation) {
         cleanup_failed_spawn(manager, runtime_generation);
         manager.rollback_spawn_slot(&reservation);
         return Err(error.into());
     }
+    output_reader_ready.finish();
     if let Some(startup_input) = startup_input {
         if let Err(error) = manager.write(&session_key, &startup_input) {
             cleanup_failed_spawn(manager, runtime_generation);
@@ -178,6 +184,9 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             }
             Err(error) => return Err(error.into()),
         };
+        let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
+            crate::other::telemetry::TerminalLaunch::CheckpointLookup,
+        );
         let restored_terminal_surface = match manager.load_terminal_checkpoint(&session_key) {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
@@ -185,6 +194,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
                 return Err(error.into());
             }
         };
+        checkpoint_lookup.finish();
         let restored_from_checkpoint = restored_terminal_surface.is_some();
         let surface = spawn_reserved(
             manager,
@@ -195,9 +205,96 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             owner.clone(),
             label.clone(),
             startup_command.clone(),
+            None,
             restored_terminal_surface,
         )?;
 
+        return Ok(GetOrSpawnTerminalOutcome {
+            surface,
+            restored_from_checkpoint,
+            is_new: true,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
+    manager: &G,
+    rows: u16,
+    cols: u16,
+    cwd: Option<String>,
+    owner: TerminalSurfaceOwner,
+    label: Option<String>,
+    process: TerminalProcessLaunch,
+) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
+    let session_key = owner.stable_key();
+    loop {
+        if let Some(surface) = manager.find_summary_by_session_key(&session_key) {
+            if surface.owner != owner {
+                return Err(UsecaseError::Gateway(
+                    "Terminal Surface owner identity collision".to_string(),
+                ));
+            }
+            if surface.process_state.is_exited() {
+                let runtime_generation = surface.runtime_generation.value();
+                manager.wait_runtime_output_drain(runtime_generation)?;
+                manager.remove_surface(runtime_generation);
+                manager.remove_runtime(runtime_generation);
+                continue;
+            }
+            return Ok(GetOrSpawnTerminalOutcome {
+                surface,
+                restored_from_checkpoint: false,
+                is_new: false,
+            });
+        }
+        let reservation = match manager
+            .reserve_spawn_slot(&session_key, Some(owner.workspace_identity().as_str()))
+        {
+            Ok(reservation) => reservation,
+            Err(
+                crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservationError::OwnerOccupied(_),
+            ) => {
+                if let Some(surface) = manager.wait_for_spawn_resolution(&session_key) {
+                    if surface.owner != owner {
+                        return Err(UsecaseError::Gateway(
+                            "Terminal Surface owner identity collision".to_string(),
+                        ));
+                    }
+                    return Ok(GetOrSpawnTerminalOutcome {
+                        surface,
+                        restored_from_checkpoint: false,
+                        is_new: false,
+                    });
+                }
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
+            crate::other::telemetry::TerminalLaunch::CheckpointLookup,
+        );
+        let restored_terminal_surface = match manager.load_terminal_checkpoint(&session_key) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                manager.rollback_spawn_slot(&reservation);
+                return Err(error.into());
+            }
+        };
+        checkpoint_lookup.finish();
+        let restored_from_checkpoint = restored_terminal_surface.is_some();
+        let surface = spawn_reserved(
+            manager,
+            reservation,
+            rows,
+            cols,
+            cwd,
+            owner,
+            label,
+            None,
+            Some(process),
+            restored_terminal_surface,
+        )?;
         return Ok(GetOrSpawnTerminalOutcome {
             surface,
             restored_from_checkpoint,

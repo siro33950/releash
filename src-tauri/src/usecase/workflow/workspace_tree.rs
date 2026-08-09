@@ -115,6 +115,7 @@ pub(crate) struct WorkspaceNodeDetailDto {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum WorkspaceNodeContentDto {
     Session(WorkspaceSessionNodeContentDto),
+    ProviderAgentSession(WorkspaceSessionNodeContentDto),
     Command(WorkspaceCommandNodeContentDto),
 }
 

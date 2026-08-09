@@ -125,8 +125,7 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
             command: spec.command.clone(),
         }),
         schema::NodeKind::Session(spec) => domain::NodeKind::Session(domain::SessionSpec {
-            model: spec.model.clone(),
-            permission: spec.permission.clone(),
+            provider: spec.provider,
             gate: session_gate_to_domain(spec.gate),
             facets: facet_refs_to_domain(&spec.facets),
         }),

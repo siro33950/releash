@@ -5,6 +5,9 @@ mod provider_lifecycle_capability_hash;
 mod provider_lifecycle_event;
 mod provider_lifecycle_outcome;
 mod provider_lifecycle_scope;
+#[cfg(test)]
+#[path = "provider_lifecycle_scope_test.rs"]
+mod provider_lifecycle_scope_tests;
 mod provider_lifecycle_signal;
 mod provider_lifecycle_slot_id;
 mod provider_lifecycle_unavailable;

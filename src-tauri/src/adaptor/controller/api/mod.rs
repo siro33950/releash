@@ -2,7 +2,7 @@ mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
-mod provider_lifecycle;
+pub(crate) mod provider_lifecycle;
 mod terminal;
 mod workflow;
 
@@ -87,30 +87,44 @@ pub(crate) fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
+    terminal_token: Arc<str>,
     agent_session: Option<AgentSessionApiDeps>,
     terminal: Option<TerminalApiDeps>,
-    provider_lifecycle: Option<Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>>,
+    provider_lifecycle: Option<
+        Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+    >,
 ) -> Router {
+    let state = LocalApiState {
+        workflow,
+        runtime,
+        agent_session,
+        terminal,
+    };
     let application_router = workflow::router()
         .merge(agent_session::router())
-        .merge(terminal::router())
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
-        .with_state(LocalApiState {
-            workflow,
-            runtime,
-            agent_session,
-            terminal,
-        });
+        .with_state(state.clone());
+    // terminal routeだけはrendererへ渡すterminal専用tokenでも認証できる。
+    // masterのdiscovery tokenはrenderer JSに露出させない。
+    let terminal_router = authenticated_with_tokens(
+        terminal::router().with_state(state),
+        auth::AcceptedBearerTokens::new([token.clone(), terminal_token]),
+    );
     authenticated(
         application_router.merge(provider_lifecycle::router(provider_lifecycle)),
         token,
     )
+    .merge(terminal_router)
 }
 
-fn authenticated(router: Router, token: Arc<str>) -> Router {
-    router.layer(middleware::from_fn_with_state(token, auth::require_bearer))
+pub(crate) fn authenticated(router: Router, token: Arc<str>) -> Router {
+    authenticated_with_tokens(router, auth::AcceptedBearerTokens::new([token]))
+}
+
+fn authenticated_with_tokens(router: Router, tokens: auth::AcceptedBearerTokens) -> Router {
+    router.layer(middleware::from_fn_with_state(tokens, auth::require_bearer))
 }
 
 #[cfg(test)]
@@ -428,12 +442,24 @@ pub(crate) mod test_support {
         test_router_with_optional_terminal(data_dir, token, Some(terminal)).0
     }
 
+    pub(crate) fn test_router_with_terminal_tokens(
+        data_dir: &Path,
+        token: &str,
+        terminal_token: &str,
+        terminal: TerminalApiDeps,
+    ) -> Router {
+        test_router_with_optional_deps(data_dir, token, terminal_token, Some(terminal), None).0
+    }
+
     pub(crate) fn test_router_with_provider_lifecycle(
         data_dir: &Path,
         token: &str,
         provider_lifecycle: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
     ) -> Router {
-        test_router_with_optional_deps(data_dir, token, None, Some(provider_lifecycle)).0
+        let provider_lifecycle: Arc<
+            dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
+        > = provider_lifecycle;
+        test_router_with_optional_deps(data_dir, token, token, None, Some(provider_lifecycle)).0
     }
 
     fn test_router_with_optional_terminal(
@@ -445,15 +471,16 @@ pub(crate) mod test_support {
         Arc<WorkflowRuntimeUsecase>,
         Arc<RecordingRuntimeGateway>,
     ) {
-        test_router_with_optional_deps(data_dir, token, terminal, None)
+        test_router_with_optional_deps(data_dir, token, token, terminal, None)
     }
 
     fn test_router_with_optional_deps(
         data_dir: &Path,
         token: &str,
+        terminal_token: &str,
         terminal: Option<TerminalApiDeps>,
         provider_lifecycle: Option<
-            Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
+            Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
         >,
     ) -> (
         Router,
@@ -487,6 +514,7 @@ pub(crate) mod test_support {
             Arc::new(workflow),
             runtime.clone(),
             Arc::<str>::from(token),
+            Arc::<str>::from(terminal_token),
             None,
             terminal,
             provider_lifecycle,
@@ -601,7 +629,7 @@ pub(crate) mod test_support {
                     },
                     "nodes": [{
                         "name": "review",
-                        "session": {"gate": "auto"},
+                        "session": {"provider": "claude", "gate": "auto"},
                         "artifact": "review-result"
                     }]
                 }

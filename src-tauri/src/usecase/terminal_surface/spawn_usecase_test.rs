@@ -8,7 +8,9 @@ use crate::domain::terminal_surface::entities::{
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceGatewayError, TerminalSurfaceRepository,
 };
-use crate::domain::terminal_surface::{TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner};
+use crate::domain::terminal_surface::{
+    TerminalProcessLaunch, TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner,
+};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 struct MockGateway {
@@ -19,6 +21,7 @@ struct MockGateway {
     fail_kill_runtime: AtomicBool,
     spawn_count: Mutex<usize>,
     spawned_sizes: Mutex<Vec<(u16, u16)>>,
+    spawned_processes: Mutex<Vec<Option<TerminalProcessLaunch>>>,
     checkpoint: Mutex<Option<TerminalSurfaceCheckpoint>>,
     written_inputs: Mutex<Vec<String>>,
     killed: Mutex<Vec<u64>>,
@@ -44,6 +47,7 @@ impl MockGateway {
             fail_kill_runtime: AtomicBool::new(false),
             spawn_count: Mutex::new(0),
             spawned_sizes: Mutex::new(Vec::new()),
+            spawned_processes: Mutex::new(Vec::new()),
             checkpoint: Mutex::new(None),
             written_inputs: Mutex::new(Vec::new()),
             killed: Mutex::new(Vec::new()),
@@ -60,15 +64,22 @@ impl MockGateway {
         let runtime_generation = registry.next_runtime_generation();
         registry.insert(TerminalSurface::new(
             runtime_generation,
-            TerminalSurfaceOwner::session(WorkspaceIdentity::new(worktree_path), owner_id),
+            TerminalSurfaceOwner::session(WorkspaceIdentity::new(worktree_path), owner_id).unwrap(),
             None,
         ));
         runtime_generation
     }
+
+    fn mark_exited(&self, runtime_generation: u64) {
+        self.registry
+            .lock()
+            .unwrap()
+            .mark_exited(runtime_generation, Some(0));
+    }
 }
 
 fn workspace_owner(path: &str) -> TerminalSurfaceOwner {
-    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path))
+    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path)).unwrap()
 }
 
 impl TerminalSurfaceRepository for MockGateway {
@@ -119,6 +130,7 @@ impl TerminalSurfaceGateway for MockGateway {
             .lock()
             .unwrap()
             .push((request.rows, request.cols));
+        self.spawned_processes.lock().unwrap().push(request.process);
         if self.fail_spawn.load(Ordering::SeqCst) {
             return Err(TerminalSurfaceGatewayError::new("spawn failed"));
         }
@@ -163,13 +175,6 @@ impl TerminalSurfaceGateway for MockGateway {
             .select_kill_targets_by_worktree(worktree_path)
     }
 
-    fn select_gc_targets(&self, worktree_path: &str, keep_session_keys: &[String]) -> Vec<u64> {
-        self.registry
-            .lock()
-            .unwrap()
-            .select_gc_targets(worktree_path, keep_session_keys)
-    }
-
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.registry.lock().unwrap().remove(runtime_generation)
     }
@@ -202,6 +207,20 @@ impl TerminalSurfaceGateway for MockGateway {
             .unwrap()
             .rollback_spawn_slot(reservation);
         self.spawn_resolved.notify_all();
+    }
+
+    fn activate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+
+    fn deactivate_input_attachment(&self, _session_key: &str, _attachment_id: &str) {}
+
+    fn write_attached(
+        &self,
+        session_key: &str,
+        _attachment_id: &str,
+        _sequence: u64,
+        data: &str,
+    ) -> Result<(), TerminalSurfaceGatewayError> {
+        self.write(session_key, data)
     }
 
     fn wait_for_spawn_resolution(&self, session_key: &str) -> Option<TerminalSurfaceSummary> {
@@ -283,6 +302,102 @@ fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一�
         gateway.written_inputs.lock().unwrap().as_slice(),
         ["cargo test\n"]
     );
+}
+
+#[test]
+fn test_agent_session_terminal生成_providerをstructured_root_processとして渡す() {
+    let gateway = MockGateway::new();
+    let process = TerminalProcessLaunch::new(
+        "/usr/local/bin/codex",
+        vec!["resume".to_string(), "provider-session-1".to_string()],
+        vec![(
+            "RELEASH_AGENT_SESSION_ID".to_string(),
+            "agent-1".to_string(),
+        )],
+    )
+    .unwrap();
+
+    let result = get_or_spawn_with_process(
+        &gateway,
+        24,
+        80,
+        Some("/repo".to_string()),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-1").unwrap(),
+        Some("Codex".to_string()),
+        process.clone(),
+    )
+    .unwrap();
+
+    assert!(result.is_new);
+    assert_eq!(
+        gateway.spawned_processes.lock().unwrap().as_slice(),
+        [Some(process)]
+    );
+    assert!(gateway.written_inputs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ置換する() {
+    let gateway = MockGateway::new();
+    let old_generation = gateway.insert_session("agent-1", "/repo");
+    gateway.mark_exited(old_generation);
+    let process = TerminalProcessLaunch::new(
+        "/usr/local/bin/codex",
+        vec!["resume".to_string(), "provider-session-1".to_string()],
+        vec![],
+    )
+    .unwrap();
+
+    let result = get_or_spawn_with_process(
+        &gateway,
+        24,
+        80,
+        Some("/repo".to_string()),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-1").unwrap(),
+        Some("Codex".to_string()),
+        process,
+    )
+    .unwrap();
+
+    assert!(result.is_new);
+    assert_ne!(result.surface.runtime_generation.value(), old_generation);
+    assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
+    assert!(gateway.snapshot(old_generation).is_none());
+}
+
+#[test]
+fn test_agent_session_terminal_archiveは停止してcheckpointを保持しdeleteは破棄する() {
+    let gateway = MockGateway::new();
+    *gateway.checkpoint.lock().unwrap() = Some(TerminalSurfaceCheckpoint {
+        replay: "last frame".to_string(),
+        sequence: 7,
+        cols: 80,
+        rows: 24,
+    });
+    let owner = TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-1").unwrap();
+    let generation = gateway.insert_session("agent-1", "/repo");
+
+    crate::usecase::terminal_surface::lifecycle_usecase::stop_preserving_checkpoint(
+        &gateway, &owner,
+    )
+    .unwrap();
+
+    assert_eq!(*gateway.killed.lock().unwrap(), vec![generation]);
+    assert!(gateway.snapshot(generation).is_none());
+    assert_eq!(
+        gateway
+            .checkpoint
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|checkpoint| checkpoint.replay.as_str()),
+        Some("last frame")
+    );
+
+    let regenerated = gateway.insert_session("agent-1", "/repo");
+    crate::usecase::terminal_surface::lifecycle_usecase::kill(&gateway, &owner).unwrap();
+    assert!(gateway.snapshot(regenerated).is_none());
+    assert!(gateway.checkpoint.lock().unwrap().is_none());
 }
 
 #[test]
@@ -514,7 +629,8 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
 #[test]
 fn test_ターミナル画面明示終了_復元点も破棄して再生成の起動コマンドを実行する() {
     let gateway = MockGateway::new();
-    let owner = TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1");
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1").unwrap();
     gateway.insert_session("session-1", "/repo");
     *gateway.checkpoint.lock().unwrap() = Some(TerminalSurfaceCheckpoint {
         replay: "stale".to_string(),
@@ -555,7 +671,7 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
         24,
         80,
         Some("/repo".to_string()),
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "failed-spawn"),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "failed-spawn").unwrap(),
         None,
     );
 
@@ -585,7 +701,7 @@ fn test_ターミナル画面取得または生成_既存所有者なら生成�
         24,
         80,
         Some("/repo".to_string()),
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1"),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1").unwrap(),
         None,
     )
     .unwrap();
@@ -608,7 +724,7 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
         24,
         80,
         Some("/repo".to_string()),
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1"),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1").unwrap(),
         None,
     )
     .unwrap();
@@ -627,7 +743,7 @@ fn test_ターミナル画面取得または生成_別ワークスペースの�
         24,
         80,
         Some("/other".to_string()),
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/other"), "session-1"),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/other"), "session-1").unwrap(),
         None,
     )
     .unwrap();

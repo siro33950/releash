@@ -6,6 +6,7 @@ pub mod git;
 pub(crate) mod local_api;
 pub(crate) mod platform;
 pub(crate) mod process;
+pub(crate) mod provider_history;
 pub(crate) mod provider_lifecycle;
 pub(crate) mod telemetry;
 pub(crate) mod terminal;

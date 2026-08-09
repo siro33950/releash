@@ -221,7 +221,7 @@ fn uncommitted_events(
         .cloned()
         .map(|scoped| {
             let (scope, event) = scoped.into_parts();
-            let stream_id = StreamId::agent_session(scope.agent_session_id())
+            let stream_id = StreamId::provider_lifecycle(scope.agent_session_id())
                 .map_err(|_| ProviderLifecycleRepositoryError::InvalidInput)?;
             Ok(UncommittedDomainEvent {
                 stream_id,

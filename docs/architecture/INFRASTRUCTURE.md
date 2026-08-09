@@ -34,8 +34,9 @@ src-tauri/src/infrastructure/
 ├── local_api/                     # ローカル HTTP サーバ / クライアント
 ├── platform/                      # OS・Tauri プラットフォーム連携
 ├── process/                       # 子プロセス起動と管理
-├── pty_session/                   # shell integration
-└── telemetry/                     # テレメトリ送出
+├── provider_lifecycle/            # provider hook の受信・launch file
+├── telemetry/                     # テレメトリ送出
+└── terminal/                      # PTY・checkpoint journal・shell integration
 ```
 
 ドメイン名でディレクトリを切ることはあるが、それは「その外部世界を誰が使うか」の目印であって、そのドメインの語彙を持ってよいという意味ではない。

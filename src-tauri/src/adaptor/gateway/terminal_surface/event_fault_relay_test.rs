@@ -16,7 +16,7 @@ impl TerminalSurfaceEventSink for RecordingEventSink {
 fn output(sequence: u64) -> TerminalSurfaceEvent {
     TerminalSurfaceEvent::Output {
         session_key: "surface".to_string(),
-        data: format!("chunk-{sequence}"),
+        data: format!("chunk-{sequence}").into(),
         sequence,
     }
 }
@@ -44,6 +44,9 @@ fn test_ターミナル画面fault中継_次イベントの欠落重複逆転を
             TerminalSurfaceEvent::Output { sequence, .. }
             | TerminalSurfaceEvent::Resize { sequence, .. }
             | TerminalSurfaceEvent::Exit { sequence, .. } => *sequence,
+            TerminalSurfaceEvent::InputUnavailable { .. } => {
+                panic!("fault relay sequence fixture emitted an input failure")
+            }
         })
         .collect::<Vec<_>>();
     assert_eq!(sequences, vec![2, 2, 4, 3]);

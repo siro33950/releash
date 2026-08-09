@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApplicationShutdownBanner } from "@/components/layout/ApplicationShutdownBanner";
+import { ProviderHookHealthBanner } from "@/components/layout/ProviderHookHealthBanner";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -133,6 +134,13 @@ function WorkbenchApp() {
 		activeCenterState?.phase === "selected"
 			? activeCenterState.selection
 			: null;
+	const centerSelectionByWorktree = useMemo(() => {
+		const map: Record<string, CenterSelection | null> = {};
+		for (const [rootPath, state] of Object.entries(centerStateByWorktree)) {
+			map[rootPath] = state.phase === "selected" ? state.selection : null;
+		}
+		return map;
+	}, [centerStateByWorktree]);
 	const activeNewSessionCreation = selectedRootPath
 		? newSessionCreationByWorktree[selectedRootPath]
 		: undefined;
@@ -249,16 +257,10 @@ function WorkbenchApp() {
 			setNewSessionCreationByWorktree((current) => {
 				const existing = current[rootPath];
 				if (existing?.status === "pending") return current;
-				const request: NewSessionCreationRequest = existing
-					? {
-							...existing.request,
-							attempt: existing.request.attempt + 1,
-						}
-					: {
-							requestId: globalThis.crypto.randomUUID(),
-							worktreePath: rootPath,
-							attempt: 1,
-						};
+				const request: NewSessionCreationRequest = {
+					requestId: globalThis.crypto.randomUUID(),
+					worktreePath: rootPath,
+				};
 				return {
 					...current,
 					[rootPath]: { request, status: "pending", error: null },
@@ -276,10 +278,7 @@ function WorkbenchApp() {
 			}));
 			setNewSessionCreationByWorktree((current) => {
 				const active = current[request.worktreePath];
-				if (
-					active?.request.requestId !== request.requestId ||
-					active.request.attempt !== request.attempt
-				) {
+				if (active?.request.requestId !== request.requestId) {
 					return current;
 				}
 				const next = { ...current };
@@ -293,10 +292,7 @@ function WorkbenchApp() {
 		(request: NewSessionCreationRequest, error: string) => {
 			setNewSessionCreationByWorktree((current) => {
 				const active = current[request.worktreePath];
-				if (
-					active?.request.requestId !== request.requestId ||
-					active.request.attempt !== request.attempt
-				) {
+				if (active?.request.requestId !== request.requestId) {
 					return current;
 				}
 				return {
@@ -311,13 +307,16 @@ function WorkbenchApp() {
 		},
 		[],
 	);
-	const handleCenterNodeMissing = useCallback(
+	const handleCenterSelectionInvalidated = useCallback(
 		(worktreePath: string, nodeId: string) => {
 			setCenterStateByWorktree((current) => {
 				const active = current[worktreePath];
 				if (
 					active?.phase !== "selected" ||
-					active.selection.nodeId !== nodeId
+					active.selection.kind === "provider_agent_session_launching" ||
+					(active.selection.kind === "node"
+						? active.selection.nodeId
+						: active.selection.agentSessionId) !== nodeId
 				) {
 					return current;
 				}
@@ -329,25 +328,33 @@ function WorkbenchApp() {
 		},
 		[],
 	);
-	const handleWorkspaceSelectionInvalidated = useCallback(
-		(worktreePath: string, nodeId: string) => {
+	const handleProviderAgentSessionLaunchConsumed = useCallback(
+		(agentSessionId: string) => {
 			setCenterStateByWorktree((current) => {
-				const active = current[worktreePath];
-				if (
-					active?.phase !== "selected" ||
-					active.selection.nodeId !== nodeId
-				) {
-					return current;
+				for (const [worktreePath, state] of Object.entries(current)) {
+					if (
+						state.phase !== "selected" ||
+						state.selection.kind !== "provider_agent_session" ||
+						state.selection.agentSessionId !== agentSessionId ||
+						!state.selection.initialAttachment
+					) {
+						continue;
+					}
+					const selection: CenterSelection = {
+						kind: "provider_agent_session",
+						worktreePath: state.selection.worktreePath,
+						agentSessionId: state.selection.agentSessionId,
+					};
+					return {
+						...current,
+						[worktreePath]: { phase: "selected", selection },
+					};
 				}
-				return {
-					...current,
-					[worktreePath]: { phase: "awaitingInitial" },
-				};
+				return current;
 			});
 		},
 		[],
 	);
-
 	const isWorktreeActive = selectedWorktreeId != null;
 	useEffect(() => {
 		invoke("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
@@ -378,7 +385,7 @@ function WorkbenchApp() {
 				newSessionCreationStatusByWorktree={newSessionCreationStatusByWorktree}
 				onSelectWorktree={handleSelectWorktree}
 				onCreateSession={handleCreateSession}
-				onWorkspaceSelectionInvalidated={handleWorkspaceSelectionInvalidated}
+				onWorkspaceSelectionInvalidated={handleCenterSelectionInvalidated}
 				onAddRepo={handleAddRepo}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
@@ -391,7 +398,7 @@ function WorkbenchApp() {
 			newSessionCreationStatusByWorktree,
 			handleSelectWorktree,
 			handleCreateSession,
-			handleWorkspaceSelectionInvalidated,
+			handleCenterSelectionInvalidated,
 			handleAddRepo,
 		],
 	);
@@ -399,17 +406,25 @@ function WorkbenchApp() {
 	return (
 		<TooltipProvider>
 			<UpdateDialog update={updateChecker} />
-			<ApplicationShutdownBanner />
 			<MainLayout
 				selectedRootPath={selectedRootPath}
 				settings={settings}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
-				centerSelection={centerSelection}
+				topBanner={
+					<>
+						<ApplicationShutdownBanner />
+						<ProviderHookHealthBanner />
+					</>
+				}
+				centerSelectionByWorktree={centerSelectionByWorktree}
 				newSessionCreationRequest={newSessionCreationRequest}
 				onNewSessionCreated={handleNewSessionCreated}
 				onNewSessionCreationFailed={handleNewSessionCreationFailed}
-				onCenterNodeMissing={handleCenterNodeMissing}
+				onProviderAgentSessionLaunchConsumed={
+					handleProviderAgentSessionLaunchConsumed
+				}
+				onCenterNodeMissing={handleCenterSelectionInvalidated}
 			/>
 
 			{/* App Settings */}

@@ -40,6 +40,7 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
 #[cfg(test)]
 use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGateway;
 use crate::adaptor::gateway::workflow::{
@@ -59,6 +60,7 @@ use crate::adaptor::gateway::workflow::{
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::local_event::LocalEventTransactionRepository;
+use crate::domain::repository::WorktreeTerminalGateway;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -103,7 +105,17 @@ pub(crate) fn build_agent_backend_registry(
 /// git ベースの repository usecase を既定の gateway 実装で構築する。
 /// Entity の読み書きは Repository gateway へ、read model 生成は `WorktreeGateway` が実装する
 /// `BranchCardQuery` を内包する `RepositoryQueryService` へ委譲する。
+/// terminal runtime を持たない composition（standalone read-only・テスト）向けに、
+/// worktree terminal 停止は no-op とする。
 pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
+    build_repository_usecase_with_worktree_terminals(Arc::new(NoopWorktreeTerminalGateway))
+}
+
+/// worktree 削除時に紐づく terminal surface を停止できる repository usecase を構築する
+/// （Tauri アプリ本体の composition 用）。
+pub(crate) fn build_repository_usecase_with_worktree_terminals(
+    worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
+) -> RepositoryUsecase {
     let query = RepositoryQueryService::new(Arc::new(BranchCardGateway));
     RepositoryUsecase::new(
         Arc::new(BranchGateway),
@@ -112,6 +124,7 @@ pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
         Arc::new(WorktreeGateway),
         Arc::new(GitConfigGateway),
         Arc::new(RepoLocatorGateway),
+        worktree_terminals,
         query,
     )
 }
@@ -171,17 +184,28 @@ pub(crate) fn build_session_store() -> SessionStore {
 }
 
 #[cfg(not(test))]
-pub(crate) fn build_canonical_session_read_store(
+pub(crate) fn build_canonical_review_session_readers(
     data_dir: impl Into<PathBuf>,
-) -> Result<SessionStore, String> {
+) -> Result<
+    (
+        SessionStore,
+        crate::adaptor::gateway::agent_session::LocalProviderAgentSessionQueryService,
+    ),
+    String,
+> {
     let data_dir = data_dir.into();
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
     let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
-    Ok(SessionStore::new_canonical(
-        repository,
-        local_event_store.installation_id().to_string(),
-        Arc::new(
-            crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+    Ok((
+        SessionStore::new_canonical(
+            repository.clone(),
+            local_event_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        ),
+        crate::adaptor::gateway::agent_session::LocalProviderAgentSessionQueryService::new(
+            repository,
         ),
     ))
 }

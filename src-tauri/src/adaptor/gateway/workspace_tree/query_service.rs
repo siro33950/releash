@@ -416,20 +416,26 @@ fn project_tree(tree: &WorkspaceTree, hidden: &HashSet<String>) -> Vec<Workspace
 
 fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
-    let content = if node.kind == WorkspaceNodeKind::WorkflowCommand {
-        WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
-            display_command: node.display_command,
-            result: node.command_result.map(|result| WorkspaceCommandResultDto {
-                exit_code: result.exit_code,
-                duration: result.duration,
-                stdout: result.stdout,
-                stderr: result.stderr,
-            }),
-        })
-    } else {
-        WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+    let content = match node.kind {
+        WorkspaceNodeKind::WorkflowCommand => {
+            WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
+                display_command: node.display_command,
+                result: node.command_result.map(|result| WorkspaceCommandResultDto {
+                    exit_code: result.exit_code,
+                    duration: result.duration,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                }),
+            })
+        }
+        WorkspaceNodeKind::WorkflowSession => {
+            WorkspaceNodeContentDto::ProviderAgentSession(WorkspaceSessionNodeContentDto {
+                session_id: node.session_id,
+            })
+        }
+        _ => WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
             session_id: node.session_id,
-        })
+        }),
     };
     WorkspaceNodeDetailDto {
         id: node.id,
@@ -613,6 +619,23 @@ mod tests {
         let detail = node_detail(direct);
         assert_eq!(detail.status, "error");
         assert_eq!(detail.error_reason.as_deref(), Some("provider failed"));
+    }
+
+    #[test]
+    fn test_workflow_session_node_detail_provider_agent_session_surfaceを公開する() {
+        let mut workflow_session = node();
+        workflow_session.session_id = Some("provider-agent-session-1".to_string());
+
+        let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
+
+        assert_eq!(
+            detail["content"]["kind"],
+            serde_json::Value::String("providerAgentSession".to_string())
+        );
+        assert_eq!(
+            detail["content"]["sessionId"],
+            serde_json::Value::String("provider-agent-session-1".to_string())
+        );
     }
 
     #[test]

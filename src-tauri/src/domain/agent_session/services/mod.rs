@@ -2,6 +2,10 @@ pub(crate) mod context_replacement;
 mod durable_counter;
 pub mod operation_recovery_policy;
 mod permission_policy;
+mod provider_session_ownership;
+#[cfg(test)]
+#[path = "provider_session_ownership_test.rs"]
+mod provider_session_ownership_tests;
 mod recovery_inventory_policy;
 mod runtime_event_policy;
 pub mod send_operation_policy;
@@ -11,6 +15,8 @@ mod streaming_policy;
 
 use super::SkillEntry;
 
+#[cfg(test)]
+pub(crate) use super::events::ProviderSessionOwnershipEvent;
 pub(crate) use context_replacement::{
     dedup_instructions, latest_revisions_by_kind, next_epoch_for_identity,
     normalize_path_components, replacement_action, snapshot_is_stale,
@@ -37,6 +43,12 @@ pub use permission_policy::{
     decide_permission_response_runtime_completion, decide_provider_permission_for_tool,
     permission_request_identity_matches, permission_response_turn_matches,
     runtime_permission_effect_is_owned, ProviderPermissionDecision,
+};
+pub(crate) use provider_session_ownership::ProviderSessionOwnership;
+#[cfg(test)]
+pub(crate) use provider_session_ownership::{
+    ProviderSessionAlreadyOwned, ProviderSessionOwnershipClaimOutcome,
+    ProviderSessionOwnershipReleaseOutcome,
 };
 pub use recovery_inventory_policy::{
     bounded_recovery_owner_component, decide_recovery_capabilities, pending_recovery_descriptor,

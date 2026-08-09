@@ -3,6 +3,7 @@ import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
+import { ProviderAgentSessionRoute } from "@/components/panels/ProviderAgentSessionPanel";
 import { Button } from "@/components/ui/button";
 import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
@@ -11,6 +12,7 @@ import {
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
 import type { AgentEditorSelection, MentionReference } from "@/types/session";
+import type { Theme } from "@/types/settings";
 import type {
 	WorkspaceCommandNodeContent,
 	WorkspaceNodeDetail,
@@ -19,6 +21,7 @@ import type {
 interface NodeContentViewProps {
 	worktreePath: string;
 	nodeId: string | null;
+	theme?: Theme;
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
 	activeEditorPath?: string | null;
@@ -39,6 +42,7 @@ interface NodeContentViewProps {
 export function NodeContentView({
 	worktreePath,
 	nodeId,
+	theme,
 	leftPanels,
 	rightSlot,
 	activeEditorPath,
@@ -70,7 +74,22 @@ export function NodeContentView({
 			/>
 			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				{detail ? (
-					detail.content.kind === "session" ? (
+					detail.content.kind === "providerAgentSession" ? (
+						detail.content.sessionId ? (
+							<ProviderAgentSessionRoute
+								agentSessionId={detail.content.sessionId}
+								theme={theme}
+							/>
+						) : (
+							<NodeEmptyState
+								message={
+									detail.status === "queued"
+										? "This session has not started yet."
+										: "Session unavailable."
+								}
+							/>
+						)
+					) : detail.content.kind === "session" ? (
 						detail.content.sessionId ? (
 							<BoundSessionChat
 								sessionId={detail.content.sessionId}

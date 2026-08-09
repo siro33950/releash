@@ -5,30 +5,19 @@ use super::super::{
     ProviderLifecycleUnavailableReason,
 };
 
-fn scope(session_id: &str, node_execution_id: &str, attempt: u32) -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new(
-        session_id,
-        "workflow-execution-1",
-        node_execution_id,
-        attempt,
-    )
-    .unwrap()
+fn scope(session_id: &str) -> ProviderLifecycleScope {
+    ProviderLifecycleScope::new(session_id).unwrap()
 }
 
 fn binding(provider: ProviderKind) -> ProviderLifecycleBinding {
-    ProviderLifecycleBinding::arm(
-        "binding-1",
-        provider,
-        scope("agent-session-1", "node-execution-1", 1),
-    )
-    .unwrap()
+    ProviderLifecycleBinding::arm("binding-1", provider, scope("agent-session-1")).unwrap()
 }
 
 fn session_start(provider: ProviderKind) -> ProviderLifecycleSignal {
     ProviderLifecycleSignal::session_started(
         "binding-1",
         provider,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/1"),
     )
@@ -39,7 +28,7 @@ fn stop(provider: ProviderKind) -> ProviderLifecycleSignal {
     ProviderLifecycleSignal::stop_observed(
         "binding-1",
         provider,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/1"),
     )
@@ -66,10 +55,7 @@ fn unavailable(
 #[test]
 fn test_providerライフサイクル利用不能_同一観測の再送は診断事実を重複させない() {
     let mut binding = binding(ProviderKind::Codex);
-    let observation = unavailable(
-        ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
-    );
+    let observation = unavailable(ProviderKind::Codex, scope("agent-session-1"));
 
     assert!(matches!(
         binding.mark_unavailable(observation.clone()),
@@ -82,12 +68,35 @@ fn test_providerライフサイクル利用不能_同一観測の再送は診断
 }
 
 #[test]
+fn test_providerライフサイクル利用不能_異なる後続観測へ診断を更新する() {
+    let mut binding = binding(ProviderKind::Codex);
+    assert!(matches!(
+        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
+        ProviderLifecycleOutcome::Applied(_)
+    ));
+    let updated = ProviderLifecycleUnavailableObservation::new(
+        "binding-1",
+        ProviderKind::Codex,
+        scope("agent-session-1"),
+        ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+    )
+    .unwrap();
+
+    assert_eq!(
+        binding.mark_unavailable(updated),
+        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::LifecycleUnavailable {
+            binding_id: "binding-1".to_string(),
+            provider: ProviderKind::Codex,
+            scope: scope("agent-session-1"),
+            reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+        },])
+    );
+}
+
+#[test]
 fn test_providerライフサイクル利用不能_scope不一致と失効済みbindingを拒否する() {
     let mut binding = binding(ProviderKind::Codex);
-    let wrong_scope = unavailable(
-        ProviderKind::Codex,
-        scope("other-agent-session", "node-execution-1", 1),
-    );
+    let wrong_scope = unavailable(ProviderKind::Codex, scope("other-agent-session"));
 
     assert_eq!(
         binding.mark_unavailable(wrong_scope),
@@ -98,31 +107,28 @@ fn test_providerライフサイクル利用不能_scope不一致と失効済みb
         ProviderLifecycleOutcome::Applied(_)
     ));
     assert_eq!(
-        binding.mark_unavailable(unavailable(
-            ProviderKind::Codex,
-            scope("agent-session-1", "node-execution-1", 1),
-        )),
+        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
         ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired)
     );
 }
 
 #[test]
-fn test_providerライフサイクル利用不能_確定後の遅延signalはcurrent_attemptを進めない() {
+fn test_providerライフサイクル利用不能_後続の正常session_startで回復する() {
     let mut binding = binding(ProviderKind::Codex);
     assert!(matches!(
-        binding.mark_unavailable(unavailable(
-            ProviderKind::Codex,
-            scope("agent-session-1", "node-execution-1", 1),
-        )),
+        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
         ProviderLifecycleOutcome::Applied(_)
     ));
 
     assert_eq!(
         binding.observe(session_start(ProviderKind::Codex)),
-        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::LifecycleUnavailable)
+        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::SessionAssociated {
+            binding_id: "binding-1".to_string(),
+            provider_session_id: "provider-session-1".to_string(),
+            transcript_ref: Some("provider://transcript/1".to_string()),
+        }])
     );
-    assert_eq!(binding.provider_session_id(), None);
-    assert!(!binding.is_stopped());
+    assert_eq!(binding.provider_session_id(), Some("provider-session-1"));
 }
 
 #[test]
@@ -134,10 +140,7 @@ fn test_providerライフサイクル利用不能_session_start受理後の期�
     ));
 
     assert_eq!(
-        binding.mark_unavailable(unavailable(
-            ProviderKind::Codex,
-            scope("agent-session-1", "node-execution-1", 1),
-        )),
+        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
         ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::SessionAlreadyAssociated)
     );
 }
@@ -158,7 +161,6 @@ fn test_providerライフサイクル受信_最初のsession_startをscopeへ関
     );
     assert_eq!(binding.provider_session_id(), Some("provider-session-1"));
     assert_eq!(binding.transcript_ref(), Some("provider://transcript/1"));
-    assert!(!binding.is_stopped());
 }
 
 #[test]
@@ -183,7 +185,7 @@ fn test_providerライフサイクル受信_異なるprovider_sessionへの差�
     let conflicting = ProviderLifecycleSignal::session_started(
         "binding-1",
         ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-2",
         Some("provider://transcript/2"),
     )
@@ -200,7 +202,7 @@ fn test_providerライフサイクル受信_異なるprovider_sessionへの差�
 }
 
 #[test]
-fn test_providerライフサイクル受信_stopはsession_start後に一度だけ確定する() {
+fn test_providerライフサイクル受信_同一agent_sessionの後続stopも観測事実として受理する() {
     let mut binding = binding(ProviderKind::Codex);
     assert_eq!(
         binding.observe(stop(ProviderKind::Codex)),
@@ -209,7 +211,7 @@ fn test_providerライフサイクル受信_stopはsession_start後に一度だ�
     binding.observe(session_start(ProviderKind::Codex));
 
     let accepted = binding.observe(stop(ProviderKind::Codex));
-    let duplicate = binding.observe(stop(ProviderKind::Codex));
+    let next_turn = binding.observe(stop(ProviderKind::Codex));
 
     assert_eq!(
         accepted,
@@ -217,8 +219,12 @@ fn test_providerライフサイクル受信_stopはsession_start後に一度だ�
             binding_id: "binding-1".to_string(),
         }])
     );
-    assert_eq!(duplicate, ProviderLifecycleOutcome::Duplicate);
-    assert!(binding.is_stopped());
+    assert_eq!(
+        next_turn,
+        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::StopObserved {
+            binding_id: "binding-1".to_string(),
+        }])
+    );
 }
 
 #[test]
@@ -227,7 +233,7 @@ fn test_providerライフサイクル受信_bindingとproviderとscopeの不一�
     let wrong_binding = ProviderLifecycleSignal::session_started(
         "binding-2",
         ProviderKind::Claude,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         None,
     )
@@ -235,7 +241,7 @@ fn test_providerライフサイクル受信_bindingとproviderとscopeの不一�
     let wrong_provider = ProviderLifecycleSignal::session_started(
         "binding-1",
         ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         None,
     )
@@ -243,7 +249,7 @@ fn test_providerライフサイクル受信_bindingとproviderとscopeの不一�
     let wrong_scope = ProviderLifecycleSignal::session_started(
         "binding-1",
         ProviderKind::Claude,
-        scope("agent-session-2", "node-execution-2", 2),
+        scope("agent-session-2"),
         "provider-session-1",
         None,
     )
@@ -265,7 +271,7 @@ fn test_providerライフサイクル受信_bindingとproviderとscopeの不一�
 }
 
 #[test]
-fn test_providerライフサイクル受信_失効後と過去attemptの信号を拒否する() {
+fn test_providerライフサイクル受信_失効後の信号を拒否する() {
     let mut expired = binding(ProviderKind::Codex);
     assert_eq!(
         expired.expire(),
@@ -277,25 +283,6 @@ fn test_providerライフサイクル受信_失効後と過去attemptの信号�
         expired.observe(session_start(ProviderKind::Codex)),
         ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired)
     );
-
-    let mut current = ProviderLifecycleBinding::arm(
-        "binding-2",
-        ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-2", 2),
-    )
-    .unwrap();
-    let previous_attempt = ProviderLifecycleSignal::session_started(
-        "binding-2",
-        ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
-        "provider-session-old",
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        current.observe(previous_attempt),
-        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ScopeMismatch)
-    );
 }
 
 #[test]
@@ -305,7 +292,7 @@ fn test_providerライフサイクル受信_stop_failureはstopへ変換しな�
     let stop_failure = ProviderLifecycleSignal::stop_failed(
         "binding-1",
         ProviderKind::Claude,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/1"),
         "provider request failed",
@@ -321,7 +308,6 @@ fn test_providerライフサイクル受信_stop_failureはstopへ変換しな�
             reason: "provider request failed".to_string(),
         }])
     );
-    assert!(!binding.is_stopped());
 }
 
 #[test]
@@ -330,7 +316,7 @@ fn test_providerライフサイクル受信_null_transcriptは後から補完で
     let without_transcript = ProviderLifecycleSignal::session_started(
         "binding-1",
         ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         None,
     )
@@ -357,7 +343,7 @@ fn test_providerライフサイクル受信_null_transcriptは後から補完で
     let conflicting = ProviderLifecycleSignal::stop_observed(
         "binding-1",
         ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/2"),
     )
@@ -388,23 +374,19 @@ fn test_providerライフサイクル再生_durable_event列から同じbinding�
 
     assert_eq!(restored.binding_id(), "binding-1");
     assert_eq!(restored.provider(), ProviderKind::Codex);
-    assert_eq!(
-        restored.scope(),
-        &scope("agent-session-1", "node-execution-1", 1)
-    );
+    assert_eq!(restored.scope(), &scope("agent-session-1"));
     assert_eq!(restored.provider_session_id(), Some("provider-session-1"));
     assert_eq!(restored.transcript_ref(), Some("provider://transcript/1"));
-    assert!(restored.is_stopped());
 }
 
 #[test]
-fn test_providerライフサイクル再生_利用不能後のsession関連付けを拒否する() {
+fn test_providerライフサイクル再生_利用不能後のsession関連付けで回復状態を復元する() {
     let events = vec![
         binding(ProviderKind::Codex).armed_event(&slot_id()),
         ProviderLifecycleEvent::LifecycleUnavailable {
             binding_id: "binding-1".to_string(),
             provider: ProviderKind::Codex,
-            scope: scope("agent-session-1", "node-execution-1", 1),
+            scope: scope("agent-session-1"),
             reason: ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
         },
         ProviderLifecycleEvent::SessionAssociated {
@@ -414,10 +396,9 @@ fn test_providerライフサイクル再生_利用不能後のsession関連付�
         },
     ];
 
-    assert_eq!(
-        ProviderLifecycleBinding::rehydrate(events),
-        Err(ProviderLifecycleReplayError::InvalidTransition)
-    );
+    let restored = ProviderLifecycleBinding::rehydrate(events).unwrap();
+
+    assert_eq!(restored.provider_session_id(), Some("provider-session-1"));
 }
 
 #[test]
@@ -432,7 +413,7 @@ fn test_providerライフサイクル再生_session関連付け後の利用不�
         ProviderLifecycleEvent::LifecycleUnavailable {
             binding_id: "binding-1".to_string(),
             provider: ProviderKind::Codex,
-            scope: scope("agent-session-1", "node-execution-1", 1),
+            scope: scope("agent-session-1"),
             reason: ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
         },
     ];

@@ -264,26 +264,37 @@ test.describe("Workspace Manager", () => {
 		expect(Math.abs(afterHoverOutBox!.y - menuBox!.y)).toBeLessThan(2);
 	});
 
-	test("NewSession creates and selects a standalone Session Node", async ({
+	test("NewSession requires a Provider and opens the created TUI AgentSession", async ({
 		page,
 	}) => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
-		const session = createdSession("session-new", worktreePath);
+		const agentSessionId = "provider-agent-session-new";
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			create_workspace_session: session.id,
-			...sessionReads(rawSession("session-new", worktreePath, "")),
-			get_workspace_session_node_id: "node-new-opaque",
-			get_workspace_node_detail: {
-				id: "node-new-opaque",
-				title: "New session",
-				status: "running",
-				capabilities: { canApprove: false, canClose: true },
-				updatedAt: 1000,
-				content: { kind: "session", sessionId: "session-new" },
+			list_available_provider_agent_session_providers: ["codex"],
+			list_provider_agent_sessions: {
+				items: [],
+				nextAfterSessionId: null,
 			},
+			create_provider_agent_session: agentSessionId,
+			get_provider_agent_session: {
+				id: agentSessionId,
+				workspaceIdentity: worktreePath,
+				worktreePath,
+				provider: "codex",
+				origin: { kind: "standalone" },
+				lifecycle: "open",
+				providerSessionId: null,
+				transcriptRef: null,
+				operations: {
+					canArchive: true,
+					canRestore: false,
+					canDelete: false,
+				},
+			},
+			open_provider_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -291,30 +302,51 @@ test.describe("Workspace Manager", () => {
 		await page.getByTestId("worktree-item-feat/wip").hover();
 		await page.getByRole("button", { name: "Create in feat/wip" }).click();
 		await page.getByRole("menuitem", { name: "NewSession" }).click();
-
-		await expect(page.getByText("New session", { exact: true })).toBeVisible();
-		await expect(page.getByPlaceholder("Send a message...")).toBeVisible();
+		await page.getByRole("menuitem", { name: "codex" }).click();
+		await expect
+			.poll(() =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.find(
+						(entry) => entry.cmd === "attach_terminal_surface",
+					),
+				),
+			)
+			.toMatchObject({
+				args: {
+					owner: {
+						kind: "session",
+						workspacePath: worktreePath,
+						sessionId: agentSessionId,
+					},
+				},
+			});
 		const creation = await page.evaluate(() =>
 			window.__TAURI_INTERNALS__?.invocations.find(
-				(entry) => entry.cmd === "create_workspace_session",
+				(entry) => entry.cmd === "create_provider_agent_session",
 			),
 		);
 		expect(creation?.args).toEqual({
-			requestId: expect.any(String),
+			workspaceIdentity: worktreePath,
 			worktreePath,
-			permissionMode: "edit",
-			backendId: null,
-			modelId: null,
+			provider: "codex",
+			rows: 24,
+			cols: 80,
+			callerRequestId: expect.any(String),
 		});
-		const lookup = await page.evaluate(() =>
-			window.__TAURI_INTERNALS__?.invocations.find(
-				(entry) => entry.cmd === "get_workspace_session_node_id",
-			),
+		const invocations = await page.evaluate(
+			() => window.__TAURI_INTERNALS__?.invocations ?? [],
 		);
-		expect(lookup?.args).toEqual({
-			worktreePath,
-			sessionId: "session-new",
+		expect(invocations).toContainEqual({
+			cmd: "get_provider_agent_session",
+			args: { agentSessionId },
 		});
+		expect(
+			invocations.some(
+				(entry) => entry.cmd === "open_provider_agent_session",
+			),
+		).toBe(false);
+		expect(invocations.some((entry) => entry.cmd === "create_workspace_session"))
+			.toBe(false);
 	});
 
 	test("closing the selected standalone Session clears the center", async ({

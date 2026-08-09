@@ -18,6 +18,7 @@ mod execution_projection_repository;
 pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
+#[cfg(test)]
 pub(crate) mod failure_policy_config;
 pub(crate) mod failure_wire;
 pub(crate) mod log;
@@ -57,7 +58,7 @@ pub(crate) use facet_repository::WorkflowFacetFileRepository;
 #[cfg(test)]
 pub(crate) use node_lifecycle_adapters::close_node_session_tab_state;
 pub(crate) use node_lifecycle_adapters::{
-    mark_started_node_tab_open, release_node_runtime_on_done, TauriNodeExecutionLifecycleGateway,
+    release_node_runtime_on_done, TauriNodeExecutionLifecycleGateway,
 };
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,

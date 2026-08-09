@@ -15,7 +15,7 @@ nodes:
   - name: judge
     artifact: verdict
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: judge
@@ -27,13 +27,13 @@ nodes:
             retry: retry
   - name: done
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: done
   - name: retry
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: retry

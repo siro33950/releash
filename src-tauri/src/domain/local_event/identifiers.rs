@@ -11,7 +11,9 @@ use std::fmt;
 pub const MAX_IDENTITY_BYTES: usize = 128;
 
 const AGENT_SESSION_PREFIX: &str = "agent-session:";
+const PROVIDER_LIFECYCLE_PREFIX: &str = "provider-lifecycle:";
 const WORKFLOW_PREFIX: &str = "workflow:";
+const PROVIDER_SESSION_OWNERSHIP_PREFIX: &str = "provider-session-ownership:";
 const APPLICATION_STREAM: &str = "application";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +35,7 @@ impl fmt::Display for IdentityError {
             }
             Self::InvalidStreamNamespace => write!(
                 f,
-                "stream id must be agent-session:<id>, workflow:<id>, or application"
+                "stream id must be agent-session:<id>, provider-lifecycle:<agent-session-id>, workflow:<id>, provider-session-ownership:<provider>:<digest>, or application"
             ),
             Self::OutOfRange { value } => write!(f, "sequence value {value} is out of range"),
         }
@@ -63,7 +65,9 @@ fn validate_identity_text(raw: &str) -> Result<(), IdentityError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamKind {
     AgentSession { session_id: String },
+    ProviderLifecycle { agent_session_id: String },
     Workflow { execution_id: String },
+    ProviderSessionOwnership { provider: String, digest: String },
     Application,
 }
 
@@ -75,11 +79,21 @@ pub struct StreamId(String);
 impl StreamId {
     pub fn parse(raw: &str) -> Result<Self, IdentityError> {
         if raw != APPLICATION_STREAM {
-            let suffix = raw
-                .strip_prefix(AGENT_SESSION_PREFIX)
-                .or_else(|| raw.strip_prefix(WORKFLOW_PREFIX))
-                .ok_or(IdentityError::InvalidStreamNamespace)?;
-            if suffix.is_empty() {
+            let suffix = raw.strip_prefix(AGENT_SESSION_PREFIX).or_else(|| {
+                raw.strip_prefix(PROVIDER_LIFECYCLE_PREFIX).or_else(|| {
+                    raw.strip_prefix(WORKFLOW_PREFIX)
+                        .or_else(|| raw.strip_prefix(PROVIDER_SESSION_OWNERSHIP_PREFIX))
+                })
+            });
+            let Some(suffix) = suffix else {
+                return Err(IdentityError::InvalidStreamNamespace);
+            };
+            if suffix.is_empty()
+                || raw.starts_with(PROVIDER_SESSION_OWNERSHIP_PREFIX)
+                    && suffix
+                        .split_once(':')
+                        .is_none_or(|(provider, digest)| provider.is_empty() || digest.is_empty())
+            {
                 return Err(IdentityError::InvalidStreamNamespace);
             }
         }
@@ -91,8 +105,18 @@ impl StreamId {
         Self::parse(&format!("{AGENT_SESSION_PREFIX}{session_id}"))
     }
 
+    pub fn provider_lifecycle(agent_session_id: &str) -> Result<Self, IdentityError> {
+        Self::parse(&format!("{PROVIDER_LIFECYCLE_PREFIX}{agent_session_id}"))
+    }
+
     pub fn workflow(execution_id: &str) -> Result<Self, IdentityError> {
         Self::parse(&format!("{WORKFLOW_PREFIX}{execution_id}"))
+    }
+
+    pub fn provider_session_ownership(provider: &str, digest: &str) -> Result<Self, IdentityError> {
+        Self::parse(&format!(
+            "{PROVIDER_SESSION_OWNERSHIP_PREFIX}{provider}:{digest}"
+        ))
     }
 
     pub fn application() -> Self {
@@ -104,9 +128,21 @@ impl StreamId {
             StreamKind::AgentSession {
                 session_id: id.to_string(),
             }
+        } else if let Some(id) = self.0.strip_prefix(PROVIDER_LIFECYCLE_PREFIX) {
+            StreamKind::ProviderLifecycle {
+                agent_session_id: id.to_string(),
+            }
         } else if let Some(id) = self.0.strip_prefix(WORKFLOW_PREFIX) {
             StreamKind::Workflow {
                 execution_id: id.to_string(),
+            }
+        } else if let Some(value) = self.0.strip_prefix(PROVIDER_SESSION_OWNERSHIP_PREFIX) {
+            let (provider, digest) = value
+                .split_once(':')
+                .expect("validated provider ownership stream identity");
+            StreamKind::ProviderSessionOwnership {
+                provider: provider.to_string(),
+                digest: digest.to_string(),
             }
         } else {
             StreamKind::Application
@@ -223,6 +259,14 @@ mod tests {
                 session_id: "s-1".to_string()
             }
         );
+        let provider_lifecycle = StreamId::provider_lifecycle("s-1").unwrap();
+        assert_eq!(provider_lifecycle.as_str(), "provider-lifecycle:s-1");
+        assert_eq!(
+            provider_lifecycle.kind(),
+            StreamKind::ProviderLifecycle {
+                agent_session_id: "s-1".to_string()
+            }
+        );
         let workflow = StreamId::workflow("exec.1").unwrap();
         assert_eq!(
             workflow.kind(),
@@ -231,6 +275,14 @@ mod tests {
             }
         );
         assert_eq!(StreamId::application().kind(), StreamKind::Application);
+        let ownership = StreamId::provider_session_ownership("codex", "ownership-digest").unwrap();
+        assert_eq!(
+            ownership.kind(),
+            StreamKind::ProviderSessionOwnership {
+                provider: "codex".to_string(),
+                digest: "ownership-digest".to_string(),
+            }
+        );
         assert!(StreamId::parse("agent-session:").is_err());
         assert!(StreamId::parse("other:x").is_err());
         assert!(StreamId::parse("agent-session:a b").is_err());

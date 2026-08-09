@@ -120,7 +120,10 @@ pub(crate) fn rebuild_workspace_query_records(
                         });
                 }
             }
-            SessionProjectionRecord::WorkflowWorktreeOwner(_) => {}
+            SessionProjectionRecord::ProviderAgentSession(_)
+            | SessionProjectionRecord::ProviderSessionOwnership(_)
+            | SessionProjectionRecord::ProviderHookHealth(_)
+            | SessionProjectionRecord::WorkflowWorktreeOwner(_) => {}
         }
     }
 

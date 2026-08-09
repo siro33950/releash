@@ -139,14 +139,34 @@ mod tests {
         Box::new(|_invoke| true)
     }
 
+    #[test]
+    fn test_agent_session_provider_tui_commandを本番routerの独立routeとして登録する() {
+        let mut router = CommandRouter::new(dummy_handler());
+
+        agent_session::register(&mut router);
+
+        assert_eq!(router.domains.len(), 2);
+        assert!(router.domains.iter().any(|route| {
+            route
+                .command_names
+                .contains(&"create_provider_agent_session")
+                && !route.command_names.contains(&"create_session")
+        }));
+    }
+
     type RegisterFn = fn(&mut CommandRouter);
 
     fn command_domains() -> Vec<(&'static str, &'static [&'static str], RegisterFn)> {
         vec![
             (
-                "agent_session",
-                agent_session::COMMAND_NAMES,
-                agent_session::register,
+                "agent_session_legacy",
+                agent_session::LEGACY_COMMAND_NAMES,
+                agent_session::register_legacy,
+            ),
+            (
+                "agent_session_provider_tui",
+                agent_session::PROVIDER_TUI_COMMAND_NAMES,
+                agent_session::register_provider_tui,
             ),
             (
                 "app_config",
@@ -349,12 +369,14 @@ mod tests {
     fn canonical_command_names() -> &'static [&'static str] {
         &[
             "abort_workflow",
+            "ack_terminal_surface_output",
             "acknowledge_agent_attempt",
             "add_repo_path",
             "append_review_comment",
             "approve_workspace_node",
             "approve_workflow_node",
-            "attach_pty",
+            "attach_terminal_surface",
+            "archive_provider_agent_session",
             "archive_workspace_workflow_execution",
             "build_agent_edit_preview",
             "build_agent_edited_multi_edit_tool_input",
@@ -374,6 +396,7 @@ mod tests {
             "compute_markdown_split_rows",
             "compute_visible_markdown_blocks",
             "compact_application_shutdown_details",
+            "create_provider_agent_session",
             "create_review_thread",
             "create_session",
             "create_workspace_session",
@@ -383,7 +406,7 @@ mod tests {
             "delete_notion_config",
             "delete_review_thread",
             "delete_workflow",
-            "detach_pty",
+            "detach_terminal_surface",
             "detect_editors",
             "diagnose_all_cmd",
             "duplicate_facet",
@@ -393,7 +416,6 @@ mod tests {
             "fetch_notion_label_options",
             "fetch_pr_status",
             "fork_session",
-            "gc_ptys_for_worktree",
             "get_agent_session_display_window",
             "get_agent_session_notice",
             "list_agent_session_feedback",
@@ -430,9 +452,13 @@ mod tests {
             "get_main_repo_path",
             "get_notion_config",
             "get_notify_config",
-            "get_or_spawn_pty",
+            "get_or_spawn_terminal_surface",
+            "get_performance_real_app_mode",
             "get_performance_telemetry_enabled",
             "get_pending_recovery_snapshot",
+            "get_provider_agent_session",
+            "get_terminal_performance_switches",
+            "get_terminal_stream_endpoint",
             "get_terminal_surface",
             "get_relative_path",
             "get_releash_base",
@@ -470,8 +496,7 @@ mod tests {
             "git_unstage",
             "git_unstage_review_group",
             "init_agent_sessions",
-            "kill_pty",
-            "kill_ptys_by_worktree",
+            "kill_terminal_surface",
             "list_agent_backends",
             "list_branches",
             "list_branches_with_status",
@@ -482,6 +507,10 @@ mod tests {
             "list_mentionable_files",
             "list_pending_agent_attempts",
             "list_pending_agent_recovery",
+            "list_available_provider_agent_session_providers",
+            "list_provider_agent_session_history",
+            "list_provider_agent_sessions",
+            "list_provider_hook_health_warnings",
             "list_terminal_surfaces",
             "list_review_threads",
             "list_session_statuses",
@@ -508,6 +537,7 @@ mod tests {
             "query_notion_tasks",
             "quit_after_startup_failure",
             "reconcile_terminal_surfaces",
+            "record_terminal_launch_renderer_phase",
             "remove_repo_path",
             "remove_worktree",
             "render_facet_preview",
@@ -520,15 +550,18 @@ mod tests {
             "stop_agent_session",
             "request_application_quit",
             "request_session_lifecycle",
-            "resize_pty",
+            "resize_terminal_surface",
             "resolve_active_execution_by_worktree",
             "resolve_review_thread",
             "resolve_shutdown_target_action",
             "resolve_worktree_by_execution",
             "resume_workflow",
             "resume_agent_queue",
+            "resume_provider_agent_session",
+            "resume_provider_agent_session_history_candidate",
             "respond_agent_permission",
             "restore_session",
+            "restore_provider_agent_session",
             "restore_workspace_workflow_execution",
             "save_facet",
             "save_notion_config",
@@ -547,11 +580,15 @@ mod tests {
             "set_releash_base",
             "set_session_title",
             "start_git_dir_watching",
+            "start_terminal_launch_performance_collection",
+            "start_terminal_input_performance_collection",
             "start_watching",
             "start_workflow",
             "stop_workflow",
             "stop_watching",
             "sync_mentions_with_text",
+            "take_terminal_launch_performance_samples",
+            "take_terminal_input_performance_samples",
             "update_agent_session_notice",
             "dismiss_agent_session_feedback",
             "update_app_settings",
@@ -565,8 +602,11 @@ mod tests {
             "workflow_get_output",
             "workflow_submit_output",
             "workflow_validate_output",
-            "write_paths_to_pty",
-            "write_pty",
+            "write_paths_to_terminal_surface",
+            "write_terminal_surface",
+            "open_provider_agent_session",
+            "delete_provider_agent_session",
+            "confirm_provider_agent_session_archive_delete",
         ]
     }
 

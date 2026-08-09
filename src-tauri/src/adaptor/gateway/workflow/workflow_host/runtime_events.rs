@@ -245,7 +245,7 @@ pub(crate) fn pre_commit_required_events_for_outcome(
                 return terminal_required_events_for_snapshot(s);
             }
         }
-        NodeOutcome::RetryCurrentNode { snapshot, .. } => {
+        NodeOutcome::RetryCurrentNode(snapshot) => {
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
         NodeOutcome::TransitionAndStart(_) => {
@@ -489,7 +489,7 @@ pub(crate) fn required_events_for_approval_commit(
                 });
             }
         }
-        NodeOutcome::RetryCurrentNode { snapshot, .. } => {
+        NodeOutcome::RetryCurrentNode(snapshot) => {
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
         NodeOutcome::TransitionAndStart(snapshot) => {
@@ -717,11 +717,9 @@ mod tests {
     #[test]
     fn pre_commit_required_events_for_retry_current_node_includes_node_started() {
         let snapshot = commit_snapshot_fixture();
-        let events = pre_commit_required_events_for_outcome(&NodeOutcome::RetryCurrentNode {
-            snapshot,
-            completed_session_id: Some("previous-session".to_string()),
-        })
-        .unwrap();
+        let events =
+            pre_commit_required_events_for_outcome(&NodeOutcome::RetryCurrentNode(snapshot))
+                .unwrap();
 
         assert_eq!(events.len(), 1);
         assert!(matches!(

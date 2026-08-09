@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::domain::workflow::{
-    NodeHistoryEntry, NodeKind, RuntimeArtifact, RuntimeExecutionState, SchemaDef, TokenUsage,
+    NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, SchemaDef, TokenUsage,
     WorkflowDefinition,
 };
 
@@ -49,8 +49,4 @@ pub(crate) fn node_history_entry_from_domain(entry: NodeHistoryEntry) -> NodeHis
 
 pub(crate) fn token_usage_to_domain(usage: &TokenUsage) -> TokenUsage {
     usage.clone()
-}
-
-pub(crate) fn node_kind_to_domain(kind: &NodeKind) -> NodeKind {
-    kind.clone()
 }

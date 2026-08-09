@@ -18,7 +18,7 @@ nodes:
   - name: judge
     artifact: verdict
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: judge
@@ -34,13 +34,13 @@ nodes:
             fix: fix
   - name: done
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: done
   - name: fix
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: fix

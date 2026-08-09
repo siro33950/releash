@@ -87,20 +87,13 @@ impl TerminalSurfaceRegistry {
             .collect()
     }
 
-    pub fn select_gc_targets(&self, worktree_path: &str, keep_session_keys: &[String]) -> Vec<u64> {
-        self.sessions
-            .values()
-            .filter(|session| {
-                session.worktree_path.as_deref() == Some(worktree_path)
-                    && !keep_session_keys.contains(&session.session_key)
-            })
-            .map(|session| session.runtime_generation.value())
-            .collect()
-    }
-
-    pub fn record_output(&mut self, runtime_generation: u64) -> Option<u64> {
+    pub fn record_output(
+        &mut self,
+        runtime_generation: u64,
+        now: std::time::Instant,
+    ) -> Option<u64> {
         let surface = self.sessions.get_mut(&runtime_generation)?;
-        surface.record_output(surface.runtime_generation)
+        surface.record_output(surface.runtime_generation, now)
     }
 
     pub fn record_resize(&mut self, runtime_generation: u64) -> Option<u64> {

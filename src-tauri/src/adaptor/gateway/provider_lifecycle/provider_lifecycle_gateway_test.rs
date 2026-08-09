@@ -10,6 +10,7 @@ use super::{
     LocalProviderLifecycleEventRepository, ProviderLaunchContext, ProviderLaunchSpec,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     GlobalSequence, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery,
@@ -24,7 +25,7 @@ use crate::domain::provider_lifecycle::{
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 
 fn scope() -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 2).unwrap()
+    ProviderLifecycleScope::new("agent-1").unwrap()
 }
 
 fn context() -> ProviderLaunchContext {
@@ -109,6 +110,29 @@ fn test_provider信号変換_claude_payloadを正確なdomain_signalへ変換す
             provider_session_id: "claude-session-1".to_string(),
             transcript_ref: Some("/provider/claude/transcript.jsonl".to_string()),
         }
+    );
+}
+
+#[test]
+fn test_provider信号変換_claude_subagent_payloadをroot_signalとして変換しない() {
+    let error = parse_provider_payload(
+        ProviderKind::Claude,
+        "binding-1",
+        scope(),
+        br#"{
+            "session_id":"claude-session-1",
+            "transcript_path":"/provider/claude/transcript.jsonl",
+            "cwd":"/workspace",
+            "hook_event_name":"Stop",
+            "agent_id":"agent-child-1",
+            "agent_type":"Explore"
+        }"#,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Provider lifecycle payload belongs to a subagent"
     );
 }
 
@@ -305,6 +329,86 @@ fn test_provider起動設定_codexはprocess_configを使いhook_trustを要求�
 }
 
 #[test]
+fn test_provider起動設定_claudeのnewとresumeをstructured_root_processへ変換する() {
+    let directory = tempdir().unwrap();
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Claude,
+        context(),
+        "releash",
+        Some(directory.path()),
+    )
+    .unwrap();
+
+    let new = spec
+        .terminal_process("/opt/bin/claude", ProviderSessionLaunch::New)
+        .unwrap();
+    assert_eq!(new.executable(), "/opt/bin/claude");
+    assert_eq!(
+        new.arguments(),
+        &[
+            "--plugin-dir".to_string(),
+            directory.path().to_string_lossy().into_owned(),
+        ]
+    );
+    assert_eq!(new.environment(), spec.environment());
+
+    let resumed = spec
+        .terminal_process(
+            "/opt/bin/claude",
+            ProviderSessionLaunch::resume("claude-session-1").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        resumed.arguments(),
+        &[
+            "--plugin-dir".to_string(),
+            directory.path().to_string_lossy().into_owned(),
+            "--resume".to_string(),
+            "claude-session-1".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ変換する() {
+    let spec =
+        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
+
+    let new = spec
+        .terminal_process("/opt/bin/codex", ProviderSessionLaunch::New)
+        .unwrap();
+    assert_eq!(new.executable(), "/opt/bin/codex");
+    assert_eq!(new.arguments(), spec.arguments());
+    assert_eq!(new.environment(), spec.environment());
+
+    let resumed = spec
+        .terminal_process(
+            "/opt/bin/codex",
+            ProviderSessionLaunch::resume("codex-session-1").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        resumed.arguments(),
+        &[
+            "-c".to_string(),
+            "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.Stop=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "resume".to_string(),
+            "codex-session-1".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn test_provider起動設定_resumeの空session_idを拒否する() {
+    assert_eq!(
+        ProviderSessionLaunch::resume(" ").unwrap_err(),
+        ProviderSessionLaunchError::ProviderSessionIdMissing
+    );
+}
+
+#[test]
 fn test_provider起動設定_launch_contextをchild_environmentだけに保持する() {
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
         let plugin_directory = tempdir().unwrap();
@@ -333,18 +437,6 @@ fn test_provider起動設定_launch_contextをchild_environmentだけに保持�
                 (
                     "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID".to_string(),
                     "agent-1".to_string(),
-                ),
-                (
-                    "RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID".to_string(),
-                    "workflow-1".to_string(),
-                ),
-                (
-                    "RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID".to_string(),
-                    "node-1".to_string(),
-                ),
-                (
-                    "RELEASH_PROVIDER_LIFECYCLE_ATTEMPT".to_string(),
-                    "2".to_string(),
                 ),
             ]
         );
@@ -397,7 +489,7 @@ fn test_provider起動設定_binding入力の欠落を拒否する() {
 }
 
 fn persistence_scope() -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap()
+    ProviderLifecycleScope::new("agent-1").unwrap()
 }
 
 fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecycleUsecase) {
@@ -420,7 +512,7 @@ fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecy
 async fn provider_event_count(store: &LocalEventStore, agent_session_id: &str) -> usize {
     store
         .load_stream(LoadStreamRequest {
-            stream_id: StreamId::agent_session(agent_session_id).unwrap(),
+            stream_id: StreamId::provider_lifecycle(agent_session_id).unwrap(),
             after: None,
             limit: 64,
         })
@@ -716,12 +808,10 @@ async fn test_providerライフサイクル永続化_invalid_capabilityとdomain
 }
 
 #[tokio::test]
-async fn test_providerライフサイクル再設定_同一slotの旧attemptをdurableに失効させる() {
+async fn test_providerライフサイクル再設定_同一slotの旧bindingをdurableに失効させる() {
     let (_directory, store, usecase) = setup_persistence_usecase();
-    let previous_scope =
-        ProviderLifecycleScope::new("agent-previous", "workflow-1", "node-previous", 1).unwrap();
-    let current_scope =
-        ProviderLifecycleScope::new("agent-current", "workflow-1", "node-current", 2).unwrap();
+    let previous_scope = ProviderLifecycleScope::new("agent-previous").unwrap();
+    let current_scope = ProviderLifecycleScope::new("agent-current").unwrap();
     let previous = usecase
         .arm(slot_id(), ProviderKind::Codex, previous_scope.clone())
         .await

@@ -123,14 +123,22 @@ pub(super) fn mutation<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
 ) -> Result<T, CliError> {
-    let Some(client) = LocalApiClient::discover(data_dir)? else {
-        return Err(app_must_be_running_error());
-    };
-    match api_request(&client) {
+    match mutation_classified(data_dir, api_request) {
         Ok(value) => Ok(value),
         Err(ApiRequestError::Unavailable) => Err(app_must_be_running_error()),
         Err(ApiRequestError::Cli(error)) => Err(error),
     }
+}
+
+pub(super) fn mutation_classified<T>(
+    data_dir: &Path,
+    api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
+) -> Result<T, ApiRequestError> {
+    let client = LocalApiClient::discover(data_dir).map_err(ApiRequestError::Cli)?;
+    let Some(client) = client else {
+        return Err(ApiRequestError::Unavailable);
+    };
+    api_request(&client)
 }
 
 /// CLI の明示 target を優先し、workflow session に注入された値を既定値にする。

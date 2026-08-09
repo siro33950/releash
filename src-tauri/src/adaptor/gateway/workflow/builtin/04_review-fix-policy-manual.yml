@@ -79,8 +79,7 @@ nodes:
 
 - name: resolve_request
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: planning
@@ -109,8 +108,7 @@ nodes:
   - next: check_fix_policy_consistency
 - name: decide_fix_policy_manual
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: triage
@@ -125,8 +123,7 @@ nodes:
   - resolve_request
 - name: check_fix_policy_consistency
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -164,8 +161,7 @@ nodes:
   - next: check_fix_policy_consistency
 - name: correct_fix_policy_manual
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: triage
@@ -180,8 +176,7 @@ nodes:
   - resolve_request
 - name: policy_confirmation
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: reporting

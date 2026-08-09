@@ -7,8 +7,6 @@ use crate::domain::workflow::{
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-const ALLOWED_PERMISSION_MODES: &str = "ask, edit, full";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSchemaKind {
     InvalidDeclaration,
@@ -103,15 +101,6 @@ pub enum ValidationError {
     UnreachableNode {
         node: String,
     },
-    /// 無効な permission mode が指定されている
-    InvalidPermissionMode {
-        node: String,
-        value: String,
-    },
-    /// node に permission が指定されていない（必須）
-    MissingPermissionMode {
-        node: String,
-    },
     /// command 種別 node の `command` が空文字
     EmptyCommand {
         node: String,
@@ -126,25 +115,6 @@ pub enum ValidationError {
         node: String,
         count: usize,
         max: usize,
-    },
-    /// 存在しないモデルが指定されている
-    UnknownModel {
-        node: String,
-        value: String,
-    },
-    /// モデルIDが形式として無効（空文字・空白のみ・制御文字・上限長超過など）。
-    /// `reason` には `ModelId` の戻り値（理由文言）を保持し、
-    /// 呼び出し側・ログで未登録（UnknownModel）と区別できるようにする。
-    InvalidModelFormat {
-        node: String,
-        value: String,
-        reason: String,
-    },
-    /// モデルIDの形式は有効だが、バックエンド所属を一意に解決できない。
-    ModelResolutionFailed {
-        node: String,
-        value: String,
-        reason: String,
     },
     /// `artifact` / `input` が存在しない `schemas:` Contract を参照している。
     UnknownSchemaRef {
@@ -249,25 +219,6 @@ impl fmt::Display for ValidationError {
             Self::UnreachableNode { node } => {
                 write!(f, "node '{node}' is unreachable from the workflow entrypoint")
             }
-            Self::InvalidPermissionMode { node, value } => {
-                let display_value = if value.is_empty() {
-                    "(empty)"
-                } else {
-                    value.as_str()
-                };
-                write!(
-                    f,
-                    "node '{node}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
-                    ALLOWED_PERMISSION_MODES
-                )
-            }
-            Self::MissingPermissionMode { node } => {
-                write!(
-                    f,
-                    "node '{node}' にはpermissionが必要です (allowed: {})",
-                    ALLOWED_PERMISSION_MODES
-                )
-            }
             Self::TooManyNodes { count, max } => write!(
                 f,
                 "node 数 {count} がワークフローあたりの上限 {max} を超えています"
@@ -280,32 +231,6 @@ impl fmt::Display for ValidationError {
                 write!(
                     f,
                     "command node '{node}' の command は空にできません"
-                )
-            }
-            Self::UnknownModel { node, value } => {
-                write!(
-                    f,
-                    "node '{node}' のmodelが不正です: unknown model: {value}"
-                )
-            }
-            Self::InvalidModelFormat {
-                node,
-                value,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "node '{node}' のmodel '{value}' は形式として無効です: {reason}"
-                )
-            }
-            Self::ModelResolutionFailed {
-                node,
-                value,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "node '{node}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
                 )
             }
             Self::UnknownSchemaRef { node, slot, key } => {
@@ -773,9 +698,6 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
 
     for node in &workflow.nodes {
         validate_node_kind_fields(node)?;
-        if node.is_session() {
-            validate_required_permission(&node.name, node.permission())?;
-        }
         if let Some(err) = check_missing_facet(node) {
             return Err(err);
         }
@@ -1027,89 +949,6 @@ fn validate_node_kind_fields(node: &NodeDefinition) -> Result<(), ValidationErro
     }
     Ok(())
 }
-
-/// node に permission が必須として指定されていることを検証する。
-/// `None` または対象外の値（旧語彙・未知語彙・空文字）はバリデーションエラー。
-fn validate_required_permission(
-    node_name: &str,
-    value: Option<&str>,
-) -> Result<(), ValidationError> {
-    match value {
-        None => Err(ValidationError::MissingPermissionMode {
-            node: node_name.to_string(),
-        }),
-        Some(v) => {
-            if !is_allowed_permission_mode(v) {
-                return Err(ValidationError::InvalidPermissionMode {
-                    node: node_name.to_string(),
-                    value: v.to_string(),
-                });
-            }
-            Ok(())
-        }
-    }
-}
-
-fn is_allowed_permission_mode(value: &str) -> bool {
-    matches!(value, "ask" | "edit" | "full")
-}
-
-/// ワークフロー内の全 node の `model` フィールドを検証する。
-///
-/// 検証は経路によらず同一の基準で行う:
-/// 1. 形式検証（`crate::domain::agent_session::ModelId`）— 空文字・空白のみ・制御文字・
-///    上限長超過は登録判定に進まず形式不正として拒否する
-/// 2. 登録判定（呼び出し側の resolver）— 未登録なら `UnknownModel`
-/// 3. 所属解決（呼び出し側の resolver）— 複数 backend に登録された曖昧な model は拒否する
-pub fn validate_models<F>(
-    workflow: &WorkflowDefinition,
-    mut resolve_model: F,
-) -> Result<(), ValidationError>
-where
-    F: FnMut(&str) -> Result<Option<String>, String>,
-{
-    for node in &workflow.nodes {
-        if let Some(model) = node.model() {
-            validate_model_format(&node.name, model)?;
-            validate_model_registered(&node.name, model, &mut resolve_model)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_model_format(node_name: &str, model: &str) -> Result<(), ValidationError> {
-    crate::domain::agent_session::ModelId::parse(model).map_err(|reason| {
-        ValidationError::InvalidModelFormat {
-            node: node_name.to_string(),
-            value: model.to_string(),
-            reason,
-        }
-    })?;
-    Ok(())
-}
-
-fn validate_model_registered<F>(
-    node_name: &str,
-    model: &str,
-    resolve_model: &mut F,
-) -> Result<(), ValidationError>
-where
-    F: FnMut(&str) -> Result<Option<String>, String>,
-{
-    match resolve_model(model) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(ValidationError::UnknownModel {
-            node: node_name.to_string(),
-            value: model.to_string(),
-        }),
-        Err(reason) => Err(ValidationError::ModelResolutionFailed {
-            node: node_name.to_string(),
-            value: model.to_string(),
-            reason,
-        }),
-    }
-}
-
 /// 診断用: 全てのバリデーションエラーを収集して返す。
 /// `validate` は最初のエラーで早期リターンするが、診断エンジンでは全エラーを網羅的に報告したいため、
 /// 構造的に安全な範囲でエラーを蓄積する。
@@ -1177,11 +1016,6 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
         if let Err(e) = validate_node_kind_fields(node) {
             errors.push(e);
         }
-        if node.is_session() {
-            if let Err(e) = validate_required_permission(&node.name, node.permission()) {
-                errors.push(e);
-            }
-        }
         if let Some(err) = check_missing_facet(node) {
             errors.push(err);
         }
@@ -1235,14 +1069,9 @@ mod tests {
         make_workflow_exact(nodes)
     }
 
-    fn resolve_from_set(valid: &HashSet<String>, model: &str) -> Result<Option<String>, String> {
-        Ok(valid.contains(model).then(|| "backend".to_string()))
-    }
-
     fn make_node(name: &str, kind: TestKind, rules: Vec<Rule>) -> NodeDefinition {
         let node_kind = match kind {
             TestKind::Session => NodeKind::Session(SessionSpec {
-                permission: Some("edit".to_string()),
                 facets: FacetRefs {
                     instruction: Some("implement".to_string()),
                     ..Default::default()
@@ -1250,7 +1079,6 @@ mod tests {
                 ..Default::default()
             }),
             TestKind::ApprovalSession => NodeKind::Session(SessionSpec {
-                permission: Some("edit".to_string()),
                 gate: SessionGate::Approval,
                 facets: FacetRefs {
                     instruction: Some("implement".to_string()),
@@ -1299,21 +1127,6 @@ mod tests {
 
     fn without_session_facets(node: NodeDefinition) -> NodeDefinition {
         with_session_facets(node, FacetRefs::default())
-    }
-
-    fn with_session_permission(
-        mut node: NodeDefinition,
-        permission: Option<&str>,
-    ) -> NodeDefinition {
-        node.session_mut()
-            .expect("test node must be session")
-            .permission = permission.map(str::to_string);
-        node
-    }
-
-    fn with_session_model(mut node: NodeDefinition, model: Option<&str>) -> NodeDefinition {
-        node.session_mut().expect("test node must be session").model = model.map(str::to_string);
-        node
     }
 
     fn with_input(mut node: NodeDefinition, input: &str) -> NodeDefinition {
@@ -2164,281 +1977,6 @@ mod tests {
             make_node("node_b", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
-    }
-
-    // ---- permission バリデーション ----
-
-    #[test]
-    fn valid_permission_ask_passes() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("ask"),
-        )]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn valid_permission_edit_passes() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("edit"),
-        )]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn valid_permission_full_passes() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("full"),
-        )]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn legacy_permission_accept_edits_rejected() {
-        for legacy in [
-            "read",
-            "readonly",
-            "acceptEdits",
-            "bypassPermissions",
-            "plan",
-            "default",
-        ] {
-            let wf = make_workflow(vec![with_session_permission(
-                make_node("node1", TestKind::Session, vec![]),
-                Some(legacy),
-            )]);
-            let err = validate(&wf).unwrap_err();
-            assert!(matches!(
-                err,
-                ValidationError::InvalidPermissionMode { ref node, ref value }
-                    if node == "node1" && value == legacy
-            ));
-            assert!(
-                err.to_string().contains("ask, edit, full"),
-                "error must include allowed list, got: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_permission_fails() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("invalid-mode"),
-        )]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::InvalidPermissionMode { ref node, ref value }
-                if node == "node1" && value == "invalid-mode"
-        ));
-        assert!(err.to_string().contains("ask, edit, full"));
-    }
-
-    #[test]
-    fn empty_permission_fails() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            Some(""),
-        )]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::InvalidPermissionMode { ref node, ref value }
-                if node == "node1" && value.is_empty()
-        ));
-        assert!(err.to_string().contains("ask, edit, full"));
-    }
-
-    #[test]
-    fn invalid_permission_on_fanout_child_fails() {
-        let child = with_session_permission(
-            make_node("child1", TestKind::Session, vec![]),
-            Some("acceptEdits"),
-        );
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            child,
-        ]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::InvalidPermissionMode { ref node, ref value }
-                if node == "child1" && value == "acceptEdits"
-        ));
-    }
-
-    #[test]
-    fn valid_permission_on_fanout_child_passes() {
-        let child =
-            with_session_permission(make_node("child1", TestKind::Session, vec![]), Some("full"));
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            child,
-        ]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    #[test]
-    fn node_without_permission_fails() {
-        let wf = make_workflow(vec![with_session_permission(
-            make_node("node1", TestKind::Session, vec![]),
-            None,
-        )]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::MissingPermissionMode { ref node } if node == "node1"
-        ));
-        assert!(err.to_string().contains("ask, edit, full"));
-    }
-
-    #[test]
-    fn fanout_child_without_permission_fails() {
-        let child = with_session_permission(make_node("child1", TestKind::Session, vec![]), None);
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            child,
-        ]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::MissingPermissionMode { ref node } if node == "child1"
-        ));
-    }
-
-    #[test]
-    fn fanout_block_without_permission_passes_when_children_have_permission() {
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            with_session_permission(make_node("child1", TestKind::Session, vec![]), Some("edit")),
-        ]);
-        assert!(validate(&wf).is_ok());
-    }
-
-    // ---- model バリデーション (validate_models) ----
-
-    #[test]
-    fn validate_models_valid_model_passes() {
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("haiku"),
-        )]);
-        let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
-        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
-    }
-
-    #[test]
-    fn validate_models_unknown_model_fails() {
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("unknown-model"),
-        )]);
-        let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
-        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownModel { ref node, ref value }
-                if node == "node1" && value == "unknown-model"
-        ));
-        assert!(err.to_string().contains("unknown model: unknown-model"));
-    }
-
-    #[test]
-    fn validate_models_unknown_model_on_fanout_child_fails() {
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            with_session_model(
-                make_node("child1", TestKind::Session, vec![]),
-                Some("unknown-model"),
-            ),
-        ]);
-        let valid = HashSet::from(["haiku".to_string()]);
-        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownModel { ref node, ref value }
-                if node == "child1" && value == "unknown-model"
-        ));
-    }
-
-    #[test]
-    fn validate_models_rejects_ambiguous_model_from_resolver() {
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("shared"),
-        )]);
-        let err = validate_models(&wf, |model| {
-            Err(format!(
-                "モデル '{model}' が複数のバックエンドに登録されています"
-            ))
-        })
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::ModelResolutionFailed { ref node, ref value, ref reason }
-                if node == "node1" && value == "shared" && reason.contains("複数")
-        ));
-    }
-
-    #[test]
-    fn validate_models_no_model_specified_passes() {
-        let wf = make_workflow(vec![make_node("node1", TestKind::Session, vec![])]);
-        let valid = HashSet::from(["haiku".to_string()]);
-        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
-    }
-
-    #[test]
-    fn validate_models_valid_model_on_fanout_child_passes() {
-        let wf = make_workflow(vec![
-            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
-            with_session_model(
-                make_node("child1", TestKind::Session, vec![]),
-                Some("haiku"),
-            ),
-        ]);
-        let valid = HashSet::from(["haiku".to_string()]);
-        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
-    }
-
-    #[test]
-    fn validate_models_rejects_empty_model_before_registry_check() {
-        // 形式不正（空文字）は registry に含まれるかにかかわらず拒否される。
-        // 未登録（UnknownModel）と区別するため InvalidModelFormat として報告される。
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some(""),
-        )]);
-        // valid_models に空文字を含めても形式検証で先に弾く
-        let valid = HashSet::from([String::new(), "haiku".to_string()]);
-        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::InvalidModelFormat { ref node, ref value, .. }
-                if node == "node1" && value.is_empty()
-        ));
-    }
-
-    #[test]
-    fn validate_models_rejects_whitespace_only_model() {
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("   "),
-        )]);
-        let valid = HashSet::from(["   ".to_string()]);
-        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
-    }
-
-    #[test]
-    fn validate_models_rejects_control_character_model() {
-        let wf = make_workflow(vec![with_session_model(
-            make_node("node1", TestKind::Session, vec![]),
-            Some("a\u{0001}b"),
-        )]);
-        let valid = HashSet::from(["a\u{0001}b".to_string()]);
-        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
     }
 
     // ---- command kind validation ----

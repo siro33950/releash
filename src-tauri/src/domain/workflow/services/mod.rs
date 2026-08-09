@@ -16,4 +16,5 @@ pub mod template_preview;
 pub mod transition;
 pub mod validation;
 
-pub use failure_policy::{RetryPolicy, TimeoutContext, TimeoutPolicy};
+#[cfg(test)]
+pub use failure_policy::{TimeoutContext, TimeoutPolicy};

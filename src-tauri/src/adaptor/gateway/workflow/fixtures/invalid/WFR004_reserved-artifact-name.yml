@@ -3,7 +3,7 @@ description: request is reserved
 nodes:
   - name: request
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: request

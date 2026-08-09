@@ -20,13 +20,13 @@ nodes:
         next: done
   - name: child
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: child
   - name: done
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: done

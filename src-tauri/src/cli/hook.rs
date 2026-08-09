@@ -1,9 +1,11 @@
 use std::io::Read;
 
-use super::api_client::mutation;
+use super::api_client::{mutation_classified, ApiRequestError};
 use super::common::{cli_error_stderr, resolve_data_dir, CliError};
 use super::HookProvider;
-use crate::adaptor::gateway::provider_lifecycle::parse_provider_payload;
+use crate::adaptor::gateway::provider_lifecycle::{
+    parse_provider_payload, ProviderLifecycleGatewayError,
+};
 use crate::adaptor::protocol::provider_lifecycle::{
     ProviderLifecycleProvider, ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
     ProviderLifecycleSignalRequest,
@@ -18,9 +20,7 @@ const SLOT_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_SLOT_ID";
 const BINDING_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_BINDING_ID";
 const CAPABILITY_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_CAPABILITY";
 const AGENT_SESSION_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID";
-const WORKFLOW_EXECUTION_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID";
-const NODE_EXECUTION_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID";
-const ATTEMPT_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_ATTEMPT";
+const HEALTH_FILE_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE";
 
 pub(super) fn cmd_receive(provider: HookProvider) -> Result<String, CliError> {
     if let Err(error) = receive_from(std::io::stdin().lock(), provider) {
@@ -42,13 +42,6 @@ fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, Cl
     let binding_id = required_environment(BINDING_ID_ENV)?;
     let capability = required_environment(CAPABILITY_ENV)?;
     let agent_session_id = required_environment(AGENT_SESSION_ID_ENV)?;
-    let workflow_execution_id = required_environment(WORKFLOW_EXECUTION_ID_ENV)?;
-    let node_execution_id = required_environment(NODE_EXECUTION_ID_ENV)?;
-    let attempt = required_environment(ATTEMPT_ENV)?
-        .parse::<u32>()
-        .map_err(|_| {
-            CliError::InvalidInput(format!("{ATTEMPT_ENV} must be an unsigned integer"))
-        })?;
     let provider_kind = match provider {
         HookProvider::Claude => ProviderKind::Claude,
         HookProvider::Codex => ProviderKind::Codex,
@@ -57,16 +50,16 @@ fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, Cl
         HookProvider::Claude => ProviderLifecycleProvider::Claude,
         HookProvider::Codex => ProviderLifecycleProvider::Codex,
     };
-    let scope = ProviderLifecycleScope::new(
-        &agent_session_id,
-        &workflow_execution_id,
-        &node_execution_id,
-        attempt,
-    )
-    .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-    let signal = parse_provider_payload(provider_kind, &binding_id, scope, &payload)
+    let scope = ProviderLifecycleScope::new(&agent_session_id)
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-    let signal = match signal.into_kind() {
+    let signal = match parse_provider_payload(provider_kind, &binding_id, scope, &payload) {
+        Ok(signal) => signal,
+        Err(ProviderLifecycleGatewayError::SubagentPayload) => return Ok("{}".to_string()),
+        Err(error) => return Err(CliError::InvalidInput(error.to_string())),
+    };
+    let signal = signal.into_kind();
+    let session_started = matches!(&signal, ProviderLifecycleSignalKind::SessionStarted { .. });
+    let signal = match signal {
         ProviderLifecycleSignalKind::SessionStarted {
             provider_session_id,
             transcript_ref,
@@ -97,22 +90,58 @@ fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, Cl
         capability,
         provider: protocol_provider,
         agent_session_id,
-        workflow_execution_id,
-        node_execution_id,
-        attempt,
         signal,
     };
     let data_dir = resolve_data_dir().map_err(CliError::Other)?;
-    let response = mutation(&data_dir, |client| {
+    let response = mutation_classified(&data_dir, |client| {
         client.receive_provider_lifecycle(&request)
+    })
+    .map_err(|error| {
+        record_delivery_failure(&data_dir, provider, &request.slot_id);
+        match error {
+            ApiRequestError::Unavailable => {
+                CliError::Other("この操作には Releash アプリの起動が必要です".to_string())
+            }
+            ApiRequestError::Cli(error) => error,
+        }
     })?;
     match response {
         ProviderLifecycleReceiveResponse::Applied | ProviderLifecycleReceiveResponse::Duplicate => {
+            if session_started {
+                if let Ok(marker_path) = std::env::var(HEALTH_FILE_ENV) {
+                    if let Err(error) = crate::infrastructure::provider_lifecycle::clear_provider_hook_local_api_failure(
+                        &data_dir,
+                        std::path::Path::new(&marker_path),
+                    ) {
+                        log::warn!("failed to clear Provider Hook delivery health: {error}");
+                    }
+                }
+            }
             Ok("{}".to_string())
         }
         ProviderLifecycleReceiveResponse::Rejected { reason } => Err(CliError::Other(format!(
             "Provider lifecycle signal was rejected: {reason}"
         ))),
+    }
+}
+
+fn record_delivery_failure(data_dir: &std::path::Path, provider: HookProvider, launch_id: &str) {
+    let Ok(marker_path) = std::env::var(HEALTH_FILE_ENV) else {
+        return;
+    };
+    let provider = match provider {
+        HookProvider::Claude => "claude",
+        HookProvider::Codex => "codex",
+    };
+    if let Err(error) =
+        crate::infrastructure::provider_lifecycle::write_provider_hook_local_api_failure(
+            data_dir,
+            std::path::Path::new(&marker_path),
+            provider,
+            launch_id,
+        )
+    {
+        log::warn!("failed to persist Provider Hook delivery health: {error}");
     }
 }
 

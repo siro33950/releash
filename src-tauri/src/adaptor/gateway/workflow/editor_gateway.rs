@@ -127,7 +127,6 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         instruction: Some("implement".to_string()),
                         ..Default::default()

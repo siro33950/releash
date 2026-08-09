@@ -3,7 +3,7 @@ description: cycle must have loop_guard
 nodes:
   - name: first
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: first
@@ -11,7 +11,7 @@ nodes:
       - next: second
   - name: second
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: second

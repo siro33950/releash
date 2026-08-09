@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 		missingNodeId: null as string | null,
 	},
 	boundSessionChat: vi.fn(),
+	providerAgentSessionRoute: vi.fn(),
 	approveWorkspaceNode: vi.fn().mockResolvedValue(null),
 }));
 
@@ -30,6 +31,12 @@ vi.mock("@/components/panels/AgentChatPanel", () => ({
 				<button type="button">Respond permission</button>
 			</div>
 		);
+	},
+}));
+vi.mock("@/components/panels/ProviderAgentSessionPanel", () => ({
+	ProviderAgentSessionRoute: (props: Record<string, unknown>) => {
+		mocks.providerAgentSessionRoute(props);
+		return <div data-testid="provider-agent-session-route" />;
 	},
 }));
 
@@ -52,6 +59,7 @@ function renderView(nodeId = "node") {
 		<NodeContentView
 			worktreePath="/repo"
 			nodeId={nodeId}
+			theme="light"
 			activeEditorPath="/repo/src/main.ts"
 			openEditorPaths={["/repo/src/main.ts"]}
 			activeEditorSelection={{
@@ -72,6 +80,7 @@ beforeEach(() => {
 	mocks.detailState.error = null;
 	mocks.detailState.missingNodeId = null;
 	mocks.boundSessionChat.mockClear();
+	mocks.providerAgentSessionRoute.mockClear();
 	mocks.approveWorkspaceNode.mockClear();
 });
 
@@ -148,6 +157,27 @@ describe("NodeContentView", () => {
 				worktreePath: "/repo",
 			}),
 		);
+	});
+
+	it("Workflow Session NodeはProvider AgentSession Terminalを表示する", () => {
+		mocks.detailState.detail = {
+			...sessionDetail("workflow-session", "provider-agent-session-1"),
+			content: {
+				kind: "providerAgentSession",
+				sessionId: "provider-agent-session-1",
+			},
+		} as unknown as WorkspaceNodeDetail;
+
+		renderView("workflow-session");
+
+		expect(screen.getByTestId("provider-agent-session-route")).toBeVisible();
+		expect(mocks.providerAgentSessionRoute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentSessionId: "provider-agent-session-1",
+				theme: "light",
+			}),
+		);
+		expect(mocks.boundSessionChat).not.toHaveBeenCalled();
 	});
 
 	it("provides a bounded flex column so the Session transcript can scroll", () => {

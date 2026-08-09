@@ -36,7 +36,122 @@ fn test_hook受信_上限を超えるstdinを拒否する() {
 }
 
 #[test]
-fn test_hook受信_live_local_apiを通してsignalを永続化する() {
+fn test_hook受信_claude_subagent_signalはlocal_apiへ送らず成功として無視する() {
+    let _lock = TEST_ENV_LOCK.lock();
+    let _slot_id = EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-1");
+    let _binding_id = EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding-1");
+    let _capability =
+        EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability-1");
+    let _agent_session_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
+        "agent-session-1",
+    );
+    let payload = br#"{
+        "session_id":"claude-session-1",
+        "transcript_path":"provider://claude/subagent-transcript",
+        "cwd":"/workspace",
+        "hook_event_name":"Stop",
+        "agent_id":"agent-child-1",
+        "agent_type":"Explore"
+    }"#;
+
+    assert_eq!(
+        receive_from(Cursor::new(payload), HookProvider::Claude).unwrap(),
+        "{}"
+    );
+}
+
+#[test]
+fn test_hook受信_local_api配送失敗をlaunch_health_markerへ記録する() {
+    let _lock = TEST_ENV_LOCK.lock();
+    let data = TempDir::new().unwrap();
+    let marker = data
+        .path()
+        .join("provider-launches/agent/launch/hook-health.json");
+    let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", data.path());
+    let _slot_id =
+        EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-failed-delivery");
+    let _binding_id = EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding-1");
+    let _capability =
+        EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability-1");
+    let _agent_session_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
+        "agent-session-1",
+    );
+    let _health_file =
+        EnvVarGuard::set_path("RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE", marker.as_path());
+    let payload = br#"{
+        "session_id":"claude-session-1",
+        "transcript_path":"provider://claude/transcript",
+        "cwd":"/workspace",
+        "hook_event_name":"SessionStart"
+    }"#;
+
+    assert!(receive_from(Cursor::new(payload), HookProvider::Claude).is_err());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(marker).unwrap()).unwrap(),
+        serde_json::json!({
+            "provider": "claude",
+            "launchId": "slot-failed-delivery",
+            "reason": "local_api_unavailable"
+        })
+    );
+}
+
+#[test]
+fn test_hook受信_local_api_http失敗もlaunch_health_markerへ記録する() {
+    let _lock = TEST_ENV_LOCK.lock();
+    let data = TempDir::new().unwrap();
+    let marker = data
+        .path()
+        .join("provider-launches/agent/http-failure/hook-health.json");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let binding = LocalApiServerBinding::bind(data.path().to_path_buf()).unwrap();
+    let server = binding.start(
+        axum::Router::new().route(
+            "/v1/provider-lifecycle/signals",
+            axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        ),
+        runtime.handle(),
+    );
+    let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", data.path());
+    let _slot_id =
+        EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-http-failure");
+    let _binding_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_BINDING_ID",
+        "binding-http-failure",
+    );
+    let _capability = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_CAPABILITY",
+        "capability-http-failure",
+    );
+    let _agent_session_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
+        "agent-session-http-failure",
+    );
+    let _health_file =
+        EnvVarGuard::set_path("RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE", marker.as_path());
+    let payload = br#"{
+        "session_id":"claude-session-http-failure",
+        "transcript_path":"provider://claude/transcript",
+        "cwd":"/workspace",
+        "hook_event_name":"SessionStart"
+    }"#;
+
+    assert!(receive_from(Cursor::new(payload), HookProvider::Claude).is_err());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(marker).unwrap()).unwrap(),
+        serde_json::json!({
+            "provider": "claude",
+            "launchId": "slot-http-failure",
+            "reason": "local_api_unavailable"
+        })
+    );
+    server.shutdown();
+}
+
+#[test]
+fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除する() {
     let _lock = TEST_ENV_LOCK.lock();
     let client_data = TempDir::new().unwrap();
     let store_data = TempDir::new().unwrap();
@@ -54,7 +169,7 @@ fn test_hook受信_live_local_apiを通してsignalを永続化する() {
         events,
     ));
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let scope = ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap();
+    let scope = ProviderLifecycleScope::new("agent-1").unwrap();
     let armed = runtime
         .block_on(usecase.arm(
             ProviderLifecycleSlotId::new("slot-1").unwrap(),
@@ -107,18 +222,18 @@ fn test_hook受信_live_local_apiを通してsignalを永続化する() {
         "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
         launch_value("RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID"),
     );
-    let _workflow_execution_id = EnvVarGuard::set_value(
-        "RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID",
-        launch_value("RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID"),
-    );
-    let _node_execution_id = EnvVarGuard::set_value(
-        "RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID",
-        launch_value("RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID"),
-    );
-    let _attempt = EnvVarGuard::set_value(
-        "RELEASH_PROVIDER_LIFECYCLE_ATTEMPT",
-        launch_value("RELEASH_PROVIDER_LIFECYCLE_ATTEMPT"),
-    );
+    let marker = client_data
+        .path()
+        .join("provider-launches/agent/launch/hook-health.json");
+    crate::infrastructure::provider_lifecycle::write_provider_hook_local_api_failure(
+        client_data.path(),
+        &marker,
+        "claude",
+        "slot-1",
+    )
+    .unwrap();
+    let _health_file =
+        EnvVarGuard::set_path("RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE", marker.as_path());
     let payload = br#"{
         "session_id":"claude-session-1",
         "transcript_path":"provider://claude/transcript",
@@ -129,9 +244,30 @@ fn test_hook受信_live_local_apiを通してsignalを永続化する() {
 
     receive_from(Cursor::new(payload), HookProvider::Claude).unwrap();
 
+    assert!(!marker.exists());
+
+    crate::infrastructure::provider_lifecycle::write_provider_hook_local_api_failure(
+        client_data.path(),
+        &marker,
+        "claude",
+        "slot-1",
+    )
+    .unwrap();
+    let stop_payload = br#"{
+        "session_id":"claude-session-1",
+        "transcript_path":"provider://claude/transcript",
+        "cwd":"/workspace",
+        "hook_event_name":"Stop",
+        "stop_hook_active":false
+    }"#;
+
+    receive_from(Cursor::new(stop_payload), HookProvider::Claude).unwrap();
+
+    assert!(marker.exists());
+
     let page = runtime
         .block_on(store.load_stream(LoadStreamRequest {
-            stream_id: StreamId::agent_session("agent-1").unwrap(),
+            stream_id: StreamId::provider_lifecycle("agent-1").unwrap(),
             after: None,
             limit: 64,
         }))
@@ -147,7 +283,7 @@ fn test_hook受信_live_local_apiを通してsignalを永続化する() {
             )
         })
         .count();
-    assert_eq!(provider_events, 2);
+    assert_eq!(provider_events, 3);
 
     server.shutdown();
 }

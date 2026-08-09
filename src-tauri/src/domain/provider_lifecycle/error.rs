@@ -1,14 +1,12 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleInputError {
     Empty(&'static str),
-    InvalidAttempt,
 }
 
 impl std::fmt::Display for ProviderLifecycleInputError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty(field) => write!(formatter, "{field} must not be empty"),
-            Self::InvalidAttempt => write!(formatter, "attempt must be greater than zero"),
         }
     }
 }

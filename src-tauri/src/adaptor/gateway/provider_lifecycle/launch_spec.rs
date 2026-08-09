@@ -2,9 +2,11 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::domain::agent_session::ProviderSessionLaunch;
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
 };
+use crate::domain::terminal_surface::TerminalProcessLaunch;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum ProviderLaunchSpecError {
@@ -14,6 +16,8 @@ pub(crate) enum ProviderLaunchSpecError {
     ClaudePluginDirectoryRequired,
     #[error("Unsupported managed Releash CLI alias")]
     UnsupportedCliAlias,
+    #[error("Generated Provider launch is invalid")]
+    InvalidGeneratedLaunch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +70,7 @@ impl ProviderLaunchFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderLaunchSpec {
+    provider: ProviderKind,
     arguments: Vec<String>,
     environment: Vec<(String, String)>,
     files: Vec<ProviderLaunchFile>,
@@ -101,18 +106,6 @@ impl ProviderLaunchSpec {
                 "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID".to_string(),
                 context.scope.agent_session_id().to_string(),
             ),
-            (
-                "RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID".to_string(),
-                context.scope.workflow_execution_id().to_string(),
-            ),
-            (
-                "RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID".to_string(),
-                context.scope.node_execution_id().to_string(),
-            ),
-            (
-                "RELEASH_PROVIDER_LIFECYCLE_ATTEMPT".to_string(),
-                context.scope.attempt().to_string(),
-            ),
         ];
 
         match provider {
@@ -121,6 +114,7 @@ impl ProviderLaunchSpec {
                     .filter(|path| !path.as_os_str().is_empty())
                     .ok_or(ProviderLaunchSpecError::ClaudePluginDirectoryRequired)?;
                 Ok(Self {
+                    provider,
                     arguments: vec![
                         "--plugin-dir".to_string(),
                         plugin_directory.to_string_lossy().into_owned(),
@@ -133,6 +127,7 @@ impl ProviderLaunchSpec {
             ProviderKind::Codex => {
                 let command = hook_command("codex");
                 Ok(Self {
+                    provider,
                     arguments: vec![
                         "-c".to_string(),
                         format!(
@@ -151,10 +146,12 @@ impl ProviderLaunchSpec {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn arguments(&self) -> &[String] {
         &self.arguments
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn environment(&self) -> &[(String, String)] {
         &self.environment
     }
@@ -165,6 +162,30 @@ impl ProviderLaunchSpec {
 
     pub(crate) fn requires_hook_trust(&self) -> bool {
         self.requires_hook_trust
+    }
+
+    pub(crate) fn terminal_process(
+        &self,
+        executable: impl Into<String>,
+        launch: ProviderSessionLaunch,
+    ) -> Result<TerminalProcessLaunch, ProviderLaunchSpecError> {
+        let executable = executable.into();
+        if executable.trim().is_empty() {
+            return Err(ProviderLaunchSpecError::EmptyField("executable"));
+        }
+        let mut arguments = self.arguments.clone();
+        if let Some(provider_session_id) = launch.provider_session_id() {
+            match self.provider {
+                ProviderKind::Claude => {
+                    arguments.extend(["--resume".to_string(), provider_session_id.to_string()])
+                }
+                ProviderKind::Codex => {
+                    arguments.extend(["resume".to_string(), provider_session_id.to_string()])
+                }
+            }
+        }
+        TerminalProcessLaunch::new(executable, arguments, self.environment.clone())
+            .map_err(|_| ProviderLaunchSpecError::InvalidGeneratedLaunch)
     }
 }
 

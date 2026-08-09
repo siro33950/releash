@@ -1,0 +1,18 @@
+transport: websocket (realApp=true)
+switches: none (production path)
+load fixture: sustained-agent-tui frame=824B interval=16ms duration=15000ms
+typed key under load: n=16 median=64.0ms p95=68.0ms max=68.0ms
+  - onData->publish (backend): n=16 median=9.0ms p95=21.0ms max=21.0ms
+  - publish->echo visible (delivery+parse): n=16 median=52.0ms p95=59.0ms max=59.0ms
+ime commit under load: n=1 median=77.0ms p95=77.0ms max=77.0ms
+dsr reply cadence: n=7 nominal=1000ms medianDev=8.0ms maxDev=11.0ms
+workspace selection under load: n=1 median=74.0ms p95=74.0ms max=74.0ms
+  - splits (bodyFirst/contentFirst ms): 74/74, 50/-
+load timer drift: 108.0ms
+longtasks: unsupported (PerformanceObserver longtask is unavailable in this WebView)
+renderer peak queue: 4872 code units, longStalls>100ms: 0, droppedBacklogs: 0, snapshotResyncs: 0
+caveat: typed-key/IME latency = time until the key's own echo is visible in the terminal buffer, sampled per animation frame (frame-granularity, renderer-independent)
+caveat: IME commit drives the real composition event sequence (compositionstart/update/end) but the events are synthesized without the OS IME; native IME timing may differ
+caveat: DSR replies are xterm CPR responses to ESC[6n embedded in the load stream; cadence deviation measures pipeline queueing, not absolute latency
+caveat: transport is derived from the disableTerminalWebsocket switch; a channel fallback after a websocket connection failure is not distinguished in this report
+caveat: renderer: webgl-default=true; canvas-detected=true

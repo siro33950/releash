@@ -314,17 +314,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             })?;
     }
     workflow_runtime_start_guard::validate_workflow_shape(&checkpoint.workflow)?;
-    let registry = agent_runtime.backend_registry();
-    let definition =
-        crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
-            &checkpoint.workflow,
-        );
-    crate::domain::workflow::validation::validate_models(&definition, |model| {
-        registry
-            .resolve_model_entry(model)
-            .map(|entry| Some(entry.backend))
-    })
-    .map_err(|error| WorkflowRuntimeError::InvalidWorkflow(error.to_string()))?;
+    driver.ensure_workflow_providers_available(&checkpoint.workflow)?;
     let facet_contents =
         WorkflowRuntimeHost::resolve_facet_contents_for_workflow(&checkpoint.workflow)?;
 

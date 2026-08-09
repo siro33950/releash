@@ -35,14 +35,18 @@ pub(crate) struct FacetRefsDto {
     pub instruction: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SessionSpecDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
+    pub provider: SessionProviderDto,
     pub gate: SessionGateDto,
     pub facets: FacetRefsDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionProviderDto {
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -267,10 +271,18 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
 
 fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
     SessionSpecDto {
-        model: session.model.clone(),
-        permission: session.permission.clone(),
+        provider: provider_to_dto(session.provider),
         gate: gate_to_dto(session.gate),
         facets: facet_refs_to_dto(&session.facets),
+    }
+}
+
+fn provider_to_dto(
+    provider: crate::domain::provider_lifecycle::ProviderKind,
+) -> SessionProviderDto {
+    match provider {
+        crate::domain::provider_lifecycle::ProviderKind::Claude => SessionProviderDto::Claude,
+        crate::domain::provider_lifecycle::ProviderKind::Codex => SessionProviderDto::Codex,
     }
 }
 
@@ -393,12 +405,12 @@ mod tests {
                 name: "node".to_string(),
                 kind: NodeKindDto::Session,
                 session: Some(SessionSpecDto {
+                    provider: SessionProviderDto::Claude,
                     gate: SessionGateDto::Auto,
                     facets: FacetRefsDto {
                         instruction: Some("inst".to_string()),
                         ..Default::default()
                     },
-                    ..Default::default()
                 }),
                 artifact: Some("plan".to_string()),
                 input: Some("plan".to_string()),
@@ -426,6 +438,7 @@ mod tests {
                     "name": "node",
                     "kind": "session",
                     "session": {
+                        "provider": "claude",
                         "gate": "auto",
                         "facets": {
                             "instruction": "inst"
@@ -447,6 +460,7 @@ mod tests {
             nodes: vec![domain::NodeDefinition {
                 name: "review".to_string(),
                 kind: domain::NodeKind::Session(domain::SessionSpec {
+                    provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
                     facets: domain::FacetRefs {
                         knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
                         ..Default::default()
@@ -467,6 +481,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(dto).unwrap()["nodes"][0]["session"]["facets"]["knowledge"],
             serde_json::json!(["knowledge-a", "knowledge-b"])
+        );
+        assert_eq!(
+            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
+                ["provider"],
+            serde_json::json!("codex")
         );
     }
 

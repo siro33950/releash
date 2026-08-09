@@ -130,10 +130,19 @@ impl EventCodecRegistry {
             crate::adaptor::gateway::local_event_store::agent_session_codec::AgentSessionEventCodec,
         ));
         registry.register(Arc::new(
+            crate::adaptor::gateway::local_event_store::agent_session_lifecycle_codec::AgentSessionLifecycleEventCodec,
+        ));
+        registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::workflow_codec::WorkflowDomainEventCodec,
         ));
         registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::ProviderLifecycleEventCodec,
+        ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::local_event_store::provider_hook_health_codec::ProviderHookHealthEventCodec,
+        ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::local_event_store::provider_session_ownership_codec::ProviderSessionOwnershipEventCodec,
         ));
         registry
     }
@@ -156,8 +165,15 @@ impl EventCodecRegistry {
             .ok_or_else(|| EventCodecError::UnregisteredEvent {
                 description: match event {
                     LocalDomainEvent::AgentSession(_) => "agent-session".to_string(),
+                    LocalDomainEvent::AgentSessionLifecycle(_) => {
+                        "agent-session-lifecycle".to_string()
+                    }
+                    LocalDomainEvent::ProviderSessionOwnership(_) => {
+                        "provider-session-ownership".to_string()
+                    }
                     LocalDomainEvent::Workflow(_) => "workflow".to_string(),
                     LocalDomainEvent::ProviderLifecycle(_) => "provider-lifecycle".to_string(),
+                    LocalDomainEvent::ProviderHookHealth(_) => "provider-hook-health".to_string(),
                     LocalDomainEvent::Application(_) => "application".to_string(),
                 },
             })?;

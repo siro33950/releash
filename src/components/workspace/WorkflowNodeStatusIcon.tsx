@@ -7,7 +7,59 @@ import {
 	Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ProviderAgentSessionItem } from "@/types/provider-agent-session";
 import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+
+// standalone AgentSession行の実行状態表現。workflow node行と同じ
+// 「アイコン色＝状態」の語彙に合わせる（open＋runningはrunning nodeと同じ
+// blue＋pulse、open＋idleはニュートラル、paused異常終了はdestructive、
+// paused正常とarchivedはqueued/abortedと同じ非活性のdim）。
+export interface ProviderAgentSessionIconPresentation {
+	className: string;
+	pulse: boolean;
+	statusLabel: string;
+}
+
+export function providerAgentSessionIconPresentation(
+	session: Pick<
+		ProviderAgentSessionItem,
+		"lifecycle" | "activity" | "lastExitAbnormal"
+	>,
+): ProviderAgentSessionIconPresentation {
+	if (session.lifecycle === "open") {
+		if (session.activity === "running") {
+			return {
+				className: "text-blue-600 dark:text-blue-300",
+				pulse: true,
+				statusLabel: "running",
+			};
+		}
+		return {
+			className: "text-foreground",
+			pulse: false,
+			statusLabel: "open",
+		};
+	}
+	if (session.lifecycle === "paused") {
+		if (session.lastExitAbnormal) {
+			return {
+				className: "text-destructive",
+				pulse: false,
+				statusLabel: "paused (exited abnormally)",
+			};
+		}
+		return {
+			className: "text-muted-foreground",
+			pulse: false,
+			statusLabel: "paused",
+		};
+	}
+	return {
+		className: "text-muted-foreground",
+		pulse: false,
+		statusLabel: "archived",
+	};
+}
 
 export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 	queued: "text-muted-foreground",

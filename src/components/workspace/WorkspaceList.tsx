@@ -45,6 +45,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import { useProviderAgentSessions } from "@/hooks/useProviderAgentSessions";
 import {
 	archiveSession,
 	getAgentSessionNotice,
@@ -53,12 +54,18 @@ import {
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
+import { notifyProviderAgentSessionChanged } from "@/lib/providerAgentSessionEvents";
 import { trackEvent } from "@/lib/telemetry";
 import {
 	executeWorkflowAction,
 	type WorkflowExecutionAction,
 } from "@/lib/workflowExecutionActions";
 import type { WorktreeBranch } from "@/types/git";
+import type {
+	ProviderAgentSessionHistoryCandidate,
+	ProviderAgentSessionHistoryPage,
+	ProviderAgentSessionItem,
+} from "@/types/provider-agent-session";
 import type {
 	CenterSelection,
 	NewSessionCreationStatus,
@@ -73,6 +80,7 @@ import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
 import {
 	isWorkspaceNodePulseStatus,
+	providerAgentSessionIconPresentation,
 	workflowNodeIconClasses,
 } from "./WorkflowNodeStatusIcon";
 import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
@@ -112,6 +120,10 @@ function repoNameFromPath(path: string): string {
 
 function sessionLabel(session: WorkspaceSessionHistoryItem): string {
 	return session.firstMessage.trim() || DEFAULT_SESSION_TITLE;
+}
+
+function providerAgentSessionLabel(session: ProviderAgentSessionItem): string {
+	return `${session.provider.charAt(0).toUpperCase()}${session.provider.slice(1)} AgentSession`;
 }
 
 function isNodeSelected(
@@ -221,6 +233,84 @@ function WorkspaceNodeRow({
 					title="Close"
 				>
 					<X className="size-3" />
+				</Button>
+			)}
+		</div>
+	);
+}
+
+function ProviderAgentSessionRow({
+	session,
+	selected,
+	onSelect,
+	onArchive,
+	onDelete,
+}: {
+	session: ProviderAgentSessionItem;
+	selected: boolean;
+	onSelect: () => void;
+	onArchive: () => void;
+	onDelete: () => void;
+}) {
+	const label = providerAgentSessionLabel(session);
+	const presentation = providerAgentSessionIconPresentation(session);
+	const pulseClassName = presentation.pulse ? "animate-pulse" : "";
+	return (
+		<div
+			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
+				selected
+					? "bg-foreground/10 text-foreground"
+					: "text-foreground/90 hover:bg-foreground/5"
+			}`}
+			style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+		>
+			<button
+				type="button"
+				className="flex min-w-0 flex-1 items-center gap-2 text-left"
+				onClick={onSelect}
+				aria-current={selected ? "page" : undefined}
+				aria-label={`${label}, ${presentation.statusLabel}`}
+				title={session.id}
+			>
+				<span
+					className="flex size-5 shrink-0 items-center justify-center"
+					title={presentation.statusLabel}
+				>
+					<Bot
+						className={`size-3.5 shrink-0 ${presentation.className} ${pulseClassName}`}
+						aria-hidden="true"
+					/>
+				</span>
+				<span className="min-w-0 flex-1 truncate">{label}</span>
+			</button>
+			{session.operations.canArchive && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onArchive();
+					}}
+					aria-label={`Archive ${label}`}
+					title="Archive"
+				>
+					<X className="size-3" />
+				</Button>
+			)}
+			{session.operations.canDelete && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-destructive group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onDelete();
+					}}
+					aria-label={`Delete ${label}`}
+					title="Delete"
+				>
+					<Trash2 className="size-3" />
 				</Button>
 			)}
 		</div>
@@ -423,7 +513,6 @@ function WorktreeTreeItem({
 	autoSelectPreferredNode,
 	newSessionCreationStatus,
 	onSelectWorktree,
-	onCreateSession,
 	onWorkspaceSelectionInvalidated,
 	onDelete,
 }: {
@@ -451,6 +540,21 @@ function WorktreeTreeItem({
 	const [workflowActionError, setWorkflowActionError] = useState<string | null>(
 		null,
 	);
+	const [providerActionError, setProviderActionError] = useState<string | null>(
+		null,
+	);
+	const [availableProviders, setAvailableProviders] = useState<string[]>([]);
+	const [providerMenuLoading, setProviderMenuLoading] = useState(false);
+	const [providerCreating, setProviderCreating] = useState<string | null>(null);
+	const [providerHistory, setProviderHistory] = useState<
+		ProviderAgentSessionHistoryCandidate[]
+	>([]);
+	const [providerHistoryNextAfter, setProviderHistoryNextAfter] = useState<
+		string | null
+	>(null);
+	const [providerHistoryLoading, setProviderHistoryLoading] = useState(false);
+	const [archiveFallbackDelete, setArchiveFallbackDelete] =
+		useState<ProviderAgentSessionItem | null>(null);
 	const [sessionHistoryNotices, setSessionHistoryNotices] = useState<
 		Record<string, string>
 	>({});
@@ -475,6 +579,10 @@ function WorktreeTreeItem({
 		centerSelection?.worktreePath === branch.worktree_path
 			? centerSelection
 			: null;
+	const scopedCenterSelectionRef = useRef(scopedCenterSelection);
+	scopedCenterSelectionRef.current = scopedCenterSelection;
+	const scopedNodeSelection =
+		scopedCenterSelection?.kind === "node" ? scopedCenterSelection : null;
 	const isSelected =
 		branch.worktree_path === selectedRootPath && scopedCenterSelection == null;
 	const actionControlsVisible = worktreeMenuOpen || createMenuOpen;
@@ -494,6 +602,27 @@ function WorktreeTreeItem({
 		isReconciliationEventCurrent,
 	} = useWorkspaceTreeNodes(branch.worktree_path);
 	const {
+		items: providerAgentSessions,
+		loading: providerSessionsLoading,
+		loadingMore: providerSessionsLoadingMore,
+		hasMore: providerSessionsHasMore,
+		error: providerSessionsError,
+		refresh: refreshProviderAgentSessions,
+		loadMore: loadMoreProviderAgentSessions,
+	} = useProviderAgentSessions(branch.worktree_path ?? null);
+	const {
+		items: archivedProviderAgentSessions,
+		loading: archivedProviderSessionsLoading,
+		loadingMore: archivedProviderSessionsLoadingMore,
+		hasMore: archivedProviderSessionsHasMore,
+		error: archivedProviderSessionsError,
+		refresh: refreshArchivedProviderAgentSessions,
+		loadMore: loadMoreArchivedProviderAgentSessions,
+	} = useProviderAgentSessions(
+		worktreeMenuOpen ? (branch.worktree_path ?? null) : null,
+		"archived",
+	);
+	const {
 		workflows,
 		loading: workflowsLoading,
 		error: workflowsError,
@@ -512,8 +641,8 @@ function WorktreeTreeItem({
 	);
 
 	useEffect(() => {
-		synchronizeSelectedNodeId(scopedCenterSelection?.nodeId ?? null);
-	}, [scopedCenterSelection?.nodeId, synchronizeSelectedNodeId]);
+		synchronizeSelectedNodeId(scopedNodeSelection?.nodeId ?? null);
+	}, [scopedNodeSelection?.nodeId, synchronizeSelectedNodeId]);
 
 	useEffect(() => {
 		if (!autoSelectPreferredNode) {
@@ -548,7 +677,7 @@ function WorktreeTreeItem({
 			notifiedReconciliationSeqRef.current === reconciliationEvent.refreshSeq ||
 			!isReconciliationEventCurrent(
 				reconciliationEvent,
-				scopedCenterSelection?.nodeId ?? null,
+				scopedNodeSelection?.nodeId ?? null,
 			)
 		) {
 			return;
@@ -562,7 +691,7 @@ function WorktreeTreeItem({
 		isReconciliationEventCurrent,
 		onWorkspaceSelectionInvalidated,
 		reconciliationEvent,
-		scopedCenterSelection?.nodeId,
+		scopedNodeSelection?.nodeId,
 	]);
 
 	const handleSelectNode = useCallback(
@@ -575,6 +704,211 @@ function WorktreeTreeItem({
 			});
 		},
 		[branch.worktree_path, selectCenter],
+	);
+	const handleSelectProviderAgentSession = useCallback(
+		(session: ProviderAgentSessionItem) => {
+			if (!branch.worktree_path) return;
+			selectCenter({
+				kind: "provider_agent_session",
+				worktreePath: branch.worktree_path,
+				agentSessionId: session.id,
+			});
+		},
+		[branch.worktree_path, selectCenter],
+	);
+	const handleArchiveProviderAgentSession = useCallback(
+		async (session: ProviderAgentSessionItem) => {
+			setProviderActionError(null);
+			try {
+				const outcome = await invoke<
+					"archived" | "already_archived" | "delete_confirmation_required"
+				>("archive_provider_agent_session", {
+					agentSessionId: session.id,
+					callerRequestId: `archive.${crypto.randomUUID()}`,
+				});
+				if (outcome === "delete_confirmation_required") {
+					setArchiveFallbackDelete(session);
+					return;
+				}
+				notifyProviderAgentSessionChanged(session.worktreePath);
+				await refreshProviderAgentSessions();
+				if (
+					scopedCenterSelection?.kind === "provider_agent_session" &&
+					scopedCenterSelection.agentSessionId === session.id &&
+					branch.worktree_path
+				) {
+					onSelectWorktree(branch.worktree_path, branch.name, repoName);
+				}
+			} catch (error) {
+				setProviderActionError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		},
+		[
+			branch.name,
+			branch.worktree_path,
+			onSelectWorktree,
+			refreshProviderAgentSessions,
+			repoName,
+			scopedCenterSelection,
+		],
+	);
+	const handleDeleteProviderAgentSession = useCallback(
+		async (session: ProviderAgentSessionItem, archiveFallback: boolean) => {
+			setProviderActionError(null);
+			try {
+				await invoke(
+					archiveFallback
+						? "confirm_provider_agent_session_archive_delete"
+						: "delete_provider_agent_session",
+					{
+						agentSessionId: session.id,
+						callerRequestId: `delete.${crypto.randomUUID()}`,
+					},
+				);
+				setArchiveFallbackDelete(null);
+				notifyProviderAgentSessionChanged(session.worktreePath);
+				await Promise.all([
+					refreshProviderAgentSessions(),
+					refreshArchivedProviderAgentSessions(),
+				]);
+				if (
+					scopedCenterSelection?.kind === "provider_agent_session" &&
+					scopedCenterSelection.agentSessionId === session.id &&
+					branch.worktree_path
+				) {
+					onSelectWorktree(branch.worktree_path, branch.name, repoName);
+				}
+			} catch (error) {
+				setProviderActionError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		},
+		[
+			branch.name,
+			branch.worktree_path,
+			onSelectWorktree,
+			refreshArchivedProviderAgentSessions,
+			refreshProviderAgentSessions,
+			repoName,
+			scopedCenterSelection,
+		],
+	);
+	const handleRestoreProviderAgentSession = useCallback(
+		async (session: ProviderAgentSessionItem) => {
+			if (!branch.worktree_path) return;
+			setProviderActionError(null);
+			try {
+				await invoke("restore_provider_agent_session", {
+					agentSessionId: session.id,
+					rows: 24,
+					cols: 80,
+					callerRequestId: `restore.${crypto.randomUUID()}`,
+				});
+				notifyProviderAgentSessionChanged(session.worktreePath);
+				await Promise.all([
+					refreshProviderAgentSessions(),
+					refreshArchivedProviderAgentSessions(),
+				]);
+				selectCenter({
+					kind: "provider_agent_session",
+					worktreePath: branch.worktree_path,
+					agentSessionId: session.id,
+				});
+			} catch (error) {
+				setProviderActionError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		},
+		[
+			branch.worktree_path,
+			refreshArchivedProviderAgentSessions,
+			refreshProviderAgentSessions,
+			selectCenter,
+		],
+	);
+
+	const refreshProviderHistory = useCallback(async () => {
+		if (!branch.worktree_path) return;
+		setProviderHistoryLoading(true);
+		try {
+			const page = await invoke<ProviderAgentSessionHistoryPage>(
+				"list_provider_agent_session_history",
+				{
+					worktreePath: branch.worktree_path,
+					limit: 100,
+				},
+			);
+			setProviderHistory(page?.items ?? []);
+			setProviderHistoryNextAfter(page?.nextAfter ?? null);
+		} catch (error) {
+			setProviderHistory([]);
+			setProviderHistoryNextAfter(null);
+			setProviderActionError(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			setProviderHistoryLoading(false);
+		}
+	}, [branch.worktree_path]);
+
+	const loadMoreProviderHistory = useCallback(async () => {
+		if (!branch.worktree_path || !providerHistoryNextAfter) return;
+		setProviderHistoryLoading(true);
+		try {
+			const page = await invoke<ProviderAgentSessionHistoryPage>(
+				"list_provider_agent_session_history",
+				{
+					worktreePath: branch.worktree_path,
+					limit: 100,
+					after: providerHistoryNextAfter,
+				},
+			);
+			setProviderHistory((current) => [...current, ...(page?.items ?? [])]);
+			setProviderHistoryNextAfter(page?.nextAfter ?? null);
+			setProviderActionError(null);
+		} catch (error) {
+			setProviderActionError(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			setProviderHistoryLoading(false);
+		}
+	}, [branch.worktree_path, providerHistoryNextAfter]);
+
+	const handleResumeProviderHistory = useCallback(
+		async (candidate: ProviderAgentSessionHistoryCandidate) => {
+			if (!branch.worktree_path) return;
+			setProviderActionError(null);
+			try {
+				const agentSessionId = await invoke<string>(
+					"resume_provider_agent_session_history_candidate",
+					{
+						workspaceIdentity: branch.worktree_path,
+						worktreePath: branch.worktree_path,
+						provider: candidate.provider,
+						providerSessionId: candidate.providerSessionId,
+						rows: 24,
+						cols: 80,
+						callerRequestId: `history-resume.${crypto.randomUUID()}`,
+					},
+				);
+				await refreshProviderAgentSessions();
+				selectCenter({
+					kind: "provider_agent_session",
+					worktreePath: branch.worktree_path,
+					agentSessionId,
+				});
+			} catch (error) {
+				setProviderActionError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		},
+		[branch.worktree_path, refreshProviderAgentSessions, selectCenter],
 	);
 
 	const handleRestoreWorkflow = useCallback(
@@ -598,8 +932,8 @@ function WorktreeTreeItem({
 					worktreePath: branch.worktree_path,
 					executionId: workflow.id,
 				});
-				if (scopedCenterSelection?.nodeId) {
-					await beginArchiveReconciliation(scopedCenterSelection.nodeId);
+				if (scopedNodeSelection?.nodeId) {
+					await beginArchiveReconciliation(scopedNodeSelection.nodeId);
 				} else {
 					await refreshTree();
 				}
@@ -611,7 +945,7 @@ function WorktreeTreeItem({
 			beginArchiveReconciliation,
 			branch.worktree_path,
 			refreshTree,
-			scopedCenterSelection?.nodeId,
+			scopedNodeSelection?.nodeId,
 		],
 	);
 
@@ -630,10 +964,98 @@ function WorktreeTreeItem({
 		[refreshTree],
 	);
 
-	const handleNewSession = useCallback(() => {
+	const refreshAvailableProviders = useCallback(async () => {
 		if (!branch.worktree_path) return;
-		onCreateSession(branch.worktree_path, branch.name, repoName);
-	}, [branch.name, branch.worktree_path, onCreateSession, repoName]);
+		setProviderMenuLoading(true);
+		setProviderActionError(null);
+		try {
+			const providers = await invoke<string[]>(
+				"list_available_provider_agent_session_providers",
+			);
+			setAvailableProviders(providers ?? []);
+		} catch (error) {
+			setAvailableProviders([]);
+			setProviderActionError(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			setProviderMenuLoading(false);
+		}
+	}, [branch.worktree_path]);
+
+	const handleCreateProviderAgentSession = useCallback(
+		async (provider: string) => {
+			if (!branch.worktree_path || providerCreating) return;
+			setCreateMenuOpen(false);
+			setProviderCreating(provider);
+			setProviderActionError(null);
+			// 作成完了を待たずに中央paneを起動中表示へ切り替え、
+			// クリック直後の視覚フィードバックを保証する
+			const launchToken = crypto.randomUUID();
+			selectCenter({
+				kind: "provider_agent_session_launching",
+				worktreePath: branch.worktree_path,
+				provider,
+				launchToken,
+			});
+			// 解決時に選択が同一launchTokenの起動中表示のままである場合のみ遷移し、
+			// pending中に移動したユーザーの選択を奪わない
+			const isLaunchSelectionCurrent = () => {
+				const current = scopedCenterSelectionRef.current;
+				return (
+					current?.kind === "provider_agent_session_launching" &&
+					current.launchToken === launchToken
+				);
+			};
+			try {
+				const agentSessionId = await invoke<string>(
+					"create_provider_agent_session",
+					{
+						workspaceIdentity: branch.worktree_path,
+						worktreePath: branch.worktree_path,
+						provider,
+						rows: 24,
+						cols: 80,
+						callerRequestId: `create.${launchToken}`,
+					},
+				);
+				if (isLaunchSelectionCurrent()) {
+					selectCenter({
+						kind: "provider_agent_session",
+						worktreePath: branch.worktree_path,
+						agentSessionId,
+						initialAttachment: {
+							agentSessionId,
+							workspaceIdentity: branch.worktree_path,
+							worktreePath: branch.worktree_path,
+							provider: provider as ProviderAgentSessionItem["provider"],
+						},
+					});
+				}
+				void refreshProviderAgentSessions();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				setProviderActionError(message);
+				if (isLaunchSelectionCurrent()) {
+					selectCenter({
+						kind: "provider_agent_session_launching",
+						worktreePath: branch.worktree_path,
+						provider,
+						launchToken,
+						error: message,
+					});
+				}
+			} finally {
+				setProviderCreating(null);
+			}
+		},
+		[
+			branch.worktree_path,
+			providerCreating,
+			refreshProviderAgentSessions,
+			selectCenter,
+		],
+	);
 
 	const handleSelectWorkflowForStart = useCallback((workflowName: string) => {
 		setCreateMenuOpen(false);
@@ -772,6 +1194,7 @@ function WorktreeTreeItem({
 				<button
 					type="button"
 					data-testid={`worktree-item-${branch.name}`}
+					aria-expanded={expanded}
 					className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
 				>
@@ -814,7 +1237,10 @@ function WorktreeTreeItem({
 							open={worktreeMenuOpen}
 							onOpenChange={(open) => {
 								setWorktreeMenuOpen(open);
-								if (open) void refreshTree();
+								if (open) {
+									void refreshTree();
+									void refreshProviderHistory();
+								}
 							}}
 						>
 							<DropdownMenuTrigger asChild>
@@ -836,35 +1262,119 @@ function WorktreeTreeItem({
 										SessionHistory
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
-										{closedSessions.length === 0 ? (
+										{(providerHistoryLoading ||
+											archivedProviderSessionsLoading) && (
 											<DropdownMenuItem disabled>
-												No closed sessions
+												<Loader2 className="size-3.5 animate-spin" />
+												Loading Session history
 											</DropdownMenuItem>
-										) : (
-											closedSessions.map((session) => (
-												<DropdownMenuItem
-													key={session.id}
-													onSelect={() => handleRestoreSession(session)}
+										)}
+										{closedSessions.length === 0 &&
+										archivedProviderAgentSessions.length === 0 &&
+										providerHistory.length === 0 &&
+										!providerHistoryLoading &&
+										!archivedProviderSessionsLoading ? (
+											<DropdownMenuItem disabled>
+												No session history
+											</DropdownMenuItem>
+										) : null}
+										{closedSessions.map((session) => (
+											<DropdownMenuItem
+												key={session.id}
+												onSelect={() => handleRestoreSession(session)}
+											>
+												<span className="max-w-52 truncate">
+													{sessionLabel(session)}
+												</span>
+												<Button
+													size="icon-xs"
+													variant="ghost"
+													className="ml-2 size-5"
+													onClick={(event) => {
+														event.preventDefault();
+														event.stopPropagation();
+														void handleArchiveSession(session.id);
+													}}
+													aria-label={`Archive ${sessionLabel(session)}`}
+													title="Archive"
 												>
-													<span className="max-w-52 truncate">
-														{sessionLabel(session)}
-													</span>
-													<Button
-														size="icon-xs"
-														variant="ghost"
-														className="ml-2 size-5"
-														onClick={(event) => {
-															event.preventDefault();
-															event.stopPropagation();
-															void handleArchiveSession(session.id);
-														}}
-														aria-label={`Archive ${sessionLabel(session)}`}
-														title="Archive"
-													>
-														<Archive className="size-3" />
-													</Button>
-												</DropdownMenuItem>
-											))
+													<Archive className="size-3" />
+												</Button>
+											</DropdownMenuItem>
+										))}
+										{archivedProviderAgentSessions.map((session) => (
+											<DropdownMenuItem
+												key={session.id}
+												onSelect={() =>
+													void handleRestoreProviderAgentSession(session)
+												}
+											>
+												<span className="max-w-52 truncate">
+													{providerAgentSessionLabel(session)}
+												</span>
+												<Button
+													size="icon-xs"
+													variant="ghost"
+													className="ml-2 size-5 text-destructive"
+													onClick={(event) => {
+														event.preventDefault();
+														event.stopPropagation();
+														void handleDeleteProviderAgentSession(
+															session,
+															false,
+														);
+													}}
+													aria-label={`Delete ${providerAgentSessionLabel(session)}`}
+													title="Delete"
+												>
+													<Trash2 className="size-3" />
+												</Button>
+											</DropdownMenuItem>
+										))}
+										{archivedProviderSessionsHasMore && (
+											<DropdownMenuItem
+												disabled={archivedProviderSessionsLoadingMore}
+												onSelect={(event) => {
+													event.preventDefault();
+													void loadMoreArchivedProviderAgentSessions();
+												}}
+											>
+												Load more archived AgentSessions
+											</DropdownMenuItem>
+										)}
+										{archivedProviderSessionsError && (
+											<DropdownMenuItem disabled>
+												<span className="max-w-52 truncate text-destructive">
+													{archivedProviderSessionsError}
+												</span>
+											</DropdownMenuItem>
+										)}
+										{providerHistory.map((candidate) => (
+											<DropdownMenuItem
+												key={`${candidate.provider}:${candidate.providerSessionId}`}
+												onSelect={() =>
+													void handleResumeProviderHistory(candidate)
+												}
+											>
+												<span className="max-w-52 truncate">
+													{candidate.provider} {candidate.providerSessionId}
+												</span>
+											</DropdownMenuItem>
+										))}
+										{providerHistory.length > 0 && (
+											<DropdownMenuItem
+												disabled={
+													providerHistoryLoading || !providerHistoryNextAfter
+												}
+												onSelect={(event) => {
+													event.preventDefault();
+													void loadMoreProviderHistory();
+												}}
+											>
+												{providerHistoryNextAfter
+													? "Load more Provider history"
+													: "All Provider history loaded"}
+											</DropdownMenuItem>
 										)}
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
@@ -919,7 +1429,10 @@ function WorktreeTreeItem({
 							open={createMenuOpen}
 							onOpenChange={(open) => {
 								setCreateMenuOpen(open);
-								if (open) void refreshTree();
+								if (open) {
+									void refreshTree();
+									void refreshAvailableProviders();
+								}
 							}}
 						>
 							<DropdownMenuTrigger asChild>
@@ -936,19 +1449,39 @@ function WorktreeTreeItem({
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end" className="w-56">
-								<DropdownMenuItem
-									disabled={newSessionCreationStatus?.pending === true}
-									onSelect={handleNewSession}
-								>
-									{newSessionCreationStatus?.pending ? (
-										<Loader2 className="size-3.5 animate-spin" />
-									) : (
-										<MessageSquare className="size-3.5" />
-									)}
-									{newSessionCreationStatus?.pending
-										? "Creating Session..."
-										: "NewSession"}
-								</DropdownMenuItem>
+								<DropdownMenuSub>
+									<DropdownMenuSubTrigger>
+										<Bot className="size-3.5" />
+										NewSession
+									</DropdownMenuSubTrigger>
+									<DropdownMenuSubContent className="w-56">
+										{providerMenuLoading ? (
+											<DropdownMenuItem disabled>
+												<Loader2 className="size-3.5 animate-spin" />
+												Loading Providers
+											</DropdownMenuItem>
+										) : availableProviders.length === 0 ? (
+											<DropdownMenuItem disabled>
+												No available Providers
+											</DropdownMenuItem>
+										) : (
+											availableProviders.map((provider) => (
+												<DropdownMenuItem
+													key={provider}
+													disabled={providerCreating != null}
+													onSelect={() =>
+														void handleCreateProviderAgentSession(provider)
+													}
+												>
+													{providerCreating === provider && (
+														<Loader2 className="size-3.5 animate-spin" />
+													)}
+													{provider}
+												</DropdownMenuItem>
+											))
+										)}
+									</DropdownMenuSubContent>
+								</DropdownMenuSub>
 								<DropdownMenuSeparator />
 								<DropdownMenuSub>
 									<DropdownMenuSubTrigger>
@@ -999,6 +1532,35 @@ function WorktreeTreeItem({
 			</div>
 			{expanded && hasWorktree && (
 				<div className="mt-0.5">
+					{providerAgentSessions.map((session) => (
+						<ProviderAgentSessionRow
+							key={session.id}
+							session={session}
+							selected={
+								scopedCenterSelection?.kind === "provider_agent_session" &&
+								scopedCenterSelection.agentSessionId === session.id
+							}
+							onSelect={() => handleSelectProviderAgentSession(session)}
+							onArchive={() => void handleArchiveProviderAgentSession(session)}
+							onDelete={() =>
+								void handleDeleteProviderAgentSession(session, false)
+							}
+						/>
+					))}
+					{providerSessionsHasMore && (
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							className="h-7 w-full justify-start text-xs text-muted-foreground"
+							disabled={providerSessionsLoadingMore}
+							onClick={() => void loadMoreProviderAgentSessions()}
+						>
+							{providerSessionsLoadingMore
+								? "Loading AgentSessions"
+								: "Load more AgentSessions"}
+						</Button>
+					)}
 					{treeLoading ? (
 						<div
 							className="flex h-8 items-center text-muted-foreground"
@@ -1013,7 +1575,7 @@ function WorktreeTreeItem({
 						>
 							{treeError}
 						</div>
-					) : nodes.length === 0 ? (
+					) : nodes.length === 0 && providerAgentSessions.length === 0 ? (
 						<div
 							className="truncate py-1 text-xs text-muted-foreground"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
@@ -1033,6 +1595,31 @@ function WorktreeTreeItem({
 								onArchiveWorkflow={handleArchiveWorkflow}
 							/>
 						))
+					)}
+					{providerSessionsLoading && providerAgentSessions.length === 0 && (
+						<div
+							className="flex h-8 items-center text-muted-foreground"
+							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							<Loader2 className="size-3.5 animate-spin" />
+						</div>
+					)}
+					{providerSessionsError && (
+						<div
+							className="truncate py-1 text-xs text-destructive"
+							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							{providerSessionsError}
+						</div>
+					)}
+					{providerActionError && (
+						<div
+							role="alert"
+							className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							{providerActionError}
+						</div>
 					)}
 					{workflowActionError && (
 						<div
@@ -1069,6 +1656,46 @@ function WorktreeTreeItem({
 					)}
 				</div>
 			)}
+			<Dialog
+				open={archiveFallbackDelete != null}
+				onOpenChange={(open) => {
+					if (!open) setArchiveFallbackDelete(null);
+				}}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Delete AgentSession?</DialogTitle>
+						<DialogDescription>
+							This AgentSession has no Provider session ID and cannot be
+							archived. Deleting removes Releash-owned state. Provider history
+							may still offer a recovery candidate.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => setArchiveFallbackDelete(null)}
+						>
+							Cancel
+						</Button>
+						<Button
+							type="button"
+							variant="destructive"
+							onClick={() => {
+								if (archiveFallbackDelete) {
+									void handleDeleteProviderAgentSession(
+										archiveFallbackDelete,
+										true,
+									);
+								}
+							}}
+						>
+							Delete
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 			<Dialog
 				open={selectedWorkflowName != null}
 				onOpenChange={handleWorkflowDialogOpenChange}
@@ -1165,9 +1792,6 @@ function RepoTreeSectionView({
 		async (branch: WorktreeBranch, force: boolean) => {
 			try {
 				if (branch.worktree_path) {
-					await invoke("kill_ptys_by_worktree", {
-						worktreePath: branch.worktree_path,
-					}).catch(() => {});
 					await invoke("remove_worktree", {
 						repoPath,
 						worktreePath: branch.worktree_path,

@@ -135,7 +135,15 @@ pub(crate) fn indexed_session_public_columns(
                 }),
             }
         }
+        SessionProjectionRecord::ProviderAgentSession(session) => Ok(IndexedSessionPublicColumns {
+            workspace_identity: Some(session.workspace_identity.clone()),
+            list_kind: None,
+            sort_key_bits: None,
+            summary: None,
+        }),
         SessionProjectionRecord::WorkflowExecution(_)
+        | SessionProjectionRecord::ProviderSessionOwnership(_)
+        | SessionProjectionRecord::ProviderHookHealth(_)
         | SessionProjectionRecord::WorkflowWorktreeOwner(_) => Ok(IndexedSessionPublicColumns {
             workspace_identity: None,
             list_kind: None,

@@ -2815,7 +2815,7 @@ mod tests {
         let router = Router::new()
             .route("/v1/agent-session", get(transport_test_upgrade))
             .layer(axum::middleware::from_fn_with_state(
-                Arc::<str>::from("b004-token"),
+                super::super::auth::AcceptedBearerTokens::new([Arc::<str>::from("b004-token")]),
                 super::super::auth::require_bearer,
             ))
             .with_state(TransportTestState {

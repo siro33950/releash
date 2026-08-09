@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -12,7 +12,13 @@ pub(crate) struct NativePtySpawnConfig {
     pub(crate) integration_dir: Option<std::path::PathBuf>,
     pub(crate) runtime_id: u64,
     pub(crate) extra_env: Vec<(String, String)>,
-    pub(crate) exec_command: Option<String>,
+    pub(crate) process: Option<NativePtyProcessConfig>,
+}
+
+pub(crate) struct NativePtyProcessConfig {
+    pub(crate) executable: String,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) environment: Vec<(String, String)>,
 }
 
 pub(crate) struct SpawnedNativePty {
@@ -22,20 +28,27 @@ pub(crate) struct SpawnedNativePty {
 
 #[derive(Clone)]
 pub(crate) struct NativePtyRuntime {
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    input: mpsc::SyncSender<Vec<u8>>,
+    input_error: Arc<Mutex<Option<String>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     resizer: Arc<Mutex<Box<dyn NativePtyResizer + Send>>>,
 }
 
 impl NativePtyRuntime {
     pub(crate) fn write(&self, data: &[u8]) -> Result<(), String> {
-        let mut writer = self.writer.lock();
-        writer
-            .write_all(data)
-            .map_err(|error| format!("Failed to write to PTY: {error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("Failed to flush PTY: {error}"))
+        if let Some(error) = self.input_error.lock().as_ref() {
+            return Err(error.clone());
+        }
+        self.input
+            .try_send(data.to_vec())
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => "PTY input queue is full".to_string(),
+                mpsc::TrySendError::Disconnected(_) => self
+                    .input_error
+                    .lock()
+                    .clone()
+                    .unwrap_or_else(|| "PTY input writer is unavailable".to_string()),
+            })
     }
 
     pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
@@ -49,17 +62,49 @@ impl NativePtyRuntime {
             .map_err(|error| format!("Failed to kill PTY: {error}"))
     }
 
+    fn new(
+        mut writer: Box<dyn Write + Send>,
+        killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+        resizer: Box<dyn NativePtyResizer + Send>,
+    ) -> Self {
+        const INPUT_QUEUE_CAPACITY: usize = 1024;
+        let (input, receiver) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE_CAPACITY);
+        let input_error = Arc::new(Mutex::new(None));
+        let worker_error = Arc::clone(&input_error);
+        std::thread::spawn(move || {
+            while let Ok(mut data) = receiver.recv() {
+                while let Ok(next) = receiver.try_recv() {
+                    data.extend_from_slice(&next);
+                }
+                let result = writer
+                    .write_all(&data)
+                    .map_err(|error| format!("Failed to write to PTY: {error}"))
+                    .and_then(|()| {
+                        writer
+                            .flush()
+                            .map_err(|error| format!("Failed to flush PTY: {error}"))
+                    });
+                if let Err(error) = result {
+                    *worker_error.lock() = Some(error);
+                    break;
+                }
+            }
+        });
+        Self {
+            input,
+            input_error,
+            killer: Arc::new(Mutex::new(killer)),
+            resizer: Arc::new(Mutex::new(resizer)),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn from_parts(
         writer: Box<dyn Write + Send>,
         killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
         resizer: Box<dyn NativePtyResizer + Send>,
     ) -> Self {
-        Self {
-            writer: Arc::new(Mutex::new(writer)),
-            killer: Arc::new(Mutex::new(killer)),
-            resizer: Arc::new(Mutex::new(resizer)),
-        }
+        Self::new(writer, killer, resizer)
     }
 }
 
@@ -104,6 +149,21 @@ impl NativePtyResizer for PortablePtyResizer {
 
 pub(crate) struct NativePtySystem;
 
+fn configure_terminal_environment(command: &mut CommandBuilder, managed_process: bool) {
+    if managed_process {
+        command.env_remove("NO_COLOR");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+        if std::env::var("LANG").is_err() {
+            command.env("LANG", "en_US.UTF-8");
+        }
+    }
+}
+
 impl NativePtySystem {
     pub(crate) fn spawn(&self, config: NativePtySpawnConfig) -> Result<SpawnedNativePty, String> {
         let pair = native_pty_system()
@@ -115,11 +175,15 @@ impl NativePtySystem {
             })
             .map_err(|error| format!("Failed to open PTY: {error}"))?;
 
-        let mut command = if let Some(exec) = config.exec_command {
-            let mut command = CommandBuilder::new(&config.shell);
-            command.arg("-l");
-            command.arg("-c");
-            command.arg(exec);
+        let managed_process = config.process.is_some();
+        let mut command = if let Some(process) = config.process {
+            let mut command = CommandBuilder::new(process.executable);
+            for argument in process.arguments {
+                command.arg(argument);
+            }
+            for (key, value) in process.environment {
+                command.env(key, value);
+            }
             command
         } else if let Some(integration_dir) = config.integration_dir {
             if config.shell.ends_with("/bash") {
@@ -149,14 +213,7 @@ impl NativePtySystem {
             CommandBuilder::new_default_prog()
         };
 
-        #[cfg(not(target_os = "windows"))]
-        {
-            command.env("TERM", "xterm-256color");
-            command.env("COLORTERM", "truecolor");
-            if std::env::var("LANG").is_err() {
-                command.env("LANG", "en_US.UTF-8");
-            }
-        }
+        configure_terminal_environment(&mut command, managed_process);
 
         command.env("RELEASH_PTY_ID", config.runtime_id.to_string());
         for (key, value) in config.extra_env {
@@ -182,11 +239,7 @@ impl NativePtySystem {
 
         let killer = child.clone_killer();
         Ok(SpawnedNativePty {
-            runtime: NativePtyRuntime {
-                writer: Arc::new(Mutex::new(writer)),
-                killer: Arc::new(Mutex::new(killer)),
-                resizer: Arc::new(Mutex::new(Box::new(PortablePtyResizer { master }))),
-            },
+            runtime: NativePtyRuntime::new(writer, killer, Box::new(PortablePtyResizer { master })),
             output: NativePtyOutput { reader, child },
         })
     }

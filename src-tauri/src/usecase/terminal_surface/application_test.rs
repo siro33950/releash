@@ -23,15 +23,97 @@ fn test_ターミナル画面_アプリケーション_ドメインポートだ�
     assert!(!production.contains("accepting_mutations"));
 }
 
+#[test]
+fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を区別する() {
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
+    let gateway = Arc::new(
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
+            tauri::test::MockRuntime,
+        >::default(),
+    );
+    let application = super::TerminalSurfaceApplication::new(
+        gateway.clone(),
+        Arc::new(TerminalSurfaceEventHub::new()),
+    );
+
+    assert_eq!(
+        application.find_owned_summary(&owner),
+        super::OwnedTerminalSummaryLookup::Absent
+    );
+
+    gateway.insert_surface(TerminalSurface {
+        session_key: owner.stable_key(),
+        owner: TerminalSurfaceOwner::session(
+            WorkspaceIdentity::new("/other-repo"),
+            "agent-session-1",
+        )
+        .unwrap(),
+        worktree_path: Some("/other-repo".to_string()),
+        label: None,
+        runtime_generation: 1.into(),
+        process_state: TerminalProcessState::Running,
+        checkpoint: TerminalSurfaceCheckpoint::empty(80, 24),
+        latest_sequence: 0,
+        last_output_at: None,
+    });
+
+    assert_eq!(
+        application.find_owned_summary(&owner),
+        super::OwnedTerminalSummaryLookup::OwnerMismatch
+    );
+    assert!(application.get_summary(&owner).is_err());
+}
+
+#[test]
+fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
+    let gateway = Arc::new(
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
+            tauri::test::MockRuntime,
+        >::default(),
+    );
+    gateway.insert_surface(TerminalSurface {
+        session_key: owner.stable_key(),
+        owner: owner.clone(),
+        worktree_path: Some("/repo".to_string()),
+        label: None,
+        runtime_generation: 1.into(),
+        process_state: TerminalProcessState::Running,
+        checkpoint: TerminalSurfaceCheckpoint::empty(80, 24),
+        latest_sequence: 0,
+        last_output_at: None,
+    });
+    let application = super::TerminalSurfaceApplication::new(
+        gateway.clone(),
+        Arc::new(TerminalSurfaceEventHub::new()),
+    );
+
+    assert!(matches!(
+        application.find_owned_summary(&owner),
+        super::OwnedTerminalSummaryLookup::Found(summary)
+            if summary.session_key == owner.stable_key()
+    ));
+    let summary = application
+        .get_summary(&owner)
+        .expect("summary for registered owner");
+    assert_eq!(summary.session_key, owner.stable_key());
+    assert!(!summary.is_exited);
+    assert_eq!(gateway.snapshot_materialization_count(), 0);
+}
+
 #[tokio::test]
 async fn test_ターミナル画面_イベント配信_出力欠落を隠さず遅延欠落を返す() {
     let hub = TerminalSurfaceEventHub::with_capacity(2);
-    let mut subscription = hub.subscribe().subscription;
+    let mut subscription = hub
+        .subscribe_owner("surface-1", "attachment-1")
+        .subscription;
 
     for sequence in 1..=3 {
         hub.publish(TerminalSurfaceEvent::Output {
             session_key: "surface-1".to_string(),
-            data: format!("chunk-{sequence}"),
+            data: format!("chunk-{sequence}").into(),
             sequence,
         });
     }
@@ -43,8 +125,105 @@ async fn test_ターミナル画面_イベント配信_出力欠落を隠さず�
 }
 
 #[tokio::test]
+async fn test_ターミナル画面_イベント配信_owner購読へ別ownerの負荷を流さない() {
+    let hub = TerminalSurfaceEventHub::with_capacity(2);
+    let mut subscription = hub
+        .subscribe_owner("surface-a", "attachment-a")
+        .subscription;
+
+    for sequence in 1..=3 {
+        hub.publish(TerminalSurfaceEvent::Output {
+            session_key: "surface-b".to_string(),
+            data: format!("unrelated-{sequence}").into(),
+            sequence,
+        });
+    }
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: "surface-a".to_string(),
+        data: "owned".into(),
+        sequence: 1,
+    });
+
+    assert!(matches!(
+        subscription.recv().await,
+        Ok(TerminalSurfaceEvent::Output {
+            session_key,
+            data,
+            sequence: 1
+        }) if session_key == "surface-a" && data.as_ref() == "owned"
+    ));
+}
+
+#[test]
+fn test_ターミナル画面_出力credit_xterm累積ackまで同一ownerのproducerを停止する() {
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
+    let _subscription = hub.subscribe_owner("surface-a", "attachment-a");
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: "surface-a".to_string(),
+        data: "a".repeat(256 * 1024).into(),
+        sequence: 1,
+    });
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let publisher = std::thread::spawn({
+        let hub = hub.clone();
+        move || {
+            hub.publish(TerminalSurfaceEvent::Output {
+                session_key: "surface-a".to_string(),
+                data: "next".into(),
+                sequence: 2,
+            });
+            finished_tx.send(()).unwrap();
+        }
+    });
+
+    let completed_before_parse = finished_rx
+        .recv_timeout(std::time::Duration::from_millis(50))
+        .is_ok();
+    hub.acknowledge_owner_output("surface-a", "attachment-a", 1);
+
+    assert!(!completed_before_parse);
+    assert!(finished_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok());
+    publisher.join().unwrap();
+}
+
+#[test]
+fn test_ターミナル画面_出力credit_切断は停止中producerを解放する() {
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
+    let subscription = hub.subscribe_owner("surface-a", "attachment-a");
+    hub.publish(TerminalSurfaceEvent::Output {
+        session_key: "surface-a".to_string(),
+        data: "a".repeat(256 * 1024).into(),
+        sequence: 1,
+    });
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let publisher = std::thread::spawn({
+        let hub = hub.clone();
+        move || {
+            hub.publish(TerminalSurfaceEvent::Output {
+                session_key: "surface-a".to_string(),
+                data: "next".into(),
+                sequence: 2,
+            });
+            finished_tx.send(()).unwrap();
+        }
+    });
+
+    assert!(finished_rx
+        .recv_timeout(std::time::Duration::from_millis(50))
+        .is_err());
+    subscription.cancellation.cancel();
+
+    assert!(finished_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .is_ok());
+    publisher.join().unwrap();
+}
+
+#[tokio::test]
 async fn test_ターミナル画面接続_エンティティ_画面写像とバックエンド_イベント配信を返す() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
             tauri::test::MockRuntime,
@@ -64,6 +243,7 @@ async fn test_ターミナル画面接続_エンティティ_画面写像とバ�
             rows: 24,
         },
         latest_sequence: 4,
+        last_output_at: None,
     });
     let event_hub = Arc::new(TerminalSurfaceEventHub::new());
     let application = super::TerminalSurfaceApplication::new(gateway.clone(), event_hub.clone());
@@ -74,7 +254,7 @@ async fn test_ターミナル画面接続_エンティティ_画面写像とバ�
     assert_eq!(gateway.snapshot_materialization_count(), 1);
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "live".to_string(),
+        data: "live".into(),
         sequence: 5,
     });
 
@@ -87,7 +267,7 @@ async fn test_ターミナル画面接続_エンティティ_画面写像とバ�
         attachment.next().await,
         Some(super::TerminalSurfaceStreamItem::Output {
             session_key: owner.stable_key(),
-            data: "live".to_string(),
+            data: "live".into(),
             sequence: 5,
         })
     );
@@ -95,7 +275,7 @@ async fn test_ターミナル画面接続_エンティティ_画面写像とバ�
 
 #[tokio::test]
 async fn test_ターミナル画面接続_出力寸法変更終了を一つの連番で並べる() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
             tauri::test::MockRuntime,
@@ -124,7 +304,7 @@ async fn test_ターミナル画面接続_出力寸法変更終了を一つの�
     });
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "live".to_string(),
+        data: "live".into(),
         sequence: 5,
     });
     event_hub.publish(TerminalSurfaceEvent::Resize {
@@ -135,6 +315,7 @@ async fn test_ターミナル画面接続_出力寸法変更終了を一つの�
     });
     event_hub.publish(TerminalSurfaceEvent::Exit {
         session_key: owner.stable_key(),
+        runtime_generation: 1,
         exit_code: Some(0),
         sequence: 7,
     });
@@ -168,7 +349,7 @@ async fn test_ターミナル画面接続_出力寸法変更終了を一つの�
 
 #[tokio::test]
 async fn test_ターミナル画面切断_対象購読だけを取消す() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
             tauri::test::MockRuntime,
@@ -183,6 +364,7 @@ async fn test_ターミナル画面切断_対象購読だけを取消す() {
         process_state: TerminalProcessState::Running,
         checkpoint: TerminalSurfaceCheckpoint::empty(80, 24),
         latest_sequence: 0,
+        last_output_at: None,
     });
     let application =
         super::TerminalSurfaceApplication::new(gateway, Arc::new(TerminalSurfaceEventHub::new()));
@@ -200,7 +382,7 @@ async fn test_ターミナル画面切断_対象購読だけを取消す() {
 
 #[tokio::test]
 async fn test_ターミナル画面再同期_遅延欠落後にエンティティから復元して包含済み出力を飛ばす() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
             tauri::test::MockRuntime,
@@ -220,6 +402,7 @@ async fn test_ターミナル画面再同期_遅延欠落後にエンティテ�
             rows: 24,
         },
         latest_sequence: sequence,
+        last_output_at: None,
     };
     gateway.insert_surface(surface(4));
     let event_hub = Arc::new(TerminalSurfaceEventHub::with_capacity(2));
@@ -234,7 +417,7 @@ async fn test_ターミナル画面再同期_遅延欠落後にエンティテ�
     for sequence in 5..=7 {
         event_hub.publish(TerminalSurfaceEvent::Output {
             session_key: owner.stable_key(),
-            data: format!("chunk-{sequence}"),
+            data: format!("chunk-{sequence}").into(),
             sequence,
         });
     }
@@ -252,12 +435,12 @@ async fn test_ターミナル画面再同期_遅延欠落後にエンティテ�
             tokio::task::yield_now().await;
             event_hub.publish(TerminalSurfaceEvent::Output {
                 session_key: session_key.clone(),
-                data: "covered".to_string(),
+                data: "covered".into(),
                 sequence: 7,
             });
             event_hub.publish(TerminalSurfaceEvent::Output {
                 session_key,
-                data: "new".to_string(),
+                data: "new".into(),
                 sequence: 8,
             });
         }
@@ -265,14 +448,14 @@ async fn test_ターミナル画面再同期_遅延欠落後にエンティテ�
     assert!(matches!(
         attachment.next().await,
         Some(super::TerminalSurfaceStreamItem::Output { data, sequence, .. })
-            if data == "new" && sequence == 8
+            if data.as_ref() == "new" && sequence == 8
     ));
     publish_after_next_poll.await.unwrap();
 }
 
 #[tokio::test]
 async fn test_ターミナル画面再接続_重複逆転を除外し連番欠落を最新画面写像へ再同期する() {
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo"));
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     let gateway = Arc::new(
         crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
             tauri::test::MockRuntime,
@@ -303,29 +486,29 @@ async fn test_ターミナル画面再接続_重複逆転を除外し連番欠�
 
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "duplicate".to_string(),
+        data: "duplicate".into(),
         sequence: 4,
     });
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "reversal".to_string(),
+        data: "reversal".into(),
         sequence: 3,
     });
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "next".to_string(),
+        data: "next".into(),
         sequence: 5,
     });
     assert!(matches!(
         attachment.next().await,
         Some(super::TerminalSurfaceStreamItem::Output { data, sequence, .. })
-            if data == "next" && sequence == 5
+            if data.as_ref() == "next" && sequence == 5
     ));
 
     gateway.insert_surface(surface(7));
     event_hub.publish(TerminalSurfaceEvent::Output {
         session_key: owner.stable_key(),
-        data: "gap".to_string(),
+        data: "gap".into(),
         sequence: 7,
     });
 
@@ -339,13 +522,13 @@ async fn test_ターミナル画面再接続_重複逆転を除外し連番欠�
     for (data, sequence) in [("duplicate", 7), ("reversal", 6), ("next", 8)] {
         event_hub.publish(TerminalSurfaceEvent::Output {
             session_key: owner.stable_key(),
-            data: data.to_string(),
+            data: data.into(),
             sequence,
         });
     }
     assert!(matches!(
         attachment.next().await,
         Some(super::TerminalSurfaceStreamItem::Output { data, sequence, .. })
-            if data == "next" && sequence == 8
+            if data.as_ref() == "next" && sequence == 8
     ));
 }

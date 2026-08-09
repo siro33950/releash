@@ -733,6 +733,7 @@ impl SessionStore {
         )
     }
 
+    #[cfg(test)]
     fn remove_read_session_projection(&self, session_id: &str) -> Result<(), String> {
         let Some(authority) = self.event_authority.read().clone() else {
             #[cfg(test)]

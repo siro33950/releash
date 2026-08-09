@@ -89,7 +89,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 | `workflow` | ワークフロー定義、実行、facet、承認 |
 | `comment` | diff_comment_store、diff_comment_sender |
 | `agent_session` | agent_sdk、session、agent_status |
-| `pty_session` | PTY 管理全般 |
+| `terminal_surface` | Terminal の backend 実装（durable terminal surface: PTY runtime lifecycle、attachment、入力 ingress、registry） |
 | `app_config` | 現 config.rs を分解 |
 | `workspace_state` | ワークスペース状態保存 |
 | `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |

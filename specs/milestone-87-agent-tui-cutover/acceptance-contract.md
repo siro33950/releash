@@ -11,7 +11,8 @@
 | conversation、thinking、tool表示、provider permission | provider CLIとprovider transcript | CLI TUIを改変せず表示し、独自Message modelへ複製しない |
 | live PTY、terminal checkpoint、bounded scrollback | Releash backend | frontendのmount状態から独立して保持し、同じ状態を各surfaceへ公開する |
 | NodeExecution、attempt、Submit、Artifact、Approval | Releash workflow | durableに記録し、providerの表示文言から推定しない |
-| provider session identity、Stop signal | provider lifecycle integrationを経由したReleashのledger | session、NodeExecution、attemptとの対応を検証する |
+| provider利用可否 | Releash backendのprovider registry | 初期化と設定から同じ判定を提供し、AgentSessionとWorkflowへ公開する |
+| provider session identity、transcript参照、Stop観測 | provider lifecycle integrationを経由したReleashのledger | AgentSessionとの対応を検証する。NodeExecutionとattemptへの適用はworkflowがAgentSession所有関係から解決する |
 
 frontendはbackend-owned stateのprojectionであり、workflow遷移またはterminal継続性の正本にならない。
 
@@ -28,14 +29,17 @@ Workflow、Fanout、Command executionはTerminal Surfaceを所有しない。Com
 
 ## 外部保証
 
-1. ClaudeとCodexのCLI TUIで対話、permission応答、再指示を行える。
+1. backendが利用可能と判定したProviderから一つを選び、ClaudeとCodexのCLI TUIで対話、permission応答、再指示を行える。暗黙のdefault Provider、model選択、permission選択は設けない。
 2. xtermのunmount / remount、tab・workspace切替、renderer reload後も同一live PTYへ欠落・重複なく再接続できる。
 3. App process restart後は最終画面とbounded scrollbackを復元できる。同一PTYまたはprocessの継続は保証しない。
-4. Submitとprovider Stopを別signalとして扱い、同じattemptの両方が揃った場合だけAutoまたはApprovalの次状態へ進む。
-5. ArtifactはSubmitへ任意で添付でき、Artifactなしでも完了意思を表明できる。
-6. signal欠落、重複、遅延、別attemptからの到着を、providerのterminal表示文言に依存せず判定する。
-7. Node完了後もAgentSessionとlive PTYを終了せず、Releashは自動入力または自動resumeを行わない。
-8. 旧AgentSessionデータを読み取り、変換、backfillしない。
+4. live PTYを失ったAgentSessionは、provider session identityがあれば同じ会話への復帰を試行でき、復帰失敗時はPausedとして明示的に再試行できる。identityがなければGCによりDeleteする。
+5. Standalone AgentSessionはArchive、Restore、Deleteでき、同一Worktreeのprovider履歴から未管理のsessionを新しいAgentSessionとして復帰できる。
+6. Hookが利用できなくてもAgentSessionとPTYを使用でき、Hook未設定または機能不全はAgentSessionを停止せずアプリ単位の警告として表示する。
+7. Submitとprovider Stopを別signalとして扱い、workflowがAgentSession所有関係から解決した同じattemptの両方が揃った場合だけAutoまたはApprovalの次状態へ進む。
+8. ArtifactはSubmitへ任意で添付でき、Artifactなしでも完了意思を表明できる。
+9. signal欠落、重複、遅延、別sessionまたは別attemptからの到着を、providerのterminal表示文言に依存せず判定する。
+10. Node完了後もAgentSessionとlive PTYを終了せず、Releashは自動入力または自動resumeを行わない。
+11. 旧AgentSessionデータを読み取り、変換、backfillしない。
 
 ## Acceptance scenario
 
@@ -45,11 +49,12 @@ Workflow、Fanout、Command executionはTerminal Surfaceを所有しない。Com
 | ATUI-010 | live terminal attach | remount、tab・workspace切替、renderer reload中の出力にgap、duplicate、順序逆転がない | #1595 |
 | ATUI-011 | terminal checkpoint | alternate screen、cursor、style、wide character、resize、bounded scrollback、終了画面を復元できる | #1595 |
 | ATUI-012 | App process restart | 最終画面とbounded scrollbackだけを復元し、同一process継続を成功扱いしない | #1595 |
-| ATUI-020 | provider lifecycle | Claude / Codexのsession、transcript参照、Stopを正しいAgentSessionとattemptへ関連付ける | #1596 |
-| ATUI-021 | lifecycle fault | signalの重複、遅延、欠落、別sessionからの混入をfail-closedで扱う | #1596 |
-| ATUI-030 | AgentSession vertical slice | 開始、対話、permission、reload、明示終了が旧Message projectionなしで成立する | #1597 |
+| ATUI-020 | provider lifecycle | Claude / Codexのsession identity、transcript参照、Stopを正しいAgentSessionへ関連付け、workflow stateを直接変更しない | #1596 |
+| ATUI-021 | lifecycle fault | signalの重複、遅延、欠落、別sessionからの混入でworkflowを進めず、AgentSessionとPTYは停止しない | #1596 |
+| ATUI-025 | provider availability | 初期化と設定から同じProvider利用可否を取得・再判定し、選択とWorkflow検証が同じ結果を参照する | #1603 |
+| ATUI-030 | AgentSession vertical slice | Provider選択、開始、対話、permission、reload、Paused / Resume、Archive / Restore / Delete、GC、履歴復帰が旧Message projectionなしで成立する | #1597 |
 | ATUI-040 | Auto workflow | 同じattemptのSubmitとStopが揃った場合だけCompletedとなる | #1598 |
-| ATUI-041 | Approval workflow | 同じattemptのSubmitとStopが揃った場合だけWaitingApprovalとなり、Approve / Rejectできる | #1598 |
+| ATUI-041 | Approval workflow | 同じattemptのSubmitとStopが揃った場合だけWaitingApprovalとなり、Approveできる | #1598 |
 | ATUI-042 | workflow fault | 片側signal、遅延signal、Retry、完了後の追加質問が定義済み状態へ収束する | #1598 |
 | ATUI-050 | atomic cutover | 旧runtime経路が削除され、Config、Hook、canonical docs、release buildが新契約だけを参照する | #1599 |
 

@@ -9,6 +9,8 @@ use crate::domain::provider_lifecycle::{
 pub(crate) enum ProviderLifecycleGatewayError {
     #[error("Provider lifecycle payload is invalid")]
     InvalidPayload,
+    #[error("Provider lifecycle payload belongs to a subagent")]
+    SubagentPayload,
     #[error("unsupported Provider lifecycle event: {0}")]
     UnsupportedEvent(String),
     #[error(transparent)]
@@ -23,6 +25,9 @@ pub(crate) fn parse_provider_payload(
 ) -> Result<ProviderLifecycleSignal, ProviderLifecycleGatewayError> {
     let payload = serde_json::from_slice::<ProviderPayload>(payload)
         .map_err(|_| ProviderLifecycleGatewayError::InvalidPayload)?;
+    if provider == ProviderKind::Claude && payload.agent_id.is_some() {
+        return Err(ProviderLifecycleGatewayError::SubagentPayload);
+    }
     let transcript_ref = payload.transcript_path.as_deref();
 
     match (provider, payload.hook_event_name.as_str()) {
@@ -86,4 +91,6 @@ struct ProviderPayload {
     error: Option<String>,
     #[serde(default)]
     error_details: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
 }

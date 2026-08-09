@@ -37,7 +37,9 @@ Releash のドメイン横断ユビキタス言語を定義する。
 | Thread | Workspace に属する会話・作業履歴・文脈。 | comment | ReviewThread | WorkflowExecution / NodeExecution には属さない。 |
 | Comment | Thread 配下の comment。 | comment | ReviewComment | review comment / discussion comment を吸収する。 |
 | Command | Session と対比される non-interactive な一回の command 実行単位。 | workflow | CommandExecution, ShellCommand, RunCommand | 命名は暫定。 |
-| Terminal | ユーザーが操作する interactive shell session。 | pty_session | PtySession, Command | Workspace に属する。workflow / node が直接触るものではない。 |
+| Terminal | ユーザーが操作する interactive shell session。 | terminal_surface | PtySession, Command | Workspace に属する。workflow / node が直接触るものではない。 |
+| TerminalSurface | 正規語 Terminal の backend 実装語彙（terminal_surface ドメインの集約）。 | terminal_surface | PtySession | product/domain 語彙は Terminal。 |
+| TerminalSurfaceOwner | TerminalSurface の所有者（Workspace または Session）。 | terminal_surface | - | 正規語 Terminal の backend 実装語彙。 |
 | UI | 人間が画面から操作・観測する面。 | operation_surface | FrontendDomain | Operation Surface。 |
 | CLI | command line から操作・観測する面。 | operation_surface | CliMutationRequestRecord | Operation Surface。 |
 | API | 外部 system、automation、remote client が programmatic に操作・観測する面。 | operation_surface | ProtocolDomain | Operation Surface。 |
@@ -189,7 +191,7 @@ Operation Surface
 | ImageAttachment | Attachment | 同上。 |
 | ReviewThread | Thread | review 固有に分けず Thread に吸収する。 |
 | ReviewComment | Comment | review 固有に分けず Comment に吸収する。 |
-| PtySession | Terminal | backend 実装語彙。product/domain 語彙は Terminal。 |
+| PtySession | Terminal / TerminalSurface | 旧 backend 実装語彙（pty_session ドメインは terminal_surface へ改名済み）。product/domain 語彙は Terminal、backend 実装語彙は TerminalSurface。 |
 | WorkflowEvent | なし | 現時点では domain entity として採用しない。 |
 | ActionPlan | なし | 合意済み語彙ではない。 |
 | Notification | なし | 今は Entity にしない。 |

@@ -30,9 +30,6 @@ fn receive_payload(armed: &ArmedProviderLifecycle) -> serde_json::Value {
         "capability": armed.capability(),
         "provider": provider,
         "agent_session_id": armed.scope().agent_session_id(),
-        "workflow_execution_id": armed.scope().workflow_execution_id(),
-        "node_execution_id": armed.scope().node_execution_id(),
-        "attempt": armed.scope().attempt(),
         "signal": {
             "event": "session_started",
             "provider_session_id": "claude-session-1",
@@ -59,7 +56,7 @@ fn slot_id() -> ProviderLifecycleSlotId {
 async fn provider_event_count(store: &LocalEventStore, agent_session_id: &str) -> usize {
     store
         .load_stream(LoadStreamRequest {
-            stream_id: StreamId::agent_session(agent_session_id).unwrap(),
+            stream_id: StreamId::provider_lifecycle(agent_session_id).unwrap(),
             after: None,
             limit: 64,
         })
@@ -89,7 +86,7 @@ async fn test_providerライフサイクル利用不能_hook_cli未実行でも�
         .arm(
             slot_id(),
             ProviderKind::Codex,
-            ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap(),
+            ProviderLifecycleScope::new("agent-1").unwrap(),
         )
         .await
         .unwrap();
@@ -102,9 +99,6 @@ async fn test_providerライフサイクル利用不能_hook_cli未実行でも�
         "capability": armed.capability(),
         "provider": "codex",
         "agent_session_id": "agent-1",
-        "workflow_execution_id": "workflow-1",
-        "node_execution_id": "node-1",
-        "attempt": 1,
         "reason": "session_start_deadline_exceeded"
     });
     let (status, response) = test_support::send_json(
@@ -140,7 +134,7 @@ async fn test_providerライフサイクルapi_認証済みrequestをusecaseへ�
         .arm(
             slot_id(),
             ProviderKind::Claude,
-            ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap(),
+            ProviderLifecycleScope::new("agent-1").unwrap(),
         )
         .await
         .unwrap();
@@ -170,7 +164,7 @@ async fn test_providerライフサイクルapi_未認証requestでは状態を�
         .arm(
             slot_id(),
             ProviderKind::Claude,
-            ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap(),
+            ProviderLifecycleScope::new("agent-1").unwrap(),
         )
         .await
         .unwrap();
@@ -210,7 +204,7 @@ async fn test_providerライフサイクルapi_不正requestでは状態を変�
         .arm(
             slot_id(),
             ProviderKind::Claude,
-            ProviderLifecycleScope::new("agent-1", "workflow-1", "node-1", 1).unwrap(),
+            ProviderLifecycleScope::new("agent-1").unwrap(),
         )
         .await
         .unwrap();
@@ -271,4 +265,39 @@ async fn test_providerライフサイクル解放_local_apiに外部routeを公�
             "message": "local API endpoint was not found",
         })
     );
+}
+
+#[tokio::test]
+async fn test_providerライフサイクルapi_session_started受理でhook_ingress区間を記録する() {
+    let _guard = crate::other::telemetry::lock_test_telemetry();
+    let directory = TempDir::new().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let usecase = provider_lifecycle_usecase(&store);
+    let armed = usecase
+        .arm(
+            slot_id(),
+            ProviderKind::Claude,
+            ProviderLifecycleScope::new("agent-1").unwrap(),
+        )
+        .await
+        .unwrap();
+    let router =
+        test_support::test_router_with_provider_lifecycle(directory.path(), "secret", usecase);
+    crate::other::telemetry::start_terminal_launch_sample_collection();
+
+    let (status, _) = test_support::send_json(
+        &router,
+        "/v1/provider-lifecycle/signals",
+        receive_payload(&armed),
+    )
+    .await;
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let samples = crate::other::telemetry::take_terminal_launch_samples();
+    assert!(samples
+        .iter()
+        .any(|sample| sample.phase == "terminal.launch.hook_ingress"));
 }

@@ -13,6 +13,7 @@ pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
     token: Arc<str>,
+    terminal_token: Arc<str>,
     instance_id: String,
     discovery: LocalApiDiscoveryFile,
 }
@@ -38,6 +39,9 @@ impl LocalApiServerBinding {
             .map_err(LocalApiServerError::Nonblocking)?;
 
         let token = Arc::<str>::from(generate_token());
+        // renderer JSへ渡すterminal専用token。discovery fileには書き出さず、
+        // in-processでterminal streamの認証にだけ使う。
+        let terminal_token = Arc::<str>::from(generate_token());
         let instance_id = uuid::Uuid::new_v4().simple().to_string();
         let pid = std::process::id();
         let process_started_at = process_start_time(pid).ok_or_else(|| {
@@ -61,6 +65,7 @@ impl LocalApiServerBinding {
             listener,
             port: address.port(),
             token,
+            terminal_token,
             instance_id,
             discovery,
         })
@@ -68,6 +73,14 @@ impl LocalApiServerBinding {
 
     pub(crate) fn bearer_token(&self) -> Arc<str> {
         self.token.clone()
+    }
+
+    pub(crate) fn terminal_bearer_token(&self) -> Arc<str> {
+        self.terminal_token.clone()
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
     pub(crate) fn start(

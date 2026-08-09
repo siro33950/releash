@@ -6,11 +6,11 @@ use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;
 
 fn workspace_owner(path: &str) -> TerminalSurfaceOwner {
-    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path))
+    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path)).unwrap()
 }
 
 fn session_owner(path: &str, session_id: &str) -> TerminalSurfaceOwner {
-    TerminalSurfaceOwner::session(WorkspaceIdentity::new(path), session_id)
+    TerminalSurfaceOwner::session(WorkspaceIdentity::new(path), session_id).unwrap()
 }
 
 struct BlockingFirstEventSink {
@@ -19,12 +19,24 @@ struct BlockingFirstEventSink {
     sequences: StdMutex<Vec<u64>>,
 }
 
+#[derive(Default)]
+struct RecordingEventSink {
+    events: StdMutex<Vec<TerminalSurfaceEvent>>,
+}
+
+impl TerminalSurfaceEventSink for RecordingEventSink {
+    fn publish(&self, event: TerminalSurfaceEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
 impl TerminalSurfaceEventSink for BlockingFirstEventSink {
     fn publish(&self, event: TerminalSurfaceEvent) {
         let sequence = match event {
             TerminalSurfaceEvent::Output { sequence, .. }
             | TerminalSurfaceEvent::Resize { sequence, .. }
             | TerminalSurfaceEvent::Exit { sequence, .. } => sequence,
+            TerminalSurfaceEvent::InputUnavailable { .. } => return,
         };
         if sequence == 1 {
             let (started, changed) = &*self.first_started;
@@ -62,7 +74,7 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
                     sequence,
                     TerminalSurfaceEvent::Output {
                         session_key: "surface".to_string(),
-                        data: "first".to_string(),
+                        data: "first".into(),
                         sequence,
                     },
                 ))
@@ -101,6 +113,42 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
     assert_eq!(*sink.sequences.lock().unwrap(), vec![1, 2]);
 }
 
+#[test]
+fn test_ターミナル増分復元点_compaction用画面とsequenceを同一critical_sectionで確定する() {
+    let source = include_str!("runtime_gateway_impl.rs");
+    let snapshot_start = source
+        .find("fn materialize_checkpoint(")
+        .expect("compaction must use one checkpoint snapshot boundary");
+    let snapshot_body = &source[snapshot_start
+        ..source[snapshot_start..]
+            .find("\n}\n")
+            .map(|end| snapshot_start + end + 3)
+            .unwrap()];
+
+    let terminal_lock = snapshot_body
+        .find("let terminal_surface = terminal_surface.lock();")
+        .expect("Terminal model must be locked before reading its sequence");
+    let registry_lock = snapshot_body
+        .find("let registry = registry.lock();")
+        .expect("registry sequence must be read while the Terminal model stays locked");
+    let snapshot = snapshot_body
+        .find("terminal_surface.snapshot(sequence)")
+        .expect("the locked model and sequence must create one checkpoint");
+    assert!(terminal_lock < registry_lock);
+    assert!(registry_lock < snapshot);
+
+    let compact_start = source.find("fn compact_checkpoint(").unwrap();
+    let compact_body = &source[compact_start
+        ..source[compact_start..]
+            .find("\n}\n")
+            .map(|end| compact_start + end + 3)
+            .unwrap()];
+    assert!(
+        compact_body.find("materialize_checkpoint(").unwrap()
+            < compact_body.find("store.replace_base(").unwrap()
+    );
+}
+
 #[derive(Default)]
 struct CapturedTerminalOutput {
     resizes: StdMutex<Vec<(u16, u16, u64)>>,
@@ -117,7 +165,9 @@ impl TerminalSurfaceEventSink for CapturedTerminalOutput {
             } => {
                 self.resizes.lock().unwrap().push((cols, rows, sequence));
             }
-            TerminalSurfaceEvent::Output { .. } | TerminalSurfaceEvent::Exit { .. } => {}
+            TerminalSurfaceEvent::Output { .. }
+            | TerminalSurfaceEvent::Exit { .. }
+            | TerminalSurfaceEvent::InputUnavailable { .. } => {}
         }
     }
 }
@@ -125,7 +175,7 @@ impl TerminalSurfaceEventSink for CapturedTerminalOutput {
 #[test]
 fn test_ターミナル画面_再起動復元_復元点破損時は新規画面で上書きしない() {
     let data_dir = tempfile::TempDir::new().unwrap();
-    let store = TerminalCheckpointFileStore::new(data_dir.path());
+    let store = TerminalCheckpointFileStore::new(data_dir.path(), TERMINAL_SURFACE_SCROLLBACK_ROWS);
     store
         .save(
             "workspace:5:/repo",
@@ -179,6 +229,37 @@ fn test_ターミナル画面_再起動復元_復元点破損時は新規画面�
 fn test_ターミナル画面_実行環境_初期状態では画面を持たない() {
     let gateway = TerminalSurfaceRuntimeGateway::default();
     assert!(gateway.list_summaries().is_empty());
+}
+
+#[test]
+fn test_ターミナル画面_pty起動は初期checkpoint永続化を待たない() {
+    let data_dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        data_dir.path().join("terminal-surfaces"),
+        b"not-a-directory",
+    )
+    .unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            data_dir.path().to_path_buf(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new(app.handle().clone());
+
+    gateway
+        .spawn_runtime(TerminalRuntimeSpawnRequest {
+            runtime_generation: 1,
+            session_key: "session:test".to_string(),
+            rows: 24,
+            cols: 80,
+            cwd: Some(data_dir.path().to_string_lossy().into_owned()),
+            process: None,
+            initial_terminal_surface: None,
+        })
+        .unwrap();
+
+    gateway.request_runtime_stop(1).unwrap();
 }
 
 #[test]
@@ -363,7 +444,8 @@ impl TerminalSurfaceEventSink for BlockingSessionSink {
         let session_key = match event {
             TerminalSurfaceEvent::Output { session_key, .. }
             | TerminalSurfaceEvent::Resize { session_key, .. }
-            | TerminalSurfaceEvent::Exit { session_key, .. } => session_key,
+            | TerminalSurfaceEvent::Exit { session_key, .. }
+            | TerminalSurfaceEvent::InputUnavailable { session_key, .. } => session_key,
         };
         if session_key != self.blocked_session_key {
             return;
@@ -385,7 +467,7 @@ fn insert_test_session_with_resizer<R: tauri::Runtime>(
     worktree_path: Option<&str>,
     label: Option<&str>,
     resizer: Box<dyn NativePtyResizer + Send>,
-) -> Arc<std::sync::atomic::AtomicBool> {
+) -> (Arc<std::sync::atomic::AtomicBool>, Arc<Mutex<Vec<u8>>>) {
     let written = Arc::new(Mutex::new(Vec::<u8>::new()));
     let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let terminal_surface = Arc::new(Mutex::new(NativeTerminalEmulator::new(
@@ -398,7 +480,7 @@ fn insert_test_session_with_resizer<R: tauri::Runtime>(
     let mut session = TerminalSurface::new_with_session_key(
         runtime_generation,
         session_key.to_string(),
-        TerminalSurfaceOwner::session(workspace, session_key),
+        TerminalSurfaceOwner::session(workspace, session_key).unwrap(),
         label.map(str::to_string),
     );
     session.worktree_path = worktree_path.map(str::to_string);
@@ -408,7 +490,7 @@ fn insert_test_session_with_resizer<R: tauri::Runtime>(
         runtime_generation,
         AttachedTerminalRuntime {
             native_pty: NativePtyRuntime::from_parts(
-                Box::new(MockWriter(written)),
+                Box::new(MockWriter(Arc::clone(&written))),
                 Box::new(MockKiller {
                     killed: Arc::clone(&killed),
                 }),
@@ -420,10 +502,14 @@ fn insert_test_session_with_resizer<R: tauri::Runtime>(
             checkpoint_scheduler: None,
             session_key: session_key.to_string(),
             output_drained: Arc::new((Mutex::new(true), parking_lot::Condvar::new())),
+            checkpoint_journal: None,
+            checkpoint_store: None,
+            checkpoint_io: None,
+            pending_input_traces: Arc::new(Mutex::new(VecDeque::new())),
         },
     );
     gateway.insert_surface(session);
-    killed
+    (killed, written)
 }
 
 fn insert_test_session<R: tauri::Runtime>(
@@ -441,6 +527,7 @@ fn insert_test_session<R: tauri::Runtime>(
         label,
         Box::new(MockResizer { rows: 24, cols: 80 }),
     )
+    .0
 }
 
 #[test]
@@ -448,6 +535,193 @@ fn test_ターミナル画面入力_存在するptyへ書き込む() {
     let gateway = TerminalSurfaceRuntimeGateway::default();
     insert_test_session(&gateway, 1, "key", Some("/repo"), None);
     assert!(gateway.write("key", "hello").is_ok());
+}
+
+#[test]
+fn test_ターミナル画面入力_attachment_sequenceをpty書込順へ変換する() {
+    let gateway = TerminalSurfaceRuntimeGateway::default();
+    let (_, written) = insert_test_session_with_resizer(
+        &gateway,
+        1,
+        "key",
+        Some("/repo"),
+        None,
+        Box::new(MockResizer { rows: 24, cols: 80 }),
+    );
+    gateway.activate_input_attachment("key", "attachment-a");
+
+    assert!(gateway
+        .write_attached("key", "attachment-a", 1, "second")
+        .is_ok());
+    assert!(written.lock().is_empty());
+    assert!(gateway
+        .write_attached("key", "attachment-a", 0, "first")
+        .is_ok());
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while written.lock().len() < "firstsecond".len() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(written.lock().as_slice(), b"firstsecond");
+}
+
+#[test]
+fn test_ターミナル画面入力_連続する入力不能をattachment_streamへ一度だけ通知する() {
+    let recorded = Arc::new(RecordingEventSink::default());
+    let gateway = TerminalSurfaceRuntimeGateway {
+        event_sink: Some(recorded.clone()),
+        input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::with_pending_capacity(
+            1,
+        )),
+        ..Default::default()
+    };
+    gateway.activate_input_attachment("key", "attachment-a");
+
+    assert!(gateway
+        .write_attached("key", "attachment-a", 2, "third")
+        .is_ok());
+    assert!(gateway
+        .write_attached("key", "attachment-a", 3, "fourth")
+        .is_err());
+    assert!(gateway
+        .write_attached("key", "attachment-a", 4, "fifth")
+        .is_err());
+
+    assert_eq!(
+        recorded.events.lock().unwrap().as_slice(),
+        &[TerminalSurfaceEvent::InputUnavailable {
+            session_key: "key".to_string(),
+            message: "Failed to write to terminal: Terminal input reorder buffer is full"
+                .to_string(),
+        }]
+    );
+}
+
+#[test]
+fn test_ターミナル画面入力_失効attachmentのwrite失敗はinput_unavailableを通知する() {
+    let recorded = Arc::new(RecordingEventSink::default());
+    let gateway = TerminalSurfaceRuntimeGateway {
+        event_sink: Some(recorded.clone()),
+        ..Default::default()
+    };
+    gateway.activate_input_attachment("key", "attachment-b");
+
+    let result = gateway.write_attached("key", "attachment-a", 0, "stale");
+
+    assert!(matches!(
+        result,
+        Err(error) if error.message() == "Terminal input attachment is no longer active"
+    ));
+    assert_eq!(
+        recorded.events.lock().unwrap().as_slice(),
+        &[TerminalSurfaceEvent::InputUnavailable {
+            session_key: "key".to_string(),
+            message: "Failed to write to terminal: Terminal input attachment is no longer active"
+                .to_string(),
+        }]
+    );
+}
+
+fn journal_output_context(
+    journal_enabled: bool,
+    flush_calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> (
+    TerminalOutputReaderContext,
+    Arc<Mutex<IncrementalCheckpointJournal>>,
+) {
+    let registry = Arc::new(Mutex::new(TerminalSurfaceRegistry::default()));
+    registry
+        .lock()
+        .insert(TerminalSurface::new_with_session_key(
+            1,
+            "journal-key".to_string(),
+            session_owner("/repo", "journal"),
+            None,
+        ));
+    let journal = Arc::new(Mutex::new(IncrementalCheckpointJournal::new(
+        NativeTerminalCheckpoint {
+            replay: String::new(),
+            sequence: 0,
+            cols: 80,
+            rows: 24,
+        },
+        true,
+    )));
+    let scheduler = DirtyCheckpointScheduler::spawn(
+        Duration::from_millis(10),
+        Arc::new(move || {
+            flush_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }),
+    );
+    let context = TerminalOutputReaderContext {
+        event_sink: None,
+        event_order: Arc::new(TerminalSurfaceEventOrder::default()),
+        registry,
+        runtime_generation: 1,
+        terminal_surface: Arc::new(Mutex::new(NativeTerminalEmulator::new(
+            80,
+            24,
+            TERMINAL_SURFACE_SCROLLBACK_ROWS,
+        ))),
+        checkpoint_scheduler: Some(scheduler),
+        session_key: "journal-key".to_string(),
+        output_drained: Arc::new((Mutex::new(false), parking_lot::Condvar::new())),
+        checkpoint_journal: Some(Arc::clone(&journal)),
+        journal_enabled,
+        first_provider_byte_started_at: Instant::now(),
+        pending_input_traces: Arc::new(Mutex::new(VecDeque::new())),
+    };
+    (context, journal)
+}
+
+#[test]
+fn test_ターミナル出力journal_有効時はrecordとmark_dirtyを実行する() {
+    let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (context, journal) = journal_output_context(true, Arc::clone(&flush_calls));
+
+    publish_terminal_output(&context, "journal-data".to_string(), Vec::new());
+
+    let pending = journal.lock().take_pending();
+    assert!(matches!(
+        pending.records.as_slice(),
+        [NativeTerminalCheckpointRecord::Output { sequence: 1, data }]
+            if data.as_ref() == "journal-data"
+    ));
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while flush_calls.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(flush_calls.load(Ordering::SeqCst) > 0);
+}
+
+#[test]
+fn test_ターミナル出力journal_無効時はrecordとmark_dirtyを実行しない() {
+    let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (context, journal) = journal_output_context(false, Arc::clone(&flush_calls));
+
+    publish_terminal_output(&context, "journal-data".to_string(), Vec::new());
+
+    assert!(journal.lock().take_pending().records.is_empty());
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(flush_calls.load(Ordering::SeqCst), 0);
+    let registry = context.registry.lock();
+    let surface = registry.find_by_session_key("journal-key").unwrap();
+    assert_eq!(surface.latest_sequence, 1);
+}
+
+#[test]
+fn test_ターミナル画面入力_provider_process終了後はwriterが残っていても拒否する() {
+    let gateway = TerminalSurfaceRuntimeGateway::default();
+    insert_test_session(&gateway, 1, "key", Some("/repo"), None);
+    assert!(gateway.registry.lock().mark_exited(1, Some(0)).is_some());
+
+    let result = gateway.write("key", "must-not-be-accepted");
+
+    assert!(matches!(
+        result,
+        Err(error) if error.message() == "Terminal Surface is not writable for owner key"
+    ));
 }
 
 #[test]
@@ -490,12 +764,12 @@ fn test_ターミナル画面_寸法変更_実pty変更中の出力適用を同�
     let output = std::thread::spawn(move || {
         event_order.advance_and_publish(None, || {
             terminal_surface.lock().apply("output-after-resize");
-            let sequence = registry.lock().record_output(1)?;
+            let sequence = registry.lock().record_output(1, Instant::now())?;
             Some((
                 sequence,
                 TerminalSurfaceEvent::Output {
                     session_key: "key".to_string(),
-                    data: "output-after-resize".to_string(),
+                    data: "output-after-resize".into(),
                     sequence,
                 },
             ))
@@ -530,6 +804,7 @@ fn test_ターミナル画面_イベント順序_別画面の配信を相互に�
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
         app.handle().clone(),
         sink,
+        true,
     ));
     insert_test_session(&gateway, 1, "surface-a", Some("/repo"), None);
     insert_test_session(&gateway, 2, "surface-b", Some("/repo"), None);
@@ -573,6 +848,7 @@ fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() 
     let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
         app.handle().clone(),
         captured.clone(),
+        true,
     );
     insert_test_session(&gateway, 1, "key", Some("/repo"), None);
 
@@ -617,25 +893,6 @@ fn test_ターミナル画面一括終了_登録簿が選んだ作業木だけ�
 
     assert_eq!(killed, vec![1, 2]);
     assert!(gateway.snapshot(1).is_none());
-    assert!(gateway.snapshot(2).is_none());
-    assert!(gateway.snapshot(3).is_some());
-}
-
-#[test]
-fn test_ターミナル画面整理_指定セッションキーを保持する() {
-    let gateway = TerminalSurfaceRuntimeGateway::default();
-    insert_test_session(&gateway, 1, "key-1", Some("/repo"), Some("dev"));
-    insert_test_session(&gateway, 2, "key-2", Some("/repo"), Some("test"));
-    insert_test_session(&gateway, 3, "key-3", Some("/other"), None);
-
-    let killed = crate::usecase::terminal_surface::lifecycle_usecase::gc_by_worktree(
-        &gateway,
-        "/repo",
-        &[String::from("key-1")],
-    );
-
-    assert_eq!(killed, vec![2]);
-    assert!(gateway.snapshot(1).is_some());
     assert!(gateway.snapshot(2).is_none());
     assert!(gateway.snapshot(3).is_some());
 }

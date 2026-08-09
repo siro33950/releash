@@ -216,7 +216,7 @@ mod tests {
                     "builtin": false,
                     "nodes": [{
                         "name": "review",
-                        "session": {},
+                        "session": {"provider": "claude", "gate": "auto"},
                         "artifact": "review-verdict"
                     }]
                 }
@@ -242,7 +242,7 @@ mod tests {
                     "builtin": false,
                     "nodes": [{
                         "name": "review",
-                        "session": {},
+                        "session": {"provider": "claude", "gate": "auto"},
                         "artifact": "review-verdict"
                     }]
                 }
@@ -277,7 +277,7 @@ mod tests {
                     },
                     {
                         "name": "security-review",
-                        "session": {},
+                        "session": {"provider": "claude", "gate": "auto"},
                         "artifact": "review-verdict"
                     }]
                 }
@@ -304,7 +304,7 @@ mod tests {
                     "builtin": false,
                     "nodes": [{
                         "name": "review",
-                        "session": {}
+                        "session": {"provider": "claude", "gate": "auto"}
                     }]
                 }
             }),

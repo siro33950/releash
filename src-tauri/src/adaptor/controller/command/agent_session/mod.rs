@@ -6,6 +6,7 @@ pub(crate) mod model;
 pub(crate) mod notice;
 pub(crate) mod paste;
 pub(crate) mod permission;
+pub(crate) mod provider_tui;
 pub(crate) mod session;
 pub(crate) mod status;
 pub(crate) mod stored_session;
@@ -46,7 +47,7 @@ impl From<AgentRuntimeError> for AppError {
     }
 }
 
-pub(super) const COMMAND_NAMES: &[&str] = &[
+pub(super) const LEGACY_COMMAND_NAMES: &[&str] = &[
     "get_session_status",
     "get_workspace_status",
     "list_workspace_statuses",
@@ -110,12 +111,39 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "set_session_title",
 ];
 
+pub(super) const PROVIDER_TUI_COMMAND_NAMES: &[&str] = &[
+    "list_available_provider_agent_session_providers",
+    "create_provider_agent_session",
+    "resume_provider_agent_session_history_candidate",
+    "list_provider_agent_sessions",
+    "get_provider_agent_session",
+    "open_provider_agent_session",
+    "resume_provider_agent_session",
+    "archive_provider_agent_session",
+    "restore_provider_agent_session",
+    "delete_provider_agent_session",
+    "confirm_provider_agent_session_archive_delete",
+    "list_provider_agent_session_history",
+    "list_provider_hook_health_warnings",
+];
+
 pub(crate) fn register(router: &mut super::CommandRouter) {
-    router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));
+    register_legacy(router);
+    register_provider_tui(router);
 }
 
-pub(crate) fn invoke_handler(
-) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+pub(super) fn register_legacy(router: &mut super::CommandRouter) {
+    router.register_domain(LEGACY_COMMAND_NAMES, Box::new(invoke_handler()));
+}
+
+pub(super) fn register_provider_tui(router: &mut super::CommandRouter) {
+    router.register_domain(
+        PROVIDER_TUI_COMMAND_NAMES,
+        Box::new(provider_tui_invoke_handler()),
+    );
+}
+
+pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         status::get_session_status,
         status::get_workspace_status,
@@ -178,5 +206,24 @@ pub(crate) fn invoke_handler(
         stored_session::list_closed_sessions,
         stored_session::fork_session,
         stored_session::set_session_title,
+    ]
+}
+
+pub(crate) fn provider_tui_invoke_handler<R: tauri::Runtime>(
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        provider_tui::list_available_provider_agent_session_providers,
+        provider_tui::create_provider_agent_session,
+        provider_tui::resume_provider_agent_session_history_candidate,
+        provider_tui::list_provider_agent_sessions,
+        provider_tui::get_provider_agent_session,
+        provider_tui::open_provider_agent_session,
+        provider_tui::resume_provider_agent_session,
+        provider_tui::archive_provider_agent_session,
+        provider_tui::restore_provider_agent_session,
+        provider_tui::delete_provider_agent_session,
+        provider_tui::confirm_provider_agent_session_archive_delete,
+        provider_tui::list_provider_agent_session_history,
+        provider_tui::list_provider_hook_health_warnings,
     ]
 }

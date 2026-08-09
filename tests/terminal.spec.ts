@@ -31,7 +31,7 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 		.poll(() =>
 			page.evaluate(() =>
 				window.__TAURI_INTERNALS__?.invocations.some(
-					(invocation) => invocation.cmd === "resize_pty",
+					(invocation) => invocation.cmd === "resize_terminal_surface",
 				),
 			),
 		)
@@ -66,7 +66,7 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 					base_branch: null,
 				},
 			],
-			get_or_spawn_pty: {
+			get_or_spawn_terminal_surface: {
 				session_key: snapshot.session_key,
 				restored_from_checkpoint: false,
 				is_new: false,
@@ -74,7 +74,7 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 				exit_code: null,
 			},
 			get_terminal_surface: snapshot,
-			attach_pty: {
+			attach_terminal_surface: {
 				__mockTerminalAttachment: true,
 				messages: [
 					{ type: "snapshot", surface: snapshot },
@@ -126,7 +126,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 					base_branch: null,
 				},
 			],
-			get_or_spawn_pty: {
+			get_or_spawn_terminal_surface: {
 				session_key: snapshot.session_key,
 				restored_from_checkpoint: true,
 				is_new: true,
@@ -134,7 +134,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 				exit_code: null,
 			},
 			get_terminal_surface: snapshot,
-			attach_pty: {
+			attach_terminal_surface: {
 				__mockTerminalAttachment: true,
 				messages: [{ type: "snapshot", surface: snapshot }],
 			},
@@ -150,7 +150,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 
 	const redBold = rows.locator("span").filter({ hasText: "RED-BOLD" });
 	await expect(redBold).toHaveCSS("font-weight", "700");
-	await expect(redBold).toHaveCSS("color", "rgb(255, 110, 103)");
+	await expect(redBold).toHaveCSS("color", "rgb(239, 41, 41)");
 	const wideJapanese = rows.locator("span").filter({ hasText: "日本語" });
 	const wideEmoji = rows.locator("span").filter({ hasText: "🙂" });
 	const narrow = rows.locator("span").filter({ hasText: "ABCD" });

@@ -4,6 +4,7 @@
 //! raw payload preservation, row namespaces and the 16 MiB stored-record
 //! bound stay on this side of the boundary.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -17,7 +18,10 @@ use crate::adaptor::gateway::workflow::execution_store::{
     encode_workflow_execution_projection_record_v1, encode_workflow_worktree_owner_record_v1,
 };
 use crate::domain::local_event::{
-    AgentContentBlobRecord, LocalStateMutation, MessageProjectionRecord, RevisionGuard,
+    AgentContentBlobRecord, LocalStateMutation, MessageProjectionRecord,
+    ProviderAgentSessionLifecycleRecord, ProviderAgentSessionOriginRecord,
+    ProviderAgentSessionProjectionRecord, ProviderAgentSessionProviderRecord,
+    ProviderHookHealthProjectionRecord, ProviderSessionOwnershipProjectionRecord, RevisionGuard,
     SessionProjectionRecord, WorkflowExecutionProjectionRecord,
 };
 
@@ -25,6 +29,278 @@ use super::indexed_projection_codec::encode_workflow_execution_node_v1;
 use super::state_record_codec::{StoredOperationReceiptV1, StoredOperationStatusV1};
 
 pub(crate) const PROJECTION_RECORD_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const PROVIDER_AGENT_SESSION_STORAGE_PREFIX: &str = "provider-agent-session:";
+pub(crate) const PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX: &str = "provider-session-ownership:";
+pub(crate) const PROVIDER_HOOK_HEALTH_STORAGE_PREFIX: &str = "provider-hook-health:";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProviderAgentSessionProjectionV1 {
+    schema: String,
+    id: String,
+    workspace_identity: String,
+    worktree_path: String,
+    provider: String,
+    origin: StoredProviderAgentSessionOriginV1,
+    lifecycle: String,
+    provider_session_id: Option<String>,
+    transcript_ref: Option<String>,
+    initial_instruction_admitted: bool,
+    #[serde(default)]
+    last_exit_abnormal: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredProviderAgentSessionOriginV1 {
+    Standalone,
+    WorkflowNode {
+        workflow_execution_id: String,
+        node_execution_id: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProviderSessionOwnershipProjectionV1 {
+    schema: String,
+    provider: String,
+    provider_session_id: String,
+    agent_session_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProviderHookHealthProjectionV1 {
+    schema: String,
+    provider: String,
+    latest_launch_id: String,
+    latest_launch_session_started: bool,
+    warning_launch_id: Option<String>,
+    warning_reason: Option<String>,
+}
+
+fn encode_provider_hook_health_projection_record_v1(
+    record: &ProviderHookHealthProjectionRecord,
+) -> Result<String, String> {
+    validate_provider_hook_health_projection(record)?;
+    serde_json::to_string(&StoredProviderHookHealthProjectionV1 {
+        schema: "provider_hook_health_projection_v1".to_string(),
+        provider: provider_record_label(record.provider).to_string(),
+        latest_launch_id: record.latest_launch_id.clone(),
+        latest_launch_session_started: record.latest_launch_session_started,
+        warning_launch_id: record.warning_launch_id.clone(),
+        warning_reason: record.warning_reason.clone(),
+    })
+    .map_err(|_| "Provider Hook health encode failed".to_string())
+}
+
+fn decode_provider_hook_health_projection_record_v1(
+    raw: &str,
+) -> Result<ProviderHookHealthProjectionRecord, String> {
+    let stored: StoredProviderHookHealthProjectionV1 = serde_json::from_str(raw)
+        .map_err(|_| "Provider Hook health projection is malformed".to_string())?;
+    if stored.schema != "provider_hook_health_projection_v1" {
+        return Err("Provider Hook health projection schema is unsupported".to_string());
+    }
+    let record = ProviderHookHealthProjectionRecord {
+        provider: decode_provider_record(&stored.provider)?,
+        latest_launch_id: stored.latest_launch_id,
+        latest_launch_session_started: stored.latest_launch_session_started,
+        warning_launch_id: stored.warning_launch_id,
+        warning_reason: stored.warning_reason,
+    };
+    validate_provider_hook_health_projection(&record)?;
+    Ok(record)
+}
+
+fn validate_provider_hook_health_projection(
+    record: &ProviderHookHealthProjectionRecord,
+) -> Result<(), String> {
+    if record.latest_launch_id.trim().is_empty()
+        || record.warning_launch_id.is_some() != record.warning_reason.is_some()
+        || record
+            .warning_launch_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || record
+            .warning_reason
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("Provider Hook health projection is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn encode_provider_session_ownership_projection_record_v1(
+    record: &ProviderSessionOwnershipProjectionRecord,
+) -> Result<String, String> {
+    validate_provider_session_ownership_projection(record)?;
+    serde_json::to_string(&StoredProviderSessionOwnershipProjectionV1 {
+        schema: "provider_session_ownership_projection_v1".to_string(),
+        provider: provider_record_label(record.provider).to_string(),
+        provider_session_id: record.provider_session_id.clone(),
+        agent_session_id: record.agent_session_id.clone(),
+    })
+    .map_err(|_| "provider Session ownership encode failed".to_string())
+}
+
+fn decode_provider_session_ownership_projection_record_v1(
+    raw: &str,
+) -> Result<ProviderSessionOwnershipProjectionRecord, String> {
+    let stored: StoredProviderSessionOwnershipProjectionV1 = serde_json::from_str(raw)
+        .map_err(|_| "provider Session ownership projection is malformed".to_string())?;
+    if stored.schema != "provider_session_ownership_projection_v1" {
+        return Err("provider Session ownership projection schema is unsupported".to_string());
+    }
+    let record = ProviderSessionOwnershipProjectionRecord {
+        provider: decode_provider_record(&stored.provider)?,
+        provider_session_id: stored.provider_session_id,
+        agent_session_id: stored.agent_session_id,
+    };
+    validate_provider_session_ownership_projection(&record)?;
+    Ok(record)
+}
+
+fn validate_provider_session_ownership_projection(
+    record: &ProviderSessionOwnershipProjectionRecord,
+) -> Result<(), String> {
+    if record.provider_session_id.trim().is_empty()
+        || record
+            .agent_session_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("provider Session ownership projection is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn provider_record_label(provider: ProviderAgentSessionProviderRecord) -> &'static str {
+    match provider {
+        ProviderAgentSessionProviderRecord::Claude => "claude",
+        ProviderAgentSessionProviderRecord::Codex => "codex",
+    }
+}
+
+fn decode_provider_record(value: &str) -> Result<ProviderAgentSessionProviderRecord, String> {
+    match value {
+        "claude" => Ok(ProviderAgentSessionProviderRecord::Claude),
+        "codex" => Ok(ProviderAgentSessionProviderRecord::Codex),
+        _ => Err("provider Session ownership provider is invalid".to_string()),
+    }
+}
+
+fn encode_provider_agent_session_projection_record_v1(
+    record: &ProviderAgentSessionProjectionRecord,
+) -> Result<String, String> {
+    validate_provider_agent_session_projection(record)?;
+    let stored = StoredProviderAgentSessionProjectionV1 {
+        schema: "provider_agent_session_projection_v1".to_string(),
+        id: record.id.clone(),
+        workspace_identity: record.workspace_identity.clone(),
+        worktree_path: record.worktree_path.clone(),
+        provider: provider_record_label(record.provider).to_string(),
+        origin: match &record.origin {
+            ProviderAgentSessionOriginRecord::Standalone => {
+                StoredProviderAgentSessionOriginV1::Standalone
+            }
+            ProviderAgentSessionOriginRecord::WorkflowNode {
+                workflow_execution_id,
+                node_execution_id,
+            } => StoredProviderAgentSessionOriginV1::WorkflowNode {
+                workflow_execution_id: workflow_execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+            },
+        },
+        lifecycle: match record.lifecycle {
+            ProviderAgentSessionLifecycleRecord::Open => "open",
+            ProviderAgentSessionLifecycleRecord::Paused => "paused",
+            ProviderAgentSessionLifecycleRecord::Archived => "archived",
+        }
+        .to_string(),
+        provider_session_id: record.provider_session_id.clone(),
+        transcript_ref: record.transcript_ref.clone(),
+        initial_instruction_admitted: record.initial_instruction_admitted,
+        last_exit_abnormal: record.last_exit_abnormal,
+    };
+    serde_json::to_string(&stored).map_err(|_| "provider AgentSession encode failed".to_string())
+}
+
+fn decode_provider_agent_session_projection_record_v1(
+    raw: &str,
+) -> Result<ProviderAgentSessionProjectionRecord, String> {
+    let stored: StoredProviderAgentSessionProjectionV1 = serde_json::from_str(raw)
+        .map_err(|_| "provider AgentSession projection is malformed".to_string())?;
+    if stored.schema != "provider_agent_session_projection_v1" {
+        return Err("provider AgentSession projection schema is unsupported".to_string());
+    }
+    let record = ProviderAgentSessionProjectionRecord {
+        id: stored.id,
+        workspace_identity: stored.workspace_identity,
+        worktree_path: stored.worktree_path,
+        provider: decode_provider_record(&stored.provider)
+            .map_err(|_| "provider AgentSession provider is invalid".to_string())?,
+        origin: match stored.origin {
+            StoredProviderAgentSessionOriginV1::Standalone => {
+                ProviderAgentSessionOriginRecord::Standalone
+            }
+            StoredProviderAgentSessionOriginV1::WorkflowNode {
+                workflow_execution_id,
+                node_execution_id,
+            } => ProviderAgentSessionOriginRecord::WorkflowNode {
+                workflow_execution_id,
+                node_execution_id,
+            },
+        },
+        lifecycle: match stored.lifecycle.as_str() {
+            "open" => ProviderAgentSessionLifecycleRecord::Open,
+            "paused" => ProviderAgentSessionLifecycleRecord::Paused,
+            "archived" => ProviderAgentSessionLifecycleRecord::Archived,
+            _ => return Err("provider AgentSession lifecycle is invalid".to_string()),
+        },
+        provider_session_id: stored.provider_session_id,
+        transcript_ref: stored.transcript_ref,
+        initial_instruction_admitted: stored.initial_instruction_admitted,
+        last_exit_abnormal: stored.last_exit_abnormal,
+    };
+    validate_provider_agent_session_projection(&record)?;
+    Ok(record)
+}
+
+fn validate_provider_agent_session_projection(
+    record: &ProviderAgentSessionProjectionRecord,
+) -> Result<(), String> {
+    if record.id.trim().is_empty()
+        || record.workspace_identity.trim().is_empty()
+        || record.worktree_path.trim().is_empty()
+        || crate::domain::repository::normalize_repo_path(&record.workspace_identity)
+            != record.workspace_identity
+        || crate::domain::repository::normalize_repo_path(&record.worktree_path)
+            != record.worktree_path
+        || record
+            .provider_session_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        || record
+            .transcript_ref
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("provider AgentSession projection is invalid".to_string());
+    }
+    if let ProviderAgentSessionOriginRecord::WorkflowNode {
+        workflow_execution_id,
+        node_execution_id,
+    } = &record.origin
+    {
+        if workflow_execution_id.trim().is_empty() || node_execution_id.trim().is_empty() {
+            return Err("provider AgentSession workflow ownership is invalid".to_string());
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn canonical_mutation_identity_v1(
     mutation: &LocalStateMutation,
@@ -122,6 +398,15 @@ pub(crate) fn encode_session_projection_record_v1(
         SessionProjectionRecord::AgentSession(projection) => {
             encode_agent_session_projection_record_v1(projection)?
         }
+        SessionProjectionRecord::ProviderAgentSession(projection) => {
+            encode_provider_agent_session_projection_record_v1(projection)?
+        }
+        SessionProjectionRecord::ProviderSessionOwnership(projection) => {
+            encode_provider_session_ownership_projection_record_v1(projection)?
+        }
+        SessionProjectionRecord::ProviderHookHealth(projection) => {
+            encode_provider_hook_health_projection_record_v1(projection)?
+        }
         SessionProjectionRecord::WorkflowExecution(projection) => {
             encode_workflow_execution_projection_record_v1(projection)?
         }
@@ -138,7 +423,19 @@ pub(crate) fn decode_session_projection_record_v1(
     session_id: &str,
 ) -> Result<SessionProjectionRecord, String> {
     validate_stored_bound(raw)?;
-    let record = if session_id.starts_with("workflow-worktree:") {
+    let record = if session_id.starts_with(PROVIDER_HOOK_HEALTH_STORAGE_PREFIX) {
+        SessionProjectionRecord::ProviderHookHealth(
+            decode_provider_hook_health_projection_record_v1(raw)?,
+        )
+    } else if session_id.starts_with(PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX) {
+        SessionProjectionRecord::ProviderSessionOwnership(
+            decode_provider_session_ownership_projection_record_v1(raw)?,
+        )
+    } else if session_id.starts_with(PROVIDER_AGENT_SESSION_STORAGE_PREFIX) {
+        SessionProjectionRecord::ProviderAgentSession(
+            decode_provider_agent_session_projection_record_v1(raw)?,
+        )
+    } else if session_id.starts_with("workflow-worktree:") {
         SessionProjectionRecord::WorkflowWorktreeOwner(decode_workflow_worktree_owner_record_v1(
             raw,
         )?)
@@ -230,7 +527,31 @@ fn validate_session_projection_key(
         SessionProjectionRecord::AgentSession(projection)
             if !session_id.starts_with("workflow:")
                 && !session_id.starts_with("workflow-worktree:")
+                && !session_id.starts_with(PROVIDER_AGENT_SESSION_STORAGE_PREFIX)
+                && !session_id.starts_with(PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX)
+                && !session_id.starts_with(PROVIDER_HOOK_HEALTH_STORAGE_PREFIX)
                 && projection.meta.id == session_id =>
+        {
+            Ok(())
+        }
+        SessionProjectionRecord::ProviderAgentSession(projection)
+            if session_id
+                .strip_prefix(PROVIDER_AGENT_SESSION_STORAGE_PREFIX)
+                .is_some_and(|id| id == projection.id) =>
+        {
+            Ok(())
+        }
+        SessionProjectionRecord::ProviderSessionOwnership(projection)
+            if session_id == provider_session_ownership_storage_key(projection) =>
+        {
+            Ok(())
+        }
+        SessionProjectionRecord::ProviderHookHealth(projection)
+            if session_id
+                == format!(
+                    "{PROVIDER_HOOK_HEALTH_STORAGE_PREFIX}{}",
+                    provider_record_label(projection.provider)
+                ) =>
         {
             Ok(())
         }
@@ -288,6 +609,17 @@ fn validate_message_projection_key(
 fn workflow_worktree_storage_key(worktree_path: &str) -> String {
     let digest = Sha256::digest(worktree_path.as_bytes());
     format!("workflow-worktree:{}", hex::encode(digest))
+}
+
+fn provider_session_ownership_storage_key(
+    projection: &ProviderSessionOwnershipProjectionRecord,
+) -> String {
+    let digest = Sha256::digest(projection.provider_session_id.as_bytes());
+    format!(
+        "{PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX}{}:{}",
+        provider_record_label(projection.provider),
+        hex::encode(digest)
+    )
 }
 
 fn validate_stored_bound(raw: &str) -> Result<(), String> {
@@ -354,6 +686,10 @@ fn preserve_additive_fields(raw: &Value, known: &Value, next: &mut Value) {
     }
 }
 
+#[cfg(test)]
+#[path = "agent_session_lifecycle_projection_codec_test.rs"]
+mod agent_session_lifecycle_projection_codec_tests;
+
 fn unique_array_keys(values: &[Value]) -> Option<Vec<String>> {
     let keys = values
         .iter()
@@ -401,7 +737,8 @@ fn semantic_array_key(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         canonical_mutation_identity_v1, decode_message_projection_record_v1,
-        decode_session_projection_record_v1, encode_message_projection_record_v1,
+        decode_provider_hook_health_projection_record_v1, decode_session_projection_record_v1,
+        encode_message_projection_record_v1, encode_provider_hook_health_projection_record_v1,
         encode_session_projection_record_v1, encode_session_projection_update_v1,
         merge_additive_payload,
     };
@@ -411,7 +748,8 @@ mod tests {
     use crate::domain::local_event::{
         AgentMessageProjectionRecord, AgentMessageRoleRecord, LocalStateMutation,
         MessageProjectionRecord, OperationKind, OperationReceiptRecord, OperationRecordMutation,
-        OperationStatusRecord, OperationStatusValue, RecordAuthentication, Revision, RevisionGuard,
+        OperationStatusRecord, OperationStatusValue, ProviderAgentSessionProviderRecord,
+        ProviderHookHealthProjectionRecord, RecordAuthentication, Revision, RevisionGuard,
         SessionProjectionRecord,
     };
     use crate::usecase::agent_session::session::{
@@ -630,5 +968,23 @@ mod tests {
                 r#""schema":"agent_session_projection_v2""#,
             );
         assert!(decode_session_projection_record_v1(&session, "session-1").is_err());
+    }
+
+    #[test]
+    fn test_provider_hook_health_projection_session_start後の配送失敗warningを保持する() {
+        let record = ProviderHookHealthProjectionRecord {
+            provider: ProviderAgentSessionProviderRecord::Claude,
+            latest_launch_id: "launch-1".to_string(),
+            latest_launch_session_started: true,
+            warning_launch_id: Some("launch-1".to_string()),
+            warning_reason: Some("local_api_unavailable".to_string()),
+        };
+
+        let encoded = encode_provider_hook_health_projection_record_v1(&record).unwrap();
+
+        assert_eq!(
+            decode_provider_hook_health_projection_record_v1(&encoded).unwrap(),
+            record
+        );
     }
 }

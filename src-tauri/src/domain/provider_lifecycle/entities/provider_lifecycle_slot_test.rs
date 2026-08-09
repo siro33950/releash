@@ -5,30 +5,19 @@ use super::super::{
     ProviderLifecycleSlotId, ScopedProviderLifecycleEvent,
 };
 
-fn scope(session_id: &str, node_execution_id: &str, attempt: u32) -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new(
-        session_id,
-        "workflow-execution-1",
-        node_execution_id,
-        attempt,
-    )
-    .unwrap()
+fn scope(session_id: &str) -> ProviderLifecycleScope {
+    ProviderLifecycleScope::new(session_id).unwrap()
 }
 
 fn binding(provider: ProviderKind) -> ProviderLifecycleBinding {
-    ProviderLifecycleBinding::arm(
-        "binding-1",
-        provider,
-        scope("agent-session-1", "node-execution-1", 1),
-    )
-    .unwrap()
+    ProviderLifecycleBinding::arm("binding-1", provider, scope("agent-session-1")).unwrap()
 }
 
 fn session_start(provider: ProviderKind) -> ProviderLifecycleSignal {
     ProviderLifecycleSignal::session_started(
         "binding-1",
         provider,
-        scope("agent-session-1", "node-execution-1", 1),
+        scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/1"),
     )
@@ -60,12 +49,9 @@ fn test_providerライフサイクル登録_capability不一致の信号を拒�
 fn test_providerライフサイクルslot_新bindingが旧bindingを失効させる() {
     let mut slot = ProviderLifecycleSlot::new(slot_id());
     slot.arm(binding(ProviderKind::Codex), capability(1));
-    let replacement = ProviderLifecycleBinding::arm(
-        "binding-2",
-        ProviderKind::Codex,
-        scope("agent-session-1", "node-execution-1", 1),
-    )
-    .unwrap();
+    let replacement =
+        ProviderLifecycleBinding::arm("binding-2", ProviderKind::Codex, scope("agent-session-1"))
+            .unwrap();
 
     let events = slot.arm(replacement, capability(2));
     let stale = slot.receive(&capability(1), session_start(ProviderKind::Codex));
@@ -74,18 +60,18 @@ fn test_providerライフサイクルslot_新bindingが旧bindingを失効させ
         events,
         vec![
             ScopedProviderLifecycleEvent::new(
-                scope("agent-session-1", "node-execution-1", 1),
+                scope("agent-session-1"),
                 ProviderLifecycleEvent::BindingExpired {
                     binding_id: "binding-1".to_string(),
                 },
             ),
             ScopedProviderLifecycleEvent::new(
-                scope("agent-session-1", "node-execution-1", 1),
+                scope("agent-session-1"),
                 ProviderLifecycleEvent::BindingArmed {
                     slot_id: "workflow-slot-1".to_string(),
                     binding_id: "binding-2".to_string(),
                     provider: ProviderKind::Codex,
-                    scope: scope("agent-session-1", "node-execution-1", 1),
+                    scope: scope("agent-session-1"),
                 },
             ),
         ]
@@ -97,19 +83,19 @@ fn test_providerライフサイクルslot_新bindingが旧bindingを失効させ
 }
 
 #[test]
-fn test_providerライフサイクル登録_同一実行系列の新attemptが旧bindingを失効させる() {
+fn test_providerライフサイクル登録_同一slotの再起動が旧bindingを失効させる() {
     let mut slot = ProviderLifecycleSlot::new(slot_id());
     let previous = ProviderLifecycleBinding::arm(
         "binding-previous",
         ProviderKind::Codex,
-        scope("agent-session-previous", "node-execution-previous", 1),
+        scope("agent-session-previous"),
     )
     .unwrap();
     slot.arm(previous, capability(1));
     let current = ProviderLifecycleBinding::arm(
         "binding-current",
         ProviderKind::Codex,
-        scope("agent-session-current", "node-execution-current", 2),
+        scope("agent-session-current"),
     )
     .unwrap();
 
@@ -119,7 +105,7 @@ fn test_providerライフサイクル登録_同一実行系列の新attemptが�
         ProviderLifecycleSignal::session_started(
             "binding-previous",
             ProviderKind::Codex,
-            scope("agent-session-previous", "node-execution-previous", 1),
+            scope("agent-session-previous"),
             "provider-session-previous",
             None,
         )

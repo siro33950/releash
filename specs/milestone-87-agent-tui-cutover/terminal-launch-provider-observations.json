@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "observations": [
+    {
+      "schemaVersion": 1,
+      "launchSource": "provider-observation",
+      "launchProvider": "claude",
+      "launchTotalMs": {
+        "count": 30,
+        "median": 288.99999999999727,
+        "p95": 292,
+        "max": 299
+      },
+      "launchPhaseMs": {
+        "commandIngress": {
+          "count": 30,
+          "median": 0.005292,
+          "p95": 0.009084,
+          "max": 0.00975
+        },
+        "availabilityAndLock": {
+          "count": 30,
+          "median": 0.06293750000000001,
+          "p95": 0.09579199999999999,
+          "max": 0.096875
+        },
+        "durableCreateCommit": {
+          "count": 30,
+          "median": 0.5598955,
+          "p95": 0.729708,
+          "max": 0.8390420000000001
+        },
+        "launchFileMaterialize": {
+          "count": 30,
+          "median": 0.542438,
+          "p95": 0.893,
+          "max": 0.896958
+        },
+        "checkpointLookup": {
+          "count": 30,
+          "median": 0.0161665,
+          "p95": 0.024959,
+          "max": 0.025167000000000002
+        },
+        "childEnvironment": {
+          "count": 30,
+          "median": 0.0504795,
+          "p95": 0.064709,
+          "max": 0.068417
+        },
+        "ptyOpenAndSpawn": {
+          "count": 30,
+          "median": 4.9403745,
+          "p95": 5.929291,
+          "max": 6.028917
+        },
+        "outputReaderReady": {
+          "count": 30,
+          "median": 0.025562500000000002,
+          "p95": 0.033207999999999994,
+          "max": 0.036042
+        },
+        "firstProviderByte": {
+          "count": 30,
+          "median": 264.2285415,
+          "p95": 269.975458,
+          "max": 271.185958
+        },
+        "firstXtermParsed": {
+          "count": 30,
+          "median": 277.0000000000009,
+          "p95": 282,
+          "max": 284
+        },
+        "firstPaint": {
+          "count": 30,
+          "median": 277.0000000000009,
+          "p95": 283.00000000000364,
+          "max": 284
+        }
+      },
+      "launchPhaseOwnership": {
+        "commandIngress": "releash",
+        "availabilityAndLock": "releash",
+        "durableCreateCommit": "releash",
+        "launchFileMaterialize": "releash",
+        "checkpointLookup": "releash",
+        "childEnvironment": "releash",
+        "ptyOpenAndSpawn": "releash",
+        "outputReaderReady": "releash",
+        "firstProviderByte": "provider",
+        "firstXtermParsed": "end_to_end",
+        "firstPaint": "end_to_end"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "launchSource": "provider-observation",
+      "launchProvider": "codex",
+      "launchTotalMs": {
+        "count": 30,
+        "median": 164,
+        "p95": 184,
+        "max": 184.0000000000009
+      },
+      "launchPhaseMs": {
+        "commandIngress": {
+          "count": 30,
+          "median": 0.003625,
+          "p95": 0.007125,
+          "max": 0.007916
+        },
+        "availabilityAndLock": {
+          "count": 30,
+          "median": 0.0480625,
+          "p95": 0.057,
+          "max": 0.0575
+        },
+        "durableCreateCommit": {
+          "count": 30,
+          "median": 0.389729,
+          "p95": 0.47437500000000005,
+          "max": 0.505291
+        },
+        "launchFileMaterialize": {
+          "count": 30,
+          "median": 0.134667,
+          "p95": 0.161459,
+          "max": 0.18875
+        },
+        "checkpointLookup": {
+          "count": 30,
+          "median": 0.011292,
+          "p95": 0.015209,
+          "max": 0.015291999999999998
+        },
+        "childEnvironment": {
+          "count": 30,
+          "median": 0.0353125,
+          "p95": 0.042959,
+          "max": 0.049625
+        },
+        "ptyOpenAndSpawn": {
+          "count": 30,
+          "median": 4.159375000000001,
+          "p95": 4.5090829999999995,
+          "max": 4.521292
+        },
+        "outputReaderReady": {
+          "count": 30,
+          "median": 0.018645500000000002,
+          "p95": 0.021292,
+          "max": 0.022667000000000003
+        },
+        "firstProviderByte": {
+          "count": 30,
+          "median": 135.8108545,
+          "p95": 138.235375,
+          "max": 138.948167
+        },
+        "firstXtermParsed": {
+          "count": 30,
+          "median": 146.00000000000068,
+          "p95": 150,
+          "max": 150
+        },
+        "firstPaint": {
+          "count": 30,
+          "median": 155.00000000000045,
+          "p95": 162,
+          "max": 163.00000000000045
+        }
+      },
+      "launchPhaseOwnership": {
+        "commandIngress": "releash",
+        "availabilityAndLock": "releash",
+        "durableCreateCommit": "releash",
+        "launchFileMaterialize": "releash",
+        "checkpointLookup": "releash",
+        "childEnvironment": "releash",
+        "ptyOpenAndSpawn": "releash",
+        "outputReaderReady": "releash",
+        "firstProviderByte": "provider",
+        "firstXtermParsed": "end_to_end",
+        "firstPaint": "end_to_end"
+      }
+    }
+  ]
+}

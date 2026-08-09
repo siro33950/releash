@@ -560,4 +560,3 @@
 	background: color-mix(in oklch, var(--status-added) 30%, var(--card));
 	color: var(--foreground);
 }
-

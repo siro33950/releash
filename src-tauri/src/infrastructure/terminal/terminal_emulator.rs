@@ -1,3 +1,6 @@
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub(crate) struct NativeTerminalCheckpoint {
     pub(crate) replay: String,
@@ -164,19 +167,48 @@ fn append_color_codes(codes: &mut Vec<String>, color: Option<avt::Color>, foregr
 #[derive(Clone)]
 pub(crate) struct TerminalCheckpointFileStore {
     root: std::path::PathBuf,
+    scrollback_rows: usize,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
-struct StoredTerminalCheckpoint {
+struct StoredTerminalCheckpointBase {
     version: u8,
     session_key: String,
     checkpoint: NativeTerminalCheckpoint,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum NativeTerminalCheckpointRecord {
+    Output {
+        sequence: u64,
+        data: std::sync::Arc<str>,
+    },
+    Resize {
+        sequence: u64,
+        cols: u16,
+        rows: u16,
+    },
+    Barrier {
+        sequence: u64,
+    },
+}
+
+impl NativeTerminalCheckpointRecord {
+    pub(crate) fn sequence(&self) -> u64 {
+        match self {
+            Self::Output { sequence, .. }
+            | Self::Resize { sequence, .. }
+            | Self::Barrier { sequence } => *sequence,
+        }
+    }
+}
+
 impl TerminalCheckpointFileStore {
-    pub(crate) fn new(app_data_dir: &std::path::Path) -> Self {
+    pub(crate) fn new(app_data_dir: &std::path::Path, scrollback_rows: usize) -> Self {
         Self {
             root: app_data_dir.join("terminal-surfaces"),
+            scrollback_rows,
         }
     }
 
@@ -190,62 +222,199 @@ impl TerminalCheckpointFileStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("read {}: {error}", path.display())),
         };
-        let stored: StoredTerminalCheckpoint = serde_json::from_slice(&bytes)
+        let stored: StoredTerminalCheckpointBase = serde_json::from_slice(&bytes)
             .map_err(|error| format!("decode {}: {error}", path.display()))?;
-        if stored.version != 1 || stored.session_key != session_key {
+        if stored.version != 2 || stored.session_key != session_key {
             return Err(format!(
                 "invalid Terminal Surface checkpoint: {}",
                 path.display()
             ));
         }
-        Ok(Some(stored.checkpoint))
+        let mut sequence = stored.checkpoint.sequence;
+        let mut terminal =
+            NativeTerminalEmulator::restore(&stored.checkpoint, self.scrollback_rows);
+        let journal_path = self.journal_path_for(session_key);
+        let journal = match std::fs::read(&journal_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Some(stored.checkpoint));
+            }
+            Err(error) => return Err(format!("read {}: {error}", journal_path.display())),
+        };
+        let durable_len = journal
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        if durable_len < journal.len() {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&journal_path)
+                .map_err(|error| format!("repair {}: {error}", journal_path.display()))?;
+            file.set_len(durable_len as u64)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("repair {}: {error}", journal_path.display()))?;
+        }
+        for line in journal[..durable_len].split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let record: NativeTerminalCheckpointRecord = serde_json::from_slice(line)
+                .map_err(|error| format!("decode {}: {error}", journal_path.display()))?;
+            if record.sequence() <= sequence {
+                continue;
+            }
+            if record.sequence() != sequence + 1 {
+                return Err(format!(
+                    "non-contiguous Terminal Surface journal: {}",
+                    journal_path.display()
+                ));
+            }
+            match &record {
+                NativeTerminalCheckpointRecord::Output { data, .. } => terminal.apply(data),
+                NativeTerminalCheckpointRecord::Resize { cols, rows, .. } => {
+                    terminal.resize(*cols, *rows);
+                }
+                NativeTerminalCheckpointRecord::Barrier { .. } => {}
+            }
+            sequence = record.sequence();
+        }
+        Ok(Some(terminal.snapshot(sequence)))
     }
 
+    #[cfg(test)]
     pub(crate) fn save(
         &self,
         session_key: &str,
         checkpoint: &NativeTerminalCheckpoint,
     ) -> Result<(), String> {
-        std::fs::create_dir_all(&self.root)
-            .map_err(|error| format!("create {}: {error}", self.root.display()))?;
+        self.replace_base(session_key, checkpoint)
+    }
+
+    pub(crate) fn replace_base(
+        &self,
+        session_key: &str,
+        checkpoint: &NativeTerminalCheckpoint,
+    ) -> Result<(), String> {
+        self.create_private_root()?;
         let path = self.path_for(session_key);
         let temp = self.root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-        let bytes = serde_json::to_vec(&StoredTerminalCheckpoint {
-            version: 1,
+        let bytes = serde_json::to_vec(&StoredTerminalCheckpointBase {
+            version: 2,
             session_key: session_key.to_string(),
             checkpoint: checkpoint.clone(),
         })
         .map_err(|error| format!("encode Terminal Surface checkpoint: {error}"))?;
         let write_result = (|| -> std::io::Result<()> {
             use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temp)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
+            #[cfg(unix)]
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
             std::fs::rename(&temp, &path)
         })();
         if let Err(error) = write_result {
             let _ = std::fs::remove_file(&temp);
             return Err(format!("write {}: {error}", path.display()));
         }
+        let journal_path = self.journal_path_for(session_key);
+        match std::fs::remove_file(&journal_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("delete {}: {error}", journal_path.display())),
+        }
         Ok(())
+    }
+
+    pub(crate) fn append_records(
+        &self,
+        session_key: &str,
+        records: &[NativeTerminalCheckpointRecord],
+    ) -> Result<usize, String> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        self.create_private_root()?;
+        let path = self.journal_path_for(session_key);
+        let mut bytes = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut bytes, record)
+                .map_err(|error| format!("encode Terminal Surface journal: {error}"))?;
+            bytes.push(b'\n');
+        }
+        let write_result = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.create(true).append(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&path)?;
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })();
+        write_result.map_err(|error| format!("write {}: {error}", path.display()))?;
+        Ok(bytes.len())
+    }
+
+    pub(crate) fn journal_len(&self, session_key: &str) -> Result<u64, String> {
+        match std::fs::metadata(self.journal_path_for(session_key)) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     pub(crate) fn delete(&self, session_key: &str) -> Result<(), String> {
         let path = self.path_for(session_key);
         match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("delete {}: {error}", path.display())),
+        }
+        let journal = self.journal_path_for(session_key);
+        match std::fs::remove_file(&journal) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("delete {}: {error}", path.display())),
+            Err(error) => Err(format!("delete {}: {error}", journal.display())),
         }
+    }
+
+    fn create_private_root(&self) -> Result<(), String> {
+        let result = (|| -> std::io::Result<()> {
+            #[cfg(unix)]
+            {
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(&self.root)?;
+                std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o700))
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir_all(&self.root)
+            }
+        })();
+        result.map_err(|error| format!("create {}: {error}", self.root.display()))
     }
 
     fn path_for(&self, session_key: &str) -> std::path::PathBuf {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(session_key.as_bytes());
-        self.root.join(format!("{}.json", hex::encode(digest)))
+        self.root
+            .join(format!("{}.base-v2.json", hex::encode(digest)))
+    }
+
+    fn journal_path_for(&self, session_key: &str) -> std::path::PathBuf {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(session_key.as_bytes());
+        self.root
+            .join(format!("{}.journal-v2.jsonl", hex::encode(digest)))
     }
 }
 

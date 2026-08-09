@@ -30,6 +30,16 @@ pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
     }
 }
 
+pub fn provider_tui_initial_instruction(system_prompt: Option<&str>, user_message: &str) -> String {
+    match system_prompt.filter(|value| !value.trim().is_empty()) {
+        Some(system_prompt) if !user_message.trim().is_empty() => {
+            format!("{system_prompt}\n\n{user_message}")
+        }
+        Some(system_prompt) => system_prompt.to_string(),
+        None => user_message.to_string(),
+    }
+}
+
 pub fn artifact_completion_action(
     key: &str,
     execution_id: &str,
@@ -73,5 +83,15 @@ mod tests {
         let composed = compose_facets(Some(&contents));
         assert_eq!(composed.system_prompt.as_deref(), Some("policy"));
         assert_eq!(composed.user_message, "knowledge\n\ninstruction");
+    }
+
+    #[test]
+    fn test_provider_tui初期指示_policyとuser_messageを各一度だけ連結する() {
+        let instruction =
+            provider_tui_initial_instruction(Some("policy"), "knowledge\ninstruction");
+
+        assert_eq!(instruction, "policy\n\nknowledge\ninstruction");
+        assert_eq!(instruction.matches("policy").count(), 1);
+        assert_eq!(instruction.matches("instruction").count(), 1);
     }
 }

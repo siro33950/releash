@@ -249,7 +249,7 @@ schemas:
 nodes:
   - name: entry
     session:
-      permission: edit
+      provider: claude
       facets:
         instruction: entry
     rules:
@@ -259,7 +259,7 @@ nodes:
         next: done
   - name: done
     session:
-      permission: edit
+      provider: claude
 "#;
 
     #[test]

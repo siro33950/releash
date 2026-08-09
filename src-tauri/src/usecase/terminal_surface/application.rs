@@ -9,17 +9,60 @@ use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventCancellation, TerminalSurfaceEventReceiveError,
     TerminalSurfaceEventSource, TerminalSurfaceEventSubscription, TerminalSurfaceGateway,
 };
-use crate::domain::terminal_surface::TerminalSurfaceOwner;
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
+use crate::usecase::terminal_surface::dto::{
+    GetOrSpawnTerminalDto, TerminalSurfaceCheckpointDto, TerminalSurfaceDto,
+    TerminalSurfaceSummaryDto,
+};
 use crate::usecase::terminal_surface::error::UsecaseError;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
+
+fn surface_dto(surface: TerminalSurface) -> TerminalSurfaceDto {
+    TerminalSurfaceDto {
+        session_key: surface.session_key,
+        checkpoint: TerminalSurfaceCheckpointDto {
+            replay: surface.checkpoint.replay,
+            sequence: surface.checkpoint.sequence,
+            cols: surface.checkpoint.cols,
+            rows: surface.checkpoint.rows,
+        },
+        is_exited: surface.process_state.is_exited(),
+        exit_code: surface.process_state.exit_code(),
+        label: surface.label,
+    }
+}
+
+fn summary_dto(summary: TerminalSurfaceSummary) -> TerminalSurfaceSummaryDto {
+    TerminalSurfaceSummaryDto {
+        session_key: summary.session_key,
+        worktree_path: summary.worktree_path,
+        label: summary.label,
+        is_exited: summary.process_state.is_exited(),
+        exit_code: summary.process_state.exit_code(),
+    }
+}
+
+fn get_or_spawn_dto(outcome: GetOrSpawnTerminalOutcome) -> GetOrSpawnTerminalDto {
+    GetOrSpawnTerminalDto {
+        session_key: outcome.surface.session_key,
+        restored_from_checkpoint: outcome.restored_from_checkpoint,
+        is_new: outcome.is_new,
+        is_exited: outcome.surface.process_state.is_exited(),
+        exit_code: outcome.surface.process_state.exit_code(),
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct TerminalSurfaceApplication {
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
-    attachment_cancellations:
-        Arc<Mutex<HashMap<String, Arc<dyn TerminalSurfaceEventCancellation>>>>,
+    attachment_cancellations: Arc<Mutex<HashMap<String, TerminalSurfaceAttachmentRegistration>>>,
     runtime_lifecycle: Arc<RwLock<TerminalSurfaceRuntimeLifecycle>>,
+}
+
+struct TerminalSurfaceAttachmentRegistration {
+    session_key: String,
+    cancellation: Arc<dyn TerminalSurfaceEventCancellation>,
 }
 
 pub(crate) struct TerminalSurfaceAttachmentStream {
@@ -27,16 +70,23 @@ pub(crate) struct TerminalSurfaceAttachmentStream {
     owner: TerminalSurfaceOwner,
     session_key: String,
     attachment: TerminalSurfaceAttachment,
-    pending_snapshot: Option<TerminalSurface>,
+    pending_snapshot: Option<TerminalSurfaceDto>,
     subscription: Box<dyn TerminalSurfaceEventSubscription>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OwnedTerminalSummaryLookup {
+    Found(TerminalSurfaceSummary),
+    Absent,
+    OwnerMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalSurfaceStreamItem {
-    Snapshot(TerminalSurface),
+    Snapshot(TerminalSurfaceDto),
     Output {
         session_key: String,
-        data: String,
+        data: Arc<str>,
         sequence: u64,
     },
     Resize {
@@ -49,6 +99,10 @@ pub(crate) enum TerminalSurfaceStreamItem {
         session_key: String,
         exit_code: Option<i32>,
         sequence: u64,
+    },
+    InputUnavailable {
+        session_key: String,
+        message: String,
     },
 }
 
@@ -67,7 +121,7 @@ impl TerminalSurfaceAttachmentStream {
         if !self.attachment.apply_snapshot(
             surface.checkpoint.sequence,
             minimum_covered_sequence,
-            surface.process_state.is_exited(),
+            surface.is_exited,
         ) {
             return None;
         }
@@ -76,11 +130,8 @@ impl TerminalSurfaceAttachmentStream {
 
     pub(crate) async fn next(&mut self) -> Option<TerminalSurfaceStreamItem> {
         if let Some(surface) = self.pending_snapshot.take() {
-            self.attachment.apply_snapshot(
-                surface.checkpoint.sequence,
-                None,
-                surface.process_state.is_exited(),
-            );
+            self.attachment
+                .apply_snapshot(surface.checkpoint.sequence, None, surface.is_exited);
             return Some(TerminalSurfaceStreamItem::Snapshot(surface));
         }
         if self.attachment.is_closed() {
@@ -136,6 +187,7 @@ impl TerminalSurfaceAttachmentStream {
                     session_key,
                     exit_code,
                     sequence,
+                    ..
                 }) if session_key == self.session_key => {
                     match self.attachment.observe(sequence, true) {
                         TerminalSurfaceSequenceDecision::Deliver => {
@@ -151,6 +203,15 @@ impl TerminalSurfaceAttachmentStream {
                         }
                         TerminalSurfaceSequenceDecision::Closed => return None,
                     }
+                }
+                Ok(TerminalSurfaceEvent::InputUnavailable {
+                    session_key,
+                    message,
+                }) if session_key == self.session_key => {
+                    return Some(TerminalSurfaceStreamItem::InputUnavailable {
+                        session_key,
+                        message,
+                    });
                 }
                 Ok(_) => {}
                 Err(TerminalSurfaceEventReceiveError::Lagged(_)) => {
@@ -197,8 +258,22 @@ impl TerminalSurfaceApplication {
         Ok(lifecycle)
     }
 
-    pub(crate) fn list(&self) -> Vec<TerminalSurfaceSummary> {
+    pub(crate) fn list(&self) -> Vec<TerminalSurfaceSummaryDto> {
+        self.gateway
+            .list_summaries()
+            .into_iter()
+            .map(summary_dto)
+            .collect()
+    }
+
+    pub(crate) fn summaries(&self) -> Vec<TerminalSurfaceSummary> {
         self.gateway.list_summaries()
+    }
+
+    pub(crate) fn subscribe_events(
+        &self,
+    ) -> crate::domain::terminal_surface::gateway::TerminalSurfaceEventStream {
+        self.event_source.subscribe()
     }
 
     pub(crate) fn reconcile_unavailable(&self, referenced_session_keys: &[String]) -> Vec<String> {
@@ -215,26 +290,55 @@ impl TerminalSurfaceApplication {
             .collect()
     }
 
+    /// registryのsummaryだけで答える読み取り。scrollback全量のreplay再構築
+    /// （emulator/registryロック保持のsnapshot materialization）を伴わない。
+    pub(crate) fn find_owned_summary(
+        &self,
+        owner: &TerminalSurfaceOwner,
+    ) -> OwnedTerminalSummaryLookup {
+        let Some(summary) = self
+            .gateway
+            .find_summary_by_session_key(&owner.stable_key())
+        else {
+            return OwnedTerminalSummaryLookup::Absent;
+        };
+        if &summary.owner != owner {
+            return OwnedTerminalSummaryLookup::OwnerMismatch;
+        }
+        OwnedTerminalSummaryLookup::Found(summary)
+    }
+
+    fn owned_summary(
+        &self,
+        owner: &TerminalSurfaceOwner,
+    ) -> Result<TerminalSurfaceSummary, UsecaseError> {
+        match self.find_owned_summary(owner) {
+            OwnedTerminalSummaryLookup::Found(summary) => Ok(summary),
+            OwnedTerminalSummaryLookup::Absent | OwnedTerminalSummaryLookup::OwnerMismatch => {
+                Err(UsecaseError::Gateway(format!(
+                    "Terminal Surface not found for owner {}",
+                    owner.stable_key()
+                )))
+            }
+        }
+    }
+
+    pub(crate) fn get_summary(
+        &self,
+        owner: &TerminalSurfaceOwner,
+    ) -> Result<TerminalSurfaceSummaryDto, UsecaseError> {
+        self.owned_summary(owner).map(summary_dto)
+    }
+
     pub(crate) fn get(
         &self,
         owner: &TerminalSurfaceOwner,
-    ) -> Result<TerminalSurface, UsecaseError> {
+    ) -> Result<TerminalSurfaceDto, UsecaseError> {
         let session_key = owner.stable_key();
-        let registered_surface = self
-            .gateway
-            .find_summary_by_session_key(&session_key)
-            .ok_or_else(|| {
-                UsecaseError::Gateway(format!(
-                    "Terminal Surface not found for owner {session_key}"
-                ))
-            })?;
-        if &registered_surface.owner != owner {
-            return Err(UsecaseError::Gateway(format!(
-                "Terminal Surface not found for owner {session_key}"
-            )));
-        }
+        let registered_surface = self.owned_summary(owner)?;
         self.gateway
             .snapshot(registered_surface.runtime_generation.value())
+            .map(surface_dto)
             .ok_or_else(|| {
                 UsecaseError::Gateway(format!(
                     "Terminal Surface not found for owner {session_key}"
@@ -252,15 +356,29 @@ impl TerminalSurfaceApplication {
                 "Terminal Surface attachment id must not be empty".to_string(),
             ));
         }
-        let event_stream = self.event_source.subscribe();
+        let event_stream = self
+            .event_source
+            .subscribe_owner(&owner.stable_key(), attachment_id);
         let surface = self.get(owner)?;
+        self.gateway
+            .activate_input_attachment(&surface.session_key, attachment_id);
         if let Some(previous) = self
             .attachment_cancellations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(attachment_id.to_string(), event_stream.cancellation)
+            .insert(
+                attachment_id.to_string(),
+                TerminalSurfaceAttachmentRegistration {
+                    session_key: surface.session_key.clone(),
+                    cancellation: event_stream.cancellation,
+                },
+            )
         {
-            previous.cancel();
+            previous.cancellation.cancel();
+            if previous.session_key != surface.session_key {
+                self.gateway
+                    .deactivate_input_attachment(&previous.session_key, attachment_id);
+            }
         }
         Ok(TerminalSurfaceAttachmentStream {
             application: self.clone(),
@@ -276,13 +394,28 @@ impl TerminalSurfaceApplication {
     }
 
     pub(crate) fn detach(&self, attachment_id: &str) {
-        if let Some(cancellation) = self
+        if let Some(registration) = self
             .attachment_cancellations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(attachment_id)
         {
-            cancellation.cancel();
+            registration.cancellation.cancel();
+            self.gateway
+                .deactivate_input_attachment(&registration.session_key, attachment_id);
+        }
+    }
+
+    pub(crate) fn acknowledge_output(&self, attachment_id: &str, sequence: u64) {
+        let session_key = self
+            .attachment_cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(attachment_id)
+            .map(|registration| registration.session_key.clone());
+        if let Some(session_key) = session_key {
+            self.event_source
+                .acknowledge_owner_output(&session_key, attachment_id, sequence);
         }
     }
 
@@ -294,7 +427,7 @@ impl TerminalSurfaceApplication {
         owner: TerminalSurfaceOwner,
         label: Option<String>,
         startup_command: Option<String>,
-    ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
+    ) -> Result<GetOrSpawnTerminalDto, UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::spawn_usecase::get_or_spawn_with_startup(
             self.gateway.as_ref(),
@@ -305,6 +438,30 @@ impl TerminalSurfaceApplication {
             label,
             startup_command,
         )
+        .map(get_or_spawn_dto)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn get_or_spawn_process(
+        &self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<String>,
+        owner: TerminalSurfaceOwner,
+        label: Option<String>,
+        process: TerminalProcessLaunch,
+    ) -> Result<GetOrSpawnTerminalDto, UsecaseError> {
+        let _admission = self.admit_mutation()?;
+        super::spawn_usecase::get_or_spawn_with_process(
+            self.gateway.as_ref(),
+            rows,
+            cols,
+            cwd,
+            owner,
+            label,
+            process,
+        )
+        .map(get_or_spawn_dto)
     }
 
     pub(crate) fn write(
@@ -314,6 +471,28 @@ impl TerminalSurfaceApplication {
     ) -> Result<(), UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::io_usecase::write(self.gateway.as_ref(), owner, data)
+    }
+
+    pub(crate) fn write_attached(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        attachment_id: &str,
+        sequence: u64,
+        client_started_at_unix_ms: Option<f64>,
+        data: &str,
+    ) -> Result<(), UsecaseError> {
+        if let Some(client_started_at_unix_ms) = client_started_at_unix_ms {
+            crate::other::telemetry::start_terminal_input_trace(
+                attachment_id,
+                sequence,
+                client_started_at_unix_ms,
+            );
+        }
+        let _admission = self.admit_mutation()?;
+        crate::other::telemetry::record_terminal_input_admission(attachment_id, sequence);
+        self.gateway
+            .write_attached(&owner.stable_key(), attachment_id, sequence, data)
+            .map_err(|error| UsecaseError::Gateway(error.to_string()))
     }
 
     pub(crate) fn write_paths(
@@ -338,6 +517,19 @@ impl TerminalSurfaceApplication {
     pub(crate) fn kill(&self, owner: &TerminalSurfaceOwner) -> Result<(), UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::lifecycle_usecase::kill(self.gateway.as_ref(), owner)
+    }
+
+    pub(crate) fn stop_preserving_checkpoint(
+        &self,
+        owner: &TerminalSurfaceOwner,
+    ) -> Result<(), UsecaseError> {
+        let _admission = self.admit_mutation()?;
+        super::lifecycle_usecase::stop_preserving_checkpoint(self.gateway.as_ref(), owner)
+    }
+
+    pub(crate) fn delete_surface(&self, owner: &TerminalSurfaceOwner) -> Result<(), UsecaseError> {
+        let _admission = self.admit_mutation()?;
+        super::lifecycle_usecase::delete(self.gateway.as_ref(), owner)
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), UsecaseError> {
@@ -388,21 +580,6 @@ impl TerminalSurfaceApplication {
             return Vec::new();
         };
         super::lifecycle_usecase::kill_by_worktree(self.gateway.as_ref(), worktree_path)
-    }
-
-    pub(crate) fn gc_by_worktree(
-        &self,
-        worktree_path: &str,
-        keep_session_keys: &[String],
-    ) -> Vec<u64> {
-        let Ok(_admission) = self.admit_mutation() else {
-            return Vec::new();
-        };
-        super::lifecycle_usecase::gc_by_worktree(
-            self.gateway.as_ref(),
-            worktree_path,
-            keep_session_keys,
-        )
     }
 }
 

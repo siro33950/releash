@@ -12,8 +12,8 @@ use releash_lib::provider_lifecycle_acceptance::{
 };
 
 const RELEASH_CLI_PATH: &str = env!("CARGO_BIN_EXE_releash");
-const SUPPORTED_CLAUDE_VERSION: &str = "2.1.220 (Claude Code)";
-const SUPPORTED_CODEX_VERSION: &str = "codex-cli 0.145.0";
+const SUPPORTED_CLAUDE_VERSION: &str = "2.1.223 (Claude Code)";
+const SUPPORTED_CODEX_VERSION: &str = "codex-cli 0.146.1";
 static CHARACTERIZATION_GATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn output(command: &mut Command, label: &str) -> Output {
@@ -449,12 +449,7 @@ async fn test_providerライフサイクル実cli検証_supported_installed_cli�
     let claude_launch = host
         .prepare_launch(
             AcceptanceProvider::Claude,
-            AcceptanceScope::new(
-                "agent-characterization-claude-config",
-                "workflow-characterization-claude-config",
-                "node-characterization-claude-config",
-                1,
-            ),
+            AcceptanceScope::new("agent-characterization-claude-config"),
             Some(claude_plugin.path()),
         )
         .await
@@ -473,12 +468,7 @@ async fn test_providerライフサイクル実cli検証_supported_installed_cli�
     let codex_launch = host
         .prepare_launch(
             AcceptanceProvider::Codex,
-            AcceptanceScope::new(
-                "agent-characterization-codex-config",
-                "workflow-characterization-codex-config",
-                "node-characterization-codex-config",
-                1,
-            ),
+            AcceptanceScope::new("agent-characterization-codex-config"),
             None,
         )
         .await
@@ -518,12 +508,7 @@ async fn test_providerライフサイクル実cli検証_claude実cliでuser_hook
     let plugin = tempfile::TempDir::new().unwrap();
     let config = tempfile::TempDir::new().unwrap();
     let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
-    let scope = AcceptanceScope::new(
-        "agent-characterization-claude-session-start",
-        "workflow-characterization-claude-session-start",
-        "node-characterization-claude-session-start",
-        1,
-    );
+    let scope = AcceptanceScope::new("agent-characterization-claude-session-start");
     let launch = host
         .prepare_launch(
             AcceptanceProvider::Claude,
@@ -574,12 +559,7 @@ async fn test_providerライフサイクル実cli検証_claudeのsession_start�
     let plugin = tempfile::TempDir::new().unwrap();
     let config = tempfile::TempDir::new().unwrap();
     let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
-    let scope = AcceptanceScope::new(
-        "agent-characterization-claude-stop",
-        "workflow-characterization-claude-stop",
-        "node-characterization-claude-stop",
-        1,
-    );
+    let scope = AcceptanceScope::new("agent-characterization-claude-stop");
     let launch = host
         .prepare_launch(
             AcceptanceProvider::Claude,
@@ -638,12 +618,7 @@ async fn test_providerライフサイクル実cli検証_codex実tuiのtrust後se
     install_codex_auth(codex_home.path());
     let marker = install_codex_user_hooks(codex_home.path());
     let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
-    let scope = AcceptanceScope::new(
-        "agent-characterization-codex-stop",
-        "workflow-characterization-codex-stop",
-        "node-characterization-codex-stop",
-        1,
-    );
+    let scope = AcceptanceScope::new("agent-characterization-codex-stop");
     let launch = host
         .prepare_launch(AcceptanceProvider::Codex, scope.clone(), None)
         .await
@@ -685,7 +660,7 @@ async fn test_providerライフサイクル実cli検証_codex実tuiのtrust後se
         workspace.path(),
     );
     if codex.wait_for_any(
-        &["skipuntilnextversion", "openaicodexv01450"],
+        &["skipuntilnextversion", "openaicodexv"],
         Duration::from_secs(30),
     ) == 0
     {
@@ -730,12 +705,7 @@ async fn test_providerライフサイクル実cli検証_codex_hook_trust未確�
     install_codex_auth(codex_home.path());
     let marker = install_codex_user_hooks(codex_home.path());
     let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
-    let scope = AcceptanceScope::new(
-        "agent-characterization-codex-untrusted",
-        "workflow-characterization-codex-untrusted",
-        "node-characterization-codex-untrusted",
-        1,
-    );
+    let scope = AcceptanceScope::new("agent-characterization-codex-untrusted");
     let launch = host
         .prepare_launch(AcceptanceProvider::Codex, scope.clone(), None)
         .await
@@ -759,7 +729,7 @@ async fn test_providerライフサイクル実cli検証_codex_hook_trust未確�
     codex.send(b"\r");
     codex.wait_for("hooksneedreview", Duration::from_secs(30));
     codex.send(b"\x1b[B\x1b[B\r");
-    codex.wait_for("openaicodexv01450", Duration::from_secs(30));
+    codex.wait_for("openaicodexv", Duration::from_secs(30));
 
     assert_eq!(
         host.report_unavailable(
@@ -800,12 +770,7 @@ async fn test_providerライフサイクル実cli検証_releash_hookをreleash�
 
     let claude_plugin = tempfile::TempDir::new().unwrap();
     let claude_config = tempfile::TempDir::new().unwrap();
-    let claude_scope = AcceptanceScope::new(
-        "agent-characterization-claude-unmanaged",
-        "workflow-characterization-claude-unmanaged",
-        "node-characterization-claude-unmanaged",
-        1,
-    );
+    let claude_scope = AcceptanceScope::new("agent-characterization-claude-unmanaged");
     let _claude_launch = host
         .prepare_launch(
             AcceptanceProvider::Claude,
@@ -839,12 +804,7 @@ async fn test_providerライフサイクル実cli検証_releash_hookをreleash�
     let codex_workspace = tempfile::TempDir::new().unwrap();
     install_codex_auth(codex_home.path());
     let codex_user_marker = install_codex_user_hooks(codex_home.path());
-    let codex_scope = AcceptanceScope::new(
-        "agent-characterization-codex-unmanaged",
-        "workflow-characterization-codex-unmanaged",
-        "node-characterization-codex-unmanaged",
-        1,
-    );
+    let codex_scope = AcceptanceScope::new("agent-characterization-codex-unmanaged");
     let mut without_releash = host
         .prepare_launch(AcceptanceProvider::Codex, codex_scope.clone(), None)
         .await
@@ -879,7 +839,7 @@ async fn test_providerライフサイクル実cli検証_releash_hookをreleash�
         codex_workspace.path(),
     );
     if codex.wait_for_any(
-        &["skipuntilnextversion", "openaicodexv01450"],
+        &["skipuntilnextversion", "openaicodexv"],
         Duration::from_secs(30),
     ) == 0
     {
@@ -914,12 +874,7 @@ async fn test_providerライフサイクル実cli検証_local_api不在でもpro
 
     let claude_plugin = tempfile::TempDir::new().unwrap();
     let claude_config = tempfile::TempDir::new().unwrap();
-    let claude_scope = AcceptanceScope::new(
-        "agent-characterization-claude-api-unavailable",
-        "workflow-characterization-claude-api-unavailable",
-        "node-characterization-claude-api-unavailable",
-        1,
-    );
+    let claude_scope = AcceptanceScope::new("agent-characterization-claude-api-unavailable");
     let claude_launch = host
         .prepare_launch(
             AcceptanceProvider::Claude,
@@ -958,12 +913,7 @@ async fn test_providerライフサイクル実cli検証_local_api不在でもpro
     let codex_workspace = tempfile::TempDir::new().unwrap();
     install_codex_auth(codex_home.path());
     let codex_user_marker = install_codex_user_hooks(codex_home.path());
-    let codex_scope = AcceptanceScope::new(
-        "agent-characterization-codex-api-unavailable",
-        "workflow-characterization-codex-api-unavailable",
-        "node-characterization-codex-api-unavailable",
-        1,
-    );
+    let codex_scope = AcceptanceScope::new("agent-characterization-codex-api-unavailable");
     let codex_launch = host
         .prepare_launch(AcceptanceProvider::Codex, codex_scope.clone(), None)
         .await
@@ -996,7 +946,7 @@ async fn test_providerライフサイクル実cli検証_local_api不在でもpro
         codex_workspace.path(),
     );
     if codex.wait_for_any(
-        &["skipuntilnextversion", "openaicodexv01450"],
+        &["skipuntilnextversion", "openaicodexv"],
         Duration::from_secs(30),
     ) == 0
     {
