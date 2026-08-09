@@ -34,15 +34,16 @@ impl TerminalOutputFlowControl {
         self.changed.notify_all();
     }
 
-    pub(crate) fn deactivate(&self, attachment_id: &str) {
+    pub(crate) fn deactivate(&self, attachment_id: &str) -> bool {
         let mut state = self.state.lock();
         if state.active_attachment_id.as_deref() != Some(attachment_id) {
-            return;
+            return false;
         }
         state.active_attachment_id = None;
         state.pending.clear();
         state.pending_code_units = 0;
         self.changed.notify_all();
+        true
     }
 
     pub(crate) fn reserve(&self, sequence: u64, code_units: usize) {

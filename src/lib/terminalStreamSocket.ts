@@ -23,10 +23,9 @@ export function openTerminalStreamSocket(
 ): Promise<WebSocket> {
 	return new Promise<WebSocket>((resolve, reject) => {
 		const socket = new WebSocket(endpoint.url, [endpoint.authSubprotocol]);
-		let opened = false;
 		let settled = false;
+		let attached = false;
 		socket.onopen = () => {
-			opened = true;
 			socket.send(
 				JSON.stringify({
 					type: "attach_surface",
@@ -35,8 +34,6 @@ export function openTerminalStreamSocket(
 					attachment_id: attach.attachmentId,
 				}),
 			);
-			settled = true;
-			resolve(socket);
 		};
 		socket.onerror = () => {
 			if (!settled) {
@@ -48,10 +45,10 @@ export function openTerminalStreamSocket(
 			// 接続確立前にcloseしたsocketはreject（error/close先着1回）だけで完結させる。
 			// ブラウザは接続失敗時にerror→closeを連鎖発火するため、ここで
 			// onUnexpectedCloseを呼ぶとfallback attachとrecovery attachが二重発行される
-			if (!opened) {
+			if (!attached) {
 				if (!settled) {
 					settled = true;
-					reject(new Error("terminal stream WebSocket closed during connect"));
+					reject(new Error("terminal stream WebSocket closed during attach"));
 				}
 				return;
 			}
@@ -61,6 +58,7 @@ export function openTerminalStreamSocket(
 		socket.onmessage = (event) => {
 			let payload: {
 				status?: string;
+				id?: string;
 				item?: TerminalSurfaceStreamItem;
 				error?: { message?: string };
 			};
@@ -70,14 +68,27 @@ export function openTerminalStreamSocket(
 				console.warn("Ignoring malformed terminal stream frame:", error);
 				return;
 			}
+			if (payload.status === "attached" && payload.id === attach.attachmentId) {
+				attached = true;
+				if (!settled) {
+					settled = true;
+					resolve(socket);
+				}
+				return;
+			}
 			if (payload.status === "event" && payload.item) {
 				callbacks.onStreamItem(payload.item);
 				return;
 			}
 			if (payload.status === "error") {
-				callbacks.onStreamError(
-					`Terminal stream error: ${payload.error?.message ?? "unknown"}`,
-				);
+				const message = `Terminal stream error: ${payload.error?.message ?? "unknown"}`;
+				if (!settled) {
+					settled = true;
+					reject(new Error(message));
+					socket.close();
+					return;
+				}
+				callbacks.onStreamError(message);
 			}
 		};
 	});

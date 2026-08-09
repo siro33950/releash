@@ -21,9 +21,9 @@ use crate::domain::local_event::{
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
     ProviderAgentSessionLifecycleRecord, ProviderAgentSessionOriginRecord,
     ProviderAgentSessionProjectionRecord, ProviderAgentSessionProviderRecord,
-    ProviderSessionOwnershipProjectionRecord, Revision, RevisionGuard, SessionProjectionMutation,
-    SessionProjectionRecord, SessionProjectionRemovalMutation, StreamId, StreamVersion,
-    UncommittedDomainEvent,
+    ProviderAgentSessionRemovalMutation, ProviderSessionOwnershipProjectionRecord, Revision,
+    RevisionGuard, SessionProjectionMutation, SessionProjectionRecord,
+    SessionProjectionRemovalMutation, StreamId, StreamVersion, UncommittedDomainEvent,
 };
 use crate::domain::provider_lifecycle::{ProviderKind, ScopedProviderLifecycleEvent};
 use crate::domain::workspace_tree::WorkspaceIdentity;
@@ -427,13 +427,13 @@ impl ProviderAgentSessionRepository for LocalProviderAgentSessionRepository {
         let session_stream = StreamId::agent_session(session.id())
             .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?;
         let occurred_at_ms = now_ms();
-        let mut events = vec![UncommittedDomainEvent {
+        let events = vec![UncommittedDomainEvent {
             stream_id: session_stream.clone(),
             event: LocalDomainEvent::AgentSessionLifecycle(authorization.tombstone_event()),
             occurred_at_ms,
         }];
-        let mut expected_heads = vec![ExpectedStreamHead {
-            stream_id: session_stream,
+        let expected_heads = vec![ExpectedStreamHead {
+            stream_id: session_stream.clone(),
             expected: stream_version(previous_revision)?,
         }];
         let mut mutations = vec![LocalStateMutation::SessionProjectionRemoval(
@@ -442,54 +442,35 @@ impl ProviderAgentSessionRepository for LocalProviderAgentSessionRepository {
                 expected: RevisionGuard::Expected(revision(previous_revision)?),
             },
         )];
-
-        if let Some(provider_session_id) = session.provider_session_id() {
-            let ownership_key = ownership_storage_key(session.provider(), provider_session_id);
-            let (mut ownership, ownership_revision) = self
-                .load_ownership(&ownership_key, session.provider(), provider_session_id)
-                .await?;
-            ownership
-                .release(session.id())
-                .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?;
-            let ownership_events = ownership.take_uncommitted_events();
-            if ownership_events.is_empty() {
-                return Err(ProviderAgentSessionRepositoryError::Corrupt);
-            }
-            let ownership_next = ownership_revision
-                .checked_add(
-                    u64::try_from(ownership_events.len())
-                        .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?,
+        let (ownership_projection_id, ownership_stream, ownership_expected) =
+            if let Some(provider_session_id) = session.provider_session_id() {
+                let ownership_key = ownership_storage_key(session.provider(), provider_session_id);
+                let (ownership, ownership_revision) = self
+                    .load_ownership(&ownership_key, session.provider(), provider_session_id)
+                    .await?;
+                if ownership.agent_session_id() != Some(session.id()) {
+                    return Err(ProviderAgentSessionRepositoryError::Corrupt);
+                }
+                (
+                    Some(ownership_key),
+                    Some(ownership_stream(session.provider(), provider_session_id)?),
+                    Some(revision(ownership_revision)?),
                 )
-                .ok_or(ProviderAgentSessionRepositoryError::Corrupt)?;
-            let ownership_stream = ownership_stream(session.provider(), provider_session_id)?;
-            expected_heads.push(ExpectedStreamHead {
-                stream_id: ownership_stream.clone(),
-                expected: stream_version(ownership_revision)?,
-            });
-            events.extend(
-                ownership_events
-                    .into_iter()
-                    .map(|event| UncommittedDomainEvent {
-                        stream_id: ownership_stream.clone(),
-                        event: LocalDomainEvent::ProviderSessionOwnership(event),
-                        occurred_at_ms,
-                    }),
-            );
-            mutations.push(LocalStateMutation::SessionProjection(
-                SessionProjectionMutation {
-                    session_id: ownership_key,
-                    projection: SessionProjectionRecord::ProviderSessionOwnership(
-                        ProviderSessionOwnershipProjectionRecord {
-                            provider: provider_record(session.provider()),
-                            provider_session_id: provider_session_id.to_string(),
-                            agent_session_id: None,
-                        },
-                    ),
-                    expected: RevisionGuard::Expected(revision(ownership_revision)?),
-                    revision: revision(ownership_next)?,
-                },
-            ));
-        }
+            } else {
+                (None, None, None)
+            };
+        let retained_tombstone_sequence = previous_revision
+            .checked_add(1)
+            .ok_or(ProviderAgentSessionRepositoryError::Corrupt)?;
+        mutations.push(LocalStateMutation::ProviderAgentSessionRemoval(
+            ProviderAgentSessionRemovalMutation {
+                agent_session_stream: session_stream,
+                retained_tombstone_sequence: stream_version(retained_tombstone_sequence)?,
+                ownership_projection_id,
+                ownership_stream,
+                ownership_expected,
+            },
+        ));
 
         let (commit_id, payload_hash) = commit_identity(
             self.repository.as_ref(),

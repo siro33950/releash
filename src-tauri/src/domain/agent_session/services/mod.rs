@@ -44,12 +44,9 @@ pub use permission_policy::{
     permission_request_identity_matches, permission_response_turn_matches,
     runtime_permission_effect_is_owned, ProviderPermissionDecision,
 };
-pub(crate) use provider_session_ownership::ProviderSessionOwnership;
 #[cfg(test)]
-pub(crate) use provider_session_ownership::{
-    ProviderSessionAlreadyOwned, ProviderSessionOwnershipClaimOutcome,
-    ProviderSessionOwnershipReleaseOutcome,
-};
+pub(crate) use provider_session_ownership::ProviderSessionAlreadyOwned;
+pub(crate) use provider_session_ownership::ProviderSessionOwnership;
 pub use recovery_inventory_policy::{
     bounded_recovery_owner_component, decide_recovery_capabilities, pending_recovery_descriptor,
     workflow_node_recovery_owner_target, PendingRecoveryCategory, PendingRecoveryKnownStatus,

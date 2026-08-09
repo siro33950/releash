@@ -160,6 +160,13 @@ async fn serve_attachment(
             return;
         }
     };
+    if send_response(sink, &TerminalWsResponseV1::Attached { id: id.clone() })
+        .await
+        .is_err()
+    {
+        deps.application.detach(&attachment_id);
+        return;
+    }
 
     loop {
         tokio::select! {

@@ -103,6 +103,25 @@ describe("ProviderAgentSessionPanel", () => {
 		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
 
+	it("Provider CLI終了でbackendがPausedへ更新した場合もerrorとResumeを表示する", async () => {
+		mockInvoke.mockResolvedValueOnce("attached");
+		const { rerender } = render(
+			<ProviderAgentSessionPanel session={session} />,
+		);
+		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
+
+		rerender(
+			<ProviderAgentSessionPanel
+				session={{ ...session, lifecycle: "paused", lastExitAbnormal: true }}
+			/>,
+		);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Provider session is not running",
+		);
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+	});
+
 	it("StandaloneでもTerminal表示の上にArchive操作を置かない", async () => {
 		mockInvoke.mockResolvedValueOnce("attached");
 

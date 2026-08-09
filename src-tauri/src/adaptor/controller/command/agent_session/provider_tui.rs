@@ -46,14 +46,12 @@ pub async fn create_provider_agent_session(
 ) -> Result<String, AppError> {
     let command_ingress = Instant::now();
     let provider = parse_provider(&provider)?;
-    let agent_session_id = format!("provider-agent-session-{}", uuid::Uuid::new_v4().simple());
     crate::other::telemetry::record_terminal_launch(
         crate::other::telemetry::TerminalLaunch::CommandIngress,
         command_ingress.elapsed(),
     );
     Arc::clone(launch.inner())
         .launch_standalone_idempotent(ProviderAgentSessionLaunchRequest {
-            agent_session_id,
             workspace: WorkspaceIdentity::new(workspace_identity),
             worktree_path,
             provider,
@@ -78,10 +76,8 @@ pub async fn resume_provider_agent_session_history_candidate(
     caller_request_id: String,
 ) -> Result<String, AppError> {
     let provider = parse_provider(&provider)?;
-    let agent_session_id = format!("provider-agent-session-{}", uuid::Uuid::new_v4().simple());
-    launch
+    let outcome = launch
         .resume_history(ProviderAgentSessionHistoryResumeRequest {
-            agent_session_id: agent_session_id.clone(),
             workspace: WorkspaceIdentity::new(workspace_identity),
             worktree_path,
             provider,
@@ -92,7 +88,12 @@ pub async fn resume_provider_agent_session_history_candidate(
         })
         .await
         .map_err(launch_error)?;
-    Ok(agent_session_id)
+    Ok(match outcome {
+        crate::usecase::agent_session::ProviderAgentSessionHistoryResumeOutcome::Open(session)
+        | crate::usecase::agent_session::ProviderAgentSessionHistoryResumeOutcome::Paused(
+            session,
+        ) => session.session().id().to_string(),
+    })
 }
 
 fn parse_provider(value: &str) -> Result<ProviderKind, AppError> {

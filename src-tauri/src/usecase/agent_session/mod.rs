@@ -40,12 +40,11 @@ pub(crate) use provider_agent_session_history::{
     ProviderAgentSessionHistoryReadUsecase, ProviderAgentSessionHistoryRequest,
 };
 pub(crate) use provider_agent_session_initial_instruction::ProviderAgentInitialInstructionUsecase;
-#[cfg(test)]
-pub(crate) use provider_agent_session_launch::ProviderAgentSessionHistoryResumeOutcome;
 pub(crate) use provider_agent_session_launch::ProviderAgentSessionLaunchUsecaseError;
 pub(crate) use provider_agent_session_launch::{
-    ProviderAgentSessionHistoryResumeRequest, ProviderAgentSessionLaunchRequest,
-    ProviderAgentSessionLaunchUsecase, ProviderAgentWorkflowSessionLaunchRequest,
+    ProviderAgentSessionHistoryResumeOutcome, ProviderAgentSessionHistoryResumeRequest,
+    ProviderAgentSessionLaunchRequest, ProviderAgentSessionLaunchUsecase,
+    ProviderAgentWorkflowSessionLaunchRequest,
 };
 pub(crate) use provider_agent_session_lifecycle::{
     ProviderAgentSessionGarbageCollectionOutcome, ProviderAgentSessionLifecycleUsecase,

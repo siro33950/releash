@@ -34,12 +34,13 @@ pub use identifiers::{
 pub use mutation::{
     CallerAttemptMutation, CallerAttemptResolution, CallerOperationKey, LocalStateMutation,
     MessageProjectionMutation, ObligationMutation, OperationBindingMutation, OperationKind,
-    OperationRecordMutation, PendingIndexEntry, PendingPartition, RecoveryActionMutation,
-    RevisionGuard, SessionProjectionMutation, SessionProjectionRemovalMutation,
-    ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
-    ShutdownPlanKey, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
-    ShutdownTargetMutation, StopResolutionKind, StopResolutionMutation, TerminalRecordMutation,
-    WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+    OperationRecordMutation, PendingIndexEntry, PendingPartition,
+    ProviderAgentSessionRemovalMutation, RecoveryActionMutation, RevisionGuard,
+    SessionProjectionMutation, SessionProjectionRemovalMutation, ShutdownDetailsCompactionMutation,
+    ShutdownDetailsState, ShutdownLatestPointerMutation, ShutdownPlanKey, ShutdownPlanMutation,
+    ShutdownRecoverySnapshotMutation, ShutdownTargetMutation, StopResolutionKind,
+    StopResolutionMutation, TerminalRecordMutation, WorkflowExecutionNodeProjectionMutation,
+    WorkflowExecutionProjectionMutation,
 };
 #[cfg(test)]
 pub use operation_identity::session_projection_rollback_identity;

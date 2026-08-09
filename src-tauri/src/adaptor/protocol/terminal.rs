@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::terminal_surface::entities::{TerminalSurface, TerminalSurfaceSummary};
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
-use crate::usecase::terminal_surface::dto::{
-    GetOrSpawnTerminalDto, TerminalSurfaceDto, TerminalSurfaceSummaryDto,
-};
+use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,8 +87,8 @@ pub struct TerminalSurfaceV1 {
     pub label: Option<String>,
 }
 
-impl From<TerminalSurfaceDto> for TerminalSurfaceV1 {
-    fn from(surface: TerminalSurfaceDto) -> Self {
+impl From<TerminalSurface> for TerminalSurfaceV1 {
+    fn from(surface: TerminalSurface) -> Self {
         Self {
             session_key: surface.session_key,
             terminal_surface: TerminalSurfaceCheckpointV1 {
@@ -98,8 +97,8 @@ impl From<TerminalSurfaceDto> for TerminalSurfaceV1 {
                 cols: surface.checkpoint.cols,
                 rows: surface.checkpoint.rows,
             },
-            is_exited: surface.is_exited,
-            exit_code: surface.exit_code,
+            is_exited: surface.process_state.is_exited(),
+            exit_code: surface.process_state.exit_code(),
             label: surface.label,
         }
     }
@@ -114,14 +113,15 @@ pub struct GetOrSpawnTerminalV1 {
     pub exit_code: Option<i32>,
 }
 
-impl From<GetOrSpawnTerminalDto> for GetOrSpawnTerminalV1 {
-    fn from(outcome: GetOrSpawnTerminalDto) -> Self {
+impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
+    fn from(outcome: GetOrSpawnTerminalOutcome) -> Self {
+        let surface = outcome.surface;
         Self {
-            session_key: outcome.session_key,
+            session_key: surface.session_key,
             restored_from_checkpoint: outcome.restored_from_checkpoint,
             is_new: outcome.is_new,
-            is_exited: outcome.is_exited,
-            exit_code: outcome.exit_code,
+            is_exited: surface.process_state.is_exited(),
+            exit_code: surface.process_state.exit_code(),
         }
     }
 }
@@ -150,12 +150,12 @@ pub struct TerminalSurfaceSummaryV1 {
     pub exit_code: Option<i32>,
 }
 
-impl From<TerminalSurfaceSummaryDto> for TerminalSurfaceSummaryV1 {
-    fn from(surface: TerminalSurfaceSummaryDto) -> Self {
+impl From<TerminalSurfaceSummary> for TerminalSurfaceSummaryV1 {
+    fn from(surface: TerminalSurfaceSummary) -> Self {
         Self {
             session_key: surface.session_key,
-            is_exited: surface.is_exited,
-            exit_code: surface.exit_code,
+            is_exited: surface.process_state.is_exited(),
+            exit_code: surface.process_state.exit_code(),
         }
     }
 }
@@ -305,6 +305,9 @@ pub enum TerminalWsAttachedRequestV1 {
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum TerminalWsResponseV1 {
+    Attached {
+        id: String,
+    },
     Error {
         id: String,
         error: TerminalWsErrorV1,

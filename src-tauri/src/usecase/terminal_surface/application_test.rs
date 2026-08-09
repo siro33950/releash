@@ -66,6 +66,21 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
 }
 
 #[test]
+fn test_ターミナル画面接続_surface不在時はowner購読を残さない() {
+    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
+    let gateway = Arc::new(
+        crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::<
+            tauri::test::MockRuntime,
+        >::default(),
+    );
+    let event_hub = Arc::new(TerminalSurfaceEventHub::new());
+    let application = super::TerminalSurfaceApplication::new(gateway, event_hub.clone());
+
+    assert!(application.attach("attachment-1", &owner).is_err());
+    assert_eq!(event_hub.owner_stream_count(), 0);
+}
+
+#[test]
 fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
@@ -99,7 +114,7 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
         .get_summary(&owner)
         .expect("summary for registered owner");
     assert_eq!(summary.session_key, owner.stable_key());
-    assert!(!summary.is_exited);
+    assert!(!summary.process_state.is_exited());
     assert_eq!(gateway.snapshot_materialization_count(), 0);
 }
 

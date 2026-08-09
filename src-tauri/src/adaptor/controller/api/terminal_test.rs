@@ -275,6 +275,9 @@ async fn attach_workspace(socket: &mut ClientWs, attachment_id: &str) {
         ))
         .await
         .unwrap();
+    let attached = next_json(socket).await;
+    assert_eq!(attached["status"], "attached");
+    assert_eq!(attached["id"], "wire-attach");
     let snapshot = next_json(socket).await;
     assert_eq!(snapshot["status"], "event");
     assert_eq!(snapshot["item"]["type"], "snapshot");
@@ -306,6 +309,9 @@ async fn test_ターミナル画面接続_認証済みウェブソケットが�
         .await
         .unwrap();
 
+    let attached = next_json(&mut socket).await;
+    assert_eq!(attached["status"], "attached");
+    assert_eq!(attached["id"], "wire-attach");
     let snapshot = next_json(&mut socket).await;
     assert_eq!(snapshot["status"], "event");
     assert_eq!(snapshot["id"], "wire-attach");

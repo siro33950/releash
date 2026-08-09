@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{LocalProviderAgentSessionQueryService, LocalProviderAgentSessionRepository};
@@ -30,6 +31,18 @@ fn new_repository(store: &Arc<LocalEventStore>) -> LocalProviderAgentSessionRepo
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     )
+}
+
+fn ownership_stream(
+    provider: ProviderKind,
+    provider_session_id: &str,
+) -> crate::domain::local_event::StreamId {
+    let provider = match provider {
+        ProviderKind::Claude => "claude",
+        ProviderKind::Codex => "codex",
+    };
+    let digest = hex::encode(Sha256::digest(provider_session_id.as_bytes()));
+    crate::domain::local_event::StreamId::provider_session_ownership(provider, &digest).unwrap()
 }
 
 #[tokio::test]
@@ -235,7 +248,8 @@ async fn test_provider_agent_session_repository削除をtombstone化してprovid
         })
         .await
         .unwrap();
-    assert!(page.events.iter().any(|event| {
+    assert_eq!(page.events.len(), 1);
+    assert!(page.events.iter().all(|event| {
         matches!(
             &event.event,
             crate::domain::local_event::LoadedDomainEvent::Known(event)
@@ -247,6 +261,16 @@ async fn test_provider_agent_session_repository削除をtombstone化してprovid
                 )
         )
     }));
+    let ownership_page = store
+        .load_stream(crate::domain::local_event::LoadStreamRequest {
+            stream_id: ownership_stream(ProviderKind::Claude, "provider-session-1"),
+            after: None,
+            limit: 16,
+        })
+        .await
+        .unwrap();
+    assert!(ownership_page.events.is_empty());
+    assert_eq!(ownership_page.head.value(), 0);
 
     let second = AgentSession::create(
         "agent-session-2",

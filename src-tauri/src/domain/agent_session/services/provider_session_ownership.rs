@@ -8,17 +8,6 @@ pub(crate) enum ProviderSessionOwnershipClaimOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderSessionOwnershipReleaseOutcome {
-    Released,
-    AlreadyReleased,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderSessionOwnershipReleaseError {
-    pub(crate) agent_session_id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderSessionOwnershipError {
     EmptyProviderSessionId,
     InvalidEventSequence,
@@ -91,29 +80,6 @@ impl ProviderSessionOwnership {
 
     pub(crate) fn agent_session_id(&self) -> Option<&str> {
         self.agent_session_id.as_deref()
-    }
-
-    pub(crate) fn release(
-        &mut self,
-        agent_session_id: &str,
-    ) -> Result<ProviderSessionOwnershipReleaseOutcome, ProviderSessionOwnershipReleaseError> {
-        let Some(owner) = &self.agent_session_id else {
-            return Ok(ProviderSessionOwnershipReleaseOutcome::AlreadyReleased);
-        };
-        if owner != agent_session_id {
-            return Err(ProviderSessionOwnershipReleaseError {
-                agent_session_id: owner.clone(),
-            });
-        }
-        let agent_session_id = owner.clone();
-        self.agent_session_id = None;
-        self.uncommitted_events
-            .push(ProviderSessionOwnershipEvent::Released {
-                provider: self.provider,
-                provider_session_id: self.provider_session_id.clone(),
-                agent_session_id,
-            });
-        Ok(ProviderSessionOwnershipReleaseOutcome::Released)
     }
 }
 

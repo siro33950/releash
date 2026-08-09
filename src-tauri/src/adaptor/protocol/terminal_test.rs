@@ -1,4 +1,6 @@
 use super::*;
+use crate::domain::terminal_surface::entities::TerminalSurface;
+use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[test]
 fn test_ターミナル画面_所有者変換_全所有者種別をドメイン型へ変換する() {
@@ -46,12 +48,10 @@ fn test_ターミナル画面_所有者変換_コマンド実行_所有者を拒
 #[test]
 fn test_ターミナル画面取得または生成_応答で接続前の復元点を二重送信しない() {
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let response = GetOrSpawnTerminalV1::from(GetOrSpawnTerminalDto {
-        session_key: owner.stable_key(),
+    let response = GetOrSpawnTerminalV1::from(GetOrSpawnTerminalOutcome {
+        surface: TerminalSurface::new(1, owner, None).summary(),
         restored_from_checkpoint: false,
         is_new: true,
-        is_exited: false,
-        exit_code: None,
     });
 
     let json = serde_json::to_value(response).unwrap();

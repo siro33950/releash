@@ -27,7 +27,6 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderAgentSessionLaunchRequest {
-    pub(crate) agent_session_id: String,
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
@@ -38,7 +37,6 @@ pub(crate) struct ProviderAgentSessionLaunchRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderAgentWorkflowSessionLaunchRequest {
-    pub(crate) agent_session_id: String,
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
@@ -51,7 +49,6 @@ pub(crate) struct ProviderAgentWorkflowSessionLaunchRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderAgentSessionHistoryResumeRequest {
-    pub(crate) agent_session_id: String,
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
@@ -88,6 +85,18 @@ type StandaloneLaunchOutcome = Result<String, ProviderAgentSessionLaunchUsecaseE
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
 const COMPLETED_STANDALONE_LAUNCH_CAPACITY: usize = 128;
+
+fn issue_agent_session_id(
+    caller_request_id: &str,
+) -> Result<String, ProviderAgentSessionLaunchUsecaseError> {
+    if caller_request_id.trim().is_empty() {
+        return Err(ProviderAgentSessionLaunchUsecaseError::InvalidInput);
+    }
+    Ok(format!(
+        "provider-agent-session-{}",
+        crate::other::id::unique_simple_id()
+    ))
+}
 
 #[derive(Default)]
 struct StandaloneLaunchRequestRegistry {
@@ -210,8 +219,13 @@ impl ProviderAgentSessionLaunchUsecase {
         &self,
         request: ProviderAgentSessionLaunchRequest,
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
-        self.launch_new_session(request, Ok(AgentSessionOrigin::Standalone))
-            .await
+        let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
+        self.launch_new_session(
+            agent_session_id,
+            request,
+            Ok(AgentSessionOrigin::Standalone),
+        )
+        .await
     }
 
     pub(crate) async fn launch_workflow_node(
@@ -223,9 +237,10 @@ impl ProviderAgentSessionLaunchUsecase {
             &request.node_execution_id,
         )
         .map_err(|_| ProviderAgentSessionLaunchUsecaseError::InvalidInput);
+        let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         self.launch_new_session(
+            agent_session_id,
             ProviderAgentSessionLaunchRequest {
-                agent_session_id: request.agent_session_id,
                 workspace: request.workspace,
                 worktree_path: request.worktree_path,
                 provider: request.provider,
@@ -240,6 +255,7 @@ impl ProviderAgentSessionLaunchUsecase {
 
     async fn launch_new_session(
         &self,
+        agent_session_id: String,
         request: ProviderAgentSessionLaunchRequest,
         origin: Result<AgentSessionOrigin, ProviderAgentSessionLaunchUsecaseError>,
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
@@ -251,14 +267,14 @@ impl ProviderAgentSessionLaunchUsecase {
         }
         let _operation = self
             .sessions
-            .lock_operation(&request.agent_session_id)
+            .lock_operation(&agent_session_id)
             .await
             .map_err(map_session_error)?;
         availability_and_lock.finish();
         let origin = origin?;
         let slot_id = ProviderLifecycleSlotId::new(crate::other::id::unique_simple_id())
             .map_err(|_| ProviderAgentSessionLaunchUsecaseError::Corrupt)?;
-        let scope = ProviderLifecycleScope::new(&request.agent_session_id)
+        let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| ProviderAgentSessionLaunchUsecaseError::Corrupt)?;
         let durable_create = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::DurableCreateCommit,
@@ -269,7 +285,7 @@ impl ProviderAgentSessionLaunchUsecase {
                 self.sessions
                     .create_with_lifecycle_events(
                         ProviderAgentSessionCreateRequest {
-                            agent_session_id: request.agent_session_id.clone(),
+                            agent_session_id: agent_session_id.clone(),
                             workspace: request.workspace.clone(),
                             worktree_path: request.worktree_path.clone(),
                             provider: request.provider,
@@ -407,6 +423,7 @@ impl ProviderAgentSessionLaunchUsecase {
         if request.provider_session_id.trim().is_empty() {
             return Err(ProviderAgentSessionLaunchUsecaseError::InvalidInput);
         }
+        let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let candidates = self
             .history
             .list_metadata(request.provider, &request.worktree_path, 201)
@@ -433,12 +450,12 @@ impl ProviderAgentSessionLaunchUsecase {
         }
         let _operation = self
             .sessions
-            .lock_operation(&request.agent_session_id)
+            .lock_operation(&agent_session_id)
             .await
             .map_err(map_session_error)?;
         self.sessions
             .create(
-                &request.agent_session_id,
+                &agent_session_id,
                 request.workspace.clone(),
                 &request.worktree_path,
                 request.provider,
@@ -450,7 +467,7 @@ impl ProviderAgentSessionLaunchUsecase {
         let associated = self
             .sessions
             .associate_provider_session(
-                &request.agent_session_id,
+                &agent_session_id,
                 &request.provider_session_id,
                 None,
                 &format!("{}.associate", request.caller_request_id),
@@ -468,7 +485,7 @@ impl ProviderAgentSessionLaunchUsecase {
             .map_err(map_lifecycle_error)
         {
             Ok(armed) => armed,
-            Err(_) => return self.pause_history_resume(&request).await,
+            Err(_) => return self.pause_history_resume(&request, &agent_session_id).await,
         };
         let prepared = match self.launch_gateway.prepare(
             &armed,
@@ -477,8 +494,9 @@ impl ProviderAgentSessionLaunchUsecase {
         ) {
             Ok(prepared) => prepared,
             Err(_) => {
-                self.cleanup_failed_history_resume(&request, &armed).await?;
-                return self.pause_history_resume(&request).await;
+                self.cleanup_failed_history_resume(&request, &agent_session_id, &armed)
+                    .await?;
+                return self.pause_history_resume(&request, &agent_session_id).await;
             }
         };
         let initial_hook_warning = prepared.initial_hook_warning();
@@ -493,8 +511,9 @@ impl ProviderAgentSessionLaunchUsecase {
             )
             .is_err()
         {
-            self.cleanup_failed_history_resume(&request, &armed).await?;
-            return self.pause_history_resume(&request).await;
+            self.cleanup_failed_history_resume(&request, &agent_session_id, &armed)
+                .await?;
+            return self.pause_history_resume(&request, &agent_session_id).await;
         }
         self.record_hook_launch(
             associated.session().provider(),
@@ -508,10 +527,11 @@ impl ProviderAgentSessionLaunchUsecase {
     async fn cleanup_failed_history_resume(
         &self,
         request: &ProviderAgentSessionHistoryResumeRequest,
+        agent_session_id: &str,
         armed: &ArmedProviderLifecycle,
     ) -> Result<(), ProviderAgentSessionLaunchUsecaseError> {
         let terminal_result =
-            TerminalSurfaceOwner::session(request.workspace.clone(), &request.agent_session_id)
+            TerminalSurfaceOwner::session(request.workspace.clone(), agent_session_id)
                 .map_err(|_| ProviderAgentSessionLaunchUsecaseError::TerminalUnavailable)
                 .and_then(|terminal_owner| {
                     self.terminal
@@ -526,7 +546,7 @@ impl ProviderAgentSessionLaunchUsecase {
             .map_err(map_lifecycle_error);
         let launch_result = self
             .launch_gateway
-            .cleanup(&request.agent_session_id)
+            .cleanup(agent_session_id)
             .map_err(map_launch_error);
 
         terminal_result?;
@@ -538,11 +558,12 @@ impl ProviderAgentSessionLaunchUsecase {
     async fn pause_history_resume(
         &self,
         request: &ProviderAgentSessionHistoryResumeRequest,
+        agent_session_id: &str,
     ) -> Result<ProviderAgentSessionHistoryResumeOutcome, ProviderAgentSessionLaunchUsecaseError>
     {
         self.sessions
             .observe_process_exit(
-                &request.agent_session_id,
+                agent_session_id,
                 None,
                 &format!("{}.paused", request.caller_request_id),
             )
@@ -550,7 +571,7 @@ impl ProviderAgentSessionLaunchUsecase {
             .map_err(map_session_error)?;
         let session = self
             .sessions
-            .find(&request.agent_session_id)
+            .find(agent_session_id)
             .await
             .map_err(map_session_error)?
             .ok_or(ProviderAgentSessionLaunchUsecaseError::Corrupt)?;

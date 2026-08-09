@@ -105,3 +105,27 @@ fn test_flow_control無効時は未ack超過でもpublishがブロックしな�
     }
     worker.join().expect("publisher thread must finish");
 }
+
+#[test]
+fn test_owner購読をdropするとowner_streamを解放する() {
+    let hub = TerminalSurfaceEventHub::with_flags(8, true);
+    let subscription = hub.subscribe_owner("session", "attachment");
+    assert_eq!(hub.owner_stream_count(), 1);
+
+    drop(subscription);
+
+    assert_eq!(hub.owner_stream_count(), 0);
+}
+
+#[test]
+fn test_旧owner購読のcancelは新しい購読を解放しない() {
+    let hub = TerminalSurfaceEventHub::with_flags(8, true);
+    let previous = hub.subscribe_owner("session", "attachment");
+    let current = hub.subscribe_owner("session", "attachment");
+
+    previous.cancellation.cancel();
+
+    assert_eq!(hub.owner_stream_count(), 1);
+    drop(current);
+    assert_eq!(hub.owner_stream_count(), 0);
+}

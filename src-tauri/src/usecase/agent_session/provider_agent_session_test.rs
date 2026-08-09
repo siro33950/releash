@@ -576,7 +576,6 @@ async fn test_provider_agent_session_launch_利用可能な選択providerをterm
 
     let launched = usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "agent-session-1".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/.worktrees/feature".to_string(),
             provider: ProviderKind::Codex,
@@ -586,6 +585,7 @@ async fn test_provider_agent_session_launch_利用可能な選択providerをterm
         })
         .await
         .unwrap();
+    let expected_id = launched.session().id();
 
     assert_eq!(launched.session().provider(), ProviderKind::Codex);
     assert_eq!(
@@ -594,12 +594,12 @@ async fn test_provider_agent_session_launch_利用可能な選択providerをterm
     );
     let armed = launch_gateway.armed.lock().unwrap();
     assert_eq!(armed.len(), 1);
-    assert_eq!(armed[0].scope().agent_session_id(), "agent-session-1");
+    assert_eq!(armed[0].scope().agent_session_id(), expected_id);
     let spawns = terminal.spawns.lock().unwrap();
     assert_eq!(spawns.len(), 1);
     assert_eq!(
         spawns[0].owner,
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap()
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), expected_id).unwrap()
     );
     assert_eq!(spawns[0].worktree_path, "/repo/.worktrees/feature");
     assert_eq!(spawns[0].process.executable(), "/opt/bin/provider");
@@ -642,7 +642,6 @@ async fn test_provider_agent_session_launch_session作成とlifecycle_armを一�
 
     usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "atomic-launch".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Claude,
@@ -690,7 +689,6 @@ async fn test_provider_agent_session_launch_hookwarning保存完了を待たずp
     let mut launch = tokio::spawn(async move {
         usecase
             .launch_standalone(ProviderAgentSessionLaunchRequest {
-                agent_session_id: "agent-session-hook-warning".to_string(),
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,
@@ -747,7 +745,6 @@ async fn test_provider_agent_session_launch_利用不可providerではsessionも
 
     let result = usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "agent-session-1".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/.worktrees/feature".to_string(),
             provider: ProviderKind::Claude,
@@ -766,12 +763,8 @@ async fn test_provider_agent_session_launch_利用不可providerではsessionも
     assert!(terminal.spawns.lock().unwrap().is_empty());
 }
 
-fn idempotent_launch_request(
-    agent_session_id: &str,
-    caller_request_id: &str,
-) -> ProviderAgentSessionLaunchRequest {
+fn idempotent_launch_request(caller_request_id: &str) -> ProviderAgentSessionLaunchRequest {
     ProviderAgentSessionLaunchRequest {
-        agent_session_id: agent_session_id.to_string(),
         workspace: WorkspaceIdentity::new("/repo"),
         worktree_path: "/repo/.worktrees/feature".to_string(),
         provider: ProviderKind::Claude,
@@ -779,6 +772,15 @@ fn idempotent_launch_request(
         cols: 80,
         caller_request_id: caller_request_id.to_string(),
     }
+}
+
+#[test]
+fn test_provider_agent_session_launch_id発行をcontrollerとworkflow_gatewayに分散しない() {
+    let controller = include_str!("../../adaptor/controller/command/agent_session/provider_tui.rs");
+    let workflow_gateway = include_str!("../../adaptor/gateway/workflow/node_session_boundary.rs");
+
+    assert!(!controller.contains("Uuid::new_v4"));
+    assert!(!workflow_gateway.contains("provider-agent-session-{nonce}"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -823,21 +825,21 @@ async fn test_provider_agent_session_launch_同一request_idの並行呼び出�
     ));
 
     let first = tokio::spawn(
-        Arc::clone(&usecase)
-            .launch_standalone_idempotent(idempotent_launch_request("agent-first", "request-dup")),
+        Arc::clone(&usecase).launch_standalone_idempotent(idempotent_launch_request("request-dup")),
     );
     entered_receiver
         .recv_timeout(Duration::from_secs(1))
         .unwrap();
     let second = tokio::spawn(
-        Arc::clone(&usecase)
-            .launch_standalone_idempotent(idempotent_launch_request("agent-second", "request-dup")),
+        Arc::clone(&usecase).launch_standalone_idempotent(idempotent_launch_request("request-dup")),
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     release_sender.send(()).unwrap();
 
-    assert_eq!(first.await.unwrap().unwrap(), "agent-first");
-    assert_eq!(second.await.unwrap().unwrap(), "agent-first");
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first, second);
+    assert!(first.starts_with("provider-agent-session-"));
     assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -868,16 +870,16 @@ async fn test_provider_agent_session_launch_完了済みrequest_id再送は再�
     ));
 
     let first = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-first", "request-1"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-1"))
         .await
         .unwrap();
     let replay = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-second", "request-1"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-1"))
         .await
         .unwrap();
 
-    assert_eq!(first, "agent-first");
-    assert_eq!(replay, "agent-first");
+    assert_eq!(first, replay);
+    assert!(first.starts_with("provider-agent-session-"));
     assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
     assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
 }
@@ -908,16 +910,17 @@ async fn test_provider_agent_session_launch_異なるrequest_idは別のsession�
     ));
 
     let first = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-first", "request-1"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-1"))
         .await
         .unwrap();
     let second = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-second", "request-2"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-2"))
         .await
         .unwrap();
 
-    assert_eq!(first, "agent-first");
-    assert_eq!(second, "agent-second");
+    assert_ne!(first, second);
+    assert!(first.starts_with("provider-agent-session-"));
+    assert!(second.starts_with("provider-agent-session-"));
     assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 2);
     assert_eq!(terminal.spawns.lock().unwrap().len(), 2);
 }
@@ -948,10 +951,10 @@ async fn test_provider_agent_session_launch_失敗結果も記録し同一reques
     ));
 
     let first = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-first", "request-fail"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-fail"))
         .await;
     let replay = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-second", "request-fail"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-fail"))
         .await;
 
     assert_eq!(
@@ -1001,10 +1004,10 @@ async fn test_provider_agent_session_launch_起動panic後はin_flightに残さ�
     ));
 
     let first = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-first", "request-panic"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
         .await;
     let replay = Arc::clone(&usecase)
-        .launch_standalone_idempotent(idempotent_launch_request("agent-second", "request-panic"))
+        .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
         .await;
 
     assert_eq!(
@@ -1072,7 +1075,7 @@ async fn test_provider_agent_session_launch_pty起動中のsessionをgcしない
     let lifecycle = Arc::new(ProviderAgentSessionLifecycleUsecase::new(
         sessions.clone(),
         provider_lifecycle,
-        launches,
+        launches.clone(),
         terminal.clone(),
         hook_health,
         Arc::new(NoopChangeNotifier),
@@ -1081,7 +1084,6 @@ async fn test_provider_agent_session_launch_pty起動中のsessionをgcしない
     let launching = tokio::spawn(async move {
         launch
             .launch_standalone(ProviderAgentSessionLaunchRequest {
-                agent_session_id: "agent-launch-gc".to_string(),
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Claude,
@@ -1094,9 +1096,14 @@ async fn test_provider_agent_session_launch_pty起動中のsessionをgcしない
     entered_receiver
         .recv_timeout(Duration::from_secs(1))
         .unwrap();
+    let expected_id = launches.armed.lock().unwrap()[0]
+        .scope()
+        .agent_session_id()
+        .to_string();
+    let gc_agent_session_id = expected_id.clone();
     let collecting = tokio::spawn(async move {
         lifecycle
-            .reconcile_garbage_collection("agent-launch-gc", "gc-during-launch")
+            .reconcile_garbage_collection(&gc_agent_session_id, "gc-during-launch")
             .await
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1107,7 +1114,7 @@ async fn test_provider_agent_session_launch_pty起動中のsessionをgcしない
         collecting.await.unwrap().unwrap(),
         super::ProviderAgentSessionGarbageCollectionOutcome::Retained
     );
-    assert!(sessions.find("agent-launch-gc").await.unwrap().is_some());
+    assert!(sessions.find(&expected_id).await.unwrap().is_some());
     assert_eq!(*terminal.deletes.lock().unwrap(), 0);
 }
 
@@ -1159,7 +1166,6 @@ async fn test_provider_agent_session_history_resumeは新しいsessionを作り�
 
     let outcome = usecase
         .resume_history(ProviderAgentSessionHistoryResumeRequest {
-            agent_session_id: "new-agent-session".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1171,11 +1177,13 @@ async fn test_provider_agent_session_history_resumeは新しいsessionを作り�
         .await
         .unwrap();
 
-    assert!(matches!(
-        outcome,
-        ProviderAgentSessionHistoryResumeOutcome::Paused(_)
-    ));
-    let saved = sessions.find("new-agent-session").await.unwrap().unwrap();
+    let expected_id = match outcome {
+        ProviderAgentSessionHistoryResumeOutcome::Paused(session) => {
+            session.session().id().to_string()
+        }
+        ProviderAgentSessionHistoryResumeOutcome::Open(_) => panic!("expected paused session"),
+    };
+    let saved = sessions.find(&expected_id).await.unwrap().unwrap();
     assert_eq!(saved.session().lifecycle(), AgentSessionLifecycle::Paused);
     assert_eq!(
         saved.session().provider_session_id(),
@@ -1187,7 +1195,7 @@ async fn test_provider_agent_session_history_resumeは新しいsessionを作り�
     );
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &["new-agent-session"]
+        &[expected_id]
     );
 }
 
@@ -1234,7 +1242,6 @@ async fn test_provider_agent_session_history_resume_lifecycle準備失敗でもp
 
     let outcome = usecase
         .resume_history(ProviderAgentSessionHistoryResumeRequest {
-            agent_session_id: "history-arm-failure".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1246,11 +1253,13 @@ async fn test_provider_agent_session_history_resume_lifecycle準備失敗でもp
         .await
         .unwrap();
 
-    assert!(matches!(
-        outcome,
-        ProviderAgentSessionHistoryResumeOutcome::Paused(_)
-    ));
-    let saved = sessions.find("history-arm-failure").await.unwrap().unwrap();
+    let expected_id = match outcome {
+        ProviderAgentSessionHistoryResumeOutcome::Paused(session) => {
+            session.session().id().to_string()
+        }
+        ProviderAgentSessionHistoryResumeOutcome::Open(_) => panic!("expected paused session"),
+    };
+    let saved = sessions.find(&expected_id).await.unwrap().unwrap();
     assert_eq!(saved.session().lifecycle(), AgentSessionLifecycle::Paused);
     assert_eq!(
         saved.session().provider_session_id(),
@@ -1467,7 +1476,6 @@ async fn test_provider_agent_workflow_session_launch_node所有sessionをprovide
 
     let launched = usecase
         .launch_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
-            agent_session_id: "workflow-agent-1".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1530,7 +1538,6 @@ async fn test_provider_agent_session_launch_spawn失敗時はsessionとlaunch資
 
     let result = usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "failed-agent-session".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1544,14 +1551,11 @@ async fn test_provider_agent_session_launch_spawn失敗時はsessionとlaunch資
         result.unwrap_err(),
         ProviderAgentSessionLaunchUsecaseError::TerminalUnavailable
     );
-    assert!(sessions
-        .find("failed-agent-session")
-        .await
-        .unwrap()
-        .is_none());
+    let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
+    assert!(sessions.find(&expected_id).await.unwrap().is_none());
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &["failed-agent-session".to_string()]
+        &[expected_id]
     );
 }
 
@@ -1597,7 +1601,6 @@ async fn test_provider_agent_session_launch_rollbackのterminal削除失敗で�
 
     let result = usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "rollback-delete-failure".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1612,15 +1615,12 @@ async fn test_provider_agent_session_launch_rollbackのterminal削除失敗で�
         ProviderAgentSessionLaunchUsecaseError::LaunchUnavailable
     );
     assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+    let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &["rollback-delete-failure".to_string()]
+        &[expected_id.clone()]
     );
-    assert!(sessions
-        .find("rollback-delete-failure")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(sessions.find(&expected_id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -1659,7 +1659,6 @@ async fn test_provider_agent_session_launch_codexのhook_delivery未確認を警
 
     let launched = usecase
         .launch_standalone(ProviderAgentSessionLaunchRequest {
-            agent_session_id: "codex-unconfirmed".to_string(),
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1670,7 +1669,12 @@ async fn test_provider_agent_session_launch_codexのhook_delivery未確認を警
         .await
         .unwrap();
 
-    assert_eq!(launched.session().id(), "codex-unconfirmed");
+    assert_eq!(
+        launched.session().id(),
+        launch_gateway.armed.lock().unwrap()[0]
+            .scope()
+            .agent_session_id()
+    );
     assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
     let warnings = tokio::time::timeout(Duration::from_secs(1), async {
         loop {

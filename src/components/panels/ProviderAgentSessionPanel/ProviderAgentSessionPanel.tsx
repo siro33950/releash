@@ -199,6 +199,11 @@ export function ProviderAgentSessionPanel({
 					{error}
 				</div>
 			)}
+			{state === "paused" && !error && (
+				<div role="alert" className="text-destructive">
+					Provider session is not running. Resume to retry.
+				</div>
+			)}
 			{state === "loading" && <div>Opening AgentSession...</div>}
 			{state === "paused" && (
 				<>

@@ -49,6 +49,14 @@ class MockWebSocket {
 	receive(payload: unknown) {
 		this.onmessage?.({ data: JSON.stringify(payload) });
 	}
+
+	acceptAttach() {
+		const attach = this.sent
+			.map((frame) => JSON.parse(frame))
+			.find((frame) => frame.type === "attach_surface");
+		if (!attach) throw new Error("attach_surface frame is missing");
+		this.receive({ status: "attached", id: attach.id });
+	}
 }
 vi.stubGlobal("WebSocket", MockWebSocket);
 
@@ -1282,6 +1290,7 @@ describe("useTerminal", () => {
 		const attach = JSON.parse(socket.sent[0]);
 		expect(attach.type).toBe("attach_surface");
 		expect(attach.attachment_id).toBe(attach.id);
+		socket.acceptAttach();
 
 		socket.receive({
 			status: "event",
@@ -2530,6 +2539,7 @@ describe("useTerminal", () => {
 				expect(socket.sent).toHaveLength(1);
 			});
 			const wsAttachmentId = JSON.parse(socket.sent[0]).attachment_id as string;
+			socket.acceptAttach();
 			socket.receive(wsSnapshot);
 			await waitFor(() => {
 				expect(mockInvoke).toHaveBeenCalledWith(
@@ -2590,6 +2600,7 @@ describe("useTerminal", () => {
 			await waitFor(() => {
 				expect(first.sent).toHaveLength(1);
 			});
+			first.acceptAttach();
 			first.receive(wsSnapshot);
 			await waitFor(() => {
 				expect(mockInvoke).toHaveBeenCalledWith(
@@ -2627,6 +2638,9 @@ describe("useTerminal", () => {
 			second.open();
 			await waitFor(() => {
 				expect(second.sent).toHaveLength(1);
+			});
+			second.acceptAttach();
+			await waitFor(() => {
 				expect(first.readyState).toBe(MockWebSocket.CLOSED);
 			});
 
@@ -2682,6 +2696,7 @@ describe("useTerminal", () => {
 			await waitFor(() => {
 				expect(first.sent).toHaveLength(1);
 			});
+			first.acceptAttach();
 			const firstAttachmentId = JSON.parse(first.sent[0])
 				.attachment_id as string;
 			first.receive(wsSnapshot);
@@ -2741,6 +2756,9 @@ describe("useTerminal", () => {
 			second.open();
 			await waitFor(() => {
 				expect(second.sent).toHaveLength(1);
+			});
+			second.acceptAttach();
+			await waitFor(() => {
 				expect(first.readyState).toBe(MockWebSocket.CLOSED);
 			});
 			const secondAttachmentId = JSON.parse(second.sent[0])
@@ -2794,6 +2812,7 @@ describe("useTerminal", () => {
 			await waitFor(() => {
 				expect(first.sent).toHaveLength(1);
 			});
+			first.acceptAttach();
 			const firstAttachmentId = JSON.parse(first.sent[0])
 				.attachment_id as string;
 			first.receive(wsSnapshot);
@@ -2886,6 +2905,7 @@ describe("useTerminal", () => {
 			await waitFor(() => {
 				expect(socket.sent).toHaveLength(1);
 			});
+			socket.acceptAttach();
 			socket.receive(wsSnapshot);
 			await waitFor(() => {
 				expect(mockInvoke).toHaveBeenCalledWith(
@@ -2970,6 +2990,7 @@ describe("useTerminal", () => {
 			await waitFor(() => {
 				expect(first.sent).toHaveLength(1);
 			});
+			first.acceptAttach();
 			first.receive(wsSnapshot);
 			await waitFor(() => {
 				expect(mockInvoke).toHaveBeenCalledWith(
@@ -2993,6 +3014,10 @@ describe("useTerminal", () => {
 
 			unmount();
 			second.open();
+			await waitFor(() => {
+				expect(second.sent).toHaveLength(1);
+			});
+			second.acceptAttach();
 
 			await waitFor(() => {
 				expect(second.readyState).toBe(MockWebSocket.CLOSED);

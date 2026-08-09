@@ -15,7 +15,7 @@ const TERMINAL_SURFACE_STREAM_CAPACITY: usize = 256;
 
 pub(crate) struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
-    owner_streams: Mutex<HashMap<String, OwnerEventStream>>,
+    owner_streams: Arc<Mutex<HashMap<String, OwnerEventStream>>>,
     capacity: usize,
     flow_control_enabled: bool,
 }
@@ -23,6 +23,7 @@ pub(crate) struct TerminalSurfaceEventHub {
 struct OwnerEventStream {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
     flow_control: Arc<TerminalOutputFlowControl>,
+    active_subscription: Arc<()>,
 }
 
 impl TerminalSurfaceEventHub {
@@ -43,7 +44,7 @@ impl TerminalSurfaceEventHub {
         let (sender, _) = tokio::sync::broadcast::channel(capacity);
         Self {
             sender,
-            owner_streams: Mutex::new(HashMap::new()),
+            owner_streams: Arc::new(Mutex::new(HashMap::new())),
             capacity,
             flow_control_enabled,
         }
@@ -66,6 +67,11 @@ impl TerminalSurfaceEventHub {
             }),
             cancellation,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner_stream_count(&self) -> usize {
+        self.owner_streams.lock().len()
     }
 }
 
@@ -108,14 +114,26 @@ struct EventCancellation {
     on_cancel: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-impl TerminalSurfaceEventCancellation for EventCancellation {
-    fn cancel(&self) {
+impl EventCancellation {
+    fn finish(&self) {
         if let Some(sender) = self.sender.lock().take() {
             let _ = sender.send(());
         }
         if let Some(on_cancel) = self.on_cancel.lock().take() {
             on_cancel();
         }
+    }
+}
+
+impl TerminalSurfaceEventCancellation for EventCancellation {
+    fn cancel(&self) {
+        self.finish();
+    }
+}
+
+impl Drop for EventCancellation {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -129,6 +147,7 @@ impl TerminalSurfaceEventSource for TerminalSurfaceEventHub {
         session_key: &str,
         attachment_id: &str,
     ) -> TerminalSurfaceEventStream {
+        let subscription_identity = Arc::new(());
         let (receiver, flow_control) = {
             let mut owner_streams = self.owner_streams.lock();
             let stream = owner_streams
@@ -138,15 +157,27 @@ impl TerminalSurfaceEventSource for TerminalSurfaceEventHub {
                     flow_control: Arc::new(TerminalOutputFlowControl::new(
                         self.flow_control_enabled,
                     )),
+                    active_subscription: Arc::new(()),
                 });
+            stream.active_subscription = Arc::clone(&subscription_identity);
             stream.flow_control.activate(attachment_id);
             (stream.sender.subscribe(), Arc::clone(&stream.flow_control))
         };
         let attachment_id = attachment_id.to_string();
+        let session_key = session_key.to_string();
+        let owner_streams = Arc::clone(&self.owner_streams);
         Self::stream(
             receiver,
             Some(Box::new(move || {
-                flow_control.deactivate(&attachment_id);
+                let mut streams = owner_streams.lock();
+                let is_current = streams.get(&session_key).is_some_and(|stream| {
+                    Arc::ptr_eq(&stream.flow_control, &flow_control)
+                        && Arc::ptr_eq(&stream.active_subscription, &subscription_identity)
+                });
+                if !is_current || !flow_control.deactivate(&attachment_id) {
+                    return;
+                }
+                streams.remove(&session_key);
             })),
         )
     }

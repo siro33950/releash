@@ -13,13 +13,6 @@ use crate::usecase::agent_session::{
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
-fn workflow_launch_identity(node_execution_id: &str) -> (String, String) {
-    let nonce = uuid::Uuid::new_v4().simple();
-    let agent_session_id = format!("provider-agent-session-{nonce}");
-    let caller_request_id = format!("workflow-node-launch-{node_execution_id}-{agent_session_id}");
-    (agent_session_id, caller_request_id)
-}
-
 #[async_trait::async_trait]
 pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
     fn is_provider_available(&self, provider: ProviderKind) -> bool;
@@ -79,10 +72,9 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
         workflow_execution_id: &str,
         node_execution_id: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
-        let (agent_session_id, caller_request_id) = workflow_launch_identity(node_execution_id);
-        self.launch
+        let launched = self
+            .launch
             .launch_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
-                agent_session_id: agent_session_id.clone(),
                 workspace: WorkspaceIdentity::new(worktree_path),
                 worktree_path: worktree_path.to_string(),
                 provider,
@@ -90,7 +82,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 node_execution_id: node_execution_id.to_string(),
                 rows: 24,
                 cols: 80,
-                caller_request_id,
+                caller_request_id: format!("workflow-node-launch-{node_execution_id}"),
             })
             .await
             .map_err(|error| {
@@ -99,7 +91,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 ))
             })?;
         Ok(NodeSessionInfo {
-            id: agent_session_id,
+            id: launched.session().id().to_string(),
         })
     }
 
@@ -259,20 +251,5 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
                     "append NodeSessionStarted failed: {error}"
                 ))
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::workflow_launch_identity;
-
-    #[test]
-    fn test_workflow_agent_session起動_identityとcaller_request_idを同じnonceで一意にする() {
-        let first = workflow_launch_identity("node-execution-1");
-        let second = workflow_launch_identity("node-execution-1");
-
-        assert_ne!(first, second);
-        assert!(first.1.contains(&first.0));
-        assert!(second.1.contains(&second.0));
     }
 }

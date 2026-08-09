@@ -10,47 +10,8 @@ use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEventSource, TerminalSurfaceEventSubscription, TerminalSurfaceGateway,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
-use crate::usecase::terminal_surface::dto::{
-    GetOrSpawnTerminalDto, TerminalSurfaceCheckpointDto, TerminalSurfaceDto,
-    TerminalSurfaceSummaryDto,
-};
 use crate::usecase::terminal_surface::error::UsecaseError;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
-
-fn surface_dto(surface: TerminalSurface) -> TerminalSurfaceDto {
-    TerminalSurfaceDto {
-        session_key: surface.session_key,
-        checkpoint: TerminalSurfaceCheckpointDto {
-            replay: surface.checkpoint.replay,
-            sequence: surface.checkpoint.sequence,
-            cols: surface.checkpoint.cols,
-            rows: surface.checkpoint.rows,
-        },
-        is_exited: surface.process_state.is_exited(),
-        exit_code: surface.process_state.exit_code(),
-        label: surface.label,
-    }
-}
-
-fn summary_dto(summary: TerminalSurfaceSummary) -> TerminalSurfaceSummaryDto {
-    TerminalSurfaceSummaryDto {
-        session_key: summary.session_key,
-        worktree_path: summary.worktree_path,
-        label: summary.label,
-        is_exited: summary.process_state.is_exited(),
-        exit_code: summary.process_state.exit_code(),
-    }
-}
-
-fn get_or_spawn_dto(outcome: GetOrSpawnTerminalOutcome) -> GetOrSpawnTerminalDto {
-    GetOrSpawnTerminalDto {
-        session_key: outcome.surface.session_key,
-        restored_from_checkpoint: outcome.restored_from_checkpoint,
-        is_new: outcome.is_new,
-        is_exited: outcome.surface.process_state.is_exited(),
-        exit_code: outcome.surface.process_state.exit_code(),
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct TerminalSurfaceApplication {
@@ -70,7 +31,7 @@ pub(crate) struct TerminalSurfaceAttachmentStream {
     owner: TerminalSurfaceOwner,
     session_key: String,
     attachment: TerminalSurfaceAttachment,
-    pending_snapshot: Option<TerminalSurfaceDto>,
+    pending_snapshot: Option<TerminalSurface>,
     subscription: Box<dyn TerminalSurfaceEventSubscription>,
 }
 
@@ -83,7 +44,7 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalSurfaceStreamItem {
-    Snapshot(TerminalSurfaceDto),
+    Snapshot(TerminalSurface),
     Output {
         session_key: String,
         data: Arc<str>,
@@ -121,7 +82,7 @@ impl TerminalSurfaceAttachmentStream {
         if !self.attachment.apply_snapshot(
             surface.checkpoint.sequence,
             minimum_covered_sequence,
-            surface.is_exited,
+            surface.process_state.is_exited(),
         ) {
             return None;
         }
@@ -130,8 +91,11 @@ impl TerminalSurfaceAttachmentStream {
 
     pub(crate) async fn next(&mut self) -> Option<TerminalSurfaceStreamItem> {
         if let Some(surface) = self.pending_snapshot.take() {
-            self.attachment
-                .apply_snapshot(surface.checkpoint.sequence, None, surface.is_exited);
+            self.attachment.apply_snapshot(
+                surface.checkpoint.sequence,
+                None,
+                surface.process_state.is_exited(),
+            );
             return Some(TerminalSurfaceStreamItem::Snapshot(surface));
         }
         if self.attachment.is_closed() {
@@ -304,19 +268,18 @@ impl TerminalSurfaceApplication {
     pub(crate) fn get_summary(
         &self,
         owner: &TerminalSurfaceOwner,
-    ) -> Result<TerminalSurfaceSummaryDto, UsecaseError> {
-        self.owned_summary(owner).map(summary_dto)
+    ) -> Result<TerminalSurfaceSummary, UsecaseError> {
+        self.owned_summary(owner)
     }
 
     pub(crate) fn get(
         &self,
         owner: &TerminalSurfaceOwner,
-    ) -> Result<TerminalSurfaceDto, UsecaseError> {
+    ) -> Result<TerminalSurface, UsecaseError> {
         let session_key = owner.stable_key();
         let registered_surface = self.owned_summary(owner)?;
         self.gateway
             .snapshot(registered_surface.runtime_generation.value())
-            .map(surface_dto)
             .ok_or_else(|| {
                 UsecaseError::Gateway(format!(
                     "Terminal Surface not found for owner {session_key}"
@@ -405,7 +368,7 @@ impl TerminalSurfaceApplication {
         owner: TerminalSurfaceOwner,
         label: Option<String>,
         startup_command: Option<String>,
-    ) -> Result<GetOrSpawnTerminalDto, UsecaseError> {
+    ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::spawn_usecase::get_or_spawn_with_startup(
             self.gateway.as_ref(),
@@ -416,7 +379,6 @@ impl TerminalSurfaceApplication {
             label,
             startup_command,
         )
-        .map(get_or_spawn_dto)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -428,7 +390,7 @@ impl TerminalSurfaceApplication {
         owner: TerminalSurfaceOwner,
         label: Option<String>,
         process: TerminalProcessLaunch,
-    ) -> Result<GetOrSpawnTerminalDto, UsecaseError> {
+    ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
         super::spawn_usecase::get_or_spawn_with_process(
             self.gateway.as_ref(),
@@ -439,7 +401,6 @@ impl TerminalSurfaceApplication {
             label,
             process,
         )
-        .map(get_or_spawn_dto)
     }
 
     pub(crate) fn write(
