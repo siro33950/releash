@@ -1,16 +1,30 @@
+import type { ProviderAgentSessionLaunchAttachment } from "./provider-agent-session";
 import type { SessionSummary } from "./session";
 import type { WorkflowExecutionSummary } from "./workflow";
 
-export interface CenterSelection {
-	kind: "node";
-	worktreePath: string;
-	nodeId: string;
-}
+export type CenterSelection =
+	| {
+			kind: "node";
+			worktreePath: string;
+			nodeId: string;
+	  }
+	| {
+			kind: "provider_agent_session";
+			worktreePath: string;
+			agentSessionId: string;
+			initialAttachment?: ProviderAgentSessionLaunchAttachment;
+	  }
+	| {
+			kind: "provider_agent_session_launching";
+			worktreePath: string;
+			provider: string;
+			launchToken: string;
+			error?: string;
+	  };
 
 export interface NewSessionCreationRequest {
 	requestId: string;
 	worktreePath: string;
-	attempt: number;
 }
 
 export interface NewSessionCreationStatus {
@@ -94,6 +108,11 @@ export interface WorkspaceSessionNodeContent {
 	sessionId?: string | null;
 }
 
+export interface WorkspaceProviderAgentSessionNodeContent {
+	kind: "providerAgentSession";
+	sessionId?: string | null;
+}
+
 export interface WorkspaceCommandResult {
 	exitCode: number;
 	duration: number;
@@ -109,6 +128,7 @@ export interface WorkspaceCommandNodeContent {
 
 export type WorkspaceNodeContent =
 	| WorkspaceSessionNodeContent
+	| WorkspaceProviderAgentSessionNodeContent
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {

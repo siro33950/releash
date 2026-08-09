@@ -63,6 +63,9 @@ src-tauri/rust-codecov.json
 test-results/
 playwright-report/
 
+# Performance harness run output (canonical baselines live in specs/*/performance-baselines/)
+performance-results/
+
 # Terraform
 **/.terraform/
 *.tfstate

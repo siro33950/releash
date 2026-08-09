@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::shutdown_terminal_surface_before_local_api;
+use super::shutdown_provider_observer_terminal_surface_and_local_api;
 
 #[test]
 fn test_通常終了テスト配置_追加したterminal_surface終了テストを別ファイルに置く() {
@@ -14,10 +14,17 @@ fn test_通常終了テスト配置_追加したterminal_surface終了テスト�
 #[test]
 fn test_通常終了_terminal_surface実行環境停止後にlocal_apiを停止する() {
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let observer_calls = Arc::clone(&calls);
     let terminal_calls = Arc::clone(&calls);
     let local_api_calls = Arc::clone(&calls);
 
-    shutdown_terminal_surface_before_local_api(
+    shutdown_provider_observer_terminal_surface_and_local_api(
+        &move || {
+            observer_calls
+                .lock()
+                .unwrap()
+                .push("provider-exit-observer-stop");
+        },
         &move || {
             terminal_calls
                 .lock()
@@ -31,6 +38,10 @@ fn test_通常終了_terminal_surface実行環境停止後にlocal_apiを停止�
 
     assert_eq!(
         calls.lock().unwrap().as_slice(),
-        &["terminal-stop-drain-flush", "local-api-stop"]
+        &[
+            "provider-exit-observer-stop",
+            "terminal-stop-drain-flush",
+            "local-api-stop"
+        ]
     );
 }

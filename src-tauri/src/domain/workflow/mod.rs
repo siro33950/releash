@@ -27,9 +27,9 @@ pub use repository::{
     WorkflowExecutionArchiveSnapshot, WorkflowExecutionManualArchiveRecord,
     WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
-pub use services::{
-    approval_rules, contract, secret_masker, validation, RetryPolicy, TimeoutContext, TimeoutPolicy,
-};
+pub use services::{approval_rules, contract, secret_masker, validation};
+#[cfg(test)]
+pub use services::{TimeoutContext, TimeoutPolicy};
 #[cfg(test)]
 pub use value_objects::ExecutionListFilter;
 #[cfg(test)]

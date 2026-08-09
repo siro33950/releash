@@ -90,6 +90,7 @@ impl SessionStore {
 
     /// workflow step session のセットアップ失敗時に、作成済みの子 session を
     /// 取り除くロールバック経路。storage 層へ削除を委譲する。
+    #[cfg(test)]
     pub(crate) fn remove_session_for_rollback(
         &self,
         _app_data_dir: &Path,
@@ -143,6 +144,7 @@ impl SessionStore {
     /// Do not pass shell/page sessions returned by `get_session_shell` or `get_session_page`.
     /// Normal runtime updates must use `append_message`, `persist_message_parts`, or meta-only
     /// update methods so page-external message chunks cannot be removed by partial input.
+    #[cfg(test)]
     pub fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,

@@ -181,6 +181,58 @@ pub enum WorkflowExecutionProjectionRecord {
     Deleted { execution_id: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAgentSessionProviderRecord {
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderAgentSessionOriginRecord {
+    Standalone,
+    WorkflowNode {
+        workflow_execution_id: String,
+        node_execution_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAgentSessionLifecycleRecord {
+    Open,
+    Paused,
+    Archived,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAgentSessionProjectionRecord {
+    pub id: String,
+    pub workspace_identity: String,
+    pub worktree_path: String,
+    pub provider: ProviderAgentSessionProviderRecord,
+    pub origin: ProviderAgentSessionOriginRecord,
+    pub lifecycle: ProviderAgentSessionLifecycleRecord,
+    pub provider_session_id: Option<String>,
+    pub transcript_ref: Option<String>,
+    pub initial_instruction_admitted: bool,
+    pub last_exit_abnormal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSessionOwnershipProjectionRecord {
+    pub provider: ProviderAgentSessionProviderRecord,
+    pub provider_session_id: String,
+    pub agent_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderHookHealthProjectionRecord {
+    pub provider: ProviderAgentSessionProviderRecord,
+    pub latest_launch_id: String,
+    pub latest_launch_session_started: bool,
+    pub warning_launch_id: Option<String>,
+    pub warning_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowWorktreeOwnerRecord {
     pub worktree_path: String,
@@ -191,6 +243,9 @@ pub struct WorkflowWorktreeOwnerRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionProjectionRecord {
     AgentSession(Box<AgentSessionProjectionRecord>),
+    ProviderAgentSession(ProviderAgentSessionProjectionRecord),
+    ProviderSessionOwnership(ProviderSessionOwnershipProjectionRecord),
+    ProviderHookHealth(ProviderHookHealthProjectionRecord),
     WorkflowExecution(WorkflowExecutionProjectionRecord),
     WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord),
 }
@@ -353,6 +408,28 @@ impl SessionProjectionRecord {
                     ));
                 total
             }
+            Self::ProviderAgentSession(projection) => 256usize
+                .saturating_add(projection.id.len())
+                .saturating_add(projection.workspace_identity.len())
+                .saturating_add(projection.worktree_path.len())
+                .saturating_add(optional_string(&projection.provider_session_id))
+                .saturating_add(optional_string(&projection.transcript_ref))
+                .saturating_add(match &projection.origin {
+                    ProviderAgentSessionOriginRecord::Standalone => 0,
+                    ProviderAgentSessionOriginRecord::WorkflowNode {
+                        workflow_execution_id,
+                        node_execution_id,
+                    } => workflow_execution_id
+                        .len()
+                        .saturating_add(node_execution_id.len()),
+                }),
+            Self::ProviderSessionOwnership(projection) => 128usize
+                .saturating_add(projection.provider_session_id.len())
+                .saturating_add(optional_string(&projection.agent_session_id)),
+            Self::ProviderHookHealth(projection) => 96usize
+                .saturating_add(projection.latest_launch_id.len())
+                .saturating_add(optional_string(&projection.warning_launch_id))
+                .saturating_add(optional_string(&projection.warning_reason)),
             Self::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(execution)) => {
                 256usize
                     .saturating_add(strings([

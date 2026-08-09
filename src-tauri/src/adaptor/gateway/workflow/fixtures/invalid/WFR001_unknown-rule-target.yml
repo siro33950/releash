@@ -3,7 +3,7 @@ description: next points to a missing node
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement

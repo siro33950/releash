@@ -4,7 +4,7 @@ nodes:
   - name: implement
     type: agent
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement

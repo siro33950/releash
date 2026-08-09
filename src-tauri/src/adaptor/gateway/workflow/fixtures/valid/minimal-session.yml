@@ -3,7 +3,7 @@ description: valid single node workflow
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement

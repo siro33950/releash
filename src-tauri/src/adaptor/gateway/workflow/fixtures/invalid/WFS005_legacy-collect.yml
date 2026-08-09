@@ -7,7 +7,7 @@ nodes:
       - next: reducer
   - name: reducer
     session:
-      permission: edit
+      provider: claude
       gate: auto
     collect:
       from: [source]

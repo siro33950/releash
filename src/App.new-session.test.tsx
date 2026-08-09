@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 interface TestRequest {
 	requestId: string;
 	worktreePath: string;
-	attempt: number;
 }
 
 const mocks = vi.hoisted(() => ({
@@ -130,7 +129,7 @@ vi.mock("@/screens/MainLayout", () => ({
 	MainLayout: ({
 		selectedRootPath,
 		leftNav,
-		centerSelection,
+		centerSelectionByWorktree,
 		newSessionCreationRequest,
 		onNewSessionCreated,
 		onNewSessionCreationFailed,
@@ -138,11 +137,14 @@ vi.mock("@/screens/MainLayout", () => ({
 	}: {
 		selectedRootPath: string | null;
 		leftNav: React.ReactNode;
-		centerSelection?: {
-			kind: "node";
-			worktreePath: string;
-			nodeId: string;
-		} | null;
+		centerSelectionByWorktree?: Record<
+			string,
+			{
+				kind: "node";
+				worktreePath: string;
+				nodeId: string;
+			} | null
+		>;
 		newSessionCreationRequest?: TestRequest | null;
 		onNewSessionCreated?: (
 			request: TestRequest,
@@ -155,6 +157,9 @@ vi.mock("@/screens/MainLayout", () => ({
 		onNewSessionCreationFailed?: (request: TestRequest, error: string) => void;
 		onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
 	}) => {
+		const centerSelection = selectedRootPath
+			? (centerSelectionByWorktree?.[selectedRootPath] ?? null)
+			: null;
 		if (newSessionCreationRequest) {
 			mocks.lastRequests.set(
 				newSessionCreationRequest.worktreePath,
@@ -167,9 +172,6 @@ vi.mock("@/screens/MainLayout", () => ({
 				<div data-testid="active-worktree">{selectedRootPath ?? "none"}</div>
 				<div data-testid="request-id">
 					{newSessionCreationRequest?.requestId ?? "none"}
-				</div>
-				<div data-testid="request-attempt">
-					{newSessionCreationRequest?.attempt ?? "none"}
 				</div>
 				<div data-testid="center-node">{centerSelection?.nodeId ?? "none"}</div>
 				<button
@@ -278,17 +280,15 @@ describe("App Workspace selection lifecycle", () => {
 });
 
 describe("App NewSession creation requests", () => {
-	it("deduplicates pending clicks and retries a failure with the same request id", async () => {
+	it("deduplicates pending clicks and retries a failure with a fresh request id", async () => {
 		render(<App />);
 
 		await screen.findByRole("button", { name: "Create A" });
 		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
 		const requestId = screen.getByTestId("request-id").textContent;
 		expect(requestId).not.toBe("none");
-		expect(screen.getByTestId("request-attempt")).toHaveTextContent("1");
 		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
 		expect(screen.getByTestId("request-id")).toHaveTextContent(requestId ?? "");
-		expect(screen.getByTestId("request-attempt")).toHaveTextContent("1");
 
 		fireEvent.click(screen.getByRole("button", { name: "Fail current" }));
 		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
@@ -297,8 +297,9 @@ describe("App NewSession creation requests", () => {
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
-		expect(screen.getByTestId("request-id")).toHaveTextContent(requestId ?? "");
-		expect(screen.getByTestId("request-attempt")).toHaveTextContent("2");
+		const retryRequestId = screen.getByTestId("request-id").textContent;
+		expect(retryRequestId).not.toBe("none");
+		expect(retryRequestId).not.toBe(requestId);
 		fireEvent.click(screen.getByRole("button", { name: "Resolve current" }));
 		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
 		expect(screen.getByTestId("center-node")).toHaveTextContent(

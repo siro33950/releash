@@ -1,13 +1,87 @@
 use crate::domain::agent_session::aggregates::session::Session;
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionRemovalAuthorization};
 use crate::domain::agent_session::events::AgentSessionDomainEvent;
 use crate::domain::agent_session::value_objects::SessionState;
 use crate::domain::local_event::LocalStateMutation;
+use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionLifecycleRepositoryError {
     NotFound,
     Corrupt(String),
     Unavailable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderAgentSessionRepositoryError {
+    AlreadyExists,
+    Conflict,
+    ProviderSessionAlreadyOwned { agent_session_id: String },
+    InvalidRequest,
+    Corrupt,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedProviderAgentSession {
+    session: AgentSession,
+    revision: u64,
+}
+
+impl VersionedProviderAgentSession {
+    pub(crate) fn restored(session: AgentSession, revision: u64) -> Self {
+        Self { session, revision }
+    }
+
+    pub(crate) fn session(&self) -> &AgentSession {
+        &self.session
+    }
+
+    pub(crate) fn session_mut(&mut self) -> &mut AgentSession {
+        &mut self.session
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn into_session(self) -> AgentSession {
+        self.session
+    }
+}
+
+#[async_trait::async_trait]
+pub trait ProviderAgentSessionRepository: Send + Sync {
+    async fn create(
+        &self,
+        session: AgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError>;
+
+    async fn create_with_lifecycle_events(
+        &self,
+        session: AgentSession,
+        lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
+        caller_request_id: &str,
+    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError>;
+
+    async fn find(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<VersionedProviderAgentSession>, ProviderAgentSessionRepositoryError>;
+
+    async fn save(
+        &self,
+        session: VersionedProviderAgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError>;
+
+    async fn remove(
+        &self,
+        session: VersionedProviderAgentSession,
+        authorization: AgentSessionRemovalAuthorization,
+        caller_request_id: &str,
+    ) -> Result<(), ProviderAgentSessionRepositoryError>;
 }
 
 /// Domain value selected for a backend-switch lifecycle change.

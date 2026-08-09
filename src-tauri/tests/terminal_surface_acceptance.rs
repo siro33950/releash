@@ -3,10 +3,11 @@ mod agent_tui_fixture;
 
 use std::time::Duration;
 
-use agent_tui_fixture::{fixture_process_shell_command, FixturePlan};
+use agent_tui_fixture::{fixture_process_launch, fixture_process_shell_command, FixturePlan};
 use releash_lib::terminal_surface::{
-    TerminalSurfaceEventFault, TerminalSurfaceOwnerV1, TerminalSurfaceRuntime,
-    TerminalSurfaceStreamItemV1, TerminalSurfaceV1, TerminalSurfaceWireAttachment,
+    TerminalProcessLaunchV1, TerminalSurfaceEventFault, TerminalSurfaceOwnerV1,
+    TerminalSurfaceRuntime, TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    TerminalSurfaceWireAttachment,
 };
 
 const PRODUCTION_SCROLLBACK_ROWS: usize = 1_000;
@@ -16,6 +17,48 @@ fn workspace_owner(path: &str) -> TerminalSurfaceOwnerV1 {
     TerminalSurfaceOwnerV1::Workspace {
         workspace_path: path.to_string(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして終了する() {
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let cwd = tempfile::TempDir::new().unwrap();
+    let path = cwd.path().to_string_lossy().into_owned();
+    let owner = session_owner(&path, "agent-session-root-process");
+    let (_app, runtime) = build_runtime(data_dir.path());
+    let fixture = FixturePlan {
+        input_lines: 1,
+        alternate_screen: true,
+        ..FixturePlan::new("atui-030-root-process", vec![])
+    };
+    let launch = fixture_process_launch(&fixture);
+
+    runtime
+        .get_or_spawn_with_process(
+            24,
+            80,
+            Some(path),
+            owner.clone(),
+            Some("AgentSession root process".to_string()),
+            TerminalProcessLaunchV1 {
+                executable: launch.executable,
+                arguments: launch.arguments,
+                environment: launch.environment,
+            },
+        )
+        .expect("spawn provider fixture as PTY root process");
+    let mut attachment = runtime
+        .attach("atui-030-root-process".to_string(), owner.clone())
+        .expect("attach root process surface");
+    receive_until(&mut attachment, "atui-030-root-process").await;
+    runtime
+        .write(owner.clone(), "operator-input\r")
+        .expect("write provider input");
+    receive_until(&mut attachment, "received-0:operator-input").await;
+    receive_exit(&mut attachment).await;
+
+    assert!(runtime.get(owner.clone()).unwrap().is_exited);
+    assert!(runtime.write(owner, "echo shell-remained\r").is_err());
 }
 
 fn session_owner(path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
@@ -210,7 +253,7 @@ fn output_events(items: &[TerminalSurfaceStreamItemV1]) -> Vec<(u64, String)> {
         .iter()
         .filter_map(|item| match item {
             TerminalSurfaceStreamItemV1::Output { data, sequence, .. } => {
-                Some((*sequence, data.clone()))
+                Some((*sequence, data.to_string()))
             }
             _ => None,
         })
@@ -418,6 +461,9 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     runtime
         .write(owner.clone(), "fault-gap\r")
         .expect("write dropped production event");
+    // 出力は2msバッチで合体しうるため、dropされるechoがイベントとして
+    // 発行され終えてから次のechoを発生させ、gap検出契機を決定的にする
+    wait_surface_contains(&runtime, &owner, "received-2:fault-gap").await;
     runtime
         .write(owner.clone(), "after-gap\r")
         .expect("write after dropped production event");

@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "transport": "websocket",
+  "realApp": true,
+  "switches": {
+    "disableOutputFlowControl": false,
+    "disableRendererWriteSerialization": false,
+    "disableTerminalJournal": false,
+    "disableTerminalWebsocket": false,
+    "disableWebglRenderer": false
+  },
+  "loadFixture": {
+    "kind": "sustained-agent-tui",
+    "frameBytes": 824,
+    "frameIntervalMs": 16,
+    "durationMs": 15000,
+    "dsrIntervalMs": 1000
+  },
+  "typedKeyUnderLoadMs": {
+    "count": 16,
+    "medianMs": 64,
+    "p95Ms": 68,
+    "maxMs": 68
+  },
+  "typedKeyOnDataToPublishMs": {
+    "count": 16,
+    "medianMs": 9,
+    "p95Ms": 21,
+    "maxMs": 21
+  },
+  "typedKeyPublishToEchoVisibleMs": {
+    "count": 16,
+    "medianMs": 52,
+    "p95Ms": 59,
+    "maxMs": 59
+  },
+  "imeCommitUnderLoadMs": {
+    "count": 1,
+    "medianMs": 77,
+    "p95Ms": 77,
+    "maxMs": 77
+  },
+  "dsrReplyCadence": {
+    "count": 7,
+    "nominalIntervalMs": 1000,
+    "medianDeviationMs": 8,
+    "maxDeviationMs": 11
+  },
+  "workspaceSelectionUnderLoadMs": {
+    "count": 1,
+    "medianMs": 74,
+    "p95Ms": 74,
+    "maxMs": 74
+  },
+  "workspaceSelectionSplits": [
+    {
+      "bodyFirstMs": 74,
+      "contentFirstMs": 74
+    },
+    {
+      "bodyFirstMs": 50,
+      "contentFirstMs": null
+    }
+  ],
+  "loadTimerDriftMs": 107.99999999999909,
+  "longtasks": {
+    "count": 0,
+    "maxMs": 0,
+    "totalMs": 0
+  },
+  "longtasksUnsupported": true,
+  "rendererPeakQueuedCodeUnits": 4872,
+  "rendererLongStallsOver100Ms": 0,
+  "rendererDroppedBacklogs": 0,
+  "snapshotResyncs": 0,
+  "caveats": [
+    "typed-key/IME latency = time until the key's own echo is visible in the terminal buffer, sampled per animation frame (frame-granularity, renderer-independent)",
+    "IME commit drives the real composition event sequence (compositionstart/update/end) but the events are synthesized without the OS IME; native IME timing may differ",
+    "DSR replies are xterm CPR responses to ESC[6n embedded in the load stream; cadence deviation measures pipeline queueing, not absolute latency",
+    "transport is derived from the disableTerminalWebsocket switch; a channel fallback after a websocket connection failure is not distinguished in this report",
+    "renderer: webgl-default=true; canvas-detected=true"
+  ],
+  "executionConditions": {
+    "buildKind": "release",
+    "machine": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpuModel": "Apple M4 Pro",
+      "totalMemoryBytes": 68719476736
+    },
+    "power": {
+      "source": "AC",
+      "batteryPercent": null
+    }
+  }
+}

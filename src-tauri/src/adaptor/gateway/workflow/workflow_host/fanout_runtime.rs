@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use super::node_settings::WorkflowDefaults;
+
 use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
     DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
 };
@@ -47,11 +49,8 @@ pub(crate) struct FanoutStartContext {
     pub(crate) children: Vec<FanoutChildExpansion>,
     pub(crate) parent_node_name: String,
     pub(crate) parent_attempt: u32,
-    pub(crate) order: u32,
     pub(crate) execution_id: String,
-    pub(crate) workflow_name: String,
     pub(crate) request: Option<String>,
-    pub(crate) workflow_defaults: WorkflowDefaults,
 }
 
 impl FanoutStartContext {
@@ -71,12 +70,8 @@ pub(crate) struct FanoutPromptInputs {
 
 pub(crate) struct FanoutChildSessionSetup {
     pub(crate) node_execution_id: String,
-    pub(crate) node_name: String,
     pub(crate) session_id: String,
-    pub(crate) system_prompt: Option<String>,
-    pub(crate) workflow_instruction: Option<String>,
-    pub(crate) user_message: String,
-    pub(crate) permission_mode: String,
+    pub(crate) initial_instruction: String,
 }
 
 pub(crate) fn prepare_fanout_start_context(
@@ -164,12 +159,9 @@ pub(crate) fn prepare_fanout_start_context(
     Ok(FanoutStartContext {
         parent_node_name: node.name.clone(),
         parent_attempt,
-        order: exec.node_history.len() as u32,
         children,
         execution_id: exec.id.clone(),
-        workflow_name: exec.workflow.name.clone(),
         request: exec.request.clone(),
-        workflow_defaults: exec.workflow_defaults.clone(),
     })
 }
 
@@ -478,14 +470,12 @@ mod tests {
         let context = prepare_fanout_start_context(&exec).unwrap();
 
         assert_eq!(context.execution_id, "execution-1");
-        assert_eq!(context.workflow_name, "test-workflow");
         assert_eq!(context.parent_node_name, "fanout-review");
         assert_eq!(
             context.child_node_names(),
             vec!["review-a".to_string(), "review-b".to_string()]
         );
         assert_eq!(context.request.as_deref(), Some("ship it"));
-        assert_eq!(context.workflow_defaults.permission_mode, "ask");
         assert_eq!(context.children[0].child_index, 0);
         assert_eq!(context.children[1].child_index, 1);
         assert!(context.children.iter().all(|child| child.item.is_none()));
@@ -597,12 +587,8 @@ mod tests {
         });
         let pending_setup = FanoutChildSessionSetup {
             node_execution_id: pending_node_execution_id.clone(),
-            node_name: "review-pending".to_string(),
             session_id: "new-pending-session".to_string(),
-            system_prompt: Some("pending system prompt".to_string()),
-            workflow_instruction: Some("pending workflow instruction".to_string()),
-            user_message: "pending user message".to_string(),
-            permission_mode: "ask".to_string(),
+            initial_instruction: "pending initial instruction".to_string(),
         };
         exec.start_current_node_execution(1.5);
 

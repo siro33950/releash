@@ -1,4 +1,6 @@
 mod adaptor;
+#[cfg(debug_assertions)]
+pub mod agent_session_tui_acceptance;
 pub mod cli;
 mod domain;
 mod infrastructure;
@@ -11,8 +13,8 @@ pub mod terminal_surface {
         TerminalSurfaceWireAttachment,
     };
     pub use crate::adaptor::protocol::terminal::{
-        GetOrSpawnTerminalV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
-        TerminalSurfaceV1,
+        GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
+        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
     };
 }
 // Test-only helpers are intentionally kept as a root module.
@@ -74,6 +76,10 @@ fn create_configured_window(
     app: &tauri::App,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "performance-wdio")]
+    if label == NORMAL_WINDOW_LABEL && app.get_webview_window(label).is_some() {
+        return Ok(());
+    }
     let mut config = app
         .config()
         .app
@@ -200,12 +206,52 @@ fn classify_startup_failure(
     }
 }
 
+fn select_provider_agent_executables(
+    claude_executable: String,
+    codex_executable: String,
+    fixture_executable: Option<String>,
+) -> (String, String) {
+    match fixture_executable.filter(|path| !path.trim().is_empty()) {
+        Some(path) => (path.clone(), path),
+        None => (claude_executable, codex_executable),
+    }
+}
+
+#[cfg(feature = "performance-wdio")]
+fn performance_provider_fixture_executable() -> Option<String> {
+    std::env::var("RELEASH_PERFORMANCE_PROVIDER_FIXTURE_EXECUTABLE").ok()
+}
+
+#[cfg(not(feature = "performance-wdio"))]
+fn performance_provider_fixture_executable() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod startup_composition_tests {
     use super::*;
     use adaptor::gateway::local_event_store::store::LocalEventStoreOpenError as E;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use usecase::application_startup::StartupFailureKind as K;
+
+    #[test]
+    fn test_performance_fixture_replaces_both_provider_executables_without_affecting_defaults() {
+        assert_eq!(
+            select_provider_agent_executables(
+                "claude".to_string(),
+                "codex".to_string(),
+                Some("/tmp/provider-fixture".to_string()),
+            ),
+            (
+                "/tmp/provider-fixture".to_string(),
+                "/tmp/provider-fixture".to_string(),
+            )
+        );
+        assert_eq!(
+            select_provider_agent_executables("claude".to_string(), "codex".to_string(), None,),
+            ("claude".to_string(), "codex".to_string())
+        );
+    }
 
     #[derive(Default)]
     struct RecordingProcessLocalExitPort {
@@ -806,8 +852,12 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
-        ))
-        .setup(|app| {
+        ));
+    #[cfg(feature = "performance-wdio")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    let builder = builder.setup(|app| {
             let failure_exit: Arc<
                 dyn usecase::application_startup::ProcessLocalExitPort,
             > = Arc::new(
@@ -841,20 +891,6 @@ pub fn run() {
             let projected_local_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
             > = local_event_store.clone();
-            let provider_lifecycle_usecase = Arc::new(
-                usecase::provider_lifecycle::ProviderLifecycleUsecase::new(
-                    Arc::new(
-                        adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
-                    ),
-                    Arc::new(
-                        adaptor::gateway::provider_lifecycle::LocalProviderLifecycleEventRepository::new(
-                            projected_local_event_repository.clone(),
-                            local_event_store.installation_id().to_string(),
-                        ),
-                    ),
-                ),
-            );
-            app.manage(provider_lifecycle_usecase.clone());
             let terminal_surface_runtime =
                 terminal_surface::TerminalSurfaceRuntime::new(app.handle().clone());
             let terminal_surface = terminal_surface_runtime.application();
@@ -959,6 +995,78 @@ pub fn run() {
                     agent_config_repository.clone(),
                 ),
             ));
+            let claude_executable = agent_config_repository
+                .cli_path_for("claude")
+                .map_err(|error| format!("Claude CLI設定の読み込みに失敗: {error}"))?
+                .unwrap_or_else(|| "claude".to_string());
+            let codex_executable = agent_config_repository
+                .cli_path_for("codex")
+                .map_err(|error| format!("Codex CLI設定の読み込みに失敗: {error}"))?
+                .unwrap_or_else(|| "codex".to_string());
+            let (claude_executable, codex_executable) = select_provider_agent_executables(
+                claude_executable,
+                codex_executable,
+                performance_provider_fixture_executable(),
+            );
+            let provider_history_home = dirs::home_dir()
+                .unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
+            let provider_agent_sessions =
+                adaptor::controller::provider_agent_session_wiring::compose_provider_agent_sessions(
+                    adaptor::controller::provider_agent_session_wiring::ProviderAgentSessionCompositionInput {
+                        repository: projected_local_event_repository.clone(),
+                        installation_id: local_event_store.installation_id().to_string(),
+                        data_dir: data_dir.clone(),
+                        claude_executable,
+                        codex_executable,
+                        claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| provider_history_home.join(".claude")),
+                        codex_home: std::env::var_os("CODEX_HOME")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| provider_history_home.join(".codex")),
+                        cli_binary: infrastructure::platform::path_aliases::alias_name_for_profile(
+                            infrastructure::platform::path_aliases::BuildProfile::current(),
+                        )
+                        .to_string(),
+                        terminal: terminal_surface.clone(),
+                        change_notifier: Arc::new(
+                            adaptor::presenter::provider_agent_session_changed::TauriProviderAgentSessionChangeNotifier::new(
+                                app.handle().clone(),
+                            ),
+                        ),
+                    },
+                );
+            let provider_agent_session_launch = provider_agent_sessions.launch.clone();
+            let provider_agent_initial_instruction =
+                provider_agent_sessions.initial_instruction.clone();
+            let provider_agent_session_exit = provider_agent_sessions.exit.clone();
+            let provider_availability = provider_agent_sessions.availability_gateway.clone();
+            let provider_lifecycle_ingress = provider_agent_sessions.lifecycle_ingress.clone();
+            terminal_surface_runtime
+                .bind_agent_session_activity(provider_agent_sessions.activity.clone());
+            let provider_agent_terminal_events = terminal_surface.subscribe_events();
+            let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
+                let cancellation = provider_agent_terminal_events.cancellation.clone();
+                move || cancellation.cancel()
+            });
+            tauri::async_runtime::spawn(
+                adaptor::controller::provider_agent_session_exit_observer::run_provider_agent_session_exit_observer(
+                    provider_agent_terminal_events,
+                    provider_agent_session_exit.clone(),
+                ),
+            );
+            app.manage(provider_agent_sessions.provider_lifecycle);
+            app.manage(provider_agent_sessions.sessions);
+            app.manage(provider_agent_sessions.history_read);
+            app.manage(provider_agent_sessions.hook_health);
+            app.manage(provider_agent_sessions.hook_health_read);
+            app.manage(provider_agent_sessions.lifecycle_ingress);
+            app.manage(provider_agent_sessions.lifecycle);
+            app.manage(provider_agent_sessions.read);
+            app.manage(provider_agent_session_exit);
+            app.manage(provider_agent_sessions.availability);
+            app.manage(provider_agent_session_launch.clone());
+            app.manage(provider_agent_initial_instruction.clone());
 
             // Initialize shared repo_paths from config
             let shared_repo_paths = app
@@ -982,8 +1090,11 @@ pub fn run() {
             // SharedRepoPaths + AppConfig を共有する。repository usecase は 1 度だけ
             // 組み立て、AppState・単体 State（workflow コマンド注入用）・watcher・
             // workflow リゾルバへ Arc 共有する（各エントリは注入で受け取る）。
-            let repository_usecase =
-                Arc::new(adaptor::controller::wiring::build_repository_usecase());
+            let repository_usecase = Arc::new(
+                adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
+                    terminal_surface.clone(),
+                ),
+            );
             app.manage(repository_usecase.clone());
             {
                 use adaptor::controller::state::AppState;
@@ -1450,14 +1561,6 @@ pub fn run() {
                 ),
             );
             app.manage(caller_journal.clone());
-            let open_tabs = app
-                .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
-                .inner()
-                .clone();
-            let branch_diff_context = app
-                .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
-                .inner()
-                .clone();
             let workflow_runtime_usecase = Arc::new(
                 adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),
@@ -1466,13 +1569,15 @@ pub fn run() {
                         app_config: config_repository.clone(),
                         session_store: session_store.clone(),
                         agent_runtime: agent_runtime.clone(),
-                        open_tabs,
-                        branch_diff_context: branch_diff_context.clone(),
                         data_dir: Some(data_dir.clone()),
                         local_event_repository: projected_local_event_repository.clone(),
                         local_event_installation_id: local_event_store
                             .installation_id()
                             .to_string(),
+                        provider_agent_session_launch: provider_agent_session_launch.clone(),
+                        provider_agent_initial_instruction: provider_agent_initial_instruction
+                            .clone(),
+                        provider_availability: provider_availability.clone(),
                     },
                 )
                 .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
@@ -1539,11 +1644,14 @@ pub fn run() {
                 adaptor::controller::application_lifecycle::build_shutdown_coordinator(
                     local_event_store.clone(),
                     projected_local_event_repository.clone(),
-                    agent_runtime.clone(),
-                    workflow_runtime_usecase.clone(),
-                    lifecycle_operation,
-                    terminal_surface.clone(),
-                    shutdown_local_api,
+                    adaptor::controller::application_lifecycle::RuntimeShutdownDependencies::new(
+                        agent_runtime.clone(),
+                        workflow_runtime_usecase.clone(),
+                        lifecycle_operation,
+                        terminal_surface.clone(),
+                        shutdown_provider_exit_observer,
+                        shutdown_local_api,
+                    ),
                 );
             let process_actions = Arc::new(
                 adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher::default(),
@@ -1596,6 +1704,7 @@ pub fn run() {
                     Arc::new(workflow_query_usecase.read_usecase()),
                     workflow_runtime_usecase.clone(),
                     local_api_binding.bearer_token(),
+                    local_api_binding.terminal_bearer_token(),
                     Some(adaptor::controller::api::AgentSessionApiDeps::new(
                         send_operation,
                         permission_response_operation,
@@ -1612,8 +1721,12 @@ pub fn run() {
                     Some(adaptor::controller::api::TerminalApiDeps::new(
                         terminal_surface.clone(),
                     )),
-                    Some(provider_lifecycle_usecase.clone()),
+                    Some(provider_lifecycle_ingress.clone()),
                 );
+                app.manage(adaptor::controller::state::TerminalStreamEndpoint {
+                    port: local_api_binding.port(),
+                    token: local_api_binding.terminal_bearer_token(),
+                });
                 let local_api =
                     local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
                 *local_api_shutdown_target.write() = Some(Arc::new({

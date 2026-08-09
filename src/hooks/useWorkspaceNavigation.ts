@@ -77,13 +77,23 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 					(event) => {
 						const worktreePath = event.payload.worktree_id;
 						const aggregated = event.payload.aggregated_state;
-						setWorktrees((prev) =>
-							prev.map((t) =>
+						setWorktrees((prev) => {
+							// 変化が無いイベントで新配列を返すとルートから全再renderが
+							// 走るため、恒等な場合は同一参照を維持する
+							if (
+								!prev.some(
+									(t) =>
+										t.rootPath === worktreePath && t.agentState !== aggregated,
+								)
+							) {
+								return prev;
+							}
+							return prev.map((t) =>
 								t.rootPath === worktreePath
 									? { ...t, agentState: aggregated }
 									: t,
-							),
-						);
+							);
+						});
 					},
 				);
 				if (disposed) {

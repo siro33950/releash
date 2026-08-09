@@ -25,6 +25,7 @@ use crate::adaptor::gateway::local_event_store::envelope::{
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::{
     decode_message_projection_record_v1, decode_session_projection_record_v1,
+    PROVIDER_AGENT_SESSION_STORAGE_PREFIX,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
@@ -39,7 +40,9 @@ use crate::domain::local_event::{
     MessageProjectionPageView, MessageProjectionRecord, MessageProjectionView, ObligationView,
     OperationBindingView, OperationKind, OperationRecordView, PendingIndexEntryView,
     PendingObligationView, PendingPartition, PendingRecoveryPageView,
-    PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView, SafeOperationFailure,
+    PendingRecoverySnapshotPageView, ProviderAgentSessionLifecycleRecord,
+    ProviderAgentSessionOriginKind, ProviderAgentSessionOriginRecord,
+    ProviderAgentSessionProjectionPageView, QueryCursor, RecoveryActionView, SafeOperationFailure,
     SessionOperationFailureKind, SessionProjectionOwnerState, SessionProjectionRecord,
     SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey, ShutdownPlanPageView,
     ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StopResolutionKind,
@@ -397,6 +400,22 @@ pub(crate) fn run_query_in_recovery_snapshot(
             after_session_id,
         } => Ok(LocalEventQueryResult::SessionProjectionPage(
             session_projection_page(connection, *limit, after_session_id.as_deref())?,
+        )),
+        LocalEventQuery::ProviderAgentSessionProjectionPage {
+            workspace_identity,
+            lifecycle,
+            origin,
+            limit,
+            after_agent_session_id,
+        } => Ok(LocalEventQueryResult::ProviderAgentSessionProjectionPage(
+            provider_agent_session_projection_page(
+                connection,
+                workspace_identity,
+                *lifecycle,
+                origin.as_ref(),
+                *limit,
+                after_agent_session_id.as_deref(),
+            )?,
         )),
         LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit } => {
             Ok(LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(
@@ -1139,6 +1158,110 @@ fn session_projection_page(
     .collect()
 }
 
+fn provider_agent_session_projection_page(
+    connection: &Connection,
+    workspace_identity: &str,
+    lifecycle: Option<ProviderAgentSessionLifecycleRecord>,
+    origin: Option<&ProviderAgentSessionOriginKind>,
+    limit: usize,
+    after_agent_session_id: Option<&str>,
+) -> Result<ProviderAgentSessionProjectionPageView, LocalEventQueryError> {
+    if limit == 0
+        || limit > 200
+        || workspace_identity.trim().is_empty()
+        || crate::domain::repository::normalize_repo_path(workspace_identity) != workspace_identity
+        || after_agent_session_id.is_some_and(|id| {
+            id.trim().is_empty() || crate::domain::local_event::StreamId::agent_session(id).is_err()
+        })
+    {
+        return Err(LocalEventQueryError::InvalidRequest);
+    }
+    let lifecycle = lifecycle.map(|value| match value {
+        ProviderAgentSessionLifecycleRecord::Open => "open",
+        ProviderAgentSessionLifecycleRecord::Paused => "paused",
+        ProviderAgentSessionLifecycleRecord::Archived => "archived",
+    });
+    let origin = origin.map(|value| match value {
+        ProviderAgentSessionOriginKind::Standalone => "standalone",
+        ProviderAgentSessionOriginKind::WorkflowNode => "workflow_node",
+    });
+    let after_storage_id =
+        after_agent_session_id.map(|id| format!("{PROVIDER_AGENT_SESSION_STORAGE_PREFIX}{id}"));
+    let fetch_limit =
+        i64::try_from(limit.saturating_add(1)).map_err(|_| LocalEventQueryError::InvalidRequest)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT session_id, projection, revision FROM session_projection
+             WHERE workspace_identity = ?1
+               AND session_id LIKE 'provider-agent-session:%'
+               AND ((?2 IS NULL AND json_extract(projection, '$.lifecycle') <> 'archived')
+                    OR json_extract(projection, '$.lifecycle') = ?2)
+               AND (?3 IS NULL OR json_extract(projection, '$.origin.kind') = ?3)
+               AND (?4 IS NULL OR session_id > ?4)
+             ORDER BY session_id ASC LIMIT ?5",
+        )
+        .map_err(|error| storage_unavailable(&error))?;
+    let rows = statement
+        .query_map(
+            params![
+                workspace_identity,
+                lifecycle,
+                origin,
+                after_storage_id,
+                fetch_limit
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(|error| storage_unavailable(&error))?;
+    let mut sessions = rows
+        .map(|row| {
+            let (session_id, projection, revision) =
+                row.map_err(|error| storage_unavailable(&error))?;
+            let projection = session_projection_record(
+                projection,
+                &session_id,
+                "provider AgentSession projection page",
+            )?;
+            if !matches!(projection, SessionProjectionRecord::ProviderAgentSession(_)) {
+                return Err(corrupt("provider AgentSession projection page owner kind"));
+            }
+            Ok(SessionProjectionView {
+                session_id,
+                projection,
+                revision: crate::domain::local_event::Revision::new(revision)
+                    .map_err(|_| corrupt("provider AgentSession projection page revision"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let has_more = sessions.len() > limit;
+    if has_more {
+        sessions.pop();
+    }
+    let next_after_agent_session_id = has_more
+        .then(|| {
+            sessions.last().and_then(|session| {
+                session
+                    .session_id
+                    .strip_prefix(PROVIDER_AGENT_SESSION_STORAGE_PREFIX)
+                    .map(str::to_string)
+            })
+        })
+        .flatten()
+        .ok_or_else(|| corrupt("provider AgentSession projection page cursor"))
+        .map(Some)
+        .or_else(|error| if has_more { Err(error) } else { Ok(None) })?;
+    Ok(ProviderAgentSessionProjectionPageView {
+        sessions,
+        next_after_agent_session_id,
+    })
+}
+
 /// Reads the complete bounded owner inventory through one SQLite statement.
 ///
 /// The rows iterator keeps one SQLite read snapshot alive until exhaustion;
@@ -1194,6 +1317,20 @@ fn canonical_runtime_owner_snapshot(
                 };
                 Some(owner)
             }
+            SessionProjectionRecord::ProviderAgentSession(session) => {
+                Some(CanonicalRuntimeOwnerView::AgentSession {
+                    projection_id,
+                    session_id: session.id,
+                    worktree_path: session.worktree_path,
+                    active: session.lifecycle == ProviderAgentSessionLifecycleRecord::Open,
+                    shutdown_target: session.lifecycle
+                        != ProviderAgentSessionLifecycleRecord::Archived,
+                    workflow_node_session: matches!(
+                        session.origin,
+                        ProviderAgentSessionOriginRecord::WorkflowNode { .. }
+                    ),
+                })
+            }
             SessionProjectionRecord::WorkflowExecution(
                 WorkflowExecutionProjectionRecord::Present(execution),
             ) if execution.status.is_active() => Some(CanonicalRuntimeOwnerView::ActiveWorkflow {
@@ -1208,6 +1345,8 @@ fn canonical_runtime_owner_snapshot(
                 WorkflowExecutionProjectionRecord::Present(_)
                 | WorkflowExecutionProjectionRecord::Deleted { .. },
             )
+            | SessionProjectionRecord::ProviderSessionOwnership(_)
+            | SessionProjectionRecord::ProviderHookHealth(_)
             | SessionProjectionRecord::WorkflowWorktreeOwner(_) => None,
         };
         if let Some(owner) = owner {

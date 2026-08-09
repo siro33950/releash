@@ -4,12 +4,16 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::adaptor::protocol::terminal::{
-    GetOrSpawnTerminalV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
+    TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
 };
 use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSink;
 
 pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    activity_tap: Arc<
+        crate::adaptor::controller::provider_agent_session_activity_observer::ProviderAgentSessionActivityEventTap,
+    >,
 }
 
 pub struct TerminalSurfaceWireAttachment {
@@ -85,10 +89,18 @@ impl TerminalSurfaceRuntime {
         >,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
     ) -> Self {
+        let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
+            .disable_terminal_journal;
+        let activity_tap = Arc::new(
+            crate::adaptor::controller::provider_agent_session_activity_observer::ProviderAgentSessionActivityEventTap::new(
+                event_sink,
+            ),
+        );
         let gateway = Arc::new(
             crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
                 app,
-                event_sink,
+                activity_tap.clone(),
+                journal_enabled,
             ),
         );
         Self {
@@ -97,6 +109,7 @@ impl TerminalSurfaceRuntime {
                     gateway, event_hub,
                 ),
             ),
+            activity_tap,
         }
     }
 
@@ -104,6 +117,16 @@ impl TerminalSurfaceRuntime {
         &self,
     ) -> Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication> {
         Arc::clone(&self.application)
+    }
+
+    /// AgentSession activity usecase を terminal event tap へ後結合する。
+    /// terminal 側 composition が provider AgentSession composition より先に
+    /// 完了するため、bind でサイクルを断つ。
+    pub(crate) fn bind_agent_session_activity(
+        &self,
+        activity: Arc<crate::usecase::agent_session::ProviderAgentSessionActivityUsecase>,
+    ) {
+        self.activity_tap.bind(activity);
     }
 
     pub fn get_or_spawn(
@@ -132,6 +155,29 @@ impl TerminalSurfaceRuntime {
     ) -> Result<GetOrSpawnTerminalV1, String> {
         self.application
             .get_or_spawn(rows, cols, cwd, owner.try_into()?, label, startup_command)
+            .map(Into::into)
+            .map_err(|error| error.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_or_spawn_with_process(
+        &self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<String>,
+        owner: TerminalSurfaceOwnerV1,
+        label: Option<String>,
+        process: TerminalProcessLaunchV1,
+    ) -> Result<GetOrSpawnTerminalV1, String> {
+        self.application
+            .get_or_spawn_process(
+                rows,
+                cols,
+                cwd,
+                owner.try_into()?,
+                label,
+                process.try_into()?,
+            )
             .map(Into::into)
             .map_err(|error| error.to_string())
     }

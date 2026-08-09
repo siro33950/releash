@@ -402,7 +402,7 @@ fn parse_shape_diagnostics(
             check_allowed_fields(
                 session,
                 &format!("{node_path}.session"),
-                &["model", "permission", "gate", "facets"],
+                &["provider", "gate", "facets"],
                 &["mode", "prompt", "inline_prompt"],
                 span_map,
                 workflow_name,
@@ -700,11 +700,6 @@ fn validation_error_code_stage(
         },
         ValidationError::UnreachableNode { .. } => "WFC001",
         ValidationError::MissingFacet { .. } => "WFR900",
-        ValidationError::InvalidPermissionMode { .. }
-        | ValidationError::MissingPermissionMode { .. }
-        | ValidationError::UnknownModel { .. }
-        | ValidationError::InvalidModelFormat { .. }
-        | ValidationError::ModelResolutionFailed { .. } => "WFT900",
     };
     (code, stage_for_code(code))
 }
@@ -856,7 +851,7 @@ fn node_base_path(wf: &WorkflowDefinitionYaml, node_name: &str) -> Option<String
 fn node_field_path(wf: &WorkflowDefinitionYaml, node_name: &str, field: &str) -> Option<String> {
     let base = node_base_path(wf, node_name)?;
     let suffix = match field {
-        "permission" | "model" => format!("session.{field}"),
+        "provider" => format!("session.{field}"),
         "facets" => "session.facets".to_string(),
         "rules.next" => "rules".to_string(),
         field => field.to_string(),
@@ -1187,21 +1182,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         }
         ValidationError::MissingFacet { node } => (Some(node.clone()), Some("facets".to_string())),
         ValidationError::InvalidArtifactReference { .. } => (None, Some("inputs".to_string())),
-        ValidationError::InvalidPermissionMode { node, .. } => {
-            (Some(node.clone()), Some("permission".to_string()))
-        }
-        ValidationError::MissingPermissionMode { node } => {
-            (Some(node.clone()), Some("permission".to_string()))
-        }
-        ValidationError::UnknownModel { node, .. } => {
-            (Some(node.clone()), Some("model".to_string()))
-        }
-        ValidationError::InvalidModelFormat { node, .. } => {
-            (Some(node.clone()), Some("model".to_string()))
-        }
-        ValidationError::ModelResolutionFailed { node, .. } => {
-            (Some(node.clone()), Some("model".to_string()))
-        }
         ValidationError::EmptyCommand { node } => (Some(node.clone()), Some("command".to_string())),
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
         ValidationError::TooManyFanoutChildren { node, .. } => {
@@ -1559,7 +1539,6 @@ mod tests {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Session(SessionSpec {
-                permission: Some("edit".to_string()),
                 facets: FacetRefs {
                     instruction: instruction.map(str::to_string),
                     ..Default::default()
@@ -1917,7 +1896,7 @@ nodes:
   - name: implement
     type: agent
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement
@@ -2312,7 +2291,6 @@ nodes:
             nodes: vec![NodeDefinition {
                 name: "node1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         knowledge: vec!["known".to_string(), "missing-knowledge".to_string()],
                         ..Default::default()
@@ -2779,7 +2757,6 @@ nodes:
             nodes: vec![NodeDefinition {
                 name: "node1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         knowledge: vec!["first".to_string(), "second".to_string()],
                         ..Default::default()
@@ -2864,7 +2841,7 @@ schemas:
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: review

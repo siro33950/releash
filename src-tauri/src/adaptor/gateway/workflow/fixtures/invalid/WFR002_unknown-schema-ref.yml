@@ -4,7 +4,7 @@ nodes:
   - name: consume
     input: missing-contract
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: consume

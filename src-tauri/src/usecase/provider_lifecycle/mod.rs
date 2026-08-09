@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
@@ -11,6 +12,18 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleRepositoryError, ProviderLifecycleScope, ProviderLifecycleSignal,
     ProviderLifecycleSlot, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
     ScopedProviderLifecycleEvent,
+};
+
+mod hook_health;
+mod ingress;
+pub(crate) use hook_health::{
+    ProviderHookHealthFailureObservation, ProviderHookHealthFailureQuery,
+    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase, ProviderHookHealthUsecase,
+    ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
+};
+pub(crate) use ingress::{
+    ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecase,
+    ProviderLifecycleIngressUsecaseError, ProviderSessionStartTransaction,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -79,6 +92,42 @@ impl ProviderLifecycleUsecase {
         ))
     }
 
+    pub(crate) async fn arm_with_commit<T, E, F, Fut>(
+        &self,
+        slot_id: ProviderLifecycleSlotId,
+        provider: ProviderKind,
+        scope: ProviderLifecycleScope,
+        commit: F,
+    ) -> Result<(ArmedProviderLifecycle, T), E>
+    where
+        E: From<ProviderLifecycleUsecaseError>,
+        F: FnOnce(Vec<ScopedProviderLifecycleEvent>) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let issued = self.credentials.issue();
+        let (binding_id, capability, capability_hash) = issued.into_parts();
+        let binding = ProviderLifecycleBinding::arm(&binding_id, provider, scope.clone())
+            .map_err(|_| E::from(ProviderLifecycleUsecaseError::InvalidInput))?;
+        let live = self.slot_for_arm(&slot_id).map_err(E::from)?;
+        let mut current = live.lock().await;
+        let mut candidate = current.clone();
+        let facts = candidate.arm(binding, capability_hash);
+        let committed = match commit(facts).await {
+            Ok(committed) => committed,
+            Err(error) => {
+                drop(current);
+                self.cleanup_empty_slot(&slot_id, &live).map_err(E::from)?;
+                return Err(error);
+            }
+        };
+        *current = candidate;
+        drop(current);
+        Ok((
+            ArmedProviderLifecycle::new(slot_id, binding_id, capability, provider, scope),
+            committed,
+        ))
+    }
+
     pub(crate) async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -101,6 +150,47 @@ impl ProviderLifecycleUsecase {
         drop(current);
         self.cleanup_empty_slot(slot_id, &live)?;
         result
+    }
+
+    pub(crate) async fn receive_session_started_with_commit<E, F, Fut>(
+        &self,
+        slot_id: &ProviderLifecycleSlotId,
+        capability: &str,
+        signal: ProviderLifecycleSignal,
+        commit: F,
+    ) -> Result<ProviderLifecycleIngressResult, E>
+    where
+        E: From<ProviderLifecycleUsecaseError>,
+        F: FnOnce(Vec<ScopedProviderLifecycleEvent>) -> Fut,
+        Fut: Future<Output = Result<(), E>>,
+    {
+        let Some(live) = self.find_slot(slot_id).map_err(E::from)? else {
+            return Ok(ProviderLifecycleIngressResult::Rejected(
+                ProviderLifecycleRejection::BindingNotActive,
+            ));
+        };
+        let scope = signal.scope().clone();
+        let capability_hash = self.credentials.hash(capability);
+        let mut current = live.lock().await;
+        let mut candidate = current.clone();
+        let outcome = candidate.receive(&capability_hash, signal);
+        let result = match outcome {
+            ProviderLifecycleOutcome::Applied(events) => {
+                commit(scoped(scope, events)).await?;
+                *current = candidate;
+                ProviderLifecycleIngressResult::Applied
+            }
+            ProviderLifecycleOutcome::Duplicate => {
+                commit(Vec::new()).await?;
+                ProviderLifecycleIngressResult::Duplicate
+            }
+            ProviderLifecycleOutcome::Rejected(reason) => {
+                ProviderLifecycleIngressResult::Rejected(reason)
+            }
+        };
+        drop(current);
+        self.cleanup_empty_slot(slot_id, &live).map_err(E::from)?;
+        Ok(result)
     }
 
     pub(crate) async fn report_unavailable(
@@ -127,7 +217,6 @@ impl ProviderLifecycleUsecase {
         result
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn release(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -150,6 +239,64 @@ impl ProviderLifecycleUsecase {
         drop(current);
         self.cleanup_empty_slot(slot_id, &live)?;
         result
+    }
+
+    pub(crate) async fn release_scope(
+        &self,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<usize, ProviderLifecycleUsecaseError> {
+        let slots = self
+            .slots
+            .lock()
+            .map_err(|_| ProviderLifecycleUsecaseError::Corrupt)?
+            .iter()
+            .map(|(slot_id, live)| (slot_id.clone(), live.clone()))
+            .collect::<Vec<_>>();
+        let mut released = 0;
+        for (slot_id, live) in slots {
+            let mut current = live.lock().await;
+            let mut candidate = current.clone();
+            let Some(outcome) = candidate.release_scope(scope) else {
+                continue;
+            };
+            let result = self
+                .persist_outcome(&mut current, candidate, scope.clone(), outcome)
+                .await?;
+            drop(current);
+            self.cleanup_empty_slot(&slot_id, &live)?;
+            if result == ProviderLifecycleIngressResult::Applied {
+                released += 1;
+            }
+        }
+        Ok(released)
+    }
+
+    pub(crate) async fn active_launch_id(
+        &self,
+        provider: ProviderKind,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Option<ProviderLifecycleSlotId>, ProviderLifecycleUsecaseError> {
+        let slots = self
+            .slots
+            .lock()
+            .map_err(|_| ProviderLifecycleUsecaseError::Corrupt)?
+            .iter()
+            .map(|(slot_id, live)| (slot_id.clone(), live.clone()))
+            .collect::<Vec<_>>();
+        let mut matching = None;
+        for (slot_id, live) in slots {
+            let current = live.lock().await;
+            if current.current_scope() != Some(scope)
+                || current.current_provider() != Some(provider)
+            {
+                continue;
+            }
+            if matching.is_some() {
+                return Err(ProviderLifecycleUsecaseError::Corrupt);
+            }
+            matching = Some(slot_id);
+        }
+        Ok(matching)
     }
 
     async fn persist_outcome(
@@ -242,6 +389,9 @@ fn scoped(
         .collect()
 }
 
+#[cfg(test)]
+#[path = "provider_lifecycle_ingress_test.rs"]
+mod provider_lifecycle_ingress_tests;
 #[cfg(test)]
 #[path = "provider_lifecycle_usecase_test.rs"]
 mod provider_lifecycle_usecase_tests;

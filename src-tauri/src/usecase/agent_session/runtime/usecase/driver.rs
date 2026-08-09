@@ -116,6 +116,7 @@ impl AgentSessionRuntimeUsecase {
         self.ctx.registry.list_result()
     }
 
+    #[cfg(test)]
     pub(crate) fn backend_registry(&self) -> &AgentBackendRegistry {
         self.ctx.registry.as_ref()
     }
@@ -1651,6 +1652,7 @@ impl AgentSessionRuntimeUsecase {
     /// stdin writes must be limited to the smallest range required for per-session ordering.
     /// UI and event notifications, including session state-change emits, must run after the guard
     /// is dropped.
+    #[cfg(test)]
     pub async fn acquire_session_lock(&self, session_id: &str) -> SessionCommandLockGuard {
         self.ctx.session_locks.acquire(session_id).await
     }

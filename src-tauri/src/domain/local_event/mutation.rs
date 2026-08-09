@@ -6,7 +6,7 @@
 //! converges on the saved result, a different content is a typed conflict.
 
 use crate::domain::local_event::events::ApplicationShutdownPhase;
-use crate::domain::local_event::identifiers::Revision;
+use crate::domain::local_event::identifiers::{Revision, StreamId, StreamVersion};
 use crate::domain::local_event::record::{
     MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
     RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
@@ -161,6 +161,19 @@ pub struct MessageProjectionMutation {
 pub struct SessionProjectionRemovalMutation {
     pub session_id: String,
     pub expected: RevisionGuard,
+}
+
+/// Removes every durable Provider AgentSession payload except the newly
+/// appended tombstone. A released provider ownership aggregate is removed in
+/// the same transaction so the provider session can be claimed again without
+/// retaining its resume identifier in Releash state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAgentSessionRemovalMutation {
+    pub agent_session_stream: StreamId,
+    pub retained_tombstone_sequence: StreamVersion,
+    pub ownership_projection_id: Option<String>,
+    pub ownership_stream: Option<StreamId>,
+    pub ownership_expected: Option<Revision>,
 }
 
 /// One indexed execution row, guarded by the owning WorkflowExecution
@@ -375,6 +388,7 @@ pub enum LocalStateMutation {
     SessionProjection(SessionProjectionMutation),
     MessageProjection(MessageProjectionMutation),
     SessionProjectionRemoval(SessionProjectionRemovalMutation),
+    ProviderAgentSessionRemoval(ProviderAgentSessionRemovalMutation),
     WorkflowExecutionProjection(WorkflowExecutionProjectionMutation),
     WorkflowExecutionNodeProjection(WorkflowExecutionNodeProjectionMutation),
     TerminalRecord(TerminalRecordMutation),
@@ -438,6 +452,25 @@ impl LocalStateMutation {
                 text(&mut bytes, "session_projection_removal");
                 text(&mut bytes, &m.session_id);
                 revision_guard(&mut bytes, m.expected);
+            }
+            Self::ProviderAgentSessionRemoval(m) => {
+                text(&mut bytes, "provider_agent_session_removal");
+                text(&mut bytes, m.agent_session_stream.as_str());
+                bytes.extend_from_slice(&m.retained_tombstone_sequence.value().to_be_bytes());
+                match (
+                    &m.ownership_projection_id,
+                    &m.ownership_stream,
+                    m.ownership_expected,
+                ) {
+                    (Some(projection_id), Some(stream), Some(expected)) => {
+                        bytes.push(1);
+                        text(&mut bytes, projection_id);
+                        text(&mut bytes, stream.as_str());
+                        revision(&mut bytes, expected);
+                    }
+                    (None, None, None) => bytes.push(0),
+                    _ => return Err("incomplete provider ownership removal"),
+                }
             }
             Self::TerminalRecord(m) => {
                 text(&mut bytes, "terminal_record");
@@ -508,6 +541,14 @@ impl LocalStateMutation {
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
             Self::MessageProjection(m) => m.projection.semantic_bytes().saturating_add(96),
             Self::SessionProjectionRemoval(m) => m.session_id.len() + 64,
+            Self::ProviderAgentSessionRemoval(m) => {
+                m.agent_session_stream.as_str().len()
+                    + m.ownership_projection_id.as_ref().map_or(0, String::len)
+                    + m.ownership_stream
+                        .as_ref()
+                        .map_or(0, |stream| stream.as_str().len())
+                    + 96
+            }
             Self::WorkflowExecutionProjection(m) => typed(&m.projection).saturating_add(64),
             Self::WorkflowExecutionNodeProjection(m) => {
                 m.nodes

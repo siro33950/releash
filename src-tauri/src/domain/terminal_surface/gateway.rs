@@ -7,7 +7,7 @@ use super::entities::{
     TerminalSurface, TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
     TerminalSurfaceSummary,
 };
-use super::TerminalSurfaceCheckpoint;
+use super::{TerminalProcessLaunch, TerminalSurfaceCheckpoint};
 
 pub struct TerminalRuntimeSpawnRequest {
     pub runtime_generation: u64,
@@ -15,7 +15,7 @@ pub struct TerminalRuntimeSpawnRequest {
     pub rows: u16,
     pub cols: u16,
     pub cwd: Option<String>,
-    pub exec_command: Option<String>,
+    pub process: Option<TerminalProcessLaunch>,
     pub initial_terminal_surface: Option<TerminalSurfaceCheckpoint>,
 }
 
@@ -48,7 +48,7 @@ impl std::error::Error for TerminalSurfaceGatewayError {}
 pub enum TerminalSurfaceEvent {
     Output {
         session_key: String,
-        data: String,
+        data: Arc<str>,
         sequence: u64,
     },
     Resize {
@@ -59,9 +59,25 @@ pub enum TerminalSurfaceEvent {
     },
     Exit {
         session_key: String,
+        runtime_generation: u64,
         exit_code: Option<i32>,
         sequence: u64,
     },
+    InputUnavailable {
+        session_key: String,
+        message: String,
+    },
+}
+
+impl TerminalSurfaceEvent {
+    pub fn session_key(&self) -> &str {
+        match self {
+            Self::Output { session_key, .. }
+            | Self::Resize { session_key, .. }
+            | Self::Exit { session_key, .. }
+            | Self::InputUnavailable { session_key, .. } => session_key,
+        }
+    }
 }
 
 pub trait TerminalSurfaceEventSink: Send + Sync {
@@ -97,6 +113,16 @@ pub struct TerminalSurfaceEventStream {
 
 pub trait TerminalSurfaceEventSource: Send + Sync {
     fn subscribe(&self) -> TerminalSurfaceEventStream;
+
+    fn subscribe_owner(
+        &self,
+        _session_key: &str,
+        _attachment_id: &str,
+    ) -> TerminalSurfaceEventStream {
+        self.subscribe()
+    }
+
+    fn acknowledge_owner_output(&self, _session_key: &str, _attachment_id: &str, _sequence: u64) {}
 }
 
 pub trait TerminalSurfaceRepository {
@@ -129,7 +155,6 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
     ) -> Result<(), TerminalSurfaceGatewayError>;
     fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface>;
     fn select_kill_targets_by_worktree(&self, worktree_path: &str) -> Vec<u64>;
-    fn select_gc_targets(&self, worktree_path: &str, keep_session_keys: &[String]) -> Vec<u64>;
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface>;
     fn reserve_spawn_slot(
         &self,
@@ -141,6 +166,15 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
     }
     fn complete_spawn_slot(&self, reservation: &TerminalSurfaceSpawnReservation);
     fn rollback_spawn_slot(&self, reservation: &TerminalSurfaceSpawnReservation);
+    fn activate_input_attachment(&self, session_key: &str, attachment_id: &str);
+    fn deactivate_input_attachment(&self, session_key: &str, attachment_id: &str);
+    fn write_attached(
+        &self,
+        session_key: &str,
+        attachment_id: &str,
+        sequence: u64,
+        data: &str,
+    ) -> Result<(), TerminalSurfaceGatewayError>;
     fn write(&self, session_key: &str, data: &str) -> Result<(), TerminalSurfaceGatewayError>;
     fn resize(
         &self,

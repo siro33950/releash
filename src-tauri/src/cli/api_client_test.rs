@@ -97,6 +97,7 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
         ),
         runtime,
         binding.bearer_token(),
+        binding.terminal_bearer_token(),
         None,
         None,
         None,

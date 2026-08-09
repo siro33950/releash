@@ -35,7 +35,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_cwd: "/test/repo",
 	get_main_repo_path: "/test/repo",
 	list_worktrees: [],
-	check_pr_provider_status: "available",
 	set_menu_items_enabled: null,
 
 	// WorktreeView 初期化
@@ -85,41 +84,12 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|enable": null,
 	"plugin:autostart|disable": null,
 
-	// Comments (legacy)
-	load_comments: [],
-	add_comment: null,
-	remove_comment: true,
-	update_comment_content: true,
-	mark_comments_sent: null,
-	toggle_resolve_comment: null,
-
-	// Threads
-	load_threads: [],
-	save_threads: null,
-	cleanup_threads: null,
-	add_thread: null,
-	add_thread_entry: null,
-	remove_thread: null,
-	update_thread_entry_content: null,
-	update_thread: null,
-	toggle_resolve_thread: null,
-	broadcast_threads: null,
-
-	// Thread AI
-	build_thread_ai_prompt: null,
-	build_thread_summarize_prompt: null,
-
-	// OneShot PTY
-	cancel_oneshot_pty: null,
-	spawn_oneshot_pty: null,
-	get_oneshot_pty_output: null,
-
 	// Branch base
 	get_branch_base: null,
 	set_branch_base: null,
 
 	// Terminal (PTY) — モック上は何もしない
-	get_or_spawn_pty: {
+	get_or_spawn_terminal_surface: {
 		session_key: "mock-session",
 		restored_from_checkpoint: false,
 		is_new: true,
@@ -137,22 +107,11 @@ const baseIpcHandler: Record<string, unknown> = {
 		is_exited: false,
 		exit_code: null,
 	},
-	attach_pty: { __mockTerminalAttachment: true },
-	detach_pty: null,
-	write_pty: null,
-	resize_pty: null,
-	kill_pty: null,
-	kill_ptys_by_worktree: null,
-
-	// MCP config
-	get_mcp_config: { port: 19801, token: "mock-token" },
-	update_mcp_config: null,
-	regenerate_mcp_token: "new-mock-token",
-	generate_agent_mcp_config: { file_path: "", content: "" },
-	preview_agent_mcp_config: "",
-	get_configured_agents: [],
-	save_and_generate_mcp_configs: [],
-	remove_agent_mcp_config: true,
+	attach_terminal_surface: { __mockTerminalAttachment: true },
+	detach_terminal_surface: null,
+	write_terminal_surface: null,
+	resize_terminal_surface: null,
+	kill_terminal_surface: null,
 
 	// External editor
 	get_external_editor: "",
@@ -179,16 +138,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Git log
 	get_git_log: [],
 
-	// Search
-	search_files: { matches: [], total_matches: 0, truncated: false },
-
-	// PullRequestPanel
-	get_pr_detail: null,
-	get_pr_files: [],
-	get_pr_review_comments: [],
-	reply_to_pr_review_comment: null,
-	post_pr_comment: null,
-
 	// IssuePanel
 	list_branches: [],
 
@@ -207,7 +156,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	create_worktree: null,
 	remove_worktree: null,
 	delete_branch: null,
-	kill_lsp_by_worktree: null,
 
 	// Agent chat sessions
 	list_sessions: [],
@@ -241,12 +189,9 @@ const baseIpcHandler: Record<string, unknown> = {
 		timestamp: 1000,
 	},
 	update_session_state: null,
-	update_message_parts: null,
-	update_session_agent_info: null,
 	stop_agent_session: { __mockAcceptedStop: true },
 	get_stop_operation: null,
 	respond_agent_permission: null,
-	scan_slash_commands: [],
 
 	// Workspace state
 	save_workspace_state: null,

@@ -142,6 +142,7 @@ fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<
     result
 }
 
+#[cfg(test)]
 fn render_workflow_instruction(
     instruction: &str,
     artifacts: &HashMap<String, Value>,
@@ -153,6 +154,7 @@ fn render_workflow_instruction(
     (!rendered.is_empty()).then_some(rendered)
 }
 
+#[cfg(test)]
 pub(crate) fn render_node_workflow_instruction(
     _node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
@@ -163,6 +165,7 @@ pub(crate) fn render_node_workflow_instruction(
     render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
 }
 
+#[cfg(test)]
 pub(crate) fn render_fanout_child_workflow_instruction(
     _node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,

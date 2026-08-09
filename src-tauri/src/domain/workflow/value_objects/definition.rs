@@ -5,6 +5,7 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::services::{contract_schema, reference};
 
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
@@ -76,6 +77,7 @@ pub enum NodeKind {
     Fanout(FanoutSpec),
 }
 
+#[cfg(test)]
 impl Default for NodeKind {
     fn default() -> Self {
         Self::Session(SessionSpec::default())
@@ -128,16 +130,49 @@ impl FacetRefs {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSpec {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_provider_kind",
+        serialize_with = "serialize_provider_kind"
+    )]
+    pub provider: ProviderKind,
     pub gate: SessionGate,
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
+}
+
+#[cfg(test)]
+impl Default for SessionSpec {
+    fn default() -> Self {
+        Self {
+            provider: ProviderKind::Claude,
+            gate: SessionGate::Auto,
+            facets: FacetRefs::default(),
+        }
+    }
+}
+
+fn deserialize_provider_kind<'de, D>(deserializer: D) -> Result<ProviderKind, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match String::deserialize(deserializer)?.as_str() {
+        "claude" => Ok(ProviderKind::Claude),
+        "codex" => Ok(ProviderKind::Codex),
+        value => Err(de::Error::unknown_variant(value, &["claude", "codex"])),
+    }
+}
+
+fn serialize_provider_kind<S>(provider: &ProviderKind, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(match provider {
+        ProviderKind::Claude => "claude",
+        ProviderKind::Codex => "codex",
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -226,7 +261,8 @@ impl Serialize for ItemsSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Default))]
 pub struct NodeDefinition {
     pub name: String,
     pub kind: NodeKind,
@@ -385,15 +421,6 @@ impl NodeDefinition {
             NodeKind::Fanout(spec) => Some(spec),
             _ => None,
         }
-    }
-
-    pub fn model(&self) -> Option<&str> {
-        self.session().and_then(|session| session.model.as_deref())
-    }
-
-    pub fn permission(&self) -> Option<&str> {
-        self.session()
-            .and_then(|session| session.permission.as_deref())
     }
 }
 

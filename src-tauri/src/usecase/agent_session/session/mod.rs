@@ -18,6 +18,7 @@ use crate::domain::agent_session::services::{
     DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
 };
 use crate::domain::repository::normalize_repo_path;
+#[cfg(test)]
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
@@ -1180,6 +1181,7 @@ pub fn create_session_internal_with_permission(
     )
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct SessionCreationAttributes {
     pub selected_model: Option<String>,
@@ -1191,6 +1193,7 @@ pub struct SessionCreationAttributes {
 /// 検証済み抽象モード・selected_model・workflow_node_session フラグを初回保存で確定する内部 API。
 /// ワークフロー engine の step session 生成経路から呼び、edit デフォルトで保存→属性上書きの
 /// 二段階保存を回避する（Spec issues-947: 途中失敗時の不正中間状態の排除）。
+#[cfg(test)]
 pub fn create_session_internal_with_attributes(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -1217,6 +1220,7 @@ pub fn create_session_internal_with_attributes(
     Ok(session)
 }
 
+#[cfg(test)]
 fn build_new_session(
     worktree_path: &str,
     backend_id: Option<String>,

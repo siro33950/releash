@@ -4,7 +4,9 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::domain::provider_lifecycle::{
-    IssuedProviderLifecycleCredential, ProviderLifecycleCapabilityHash,
+    IssuedProviderLifecycleCredential, ProviderHookHealth, ProviderHookHealthRepository,
+    ProviderHookHealthRepositoryError, ProviderLifecycleCapabilityHash,
+    ProviderLifecycleUnavailableReason, VersionedProviderHookHealth,
 };
 
 #[derive(Default)]
@@ -109,8 +111,8 @@ fn slot_id(value: &str) -> ProviderLifecycleSlotId {
     ProviderLifecycleSlotId::new(value).unwrap()
 }
 
-fn scope(session: &str, node_execution: &str, attempt: u32) -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new(session, "workflow-execution-1", node_execution, attempt).unwrap()
+fn scope(session: &str) -> ProviderLifecycleScope {
+    ProviderLifecycleScope::new(session).unwrap()
 }
 
 fn session_start(
@@ -146,22 +148,14 @@ async fn test_providerライフサイクルusecase_永続化失敗時は直前bi
     let (usecase, events, _) = usecase();
     let slot = slot_id("slot-1");
     let previous = usecase
-        .arm(
-            slot.clone(),
-            ProviderKind::Codex,
-            scope("agent-previous", "node-previous", 1),
-        )
+        .arm(slot.clone(), ProviderKind::Codex, scope("agent-previous"))
         .await
         .unwrap();
     events.fail_with(ProviderLifecycleRepositoryError::StorageUnavailable);
 
     assert_eq!(
         usecase
-            .arm(
-                slot.clone(),
-                ProviderKind::Codex,
-                scope("agent-current", "node-current", 2),
-            )
+            .arm(slot.clone(), ProviderKind::Codex, scope("agent-current"),)
             .await,
         Err(ProviderLifecycleUsecaseError::StorageUnavailable)
     );
@@ -182,23 +176,15 @@ async fn test_providerライフサイクルusecase_永続化失敗時は直前bi
 }
 
 #[tokio::test]
-async fn test_providerライフサイクルusecase_同一slotの新attemptが旧bindingを拒否する() {
+async fn test_providerライフサイクルusecase_同一slotの再起動が旧bindingを拒否する() {
     let (usecase, events, _) = usecase();
     let slot = slot_id("slot-1");
     let previous = usecase
-        .arm(
-            slot.clone(),
-            ProviderKind::Codex,
-            scope("agent-previous", "node-previous", 1),
-        )
+        .arm(slot.clone(), ProviderKind::Codex, scope("agent-previous"))
         .await
         .unwrap();
     usecase
-        .arm(
-            slot.clone(),
-            ProviderKind::Codex,
-            scope("agent-current", "node-current", 2),
-        )
+        .arm(slot.clone(), ProviderKind::Codex, scope("agent-current"))
         .await
         .unwrap();
 
@@ -222,19 +208,11 @@ async fn test_providerライフサイクルusecase_異なるslotは互いのbind
     let first_slot = slot_id("slot-1");
     let second_slot = slot_id("slot-2");
     let first = usecase
-        .arm(
-            first_slot.clone(),
-            ProviderKind::Claude,
-            scope("agent-1", "node-1", 1),
-        )
+        .arm(first_slot.clone(), ProviderKind::Claude, scope("agent-1"))
         .await
         .unwrap();
     usecase
-        .arm(
-            second_slot,
-            ProviderKind::Claude,
-            scope("agent-2", "node-2", 1),
-        )
+        .arm(second_slot, ProviderKind::Claude, scope("agent-2"))
         .await
         .unwrap();
 
@@ -265,7 +243,7 @@ async fn test_providerライフサイクルusecase_一方のslot永続化中も�
                 .arm(
                     slot_id("slot-blocked"),
                     ProviderKind::Claude,
-                    scope("agent-blocked", "node-blocked", 1),
+                    scope("agent-blocked"),
                 )
                 .await
         })
@@ -284,7 +262,7 @@ async fn test_providerライフサイクルusecase_一方のslot永続化中も�
                 .arm(
                     slot_id("slot-independent"),
                     ProviderKind::Codex,
-                    scope("agent-independent", "node-independent", 1),
+                    scope("agent-independent"),
                 )
                 .await
         })
@@ -306,11 +284,7 @@ async fn test_providerライフサイクルusecase_明示releaseでlive_slotを�
     let (usecase, _, _) = usecase();
     let slot = slot_id("slot-1");
     let armed = usecase
-        .arm(
-            slot.clone(),
-            ProviderKind::Claude,
-            scope("agent-1", "node-1", 1),
-        )
+        .arm(slot.clone(), ProviderKind::Claude, scope("agent-1"))
         .await
         .unwrap();
     assert_eq!(usecase.live_slot_count().unwrap(), 1);
@@ -331,6 +305,52 @@ async fn test_providerライフサイクルusecase_明示releaseでlive_slotを�
             .unwrap(),
         ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
     );
+}
+
+#[tokio::test]
+async fn test_providerライフサイクルusecase_agent_session終了でscopeのbindingを全て失効する() {
+    let (usecase, _, _) = usecase();
+    let target_scope = scope("agent-1");
+    let first = usecase
+        .arm(
+            slot_id("slot-1"),
+            ProviderKind::Claude,
+            target_scope.clone(),
+        )
+        .await
+        .unwrap();
+    let second = usecase
+        .arm(
+            slot_id("slot-2"),
+            ProviderKind::Claude,
+            target_scope.clone(),
+        )
+        .await
+        .unwrap();
+    usecase
+        .arm(
+            slot_id("slot-other"),
+            ProviderKind::Codex,
+            scope("agent-other"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(usecase.release_scope(&target_scope).await.unwrap(), 2);
+    assert_eq!(usecase.live_slot_count().unwrap(), 1);
+    for armed in [first, second] {
+        assert_eq!(
+            usecase
+                .receive(
+                    armed.slot_id(),
+                    armed.capability(),
+                    session_start(&armed, "provider-session-1"),
+                )
+                .await
+                .unwrap(),
+            ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
+        );
+    }
 }
 
 #[test]
@@ -354,4 +374,171 @@ fn test_providerライフサイクルusecase_repository_errorをusecase_errorへ
             expected
         );
     }
+}
+
+#[derive(Default)]
+struct InMemoryHookHealthRepository {
+    stored: Mutex<std::collections::HashMap<ProviderKind, VersionedProviderHookHealth>>,
+}
+
+#[async_trait::async_trait]
+impl ProviderHookHealthRepository for InMemoryHookHealthRepository {
+    async fn load(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError> {
+        Ok(self
+            .stored
+            .lock()
+            .unwrap()
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| {
+                VersionedProviderHookHealth::restored(ProviderHookHealth::new(provider), 0)
+            }))
+    }
+
+    async fn save(
+        &self,
+        mut health: VersionedProviderHookHealth,
+        _caller_request_id: &str,
+    ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError> {
+        let event_count = health.health_mut().take_uncommitted_events().len() as u64;
+        let revision = health.revision() + event_count;
+        let saved = VersionedProviderHookHealth::restored(health.into_health(), revision);
+        self.stored
+            .lock()
+            .unwrap()
+            .insert(saved.health().provider(), saved.clone());
+        Ok(saved)
+    }
+}
+
+#[tokio::test]
+async fn test_provider_hook_health_usecase_異常を警告し後続session_startで解除する() {
+    let repository = Arc::new(InMemoryHookHealthRepository::default());
+    let usecase = ProviderHookHealthUsecase::new(repository);
+
+    usecase
+        .record_launch(ProviderKind::Codex, "launch-1", "launch-request-1")
+        .await
+        .unwrap();
+    usecase
+        .record_unavailable(
+            ProviderKind::Codex,
+            "launch-1",
+            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+            "warning-request-1",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        usecase.warnings().await.unwrap(),
+        vec![ProviderHookHealthWarning {
+            provider: ProviderKind::Codex,
+            launch_id: "launch-1".to_string(),
+            reason: ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+        }]
+    );
+
+    usecase
+        .record_launch(ProviderKind::Codex, "launch-2", "launch-request-2")
+        .await
+        .unwrap();
+    usecase
+        .record_session_started(ProviderKind::Codex, "launch-2", "clear-request-1")
+        .await
+        .unwrap();
+    assert!(usecase.warnings().await.unwrap().is_empty());
+}
+
+struct FixedHookDeliveryFailures {
+    observations: Vec<ProviderHookHealthFailureObservation>,
+}
+
+#[async_trait::async_trait]
+impl ProviderHookHealthFailureQuery for FixedHookDeliveryFailures {
+    async fn list(
+        &self,
+        _limit: usize,
+    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>
+    {
+        Ok(self.observations.clone())
+    }
+}
+
+#[tokio::test]
+async fn test_provider_hook_health_read_local_api配送失敗を最新launchの警告へ反映する() {
+    let repository = Arc::new(InMemoryHookHealthRepository::default());
+    let health = Arc::new(ProviderHookHealthUsecase::new(repository));
+    health
+        .record_launch(
+            ProviderKind::Claude,
+            "launch-latest",
+            "launch-latest-request",
+        )
+        .await
+        .unwrap();
+    let read = ProviderHookHealthReadUsecase::new(
+        health,
+        Arc::new(FixedHookDeliveryFailures {
+            observations: vec![
+                ProviderHookHealthFailureObservation {
+                    provider: ProviderKind::Claude,
+                    launch_id: "launch-old".to_string(),
+                    reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+                },
+                ProviderHookHealthFailureObservation {
+                    provider: ProviderKind::Claude,
+                    launch_id: "launch-latest".to_string(),
+                    reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+                },
+            ],
+        }),
+    );
+
+    assert_eq!(
+        read.warnings().await.unwrap(),
+        vec![ProviderHookHealthWarning {
+            provider: ProviderKind::Claude,
+            launch_id: "launch-latest".to_string(),
+            reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn test_provider_hook_health_正常session_start後の同一launch欠落報告を無視する() {
+    let repository = Arc::new(InMemoryHookHealthRepository::default());
+    let health = ProviderHookHealthUsecase::new(repository);
+    health
+        .record_launch(ProviderKind::Claude, "launch-1", "launch-1-request")
+        .await
+        .unwrap();
+
+    health
+        .record_unavailable(
+            ProviderKind::Claude,
+            "launch-1",
+            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
+            "missing-1-request",
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.warnings().await.unwrap().len(), 1);
+
+    health
+        .record_session_started(ProviderKind::Claude, "launch-1", "session-started-request")
+        .await
+        .unwrap();
+    health
+        .record_unavailable(
+            ProviderKind::Claude,
+            "launch-1",
+            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
+            "missing-after-success-request",
+        )
+        .await
+        .unwrap();
+    assert!(health.warnings().await.unwrap().is_empty());
 }

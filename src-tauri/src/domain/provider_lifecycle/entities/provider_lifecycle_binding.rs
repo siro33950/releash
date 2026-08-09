@@ -15,7 +15,6 @@ pub(crate) struct ProviderLifecycleBinding {
     scope: ProviderLifecycleScope,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
-    stopped: bool,
     unavailable: Option<ProviderLifecycleUnavailableReason>,
     expired: bool,
 }
@@ -61,7 +60,6 @@ impl ProviderLifecycleBinding {
             scope,
             provider_session_id: None,
             transcript_ref: None,
-            stopped: false,
             unavailable: None,
             expired: false,
         })
@@ -76,7 +74,6 @@ impl ProviderLifecycleBinding {
         &self.binding_id
     }
 
-    #[cfg(test)]
     pub(crate) fn provider(&self) -> ProviderKind {
         self.provider
     }
@@ -97,11 +94,6 @@ impl ProviderLifecycleBinding {
     #[cfg(test)]
     pub(crate) fn transcript_ref(&self) -> Option<&str> {
         self.transcript_ref.as_deref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.stopped
     }
 
     pub(crate) fn expire(&mut self) -> ProviderLifecycleOutcome {
@@ -129,12 +121,6 @@ impl ProviderLifecycleBinding {
         if signal.scope() != &self.scope {
             return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ScopeMismatch);
         }
-        if self.unavailable.is_some() {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::LifecycleUnavailable,
-            );
-        }
-
         match signal.into_kind() {
             ProviderLifecycleSignalKind::SessionStarted {
                 provider_session_id,
@@ -175,12 +161,8 @@ impl ProviderLifecycleBinding {
                 ProviderLifecycleRejection::SessionAlreadyAssociated,
             );
         }
-        if let Some(existing) = self.unavailable {
-            return if existing == observation.reason() {
-                ProviderLifecycleOutcome::Duplicate
-            } else {
-                ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::LifecycleUnavailable)
-            };
+        if self.unavailable == Some(observation.reason()) {
+            return ProviderLifecycleOutcome::Duplicate;
         }
         self.unavailable = Some(observation.reason());
         ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::LifecycleUnavailable {
@@ -204,6 +186,7 @@ impl ProviderLifecycleBinding {
             }
             Some(_) => {}
             None => {
+                self.unavailable = None;
                 self.provider_session_id = Some(provider_session_id.clone());
                 self.transcript_ref = transcript_ref.clone();
                 return ProviderLifecycleOutcome::Applied(vec![
@@ -235,14 +218,6 @@ impl ProviderLifecycleBinding {
             Ok(events) => events,
             Err(rejection) => return ProviderLifecycleOutcome::Rejected(rejection),
         };
-        if self.stopped {
-            return if events.is_empty() {
-                ProviderLifecycleOutcome::Duplicate
-            } else {
-                ProviderLifecycleOutcome::Applied(events)
-            };
-        }
-        self.stopped = true;
         events.push(ProviderLifecycleEvent::StopObserved {
             binding_id: self.binding_id.clone(),
         });

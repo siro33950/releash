@@ -11,7 +11,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
 };
-use crate::usecase::provider_lifecycle::ProviderLifecycleUsecaseError;
+use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
 
 use super::error::ApiError;
 use crate::adaptor::protocol::provider_lifecycle::{
@@ -21,11 +21,11 @@ use crate::adaptor::protocol::provider_lifecycle::{
 };
 #[derive(Clone)]
 struct ProviderLifecycleApiState {
-    usecase: Option<Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>>,
+    usecase: Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>>,
 }
 
-pub(super) fn router(
-    usecase: Option<Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>>,
+pub(crate) fn router(
+    usecase: Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>>,
 ) -> Router {
     Router::new()
         .route("/v1/provider-lifecycle/signals", post(receive))
@@ -40,6 +40,7 @@ async fn receive(
     State(state): State<ProviderLifecycleApiState>,
     payload: Result<Json<ProviderLifecycleReceiveRequest>, JsonRejection>,
 ) -> Result<Json<ProviderLifecycleReceiveResponse>, ApiError> {
+    let ingress_started = std::time::Instant::now();
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let usecase = state.usecase.ok_or_else(|| {
         ApiError::new(
@@ -54,13 +55,12 @@ async fn receive(
     };
     let slot_id = ProviderLifecycleSlotId::new(&payload.slot_id)
         .map_err(|error| ApiError::invalid_request(error.to_string()))?;
-    let scope = ProviderLifecycleScope::new(
-        payload.agent_session_id,
-        payload.workflow_execution_id,
-        payload.node_execution_id,
-        payload.attempt,
-    )
-    .map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    let scope = ProviderLifecycleScope::new(payload.agent_session_id)
+        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    let is_session_started = matches!(
+        &payload.signal,
+        ProviderLifecycleSignalRequest::SessionStarted { .. }
+    );
     let signal = match payload.signal {
         ProviderLifecycleSignalRequest::SessionStarted {
             provider_session_id,
@@ -101,6 +101,12 @@ async fn receive(
         .receive(&slot_id, &payload.capability, signal)
         .await
         .map_err(usecase_error)?;
+    if is_session_started {
+        crate::other::telemetry::record_terminal_launch(
+            crate::other::telemetry::TerminalLaunch::HookIngress,
+            ingress_started.elapsed(),
+        );
+    }
     Ok(Json(response(result)))
 }
 
@@ -122,13 +128,8 @@ async fn report_unavailable(
     };
     let slot_id = ProviderLifecycleSlotId::new(&payload.slot_id)
         .map_err(|error| ApiError::invalid_request(error.to_string()))?;
-    let scope = ProviderLifecycleScope::new(
-        payload.agent_session_id,
-        payload.workflow_execution_id,
-        payload.node_execution_id,
-        payload.attempt,
-    )
-    .map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    let scope = ProviderLifecycleScope::new(payload.agent_session_id)
+        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
     let reason = match payload.reason {
         ProviderLifecycleUnavailableReasonRequest::SessionStartDeadlineExceeded => {
             ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded
@@ -173,7 +174,6 @@ fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
         ProviderLifecycleRejection::ProviderMismatch => "provider_mismatch",
         ProviderLifecycleRejection::ScopeMismatch => "scope_mismatch",
         ProviderLifecycleRejection::BindingExpired => "binding_expired",
-        ProviderLifecycleRejection::LifecycleUnavailable => "lifecycle_unavailable",
         ProviderLifecycleRejection::SessionAlreadyAssociated => "session_already_associated",
         ProviderLifecycleRejection::SessionNotAssociated => "session_not_associated",
         ProviderLifecycleRejection::ProviderSessionMismatch => "provider_session_mismatch",
@@ -181,17 +181,24 @@ fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
     }
 }
 
-fn usecase_error(error: ProviderLifecycleUsecaseError) -> ApiError {
+fn usecase_error(error: ProviderLifecycleIngressUsecaseError) -> ApiError {
     match error {
-        ProviderLifecycleUsecaseError::InvalidInput => {
+        ProviderLifecycleIngressUsecaseError::InvalidInput => {
             ApiError::invalid_request("Provider lifecycle input is invalid")
         }
-        ProviderLifecycleUsecaseError::StorageUnavailable => ApiError::new(
+        ProviderLifecycleIngressUsecaseError::Conflict => ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_lifecycle_conflict",
+            "Provider lifecycle conflicts with current AgentSession ownership",
+        ),
+        ProviderLifecycleIngressUsecaseError::StorageUnavailable => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "provider_lifecycle_storage_unavailable",
-            error.to_string(),
+            "Provider lifecycle persistence is unavailable",
         ),
-        ProviderLifecycleUsecaseError::Corrupt => ApiError::internal(error.to_string()),
+        ProviderLifecycleIngressUsecaseError::Corrupt => {
+            ApiError::internal("Provider lifecycle state is corrupt")
+        }
     }
 }
 

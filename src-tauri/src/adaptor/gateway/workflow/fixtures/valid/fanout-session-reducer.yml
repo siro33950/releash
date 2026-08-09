@@ -30,7 +30,7 @@ nodes:
     artifact: review-verdict
   - name: judge
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: reduce-review-verdicts

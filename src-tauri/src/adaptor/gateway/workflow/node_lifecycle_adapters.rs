@@ -127,10 +127,6 @@ impl NodeExecutionRuntimeGateway for TauriNodeExecutionLifecycleGateway {
     }
 }
 
-pub(crate) fn mark_started_node_tab_open(open_tabs: &OpenTabRegistry, session_id: &str) {
-    open_tabs.add(session_id);
-}
-
 pub(crate) async fn release_node_runtime_on_done(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,

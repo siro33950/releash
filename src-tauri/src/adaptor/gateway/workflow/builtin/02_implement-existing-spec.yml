@@ -93,8 +93,7 @@ nodes:
 
 - name: resolve_request
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: planning
@@ -107,8 +106,7 @@ nodes:
 
 - name: create_detailed_design
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: planning
@@ -147,8 +145,7 @@ nodes:
   - next: verify_implementation
 - name: implement_task
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: coding
@@ -159,8 +156,7 @@ nodes:
   - resolve_request
 - name: verify_implementation
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -185,8 +181,7 @@ nodes:
     next: implementation_confirmation
 - name: implementation_confirmation
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: reporting

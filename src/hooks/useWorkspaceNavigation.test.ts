@@ -141,6 +141,48 @@ describe("useWorkspaceNavigation", () => {
 		).toBeUndefined();
 	});
 
+	it("workspace-status-changed の恒等更新では worktrees の同一参照を維持する", async () => {
+		type WorkspaceStatusCallback = (event: {
+			payload: WorkspaceStatus;
+		}) => void;
+		let workspaceStatusCallback: WorkspaceStatusCallback | null = null;
+		mockListen.mockImplementation(
+			(event: string, callback: WorkspaceStatusCallback) => {
+				if (event === "workspace-status-changed") {
+					workspaceStatusCallback = callback;
+				}
+				return Promise.resolve(vi.fn());
+			},
+		);
+		const { result } = renderHook(() => useWorkspaceNavigation());
+
+		act(() => {
+			result.current.openWorktreeTab("/repo/a", "main", "repo");
+			result.current.openWorktreeTab("/repo/b", "feat/b", "repo");
+		});
+		await waitFor(() => {
+			expect(workspaceStatusCallback).not.toBeNull();
+		});
+
+		await act(async () => {
+			workspaceStatusCallback?.({
+				payload: makeStatus({ aggregated_state: "running" }),
+			});
+		});
+		const updatedWorktrees = result.current.worktrees;
+		expect(
+			updatedWorktrees.find((tab) => tab.rootPath === "/repo/a")?.agentState,
+		).toBe("running");
+
+		await act(async () => {
+			workspaceStatusCallback?.({
+				payload: makeStatus({ aggregated_state: "running" }),
+			});
+		});
+
+		expect(result.current.worktrees).toBe(updatedWorktrees);
+	});
+
 	it("unmount 時に workspace-status-changed の unlisten を呼ぶ", async () => {
 		const unlisten = vi.fn();
 		mockListen.mockResolvedValue(unlisten);

@@ -18,13 +18,19 @@ use crate::domain::local_event::mutation::{
 };
 use crate::domain::local_event::record::{
     MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
-    RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord, TerminalResultRecord,
+    ProviderAgentSessionLifecycleRecord, RecoveryAttemptRecord, RecoveryResultRecord,
+    SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord, TerminalResultRecord,
 };
 
 /// Opaque MAC-protected pagination cursor issued by the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryCursor(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAgentSessionOriginKind {
+    Standalone,
+    WorkflowNode,
+}
 
 impl QueryCursor {
     /// Wrap an opaque cursor token received back from a caller. Integrity is
@@ -106,6 +112,13 @@ pub enum LocalEventQuery {
     SessionProjectionPage {
         limit: usize,
         after_session_id: Option<String>,
+    },
+    ProviderAgentSessionProjectionPage {
+        workspace_identity: String,
+        lifecycle: Option<ProviderAgentSessionLifecycleRecord>,
+        origin: Option<ProviderAgentSessionOriginKind>,
+        limit: usize,
+        after_agent_session_id: Option<String>,
     },
     /// One bounded, lightweight owner inventory read by a single SQLite
     /// statement. Startup GC uses this instead of composing independently
@@ -227,6 +240,12 @@ pub struct SessionProjectionView {
 pub struct AgentSessionLifecycleSnapshotView {
     pub session: SessionProjectionView,
     pub pending_obligations: Vec<(String, ObligationRecord)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderAgentSessionProjectionPageView {
+    pub sessions: Vec<SessionProjectionView>,
+    pub next_after_agent_session_id: Option<String>,
 }
 
 /// Lightweight runtime-ownership facts extracted from one canonical SQLite
@@ -402,6 +421,7 @@ pub enum LocalEventQueryResult {
     SessionProjectionByIdentity(Option<SessionProjectionView>),
     AgentSessionLifecycleSnapshot(Option<AgentSessionLifecycleSnapshotView>),
     SessionProjectionPage(Vec<SessionProjectionView>),
+    ProviderAgentSessionProjectionPage(ProviderAgentSessionProjectionPageView),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
     MessageProjectionByIdentity(Option<MessageProjectionView>),
     MessageProjectionPage(MessageProjectionPageView),

@@ -36,9 +36,6 @@ pub(crate) struct ProviderLifecycleReceiveRequest {
     pub(crate) capability: String,
     pub(crate) provider: ProviderLifecycleProvider,
     pub(crate) agent_session_id: String,
-    pub(crate) workflow_execution_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) attempt: u32,
     pub(crate) signal: ProviderLifecycleSignalRequest,
 }
 
@@ -59,9 +56,6 @@ pub(crate) struct ProviderLifecycleUnavailableRequest {
     pub(crate) capability: String,
     pub(crate) provider: ProviderLifecycleProvider,
     pub(crate) agent_session_id: String,
-    pub(crate) workflow_execution_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) attempt: u32,
     pub(crate) reason: ProviderLifecycleUnavailableReasonRequest,
 }
 

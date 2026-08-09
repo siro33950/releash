@@ -116,13 +116,51 @@ struct RuntimeShutdownExecutor {
         Arc<crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase>,
     terminal_surface:
         Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync>,
     shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
 }
 
-fn shutdown_terminal_surface_before_local_api(
+pub(crate) struct RuntimeShutdownDependencies {
+    runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
+    lifecycle_operation:
+        Arc<crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase>,
+    terminal_surface:
+        Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync>,
+    shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl RuntimeShutdownDependencies {
+    pub(crate) fn new(
+        runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+        workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
+        lifecycle_operation: Arc<
+            crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase,
+        >,
+        terminal_surface: Arc<
+            crate::usecase::terminal_surface::application::TerminalSurfaceApplication,
+        >,
+        shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync>,
+        shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            runtime,
+            workflow_runtime,
+            lifecycle_operation,
+            terminal_surface,
+            shutdown_provider_exit_observer,
+            shutdown_local_api,
+        }
+    }
+}
+
+fn shutdown_provider_observer_terminal_surface_and_local_api(
+    shutdown_provider_exit_observer: &(dyn Fn() + Send + Sync),
     shutdown_terminal_surface: &(dyn Fn() -> Result<(), String> + Send + Sync),
     shutdown_local_api: &(dyn Fn() + Send + Sync),
 ) -> Result<(), String> {
+    shutdown_provider_exit_observer();
     shutdown_terminal_surface()?;
     shutdown_local_api();
     Ok(())
@@ -410,7 +448,8 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
     async fn shutdown_subordinates(
         &self,
     ) -> Result<(), crate::domain::local_event::SafeOperationFailure> {
-        shutdown_terminal_surface_before_local_api(
+        shutdown_provider_observer_terminal_surface_and_local_api(
+            self.shutdown_provider_exit_observer.as_ref(),
             &|| {
                 self.terminal_surface
                     .shutdown()
@@ -432,26 +471,19 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
 pub(crate) fn build_shutdown_coordinator(
     store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
-    workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-    lifecycle_operation: Arc<
-        crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase,
-    >,
-    terminal_surface: Arc<
-        crate::usecase::terminal_surface::application::TerminalSurfaceApplication,
-    >,
-    shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
+    dependencies: RuntimeShutdownDependencies,
 ) -> Arc<ShutdownCoordinator> {
     let installation_id = store.installation_id().to_string();
     let process_instance_id = store.process_instance_id().to_string();
     let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
         store.clone();
     let executor: Arc<dyn ShutdownTargetExecutor> = Arc::new(RuntimeShutdownExecutor {
-        runtime,
-        workflow_runtime,
-        lifecycle_operation,
-        terminal_surface,
-        shutdown_local_api,
+        runtime: dependencies.runtime,
+        workflow_runtime: dependencies.workflow_runtime,
+        lifecycle_operation: dependencies.lifecycle_operation,
+        terminal_surface: dependencies.terminal_surface,
+        shutdown_provider_exit_observer: dependencies.shutdown_provider_exit_observer,
+        shutdown_local_api: dependencies.shutdown_local_api,
     });
     Arc::new(ShutdownCoordinator::new(
         repository,

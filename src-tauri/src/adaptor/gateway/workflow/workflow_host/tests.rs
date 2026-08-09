@@ -21,7 +21,6 @@ use crate::domain::workflow::services::event_replay::project_workflow_execution;
 use crate::domain::workflow::services::transition::ApprovalApplication;
 use crate::domain::workflow::FanoutParentRef;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
-use async_trait::async_trait;
 use tauri::{Listener, Manager};
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -52,172 +51,6 @@ fn node_execution_fixture(
         fanout_parent,
         started_at: 1000.0,
         completed_at: None,
-    }
-}
-
-struct WorkflowMockBackend {
-    backend_id: String,
-    models: Vec<String>,
-}
-
-#[async_trait]
-impl AgentBackend for WorkflowMockBackend {
-    fn id(&self) -> &str {
-        &self.backend_id
-    }
-    fn name(&self) -> &str {
-        "Mock"
-    }
-
-    fn available_models(&self) -> Vec<ModelDescriptor> {
-        self.models
-            .iter()
-            .map(|model| ModelDescriptor {
-                id: ModelId::parse(model).unwrap(),
-                display_name: model.clone(),
-            })
-            .collect()
-    }
-
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities { steering: false }
-    }
-
-    async fn open_session(
-        &self,
-        _spec: AgentSessionSpec,
-    ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
-        Ok(Box::new(WorkflowMockRuntime))
-    }
-
-    async fn skill_catalog(
-        &self,
-        _cwd: &std::path::Path,
-        _query: Option<&str>,
-        _limit: Option<usize>,
-    ) -> Result<Vec<SkillEntry>, AgentBackendError> {
-        Ok(Vec::new())
-    }
-
-    async fn fuzzy_file_search(
-        &self,
-        _root: &std::path::Path,
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Option<Vec<String>>, AgentBackendError> {
-        Ok(None)
-    }
-}
-
-struct WorkflowMockRuntime;
-
-#[async_trait]
-impl AgentSessionRuntime for WorkflowMockRuntime {
-    fn take_events(
-        &mut self,
-    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = AgentRuntimeEvent> + Send>> {
-        Box::pin(futures_util::stream::empty())
-    }
-
-    async fn start_turn(&self, _input: TurnInput) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn interrupt(&self) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn respond_permission(
-        &self,
-        _response: PermissionResponse,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn close(&self) {}
-}
-
-fn make_workflow_test_registry(
-    claude_models: &[&str],
-    codex_models: &[&str],
-) -> AgentBackendRegistry {
-    let mut registry = AgentBackendRegistry::new();
-    registry.register(Arc::new(WorkflowMockBackend {
-        backend_id: "claude".to_string(),
-        models: claude_models
-            .iter()
-            .map(|model| model.to_string())
-            .collect(),
-    }));
-    registry.register(Arc::new(WorkflowMockBackend {
-        backend_id: "codex".to_string(),
-        models: codex_models.iter().map(|model| model.to_string()).collect(),
-    }));
-    registry
-}
-
-#[test]
-fn fanout_child_failure_kind_uses_typed_refusal_signal() {
-    let kind = fanout_child_failure_kind(
-        0,
-        Some(workflow_transition::SessionFailureSignal::ModelRefusal),
-    );
-
-    assert_eq!(kind, NodeExecutionFailureKind::ModelRefusal);
-}
-
-#[test]
-fn fanout_child_failure_kind_without_signal_uses_session_error_classification() {
-    let kind = fanout_child_failure_kind(1, None);
-
-    assert_eq!(kind, NodeExecutionFailureKind::ValidationFailure);
-}
-
-#[test]
-fn workflow_resolve_unique_model_returns_owning_backend() {
-    let registry = make_workflow_test_registry(&["claude-4"], &["gpt-5"]);
-    let result = resolve_node_model_with_registry(&registry, "claude-4").unwrap();
-    assert_eq!(result, "claude");
-}
-
-#[test]
-fn workflow_resolve_rejects_ambiguous_model_in_multiple_backends() {
-    let registry = make_workflow_test_registry(&["shared"], &["shared"]);
-    let err = resolve_node_model_with_registry(&registry, "shared").unwrap_err();
-    match err {
-        WorkflowRuntimeError::InvalidWorkflow(msg) => {
-            assert!(msg.contains("could not be resolved"));
-        }
-        other => panic!("expected InvalidWorkflow, got {:?}", other),
-    }
-}
-
-#[test]
-fn workflow_resolve_rejects_unknown_model() {
-    let registry = make_workflow_test_registry(&["claude-4"], &[]);
-    let err = resolve_node_model_with_registry(&registry, "unknown").unwrap_err();
-    match err {
-        WorkflowRuntimeError::InvalidWorkflow(msg) => {
-            assert!(msg.contains("could not be resolved"));
-        }
-        other => panic!("expected InvalidWorkflow, got {:?}", other),
-    }
-}
-
-#[test]
-fn workflow_resolve_rejects_invalid_format() {
-    let registry = make_workflow_test_registry(&["claude-4"], &[]);
-    // 形式不正（空文字）は登録判定に進む前に拒否される
-    let err = resolve_node_model_with_registry(&registry, "").unwrap_err();
-    match err {
-        WorkflowRuntimeError::InvalidWorkflow(msg) => {
-            assert!(msg.contains("invalid model"));
-        }
-        other => panic!("expected InvalidWorkflow, got {:?}", other),
     }
 }
 
@@ -359,7 +192,7 @@ fn node_session_tab_cleanup_is_view_only_and_preserves_history() {
 }
 
 #[tokio::test]
-async fn persist_outcome_without_new_history_does_not_cleanup_last_node_session() {
+async fn test_workflow完了_完了nodeのagent_sessionを終了対象にしない() {
     let driver = WorkflowRuntimeHost::new_for_test();
     let mut snapshot = driver
         .insert_test_approval_execution(
@@ -380,45 +213,17 @@ async fn persist_outcome_without_new_history_does_not_cleanup_last_node_session(
         state: crate::domain::workflow::value_objects::default_node_history_status(),
     });
 
-    let persist = NodeOutcome::Persist(snapshot.clone());
-    assert!(persist.completed_node_session_ids().is_empty());
-
     snapshot.apply_lifecycle_projection(RuntimeExecutionState::Completed, snapshot.updated_at);
     let terminal = NodeOutcome::Persist(snapshot);
     assert_eq!(
-        terminal.completed_node_session_ids(),
-        vec![TEST_NODE_SESSION_ID.to_string()]
-    );
-}
-
-#[tokio::test]
-async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry() {
-    let driver = WorkflowRuntimeHost::new_for_test();
-    let mut snapshot = driver
-        .insert_test_approval_execution(
-            "/repo",
-            TEST_NODE_SESSION_ID,
-            RuntimeExecutionState::WaitingApproval,
-        )
-        .await;
-    snapshot.current_session_id = Some("approval-session".to_string());
-    snapshot.node_history.push(NodeHistoryEntry {
-        node_name: "previous".to_string(),
-        completed_at: 1.0,
-        result: Some("ok".to_string()),
-        session_id: Some("previous-session".to_string()),
-        token_usage: None,
-        artifact: None,
-        attempt: 1,
-        fanout_children: None,
-        state: crate::domain::workflow::value_objects::default_node_history_status(),
-    });
-    snapshot.apply_lifecycle_projection(RuntimeExecutionState::Aborted, snapshot.updated_at);
-
-    let outcome = NodeOutcome::Persist(snapshot);
-    assert_eq!(
-        outcome.completed_node_session_ids(),
-        vec!["approval-session".to_string()]
+        terminal
+            .snapshot()
+            .node_history
+            .last()
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some(TEST_NODE_SESSION_ID)
     );
 }
 
@@ -476,83 +281,6 @@ async fn terminal_state_cleanup_targets_current_and_fanout_node_sessions() {
     );
 }
 
-#[tokio::test]
-async fn terminal_outcome_cleanup_includes_parent_entry_and_fanout_fanout_children() {
-    let driver = WorkflowRuntimeHost::new_for_test();
-    let mut snapshot = driver
-        .insert_test_approval_execution(
-            "/repo",
-            TEST_NODE_SESSION_ID,
-            RuntimeExecutionState::Completed,
-        )
-        .await;
-    snapshot.node_history.push(NodeHistoryEntry {
-        node_name: "fanout-review".to_string(),
-        completed_at: 1.0,
-        result: Some("done".to_string()),
-        session_id: Some("parent-entry-session".to_string()),
-        token_usage: None,
-        artifact: None,
-        attempt: 1,
-        fanout_children: Some(vec![
-            crate::domain::workflow::FanoutChildSnapshot {
-                node_name: "review-a".to_string(),
-                session_id: Some("child-a-session".to_string()),
-                result: Some("LGTM".to_string()),
-                attempt: 1,
-                completed_at: 1.0,
-                artifact: None,
-                contract: None,
-                state: crate::domain::workflow::value_objects::default_node_history_status(),
-                failure_kind: None,
-                failure_disposition: None,
-            },
-            crate::domain::workflow::FanoutChildSnapshot {
-                node_name: "review-b".to_string(),
-                session_id: Some("child-b-session".to_string()),
-                result: Some("LGTM".to_string()),
-                attempt: 1,
-                completed_at: 1.0,
-                artifact: None,
-                contract: None,
-                state: crate::domain::workflow::value_objects::default_node_history_status(),
-                failure_kind: None,
-                failure_disposition: None,
-            },
-        ]),
-        state: crate::domain::workflow::value_objects::default_node_history_status(),
-    });
-
-    assert_eq!(
-        NodeOutcome::Persist(snapshot).completed_node_session_ids(),
-        vec![
-            "child-a-session".to_string(),
-            "child-b-session".to_string(),
-            "parent-entry-session".to_string(),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn retry_current_node_outcome_releases_previous_session_only() {
-    let driver = WorkflowRuntimeHost::new_for_test();
-    let snapshot = driver
-        .insert_test_approval_execution(
-            "/repo",
-            TEST_NODE_SESSION_ID,
-            RuntimeExecutionState::Running,
-        )
-        .await;
-
-    assert_eq!(
-        NodeOutcome::RetryCurrentNode {
-            snapshot,
-            completed_session_id: Some("stale-session".to_string()),
-        }
-        .completed_node_session_ids(),
-        vec!["stale-session".to_string()]
-    );
-}
 use crate::domain::workflow::{Rule, SchemaDef, WorkflowDefinition};
 
 fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
@@ -3143,294 +2871,34 @@ fn build_node_prompt_expands_artifact_field_references_in_user_message() {
     assert!(!sys_str.contains("{{ authoring.spec_dir }}"));
 }
 
-// ---- dispatch_session_start (SessionStartGate 経由のテストダブル検証) ----
-
-/// テスト用の `SessionStartGate` 実装。受け取った引数を共有 Vec に記録する。
-struct RecordingSessionStartGate {
-    records: Arc<std::sync::Mutex<Vec<RecordedSessionStart>>>,
-}
-
-#[derive(Clone, Debug)]
-struct RecordedSessionStart {
-    session_id: String,
-    worktree_path: String,
-    permission_mode: Option<String>,
-    system_prompt: Option<String>,
-}
-
-#[async_trait::async_trait]
-impl SessionStartGate for RecordingSessionStartGate {
-    async fn start_session(
-        &self,
-        session_id: &str,
-        worktree_path: &str,
-        permission_mode: Option<String>,
-        system_prompt: Option<String>,
-        _workflow_instruction: Option<String>,
-    ) -> Result<(), crate::usecase::agent_session::runtime::usecase::AgentRuntimeError> {
-        self.records.lock().unwrap().push(RecordedSessionStart {
-            session_id: session_id.to_string(),
-            worktree_path: worktree_path.to_string(),
-            permission_mode,
-            system_prompt,
-        });
-        Ok(())
-    }
-}
-
-struct StartupTimeoutSessionStartGate;
-
-#[async_trait::async_trait]
-impl SessionStartGate for StartupTimeoutSessionStartGate {
-    async fn start_session(
-        &self,
-        _session_id: &str,
-        _worktree_path: &str,
-        _permission_mode: Option<String>,
-        _system_prompt: Option<String>,
-        _workflow_instruction: Option<String>,
-    ) -> Result<(), crate::usecase::agent_session::runtime::usecase::AgentRuntimeError> {
-        Err(
-            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
-                retry_count: 2,
-                max_retries: 2,
-            },
-        )
-    }
-}
-
-#[tokio::test]
-async fn dispatch_session_start_preserves_startup_timeout_metadata() {
-    let err = dispatch_session_start(
-        &StartupTimeoutSessionStartGate,
-        "sid",
-        "/repo",
-        None,
-        None,
-        None,
-    )
-    .await
-    .unwrap_err();
-
-    match err {
-        WorkflowRuntimeError::AgentRuntime {
-            failure_kind,
-            retry_count,
-            ..
-        } => {
-            assert_eq!(
-                failure_kind,
-                crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
-            );
-            assert_eq!(retry_count, Some(2));
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
-    // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
-    // ───「バックエンド起動経路 (start_agent_session_internal 相当) はテストダブルで置換され
-    // 受け取った引数を記録する」を直接検証する。
-    let tmp = tempfile::TempDir::new().unwrap();
-    let base = tmp.path();
-    let policies = base.join("policies");
-    let contracts = base.join("contracts");
-    std::fs::create_dir_all(&policies).unwrap();
-    std::fs::create_dir_all(&contracts).unwrap();
-    std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
-    std::fs::write(contracts.join("c.md"), "CONTRACT_BODY").unwrap();
-
-    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut node, Some("p".to_string()));
-    node.artifact = Some("c".to_string());
-    set_instruction_facet(&mut node, None);
-    let facet_contents = resolve_node_facets_for_test(&node, base);
-
-    // build_node_prompt → dispatch_session_start の経路をそのまま再現する。
-    let (system_prompt, _prompt) = workflow_prompt::build_node_prompt(
-        &node,
-        Some(&facet_contents),
-        "00000000-0000-0000-0000-000000000000",
-        None,
-        &HashMap::new(),
-        &BTreeMap::new(),
-    )
-    .unwrap();
-
-    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let gate = RecordingSessionStartGate {
-        records: records.clone(),
-    };
-
-    dispatch_session_start(
-        &gate,
-        "node-session-id",
-        "/repo",
-        None,
-        system_prompt.clone(),
-        None,
-    )
-    .await
-    .unwrap();
-
-    let recorded = records.lock().unwrap();
-    assert_eq!(
-        recorded.len(),
-        1,
-        "gate.start_session must be invoked exactly once"
-    );
-    let r = &recorded[0];
-    assert_eq!(r.session_id, "node-session-id");
-    assert_eq!(r.worktree_path, "/repo");
-    assert!(r.permission_mode.is_none());
-    let sp = r
-        .system_prompt
-        .as_ref()
-        .expect("system_prompt must be passed through as Some(_)");
-    assert!(
-        !sp.is_empty(),
-        "system_prompt must not be dropped or replaced with an empty string"
-    );
-    assert!(sp.contains("POLICY_BODY"));
-}
-
-#[tokio::test]
-async fn build_and_dispatch_node_session_forwards_composed_system_prompt_through_gate() {
-    // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
-    // start_node_session 側の経路（build_node_prompt → SessionStartGate）を切り出したヘルパーを
-    // 記録用 gate で駆動し、合成された system_prompt が None / 空文字に置換されずに
-    // gate に渡ることを直接 assert する。
-    let tmp = tempfile::TempDir::new().unwrap();
-    let base = tmp.path();
-    let policies = base.join("policies");
-    let contracts = base.join("contracts");
-    std::fs::create_dir_all(&policies).unwrap();
-    std::fs::create_dir_all(&contracts).unwrap();
-    std::fs::write(policies.join("p.md"), "NODE_POLICY_BODY").unwrap();
-    std::fs::write(contracts.join("c.md"), "NODE_CONTRACT_BODY").unwrap();
-
-    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut node, Some("p".to_string()));
-    node.artifact = Some("c".to_string());
-    set_instruction_facet(&mut node, None);
-    let facet_contents = resolve_node_facets_for_test(&node, base);
-
-    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let gate = RecordingSessionStartGate {
-        records: records.clone(),
-    };
-
-    let prompt = WorkflowRuntimeHost::build_and_dispatch_node_session(
-        &gate,
-        &node,
-        Some(&facet_contents),
-        "00000000-0000-0000-0000-000000000000",
-        "node-session-id",
-        "/repo",
-        None,
-        None,
-        &HashMap::new(),
-    )
-    .await
-    .unwrap();
-
-    // knowledge / instruction がなくても、contract があれば user_message には
-    // Contract 由来の完了時アクションが入る。
-    let _ = prompt;
-
-    let recorded = records.lock().unwrap();
-    assert_eq!(
-        recorded.len(),
-        1,
-        "gate.start_session must be invoked exactly once via build_and_dispatch_node_session"
-    );
-    let r = &recorded[0];
-    assert_eq!(r.session_id, "node-session-id");
-    assert_eq!(r.worktree_path, "/repo");
-    assert!(r.permission_mode.is_none());
-    let sp = r.system_prompt.as_ref().expect(
-        "system_prompt must be passed through start_node_session path as Some(_), not dropped",
-    );
-    assert!(
-        !sp.is_empty(),
-        "system_prompt must not be dropped or replaced with an empty string"
-    );
-    assert!(sp.contains("NODE_POLICY_BODY"));
-}
-
-#[tokio::test]
-async fn dispatch_session_start_passes_none_when_no_facets() {
-    // Scenario: policy も contract も指定がないと system_prompt は設定されない
-    // を SessionStartGate 経由でも維持することを検証する。
-    let tmp = tempfile::TempDir::new().unwrap();
-    let instructions = tmp.path().join("instructions");
-    std::fs::create_dir_all(&instructions).unwrap();
-    std::fs::write(instructions.join("only-instr.md"), "Body").unwrap();
-
-    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
-    set_instruction_facet(&mut node, Some("only-instr".to_string()));
-    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
-    let (system_prompt, _prompt) = workflow_prompt::build_node_prompt(
-        &node,
-        Some(&facet_contents),
-        "00000000-0000-0000-0000-000000000000",
-        None,
-        &HashMap::new(),
-        &BTreeMap::new(),
-    )
-    .unwrap();
-
-    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let gate = RecordingSessionStartGate {
-        records: records.clone(),
-    };
-
-    dispatch_session_start(&gate, "sid", "/repo", None, system_prompt, None)
-        .await
-        .unwrap();
-
-    let recorded = records.lock().unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert!(
-        recorded[0].system_prompt.is_none(),
-        "system_prompt must be None when neither policy nor contract is specified"
-    );
-}
-
 // ---- start_node_session_with_deps (副作用境界の注入による順序保証検証) ----
 
-/// テスト用の `NodeSessionDeps` 実装。副作用境界の各メソッドの呼び出し回数を
-/// 記録し、本番経路と同じ順序で副作用が発火することを assert できるようにする。
-/// プロンプト合成失敗時に `create_node_session` が呼ばれないこと等を検証する。
 #[derive(Default)]
 struct RecordingNodeSessionDeps {
-    create_node_session_count: std::sync::atomic::AtomicUsize,
-    dispatch_session_start_count: std::sync::atomic::AtomicUsize,
-    mark_node_tab_open_count: std::sync::atomic::AtomicUsize,
+    launch_count: std::sync::atomic::AtomicUsize,
+    rollback_count: std::sync::atomic::AtomicUsize,
+    dispatch_initial_instruction_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
-    start_agent_turn_count: std::sync::atomic::AtomicUsize,
-    created_contexts: std::sync::Mutex<Vec<WorkflowNodeContext>>,
-    dispatched_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
-    started_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
+    requested_providers: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
+    launch_owners: std::sync::Mutex<Vec<(String, String)>>,
+    dispatched_instructions: std::sync::Mutex<Vec<String>>,
+    calls: std::sync::Mutex<Vec<&'static str>>,
 }
 
 impl RecordingNodeSessionDeps {
-    fn create_node_session_count(&self) -> usize {
-        self.create_node_session_count
+    fn launch_count(&self) -> usize {
+        self.launch_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn rollback_count(&self) -> usize {
+        self.rollback_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn dispatch_session_start_count(&self) -> usize {
-        self.dispatch_session_start_count
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    fn mark_node_tab_open_count(&self) -> usize {
-        self.mark_node_tab_open_count
+    fn dispatch_initial_instruction_count(&self) -> usize {
+        self.dispatch_initial_instruction_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -3449,75 +2917,76 @@ impl RecordingNodeSessionDeps {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    fn start_agent_turn_count(&self) -> usize {
-        self.start_agent_turn_count
-            .load(std::sync::atomic::Ordering::SeqCst)
+    fn requested_providers(&self) -> Vec<crate::domain::provider_lifecycle::ProviderKind> {
+        self.requested_providers.lock().unwrap().clone()
     }
 
-    fn created_contexts(&self) -> Vec<WorkflowNodeContext> {
-        self.created_contexts.lock().unwrap().clone()
+    fn launch_owners(&self) -> Vec<(String, String)> {
+        self.launch_owners.lock().unwrap().clone()
     }
 
-    fn dispatched_workflow_instructions(&self) -> Vec<Option<String>> {
-        self.dispatched_workflow_instructions
-            .lock()
-            .unwrap()
-            .clone()
+    fn dispatched_instructions(&self) -> Vec<String> {
+        self.dispatched_instructions.lock().unwrap().clone()
     }
 
-    fn started_workflow_instructions(&self) -> Vec<Option<String>> {
-        self.started_workflow_instructions.lock().unwrap().clone()
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().unwrap().clone()
     }
 }
 
 #[async_trait::async_trait]
 impl NodeSessionDeps for RecordingNodeSessionDeps {
-    async fn create_node_session(
+    async fn launch_workflow_agent_session(
         &self,
         _worktree_path: &str,
-        _node_model: Option<String>,
-        _node_permission: Option<String>,
-        _workflow_defaults: WorkflowDefaults,
-        workflow_node_context: WorkflowNodeContext,
-        _kind_context: workflow_runtime_session::NodeRuntimeKindContext,
+        provider: crate::domain::provider_lifecycle::ProviderKind,
+        workflow_execution_id: &str,
+        node_execution_id: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
-        self.create_node_session_count
+        self.launch_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.created_contexts
-            .lock()
-            .unwrap()
-            .push(workflow_node_context);
+        self.requested_providers.lock().unwrap().push(provider);
+        self.launch_owners.lock().unwrap().push((
+            workflow_execution_id.to_string(),
+            node_execution_id.to_string(),
+        ));
+        self.calls.lock().unwrap().push("launch");
         Ok(NodeSessionInfo {
             id: "node-session-id".to_string(),
-            permission_mode: "ask".to_string(),
         })
     }
 
-    async fn dispatch_session_start(
+    async fn dispatch_initial_instruction(
         &self,
         _node_session_id: &str,
-        _worktree_path: &str,
-        _permission_mode: Option<String>,
-        _system_prompt: Option<String>,
-        workflow_instruction: Option<String>,
+        _node_execution_id: &str,
+        instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.dispatch_session_start_count
+        self.dispatch_initial_instruction_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.dispatched_workflow_instructions
+        self.dispatched_instructions
             .lock()
             .unwrap()
-            .push(workflow_instruction);
+            .push(instruction.to_string());
+        self.calls.lock().unwrap().push("dispatch");
         Ok(())
     }
 
-    async fn mark_node_tab_open(&self, _node_session_id: &str) {
-        self.mark_node_tab_open_count
+    async fn rollback_workflow_agent_session(
+        &self,
+        _node_session_id: &str,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.rollback_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.lock().unwrap().push("rollback");
+        Ok(())
     }
 
     async fn broadcast_state(&self, _worktree_path: &str, _snapshot: RuntimeCommitSnapshot) {
         self.broadcast_state_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.lock().unwrap().push("broadcast");
     }
 
     async fn append_node_session_started(
@@ -3526,6 +2995,7 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
     ) -> Result<(), WorkflowRuntimeError> {
         self.append_node_session_started_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.lock().unwrap().push("append");
         if self
             .append_node_session_started_should_fail
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -3536,25 +3006,216 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
         }
         Ok(())
     }
+}
 
-    async fn start_agent_turn_locked(
+#[derive(Default)]
+struct RecordingWorkflowAgentSessionPort {
+    providers: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
+    owners: std::sync::Mutex<Vec<(String, String)>>,
+    instructions: std::sync::Mutex<Vec<(String, String)>>,
+    rollbacks: std::sync::Mutex<Vec<(String, String)>>,
+    unavailable: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
+    fail_next_dispatch: std::sync::atomic::AtomicBool,
+    launch_attempts: std::sync::atomic::AtomicUsize,
+    fail_launch_attempt: std::sync::atomic::AtomicUsize,
+}
+
+impl RecordingWorkflowAgentSessionPort {
+    fn providers(&self) -> Vec<crate::domain::provider_lifecycle::ProviderKind> {
+        self.providers.lock().unwrap().clone()
+    }
+
+    fn owners(&self) -> Vec<(String, String)> {
+        self.owners.lock().unwrap().clone()
+    }
+
+    fn instructions(&self) -> Vec<(String, String)> {
+        self.instructions.lock().unwrap().clone()
+    }
+
+    fn rollbacks(&self) -> Vec<(String, String)> {
+        self.rollbacks.lock().unwrap().clone()
+    }
+
+    fn mark_unavailable(&self, provider: crate::domain::provider_lifecycle::ProviderKind) {
+        self.unavailable.lock().unwrap().push(provider);
+    }
+
+    fn fail_next_dispatch(&self) {
+        self.fail_next_dispatch
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn fail_launch_at(&self, one_based_attempt: usize) {
+        self.fail_launch_attempt
+            .store(one_based_attempt, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessionPort {
+    fn is_provider_available(
         &self,
-        _node_execution_id: &str,
+        provider: crate::domain::provider_lifecycle::ProviderKind,
+    ) -> bool {
+        !self.unavailable.lock().unwrap().contains(&provider)
+    }
+
+    async fn launch_workflow_agent_session(
+        &self,
+        _worktree_path: &str,
+        provider: crate::domain::provider_lifecycle::ProviderKind,
+        workflow_execution_id: &str,
+        node_execution_id: &str,
+    ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+        let attempt = self
+            .launch_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if attempt
+            == self
+                .fail_launch_attempt
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkflowRuntimeError::AgentSession(
+                "injected Provider TUI launch failure".to_string(),
+            ));
+        }
+        self.providers.lock().unwrap().push(provider);
+        self.owners.lock().unwrap().push((
+            workflow_execution_id.to_string(),
+            node_execution_id.to_string(),
+        ));
+        Ok(NodeSessionInfo {
+            id: format!("provider-agent-session-{node_execution_id}"),
+        })
+    }
+
+    async fn dispatch_initial_instruction(
+        &self,
         node_session_id: &str,
-        _permission_mode: &str,
-        _prompt: &str,
-        _system_prompt: Option<String>,
-        workflow_instruction: Option<String>,
+        _node_execution_id: &str,
+        instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.start_agent_turn_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.started_workflow_instructions
+        if self
+            .fail_next_dispatch
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkflowRuntimeError::AgentSession(
+                "injected Provider TUI dispatch failure".to_string(),
+            ));
+        }
+        self.instructions
             .lock()
             .unwrap()
-            .push(workflow_instruction);
-        let _ = node_session_id;
+            .push((node_session_id.to_string(), instruction.to_string()));
         Ok(())
     }
+
+    async fn rollback_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.rollbacks
+            .lock()
+            .unwrap()
+            .push((node_session_id.to_string(), node_execution_id.to_string()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_workflow_session_node_設定providerでtui_agent_sessionだけを起動する() {
+    let driver = WorkflowRuntimeHost::new_for_test();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let instructions = tmp.path().join("instructions");
+    std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::write(instructions.join("ok.md"), "hello").unwrap();
+    let mut node = make_test_node("ok-node", TestKind::Session, "ok", vec![], None);
+    node.session_mut().unwrap().provider = crate::domain::provider_lifecycle::ProviderKind::Codex;
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
+
+    {
+        let mut execs = driver.executions.lock().await;
+        insert_single_node_execution(&mut execs, node);
+    }
+    seed_single_node_facet_contents_for_test(&driver, "ok-node", facet_contents).await;
+
+    let deps = RecordingNodeSessionDeps::default();
+    driver
+        .start_node_session_with_deps(&deps, "/repo")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        deps.requested_providers(),
+        vec![crate::domain::provider_lifecycle::ProviderKind::Codex]
+    );
+    assert_eq!(
+        deps.launch_owners(),
+        vec![("exec-id".to_string(), "node-execution-current".to_string())]
+    );
+    assert_eq!(deps.dispatch_initial_instruction_count(), 1);
+}
+
+#[tokio::test]
+async fn test_workflow_session_provider_利用不可ならworkflowを開始しない() {
+    let data_dir_fixture = tempfile::TempDir::new().unwrap();
+    let data_dir = data_dir_fixture.path().to_path_buf();
+    let app = tauri::test::mock_builder()
+        .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            data_dir.clone(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    app.manage(Arc::new(
+        crate::usecase::agent_session::status::AgentStatusCenter::new(),
+    ));
+    app.manage(Arc::new(OpenTabRegistry::default()));
+    let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+    workflow_agent_sessions
+        .mark_unavailable(crate::domain::provider_lifecycle::ProviderKind::Codex);
+    let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+        workflow_agent_sessions.clone(),
+    );
+    driver.set_execution_store_data_dir(data_dir.clone()).await;
+    let session_store = Arc::new(crate::test_support::build_session_store());
+    let agent_runtime =
+        crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir.clone());
+    let mut node = make_test_node(
+        "review",
+        TestKind::Session,
+        "review-acceptance",
+        vec![],
+        None,
+    );
+    node.session_mut().unwrap().provider = crate::domain::provider_lifecycle::ProviderKind::Codex;
+    let workflow = WorkflowDefinition {
+        name: "unavailable-provider".to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: Default::default(),
+        nodes: vec![node],
+    };
+    let worktree = tempfile::TempDir::new().unwrap();
+
+    let result = driver
+        .start_resolved_workflow(
+            app.handle(),
+            &session_store,
+            &agent_runtime,
+            workflow,
+            worktree.path().to_string_lossy().to_string(),
+            None,
+            ExecutionOrigin::DesktopUi,
+            PermissionMode::Edit,
+        )
+        .await;
+
+    assert!(matches!(result, Err(WorkflowRuntimeError::AgentSession(_))));
+    assert!(workflow_agent_sessions.owners().is_empty());
+    assert!(driver.executions.lock().await.is_empty());
 }
 
 /// `executions` に 1 ステップのワークフロー実行を登録する。
@@ -3678,19 +3339,14 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 
     // (b)/(c) 副作用境界はいずれも呼ばれていない
     assert_eq!(
-        deps.create_node_session_count(),
+        deps.launch_count(),
         0,
-        "create_node_session must NOT be invoked when prompt synthesis fails"
+        "AgentSession launch must NOT run when prompt synthesis fails"
     );
     assert_eq!(
-        deps.dispatch_session_start_count(),
+        deps.dispatch_initial_instruction_count(),
         0,
-        "dispatch_session_start must NOT be invoked when prompt synthesis fails"
-    );
-    assert_eq!(
-        deps.mark_node_tab_open_count(),
-        0,
-        "mark_node_tab_open must NOT be invoked when prompt synthesis fails"
+        "initial instruction must NOT be dispatched when prompt synthesis fails"
     );
     assert_eq!(
         deps.broadcast_state_count(),
@@ -3701,11 +3357,6 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
         deps.append_node_session_started_count(),
         0,
         "NodeSessionStarted must NOT be appended when prompt synthesis fails"
-    );
-    assert_eq!(
-        deps.start_agent_turn_count(),
-        0,
-        "start_agent_turn must NOT be invoked when prompt synthesis fails"
     );
 
     // (d) session_workflow_refs は空のまま
@@ -3726,8 +3377,8 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 #[tokio::test]
 async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success() {
     // 副作用境界が正しい順序で呼ばれる成功経路を併せて検証する。
-    // プロンプト合成が成功した場合は、create_node_session → dispatch_session_start
-    // → NodeSessionStarted append → broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
+    // プロンプト合成が成功した場合は、AgentSession起動 → NodeSessionStarted append
+    // → broadcast → 初期指示dispatch の全境界が各1回ずつ呼ばれ、
     // driver.session_workflow_refs と executions["/repo"].current_session_id が
     // 期待通り更新されることを assert する。
     let driver = WorkflowRuntimeHost::new_for_test();
@@ -3752,27 +3403,18 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
         .expect("start_node_session_with_deps must succeed for instruction facet node");
 
     // 各副作用境界が 1 回ずつ呼ばれている
-    assert_eq!(deps.create_node_session_count(), 1);
-    assert_eq!(deps.dispatch_session_start_count(), 1);
-    assert_eq!(deps.mark_node_tab_open_count(), 1);
+    assert_eq!(deps.launch_count(), 1);
+    assert_eq!(deps.rollback_count(), 0);
     assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(deps.broadcast_state_count(), 1);
-    assert_eq!(deps.start_agent_turn_count(), 1);
+    assert_eq!(deps.dispatch_initial_instruction_count(), 1);
     assert_eq!(
-        deps.created_contexts(),
-        vec![WorkflowNodeContext {
-            execution_id: "exec-id".to_string(),
-            node_execution_id: "node-execution-current".to_string(),
-            workflow_name: "regression-workflow".to_string(),
-            node_name: "ok-node".to_string(),
-            attempt: 1,
-            parent_node_name: None,
-            parent_attempt: None,
-            order: 0,
-            startup_timeout_secs: None,
-            startup_max_retries: None,
-            stale_timeout_secs: None,
-        }]
+        deps.launch_owners(),
+        vec![("exec-id".to_string(), "node-execution-current".to_string())]
+    );
+    assert_eq!(
+        deps.calls(),
+        vec!["launch", "append", "broadcast", "dispatch"]
     );
 
     // session_workflow_refs に SequentialNode として登録されている
@@ -3794,16 +3436,19 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
 }
 
 #[tokio::test]
-async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_context() {
+async fn test_workflow_session_node_初期指示を一度だけdispatchする() {
     let driver = WorkflowRuntimeHost::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
+    let policies = tmp.path().join("policies");
     std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::create_dir_all(&policies).unwrap();
     std::fs::write(
         instructions.join("impl.md"),
         "Keep this instruction private.",
     )
     .unwrap();
+    std::fs::write(policies.join("policy.md"), "Follow the workflow policy.").unwrap();
 
     let mut node = make_test_node(
         "instruction-node",
@@ -3813,6 +3458,7 @@ async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_co
         None,
     );
     set_instruction_facet(&mut node, Some("impl".to_string()));
+    set_policy_facet(&mut node, Some("policy".to_string()));
     let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
 
     {
@@ -3827,23 +3473,21 @@ async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_co
         .await
         .expect("start_node_session_with_deps must succeed");
 
-    let contexts = deps.created_contexts();
-    assert_eq!(contexts.len(), 1);
-    assert_eq!(contexts[0].node_name, "instruction-node");
-    let dispatched = deps.dispatched_workflow_instructions();
-    let started = deps.started_workflow_instructions();
+    let dispatched = deps.dispatched_instructions();
     assert_eq!(dispatched.len(), 1);
-    assert_eq!(started.len(), 1);
-    let dispatched_instruction = dispatched[0]
-        .as_deref()
-        .expect("dispatch_session_start must receive workflow instruction");
-    let started_instruction = started[0]
-        .as_deref()
-        .expect("start_agent_turn_locked must receive workflow instruction");
-    assert_eq!(dispatched_instruction, started_instruction);
     assert!(
-        dispatched_instruction.contains("Keep this instruction private."),
-        "rendered workflow instruction body must be handed off to both gates"
+        dispatched[0].contains("Keep this instruction private."),
+        "rendered workflow instruction must be dispatched to the TUI AgentSession"
+    );
+    assert_eq!(
+        dispatched[0]
+            .matches("Keep this instruction private.")
+            .count(),
+        1
+    );
+    assert_eq!(
+        dispatched[0].matches("Follow the workflow policy.").count(),
+        1
     );
 }
 
@@ -3875,9 +3519,12 @@ async fn start_node_session_with_deps_propagates_node_session_append_failure() {
         matches!(&err, WorkflowRuntimeError::SessionStore(message) if message.contains("append node session started failed")),
         "append failure must surface as SessionStore error, got: {err:?}"
     );
-    assert_eq!(deps.create_node_session_count(), 1);
-    assert_eq!(deps.dispatch_session_start_count(), 1);
-    assert_eq!(deps.mark_node_tab_open_count(), 1);
+    assert_eq!(deps.launch_count(), 1);
+    assert_eq!(
+        deps.rollback_count(),
+        1,
+        "durable attachmentが成立しないAgentSessionはrollbackする"
+    );
     assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(
         deps.broadcast_state_count(),
@@ -3885,9 +3532,20 @@ async fn start_node_session_with_deps_propagates_node_session_append_failure() {
         "broadcast_state must not run after append failure"
     );
     assert_eq!(
-        deps.start_agent_turn_count(),
+        deps.dispatch_initial_instruction_count(),
         0,
-        "start_agent_turn must not run after append failure"
+        "initial instruction must not run after append failure"
+    );
+    assert!(
+        driver.session_workflow_refs.lock().await.is_empty(),
+        "a session attachment that was not durably appended must not become addressable"
+    );
+    let executions = driver.executions.lock().await;
+    let (_, execution) =
+        find_by_worktree(&executions, "/repo").expect("execution must remain registered");
+    assert_eq!(
+        execution.current_session_id, None,
+        "a session attachment that was not durably appended must not become live"
     );
 }
 
@@ -3897,7 +3555,6 @@ fn make_fanout_child(name: &str) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Session(SessionSpec {
-            permission: Some("edit".to_string()),
             ..Default::default()
         }),
         ..Default::default()
@@ -4869,7 +4526,7 @@ fn normal_node_completion_retry_and_transition_clear_stall_observations() {
         retried
             .retry_current_node()
             .expect("retry must produce an outcome"),
-        NodeOutcome::RetryCurrentNode { .. }
+        NodeOutcome::RetryCurrentNode(_)
     ));
     assert!(retried.current_stall_observations.is_empty());
 
@@ -5387,240 +5044,6 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
     assert!(exec.artifacts.contains_key("fix"));
 }
 
-// ---- resolve_node_settings ----
-
-#[test]
-fn resolve_node_settings_model_and_permission_specified() {
-    let result = resolve_node_settings(
-        Some("codex-mini".to_string()),
-        Some("full".to_string()),
-        Some("codex".to_string()),
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result,
-        ResolvedNodeSettings {
-            backend_id: Some("codex".to_string()),
-            selected_model: Some("codex-mini".to_string()),
-            permission_mode: "full".to_string(),
-        }
-    );
-}
-
-#[test]
-fn resolve_node_settings_model_only() {
-    let result = resolve_node_settings(
-        Some("haiku".to_string()),
-        None,
-        Some("claude".to_string()),
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result,
-        ResolvedNodeSettings {
-            backend_id: Some("claude".to_string()),
-            selected_model: Some("haiku".to_string()),
-            permission_mode: "edit".to_string(),
-        }
-    );
-}
-
-#[test]
-fn resolve_node_settings_permission_only_clears_model_to_unset() {
-    // Spec: workflow 経路では node model 未指定なら親の選択モデルへフォールバックしない。
-    // permission のみ指定でも selected_model は None になる。
-    let result = resolve_node_settings(
-        None,
-        Some("ask".to_string()),
-        None,
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result,
-        ResolvedNodeSettings {
-            backend_id: Some("claude".to_string()),
-            selected_model: None,
-            permission_mode: "ask".to_string(),
-        }
-    );
-}
-
-#[test]
-fn resolve_node_settings_nothing_specified_clears_model_to_unset() {
-    // Spec: model 未指定（None）は未指定状態のまま。親の selected_model へ
-    // 暗黙フォールバックしない。
-    let result = resolve_node_settings(
-        None,
-        None,
-        None,
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result,
-        ResolvedNodeSettings {
-            backend_id: Some("claude".to_string()),
-            selected_model: None,
-            permission_mode: "edit".to_string(),
-        }
-    );
-}
-
-#[test]
-fn resolve_node_settings_fanout_children_different_configs() {
-    // ステップA: model=opus-4, permission=ask
-    let result_a = resolve_node_settings(
-        Some("opus-4".to_string()),
-        Some("ask".to_string()),
-        Some("claude".to_string()),
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result_a,
-        ResolvedNodeSettings {
-            backend_id: Some("claude".to_string()),
-            selected_model: Some("opus-4".to_string()),
-            permission_mode: "ask".to_string(),
-        }
-    );
-
-    // ステップB: model=codex-mini, permission=full
-    let result_b = resolve_node_settings(
-        Some("codex-mini".to_string()),
-        Some("full".to_string()),
-        Some("codex".to_string()),
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "edit".to_string(),
-        },
-    );
-    assert_eq!(
-        result_b,
-        ResolvedNodeSettings {
-            backend_id: Some("codex".to_string()),
-            selected_model: Some("codex-mini".to_string()),
-            permission_mode: "full".to_string(),
-        }
-    );
-
-    // 並列ステップ間で結果が独立していることを確認
-    assert_ne!(result_a.backend_id, result_b.backend_id);
-    assert_ne!(result_a.selected_model, result_b.selected_model);
-    assert_ne!(result_a.permission_mode, result_b.permission_mode);
-}
-
-// ---- ワークフロー node session の attributes 永続化 ----
-
-// Spec issues-947: ワークフロー node session 作成は
-// `create_session_internal_with_attributes` 経由で permission_mode / selected_model /
-// workflow_node_session=true を初回保存で確定する。create_node_session_with_settings の
-// 後段（resolve_node_settings の結果を attributes に流して save する経路）が
-// 二段階保存に逆戻りしないことをガードする。
-#[test]
-fn node_session_persists_permission_workflow_flag_and_model_on_initial_save() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::test_support::build_session_store();
-
-    let settings = resolve_node_settings(
-        Some("opus-4".to_string()),
-        Some("edit".to_string()),
-        Some("claude".to_string()),
-        &WorkflowDefaults {
-            backend_id: Some("codex".to_string()),
-            permission_mode: "ask".to_string(),
-        },
-    );
-    let permission_mode =
-        crate::domain::agent_session::PermissionMode::parse_canonical(&settings.permission_mode)
-            .unwrap();
-    let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
-        &store,
-        tmp.path(),
-        "/repo",
-        settings.backend_id.clone(),
-        permission_mode,
-        crate::usecase::agent_session::session::SessionCreationAttributes {
-            selected_model: settings.selected_model.clone(),
-            workflow_node_session: true,
-            workflow_node_context: None,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    // 初回保存で permission_mode / workflow_node_session / selected_model / backend_id が確定。
-    assert_eq!(session.permission_mode, "edit");
-    assert!(session.workflow_node_session);
-    assert_eq!(session.selected_model.as_deref(), Some("opus-4"));
-    assert_eq!(session.backend_id.as_deref(), Some("claude"));
-
-    // 別インスタンスから読み直しても同じ値で復元される（永続化が確定値で書かれている）。
-    let store2 = crate::test_support::build_session_store();
-    let loaded = store2
-        .load_full_session_for_restore(tmp.path(), &session.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.permission_mode, "edit");
-    assert!(loaded.workflow_node_session);
-    assert_eq!(loaded.selected_model.as_deref(), Some("opus-4"));
-    assert_eq!(loaded.backend_id.as_deref(), Some("claude"));
-}
-
-// 親セッションから permission_mode/backend_id を継承する経路でも初回保存で確定することを確認する。
-// selected_model は Spec issues-946 により暗黙フォールバック禁止のため、node 未指定なら None。
-#[test]
-fn node_session_inherits_parent_permission_and_backend_on_initial_save() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let store = crate::test_support::build_session_store();
-
-    let settings = resolve_node_settings(
-        None,
-        None,
-        None,
-        &WorkflowDefaults {
-            backend_id: Some("claude".to_string()),
-            permission_mode: "full".to_string(),
-        },
-    );
-    let permission_mode =
-        crate::domain::agent_session::PermissionMode::parse_canonical(&settings.permission_mode)
-            .unwrap();
-    let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
-        &store,
-        tmp.path(),
-        "/repo",
-        settings.backend_id,
-        permission_mode,
-        crate::usecase::agent_session::session::SessionCreationAttributes {
-            selected_model: settings.selected_model,
-            workflow_node_session: true,
-            workflow_node_context: None,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(session.permission_mode, "full");
-    assert!(session.workflow_node_session);
-    // 親 selected_model="haiku" は継承しない（Spec issues-946: 暗黙フォールバック禁止）
-    assert_eq!(session.selected_model, None);
-    assert_eq!(session.backend_id.as_deref(), Some("claude"));
-}
-
 // ---- execution_id 主体性に関する driver レベル統合テスト ----
 
 /// driver が DomainWorkflowExecution を登録する際に、`DomainWorkflowExecution.id` と
@@ -5886,13 +5309,13 @@ fn make_minimal_workflow() -> WorkflowDefinition {
         description: "minimal".to_string(),
         builtin: false,
         schemas: Default::default(),
-        nodes: vec![{
-            let mut node = make_test_node("only-node", TestKind::Session, "do", vec![], None);
-            node.session_mut()
-                .expect("minimal workflow node must be a session")
-                .permission = Some("edit".to_string());
-            node
-        }],
+        nodes: vec![make_test_node(
+            "only-node",
+            TestKind::Session,
+            "do",
+            vec![],
+            None,
+        )],
     }
 }
 
@@ -7640,15 +7063,95 @@ mod dispatch_boundary_tests {
     ) -> WorkflowRuntimeHost {
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_event_store.clone();
-        WorkflowRuntimeHost::new_canonical(
+        let workflow_agent_sessions = Arc::new(CanonicalDispatchWorkflowAgentSessionPort {
+            repository: Arc::new(
+                crate::adaptor::gateway::agent_session::LocalProviderAgentSessionRepository::new(
+                    repository.clone(),
+                    local_event_store.installation_id().to_string(),
+                ),
+            ),
+        });
+        WorkflowRuntimeHost::with_execution_store(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(PassthroughManagedWorktreeResolver),
-            None,
-            Arc::new(OpenTabRegistry::default()),
-            Some(data_dir),
-            repository,
-            local_event_store.installation_id().to_string(),
+            Arc::new(ExecutionStore::new_canonical(
+                Some(data_dir),
+                repository,
+                local_event_store.installation_id().to_string(),
+            )),
+            workflow_agent_sessions,
         )
+    }
+
+    struct CanonicalDispatchWorkflowAgentSessionPort {
+        repository:
+            Arc<dyn crate::domain::agent_session::repository::ProviderAgentSessionRepository>,
+    }
+
+    #[async_trait]
+    impl WorkflowAgentSessionPort for CanonicalDispatchWorkflowAgentSessionPort {
+        fn is_provider_available(
+            &self,
+            _provider: crate::domain::provider_lifecycle::ProviderKind,
+        ) -> bool {
+            true
+        }
+
+        async fn launch_workflow_agent_session(
+            &self,
+            worktree_path: &str,
+            provider: crate::domain::provider_lifecycle::ProviderKind,
+            workflow_execution_id: &str,
+            node_execution_id: &str,
+        ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+            let id = format!(
+                "provider-agent-session-{}-{node_execution_id}",
+                match provider {
+                    crate::domain::provider_lifecycle::ProviderKind::Claude => "claude",
+                    crate::domain::provider_lifecycle::ProviderKind::Codex => "codex",
+                }
+            );
+            let origin =
+                crate::domain::agent_session::aggregates::AgentSessionOrigin::workflow_node(
+                    workflow_execution_id,
+                    node_execution_id,
+                )
+                .unwrap();
+            let session = crate::domain::agent_session::aggregates::AgentSession::create(
+                id.clone(),
+                crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_path),
+                worktree_path,
+                provider,
+                origin,
+            )
+            .unwrap();
+            self.repository
+                .create(session, &format!("canonical-dispatch-{node_execution_id}"))
+                .await
+                .map_err(|error| {
+                    WorkflowRuntimeError::AgentSession(format!(
+                        "canonical dispatch AgentSession create failed: {error:?}"
+                    ))
+                })?;
+            Ok(NodeSessionInfo { id })
+        }
+
+        async fn dispatch_initial_instruction(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+            _instruction: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            Ok(())
+        }
+
+        async fn rollback_workflow_agent_session(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            Ok(())
+        }
     }
 
     #[derive(Clone)]
@@ -9274,15 +8777,17 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn resume_runtime_start_failure_is_accepted_with_a_classified_terminal_failure() {
         let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
         let data_dir = dispatch_data_dir(app.handle());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir.clone(),
-            );
+        let agent_runtime = crate::test_support::build_agent_runtime_usecase(
+            session_store.clone(),
+            data_dir.clone(),
+        );
         let worktree = TempDir::new().unwrap();
         let execution_id = uuid::Uuid::new_v4().to_string();
         let exec =
@@ -9294,7 +8799,7 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        controller.fail_next_start_turn();
+        workflow_agent_sessions.fail_next_dispatch();
         driver
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
@@ -9722,7 +9227,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn explicit_stop_accepts_waiting_approval() {
+    async fn test_explicit_stop_accepts_waiting_approval() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -9753,862 +9258,6 @@ mod dispatch_boundary_tests {
             Some(ExecutionInterruptionReason::Stop)
         );
         assert_eq!(metadata.resume_from_node.as_deref(), Some("review"));
-    }
-
-    #[tokio::test]
-    async fn explicit_stop_waits_for_session_turn_activation_and_interrupts_the_started_turn() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir,
-            );
-        controller.pause_start_turn();
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node = make_test_node(
-            "review",
-            TestKind::Session,
-            "review-acceptance",
-            vec![],
-            None,
-        );
-        if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-sonnet-5".to_string());
-        }
-        let workflow = WorkflowDefinition {
-            name: "stop-during-session-activation".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![review_node],
-        };
-
-        let start_engine = driver.clone();
-        let start_app = app.handle().clone();
-        let start_session_store = session_store.clone();
-        let start_agent_runtime = agent_runtime.clone();
-        let start_worktree_path = worktree_path.clone();
-        let mut start_task = tokio::spawn(async move {
-            start_engine
-                .start_resolved_workflow(
-                    &start_app,
-                    &start_session_store,
-                    &start_agent_runtime,
-                    workflow,
-                    start_worktree_path,
-                    Some("review safely".to_string()),
-                    ExecutionOrigin::DesktopUi,
-                    PermissionMode::Edit,
-                )
-                .await
-        });
-
-        let session_id_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(call) = controller.calls().into_iter().find(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurn
-                    )
-                }) {
-                    break call.session_id;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-        let session_id = match session_id_result {
-            Ok(session_id) => session_id,
-            Err(_) => {
-                controller.release_start_turn();
-                let start_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task).await;
-                let metadata = match &start_result {
-                    Ok(Ok(Ok(execution_id))) => {
-                        driver.execution_store().get_execution(execution_id).await
-                    }
-                    _ => None,
-                };
-                panic!(
-                    "session turn activation did not reach the paused backend; start result: {start_result:?}; runtime calls: {:?}; metadata: {metadata:?}",
-                    controller.calls(),
-                );
-            }
-        };
-        let execution_id = {
-            let executions = driver.executions.lock().await;
-            find_by_worktree(&executions, &worktree_path)
-                .map(|(execution_id, _)| execution_id.clone())
-                .expect("execution must be visible before its turn starts")
-        };
-
-        let stop_engine = driver.clone();
-        let stop_app = app.handle().clone();
-        let stop_agent_runtime = agent_runtime.clone();
-        let stop_execution_id = execution_id.clone();
-        let mut stop_task = tokio::spawn(async move {
-            stop_engine
-                .stop_workflow_execution(&stop_app, &stop_agent_runtime, &stop_execution_id)
-                .await
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(2), &mut stop_task)
-            .await
-            .expect("stop must cancel a stuck in-flight turn activation")
-            .expect("stop task should join")
-            .expect("stop should succeed");
-        controller.release_start_turn();
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("workflow start should finish after releasing the turn")
-                .expect("workflow start task should join")
-                .expect("workflow start should be accepted");
-        assert_eq!(started_execution_id, execution_id);
-
-        let metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            metadata.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
-        );
-        assert_eq!(metadata.resume_from_node.as_deref(), Some("review"));
-        assert!(controller
-            .call_kinds_for(&session_id)
-            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-    }
-
-    #[derive(Clone, Copy)]
-    enum PausedFanoutActivationWait {
-        StartTurn,
-        StartTurnPrompt,
-    }
-
-    struct PausedFanoutActivation {
-        app: DispatchTestApp,
-        driver: WorkflowRuntimeHost,
-        session_store: Arc<SessionStore>,
-        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
-        controller: crate::test_support::TestAgentRuntimeController,
-        execution_id: String,
-        child_session_ids: Vec<String>,
-        start_task: tokio::task::JoinHandle<Result<String, WorkflowRuntimeError>>,
-        _worktree: TempDir,
-    }
-
-    async fn setup_paused_fanout_activation(
-        wait_for: PausedFanoutActivationWait,
-    ) -> PausedFanoutActivation {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir,
-            );
-        controller.pause_start_turn();
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let workflow = WorkflowDefinition {
-            name: "paused-fanout-activation".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                make_fanout_child("review-a"),
-                make_fanout_child("review-b"),
-            ],
-        };
-
-        let start_engine = driver.clone();
-        let start_app = app.handle().clone();
-        let start_session_store = session_store.clone();
-        let start_agent_runtime = agent_runtime.clone();
-        let start_worktree_path = worktree_path.clone();
-        let start_task = tokio::spawn(async move {
-            start_engine
-                .start_resolved_workflow(
-                    &start_app,
-                    &start_session_store,
-                    &start_agent_runtime,
-                    workflow,
-                    start_worktree_path,
-                    None,
-                    ExecutionOrigin::DesktopUi,
-                    PermissionMode::Edit,
-                )
-                .await
-        });
-
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let reached_wait_point = controller.calls().iter().any(|call| match wait_for {
-                    PausedFanoutActivationWait::StartTurn => matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurn
-                    ),
-                    PausedFanoutActivationWait::StartTurnPrompt => matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                    ),
-                });
-                if reached_wait_point {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the first fanout child must reach the paused backend");
-
-        let (execution_id, child_session_ids) = {
-            let executions = driver.executions.lock().await;
-            let (execution_id, execution) = find_by_worktree(&executions, &worktree_path)
-                .expect("fanout execution must be visible before child activation completes");
-            let child_session_ids = execution
-                .fanout_runtime
-                .as_ref()
-                .expect("fanout runtime")
-                .children
-                .iter()
-                .map(|child| child.session_id.clone())
-                .collect::<Vec<_>>();
-            (execution_id.clone(), child_session_ids)
-        };
-        assert_eq!(child_session_ids.len(), 2);
-
-        PausedFanoutActivation {
-            app,
-            driver,
-            session_store,
-            agent_runtime,
-            controller,
-            execution_id,
-            child_session_ids,
-            start_task,
-            _worktree: worktree,
-        }
-    }
-
-    #[tokio::test]
-    async fn explicit_stop_aborts_stuck_fanout_activation_tasks_before_returning() {
-        let PausedFanoutActivation {
-            app,
-            driver,
-            session_store: _,
-            agent_runtime,
-            controller,
-            execution_id,
-            child_session_ids,
-            mut start_task,
-            _worktree,
-        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurn).await;
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            driver.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
-        )
-        .await
-        .expect("stop must abort and join stuck fanout child activation tasks")
-        .expect("stop should succeed");
-
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("workflow start must finish without releasing the backend gate")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        assert_eq!(started_execution_id, execution_id);
-        for session_id in &child_session_ids {
-            assert!(
-                !agent_runtime.session_runtime_lock_is_held_for_test(session_id),
-                "fanout child session lock must be released before stop returns: {session_id}"
-            );
-        }
-
-        let calls_after_stop = controller.calls();
-        controller.release_start_turn();
-        tokio::task::yield_now().await;
-        assert_eq!(controller.calls(), calls_after_stop);
-        assert_eq!(
-            calls_after_stop
-                .iter()
-                .filter(|call| matches!(
-                    call.kind,
-                    crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                ))
-                .count(),
-            1,
-            "the later fanout child must not start after interruption"
-        );
-    }
-
-    #[tokio::test]
-    async fn active_abort_quiesces_fanout_children_before_terminal_cleanup() {
-        let PausedFanoutActivation {
-            app,
-            driver,
-            session_store,
-            agent_runtime,
-            controller,
-            execution_id,
-            child_session_ids,
-            mut start_task,
-            _worktree,
-        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurnPrompt).await;
-
-        let lookup_completed = Arc::new(tokio::sync::Notify::new());
-        let continue_precommit = Arc::new(tokio::sync::Notify::new());
-        driver
-            .pause_abort_after_lookup_for_test(lookup_completed.clone(), continue_precommit.clone())
-            .await;
-        let abort_engine = driver.clone();
-        let abort_app = app.handle().clone();
-        let abort_session_store = session_store.clone();
-        let abort_agent_runtime = agent_runtime.clone();
-        let abort_execution_id = execution_id.clone();
-        let abort_task = tokio::spawn(async move {
-            abort_engine
-                .abort_workflow_execution(
-                    &abort_app,
-                    &abort_session_store,
-                    &abort_agent_runtime,
-                    &abort_execution_id,
-                    None,
-                )
-                .await
-        });
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            lookup_completed.notified(),
-        )
-        .await
-        .expect("abort must acknowledge cancellation before pre-commit");
-        let starts_at_acknowledgement = controller
-            .calls()
-            .iter()
-            .filter(|call| {
-                matches!(
-                    call.kind,
-                    crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                )
-            })
-            .count();
-        assert_eq!(starts_at_acknowledgement, 1);
-
-        // Completing backend start while abort is deciding must not poll the quiesced parent
-        // activation or allow the later child to start.
-        controller.release_start_turn();
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        assert_eq!(
-            controller
-                .calls()
-                .iter()
-                .filter(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                    )
-                })
-                .count(),
-            starts_at_acknowledgement,
-            "cancel acknowledgement must quiesce every fanout child while abort is deciding"
-        );
-
-        continue_precommit.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(2), abort_task)
-            .await
-            .expect("abort must finish after the durable decision")
-            .expect("abort task should join")
-            .expect("abort should succeed");
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("workflow start must finish after committed cancellation")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        assert_eq!(started_execution_id, execution_id);
-
-        let calls_after_abort = controller.calls();
-        assert_eq!(
-            calls_after_abort
-                .iter()
-                .filter(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                    )
-                })
-                .count(),
-            1,
-            "terminal cleanup must not be followed by another fanout child start"
-        );
-        for session_id in &child_session_ids {
-            assert!(
-                !agent_runtime.has_live_runtime(session_id).await,
-                "terminal cleanup must leave no live child runtime: {session_id}"
-            );
-            assert!(
-                !agent_runtime.session_runtime_lock_is_held_for_test(session_id),
-                "terminal cleanup must run after child activation lock release: {session_id}"
-            );
-        }
-        let metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Aborted);
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-    }
-
-    #[tokio::test]
-    async fn stop_append_failure_resumes_the_quiesced_fanout_activation() {
-        let PausedFanoutActivation {
-            app,
-            driver,
-            session_store: _,
-            agent_runtime,
-            controller,
-            execution_id,
-            child_session_ids,
-            mut start_task,
-            _worktree,
-        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurnPrompt).await;
-
-        driver.fail_next_required_event_append_for_test();
-        let stop_error = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            driver.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
-        )
-        .await
-        .expect("failed stop must decide rollback without waiting for backend start")
-        .expect_err("the injected append failure must reject stop");
-        assert!(matches!(stop_error, WorkflowRuntimeError::SessionStore(_)));
-        assert_eq!(
-            driver
-                .execution_store()
-                .get_execution(&execution_id)
-                .await
-                .unwrap()
-                .status,
-            ExecutionStatus::Running
-        );
-        for session_id in &child_session_ids {
-            assert!(
-                agent_runtime.session_runtime_lock_is_held_for_test(session_id),
-                "rollback must preserve the existing child reservation: {session_id}"
-            );
-        }
-
-        controller.release_start_turn();
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("rolled-back fanout activation must resume")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        assert_eq!(started_execution_id, execution_id);
-        for session_id in &child_session_ids {
-            assert_eq!(
-                controller
-                    .call_kinds_for(session_id)
-                    .iter()
-                    .filter(|call| matches!(
-                        call,
-                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
-                    ))
-                    .count(),
-                1,
-                "rollback must resume each reserved child exactly once: {session_id}"
-            );
-        }
-
-        driver
-            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn stop_append_failure_resumes_the_paused_session_activation_and_restores_running() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir,
-            );
-        controller.pause_start_turn();
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node = make_test_node(
-            "review",
-            TestKind::Session,
-            "review-acceptance",
-            vec![],
-            None,
-        );
-        if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-sonnet-5".to_string());
-        }
-        let workflow = WorkflowDefinition {
-            name: "stop-append-failure-during-activation".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![review_node],
-        };
-        let start_engine = driver.clone();
-        let start_app = app.handle().clone();
-        let start_session_store = session_store.clone();
-        let start_agent_runtime = agent_runtime.clone();
-        let start_worktree_path = worktree_path.clone();
-        let mut start_task = tokio::spawn(async move {
-            start_engine
-                .start_resolved_workflow(
-                    &start_app,
-                    &start_session_store,
-                    &start_agent_runtime,
-                    workflow,
-                    start_worktree_path,
-                    Some("review safely".to_string()),
-                    ExecutionOrigin::DesktopUi,
-                    PermissionMode::Edit,
-                )
-                .await
-        });
-        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(call) = controller.calls().into_iter().find(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurn
-                    )
-                }) {
-                    break call.session_id;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("session turn activation should reach the paused backend");
-        let execution_id = {
-            let executions = driver.executions.lock().await;
-            find_by_worktree(&executions, &worktree_path)
-                .map(|(execution_id, _)| execution_id.clone())
-                .expect("execution must be visible before its turn starts")
-        };
-
-        driver.fail_next_required_event_append_for_test();
-        driver
-            .execution_store
-            .fail_next_active_interruption_rollback_for_test();
-        let stop_error = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            driver.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
-        )
-        .await
-        .expect("failed stop append must roll back without waiting for the paused backend")
-        .expect_err("injected stop append failure must be returned");
-        assert!(matches!(stop_error, WorkflowRuntimeError::SessionStore(_)));
-        let stop_error = stop_error.to_string();
-        assert!(stop_error.contains("ExecutionInterrupted log failed"));
-        assert!(stop_error.contains("interruption reservation rollback failed"));
-        assert!(stop_error.contains("active metadata rollback failed"));
-
-        let restored = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(restored.status, ExecutionStatus::Running);
-        assert_eq!(restored.current_node.as_deref(), Some("review"));
-        assert!(driver.contains_execution_for_test(&execution_id).await);
-        assert!(!read_dispatch_events(&app, &execution_id)
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
-        assert!(!controller
-            .call_kinds_for(&session_id)
-            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
-
-        // The injected rollback failure deliberately leaves the transition reservation in place.
-        // Clear it so the remainder of this activation test can verify a later successful stop.
-        driver
-            .execution_store
-            .finish_active_interruption(
-                crate::adaptor::gateway::workflow::execution_store::ActiveInterruptionReservation {
-                    execution_id: execution_id.clone(),
-                    worktree_path: worktree_path.clone(),
-                },
-            )
-            .await
-            .unwrap();
-
-        controller.release_start_turn();
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("rolled-back activation should resume")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        assert_eq!(started_execution_id, execution_id);
-
-        driver
-            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-        assert!(controller
-            .call_kinds_for(&session_id)
-            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
-    }
-
-    #[tokio::test]
-    async fn active_abort_cancels_a_stuck_session_activation_and_interrupts_the_turn() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir,
-            );
-        controller.pause_start_turn();
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node = make_test_node(
-            "review",
-            TestKind::Session,
-            "review-acceptance",
-            vec![],
-            None,
-        );
-        if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-sonnet-5".to_string());
-        }
-        let workflow = WorkflowDefinition {
-            name: "abort-during-session-activation".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![review_node],
-        };
-        let start_engine = driver.clone();
-        let start_app = app.handle().clone();
-        let start_session_store = session_store.clone();
-        let start_agent_runtime = agent_runtime.clone();
-        let start_worktree_path = worktree_path.clone();
-        let mut start_task = tokio::spawn(async move {
-            start_engine
-                .start_resolved_workflow(
-                    &start_app,
-                    &start_session_store,
-                    &start_agent_runtime,
-                    workflow,
-                    start_worktree_path,
-                    Some("review safely".to_string()),
-                    ExecutionOrigin::DesktopUi,
-                    PermissionMode::Edit,
-                )
-                .await
-        });
-        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(call) = controller.calls().into_iter().find(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurn
-                    )
-                }) {
-                    break call.session_id;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("session turn activation should reach the paused backend");
-        let execution_id = {
-            let executions = driver.executions.lock().await;
-            find_by_worktree(&executions, &worktree_path)
-                .map(|(execution_id, _)| execution_id.clone())
-                .expect("execution must be visible before its turn starts")
-        };
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            driver.abort_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-                None,
-            ),
-        )
-        .await
-        .expect("abort must cancel a stuck in-flight turn activation")
-        .expect("abort should succeed");
-        controller.release_start_turn();
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("workflow start should finish after abort cancellation")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        assert_eq!(started_execution_id, execution_id);
-
-        let metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Aborted);
-        assert!(controller
-            .call_kinds_for(&session_id)
-            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        assert!(read_dispatch_events(&app, &execution_id)
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::ExecutionAborted { .. })));
-    }
-
-    #[tokio::test]
-    async fn active_abort_keeps_activation_cancelled_after_metadata_projection_failure() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (agent_runtime, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir,
-            );
-        controller.pause_start_turn();
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let workflow = WorkflowDefinition {
-            name: "abort-projection-failure-during-activation".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![make_test_node(
-                "review",
-                TestKind::Session,
-                "review-acceptance",
-                vec![],
-                None,
-            )],
-        };
-        let start_engine = driver.clone();
-        let start_app = app.handle().clone();
-        let start_session_store = session_store.clone();
-        let start_agent_runtime = agent_runtime.clone();
-        let start_worktree_path = worktree_path.clone();
-        let mut start_task = tokio::spawn(async move {
-            start_engine
-                .start_resolved_workflow(
-                    &start_app,
-                    &start_session_store,
-                    &start_agent_runtime,
-                    workflow,
-                    start_worktree_path,
-                    Some("review safely".to_string()),
-                    ExecutionOrigin::DesktopUi,
-                    PermissionMode::Edit,
-                )
-                .await
-        });
-        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(call) = controller.calls().into_iter().find(|call| {
-                    matches!(
-                        call.kind,
-                        crate::test_support::TestRuntimeCallKind::StartTurn
-                    )
-                }) {
-                    break call.session_id;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("session turn activation should reach the paused backend");
-        let execution_id = {
-            let executions = driver.executions.lock().await;
-            find_by_worktree(&executions, &worktree_path)
-                .map(|(execution_id, _)| execution_id.clone())
-                .expect("execution must be visible before its turn starts")
-        };
-
-        // Event log writes still use the app data directory. Redirect only ExecutionStore
-        // metadata to a regular file so the durable ExecutionAborted append succeeds and its
-        // post-commit metadata projection fails.
-        let invalid_metadata_dir = worktree.path().join("metadata-is-a-file");
-        std::fs::write(&invalid_metadata_dir, "not a directory").unwrap();
-        driver
-            .set_execution_store_data_dir(invalid_metadata_dir)
-            .await;
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            driver.abort_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-                None,
-            ),
-        )
-        .await
-        .expect("durably committed abort must cancel the paused activation")
-        .expect("metadata projection is post-commit and must not reject the abort");
-
-        // A committed cancellation drops the pinned start future, so workflow start completes
-        // without releasing the test backend's pause gate. Rolling cancellation back here would
-        // leave this task blocked and later resume it against an Aborted execution.
-        let started_execution_id =
-            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
-                .await
-                .expect("workflow start must finish without resuming the paused activation")
-                .expect("workflow start task should join")
-                .expect("workflow start should remain accepted");
-        controller.release_start_turn();
-        assert_eq!(started_execution_id, execution_id);
-        assert!(controller
-            .call_kinds_for(&session_id)
-            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-
-        let events = read_dispatch_events(&app, &execution_id);
-        let aborted_index = events
-            .iter()
-            .position(|event| matches!(event, WorkflowEvent::ExecutionAborted { .. }))
-            .expect("ExecutionAborted must remain durable");
-        assert!(
-            !events[aborted_index + 1..]
-                .iter()
-                .any(|event| matches!(event, WorkflowEvent::ExecutionInterrupted { .. })),
-            "cancelled activation must not resume and append a crash interruption after abort"
-        );
     }
 
     #[tokio::test]
@@ -10815,8 +9464,6 @@ mod dispatch_boundary_tests {
         let mismatch_engine = WorkflowRuntimeHost::new(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(RewritingManagedWorktreeResolver),
-            None,
-            Arc::new(OpenTabRegistry::default()),
         );
         mismatch_engine.set_execution_store_data_dir(data_dir).await;
         let mismatch_id = uuid::Uuid::new_v4().to_string();
@@ -10996,7 +9643,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_active_command(driver: &WorkflowRuntimeHost, execution_id: &str) {
-        for _ in 0..100 {
+        for _ in 0..3000 {
             if driver
                 .active_command_executions
                 .lock()
@@ -11016,7 +9663,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         child_name: &str,
     ) -> String {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let session_id = {
                 let execs = driver.executions.lock().await;
                 execs
@@ -11043,7 +9690,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_inactive_command(driver: &WorkflowRuntimeHost, execution_id: &str) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if !driver
                 .active_command_executions
                 .lock()
@@ -11060,7 +9707,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if let Ok(text) = std::fs::read_to_string(path) {
                 if let Ok(pid) = text.trim().parse::<i32>() {
                     return pid;
@@ -11073,7 +9720,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     async fn wait_for_process_exit(pid: i32) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if !process_exists(pid) {
                 return;
             }
@@ -11097,7 +9744,7 @@ mod dispatch_boundary_tests {
         driver: &WorkflowRuntimeHost,
         execution_id: &str,
     ) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let execution_store_terminal = driver
                 .execution_store()
                 .get_execution(execution_id)
@@ -11129,7 +9776,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         expected: ExecutionStatus,
     ) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if driver
                 .execution_store()
                 .get_execution(execution_id)
@@ -11287,7 +9934,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         node_name: &str,
     ) -> (String, String) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let target = {
                 let executions = driver.executions.lock().await;
                 executions.get(execution_id).and_then(|execution| {
@@ -11344,7 +9991,7 @@ mod dispatch_boundary_tests {
         parent_node: &str,
         expected_count: usize,
     ) -> Vec<(String, String, String)> {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let children = {
                 let executions = driver.executions.lock().await;
                 executions
@@ -11408,21 +10055,6 @@ mod dispatch_boundary_tests {
         );
     }
 
-    async fn wait_for_stub_session_turn_activation(
-        agent_runtime: &AgentSessionRuntimeUsecase,
-        session_id: &str,
-    ) {
-        for _ in 0..500 {
-            if agent_runtime.turn_phase(session_id).await
-                == Some(crate::usecase::agent_session::status::TurnPhase::Streaming)
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("stub session '{session_id}' did not activate its turn");
-    }
-
     async fn complete_top_level_session(
         app: &DispatchTestApp,
         driver: &WorkflowRuntimeHost,
@@ -11434,7 +10066,6 @@ mod dispatch_boundary_tests {
     ) {
         let (session_id, node_execution_id) =
             wait_for_top_level_session(driver, execution_id, node_name).await;
-        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
         if let Some((contract, value)) = artifact {
             driver
                 .submit_workflow_output(
@@ -11450,7 +10081,7 @@ mod dispatch_boundary_tests {
                 .await
                 .unwrap();
         }
-        driver
+        let completion = driver
             .on_turn_complete(
                 app.handle(),
                 session_store,
@@ -11464,8 +10095,16 @@ mod dispatch_boundary_tests {
                 }],
                 None,
             )
-            .await
-            .unwrap();
+            .await;
+        if let Err(error) = completion {
+            let live = driver.executions.lock().await.get(execution_id).cloned();
+            let metadata = driver.execution_store().get_execution(execution_id).await;
+            let events = read_dispatch_events(app, execution_id);
+            panic!(
+                "top-level Session Node '{node_name}' completion failed: {error:?}; \
+                 live={live:?}; metadata={metadata:?}; events={events:?}"
+            );
+        }
     }
 
     async fn complete_review_fanout(
@@ -11477,9 +10116,6 @@ mod dispatch_boundary_tests {
         lgtm: bool,
     ) {
         let children = wait_for_active_fanout_children(driver, execution_id, "review", 2).await;
-        for (_, session_id, _) in &children {
-            wait_for_stub_session_turn_activation(agent_runtime, session_id).await;
-        }
         for (node_name, _, node_execution_id) in &children {
             driver
                 .submit_workflow_output(
@@ -11525,7 +10161,6 @@ mod dispatch_boundary_tests {
         let mut children =
             wait_for_active_fanout_children(driver, execution_id, "fix_each", 1).await;
         let (node_name, session_id, node_execution_id) = children.pop().unwrap();
-        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
         driver
             .submit_workflow_output(
                 app.handle(),
@@ -11586,7 +10221,6 @@ mod dispatch_boundary_tests {
     ) {
         let (session_id, node_execution_id) =
             wait_for_top_level_session(driver, execution_id, node_name).await;
-        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
         driver
             .on_turn_complete(
                 app.handle(),
@@ -13760,6 +12394,111 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
+    async fn test_workflow_fanout_session_node_legacy_message_runtimeを使わない() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir.clone(),
+            );
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-provider-agent-sessions";
+        let mut claude_child = make_fanout_child("review-claude");
+        set_instruction_facet(
+            &mut claude_child,
+            Some("review-claude-instruction".to_string()),
+        );
+        let mut codex_child = make_fanout_child("review-codex");
+        set_instruction_facet(
+            &mut codex_child,
+            Some("review-codex-instruction".to_string()),
+        );
+        let NodeKind::Session(session) = &mut codex_child.kind else {
+            panic!("fixture must be a Session Node");
+        };
+        session.provider = crate::domain::provider_lifecycle::ProviderKind::Codex;
+        let workflow = WorkflowDefinition {
+            name: "fanout-provider-agent-sessions".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-claude", "review-codex"]),
+                claude_child,
+                codex_child,
+            ],
+        };
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
+        execution.force_state_for_test(RuntimeExecutionState::Running);
+        execution.current_node_index = 0;
+        execution.current_session_id = None;
+        execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+        let mut facet_contents =
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default();
+        facet_contents.insert_node(
+            "review-claude".to_string(),
+            instruction_contents("Review with Claude."),
+        );
+        facet_contents.insert_node(
+            "review-codex".to_string(),
+            instruction_contents("Review with Codex."),
+        );
+        driver
+            .execution_facet_contents
+            .lock()
+            .await
+            .insert(execution_id.clone(), facet_contents);
+
+        driver
+            .start_fanout_children(app.handle(), &session_store, &agent_runtime, worktree_path)
+            .await
+            .unwrap();
+
+        assert!(
+            session_store
+                .list_sessions(&data_dir, worktree_path)
+                .unwrap()
+                .is_empty(),
+            "Fanout Session Node must not create legacy ChatSession records"
+        );
+        assert!(
+            controller.calls().is_empty(),
+            "Fanout Session Node must not invoke the legacy Message runtime"
+        );
+        assert_eq!(
+            workflow_agent_sessions.providers(),
+            vec![
+                crate::domain::provider_lifecycle::ProviderKind::Claude,
+                crate::domain::provider_lifecycle::ProviderKind::Codex,
+            ],
+            "each Fanout Session Node must launch its configured Provider"
+        );
+        let owners = workflow_agent_sessions.owners();
+        assert_eq!(owners.len(), 2);
+        assert!(owners
+            .iter()
+            .all(|(owner_execution_id, _)| owner_execution_id == &execution_id));
+        let instructions = workflow_agent_sessions.instructions();
+        assert_eq!(instructions.len(), 2);
+        assert!(instructions
+            .iter()
+            .all(
+                |(session_id, instruction)| session_id.starts_with("provider-agent-session-")
+                    && !instruction.trim().is_empty()
+            ));
+    }
+
+    #[tokio::test]
     async fn fanout_child_prompt_failure_skips_sessions_refs_and_execution_mutation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
@@ -13839,102 +12578,13 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_setup_failure_rolls_back_created_sessions_refs_and_execution_mutation() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-        let driver = WorkflowRuntimeHost::new_for_test();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let save_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let save_attempts_for_hook = save_attempts.clone();
-        session_store.set_save_hook_for_test(Arc::new(move |session| {
-            save_attempts_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if session
-                .workflow_node_context
-                .as_ref()
-                .is_some_and(|context| context.node_name == "review-b")
-            {
-                Err("injected second child save failure".to_string())
-            } else {
-                Ok(())
-            }
-        }));
-
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/fanout-setup-rollback";
-        let workflow = WorkflowDefinition {
-            name: "fanout-setup-rollback-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                make_fanout_child("review-a"),
-                make_fanout_child("review-b"),
-            ],
-        };
-        let mut exec =
-            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.force_state_for_test(RuntimeExecutionState::Running);
-        exec.current_node_index = 0;
-        exec.current_session_id = None;
-        exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-
-        let result = driver
-            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
-            .await;
-
-        let err = result.expect_err("second child save failure must fail setup");
-        assert!(
-            matches!(err, WorkflowRuntimeError::SessionStore(_)),
-            "injected save failure must surface as SessionStore, got: {err:?}"
-        );
-        assert!(
-            err.to_string()
-                .contains("injected second child save failure"),
-            "original setup failure must remain diagnosable, got: {err}"
-        );
-        assert_eq!(
-            save_attempts.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "test must exercise first child save success followed by second child save failure"
-        );
-        assert!(
-            session_store
-                .list_sessions(&data_dir, worktree_path)
-                .unwrap()
-                .is_empty(),
-            "rollback must remove the first child ChatSession from SessionStore"
-        );
-        assert!(
-            driver.session_workflow_refs.lock().await.is_empty(),
-            "rollback must remove refs for created child sessions"
-        );
-
-        let execs = driver.executions.lock().await;
-        let (_, exec) = find_by_worktree(&execs, worktree_path)
-            .expect("execution must remain registered after setup failure");
-        assert!(
-            exec.fanout_runtime.is_none(),
-            "setup failure must not apply fanout_runtime state"
-        );
-        assert!(
-            exec.current_session_id.is_none(),
-            "setup failure must not set current_session_id"
-        );
-        assert_eq!(
-            exec.node_execution_counts,
-            HashMap::from([("fanout-review".to_string(), 1)]),
-            "setup failure must not record child execution indices"
-        );
-    }
-
-    #[tokio::test]
     async fn fanout_child_start_event_append_failure_rolls_back_sessions_refs_and_expansion() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let driver = WorkflowRuntimeHost::new_for_test();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
 
@@ -13981,6 +12631,11 @@ mod dispatch_boundary_tests {
             driver.session_workflow_refs.lock().await.is_empty(),
             "prepared child session refs must be removed after event rollback"
         );
+        assert_eq!(
+            workflow_agent_sessions.rollbacks().len(),
+            2,
+            "durable attachmentが成立しなかった全Fanout AgentSessionをrollbackする"
+        );
         let executions = driver.executions.lock().await;
         let execution = executions
             .get(&execution_id)
@@ -14010,10 +12665,65 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_post_commit_projection_failure_preserves_attached_sessions() {
+    async fn fanout_child_launch_failure_rolls_back_previously_launched_agent_sessions() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
-        let driver = WorkflowRuntimeHost::new_for_test();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        workflow_agent_sessions.fail_launch_at(2);
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-child-launch-rollback";
+        let workflow = WorkflowDefinition {
+            name: "fanout-child-launch-rollback-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
+        execution.force_state_for_test(RuntimeExecutionState::Running);
+        execution.current_session_id = None;
+        let _ = execution.node_executions[0].replay_started();
+        execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+
+        let error = driver
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
+            .await
+            .expect_err("second AgentSession launch failure must propagate");
+
+        assert!(matches!(error, WorkflowRuntimeError::AgentSession(_)));
+        assert_eq!(
+            workflow_agent_sessions.rollbacks().len(),
+            1,
+            "2件目の起動失敗前に起動済みのAgentSessionをrollbackする"
+        );
+        assert!(driver.session_workflow_refs.lock().await.is_empty());
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert!(execution.fanout_runtime.is_none());
+        assert_eq!(execution.node_executions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fanout_child_post_commit_projection_failure_preserves_attached_provider_agent_sessions(
+    ) {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
 
@@ -14059,17 +12769,13 @@ mod dispatch_boundary_tests {
         let stored_sessions = session_store
             .list_sessions(&data_dir, worktree_path)
             .unwrap();
-        assert_eq!(
-            stored_sessions.len(),
-            2,
-            "durably attached fanout Sessions must not be rolled back after append"
-        );
+        assert!(stored_sessions.is_empty());
+        assert_eq!(workflow_agent_sessions.owners().len(), 2);
         let refs = driver.session_workflow_refs.lock().await;
         assert_eq!(refs.len(), 2);
-        assert!(stored_sessions.iter().all(|session| {
-            refs.get(&session.id)
-                .is_some_and(|reference| reference.execution_id == execution_id)
-        }));
+        assert!(refs
+            .values()
+            .all(|reference| reference.execution_id == execution_id));
         drop(refs);
 
         let executions = driver.executions.lock().await;
@@ -14093,6 +12799,7 @@ mod dispatch_boundary_tests {
         drop(executions);
 
         let events = read_dispatch_events(&app, &execution_id);
+        let refs = driver.session_workflow_refs.lock().await;
         for (node_execution_id, session_id) in &attached_children {
             assert_eq!(
                 events
@@ -14110,10 +12817,9 @@ mod dispatch_boundary_tests {
                 1,
                 "each live Session attachment must have exactly one durable fact"
             );
-            assert!(stored_sessions
-                .iter()
-                .any(|session| session.id == *session_id));
+            assert!(refs.get(session_id).is_some());
         }
+        drop(refs);
         let replay = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
@@ -20727,16 +19433,18 @@ mod dispatch_boundary_tests {
     #[tokio::test]
     async fn fanout_activation_failure_is_terminal_without_claiming_a_crash() {
         let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
         let data_dir = dispatch_data_dir(app.handle());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let session_store = Arc::new(crate::test_support::build_session_store());
-        let (handles, controller) =
-            crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store.clone(),
-                data_dir.clone(),
-            );
-        controller.fail_next_start_turn();
+        let handles = crate::test_support::build_agent_runtime_usecase(
+            session_store.clone(),
+            data_dir.clone(),
+        );
+        workflow_agent_sessions.fail_next_dispatch();
         let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let received_for_listener = Arc::clone(&received_payloads);

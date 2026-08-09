@@ -11,16 +11,16 @@ use portable_pty::PtySize;
 use std::time::Duration;
 
 #[test]
-fn atui_000_fixture_builds_a_shell_launch_command_for_product_path_tests() {
+fn test_atui_000_fixture_builds_a_shell_launch_command_for_product_path_tests() {
     let command = fixture_process_shell_command(&FixturePlan::new("shell-launch", vec![]));
 
     assert!(command.contains("RELEASH_AGENT_TUI_FIXTURE_PLAN="));
-    assert!(command.contains("agent_tui_fixture::agent_tui_fixture_process"));
+    assert!(command.contains("agent_tui_fixture::test_agent_tui_fixture_process"));
     assert!(command.contains("--exact"));
 }
 
 #[test]
-fn atui_000_real_pty_io_and_lifecycle_use_independent_channels() {
+fn test_atui_000_real_pty_io_and_lifecycle_use_independent_channels() {
     let run = run_fixture(
         FixturePlan::new(
             "arbitrary-visible-provider-wording",
@@ -47,7 +47,7 @@ fn atui_000_real_pty_io_and_lifecycle_use_independent_channels() {
 }
 
 #[test]
-fn atui_000_backend_capture_continues_without_surface_consumer() {
+fn test_atui_000_backend_capture_continues_without_surface_consumer() {
     let run = run_fixture(
         FixturePlan {
             input_lines: 2,
@@ -69,7 +69,7 @@ fn atui_000_backend_capture_continues_without_surface_consumer() {
 
 #[cfg(unix)]
 #[test]
-fn atui_000_real_pty_resize_is_visible_to_provider() {
+fn test_atui_000_real_pty_resize_is_visible_to_provider() {
     let run = run_fixture(
         FixturePlan {
             report_terminal_size: true,
@@ -90,7 +90,7 @@ fn atui_000_real_pty_resize_is_visible_to_provider() {
 }
 
 #[test]
-fn atui_000_provider_process_exit_is_not_a_stop_signal() {
+fn test_atui_000_provider_process_exit_is_not_a_stop_signal() {
     let run = run_fixture(
         FixturePlan {
             exit_code: 23,
@@ -104,7 +104,7 @@ fn atui_000_provider_process_exit_is_not_a_stop_signal() {
 }
 
 #[test]
-fn atui_000_submit_and_stop_order_can_be_reversed() {
+fn test_atui_000_submit_and_stop_order_can_be_reversed() {
     let submit_then_stop = run_fixture(
         FixturePlan::new(
             "same-visible-output",
@@ -131,7 +131,7 @@ fn atui_000_submit_and_stop_order_can_be_reversed() {
 }
 
 #[test]
-fn atui_000_each_lifecycle_signal_can_be_missing() {
+fn test_atui_000_each_lifecycle_signal_can_be_missing() {
     let submit_only = run_fixture(
         FixturePlan::new(
             "same-visible-output",
@@ -157,7 +157,7 @@ fn atui_000_each_lifecycle_signal_can_be_missing() {
 }
 
 #[test]
-fn atui_000_each_lifecycle_signal_can_be_duplicated() {
+fn test_atui_000_each_lifecycle_signal_can_be_duplicated() {
     let run = run_fixture(
         FixturePlan::new(
             "duplicate-independent-output",
@@ -178,7 +178,7 @@ fn atui_000_each_lifecycle_signal_can_be_duplicated() {
 }
 
 #[test]
-fn atui_000_lifecycle_signal_can_be_delayed() {
+fn test_atui_000_lifecycle_signal_can_be_delayed() {
     let run = run_fixture(
         FixturePlan::new(
             "delayed-signal-output",
@@ -198,7 +198,7 @@ fn atui_000_lifecycle_signal_can_be_delayed() {
 }
 
 #[test]
-fn atui_000_lifecycle_scope_can_reference_another_session_or_attempt() {
+fn test_atui_000_lifecycle_scope_can_reference_another_session_or_attempt() {
     let mut wrong_session = FixtureLifecycleSignal::new("stop", 1);
     wrong_session.session_key = "other-session".to_string();
     let mut wrong_attempt = FixtureLifecycleSignal::new("stop", 2);
@@ -230,7 +230,7 @@ fn atui_000_lifecycle_scope_can_reference_another_session_or_attempt() {
 }
 
 #[test]
-fn atui_000_lifecycle_sequence_gap_and_reversal_are_preserved() {
+fn test_atui_000_lifecycle_sequence_gap_and_reversal_are_preserved() {
     let run = run_fixture(
         FixturePlan::new(
             "sequence-fault-output",
@@ -250,7 +250,7 @@ fn atui_000_lifecycle_sequence_gap_and_reversal_are_preserved() {
 }
 
 #[test]
-fn atui_000_malformed_lifecycle_payload_is_observable_without_terminal_parsing() {
+fn test_atui_000_malformed_lifecycle_payload_is_observable_without_terminal_parsing() {
     let run = run_fixture(
         FixturePlan::new(
             "malformed-signal-output",
@@ -270,12 +270,12 @@ fn atui_000_malformed_lifecycle_payload_is_observable_without_terminal_parsing()
 }
 
 #[test]
-fn harness_contract_lists_every_milestone_scenario_once() {
+fn test_harness_contract_lists_every_milestone_scenario_once() {
     const CONTRACT: &str =
         include_str!("../../specs/milestone-87-agent-tui-cutover/acceptance-contract.md");
     const SCENARIOS: &[&str] = &[
-        "ATUI-000", "ATUI-010", "ATUI-011", "ATUI-012", "ATUI-020", "ATUI-021", "ATUI-030",
-        "ATUI-040", "ATUI-041", "ATUI-042", "ATUI-050",
+        "ATUI-000", "ATUI-010", "ATUI-011", "ATUI-012", "ATUI-020", "ATUI-021", "ATUI-025",
+        "ATUI-030", "ATUI-040", "ATUI-041", "ATUI-042", "ATUI-050",
     ];
 
     for scenario in SCENARIOS {
@@ -291,7 +291,7 @@ fn harness_contract_lists_every_milestone_scenario_once() {
 }
 
 #[test]
-fn integration_branch_runs_ci_without_becoming_a_release_source() {
+fn test_integration_branch_runs_ci_without_becoming_a_release_source() {
     const CI: &str = include_str!("../../.github/workflows/ci.yml");
     const CODEQL: &str = include_str!("../../.github/workflows/codeql.yml");
     const AUTO_TAG: &str = include_str!("../../.github/workflows/auto-tag.yml");

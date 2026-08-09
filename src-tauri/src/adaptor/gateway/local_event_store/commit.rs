@@ -142,6 +142,7 @@ fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) ->
             | LocalStateMutation::StopResolution(_) => {}
             LocalStateMutation::OperationBinding(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
+            | LocalStateMutation::ProviderAgentSessionRemoval(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
@@ -267,6 +268,7 @@ fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> 
     for mutation in mutations {
         match mutation {
             LocalStateMutation::OperationBinding(_)
+            | LocalStateMutation::ProviderAgentSessionRemoval(_)
             | LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
@@ -486,6 +488,7 @@ fn projection_progress_has_one_session_scope(prepared: &PreparedBatch) -> bool {
                 obligation_session_id(&obligation.record) == Some(owner_session.as_str())
             }
             LocalStateMutation::RecoveryAction(_) => false,
+            LocalStateMutation::ProviderAgentSessionRemoval(_) => false,
             LocalStateMutation::WorkflowExecutionProjection(_)
             | LocalStateMutation::WorkflowExecutionNodeProjection(_) => false,
             LocalStateMutation::OperationBinding(_)
@@ -575,7 +578,14 @@ fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
                 crate::domain::local_event::SessionProjectionRecord::WorkflowWorktreeOwner(
                     owner,
                 ) => owner.execution_id == execution_id,
-                crate::domain::local_event::SessionProjectionRecord::AgentSession(_) => false,
+                crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
+                | crate::domain::local_event::SessionProjectionRecord::ProviderAgentSession(_)
+                | crate::domain::local_event::SessionProjectionRecord::ProviderSessionOwnership(
+                    _,
+                )
+                | crate::domain::local_event::SessionProjectionRecord::ProviderHookHealth(_) => {
+                    false
+                }
             },
             LocalStateMutation::WorkflowExecutionProjection(projection) => {
                 prepared.batch.state_mutations.iter().any(|candidate| {
@@ -1071,6 +1081,7 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
             LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::RecoveryAction(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
+            | LocalStateMutation::ProviderAgentSessionRemoval(_)
             | LocalStateMutation::WorkflowExecutionProjection(_)
             | LocalStateMutation::WorkflowExecutionNodeProjection(_)
             | LocalStateMutation::ShutdownPlan(_)
@@ -1412,6 +1423,7 @@ fn application_quit_progress_is_bound_to_current_plan(
             | LocalStateMutation::SessionProjection(_)
             | LocalStateMutation::MessageProjection(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
+            | LocalStateMutation::ProviderAgentSessionRemoval(_)
             | LocalStateMutation::TerminalRecord(_)
             | LocalStateMutation::StopResolution(_)
             | LocalStateMutation::Obligation(_)
@@ -2684,6 +2696,39 @@ fn validate_one_guard(
             )?;
             check_guard(existing, m.expected)
         }
+        LocalStateMutation::ProviderAgentSessionRemoval(m) => {
+            let current_head = read_revision(
+                connection,
+                "SELECT head FROM stream_heads WHERE stream_id = ?1",
+                params![m.agent_session_stream.as_str()],
+            )?
+            .ok_or_else(|| conflict(0))?;
+            if current_head.checked_add(1) != Some(m.retained_tombstone_sequence.value()) {
+                return Err(conflict(current_head));
+            }
+            match (
+                &m.ownership_projection_id,
+                &m.ownership_stream,
+                m.ownership_expected,
+            ) {
+                (Some(projection_id), Some(stream), Some(expected)) => {
+                    let projection_revision = read_revision(
+                        connection,
+                        "SELECT revision FROM session_projection WHERE session_id = ?1",
+                        params![projection_id],
+                    )?;
+                    check_guard(projection_revision, RevisionGuard::Expected(expected))?;
+                    let stream_head = read_revision(
+                        connection,
+                        "SELECT head FROM stream_heads WHERE stream_id = ?1",
+                        params![stream.as_str()],
+                    )?;
+                    check_guard(stream_head, RevisionGuard::Expected(expected))
+                }
+                (None, None, None) => Ok(()),
+                _ => Err(CommitBatchError::PayloadConflict),
+            }
+        }
         LocalStateMutation::TerminalRecord(m) => {
             validate_terminal_record(m).map_err(|_| CommitBatchError::PayloadConflict)?;
             let existing: Option<(String, String, Vec<u8>)> = connection
@@ -3072,6 +3117,34 @@ fn apply_mutation(
                 "DELETE FROM session_projection WHERE session_id = ?1",
                 params![m.session_id],
             ))
+        }
+        LocalStateMutation::ProviderAgentSessionRemoval(m) => {
+            run(connection.execute(
+                "DELETE FROM events WHERE stream_id = ?1 AND stream_sequence < ?2",
+                params![
+                    m.agent_session_stream.as_str(),
+                    m.retained_tombstone_sequence.value()
+                ],
+            ))?;
+            if let (Some(projection_id), Some(stream), Some(_)) = (
+                &m.ownership_projection_id,
+                &m.ownership_stream,
+                m.ownership_expected,
+            ) {
+                run(connection.execute(
+                    "DELETE FROM session_projection WHERE session_id = ?1",
+                    params![projection_id],
+                ))?;
+                run(connection.execute(
+                    "DELETE FROM events WHERE stream_id = ?1",
+                    params![stream.as_str()],
+                ))?;
+                run(connection.execute(
+                    "DELETE FROM stream_heads WHERE stream_id = ?1",
+                    params![stream.as_str()],
+                ))?;
+            }
+            Ok(())
         }
         LocalStateMutation::TerminalRecord(m) => apply_terminal_record(connection, commit_id, m),
         LocalStateMutation::StopResolution(m) => apply_stop_resolution(connection, commit_id, m),

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::domain::terminal_surface::{
     TerminalProcessState, TerminalRuntimeGeneration, TerminalSurfaceCheckpoint,
     TerminalSurfaceOwner,
@@ -13,7 +15,11 @@ pub struct TerminalSurface {
     pub process_state: TerminalProcessState,
     pub checkpoint: TerminalSurfaceCheckpoint,
     pub(crate) latest_sequence: u64,
+    pub(crate) last_output_at: Option<Instant>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSurfaceNotWritable;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalSurfaceSummary {
@@ -24,6 +30,7 @@ pub struct TerminalSurfaceSummary {
     pub runtime_generation: TerminalRuntimeGeneration,
     pub process_state: TerminalProcessState,
     pub latest_sequence: u64,
+    pub last_output_at: Option<Instant>,
 }
 
 impl TerminalSurface {
@@ -57,6 +64,7 @@ impl TerminalSurface {
             runtime_generation: runtime_generation.into(),
             process_state: TerminalProcessState::Running,
             latest_sequence: checkpoint.sequence,
+            last_output_at: None,
             checkpoint,
         }
     }
@@ -74,11 +82,25 @@ impl TerminalSurface {
             runtime_generation: self.runtime_generation,
             process_state: self.process_state.clone(),
             latest_sequence: self.latest_sequence,
+            last_output_at: self.last_output_at,
         }
     }
 
-    pub fn record_output(&mut self, runtime_generation: TerminalRuntimeGeneration) -> Option<u64> {
-        self.advance_running_sequence(runtime_generation)
+    pub fn ensure_writable(&self) -> Result<(), TerminalSurfaceNotWritable> {
+        if self.process_state.is_exited() {
+            return Err(TerminalSurfaceNotWritable);
+        }
+        Ok(())
+    }
+
+    pub fn record_output(
+        &mut self,
+        runtime_generation: TerminalRuntimeGeneration,
+        now: Instant,
+    ) -> Option<u64> {
+        let sequence = self.advance_running_sequence(runtime_generation)?;
+        self.last_output_at = Some(now);
+        Some(sequence)
     }
 
     pub fn record_resize(&mut self, runtime_generation: TerminalRuntimeGeneration) -> Option<u64> {

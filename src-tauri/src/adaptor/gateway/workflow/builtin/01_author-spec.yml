@@ -171,8 +171,7 @@ nodes:
 # IntakeSequence
 - name: spec_intake
   session:
-    model: claude-opus-5
-    permission: full
+    provider: claude
     gate: auto
     facets:
       policy: author-spec-governance
@@ -203,8 +202,7 @@ nodes:
 # AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
 - name: requirements_author
   session:
-    model: claude-opus-5
-    permission: full
+    provider: claude
     gate: auto
     facets:
       policy: author-spec-governance
@@ -236,8 +234,7 @@ nodes:
 
 - name: behavior_author
   session:
-    model: gpt-5.6-sol
-    permission: edit
+    provider: codex
     gate: auto
     facets:
       policy: author-spec-governance
@@ -272,8 +269,7 @@ nodes:
 
 - name: design_author
   session:
-    model: gpt-5.6-sol
-    permission: edit
+    provider: codex
     gate: auto
     facets:
       policy: author-spec-governance
@@ -311,8 +307,7 @@ nodes:
 # SpecSequence: 3文書を1単位として検証 -> 検討 -> 修正し、Findingがなくなるまで繰り返す。
 - name: spec_validate
   session:
-    model: claude-opus-5
-    permission: full
+    provider: claude
     gate: auto
     facets:
       policy: author-spec-governance
@@ -354,8 +349,7 @@ nodes:
 
 - name: spec_consider
   session:
-    model: gpt-5.6-sol
-    permission: edit
+    provider: codex
     gate: auto
     facets:
       policy: author-spec-governance
@@ -389,8 +383,7 @@ nodes:
 
 - name: spec_repair
   session:
-    model: claude-opus-5
-    permission: full
+    provider: claude
     gate: auto
     facets:
       policy: author-spec-governance
@@ -428,8 +421,7 @@ nodes:
 # HumanDecisionSequence: 文書レビューではなく、自動判断不能な一点だけを解決する。
 - name: human_decision
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: author-spec-governance
@@ -462,8 +454,7 @@ nodes:
 # FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
 - name: final_review
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: author-spec-governance

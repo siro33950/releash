@@ -1229,6 +1229,7 @@ fn dynamic_fanout_sentinel_id(execution_id: &str, node_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::{
         FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, SessionGate, SessionSpec,
     };
@@ -1243,8 +1244,7 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "plan".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    model: None,
-                    permission: None,
+                    provider: ProviderKind::Claude,
                     gate: SessionGate::Auto,
                     facets: FacetRefs::default(),
                 }),

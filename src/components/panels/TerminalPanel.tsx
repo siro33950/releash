@@ -17,7 +17,11 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
-import { type TerminalSurfaceOwner, useTerminal } from "@/hooks/useTerminal";
+import {
+	type TerminalInitializationMode,
+	type TerminalSurfaceOwner,
+	useTerminal,
+} from "@/hooks/useTerminal";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -35,6 +39,8 @@ export interface TerminalPanelProps {
 	onTerminalReady?: (sessionKey: string) => void;
 	onTerminalError?: (message: string) => void;
 	shouldKillPendingTerminal?: () => boolean;
+	initialization?: TerminalInitializationMode;
+	autoFocus?: boolean;
 	onSplitVertical?: () => void;
 	onSplitHorizontal?: () => void;
 	onBreakToTab?: () => void;
@@ -56,6 +62,8 @@ export const TerminalPanel = forwardRef<
 		onTerminalReady,
 		onTerminalError,
 		shouldKillPendingTerminal,
+		initialization,
+		autoFocus,
 		onSplitVertical,
 		onSplitHorizontal,
 		onBreakToTab,
@@ -66,30 +74,26 @@ export const TerminalPanel = forwardRef<
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const {
-		terminalRef,
-		terminalOwner,
-		isRunningRef,
-		writeToTerminal,
-		requestKill,
-	} = useTerminal(
-		containerRef,
-		cwd,
-		theme,
-		terminalStartupCommand,
-		owner,
-		label,
-		onTerminalReady,
-		onTerminalError,
-		shouldKillPendingTerminal,
-	);
+	const { terminalRef, terminalOwner, isRunningRef, sendInput, requestKill } =
+		useTerminal(containerRef, {
+			cwd,
+			theme,
+			terminalStartupCommand,
+			owner,
+			label,
+			onTerminalReady,
+			onTerminalError,
+			shouldKillPendingTerminal,
+			initialization,
+			autoFocus,
+		});
 	const [isDragOver, setIsDragOver] = useState(false);
 	const isDragOverRef = useRef(false);
 
 	const writePathsToTerminal = useCallback(
 		(paths: string[]) => {
 			if (!isRunningRef.current || paths.length === 0) return;
-			invoke("write_paths_to_pty", {
+			invoke("write_paths_to_terminal_surface", {
 				owner: terminalOwner,
 				paths,
 			}).catch((error) => {
@@ -102,10 +106,10 @@ export const TerminalPanel = forwardRef<
 	useImperativeHandle(
 		ref,
 		() => ({
-			writeToTerminal,
+			writeToTerminal: sendInput,
 			requestKill,
 		}),
-		[writeToTerminal, requestKill],
+		[sendInput, requestKill],
 	);
 
 	// ネイティブドロップ時はHTML5のdropイベントが発火しないため、
@@ -188,15 +192,12 @@ export const TerminalPanel = forwardRef<
 			<ContextMenuTrigger asChild>
 				<div
 					role="application"
-					className="relative h-full w-full"
+					className="relative h-full w-full bg-terminal-bg p-2"
 					onDragOver={handleDragOver}
 					onDragLeave={handleDragLeave}
 					onDrop={handleDrop}
 				>
-					<div
-						ref={containerRef}
-						className="h-full w-full p-2 bg-terminal-bg"
-					/>
+					<div ref={containerRef} className="h-full w-full bg-terminal-bg" />
 					{isDragOver && (
 						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
 							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">

@@ -3,7 +3,6 @@ import type { Page } from "@playwright/test";
 export interface MockConfig {
 	/**
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
-	 * `{ __mockSequence: [...] }` は呼び出し順に返し、末尾へ到達後は最後の値を維持する。
 	 */
 	ipcHandler: Record<string, unknown>;
 }
@@ -75,11 +74,18 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
 		// イベントリスナー管理
 		const eventListeners = new Map<string, number[]>();
-		const invocationCounts = new Map<string, number>();
 		const agentSessionNotices = new Map<
 			string,
 			{ operation: string; message: string }
 		>();
+		let terminalPerformanceStarted = false;
+		let terminalPerformanceCompleted = false;
+		let terminalPerformanceSequence = 0;
+		let acknowledgeTerminalPerformanceOutput:
+			| ((sequence: number) => void)
+			| null = null;
+		let startTerminalPerformanceFixture: (() => void) | null = null;
+		let emitTerminalPerformanceOutput: ((data: string) => void) | null = null;
 		let agentSessionNoticeRevision = 0;
 		const invocations: Array<{
 			cmd: string;
@@ -121,6 +127,32 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				}
 				return;
 			}
+			if (cmd === "ack_terminal_surface_output") {
+				acknowledgeTerminalPerformanceOutput?.(Number(args.sequence));
+				return;
+			}
+			if (cmd === "start_terminal_performance_fixture") {
+				startTerminalPerformanceFixture?.();
+				return;
+			}
+			if (cmd === "write_terminal_surface" && emitTerminalPerformanceOutput) {
+				emitTerminalPerformanceOutput(String(args.data ?? ""));
+				return;
+			}
+			// Chromiumで走るmockテストはDOM span/CSSのassertを維持するため
+			// DOMレンダラを明示する（WebGL既定の実機経路はwdio harnessが担う）。
+			if (
+				cmd === "get_terminal_performance_switches" &&
+				!(cmd in cfg.ipcHandler)
+			) {
+				return {
+					disableOutputFlowControl: false,
+					disableTerminalJournal: false,
+					disableTerminalWebsocket: false,
+					disableRendererWriteSerialization: false,
+					disableWebglRenderer: true,
+				};
+			}
 
 			// list_branches_with_status_snapshot は明示ハンドラが無い場合、
 			// list_branches_with_status の配列を BranchCardsSnapshot 形に
@@ -144,10 +176,12 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (cmd in cfg.ipcHandler) {
 				let value = cfg.ipcHandler[cmd];
 				if (
-					cmd === "attach_pty" &&
+					cmd === "attach_terminal_surface" &&
 					value &&
 					typeof value === "object" &&
-					"__mockTerminalAttachment" in (value as Record<string, unknown>)
+					("__mockTerminalAttachment" in (value as Record<string, unknown>) ||
+						"__mockTerminalPerformanceAttachment" in
+							(value as Record<string, unknown>))
 				) {
 					const rawChannel = args.onEvent;
 					const channel =
@@ -160,7 +194,165 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 								: "";
 					const channelId = /^__CHANNEL__:(\d+)$/.exec(channel)?.[1];
 					if (!channelId) {
-						throw new Error("attach_pty requires a Tauri Channel");
+						throw new Error("attach_terminal_surface requires a Tauri Channel");
+					}
+					if (
+						"__mockTerminalPerformanceAttachment" in
+						(value as Record<string, unknown>)
+					) {
+						const config = (
+							value as {
+							__mockTerminalPerformanceAttachment: {
+								targetBytes: number;
+								chunkCodeUnits: number;
+								initialReplay?: string;
+								};
+							}
+						).__mockTerminalPerformanceAttachment;
+						const sessionKey = "workspace:10:/test/repo";
+						queueMicrotask(() => {
+							runCallback(Number(channelId), {
+								index: 0,
+								message: {
+									type: "snapshot",
+									surface: {
+										session_key: sessionKey,
+										terminal_surface: {
+											replay: terminalPerformanceCompleted
+												? "\u001bcPERF-FIXTURE-COMPLETE"
+												: (config.initialReplay ?? ""),
+											sequence: terminalPerformanceSequence,
+											cols: 80,
+											rows: 24,
+										},
+										is_exited: false,
+										exit_code: null,
+									},
+								},
+							});
+						});
+						if (!startTerminalPerformanceFixture) {
+							const frame =
+								"\u001b[38;5;220m◆ tool\u001b[0m 日本語🙂 wide\r\n" +
+								"\u001b[2K\r\u001b[32m✓ completed\u001b[0m\r\n" +
+								"\u001b[2A\u001b[12C\u001b[1mredraw\u001b[0m\u001b[2B\r\n" +
+								"history-line 日本語🙂\r\n";
+							const frameBytes = new TextEncoder().encode(frame).byteLength;
+							const fixture = frame.repeat(
+								Math.ceil(config.targetBytes / frameBytes),
+							);
+							const performanceState = (
+								window as typeof window & {
+									__RELEASH_TERMINAL_PERFORMANCE_STATE__?: {
+										fixtureByteLength: number;
+									};
+								}
+							).__RELEASH_TERMINAL_PERFORMANCE_STATE__;
+							if (performanceState) {
+								performanceState.fixtureByteLength = new TextEncoder().encode(
+									fixture,
+								).byteLength;
+							}
+							let offset = 0;
+							let pendingCodeUnits = 0;
+							let pending: Array<{ sequence: number; codeUnits: number }> = [];
+							let continuationPosted = false;
+							const continuation = new MessageChannel();
+							const schedule = () => {
+								if (
+									!terminalPerformanceStarted ||
+									continuationPosted ||
+									offset >= fixture.length ||
+									pendingCodeUnits >= 256 * 1024
+								)
+									return;
+								continuationPosted = true;
+								continuation.port2.postMessage(null);
+							};
+							acknowledgeTerminalPerformanceOutput = (sequence) => {
+								pending = pending.filter((entry) => {
+									if (entry.sequence > sequence) return true;
+									pendingCodeUnits -= entry.codeUnits;
+									return false;
+								});
+								schedule();
+							};
+							emitTerminalPerformanceOutput = (data) => {
+								if (!data) return;
+								terminalPerformanceSequence += 1;
+								runCallback(Number(channelId), {
+									index: terminalPerformanceSequence,
+									message: {
+										type: "output",
+										session_key: sessionKey,
+										data,
+										sequence: terminalPerformanceSequence,
+									},
+								});
+							};
+							startTerminalPerformanceFixture = () => {
+								if (terminalPerformanceStarted) return;
+								terminalPerformanceStarted = true;
+								const state = (
+									window as typeof window & {
+										__RELEASH_TERMINAL_PERFORMANCE_STATE__?: {
+											fixtureStartedAt: number;
+										};
+									}
+								).__RELEASH_TERMINAL_PERFORMANCE_STATE__;
+								if (state) state.fixtureStartedAt = performance.now();
+								schedule();
+							};
+							continuation.port1.onmessage = () => {
+								continuationPosted = false;
+								for (
+									let index = 0;
+									index < 8 &&
+									offset < fixture.length &&
+									pendingCodeUnits < 256 * 1024;
+									index += 1
+								) {
+									const data = fixture.slice(
+										offset,
+										offset + config.chunkCodeUnits,
+									);
+									offset += data.length;
+									terminalPerformanceSequence += 1;
+									pending.push({
+										sequence: terminalPerformanceSequence,
+										codeUnits: data.length,
+									});
+									pendingCodeUnits += data.length;
+									runCallback(Number(channelId), {
+										index: terminalPerformanceSequence,
+										message: {
+											type: "output",
+											session_key: sessionKey,
+											data,
+											sequence: terminalPerformanceSequence,
+										},
+									});
+								}
+								if (offset < fixture.length) {
+									schedule();
+									return;
+								}
+								terminalPerformanceSequence += 1;
+								terminalPerformanceCompleted = true;
+								runCallback(Number(channelId), {
+									index: terminalPerformanceSequence,
+									message: {
+										type: "output",
+										session_key: sessionKey,
+										data: "\r\nPERF-FIXTURE-COMPLETE",
+										sequence: terminalPerformanceSequence,
+									},
+								});
+								continuation.port1.close();
+								continuation.port2.close();
+							};
+						}
+						return null;
 					}
 					const attachment = value as {
 						messages?: unknown[];
@@ -247,20 +439,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						state: { type: "accepted" },
 					};
 				}
-				if (
-					value &&
-					typeof value === "object" &&
-					"__mockSequence" in (value as Record<string, unknown>)
-				) {
-					const sequence = (value as { __mockSequence: unknown[] })
-						.__mockSequence;
-					const index = invocationCounts.get(cmd) ?? 0;
-					invocationCounts.set(cmd, index + 1);
-					value =
-						sequence.length === 0
-							? null
-							: sequence[Math.min(index, sequence.length - 1)];
-				}
 				// { __mockError: "message" } の場合はエラーを投げる
 				if (
 					value &&
@@ -330,7 +508,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			invocations,
 			setMockResponse: (cmd: string, value: unknown) => {
 				cfg.ipcHandler[cmd] = value;
-				invocationCounts.delete(cmd);
 			},
 			metadata: {
 				currentWindow: { label: "main" },

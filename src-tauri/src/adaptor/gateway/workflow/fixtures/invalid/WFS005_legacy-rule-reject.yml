@@ -3,7 +3,7 @@ description: reject is not a workflow rule or approval operation
 nodes:
   - name: approve
     session:
-      permission: ask
+      provider: claude
       gate: approval
     rules:
       - reject: fix

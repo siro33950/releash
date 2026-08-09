@@ -30,13 +30,8 @@ fn provider_name(provider: AcceptanceProvider) -> &'static str {
     }
 }
 
-fn scope(provider: AcceptanceProvider, scenario: &str, attempt: u32) -> AcceptanceScope {
-    AcceptanceScope::new(
-        format!("agent-{}-{scenario}", provider_name(provider)),
-        format!("workflow-{}-{scenario}", provider_name(provider)),
-        format!("node-{}-{scenario}", provider_name(provider)),
-        attempt,
-    )
+fn scope(provider: AcceptanceProvider, scenario: &str) -> AcceptanceScope {
+    AcceptanceScope::new(format!("agent-{}-{scenario}", provider_name(provider)))
 }
 
 fn payload(event: &str, session_id: &str, transcript_ref: Option<&str>) -> String {
@@ -370,7 +365,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
         let name = provider_name(provider);
 
-        let correct_scope = scope(provider, "correct", 1);
+        let correct_scope = scope(provider, "correct");
         let correct = prepare(
             &host,
             provider,
@@ -435,7 +430,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             TRANSCRIPT_BODY_MARKER.as_bytes()
         ));
 
-        let duplicate_scope = scope(provider, "duplicate", 1);
+        let duplicate_scope = scope(provider, "duplicate");
         let duplicate = prepare(
             &host,
             provider,
@@ -473,9 +468,9 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         );
         let facts = host.facts(&duplicate_scope.agent_session_id).await.unwrap();
         assert_eq!(session_count(&facts), 1);
-        assert_eq!(stop_count(&facts), 1);
+        assert_eq!(stop_count(&facts), 2);
 
-        let missing_start_scope = scope(provider, "missing-start", 1);
+        let missing_start_scope = scope(provider, "missing-start");
         let missing_start = prepare(
             &host,
             provider,
@@ -521,7 +516,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             1
         );
 
-        let missing_stop_scope = scope(provider, "missing-stop", 1);
+        let missing_stop_scope = scope(provider, "missing-stop");
         let missing_stop = prepare(
             &host,
             provider,
@@ -545,24 +540,12 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         assert_eq!(session_count(&facts), 1);
         assert_eq!(stop_count(&facts), 0);
 
-        for (scenario, environment_key, wrong_value) in [
-            (
-                "other-agent",
-                "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
-                "other-agent-session",
-            ),
-            (
-                "other-workflow",
-                "RELEASH_PROVIDER_LIFECYCLE_WORKFLOW_EXECUTION_ID",
-                "other-workflow-execution",
-            ),
-            (
-                "other-node",
-                "RELEASH_PROVIDER_LIFECYCLE_NODE_EXECUTION_ID",
-                "other-node-execution",
-            ),
-        ] {
-            let signal_scope = scope(provider, scenario, 2);
+        for (scenario, environment_key, wrong_value) in [(
+            "other-agent",
+            "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
+            "other-agent-session",
+        )] {
+            let signal_scope = scope(provider, scenario);
             let launch = prepare(
                 &host,
                 provider,
@@ -586,7 +569,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
                 &host,
                 data_dir.path(),
                 &signal_scope,
-                (scenario == "other-agent").then_some("other-agent-session"),
+                Some("other-agent-session"),
                 before,
                 &run,
                 "scope_mismatch",
@@ -594,7 +577,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             .await;
         }
 
-        let malformed_scope = scope(provider, "malformed", 1);
+        let malformed_scope = scope(provider, "malformed");
         let malformed = prepare(
             &host,
             provider,
@@ -619,7 +602,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         )
         .await;
 
-        let invalid_scope = scope(provider, "invalid-capability", 1);
+        let invalid_scope = scope(provider, "invalid-capability");
         let invalid = prepare(
             &host,
             provider,
@@ -654,7 +637,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         )
         .await;
 
-        let stale_scope = scope(provider, "stale-capability", 1);
+        let stale_scope = scope(provider, "stale-capability");
         let stale_slot = format!("{name}-stale-capability-slot");
         let stale = prepare_in_slot(
             &host,
@@ -729,13 +712,8 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             )
         }));
 
-        let retry_slot = format!("{name}-previous-attempt-slot");
-        let previous_scope = AcceptanceScope::new(
-            format!("agent-{name}-previous-attempt"),
-            format!("workflow-{name}-retry"),
-            format!("node-{name}-previous-attempt"),
-            1,
-        );
+        let retry_slot = format!("{name}-replacement-launch-slot");
+        let previous_scope = AcceptanceScope::new(format!("agent-{name}-previous-launch"));
         let previous = prepare_in_slot(
             &host,
             &retry_slot,
@@ -744,12 +722,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             plugin_directory.path(),
         )
         .await;
-        let current_scope = AcceptanceScope::new(
-            format!("agent-{name}-current-attempt"),
-            format!("workflow-{name}-retry"),
-            format!("node-{name}-current-attempt"),
-            2,
-        );
+        let current_scope = AcceptanceScope::new(format!("agent-{name}-replacement-launch"));
         let _current = prepare_in_slot(
             &host,
             &retry_slot,
@@ -760,11 +733,11 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         .await;
         let before = host.ledger_event_counts().unwrap();
         let run = run_product_fixture(
-            &format!("{name}-previous-attempt"),
+            &format!("{name}-previous-launch"),
             command(provider, &previous, data_dir.path()),
             vec![raw(payload(
                 "SessionStart",
-                &format!("{name}-session-previous-attempt"),
+                &format!("{name}-session-previous-launch"),
                 None,
             ))],
         );
@@ -789,7 +762,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         let current_facts = host.facts(&current_scope.agent_session_id).await.unwrap();
         assert_eq!(accepted_lifecycle_count(&current_facts), 0);
 
-        let provider_mismatch_scope = scope(provider, "provider-mismatch", 1);
+        let provider_mismatch_scope = scope(provider, "provider-mismatch");
         let provider_mismatch = prepare(
             &host,
             provider,
@@ -826,7 +799,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         )
         .await;
 
-        let missing_discovery_scope = scope(provider, "missing-discovery", 1);
+        let missing_discovery_scope = scope(provider, "missing-discovery");
         let missing_discovery = prepare(
             &host,
             provider,
@@ -864,7 +837,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
                 0,
             ),
         ] {
-            let no_signal_scope = scope(provider, scenario, 1);
+            let no_signal_scope = scope(provider, scenario);
             let launch = prepare(
                 &host,
                 provider,
@@ -884,7 +857,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
         }
 
         if matches!(provider, AcceptanceProvider::Claude) {
-            let failure_scope = scope(provider, "stop-failure", 1);
+            let failure_scope = scope(provider, "stop-failure");
             let failure = prepare(
                 &host,
                 provider,
@@ -921,7 +894,7 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
         let data_dir = tempfile::TempDir::new().unwrap();
         let plugin_directory = tempfile::TempDir::new().unwrap();
         let host = ProviderLifecycleAcceptanceHost::start(data_dir.path()).unwrap();
-        let provider_scope = scope(provider, "stale-discovery", 1);
+        let provider_scope = scope(provider, "stale-discovery");
         let launch = prepare(
             &host,
             provider,

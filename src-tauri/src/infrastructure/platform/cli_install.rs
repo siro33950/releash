@@ -34,8 +34,11 @@ impl fmt::Display for CliInstallStatus {
 pub(crate) fn ensure_cli_symlink_installed() {
     #[cfg(target_os = "macos")]
     {
-        if !should_install_cli_symlink_for_profile(cfg!(debug_assertions)) {
-            log::info!("Skipping Releash CLI install on dev build to preserve production CLI");
+        if !should_install_cli_symlink_for_startup(
+            cfg!(debug_assertions),
+            cfg!(feature = "performance-wdio"),
+        ) {
+            log::info!("Skipping Releash CLI install for this startup profile");
             return;
         }
         let exe = match std::env::current_exe() {
@@ -58,8 +61,11 @@ pub(crate) fn ensure_cli_symlink_installed() {
 /// `/usr/local/bin/releash` を debug binary に張り替えると本番 CLI を破壊するため、
 /// dev 起動はこの install 経路に関与しない。
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn should_install_cli_symlink_for_profile(is_debug_build: bool) -> bool {
-    !is_debug_build
+pub(crate) fn should_install_cli_symlink_for_startup(
+    is_debug_build: bool,
+    is_performance_harness: bool,
+) -> bool {
+    !is_debug_build && !is_performance_harness
 }
 
 #[cfg(all(unix, any(target_os = "macos", test)))]
@@ -319,12 +325,17 @@ mod tests {
     fn should_install_cli_symlink_skips_dev_build() {
         // dev (debug) ビルドは本番 CLI を所有しないため install しない
         // （spec [01]「dev 起動による本番 CLI の不変性」）。
-        assert!(!should_install_cli_symlink_for_profile(true));
+        assert!(!should_install_cli_symlink_for_startup(true, false));
     }
 
     #[test]
     fn should_install_cli_symlink_allows_release_build() {
         // 本番 (release) ビルドは `/usr/local/bin/releash` を更新する。
-        assert!(should_install_cli_symlink_for_profile(false));
+        assert!(should_install_cli_symlink_for_startup(false, false));
+    }
+
+    #[test]
+    fn test_should_install_cli_symlink_skips_performance_harness() {
+        assert!(!should_install_cli_symlink_for_startup(false, true));
     }
 }

@@ -6,10 +6,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 
 use crate::adaptor::protocol::terminal::{
-    TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    TerminalSurfaceOwnerV1, TerminalWsAttachedRequestV1, TerminalWsErrorV1, TerminalWsRequestV1,
+    TerminalWsResponseV1, TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX, TERMINAL_WS_PATH,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
@@ -32,85 +32,39 @@ impl TerminalApiDeps {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum TerminalWsRequestV1 {
-    GetSurface {
-        id: String,
-        owner: TerminalSurfaceOwnerV1,
-    },
-    AttachSurface {
-        id: String,
-        owner: TerminalSurfaceOwnerV1,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum TerminalWsResponseV1 {
-    Ok {
-        id: String,
-        surface: TerminalSurfaceV1,
-    },
-    Error {
-        id: String,
-        error: TerminalWsErrorV1,
-    },
-    Event {
-        id: String,
-        item: TerminalSurfaceStreamItemV1,
-    },
-}
-
-#[derive(Serialize)]
-struct TerminalWsErrorV1 {
-    code: &'static str,
-    message: String,
-}
-
-fn dispatch(deps: &TerminalApiDeps, request: TerminalWsRequestV1) -> TerminalWsResponseV1 {
-    match request {
-        TerminalWsRequestV1::GetSurface { id, owner } => match owner
-            .try_into()
-            .map_err(crate::usecase::terminal_surface::error::UsecaseError::Gateway)
-            .and_then(|owner| deps.application.get(&owner))
-        {
-            Ok(surface) => TerminalWsResponseV1::Ok {
-                id,
-                surface: surface.into(),
-            },
-            Err(error) => TerminalWsResponseV1::Error {
-                id,
-                error: TerminalWsErrorV1 {
-                    code: "PTY_ERROR",
-                    message: error.to_string(),
-                },
-            },
-        },
-        TerminalWsRequestV1::AttachSurface { id, .. } => TerminalWsResponseV1::Error {
-            id,
-            error: TerminalWsErrorV1 {
-                code: "INVALID_REQUEST",
-                message: "attach_surface must be handled as a stream".to_string(),
-            },
-        },
-    }
-}
-
 pub(super) fn router() -> Router<LocalApiState> {
-    Router::new().route("/v1/terminal", get(upgrade))
+    Router::new().route(TERMINAL_WS_PATH, get(upgrade))
 }
 
-async fn upgrade(State(state): State<LocalApiState>, ws: WebSocketUpgrade) -> Response {
+async fn upgrade(
+    State(state): State<LocalApiState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
     let Some(deps) = state.terminal else {
         return axum::http::StatusCode::NOT_FOUND.into_response();
     };
     let Ok(permit) = deps.connection_limit.clone().try_acquire_owned() else {
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    ws.max_message_size(MAX_TERMINAL_REQUEST_BYTES + 1)
-        .max_frame_size(MAX_TERMINAL_REQUEST_BYTES + 1)
-        .on_upgrade(move |socket| serve(socket, deps, permit))
+    // subprotocol認証を使うクライアントにはhandshake成立のためechoが必要
+    let bearer_subprotocol = headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find(|candidate| candidate.starts_with(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX))
+                .map(str::to_string)
+        });
+    let mut ws = ws
+        .max_message_size(MAX_TERMINAL_REQUEST_BYTES + 1)
+        .max_frame_size(MAX_TERMINAL_REQUEST_BYTES + 1);
+    if let Some(subprotocol) = bearer_subprotocol {
+        ws = ws.protocols([subprotocol]);
+    }
+    ws.on_upgrade(move |socket| serve(socket, deps, permit))
 }
 
 async fn serve(
@@ -123,11 +77,15 @@ async fn serve(
         let response = match frame {
             Ok(Message::Text(text)) if text.len() <= MAX_TERMINAL_REQUEST_BYTES => {
                 match serde_json::from_str::<TerminalWsRequestV1>(&text) {
-                    Ok(TerminalWsRequestV1::AttachSurface { id, owner }) => {
-                        serve_attachment(&mut sink, &mut stream, &deps, id, owner).await;
+                    Ok(TerminalWsRequestV1::AttachSurface {
+                        id,
+                        owner,
+                        attachment_id,
+                    }) => {
+                        serve_attachment(&mut sink, &mut stream, &deps, id, owner, attachment_id)
+                            .await;
                         break;
                     }
-                    Ok(request) => dispatch(&deps, request),
                     Err(error) => invalid_request(error.to_string()),
                 }
             }
@@ -165,20 +123,18 @@ async fn serve_attachment(
     deps: &TerminalApiDeps,
     id: String,
     owner: TerminalSurfaceOwnerV1,
+    attachment_id: Option<String>,
 ) {
-    let owner = match owner
-        .try_into()
-        .map_err(crate::usecase::terminal_surface::error::UsecaseError::Gateway)
-    {
+    let owner = match owner.try_into() {
         Ok(owner) => owner,
-        Err(error) => {
+        Err(message) => {
             let _ = send_response(
                 sink,
                 &TerminalWsResponseV1::Error {
                     id,
                     error: TerminalWsErrorV1 {
-                        code: "PTY_ERROR",
-                        message: error.to_string(),
+                        code: "INVALID_REQUEST",
+                        message,
                     },
                 },
             )
@@ -186,7 +142,7 @@ async fn serve_attachment(
             return;
         }
     };
-    let attachment_id = format!("ws-{}", uuid::Uuid::new_v4());
+    let attachment_id = attachment_id.unwrap_or_else(|| format!("ws-{}", uuid::Uuid::new_v4()));
     let mut attachment = match deps.application.attach(&attachment_id, &owner) {
         Ok(attachment) => attachment,
         Err(error) => {
@@ -204,6 +160,13 @@ async fn serve_attachment(
             return;
         }
     };
+    if send_response(sink, &TerminalWsResponseV1::Attached { id: id.clone() })
+        .await
+        .is_err()
+    {
+        deps.application.detach(&attachment_id);
+        return;
+    }
 
     loop {
         tokio::select! {
@@ -233,12 +196,90 @@ async fn serve_attachment(
                     }
                     Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Text(text)))
+                        if text.len() <= MAX_TERMINAL_REQUEST_BYTES =>
+                    {
+                        if let Some(error_response) = handle_attached_request(deps, &text) {
+                            if send_response(sink, &error_response).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                     Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) => {}
                 }
             }
         }
     }
     deps.application.detach(&attachment_id);
+}
+
+/// attach確立後のwrite/ack/resizeを処理する。成功時は応答なし
+/// （hot pathを往復させない）。失敗時のみErrorを返す。
+fn handle_attached_request(deps: &TerminalApiDeps, text: &str) -> Option<TerminalWsResponseV1> {
+    let request = match serde_json::from_str::<TerminalWsAttachedRequestV1>(text) {
+        Ok(request) => request,
+        Err(error) => return Some(invalid_request(error.to_string())),
+    };
+    let error = |operation: &'static str, message: String| {
+        Some(TerminalWsResponseV1::Error {
+            id: operation.to_string(),
+            error: TerminalWsErrorV1 {
+                code: "PTY_ERROR",
+                message,
+            },
+        })
+    };
+    let invalid_owner = |operation: &'static str, message: String| {
+        Some(TerminalWsResponseV1::Error {
+            id: operation.to_string(),
+            error: TerminalWsErrorV1 {
+                code: "INVALID_REQUEST",
+                message,
+            },
+        })
+    };
+    match request {
+        TerminalWsAttachedRequestV1::Write {
+            owner,
+            attachment_id,
+            sequence,
+            data,
+            client_started_at_unix_ms,
+        } => {
+            let owner = match owner.try_into() {
+                Ok(owner) => owner,
+                Err(message) => return invalid_owner("write", message),
+            };
+            match deps.application.write_attached(
+                &owner,
+                &attachment_id,
+                sequence,
+                client_started_at_unix_ms,
+                &data,
+            ) {
+                Ok(()) => None,
+                Err(cause) => error("write", cause.to_string()),
+            }
+        }
+        TerminalWsAttachedRequestV1::Ack {
+            attachment_id,
+            sequence,
+        } => {
+            deps.application
+                .acknowledge_output(&attachment_id, sequence);
+            None
+        }
+        TerminalWsAttachedRequestV1::Resize { owner, rows, cols } => {
+            let owner = match owner.try_into() {
+                Ok(owner) => owner,
+                Err(message) => return invalid_owner("resize", message),
+            };
+            match deps.application.resize(&owner, rows, cols) {
+                Ok(()) => None,
+                Err(cause) => error("resize", cause.to_string()),
+            }
+        }
+    }
 }
 
 fn invalid_request(message: String) -> TerminalWsResponseV1 {

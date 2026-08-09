@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::git_host::{
-    GitHostProvider, IssueCache, IssueInfo, PrStatus, PrStatusCache, ProviderStatus,
-};
+use crate::domain::git_host::{GitHostProvider, IssueCache, IssueInfo, PrStatus, PrStatusCache};
 
 #[derive(Clone)]
 pub struct GitHostUsecase {
@@ -22,10 +20,6 @@ impl GitHostUsecase {
             pr_cache,
             issue_cache,
         }
-    }
-
-    pub fn check_provider_status(&self, repo_path: &str) -> ProviderStatus {
-        self.provider.provider_status(repo_path)
     }
 
     pub fn fetch_pr_status(&self, repo_path: &str) -> PrStatus {
@@ -67,7 +61,6 @@ mod tests {
     use crate::domain::git_host::{PrInfo, PrStatus};
 
     struct FakeProvider {
-        status: ProviderStatus,
         pr_status: PrStatus,
         issues: Vec<IssueInfo>,
         pr_fetch_count: AtomicUsize,
@@ -75,9 +68,8 @@ mod tests {
     }
 
     impl FakeProvider {
-        fn new(status: ProviderStatus, pr_status: PrStatus, issues: Vec<IssueInfo>) -> Self {
+        fn new(pr_status: PrStatus, issues: Vec<IssueInfo>) -> Self {
             Self {
-                status,
                 pr_status,
                 issues,
                 pr_fetch_count: AtomicUsize::new(0),
@@ -85,8 +77,8 @@ mod tests {
             }
         }
 
-        fn empty(status: ProviderStatus) -> Self {
-            Self::new(status, PrStatus::default(), Vec::new())
+        fn empty() -> Self {
+            Self::new(PrStatus::default(), Vec::new())
         }
 
         fn pr_fetch_count(&self) -> usize {
@@ -99,10 +91,6 @@ mod tests {
     }
 
     impl GitHostProvider for FakeProvider {
-        fn provider_status(&self, _repo_path: &str) -> ProviderStatus {
-            self.status.clone()
-        }
-
         fn fetch_pr_status(&self, _repo_path: &str) -> PrStatus {
             self.pr_fetch_count.fetch_add(1, Ordering::SeqCst);
             self.pr_status.clone()
@@ -213,7 +201,7 @@ mod tests {
 
     #[test]
     fn provider_absent_fetches_empty_values() {
-        let provider = Arc::new(FakeProvider::empty(ProviderStatus::NoRemote));
+        let provider = Arc::new(FakeProvider::empty());
         let uc = usecase_with(
             provider,
             Arc::new(FakePrCache::default()),
@@ -225,46 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn provider_available_status_is_returned() {
-        let provider = Arc::new(FakeProvider::empty(ProviderStatus::Available));
-        let uc = usecase_with(
-            provider,
-            Arc::new(FakePrCache::default()),
-            Arc::new(FakeIssueCache::default()),
-        );
-
-        assert_eq!(uc.check_provider_status("/repo"), ProviderStatus::Available);
-    }
-
-    #[test]
-    fn provider_unavailable_statuses_are_returned() {
-        for status in [
-            ProviderStatus::NoRemote,
-            ProviderStatus::UnsupportedPlatform,
-            ProviderStatus::CliNotFound {
-                cli: "gh".to_string(),
-            },
-            ProviderStatus::NotAuthenticated,
-        ] {
-            let provider = Arc::new(FakeProvider::empty(status.clone()));
-            let uc = usecase_with(
-                provider,
-                Arc::new(FakePrCache::default()),
-                Arc::new(FakeIssueCache::default()),
-            );
-
-            assert_eq!(uc.check_provider_status("/repo"), status);
-        }
-    }
-
-    #[test]
     fn cached_pr_status_hit_does_not_fetch_provider() {
         let cached = sample_pr_status();
-        let provider = Arc::new(FakeProvider::new(
-            ProviderStatus::Available,
-            PrStatus::default(),
-            Vec::new(),
-        ));
+        let provider = Arc::new(FakeProvider::new(PrStatus::default(), Vec::new()));
         let uc = usecase_with(
             provider.clone(),
             Arc::new(FakePrCache::with_lookup(Some(cached.clone()))),
@@ -278,11 +229,7 @@ mod tests {
     #[test]
     fn cached_pr_status_miss_fetches_and_stores() {
         let fetched = sample_pr_status();
-        let provider = Arc::new(FakeProvider::new(
-            ProviderStatus::Available,
-            fetched.clone(),
-            Vec::new(),
-        ));
+        let provider = Arc::new(FakeProvider::new(fetched.clone(), Vec::new()));
         let pr_cache = Arc::new(FakePrCache::with_lookup(None));
         let uc = usecase_with(
             provider.clone(),
@@ -298,11 +245,7 @@ mod tests {
     #[test]
     fn cached_pr_status_lookup_none_refetches_and_updates_cache() {
         let fetched = sample_pr_status();
-        let provider = Arc::new(FakeProvider::new(
-            ProviderStatus::Available,
-            fetched.clone(),
-            Vec::new(),
-        ));
+        let provider = Arc::new(FakeProvider::new(fetched.clone(), Vec::new()));
         let pr_cache = Arc::new(FakePrCache::with_lookup(None));
         let uc = usecase_with(
             provider.clone(),
@@ -318,11 +261,7 @@ mod tests {
     #[test]
     fn cached_issues_hit_does_not_fetch_provider() {
         let cached = vec![sample_issue(1)];
-        let provider = Arc::new(FakeProvider::new(
-            ProviderStatus::Available,
-            PrStatus::default(),
-            Vec::new(),
-        ));
+        let provider = Arc::new(FakeProvider::new(PrStatus::default(), Vec::new()));
         let uc = usecase_with(
             provider.clone(),
             Arc::new(FakePrCache::default()),
@@ -336,11 +275,7 @@ mod tests {
     #[test]
     fn cached_issues_miss_fetches_and_stores() {
         let fetched = vec![sample_issue(2)];
-        let provider = Arc::new(FakeProvider::new(
-            ProviderStatus::Available,
-            PrStatus::default(),
-            fetched.clone(),
-        ));
+        let provider = Arc::new(FakeProvider::new(PrStatus::default(), fetched.clone()));
         let issue_cache = Arc::new(FakeIssueCache::with_lookup(None));
         let uc = usecase_with(
             provider.clone(),

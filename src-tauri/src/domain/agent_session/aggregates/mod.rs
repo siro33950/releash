@@ -1,3 +1,7 @@
+mod agent_session;
+#[cfg(test)]
+#[path = "agent_session_test.rs"]
+mod agent_session_tests;
 pub mod backend_recovery_attempt;
 pub mod backend_recovery_projection;
 pub mod provider_establishment;
@@ -12,3 +16,11 @@ pub mod runtime_streaming_delivery;
 pub mod runtime_turn;
 pub mod send_dispatches;
 pub mod session;
+
+pub(crate) use agent_session::{
+    AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
+    AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
+    AgentSessionOpenAction, AgentSessionOperations, AgentSessionOrigin,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionRemovalAuthorization,
+    ManagedPtyPresence,
+};

@@ -1,8 +1,9 @@
 use super::ProviderLifecycleBinding;
 use crate::domain::provider_lifecycle::{
-    ProviderLifecycleCapabilityHash, ProviderLifecycleEvent, ProviderLifecycleOutcome,
-    ProviderLifecycleRejection, ProviderLifecycleScope, ProviderLifecycleSignal,
-    ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation, ScopedProviderLifecycleEvent,
+    ProviderKind, ProviderLifecycleCapabilityHash, ProviderLifecycleEvent,
+    ProviderLifecycleOutcome, ProviderLifecycleRejection, ProviderLifecycleScope,
+    ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
+    ScopedProviderLifecycleEvent,
 };
 
 #[derive(Debug, Clone)]
@@ -87,7 +88,6 @@ impl ProviderLifecycleSlot {
         current.binding.mark_unavailable(observation)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn release(&mut self, binding_id: &str) -> ProviderLifecycleOutcome {
         let Some(current) = self.current.as_mut() else {
             return ProviderLifecycleOutcome::Duplicate;
@@ -100,13 +100,30 @@ impl ProviderLifecycleSlot {
         outcome
     }
 
+    pub(crate) fn release_scope(
+        &mut self,
+        scope: &ProviderLifecycleScope,
+    ) -> Option<ProviderLifecycleOutcome> {
+        let binding_id = self
+            .current
+            .as_ref()
+            .filter(|current| current.binding.scope() == scope)
+            .map(|current| current.binding.binding_id().to_string())?;
+        Some(self.release(&binding_id))
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.current.is_none()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn current_scope(&self) -> Option<&ProviderLifecycleScope> {
         self.current.as_ref().map(|current| current.binding.scope())
+    }
+
+    pub(crate) fn current_provider(&self) -> Option<ProviderKind> {
+        self.current
+            .as_ref()
+            .map(|current| current.binding.provider())
     }
 }
 

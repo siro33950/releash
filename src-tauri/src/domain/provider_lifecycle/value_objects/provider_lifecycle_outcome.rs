@@ -15,7 +15,6 @@ pub(crate) enum ProviderLifecycleRejection {
     ProviderMismatch,
     ScopeMismatch,
     BindingExpired,
-    LifecycleUnavailable,
     SessionAlreadyAssociated,
     SessionNotAssociated,
     ProviderSessionMismatch,

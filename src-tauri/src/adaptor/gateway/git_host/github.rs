@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::domain::git_host::{
-    GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus, ProviderStatus,
+    GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
 };
 
-use super::discovery::{get_origin_url, is_github, is_github_repository};
+use super::discovery::is_github_repository;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -35,20 +35,7 @@ impl Default for GitHubGitHostGateway {
 }
 
 trait GhCommandRunner: Send + Sync {
-    fn status(&self, args: &[&str]) -> GhCommandStatus;
     fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum GhCommandStatus {
-    Success,
-    Failed,
-}
-
-impl GhCommandStatus {
-    fn is_success(&self) -> bool {
-        matches!(self, Self::Success)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,22 +52,6 @@ enum GhCommandOutput {
 struct SystemGhCommandRunner;
 
 impl GhCommandRunner for SystemGhCommandRunner {
-    fn status(&self, args: &[&str]) -> GhCommandStatus {
-        let success = Command::new("gh")
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if success {
-            GhCommandStatus::Success
-        } else {
-            GhCommandStatus::Failed
-        }
-    }
-
     fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
         let mut child = match Command::new("gh")
             .args(args)
@@ -165,19 +136,6 @@ fn join_pipe_reader(handle: JoinHandle<Option<Vec<u8>>>) -> Option<Vec<u8>> {
 }
 
 impl GitHostProvider for GitHubGitHostGateway {
-    fn provider_status(&self, repo_path: &str) -> ProviderStatus {
-        let remote_url = match get_origin_url(repo_path) {
-            Some(url) => url,
-            None => return ProviderStatus::NoRemote,
-        };
-
-        if is_github(&remote_url) {
-            check_github_status(self.runner.as_ref())
-        } else {
-            ProviderStatus::UnsupportedPlatform
-        }
-    }
-
     fn fetch_pr_status(&self, repo_path: &str) -> PrStatus {
         if !is_github_repository(repo_path) {
             return PrStatus::default();
@@ -264,20 +222,6 @@ fn detect_merged_prs(runner: &dyn GhCommandRunner, repo_path: &str) -> Vec<Strin
         Some(stdout) => parse_gh_merged_pr_output(&stdout),
         None => Vec::new(),
     }
-}
-
-fn check_github_status(runner: &dyn GhCommandRunner) -> ProviderStatus {
-    if !runner.status(&["--version"]).is_success() {
-        return ProviderStatus::CliNotFound {
-            cli: "gh".to_string(),
-        };
-    }
-
-    if !runner.status(&["auth", "status"]).is_success() {
-        return ProviderStatus::NotAuthenticated;
-    }
-
-    ProviderStatus::Available
 }
 
 fn run_gh_with_timeout(
@@ -448,9 +392,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeGhRunner {
-        statuses: Mutex<HashMap<Vec<String>, GhCommandStatus>>,
         outputs: Mutex<HashMap<Vec<String>, GhCommandOutput>>,
-        status_calls: Mutex<Vec<Vec<String>>>,
         output_calls: Mutex<Vec<FakeOutputCall>>,
     }
 
@@ -463,14 +405,6 @@ mod tests {
     impl FakeGhRunner {
         fn new() -> Self {
             Self::default()
-        }
-
-        fn with_status(mut self, args: &[&str], status: GhCommandStatus) -> Self {
-            self.statuses
-                .get_mut()
-                .unwrap()
-                .insert(args_key(args), status);
-            self
         }
 
         fn with_output(mut self, args: &[&str], output: GhCommandOutput) -> Self {
@@ -487,17 +421,6 @@ mod tests {
     }
 
     impl GhCommandRunner for FakeGhRunner {
-        fn status(&self, args: &[&str]) -> GhCommandStatus {
-            let key = args_key(args);
-            self.status_calls.lock().unwrap().push(key.clone());
-            self.statuses
-                .lock()
-                .unwrap()
-                .get(&key)
-                .cloned()
-                .unwrap_or(GhCommandStatus::Failed)
-        }
-
         fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
             let key = args_key(args);
             self.output_calls.lock().unwrap().push(FakeOutputCall {
@@ -562,73 +485,6 @@ mod tests {
             "--limit",
             "100",
         ]
-    }
-
-    #[test]
-    fn provider_status_no_remote() {
-        let dir = tempfile::TempDir::new().unwrap();
-        git2::Repository::init(dir.path()).unwrap();
-
-        let status = GitHubGitHostGateway::default().provider_status(dir.path().to_str().unwrap());
-
-        assert!(matches!(status, ProviderStatus::NoRemote));
-    }
-
-    #[test]
-    fn provider_status_unsupported_platform() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-        repo.remote("origin", "https://gitlab.com/user/repo.git")
-            .unwrap();
-
-        let status = GitHubGitHostGateway::default().provider_status(dir.path().to_str().unwrap());
-
-        assert!(matches!(status, ProviderStatus::UnsupportedPlatform));
-    }
-
-    #[test]
-    fn provider_status_returns_cli_not_found_when_gh_version_fails() {
-        let dir = github_repo();
-        let runner =
-            Arc::new(FakeGhRunner::new().with_status(&["--version"], GhCommandStatus::Failed));
-
-        let status =
-            GitHubGitHostGateway::with_runner(runner).provider_status(dir.path().to_str().unwrap());
-
-        assert!(matches!(
-            status,
-            ProviderStatus::CliNotFound { cli } if cli == "gh"
-        ));
-    }
-
-    #[test]
-    fn provider_status_returns_not_authenticated_when_auth_status_fails() {
-        let dir = github_repo();
-        let runner = Arc::new(
-            FakeGhRunner::new()
-                .with_status(&["--version"], GhCommandStatus::Success)
-                .with_status(&["auth", "status"], GhCommandStatus::Failed),
-        );
-
-        let status =
-            GitHubGitHostGateway::with_runner(runner).provider_status(dir.path().to_str().unwrap());
-
-        assert!(matches!(status, ProviderStatus::NotAuthenticated));
-    }
-
-    #[test]
-    fn provider_status_returns_available_when_cli_and_auth_succeed() {
-        let dir = github_repo();
-        let runner = Arc::new(
-            FakeGhRunner::new()
-                .with_status(&["--version"], GhCommandStatus::Success)
-                .with_status(&["auth", "status"], GhCommandStatus::Success),
-        );
-
-        let status =
-            GitHubGitHostGateway::with_runner(runner).provider_status(dir.path().to_str().unwrap());
-
-        assert!(matches!(status, ProviderStatus::Available));
     }
 
     #[test]

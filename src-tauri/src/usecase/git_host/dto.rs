@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::git_host::{
-    issue_branch_name, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus, ProviderStatus,
+    issue_branch_name, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,28 +36,6 @@ impl From<PrStatus> for PrStatusDto {
                 .map(|(branch, pr)| (branch, pr.into()))
                 .collect(),
             merged_branches: status.merged_branches,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderStatusDto {
-    Available,
-    CliNotFound { cli: String },
-    NotAuthenticated,
-    UnsupportedPlatform,
-    NoRemote,
-}
-
-impl From<ProviderStatus> for ProviderStatusDto {
-    fn from(status: ProviderStatus) -> Self {
-        match status {
-            ProviderStatus::Available => Self::Available,
-            ProviderStatus::CliNotFound { cli } => Self::CliNotFound { cli },
-            ProviderStatus::NotAuthenticated => Self::NotAuthenticated,
-            ProviderStatus::UnsupportedPlatform => Self::UnsupportedPlatform,
-            ProviderStatus::NoRemote => Self::NoRemote,
         }
     }
 }
@@ -143,21 +121,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn provider_status_dto_serializes_existing_wire_shape() {
-        assert_eq!(
-            serde_json::to_value(ProviderStatusDto::from(ProviderStatus::Available)).unwrap(),
-            json!("available")
-        );
-        assert_eq!(
-            serde_json::to_value(ProviderStatusDto::from(ProviderStatus::CliNotFound {
-                cli: "gh".to_string()
-            }))
-            .unwrap(),
-            json!({"cli_not_found": {"cli": "gh"}})
-        );
-    }
 
     #[test]
     fn pr_status_dto_serializes_existing_wire_shape() {

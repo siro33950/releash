@@ -10,7 +10,15 @@ use crate::domain::comment::{
     ReviewThreadFilter, ReviewThreadState,
 };
 use crate::usecase::agent_session::session::SessionState;
+use crate::usecase::agent_session::{
+    ProviderAgentSessionItemDto, ProviderAgentSessionLifecycleDto, ProviderAgentSessionProviderDto,
+};
 use crate::usecase::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
+
+enum ReviewSessionContext {
+    Legacy(crate::usecase::agent_session::session::SessionReviewContext),
+    Provider(ProviderAgentSessionItemDto),
+}
 
 #[derive(Subcommand, Debug)]
 pub(super) enum ReviewSubcommand {
@@ -102,27 +110,51 @@ fn review_actor_and_worktree(
     }
     let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
-    if session.state == SessionState::Closed {
-        return Err(CliError::InvalidInput(format!(
-            "Session is closed and cannot be used as a review actor: {session_id}"
-        )));
+    review_actor_and_worktree_from_context(session_id, session)
+}
+
+fn review_actor_and_worktree_from_context(
+    session_id: &str,
+    session: ReviewSessionContext,
+) -> Result<(ReviewActor, String), CliError> {
+    match session {
+        ReviewSessionContext::Legacy(session) => {
+            if session.state == SessionState::Closed {
+                return Err(CliError::InvalidInput(format!(
+                    "Session is closed and cannot be used as a review actor: {session_id}"
+                )));
+            }
+            let backend_id = session.backend_id.clone().ok_or_else(|| {
+                CliError::InvalidInput(format!(
+                    "Session has no backend_id and cannot be used as a review actor: {session_id}"
+                ))
+            })?;
+            let model = session.selected_model.clone().ok_or_else(|| {
+                CliError::InvalidInput(format!(
+                    "Session has no selected_model and cannot be used as a review actor: {session_id}"
+                ))
+            })?;
+            Ok((
+                ReviewActor::agent(backend_id, model, Some(session_id.to_string())),
+                session.worktree_path,
+            ))
+        }
+        ReviewSessionContext::Provider(session) => {
+            if session.lifecycle != ProviderAgentSessionLifecycleDto::Open {
+                return Err(CliError::InvalidInput(format!(
+                    "Session is not open and cannot be used as a review actor: {session_id}"
+                )));
+            }
+            let provider = match session.provider {
+                ProviderAgentSessionProviderDto::Claude => "claude",
+                ProviderAgentSessionProviderDto::Codex => "codex",
+            };
+            Ok((
+                ReviewActor::provider_agent(provider.to_string(), Some(session_id.to_string())),
+                session.worktree_path,
+            ))
+        }
     }
-    let backend_id = session.backend_id.clone().ok_or_else(|| {
-        CliError::InvalidInput(format!(
-            "Session has no backend_id and cannot be used as a review actor: {session_id}"
-        ))
-    })?;
-    let model = session.selected_model.clone().ok_or_else(|| {
-        CliError::InvalidInput(format!(
-            "Session has no selected_model and cannot be used as a review actor: {session_id}"
-        ))
-    })?;
-    Ok(ReviewActor::agent(
-        backend_id,
-        model,
-        Some(session_id.to_string()),
-    ))
-    .map(|actor| (actor, session.worktree_path))
 }
 
 /// 読み取り専用 review コマンド (`get` / `history`) 向けの軽量 helper。
@@ -139,26 +171,41 @@ fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<Str
     }
     let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
-    Ok(session.worktree_path)
+    Ok(match session {
+        ReviewSessionContext::Legacy(session) => session.worktree_path,
+        ReviewSessionContext::Provider(session) => session.worktree_path,
+    })
 }
 
 fn review_session_context(
     data_dir: &Path,
     session_id: &str,
-) -> Result<Option<crate::usecase::agent_session::session::SessionReviewContext>, CliError> {
+) -> Result<Option<ReviewSessionContext>, CliError> {
     #[cfg(test)]
     {
         crate::adaptor::controller::wiring::build_session_store()
             .get_session_review_context(data_dir, session_id)
+            .map(|context| context.map(ReviewSessionContext::Legacy))
             .map_err(CliError::Other)
     }
     #[cfg(not(test))]
     {
-        crate::adaptor::controller::wiring::build_canonical_session_read_store(
-            data_dir.to_path_buf(),
-        )?
-        .get_session_review_context(data_dir, session_id)
-        .map_err(CliError::Other)
+        let (legacy, provider) =
+            crate::adaptor::controller::wiring::build_canonical_review_session_readers(
+                data_dir.to_path_buf(),
+            )?;
+        if let Some(context) = legacy
+            .get_session_review_context(data_dir, session_id)
+            .map_err(CliError::Other)?
+        {
+            return Ok(Some(ReviewSessionContext::Legacy(context)));
+        }
+        provider
+            .get_blocking(session_id)
+            .map(|context| context.map(ReviewSessionContext::Provider))
+            .map_err(|error| {
+                CliError::Other(format!("Provider AgentSession query failed: {error:?}"))
+            })
     }
 }
 
@@ -440,6 +487,41 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_provider_agent_session_resolves_review_actor_without_a_model() {
+        let session_id = "provider-agent-session-1";
+        let (actor, worktree_path) = review_actor_and_worktree_from_context(
+            session_id,
+            ReviewSessionContext::Provider(ProviderAgentSessionItemDto {
+                id: session_id.to_string(),
+                workspace_identity: "/repo".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                provider: ProviderAgentSessionProviderDto::Claude,
+                origin:
+                    crate::usecase::agent_session::ProviderAgentSessionOriginDto::WorkflowNode {
+                        workflow_execution_id: "workflow-1".to_string(),
+                        node_execution_id: "node-1".to_string(),
+                    },
+                lifecycle: ProviderAgentSessionLifecycleDto::Open,
+                provider_session_id: None,
+                transcript_ref: None,
+                operations: crate::usecase::agent_session::ProviderAgentSessionOperationsDto {
+                    can_archive: false,
+                    can_restore: false,
+                    can_delete: false,
+                },
+                activity: crate::usecase::agent_session::ProviderAgentSessionActivityDto::Idle,
+                last_exit_abnormal: false,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(worktree_path, "/repo/worktree");
+        assert_eq!(actor.backend_id.as_deref(), Some("claude"));
+        assert_eq!(actor.model, None);
+        assert_eq!(actor.session_id.as_deref(), Some(session_id));
+    }
 
     #[test]
     fn review_thread_json_formatter_preserves_field_shape() {

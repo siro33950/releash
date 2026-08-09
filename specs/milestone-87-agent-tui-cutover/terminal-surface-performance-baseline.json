@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "transport": "tauri-ipc",
+  "inputPhaseMs": {
+    "onDataToCommandIngressMs": {
+      "count": 16,
+      "median": 0,
+      "p95": 1,
+      "max": 1
+    },
+    "commandIngressToAdmissionMs": {
+      "count": 16,
+      "median": 0.0038745000000000003,
+      "p95": 0.012125,
+      "max": 0.012125
+    },
+    "admissionToWriterEnqueueMs": {
+      "count": 16,
+      "median": 0.0068125,
+      "p95": 0.010209,
+      "max": 0.010209
+    },
+    "writerEnqueueToOutputReadMs": {
+      "count": 16,
+      "median": 0.5446460000000001,
+      "p95": 0.746666,
+      "max": 0.746666
+    },
+    "outputReadToModelApplyMs": {
+      "count": 16,
+      "median": 0.0163335,
+      "p95": 0.036292,
+      "max": 0.036292
+    },
+    "modelApplyToEventPublishMs": {
+      "count": 16,
+      "median": 0.01625,
+      "p95": 0.040292,
+      "max": 0.040292
+    },
+    "eventPublishToChannelReceiveMs": {
+      "count": 16,
+      "median": 0,
+      "p95": 2,
+      "max": 2
+    },
+    "channelReceiveToXtermParsedMs": {
+      "count": 16,
+      "median": 0.5,
+      "p95": 1,
+      "max": 1
+    },
+    "xtermParsedToPaintMs": {
+      "count": 16,
+      "median": 9.5,
+      "p95": 19,
+      "max": 19
+    }
+  },
+  "fixture": {
+    "kind": "agent-tui",
+    "byteLength": 10485800,
+    "containsAnsi": true,
+    "containsUnicode": true,
+    "containsWideCharacters": true,
+    "containsCursorRedraw": true
+  },
+  "keyLatencyMs": {
+    "count": 16,
+    "median": 11.5,
+    "p95": 21,
+    "max": 21
+  },
+  "imeCommitLatencyMs": {
+    "count": 2,
+    "median": 13.5,
+    "p95": 20,
+    "max": 20
+  },
+  "revisitLatencyMs": {
+    "count": 1,
+    "median": 102,
+    "p95": 102,
+    "max": 102
+  },
+  "unloadedTimerDriftMs": {
+    "count": 1,
+    "median": 6,
+    "p95": 6,
+    "max": 6
+  },
+  "injectedLoadTimerDriftMs": {
+    "count": 1,
+    "median": 10,
+    "p95": 10,
+    "max": 10
+  },
+  "scrollLatencyMs": {
+    "count": 1,
+    "median": 13,
+    "p95": 13,
+    "max": 13
+  },
+  "restoreLatencyMs": {
+    "count": 1,
+    "median": 9,
+    "p95": 9,
+    "max": 9
+  },
+  "uiHeartbeatDriftMs": {
+    "count": 1,
+    "median": 10,
+    "p95": 10,
+    "max": 10
+  },
+  "workspaceSelectionLatencyMs": {
+    "count": 2,
+    "median": 13.5,
+    "p95": 16,
+    "max": 16
+  },
+  "rendererQueuedCodeUnits": {
+    "count": 2181,
+    "median": 16952,
+    "p95": 195374,
+    "max": 261540
+  },
+  "rendererPeakQueuedCodeUnits": {
+    "count": 2181,
+    "median": 212992,
+    "p95": 261540,
+    "max": 261540
+  },
+  "rendererDroppedBacklogs": 0,
+  "snapshotResyncs": 0,
+  "rendererLongStallsOver100Ms": 0,
+  "throughputMiBPerSecond": 12.987062528535917
+}

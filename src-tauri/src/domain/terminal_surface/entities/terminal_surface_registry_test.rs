@@ -12,7 +12,7 @@ fn session(
     let mut session = TerminalSurface::new_with_session_key(
         runtime_generation,
         session_key.to_string(),
-        TerminalSurfaceOwner::session(workspace, session_key),
+        TerminalSurfaceOwner::session(workspace, session_key).unwrap(),
         label.map(str::to_string),
     );
     session.worktree_path = worktree_path.map(str::to_string);
@@ -71,18 +71,6 @@ fn test_ターミナル画面終了対象_作業木が一致する画面だけ�
     targets.sort_unstable();
 
     assert_eq!(targets, vec![1, 2]);
-}
-
-#[test]
-fn test_ターミナル画面整理対象_保持キー以外を選ぶ() {
-    let mut registry = TerminalSurfaceRegistry::default();
-    registry.insert(session(1, "key-1", Some("/repo"), Some("dev")));
-    registry.insert(session(2, "key-2", Some("/repo"), Some("test")));
-    registry.insert(session(3, "key-3", Some("/other"), None));
-
-    let targets = registry.select_gc_targets("/repo", &[String::from("key-1")]);
-
-    assert_eq!(targets, vec![2]);
 }
 
 #[test]

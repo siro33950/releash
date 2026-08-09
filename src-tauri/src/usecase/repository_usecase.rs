@@ -12,7 +12,7 @@ use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
     worktree_path as derive_worktree_path, Branch, BranchRepository, Commit, FileStatus,
     GitConfigRepository, LogRepository, RepoLocator, RepositoryStatusScan, StatusRepository,
-    WorktreeRepository,
+    WorktreeRepository, WorktreeTerminalGateway,
 };
 
 use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
@@ -27,6 +27,7 @@ pub struct RepositoryUsecase {
     worktree: Arc<dyn WorktreeRepository>,
     git_config: Arc<dyn GitConfigRepository>,
     locator: Arc<dyn RepoLocator>,
+    worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     query: RepositoryQueryService,
 }
 
@@ -39,6 +40,7 @@ impl RepositoryUsecase {
         worktree: Arc<dyn WorktreeRepository>,
         git_config: Arc<dyn GitConfigRepository>,
         locator: Arc<dyn RepoLocator>,
+        worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
         query: RepositoryQueryService,
     ) -> Self {
         Self {
@@ -48,6 +50,7 @@ impl RepositoryUsecase {
             worktree,
             git_config,
             locator,
+            worktree_terminals,
             query,
         }
     }
@@ -219,13 +222,22 @@ impl RepositoryUsecase {
         })
     }
 
+    /// worktree 削除の業務手順。
+    ///
+    /// (1) worktree に紐づく terminal surface を先に停止する（best-effort。停止
+    /// 失敗は terminal surface 側で吸収され、削除は続行する）、(2) worktree 本体を
+    /// 削除、(3) releash-base config を後始末する。複数集約（terminal surface /
+    /// worktree / git_config）をまたぐオーケストレーションは usecase の責務。
     pub fn remove_worktree(
         &self,
         repo_path: &str,
         worktree_path: &str,
         force: bool,
     ) -> Result<(), UsecaseError> {
-        // gateway は worktree を削除し、指していたブランチ名を返す。対応する
+        // (1) 紐づく terminal surface を停止する。
+        self.worktree_terminals.kill_by_worktree(worktree_path);
+
+        // (2) gateway は worktree を削除し、指していたブランチ名を返す。対応する
         // releash-base config の後始末は usecase が best-effort で行う（旧 gateway
         // 内蔵の Ok|Err 握りつぶしと等価）。
         let removed_branch = self.worktree.remove(repo_path, worktree_path, force)?;
@@ -334,9 +346,12 @@ mod repository_usecase_tests {
         dirty: u32,
         branch_base: Option<String>,
         fail_create_worktree: bool,
+        fail_remove_worktree: bool,
         created_branches: Mutex<Vec<String>>,
         deleted_branches: Mutex<Vec<String>>,
         removed_worktrees: Mutex<Vec<(String, bool)>>,
+        /// `kill_by_worktree` 呼び出し時の (対象 path, その時点の removed 件数)。
+        killed_worktree_terminals: Mutex<Vec<(String, usize)>>,
         /// `remove` が返す「削除した worktree のブランチ名」。
         removed_branch: Option<String>,
         prune_invalid_calls: Mutex<u32>,
@@ -430,6 +445,9 @@ mod repository_usecase_tests {
             worktree_path: &str,
             force: bool,
         ) -> Result<Option<String>, RepositoryError> {
+            if self.fail_remove_worktree {
+                return Err(RepositoryError::External("remove failed".to_string()));
+            }
             self.removed_worktrees
                 .lock()
                 .push((worktree_path.to_string(), force));
@@ -511,6 +529,15 @@ mod repository_usecase_tests {
         }
     }
 
+    impl WorktreeTerminalGateway for FakeRepo {
+        fn kill_by_worktree(&self, worktree_path: &str) {
+            let removed_so_far = self.removed_worktrees.lock().len();
+            self.killed_worktree_terminals
+                .lock()
+                .push((worktree_path.to_string(), removed_so_far));
+        }
+    }
+
     impl BranchCardQuery for FakeRepo {
         fn list_branch_cards(
             &self,
@@ -523,6 +550,7 @@ mod repository_usecase_tests {
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         let query = RepositoryQueryService::new(fake.clone());
         RepositoryUsecase::new(
+            fake.clone(),
             fake.clone(),
             fake.clone(),
             fake.clone(),
@@ -755,6 +783,41 @@ mod repository_usecase_tests {
             *fake.removed_worktrees.lock(),
             vec![("/wt".to_string(), false)]
         );
+    }
+
+    #[test]
+    fn test_worktree削除_紐づくterminal_surfaceを先に停止する() {
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        usecase(fake.clone())
+            .remove_worktree("/r", "/wt", false)
+            .unwrap();
+        // worktree 本体の削除（removed 0 件時点）より前に停止が呼ばれる。
+        assert_eq!(
+            *fake.killed_worktree_terminals.lock(),
+            vec![("/wt".to_string(), 0)]
+        );
+        assert_eq!(
+            *fake.removed_worktrees.lock(),
+            vec![("/wt".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn test_worktree削除_削除失敗でもterminal停止は実行されエラーを伝播する() {
+        let fake = Arc::new(FakeRepo {
+            fail_remove_worktree: true,
+            ..<FakeRepo as Default>::default()
+        });
+        let err = usecase(fake.clone())
+            .remove_worktree("/r", "/wt", false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "remove failed");
+        assert_eq!(
+            *fake.killed_worktree_terminals.lock(),
+            vec![("/wt".to_string(), 0)]
+        );
+        // 削除に失敗した場合は releash-base の後始末を行わない。
+        assert!(fake.set_branch_base_override_calls.lock().is_empty());
     }
 
     #[test]

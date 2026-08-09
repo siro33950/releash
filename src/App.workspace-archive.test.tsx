@@ -102,11 +102,16 @@ vi.mock("@/components/panels/SettingsModal", () => ({
 vi.mock("@/screens/MainLayout", () => ({
 	MainLayout: ({
 		leftNav,
-		centerSelection,
+		selectedRootPath,
+		centerSelectionByWorktree,
 	}: {
 		leftNav: React.ReactNode;
-		centerSelection?: { nodeId: string } | null;
+		selectedRootPath: string | null;
+		centerSelectionByWorktree?: Record<string, { nodeId: string } | null>;
 	}) => {
+		const centerSelection = selectedRootPath
+			? (centerSelectionByWorktree?.[selectedRootPath] ?? null)
+			: null;
 		mocks.workspaceSelectionInvalidated = (
 			leftNav as React.ReactElement<{
 				onWorkspaceSelectionInvalidated: (

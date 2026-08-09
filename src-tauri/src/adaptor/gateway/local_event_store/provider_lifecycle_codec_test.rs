@@ -18,13 +18,7 @@ use crate::domain::provider_lifecycle::{
 use tempfile::TempDir;
 
 fn scope() -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new(
-        "agent-session-1",
-        "workflow-execution-1",
-        "node-execution-1",
-        1,
-    )
-    .unwrap()
+    ProviderLifecycleScope::new("agent-session-1").unwrap()
 }
 
 #[test]
@@ -151,7 +145,7 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
         ),
     })
     .unwrap();
-    let stream_id = StreamId::agent_session("agent-session-1").unwrap();
+    let stream_id = StreamId::provider_lifecycle("agent-session-1").unwrap();
     let domain_events = vec![
         ProviderLifecycleEvent::BindingArmed {
             slot_id: "slot-1".to_string(),
@@ -224,7 +218,6 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
         .collect::<Vec<_>>();
     assert_eq!(loaded, domain_events);
     let restored = ProviderLifecycleBinding::rehydrate(loaded).unwrap();
-    assert!(restored.is_stopped());
     assert_eq!(restored.provider_session_id(), Some("provider-session-1"));
 
     let stale = LocalAtomicBatch {
@@ -240,7 +233,7 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
             expected: StreamVersion::zero(),
         }],
         events: vec![UncommittedDomainEvent {
-            stream_id: StreamId::agent_session("agent-session-1").unwrap(),
+            stream_id: StreamId::provider_lifecycle("agent-session-1").unwrap(),
             event: LocalDomainEvent::ProviderLifecycle(ProviderLifecycleEvent::BindingExpired {
                 binding_id: "binding-1".to_string(),
             }),

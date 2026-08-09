@@ -26,9 +26,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-wdio = { version = "1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 portable-pty = "0.9.0"
 avt = "0.18.0"
@@ -90,6 +92,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [features]
 vendored-openssl = ["git2/vendored-openssl"]
+performance-wdio = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
 filetime = "0.2"

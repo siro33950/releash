@@ -712,8 +712,6 @@ mod tests {
         Arc::new(TestRuntimeKernel::new(
             Arc::new(StaticWorkflowResolver),
             Arc::new(TestWorktreeResolver),
-            None,
-            Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default()),
         ))
     }
 
@@ -1655,7 +1653,6 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
                         ..Default::default()

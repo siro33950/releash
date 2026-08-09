@@ -9,6 +9,21 @@ use crate::domain::agent_session::value_objects::{
     JsonPayload, SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary,
 };
 use crate::domain::code::MentionReference;
+use crate::domain::provider_lifecycle::ProviderKind;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderSessionOwnershipEvent {
+    Claimed {
+        provider: ProviderKind,
+        provider_session_id: String,
+        agent_session_id: String,
+    },
+    Released {
+        provider: ProviderKind,
+        provider_session_id: String,
+        agent_session_id: String,
+    },
+}
 
 pub type TurnId = u64;
 

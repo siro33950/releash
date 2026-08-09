@@ -660,8 +660,6 @@ pub struct ExecutionStore {
     allow_in_memory_without_data_dir: bool,
     #[cfg(test)]
     fail_next_resume_commit: AtomicBool,
-    #[cfg(test)]
-    fail_next_active_interruption_rollback: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -1135,8 +1133,6 @@ impl ExecutionStore {
             allow_in_memory_without_data_dir: false,
             #[cfg(test)]
             fail_next_resume_commit: AtomicBool::new(false),
-            #[cfg(test)]
-            fail_next_active_interruption_rollback: AtomicBool::new(false),
         }
     }
 
@@ -1156,8 +1152,6 @@ impl ExecutionStore {
             allow_in_memory_without_data_dir: false,
             #[cfg(test)]
             fail_next_resume_commit: AtomicBool::new(false),
-            #[cfg(test)]
-            fail_next_active_interruption_rollback: AtomicBool::new(false),
         }
     }
 
@@ -1169,7 +1163,6 @@ impl ExecutionStore {
             authority: Mutex::new(None),
             allow_in_memory_without_data_dir: true,
             fail_next_resume_commit: AtomicBool::new(false),
-            fail_next_active_interruption_rollback: AtomicBool::new(false),
         }
     }
 
@@ -1747,15 +1740,6 @@ impl ExecutionStore {
         &self,
         reservation: ActiveInterruptionReservation,
     ) -> Result<(), ExecutionStoreError> {
-        #[cfg(test)]
-        if self
-            .fail_next_active_interruption_rollback
-            .swap(false, Ordering::AcqRel)
-        {
-            return Err(ExecutionStoreError::InterruptionReservationChanged {
-                execution_id: reservation.execution_id,
-            });
-        }
         let mut inner = self.inner.lock().await;
         let execution_reserved = inner
             .pending_interrupted_transitions
@@ -1775,12 +1759,6 @@ impl ExecutionStore {
             });
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_next_active_interruption_rollback_for_test(&self) {
-        self.fail_next_active_interruption_rollback
-            .store(true, Ordering::Release);
     }
 
     pub async fn interrupted_transition_pending(&self, execution_id: &str) -> bool {

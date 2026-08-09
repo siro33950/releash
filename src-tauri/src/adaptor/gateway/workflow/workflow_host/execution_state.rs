@@ -118,10 +118,7 @@ impl WorkflowExecutionAggregate {
     }
 
     pub(crate) fn retry_current_node(&mut self) -> Result<NodeOutcome, WorkflowRuntimeError> {
-        let decision = self.retry_current_node_at(current_timestamp());
-        Ok(NodeOutcome::RetryCurrentNode {
-            snapshot: self.to_commit_snapshot()?,
-            completed_session_id: decision.completed_session_id,
-        })
+        self.retry_current_node_at(current_timestamp());
+        Ok(NodeOutcome::RetryCurrentNode(self.to_commit_snapshot()?))
     }
 }

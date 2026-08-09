@@ -138,7 +138,7 @@ mod tests {
                     "description": "",
                     "nodes": [{
                         "name": "node",
-                        "session": { "gate": "auto" }
+                        "session": { "provider": "claude", "gate": "auto" }
                     }]
                 }
             }),
@@ -181,7 +181,7 @@ mod tests {
                     "description": "",
                     "nodes": [{
                         "name": "node",
-                        "session": { "gate": "auto" }
+                        "session": { "provider": "claude", "gate": "auto" }
                     }]
                 }
             }),

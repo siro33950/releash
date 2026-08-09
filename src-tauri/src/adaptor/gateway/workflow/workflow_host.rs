@@ -37,8 +37,8 @@ pub(crate) mod turn_completion;
 mod turn_completion_recovery;
 
 use activation::{
-    rollback_active_interruption, run_runtime_activation,
-    run_runtime_activation_with_cancel_cleanup, InterruptionRollback, RuntimeActivationGate,
+    rollback_active_interruption, run_runtime_activation, InterruptionRollback,
+    RuntimeActivationGate,
 };
 use command_preparation::{command_execution_input_is_current, CommandExecutionInput};
 
@@ -50,12 +50,9 @@ use crate::adaptor::gateway::workflow::execution_store::{
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
-#[cfg(test)]
 use crate::adaptor::gateway::workflow::node_session_boundary::{
-    dispatch_session_start, SessionStartGate,
-};
-use crate::adaptor::gateway::workflow::node_session_boundary::{
-    NodeSessionDeps, RealNodeSessionDeps,
+    NodeSessionDeps, ProviderWorkflowAgentSessionPort, RealNodeSessionDeps,
+    WorkflowAgentSessionPort,
 };
 use crate::adaptor::gateway::workflow::secret_source;
 use crate::domain::agent_session::PermissionMode;
@@ -80,7 +77,6 @@ use crate::domain::workflow::NodeDefinition;
 #[cfg(test)]
 use crate::domain::workflow::NodeHistoryEntry;
 use crate::domain::workflow::WorkflowFacetContents;
-use crate::domain::workflow::WorkflowNodeContext;
 #[cfg(test)]
 use crate::domain::workflow::{
     CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionGate, SessionSpec,
@@ -95,10 +91,14 @@ use crate::domain::workflow::{RuntimeArtifact, RuntimeExecutionState, TokenUsage
 use crate::infrastructure::process::command_runner::{
     self as workflow_command_runner, ActiveCommandHandle, CommandRunOutput, CommandRunnerError,
 };
-use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
-use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
+#[cfg(test)]
+use crate::usecase::agent_session::session::OpenTabRegistry;
+use crate::usecase::agent_session::session::SessionStore;
 use crate::usecase::agent_session::status::current_timestamp;
+use crate::usecase::agent_session::{
+    ProviderAgentInitialInstructionUsecase, ProviderAgentSessionLaunchUsecase,
+};
 use crate::usecase::workflow::runtime_driver::{
     PreparedWorkflowTransaction, WorkflowRuntimeEffect, WorkflowTransactionCommitError,
 };
@@ -119,10 +119,6 @@ use execution_state::{DomainWorkflowExecution, FanoutChildRuntimeState, SessionW
 #[cfg(test)]
 use execution_state::{FanoutChildRuntime, FanoutRuntimeState};
 use fanout_runtime as workflow_fanout_runtime;
-#[cfg(test)]
-use node_settings::resolve_node_settings;
-#[cfg(test)]
-use node_settings::ResolvedNodeSettings;
 use node_settings::WorkflowDefaults;
 use orphan_recovery as workflow_orphan_recovery;
 use output_limit as workflow_output_limit;
@@ -134,11 +130,59 @@ use runtime_commit::{
     NodeOutcome, RequiredEventCommit,
 };
 use runtime_events as workflow_runtime_events;
-use runtime_mapping::{node_kind_to_domain, workflow_schemas_to_domain};
+use runtime_mapping::workflow_schemas_to_domain;
 use runtime_session as workflow_runtime_session;
-#[cfg(test)]
-use runtime_session::resolve_node_model_with_registry;
 use runtime_start_guard as workflow_runtime_start_guard;
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestWorkflowAgentSessionPort;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl WorkflowAgentSessionPort for TestWorkflowAgentSessionPort {
+    fn is_provider_available(
+        &self,
+        _provider: crate::domain::provider_lifecycle::ProviderKind,
+    ) -> bool {
+        true
+    }
+
+    async fn launch_workflow_agent_session(
+        &self,
+        _worktree_path: &str,
+        provider: crate::domain::provider_lifecycle::ProviderKind,
+        _workflow_execution_id: &str,
+        node_execution_id: &str,
+    ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+        Ok(NodeSessionInfo {
+            id: format!(
+                "provider-agent-session-{}-{node_execution_id}",
+                match provider {
+                    crate::domain::provider_lifecycle::ProviderKind::Claude => "claude",
+                    crate::domain::provider_lifecycle::ProviderKind::Codex => "codex",
+                }
+            ),
+        })
+    }
+
+    async fn dispatch_initial_instruction(
+        &self,
+        _node_session_id: &str,
+        _node_execution_id: &str,
+        _instruction: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        Ok(())
+    }
+
+    async fn rollback_workflow_agent_session(
+        &self,
+        _node_session_id: &str,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        Ok(())
+    }
+}
 
 fn fanout_child_failure_kind(
     exit_code: i64,
@@ -236,8 +280,7 @@ pub struct WorkflowRuntimeHost {
     execution_store: Arc<ExecutionStore>,
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
-    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    open_tabs: Arc<OpenTabRegistry>,
+    workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
     #[cfg(test)]
     fail_next_required_event_append: Arc<AtomicBool>,
     #[cfg(test)]
@@ -800,36 +843,38 @@ impl WorkflowRuntimeHost {
     pub(crate) fn new(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
-        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-        open_tabs: Arc<OpenTabRegistry>,
     ) -> Self {
         Self::with_execution_store(
             workflow_resolver,
             worktree_resolver,
-            branch_diff_context,
-            open_tabs,
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            Arc::new(TestWorkflowAgentSessionPort),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_canonical(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
-        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-        open_tabs: Arc<OpenTabRegistry>,
         data_dir: Option<std::path::PathBuf>,
         repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
         installation_id: String,
+        provider_agent_session_launch: Arc<ProviderAgentSessionLaunchUsecase>,
+        provider_agent_initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
+        provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityGateway>,
     ) -> Self {
         Self::with_execution_store(
             workflow_resolver,
             worktree_resolver,
-            branch_diff_context,
-            open_tabs,
             Arc::new(ExecutionStore::new_canonical(
                 data_dir,
                 repository,
                 installation_id,
+            )),
+            Arc::new(ProviderWorkflowAgentSessionPort::new(
+                provider_agent_session_launch,
+                provider_agent_initial_instruction,
+                provider_availability,
             )),
         )
     }
@@ -837,9 +882,8 @@ impl WorkflowRuntimeHost {
     fn with_execution_store(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
-        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-        open_tabs: Arc<OpenTabRegistry>,
         execution_store: Arc<ExecutionStore>,
+        workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
     ) -> Self {
         Self {
             executions: Arc::new(Mutex::new(HashMap::new())),
@@ -855,8 +899,7 @@ impl WorkflowRuntimeHost {
             execution_store,
             workflow_resolver,
             worktree_resolver,
-            branch_diff_context,
-            open_tabs,
+            workflow_agent_sessions,
             #[cfg(test)]
             fail_next_required_event_append: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -869,8 +912,18 @@ impl WorkflowRuntimeHost {
         Self::new(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(PassthroughManagedWorktreeResolver),
-            None,
-            Arc::new(OpenTabRegistry::default()),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_workflow_agent_sessions(
+        workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
+    ) -> Self {
+        Self::with_execution_store(
+            Arc::new(TestWorkflowDefinitionResolver),
+            Arc::new(PassthroughManagedWorktreeResolver),
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            workflow_agent_sessions,
         )
     }
 
@@ -883,6 +936,31 @@ impl WorkflowRuntimeHost {
         let lock = Arc::new(RuntimeActivationGate::new());
         locks.insert(execution_id.to_string(), Arc::downgrade(&lock));
         lock
+    }
+
+    fn ensure_workflow_providers_available(
+        &self,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), WorkflowRuntimeError> {
+        for node in &workflow.nodes {
+            let Some(session) = node.session() else {
+                continue;
+            };
+            if !self
+                .workflow_agent_sessions
+                .is_provider_available(session.provider)
+            {
+                let provider = match session.provider {
+                    crate::domain::provider_lifecycle::ProviderKind::Claude => "claude",
+                    crate::domain::provider_lifecycle::ProviderKind::Codex => "codex",
+                };
+                return Err(WorkflowRuntimeError::AgentSession(format!(
+                    "Provider '{provider}' configured for Session Node '{}' is unavailable",
+                    node.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1609,19 +1687,7 @@ impl WorkflowRuntimeHost {
         //
         // 1) workflow 構造の事前検証（空 nodes などの実行不能形状の拒否）。
         workflow_runtime_start_guard::validate_workflow_shape(&workflow)?;
-        // 2) model 検証: 各 model から所属 backend を一意に解決する。
-        //    registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
-        let registry = agent_runtime.backend_registry();
-        let workflow_definition =
-            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
-                &workflow,
-            );
-        crate::domain::workflow::validation::validate_models(&workflow_definition, |model| {
-            registry
-                .resolve_model_entry(model)
-                .map(|entry| Some(entry.backend))
-        })
-        .map_err(|e| WorkflowRuntimeError::InvalidWorkflow(e.to_string()))?;
+        self.ensure_workflow_providers_available(&workflow)?;
         let facet_contents = Self::resolve_facet_contents_for_workflow(&workflow)?;
 
         // ===== Phase 2: 副作用（Execution Store reservation 先取り → 親 session 作成 → executions 登録） =====
@@ -2536,7 +2602,6 @@ impl WorkflowRuntimeHost {
                 "required turn event commit missing rollback snapshot".to_string(),
             ));
         };
-        let completed_node_session_ids = outcome.completed_node_session_ids();
         let snapshot_for_commit = outcome.snapshot().clone();
         let terminal_and_transition_events =
             match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
@@ -2570,13 +2635,6 @@ impl WorkflowRuntimeHost {
         )
         .await?;
 
-        if !self.recovery_effects_suppressed(&execution_id).await {
-            workflow_runtime_session::release_completed_node_sessions(
-                agent_runtime,
-                &completed_node_session_ids,
-            )
-            .await;
-        }
         self.finalize_after_commit(app, &snapshot_for_commit, worktree_path)
             .await;
         if let Err(e) = self
@@ -2825,7 +2883,6 @@ impl WorkflowRuntimeHost {
         };
 
         let snapshot_for_commit = outcome.snapshot().clone();
-        let completed_node_session_ids = outcome.completed_node_session_ids();
         let execution_store_snapshot_before = self
             .execution_store
             .active_execution_snapshot(execution_id)
@@ -2891,14 +2948,9 @@ impl WorkflowRuntimeHost {
         .await?;
 
         // [04] post-commit: required event append 済みのため、ここから先の失敗は
-        // command failure に射影しない（spec [04] post-commit 境界）。session release /
-        // broadcast / terminal log / cleanup / 次 node 起動 / auto-approve primitive は
+        // command failure に射影しない（spec [04] post-commit 境界）。broadcast /
+        // terminal log / cleanup / 次 node 起動 / auto-approve primitive は
         // ここで実行する。
-        workflow_runtime_session::release_completed_node_sessions(
-            agent_runtime,
-            &completed_node_session_ids,
-        )
-        .await;
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path)
             .await;
         if let Err(e) = self
@@ -3086,7 +3138,6 @@ impl WorkflowRuntimeHost {
         };
 
         if let Some(outcome) = completion.outcome {
-            let completed_sessions = session_id.into_iter().collect::<Vec<_>>();
             self.commit_required_fanout_progress_events_and_execute_outcome(
                 app,
                 session_store,
@@ -3096,7 +3147,6 @@ impl WorkflowRuntimeHost {
                 outcome,
                 completion.snapshot_before,
                 completion.progress_events,
-                &completed_sessions,
                 completion.failure_telemetry,
             )
             .await?;
@@ -3435,10 +3485,6 @@ impl WorkflowRuntimeHost {
                     "fanout progress events require a durable outcome snapshot".to_string(),
                 ));
             };
-            let mut completed_session_ids = interrupted_session_ids.clone();
-            completed_session_ids.push(session_id.to_string());
-            completed_session_ids.sort();
-            completed_session_ids.dedup();
             self.commit_required_fanout_progress_events_and_execute_outcome(
                 app,
                 session_store,
@@ -3448,7 +3494,6 @@ impl WorkflowRuntimeHost {
                 outcome,
                 snapshot_before,
                 progress_events,
-                &completed_session_ids,
                 failure_telemetry,
             )
             .await?;
@@ -3482,14 +3527,8 @@ impl WorkflowRuntimeHost {
             } else {
                 // まだ完了していない → Persistのみ
                 if let NodeOutcome::Persist(snapshot) = outcome {
-                    self.persist_release_and_broadcast(
-                        app,
-                        agent_runtime,
-                        worktree_path,
-                        snapshot,
-                        &[session_id.to_string()],
-                    )
-                    .await?;
+                    self.persist_and_broadcast(app, worktree_path, snapshot)
+                        .await?;
                 }
             }
         }
@@ -3508,16 +3547,10 @@ impl WorkflowRuntimeHost {
         outcome: NodeOutcome,
         snapshot_before: DomainWorkflowExecution,
         mut required_events: Vec<WorkflowEvent>,
-        extra_completed_node_session_ids: &[String],
         failure_telemetry: Option<FailureClassification>,
     ) -> Result<(), WorkflowRuntimeError> {
         let execution_id = outcome.snapshot().execution_id.clone();
         let snapshot_for_commit = outcome.snapshot().clone();
-        let mut completed_node_session_ids = outcome.completed_node_session_ids();
-        completed_node_session_ids.extend(extra_completed_node_session_ids.iter().cloned());
-        completed_node_session_ids.sort();
-        completed_node_session_ids.dedup();
-
         let mut pre_commit_events =
             match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
                 Ok(events) => events,
@@ -3554,13 +3587,6 @@ impl WorkflowRuntimeHost {
             crate::other::telemetry::record_workflow_node_failure(classification, None);
         }
 
-        if !self.recovery_effects_suppressed(&execution_id).await {
-            workflow_runtime_session::release_completed_node_sessions(
-                agent_runtime,
-                &completed_node_session_ids,
-            )
-            .await;
-        }
         self.finalize_after_commit(app, &snapshot_for_commit, worktree_path)
             .await;
         self.dispatch_node_outcome_side_effects(
@@ -4070,7 +4096,6 @@ impl WorkflowRuntimeHost {
                 outcome,
                 completion.snapshot_before,
                 completion.progress_events,
-                &[],
                 completion.failure_telemetry,
             )
             .await?;
@@ -4327,10 +4352,7 @@ impl WorkflowRuntimeHost {
                 self.run_current_command_node(app, session_store, agent_runtime, worktree_path)
                     .await
             }
-            NodeKindName::Session => {
-                self.start_node_session(app, agent_runtime, session_store, worktree_path)
-                    .await
-            }
+            NodeKindName::Session => self.start_node_session(app, worktree_path).await,
             NodeKindName::Fanout => {
                 self.start_fanout_children(app, session_store, agent_runtime, worktree_path)
                     .await
@@ -4790,7 +4812,6 @@ impl WorkflowRuntimeHost {
                 outcome,
                 completion.snapshot_before,
                 completion.progress_events,
-                &[],
                 completion.failure_telemetry,
             )
             .await?;
@@ -5196,25 +5217,16 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    /// 現在のステップ用に新しいChatSessionを生成し、AgentSessionを開始してプロンプトを送信する。
-    /// ファセット方式と旧prompt方式を自動判別する。
-    ///
-    /// production 経路。副作用境界を `RealNodeSessionDeps` にラップし、コアロジック
-    /// `start_node_session_with_deps` に委譲する。
+    /// 現在のSession Node用AgentSessionを起動し、初期指示を送信する。
     async fn start_node_session<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let deps = RealNodeSessionDeps {
             app,
-            branch_diff_context: self.branch_diff_context.clone(),
-            agent_runtime,
-            session_store,
+            agent_sessions: self.workflow_agent_sessions.as_ref(),
             execution_store: &self.execution_store,
-            open_tabs: &self.open_tabs,
         };
         self.start_node_session_with_deps(&deps, worktree_path)
             .await
@@ -5222,18 +5234,7 @@ impl WorkflowRuntimeHost {
 
     /// `start_node_session` のコアロジック。副作用境界は `NodeSessionDeps` 経由で注入する。
     ///
-    /// 呼び出し順序の不変条件:
-    /// 1. `build_node_prompt`（純粋関数）でプロンプト合成
-    /// 2. `deps.create_node_session`（`exec.workflow_defaults` を継承元に注入）
-    /// 3. `session_workflow_refs` への登録
-    /// 4. `deps.dispatch_session_start`（AgentSession 開始）
-    /// 5. `executions.current_session_id` 更新
-    /// 6. `NodeSessionStarted` append とブロードキャスト
-    /// 7. `deps.start_agent_turn`（ターン起動）
-    ///
-    /// 1 で失敗した場合、2 以降は一切実行されない（合成失敗時に
-    /// ChatSession 生成や `session_workflow_refs` への孤立 entry が残らない）。
-    /// テストではこの順序保証を `NodeSessionDeps` のテストダブル経由で検証する。
+    /// プロンプト合成、AgentSession起動、Workflow所有関係の永続化、初期指示の順で実行する。
     async fn start_node_session_with_deps<D: NodeSessionDeps + ?Sized>(
         &self,
         deps: &D,
@@ -5262,8 +5263,7 @@ impl WorkflowRuntimeHost {
             node_clone,
             artifacts_clone,
             task_clone,
-            workflow_defaults_clone,
-            workflow_node_context,
+            node_execution_id,
             workflow_clone,
         ) = {
             let execs = self.executions.lock().await;
@@ -5304,20 +5304,7 @@ impl WorkflowRuntimeHost {
                 node.clone(),
                 exec.artifacts.clone(),
                 exec.request.clone(),
-                exec.workflow_defaults.clone(),
-                WorkflowNodeContext {
-                    execution_id: execution_id.clone(),
-                    node_execution_id,
-                    workflow_name: exec.workflow.name.clone(),
-                    node_name: node.name.clone(),
-                    attempt: node_attempt,
-                    parent_node_name: None,
-                    parent_attempt: None,
-                    order: exec.node_history.len() as u32,
-                    startup_timeout_secs: None,
-                    startup_max_retries: None,
-                    stale_timeout_secs: None,
-                },
+                node_execution_id,
                 exec.workflow.clone(),
             )
         };
@@ -5326,11 +5313,7 @@ impl WorkflowRuntimeHost {
             .await?;
         let node_facet_contents = facet_contents.for_node(&node_clone.name);
 
-        // プロンプト合成（純粋関数）を最初に行う。
-        // ここで失敗（参照先ファセットが存在しない等）した場合、後続の
-        // ChatSession 生成・`session_workflow_refs` 登録・AgentSession 開始は一切
-        // 行われない。これにより、`start_node_session` がエラー経路で孤立した
-        // ChatSession や参照マップ entry を残さないことを構造的に保証する。
+        // プロンプト合成に失敗した場合はAgentSessionもPTYも作成しない。
         let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
             &node_clone,
             node_facet_contents,
@@ -5339,35 +5322,67 @@ impl WorkflowRuntimeHost {
             &artifacts_clone,
             &workflow_clone.schemas,
         )?;
-        let workflow_instruction = workflow_prompt::render_node_workflow_instruction(
-            &node_clone,
-            node_facet_contents,
-            task_clone.as_deref(),
-            &artifacts_clone,
-        );
-        // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
-        let node_execution_id = workflow_node_context.node_execution_id.clone();
+        let initial_instruction =
+            crate::domain::workflow::services::prompt_composition::provider_tui_initial_instruction(
+                system_prompt.as_deref(),
+                &prompt,
+            );
+        let provider = node_clone
+            .session()
+            .ok_or_else(|| {
+                WorkflowRuntimeError::InvalidWorkflow(format!(
+                    "Node '{}' is not a Session Node",
+                    node_clone.name
+                ))
+            })?
+            .provider;
         let node_session = deps
-            .create_node_session(
+            .launch_workflow_agent_session(
                 worktree_path,
-                node_clone
-                    .session()
-                    .and_then(|session| session.model.clone()),
-                node_clone
-                    .session()
-                    .and_then(|session| session.permission.clone()),
-                workflow_defaults_clone,
-                workflow_node_context,
-                workflow_runtime_session::NodeRuntimeKindContext::new(
-                    node_kind_to_domain(&node_clone.kind).name(),
-                    node_clone.is_approval_session(),
-                ),
+                provider,
+                &execution_id_for_ref,
+                &node_execution_id,
             )
             .await?;
-        let permission_mode = node_session.permission_mode.clone();
         let node_session_id = node_session.id.clone();
 
-        // ステップセッションID → SessionWorkflowRefのマッピングを登録
+        // SessionAttached とその projection が durable になるまで、候補 aggregate を
+        // live registry へ公開しない。これにより、UI/Hook が session_id を観測して
+        // 完了処理を開始し、添付 event の commit を追い越すことを防ぐ。
+        let snapshot = {
+            let mut execs = self.executions.lock().await;
+            let execution = execs.get_mut(&execution_id_for_ref).ok_or_else(|| {
+                WorkflowRuntimeError::ExecutionNotFound(execution_id_for_ref.clone())
+            })?;
+            let mut candidate = execution.clone();
+            if !matches!(
+                candidate.attach_node_session(
+                    &node_execution_id,
+                    node_session_id.clone(),
+                    current_timestamp(),
+                ),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            ) {
+                return Err(WorkflowRuntimeError::InvalidState(format!(
+                    "NodeExecution '{node_execution_id}' does not admit AgentSession attachment"
+                )));
+            }
+            let snapshot = candidate.to_commit_snapshot()?;
+            if let Err(append_error) = deps.append_node_session_started(&snapshot).await {
+                deps.rollback_workflow_agent_session(&node_session_id, &node_execution_id)
+                    .await
+                    .map_err(|rollback_error| {
+                        WorkflowRuntimeError::AgentSession(format!(
+                            "{append_error}; rollback failed: {rollback_error}"
+                        ))
+                    })?;
+                return Err(append_error);
+            }
+            *execution = candidate;
+            snapshot
+        };
+
+        // durable attachmentだけをAgentSessionからWorkflowへ解決可能にする。
         {
             let mut map = self.session_workflow_refs.lock().await;
             map.insert(
@@ -5377,95 +5392,20 @@ impl WorkflowRuntimeHost {
                 },
             );
         }
+        deps.broadcast_state(worktree_path, snapshot).await;
 
-        // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
-        deps.dispatch_session_start(
-            &node_session_id,
-            worktree_path,
-            None,
-            system_prompt.clone(),
-            workflow_instruction.clone(),
-        )
-        .await?;
-        deps.mark_node_tab_open(&node_session_id).await;
-
-        // ステップセッションIDをワークフロー実行に紐付け
-        let snapshot = {
-            let mut execs = self.executions.lock().await;
-            if let Some(exec) = execs.get_mut(&execution_id_for_ref) {
-                let _ = exec.attach_node_session(
-                    &node_execution_id,
-                    node_session_id.clone(),
-                    current_timestamp(),
-                );
-                Some(exec.to_commit_snapshot()?)
-            } else {
-                None
-            }
-        };
-
-        if let Some(snapshot) = snapshot {
-            deps.append_node_session_started(&snapshot).await?;
-            deps.broadcast_state(worktree_path, snapshot).await;
-        }
-
-        // プロンプト送信（ステップ用セッションIDを使用）
+        // AgentSession側のat-most-once admissionを確定してからTerminalへ初期指示を送る。
         run_runtime_activation(
             &activation_gate,
             &execution_id_for_ref,
             "session",
-            deps.start_agent_turn_locked(
-                &node_execution_id,
+            deps.dispatch_initial_instruction(
                 &node_session_id,
-                &permission_mode,
-                &prompt,
-                system_prompt,
-                workflow_instruction,
+                &node_execution_id,
+                &initial_instruction,
             ),
         )
         .await
-    }
-
-    /// `build_node_prompt` で合成した `system_prompt` を `dispatch_session_start` 経由で
-    /// gate に渡し、`prompt`（user_message 由来）を返すテスト用ヘルパー。
-    ///
-    /// production では `start_node_session` 内で `build_node_prompt` →
-    /// `create_node_session_with_settings` → `dispatch_session_start` を順に呼ぶ
-    /// 構造にしている（プロンプト合成失敗時に ChatSession・参照マップ登録が起きない
-    /// 順序保証のため）。テストでは記録用 gate を注入することで、合成された
-    /// `system_prompt` が None や空文字に置換されずバックエンドへ受け渡される
-    /// 経路を直接検証する。
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    async fn build_and_dispatch_node_session<G: SessionStartGate + ?Sized>(
-        gate: &G,
-        node: &NodeDefinition,
-        facet_contents: Option<&crate::domain::workflow::FacetContents>,
-        execution_id: &str,
-        node_session_id: &str,
-        worktree_path: &str,
-        permission_mode: Option<String>,
-        request: Option<&str>,
-        artifacts: &HashMap<String, RuntimeArtifact>,
-    ) -> Result<String, WorkflowRuntimeError> {
-        let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
-            node,
-            facet_contents,
-            execution_id,
-            request,
-            artifacts,
-            &BTreeMap::new(),
-        )?;
-        dispatch_session_start(
-            gate,
-            node_session_id,
-            worktree_path,
-            permission_mode,
-            system_prompt,
-            None,
-        )
-        .await?;
-        Ok(prompt)
     }
 
     /// [08] prose 抽出経路は driver から完全除去された（spec [08] Rule 4 構造化出力の
@@ -5640,17 +5580,11 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    /// [04] pre-commit phase: sync_execution_store + release_completed_node_sessions を実行する。
-    /// 本 helper は本 issue scope 外の non-command 経路（NodeCompleted/NodeFailed 系の
-    /// `persist_release_and_broadcast` 呼び出し）専用に温存する。
-    /// 本 issue scope の command 受理 handler は required event append 前の rollback 可能な
-    /// projection と post-commit `release_completed_node_sessions` の組み合わせを使う。
-    async fn sync_persist_release<R: tauri::Runtime>(
+    /// non-command 経路のcanonical projectionを同期する。
+    async fn sync_projection<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         snapshot: &RuntimeCommitSnapshot,
-        completed_node_session_ids: &[String],
     ) -> Result<(), WorkflowRuntimeError> {
         let execution_id = snapshot.execution_id.clone();
         let mutations = self
@@ -5674,13 +5608,6 @@ impl WorkflowRuntimeHost {
             log::warn!(
                 "workflow {execution_id}: derived execution projection refresh failed after canonical projection commit: {e}"
             );
-        }
-        if !self.recovery_effects_suppressed(&execution_id).await {
-            workflow_runtime_session::release_completed_node_sessions(
-                agent_runtime,
-                completed_node_session_ids,
-            )
-            .await;
         }
         Ok(())
     }
@@ -5720,16 +5647,13 @@ impl WorkflowRuntimeHost {
     /// 既存呼び出し元（on_turn_complete 等）から使う一括 helper。pre-commit と post-commit
     /// を順に呼ぶだけで、外部 contract は変えない。
     #[allow(clippy::too_many_arguments)]
-    async fn persist_release_and_broadcast<R: tauri::Runtime>(
+    async fn persist_and_broadcast<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         snapshot: RuntimeCommitSnapshot,
-        completed_node_session_ids: &[String],
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
-        self.sync_persist_release(app, agent_runtime, &snapshot, completed_node_session_ids)
-            .await?;
+        self.sync_projection(app, &snapshot).await?;
         self.finalize_after_commit(app, &snapshot, worktree_path)
             .await;
         Ok(snapshot)
@@ -5747,7 +5671,7 @@ impl WorkflowRuntimeHost {
     /// ChatSession の分離を防ぐ（spec [05]: state mutation と event log の分離を防ぐ
     /// rollback 境界 / atomic mutation 境界）。
     ///
-    /// 必須 event が空の場合は従来通り `sync_persist_release` のみを実行する。
+    /// 必須 event が空の場合はcanonical projectionだけを同期する。
     async fn execute_outcome<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -5757,7 +5681,6 @@ impl WorkflowRuntimeHost {
         outcome: NodeOutcome,
         snapshot_before: DomainWorkflowExecution,
     ) -> Result<(), WorkflowRuntimeError> {
-        let completed_node_session_ids = outcome.completed_node_session_ids();
         let snapshot_for_commit = outcome.snapshot().clone();
         let execution_id = snapshot_for_commit.execution_id.clone();
 
@@ -5797,22 +5720,8 @@ impl WorkflowRuntimeHost {
                 },
             )
             .await?;
-            if !self.recovery_effects_suppressed(&execution_id).await {
-                workflow_runtime_session::release_completed_node_sessions(
-                    agent_runtime,
-                    &completed_node_session_ids,
-                )
-                .await;
-            }
         } else {
-            // 必須 event 無し: 従来通り sync_persist_release のみ。
-            self.sync_persist_release(
-                app,
-                agent_runtime,
-                &snapshot_for_commit,
-                &completed_node_session_ids,
-            )
-            .await?;
+            self.sync_projection(app, &snapshot_for_commit).await?;
         }
 
         // terminal / NodeCompleted are already part of the canonical commit.
@@ -5963,7 +5872,7 @@ impl WorkflowRuntimeHost {
                 }
                 Ok(())
             }
-            NodeOutcome::RetryCurrentNode { snapshot, .. } => {
+            NodeOutcome::RetryCurrentNode(snapshot) => {
                 if let Err(e) = Box::pin(self.start_current_node_runtime(
                     app,
                     session_store,
@@ -6034,6 +5943,29 @@ impl WorkflowRuntimeHost {
 
     /// fanout の子 node execution を展開して起動する。
     #[allow(clippy::too_many_arguments)]
+    async fn rollback_unattached_fanout_sessions(
+        &self,
+        child_setups: &[workflow_fanout_runtime::FanoutChildSessionSetup],
+    ) -> Option<WorkflowRuntimeError> {
+        {
+            let mut refs = self.session_workflow_refs.lock().await;
+            for setup in child_setups {
+                refs.remove(&setup.session_id);
+            }
+        }
+        let mut rollback_failure = None;
+        for setup in child_setups {
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .rollback_workflow_agent_session(&setup.session_id, &setup.node_execution_id)
+                .await
+            {
+                rollback_failure.get_or_insert(error);
+            }
+        }
+        rollback_failure
+    }
+
     async fn start_fanout_children<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -6145,19 +6077,50 @@ impl WorkflowRuntimeHost {
             })
             .collect::<Vec<_>>();
 
-        // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
-        let child_setups = workflow_runtime_session::prepare_fanout_child_session_setups(
-            app,
-            agent_runtime.backend_registry(),
-            session_store,
-            &self.session_workflow_refs,
-            worktree_path,
+        let child_session_plans = workflow_runtime_session::prepare_fanout_child_session_plans(
             &fanout_start,
             &prompt_inputs,
             &facet_contents,
             &workflow_for_facets.schemas,
-        )
-        .await?;
+        )?;
+        let mut child_setups: Vec<workflow_fanout_runtime::FanoutChildSessionSetup> =
+            Vec::with_capacity(child_session_plans.len());
+        for plan in child_session_plans {
+            let session = match self
+                .workflow_agent_sessions
+                .launch_workflow_agent_session(
+                    worktree_path,
+                    plan.provider,
+                    &fanout_start.execution_id,
+                    &plan.node_execution_id,
+                )
+                .await
+            {
+                Ok(session) => session,
+                Err(launch_error) => {
+                    return match self
+                        .rollback_unattached_fanout_sessions(&child_setups)
+                        .await
+                    {
+                        Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
+                            "{launch_error}; rollback failed: {rollback_error}"
+                        ))),
+                        None => Err(launch_error),
+                    };
+                }
+            };
+            self.session_workflow_refs.lock().await.insert(
+                session.id.clone(),
+                SessionWorkflowRef {
+                    execution_id: fanout_start.execution_id.clone(),
+                },
+            );
+            child_setups.push(workflow_fanout_runtime::FanoutChildSessionSetup {
+                node_execution_id: plan.node_execution_id,
+                session_id: session.id,
+                initial_instruction: plan.initial_instruction,
+            });
+        }
 
         let timestamp = current_timestamp();
         let (snapshot_before, snapshot) = {
@@ -6278,16 +6241,17 @@ impl WorkflowRuntimeHost {
                 .await
             {
                 return match failure {
-                    RequiredEventCommitFailure::BeforeDurableAppend(error) => Err(
-                        workflow_runtime_session::rollback_prepared_fanout_child_sessions(
-                            app,
-                            session_store,
-                            &self.session_workflow_refs,
-                            &child_setups,
-                            error,
-                        )
-                        .await,
-                    ),
+                    RequiredEventCommitFailure::BeforeDurableAppend(error) => {
+                        match self
+                            .rollback_unattached_fanout_sessions(&child_setups)
+                            .await
+                        {
+                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
+                                format!("{error}; rollback failed: {rollback_error}"),
+                            )),
+                            None => Err(error),
+                        }
+                    }
                     #[cfg(test)]
                     RequiredEventCommitFailure::AfterDurableAppend(error) => Err(error),
                 };
@@ -6346,7 +6310,6 @@ impl WorkflowRuntimeHost {
                     outcome,
                     completion.snapshot_before,
                     completion.progress_events,
-                    &[],
                     completion.failure_telemetry,
                 )
                 .await?;
@@ -6354,29 +6317,20 @@ impl WorkflowRuntimeHost {
             return Ok(());
         }
 
-        let fanout_activation_tasks =
-            Arc::new(workflow_runtime_session::FanoutActivationTaskTracker::default());
-        let cancel_fanout_activation_tasks = Arc::clone(&fanout_activation_tasks);
-        run_runtime_activation_with_cancel_cleanup(
-            &activation_gate,
-            &fanout_start.execution_id,
-            "fanout",
-            workflow_runtime_session::activate_fanout_child_sessions(
-                app,
-                self.branch_diff_context.clone(),
-                session_store,
-                agent_runtime,
-                &self.open_tabs,
-                worktree_path,
-                &child_setups,
-                snapshot,
-                fanout_activation_tasks,
-            ),
-            async move {
-                cancel_fanout_activation_tasks.abort_and_wait().await;
-            },
-        )
-        .await?;
+        workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
+        for setup in &child_setups {
+            run_runtime_activation(
+                &activation_gate,
+                &fanout_start.execution_id,
+                "fanout",
+                self.workflow_agent_sessions.dispatch_initial_instruction(
+                    &setup.session_id,
+                    &setup.node_execution_id,
+                    &setup.initial_instruction,
+                ),
+            )
+            .await?;
+        }
 
         for input in command_inputs {
             self.spawn_command_execution(app, session_store, agent_runtime, input)

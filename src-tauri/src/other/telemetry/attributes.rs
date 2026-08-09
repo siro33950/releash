@@ -331,6 +331,57 @@ pub(crate) enum StartupMetric {
     FirstRepoSnapshotReady,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalLaunchMetric {
+    CommandIngress,
+    AvailabilityAndLock,
+    DurableCreateCommit,
+    LaunchFileMaterialize,
+    CheckpointLookup,
+    ChildEnvironment,
+    PtyOpenAndSpawn,
+    OutputReaderReady,
+    FirstProviderByte,
+    FirstXtermParsed,
+    FirstPaint,
+    HookIngress,
+}
+
+impl TerminalLaunchMetric {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 12] = [
+        Self::CommandIngress,
+        Self::AvailabilityAndLock,
+        Self::DurableCreateCommit,
+        Self::LaunchFileMaterialize,
+        Self::CheckpointLookup,
+        Self::ChildEnvironment,
+        Self::PtyOpenAndSpawn,
+        Self::OutputReaderReady,
+        Self::FirstProviderByte,
+        Self::FirstXtermParsed,
+        Self::FirstPaint,
+        Self::HookIngress,
+    ];
+
+    pub(crate) fn operation(self) -> &'static str {
+        match self {
+            Self::CommandIngress => "terminal.launch.command_ingress",
+            Self::AvailabilityAndLock => "terminal.launch.availability_and_lock",
+            Self::DurableCreateCommit => "terminal.launch.durable_create_commit",
+            Self::LaunchFileMaterialize => "terminal.launch.launch_file_materialize",
+            Self::CheckpointLookup => "terminal.launch.checkpoint_lookup",
+            Self::ChildEnvironment => "terminal.launch.child_environment",
+            Self::PtyOpenAndSpawn => "terminal.launch.pty_open_and_spawn",
+            Self::OutputReaderReady => "terminal.launch.output_reader_ready",
+            Self::FirstProviderByte => "terminal.launch.first_provider_byte",
+            Self::FirstXtermParsed => "terminal.launch.first_xterm_parsed",
+            Self::FirstPaint => "terminal.launch.first_paint",
+            Self::HookIngress => "terminal.launch.hook_ingress",
+        }
+    }
+}
+
 impl StartupMetric {
     pub(crate) fn operation(self) -> &'static str {
         match self {
@@ -412,6 +463,32 @@ mod tests {
                 "agent.turn.first_assistant_event",
                 "agent.turn.permission_wait",
                 "agent.turn.complete",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_terminal_launch_operations_are_canonical() {
+        let operations: Vec<_> = TerminalLaunchMetric::ALL
+            .iter()
+            .map(|metric| metric.operation())
+            .collect();
+
+        assert_eq!(
+            operations,
+            [
+                "terminal.launch.command_ingress",
+                "terminal.launch.availability_and_lock",
+                "terminal.launch.durable_create_commit",
+                "terminal.launch.launch_file_materialize",
+                "terminal.launch.checkpoint_lookup",
+                "terminal.launch.child_environment",
+                "terminal.launch.pty_open_and_spawn",
+                "terminal.launch.output_reader_ready",
+                "terminal.launch.first_provider_byte",
+                "terminal.launch.first_xterm_parsed",
+                "terminal.launch.first_paint",
+                "terminal.launch.hook_ingress",
             ]
         );
     }

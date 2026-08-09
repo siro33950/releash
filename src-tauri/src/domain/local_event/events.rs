@@ -6,11 +6,14 @@
 
 #![allow(dead_code)] // Closed persisted event vocabulary retains compatibility accessors.
 
-use crate::domain::agent_session::events::AgentSessionDomainEvent;
+use crate::domain::agent_session::aggregates::AgentSessionLifecycleEvent;
+use crate::domain::agent_session::events::{
+    AgentSessionDomainEvent, ProviderSessionOwnershipEvent,
+};
 use crate::domain::local_event::identifiers::{
     CommitIdentity, EventId, GlobalSequence, StreamId, StreamSequence, StreamVersion,
 };
-use crate::domain::provider_lifecycle::ProviderLifecycleEvent;
+use crate::domain::provider_lifecycle::{ProviderHookHealthEvent, ProviderLifecycleEvent};
 use crate::domain::workflow::events::WorkflowDomainEvent;
 
 /// Shutdown / quit intent fixed by the first accepted quit request.
@@ -57,8 +60,11 @@ pub enum ApplicationDomainEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalDomainEvent {
     AgentSession(AgentSessionDomainEvent),
+    AgentSessionLifecycle(AgentSessionLifecycleEvent),
+    ProviderSessionOwnership(ProviderSessionOwnershipEvent),
     Workflow(WorkflowDomainEvent),
     ProviderLifecycle(ProviderLifecycleEvent),
+    ProviderHookHealth(ProviderHookHealthEvent),
     Application(ApplicationDomainEvent),
 }
 

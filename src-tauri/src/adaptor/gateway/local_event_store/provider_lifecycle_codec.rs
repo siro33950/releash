@@ -23,9 +23,6 @@ enum StoredProviderLifecycleEventV1 {
         binding_id: String,
         provider: String,
         agent_session_id: String,
-        workflow_execution_id: String,
-        node_execution_id: String,
-        attempt: u32,
     },
     SessionAssociated {
         binding_id: String,
@@ -47,9 +44,6 @@ enum StoredProviderLifecycleEventV1 {
         binding_id: String,
         provider: String,
         agent_session_id: String,
-        workflow_execution_id: String,
-        node_execution_id: String,
-        attempt: u32,
         reason: String,
     },
     BindingExpired {
@@ -123,9 +117,6 @@ fn stored_event(event: &ProviderLifecycleEvent) -> StoredProviderLifecycleEventV
             binding_id: binding_id.clone(),
             provider: stored_provider(*provider).to_string(),
             agent_session_id: scope.agent_session_id().to_string(),
-            workflow_execution_id: scope.workflow_execution_id().to_string(),
-            node_execution_id: scope.node_execution_id().to_string(),
-            attempt: scope.attempt(),
         },
         ProviderLifecycleEvent::SessionAssociated {
             binding_id,
@@ -163,9 +154,6 @@ fn stored_event(event: &ProviderLifecycleEvent) -> StoredProviderLifecycleEventV
             binding_id: binding_id.clone(),
             provider: stored_provider(*provider).to_string(),
             agent_session_id: scope.agent_session_id().to_string(),
-            workflow_execution_id: scope.workflow_execution_id().to_string(),
-            node_execution_id: scope.node_execution_id().to_string(),
-            attempt: scope.attempt(),
             reason: stored_unavailable_reason(*reason).to_string(),
         },
         ProviderLifecycleEvent::BindingExpired { binding_id } => {
@@ -185,20 +173,11 @@ fn domain_event(
             binding_id,
             provider,
             agent_session_id,
-            workflow_execution_id,
-            node_execution_id,
-            attempt,
         } => ProviderLifecycleEvent::binding_armed(
             slot_id,
             binding_id,
             domain_provider(&provider)?,
-            ProviderLifecycleScope::new(
-                agent_session_id,
-                workflow_execution_id,
-                node_execution_id,
-                attempt,
-            )
-            .map_err(|_| malformed())?,
+            ProviderLifecycleScope::new(agent_session_id).map_err(|_| malformed())?,
         )
         .map_err(|_| malformed())?,
         StoredProviderLifecycleEventV1::SessionAssociated {
@@ -226,20 +205,11 @@ fn domain_event(
             binding_id,
             provider,
             agent_session_id,
-            workflow_execution_id,
-            node_execution_id,
-            attempt,
             reason,
         } => ProviderLifecycleEvent::lifecycle_unavailable(
             binding_id,
             domain_provider(&provider)?,
-            ProviderLifecycleScope::new(
-                agent_session_id,
-                workflow_execution_id,
-                node_execution_id,
-                attempt,
-            )
-            .map_err(|_| malformed())?,
+            ProviderLifecycleScope::new(agent_session_id).map_err(|_| malformed())?,
             domain_unavailable_reason(&reason)?,
         )
         .map_err(|_| malformed())?,

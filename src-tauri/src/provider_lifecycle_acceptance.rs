@@ -60,34 +60,17 @@ pub enum AcceptanceIngressResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptanceScope {
     pub agent_session_id: String,
-    pub workflow_execution_id: String,
-    pub node_execution_id: String,
-    pub attempt: u32,
 }
 
 impl AcceptanceScope {
-    pub fn new(
-        agent_session_id: impl Into<String>,
-        workflow_execution_id: impl Into<String>,
-        node_execution_id: impl Into<String>,
-        attempt: u32,
-    ) -> Self {
+    pub fn new(agent_session_id: impl Into<String>) -> Self {
         Self {
             agent_session_id: agent_session_id.into(),
-            workflow_execution_id: workflow_execution_id.into(),
-            node_execution_id: node_execution_id.into(),
-            attempt,
         }
     }
 
     fn domain(&self) -> Result<ProviderLifecycleScope, String> {
-        ProviderLifecycleScope::new(
-            &self.agent_session_id,
-            &self.workflow_execution_id,
-            &self.node_execution_id,
-            self.attempt,
-        )
-        .map_err(|error| error.to_string())
+        ProviderLifecycleScope::new(&self.agent_session_id).map_err(|error| error.to_string())
     }
 }
 
@@ -360,6 +343,7 @@ impl ProviderLifecycleAcceptanceHost {
             Arc::new(workflow),
             runtime,
             binding.bearer_token(),
+            binding.terminal_bearer_token(),
             None,
             None,
             Some(usecase.clone()),
@@ -445,7 +429,7 @@ impl ProviderLifecycleAcceptanceHost {
         let page = self
             .store
             .load_stream(LoadStreamRequest {
-                stream_id: StreamId::agent_session(agent_session_id)
+                stream_id: StreamId::provider_lifecycle(agent_session_id)
                     .map_err(|error| error.to_string())?,
                 after: None,
                 limit: 1_024,
@@ -482,9 +466,6 @@ impl ProviderLifecycleAcceptanceHost {
             capability: launch.capability.clone(),
             provider: protocol_provider(launch.provider),
             agent_session_id: launch.scope.agent_session_id.clone(),
-            workflow_execution_id: launch.scope.workflow_execution_id.clone(),
-            node_execution_id: launch.scope.node_execution_id.clone(),
-            attempt: launch.scope.attempt,
             reason: protocol_unavailable_reason(reason),
         };
         let response = tokio::task::spawn_blocking(move || {
@@ -516,7 +497,7 @@ impl ProviderLifecycleAcceptanceHost {
         let page = self
             .store
             .load_stream(LoadStreamRequest {
-                stream_id: StreamId::agent_session(agent_session_id)
+                stream_id: StreamId::provider_lifecycle(agent_session_id)
                     .map_err(|error| error.to_string())?,
                 after: None,
                 limit: 1_024,
@@ -637,9 +618,6 @@ fn unavailable_reason(reason: ProviderLifecycleUnavailableReason) -> &'static st
 fn acceptance_scope(scope: ProviderLifecycleScope) -> AcceptanceScope {
     AcceptanceScope {
         agent_session_id: scope.agent_session_id().to_string(),
-        workflow_execution_id: scope.workflow_execution_id().to_string(),
-        node_execution_id: scope.node_execution_id().to_string(),
-        attempt: scope.attempt(),
     }
 }
 

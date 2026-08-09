@@ -4,12 +4,14 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
 import type { WorktreeBranch } from "@/types/git";
 import type {
+	CenterSelection,
 	WorkspaceSessionHistoryItem,
 	WorkspaceTreeItem,
 	WorkspaceWorkflowHistoryItem,
@@ -29,6 +31,7 @@ type MockWorkspaceTreeState = {
 const mocks = vi.hoisted(() => ({
 	invoke: vi.fn().mockResolvedValue(null),
 	emit: vi.fn().mockResolvedValue(undefined),
+	listen: vi.fn().mockResolvedValue(() => {}),
 	openUrl: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
@@ -57,7 +60,10 @@ vi.mock("react-resizable-panels", () => ({
 	Separator: () => <div />,
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
+vi.mock("@tauri-apps/api/event", () => ({
+	emit: mocks.emit,
+	listen: mocks.listen,
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/hooks/useSessionStore", () => ({
 	archiveSession: mocks.archiveSession,
@@ -225,6 +231,71 @@ function renderWorkspaceList(
 	};
 }
 
+function mockDeferredProviderCreate() {
+	const deferred: {
+		resolve?: (agentSessionId: string) => void;
+		reject?: (error: Error) => void;
+	} = {};
+	mocks.invoke.mockImplementation((command: string) => {
+		if (command === "list_provider_agent_sessions") {
+			return Promise.resolve({ items: [], nextAfterSessionId: null });
+		}
+		if (command === "list_available_provider_agent_session_providers") {
+			return Promise.resolve(["codex"]);
+		}
+		if (command === "create_provider_agent_session") {
+			return new Promise<string>((resolve, reject) => {
+				deferred.resolve = resolve;
+				deferred.reject = reject;
+			});
+		}
+		return Promise.resolve(null);
+	});
+	return deferred;
+}
+
+async function launchProviderCreate(
+	user: ReturnType<typeof userEvent.setup>,
+	onSelectWorktree: ReturnType<typeof vi.fn>,
+) {
+	await user.click(screen.getByRole("button", { name: "Create in feature" }));
+	await user.hover(screen.getByRole("menuitem", { name: "NewSession" }));
+	const provider = await screen.findByRole("menuitem", { name: "codex" });
+	act(() => provider.focus());
+	await user.keyboard("{Enter}");
+	await waitFor(() => {
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			expect.objectContaining({ kind: "provider_agent_session_launching" }),
+		);
+	});
+}
+
+function wireSelectionRoundTrip({
+	onSelectWorktree,
+	rerenderWorkspaceList,
+}: {
+	onSelectWorktree: ReturnType<typeof vi.fn>;
+	rerenderWorkspaceList: (
+		nextOverrides?: Partial<React.ComponentProps<typeof WorkspaceList>>,
+	) => void;
+}) {
+	onSelectWorktree.mockImplementation(
+		(
+			_rootPath: string,
+			_branchName?: string,
+			_repoName?: string,
+			selection?: CenterSelection,
+		) => {
+			if (selection) {
+				rerenderWorkspaceList({ centerSelection: selection });
+			}
+		},
+	);
+}
+
 beforeEach(() => {
 	for (const mock of Object.values(mocks)) {
 		if (typeof mock === "function" && "mockClear" in mock) {
@@ -263,6 +334,413 @@ describe("WorkspaceList", () => {
 				.querySelector("svg.lucide-git-fork"),
 		).toBeInTheDocument();
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
+	});
+
+	it("backendが絞り込んだStandalone Provider AgentSessionを選択できる", async () => {
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({
+					items: [
+						{
+							id: "provider-agent-1",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "open",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+					],
+					nextAfterSessionId: null,
+				});
+			}
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		await user.click(
+			await screen.findByRole("button", {
+				name: "Claude AgentSession, open",
+			}),
+		);
+
+		expect(mocks.invoke).toHaveBeenCalledWith("list_provider_agent_sessions", {
+			workspaceIdentity: "/repo/wt",
+			origin: "standalone",
+			limit: 100,
+		});
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "provider_agent_session",
+				worktreePath: "/repo/wt",
+				agentSessionId: "provider-agent-1",
+			},
+		);
+	});
+
+	it("Archived Provider AgentSessionをWorkspaceからSessionHistoryへ移して復帰できる", async () => {
+		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+			if (command === "list_provider_agent_sessions") {
+				const lifecycle = (args as { lifecycle?: string })?.lifecycle;
+				return Promise.resolve(
+					lifecycle === "archived"
+						? {
+								items: [
+									{
+										id: "provider-agent-archived",
+										workspaceIdentity: "/repo/wt",
+										worktreePath: "/repo/wt",
+										provider: "claude",
+										lifecycle: "archived",
+										activity: "idle",
+										lastExitAbnormal: false,
+										operations: {
+											canArchive: false,
+											canRestore: true,
+											canDelete: true,
+										},
+									},
+								],
+								nextAfterSessionId: null,
+							}
+						: { items: [], nextAfterSessionId: null },
+				);
+			}
+			if (command === "list_provider_agent_session_history") {
+				return Promise.resolve({ items: [], nextAfter: null });
+			}
+			if (command === "restore_provider_agent_session") {
+				return Promise.resolve("restored");
+			}
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		expect(
+			screen.queryByRole("button", {
+				name: "Claude AgentSession, archived",
+			}),
+		).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for feature" }),
+		);
+		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
+		const archived = await screen.findByRole("menuitem", {
+			name: /Claude AgentSession/,
+		});
+		expect(
+			screen.getByRole("button", { name: "Delete Claude AgentSession" }),
+		).toBeVisible();
+		act(() => archived.focus());
+		await user.keyboard("{Enter}");
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"restore_provider_agent_session",
+				expect.objectContaining({
+					agentSessionId: "provider-agent-archived",
+					rows: 24,
+					cols: 80,
+					callerRequestId: expect.any(String),
+				}),
+			);
+			expect(onSelectWorktree).toHaveBeenCalledWith(
+				"/repo/wt",
+				"feature",
+				"repo",
+				{
+					kind: "provider_agent_session",
+					worktreePath: "/repo/wt",
+					agentSessionId: "provider-agent-archived",
+				},
+			);
+		});
+	});
+
+	it("Standalone Provider AgentSessionの実行状態はテキストでなくアイコン色で表現する", async () => {
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({
+					items: [
+						{
+							id: "provider-agent-running",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "open",
+							activity: "running",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+						{
+							id: "provider-agent-open",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "open",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+						{
+							id: "provider-agent-paused-abnormal",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "codex",
+							lifecycle: "paused",
+							activity: "idle",
+							lastExitAbnormal: true,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+						{
+							id: "provider-agent-paused",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "codex",
+							lifecycle: "paused",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+					],
+					nextAfterSessionId: null,
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+		renderWorkspaceList();
+
+		const runningRow = await screen.findByRole("button", {
+			name: "Claude AgentSession, running",
+		});
+		const openRow = screen.getByRole("button", {
+			name: "Claude AgentSession, open",
+		});
+		const abnormalRow = screen.getByRole("button", {
+			name: "Codex AgentSession, paused (exited abnormally)",
+		});
+		const pausedRow = screen.getByRole("button", {
+			name: "Codex AgentSession, paused",
+		});
+
+		expect(within(runningRow).queryByText("running")).toBeNull();
+		expect(within(openRow).queryByText("open")).toBeNull();
+		expect(within(abnormalRow).queryByText(/paused/)).toBeNull();
+		expect(within(pausedRow).queryByText("paused")).toBeNull();
+		expect(within(runningRow).getByTitle("running").firstChild).toHaveClass(
+			"text-blue-600",
+			"dark:text-blue-300",
+			"animate-pulse",
+		);
+		const openIcon = within(openRow).getByTitle("open").firstChild;
+		expect(openIcon).toHaveClass("text-foreground");
+		expect(openIcon).not.toHaveClass("animate-pulse");
+		expect(
+			within(abnormalRow).getByTitle("paused (exited abnormally)").firstChild,
+		).toHaveClass("text-destructive");
+		expect(within(pausedRow).getByTitle("paused").firstChild).toHaveClass(
+			"text-muted-foreground",
+		);
+	});
+
+	it("Standalone Provider AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({
+					items: [
+						{
+							id: "provider-agent-unknown",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "open",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+					],
+					nextAfterSessionId: null,
+				});
+			}
+			if (command === "archive_provider_agent_session") {
+				return Promise.resolve("delete_confirmation_required");
+			}
+			return Promise.resolve(undefined);
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(
+			await screen.findByRole("button", {
+				name: "Archive Claude AgentSession",
+			}),
+		);
+
+		expect(
+			await screen.findByText(
+				/This AgentSession has no Provider session ID and cannot be archived/,
+			),
+		).toBeVisible();
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"confirm_provider_agent_session_archive_delete",
+			expect.anything(),
+		);
+
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"confirm_provider_agent_session_archive_delete",
+				expect.objectContaining({
+					agentSessionId: "provider-agent-unknown",
+				}),
+			);
+		});
+	});
+
+	it("Standalone Provider AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({
+					items: [
+						{
+							id: "provider-agent-known",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "open",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: true,
+								canRestore: false,
+								canDelete: false,
+							},
+						},
+					],
+					nextAfterSessionId: null,
+				});
+			}
+			if (command === "archive_provider_agent_session") {
+				return Promise.resolve("archived");
+			}
+			return Promise.resolve(undefined);
+		});
+		const refresh = vi.fn();
+		window.addEventListener("provider-agent-session-refresh", refresh);
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(
+			await screen.findByRole("button", {
+				name: "Archive Claude AgentSession",
+			}),
+		);
+
+		await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+		const event = refresh.mock.calls[0]?.[0];
+		expect((event as CustomEvent).detail).toEqual({
+			worktreePath: "/repo/wt",
+		});
+		window.removeEventListener("provider-agent-session-refresh", refresh);
+	});
+
+	it("Standalone Provider AgentSession一覧の次pageをcursorから表示する", async () => {
+		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+			if (command !== "list_provider_agent_sessions") {
+				return Promise.resolve(null);
+			}
+			const afterSessionId = (args as { afterSessionId?: string })
+				?.afterSessionId;
+			return Promise.resolve(
+				afterSessionId
+					? {
+							items: [
+								{
+									id: "provider-agent-2",
+									workspaceIdentity: "/repo/wt",
+									worktreePath: "/repo/wt",
+									provider: "codex",
+									lifecycle: "open",
+									activity: "idle",
+									lastExitAbnormal: false,
+									operations: {
+										canArchive: true,
+										canRestore: false,
+										canDelete: false,
+									},
+								},
+							],
+							nextAfterSessionId: null,
+						}
+					: {
+							items: [
+								{
+									id: "provider-agent-1",
+									workspaceIdentity: "/repo/wt",
+									worktreePath: "/repo/wt",
+									provider: "claude",
+									lifecycle: "open",
+									activity: "idle",
+									lastExitAbnormal: false,
+									operations: {
+										canArchive: true,
+										canRestore: false,
+										canDelete: false,
+									},
+								},
+							],
+							nextAfterSessionId: "provider-agent-1",
+						},
+			);
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(
+			await screen.findByRole("button", { name: "Load more AgentSessions" }),
+		);
+
+		expect(
+			await screen.findByRole("button", {
+				name: "Codex AgentSession, open",
+			}),
+		).toBeVisible();
+		expect(mocks.invoke).toHaveBeenCalledWith("list_provider_agent_sessions", {
+			workspaceIdentity: "/repo/wt",
+			origin: "standalone",
+			limit: 100,
+			afterSessionId: "provider-agent-1",
+		});
 	});
 
 	it("renders an empty backend-owned Workflow branch without Node leaves", () => {
@@ -740,15 +1218,149 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("sends NewSession through the separate creation operation", async () => {
+	it("NewSessionはNewWorkflowと同じsubmenuでProviderを選択して作成する", async () => {
 		const user = userEvent.setup();
-		const { onCreateSession, onSelectWorktree } = renderWorkspaceList();
+		let providerSessionListCalls = 0;
+		const refreshAfterCreate = new Promise(() => {});
+		const initialAttachment = {
+			agentSessionId: "provider-agent-session-1",
+			workspaceIdentity: "/repo/wt",
+			worktreePath: "/repo/wt",
+			provider: "codex" as const,
+		};
+		mocks.invoke.mockImplementation((command) => {
+			if (command === "list_provider_agent_sessions") {
+				providerSessionListCalls += 1;
+				return providerSessionListCalls === 1
+					? Promise.resolve({ items: [], nextAfterSessionId: null })
+					: refreshAfterCreate;
+			}
+			if (command === "list_available_provider_agent_session_providers") {
+				return Promise.resolve(["codex"]);
+			}
+			if (command === "create_provider_agent_session") {
+				return Promise.resolve("provider-agent-session-1");
+			}
+			return Promise.resolve(null);
+		});
+		const { onCreateSession, onSelectWorktree, rerenderWorkspaceList } =
+			renderWorkspaceList();
+		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
+		await waitFor(() => {
+			expect(providerSessionListCalls).toBe(1);
+		});
 
 		await user.click(screen.getByRole("button", { name: "Create in feature" }));
-		await user.click(screen.getByRole("menuitem", { name: "NewSession" }));
+		await user.hover(screen.getByRole("menuitem", { name: "NewSession" }));
+		const provider = await screen.findByRole("menuitem", { name: "codex" });
+		act(() => provider.focus());
+		await user.keyboard("{Enter}");
 
-		expect(onCreateSession).toHaveBeenCalledWith("/repo/wt", "feature", "repo");
+		expect(onCreateSession).not.toHaveBeenCalled();
+		expect(
+			screen.queryByRole("dialog", { name: "New AgentSession" }),
+		).toBeNull();
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"create_provider_agent_session",
+				expect.objectContaining({
+					workspaceIdentity: "/repo/wt",
+					worktreePath: "/repo/wt",
+					provider: "codex",
+					rows: 24,
+					cols: 80,
+					callerRequestId: expect.any(String),
+				}),
+			);
+			expect(onSelectWorktree).toHaveBeenCalledWith(
+				"/repo/wt",
+				"feature",
+				"repo",
+				{
+					kind: "provider_agent_session",
+					worktreePath: "/repo/wt",
+					agentSessionId: "provider-agent-session-1",
+					initialAttachment,
+				},
+			);
+		});
+	});
+
+	it("AgentSession作成のpending中に別Nodeへ移動した場合は作成成功でも選択を奪わない", async () => {
+		const user = userEvent.setup();
+		const createCall = mockDeferredProviderCreate();
+		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
+		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
+
+		await launchProviderCreate(user, onSelectWorktree);
+		onSelectWorktree.mockClear();
+		rerenderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		});
+
+		await act(async () => {
+			createCall.resolve?.("provider-agent-session-1");
+		});
+
 		expect(onSelectWorktree).not.toHaveBeenCalled();
+	});
+
+	it("AgentSession作成のpending中に別Nodeへ移動した場合は失敗しても選択を奪わずエラーを表示する", async () => {
+		const user = userEvent.setup();
+		const createCall = mockDeferredProviderCreate();
+		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
+		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
+
+		await launchProviderCreate(user, onSelectWorktree);
+		onSelectWorktree.mockClear();
+		rerenderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		});
+
+		await act(async () => {
+			createCall.reject?.(new Error("spawn failed"));
+		});
+
+		expect(onSelectWorktree).not.toHaveBeenCalled();
+		expect(await screen.findByRole("alert")).toHaveTextContent("spawn failed");
+	});
+
+	it("選択が起動中表示のまま作成が失敗した場合は同一launchTokenのエラー表示を再選択する", async () => {
+		const user = userEvent.setup();
+		const createCall = mockDeferredProviderCreate();
+		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
+		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
+
+		await launchProviderCreate(user, onSelectWorktree);
+		const launching = onSelectWorktree.mock.lastCall?.[3] as Extract<
+			CenterSelection,
+			{ kind: "provider_agent_session_launching" }
+		>;
+
+		await act(async () => {
+			createCall.reject?.(new Error("spawn failed"));
+		});
+
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "provider_agent_session_launching",
+				worktreePath: "/repo/wt",
+				provider: "codex",
+				launchToken: launching.launchToken,
+				error: "spawn failed",
+			},
+		);
 	});
 
 	it("closes only a Node allowed by backend capability", async () => {
@@ -959,6 +1571,124 @@ describe("WorkspaceList", () => {
 
 		expect(mocks.archiveSession).toHaveBeenCalledWith("closed-session");
 		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalledOnce());
+	});
+
+	it("resumes a Provider history candidate as a new AgentSession", async () => {
+		const user = userEvent.setup();
+		mocks.invoke.mockImplementation((command) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({ items: [], nextAfterSessionId: null });
+			}
+			if (command === "list_provider_agent_session_history") {
+				return Promise.resolve({
+					items: [
+						{
+							provider: "codex",
+							providerSessionId: "provider-session-1",
+						},
+					],
+					nextAfter: null,
+				});
+			}
+			if (command === "resume_provider_agent_session_history_candidate") {
+				return Promise.resolve("provider-agent-session-2");
+			}
+			return Promise.resolve(null);
+		});
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for feature" }),
+		);
+		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
+		const candidate = await screen.findByRole("menuitem", {
+			name: /codex.*provider-session-1/,
+		});
+		act(() => candidate.focus());
+		await user.keyboard("{Enter}");
+
+		expect(mocks.invoke).toHaveBeenCalledWith(
+			"resume_provider_agent_session_history_candidate",
+			expect.objectContaining({
+				workspaceIdentity: "/repo/wt",
+				worktreePath: "/repo/wt",
+				provider: "codex",
+				providerSessionId: "provider-session-1",
+				rows: 24,
+				cols: 80,
+				callerRequestId: expect.any(String),
+			}),
+		);
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "provider_agent_session",
+				worktreePath: "/repo/wt",
+				agentSessionId: "provider-agent-session-2",
+			},
+		);
+	});
+
+	it("Provider historyの次pageをcursorから表示する", async () => {
+		const user = userEvent.setup();
+		mocks.invoke.mockImplementation((command, args?: unknown) => {
+			if (command === "list_provider_agent_sessions") {
+				return Promise.resolve({ items: [], nextAfterSessionId: null });
+			}
+			if (command === "list_provider_agent_session_history") {
+				const after = (args as { after?: string })?.after;
+				return Promise.resolve(
+					after
+						? {
+								items: [
+									{
+										provider: "claude",
+										providerSessionId: "provider-session-2",
+									},
+								],
+								nextAfter: null,
+							}
+						: {
+								items: [
+									{
+										provider: "codex",
+										providerSessionId: "provider-session-1",
+									},
+								],
+								nextAfter: "history-cursor-1",
+							},
+				);
+			}
+			return Promise.resolve(null);
+		});
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for feature" }),
+		);
+		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
+		const loadMore = await screen.findByRole("menuitem", {
+			name: "Load more Provider history",
+		});
+		act(() => loadMore.focus());
+		await user.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"list_provider_agent_session_history",
+				{
+					worktreePath: "/repo/wt",
+					limit: 100,
+					after: "history-cursor-1",
+				},
+			),
+		);
+		expect(
+			await screen.findByRole("menuitem", {
+				name: /claude.*provider-session-2/,
+			}),
+		).toBeVisible();
 	});
 
 	it.each([

@@ -123,22 +123,6 @@ pub fn collect_node_session_ids(state: &WorkflowRuntimeSnapshot) -> HashSet<Stri
         .collect::<HashSet<_>>()
 }
 
-pub fn collect_completed_node_session_ids(state: &WorkflowRuntimeSnapshot) -> Vec<String> {
-    let mut ids = Vec::new();
-    let Some(entry) = state.node_history.last() else {
-        return ids;
-    };
-    if let Some(session_id) = entry.session_id.as_ref() {
-        ids.push(session_id.clone());
-    }
-    if let Some(children) = entry.fanout_children.as_ref() {
-        ids.extend(children.iter().filter_map(|child| child.session_id.clone()));
-    }
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
 pub fn collect_terminal_node_session_ids(state: &WorkflowRuntimeSnapshot) -> Vec<String> {
     let mut ids = Vec::new();
     ids.extend(state.current_session_id.iter().cloned());
@@ -256,13 +240,6 @@ mod tests {
         assert_eq!(fanout.progress, NodeProgress::Running);
         assert_eq!(fanout.representative, RepresentativeStatus::Running);
         assert_eq!(fanout.order, 0);
-    }
-
-    #[test]
-    fn completed_node_session_ids_use_last_history_entry_only_for_cleanup() {
-        let ids = collect_completed_node_session_ids(&state());
-
-        assert_eq!(ids, vec!["child-session", "done-session"]);
     }
 
     #[test]

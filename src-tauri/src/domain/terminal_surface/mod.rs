@@ -3,7 +3,8 @@ pub(crate) mod gateway;
 pub(crate) mod value_objects;
 
 pub use value_objects::{
-    TerminalProcessState, TerminalRuntimeGeneration, TerminalSurfaceCheckpoint,
-    TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner, TerminalSurfaceStartupCommand,
+    TerminalActivity, TerminalProcessLaunch, TerminalProcessState, TerminalRuntimeGeneration,
+    TerminalSurfaceCheckpoint, TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner,
+    TerminalSurfaceStartupCommand, TERMINAL_ACTIVITY_RUNNING_WINDOW,
     TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };

@@ -3,7 +3,7 @@ description: only one next catch-all is allowed
 nodes:
   - name: route
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: route
@@ -12,7 +12,7 @@ nodes:
       - next: done
   - name: done
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: done

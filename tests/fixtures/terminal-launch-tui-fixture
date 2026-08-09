@@ -1,0 +1,11 @@
+#!/bin/sh
+# TUI-shaped deterministic launch fixture:
+# alt-screen -> initial frame -> (init delay) -> READY marker -> input echo loop.
+printf '\033[?1049h\033[2J\033[H'
+printf '\033[1mReleash launch fixture TUI\033[0m\r\n'
+printf 'initializing...\r\n'
+sleep 0.2
+printf 'LAUNCH-TUI-READY\r\n'
+while IFS= read -r line; do
+	printf 'echo:%s\r\n' "$line"
+done
