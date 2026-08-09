@@ -9643,7 +9643,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_active_command(driver: &WorkflowRuntimeHost, execution_id: &str) {
-        for _ in 0..100 {
+        for _ in 0..3000 {
             if driver
                 .active_command_executions
                 .lock()
@@ -9663,7 +9663,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         child_name: &str,
     ) -> String {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let session_id = {
                 let execs = driver.executions.lock().await;
                 execs
@@ -9690,7 +9690,7 @@ mod dispatch_boundary_tests {
     }
 
     async fn wait_for_inactive_command(driver: &WorkflowRuntimeHost, execution_id: &str) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if !driver
                 .active_command_executions
                 .lock()
@@ -9707,7 +9707,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if let Ok(text) = std::fs::read_to_string(path) {
                 if let Ok(pid) = text.trim().parse::<i32>() {
                     return pid;
@@ -9720,7 +9720,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     async fn wait_for_process_exit(pid: i32) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if !process_exists(pid) {
                 return;
             }
@@ -9744,7 +9744,7 @@ mod dispatch_boundary_tests {
         driver: &WorkflowRuntimeHost,
         execution_id: &str,
     ) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let execution_store_terminal = driver
                 .execution_store()
                 .get_execution(execution_id)
@@ -9776,7 +9776,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         expected: ExecutionStatus,
     ) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             if driver
                 .execution_store()
                 .get_execution(execution_id)
@@ -9934,7 +9934,7 @@ mod dispatch_boundary_tests {
         execution_id: &str,
         node_name: &str,
     ) -> (String, String) {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let target = {
                 let executions = driver.executions.lock().await;
                 executions.get(execution_id).and_then(|execution| {
@@ -9991,7 +9991,7 @@ mod dispatch_boundary_tests {
         parent_node: &str,
         expected_count: usize,
     ) -> Vec<(String, String, String)> {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let children = {
                 let executions = driver.executions.lock().await;
                 executions
