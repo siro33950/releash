@@ -12,8 +12,6 @@ import type {
 } from "@/types/provider-agent-session";
 import type { Theme } from "@/types/settings";
 
-export type { ProviderAgentSessionItem } from "@/types/provider-agent-session";
-
 type OpenOutcome =
 	| "attached"
 	| "resumed"

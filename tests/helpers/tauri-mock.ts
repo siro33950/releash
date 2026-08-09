@@ -3,7 +3,6 @@ import type { Page } from "@playwright/test";
 export interface MockConfig {
 	/**
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
-	 * `{ __mockSequence: [...] }` は呼び出し順に返し、末尾へ到達後は最後の値を維持する。
 	 */
 	ipcHandler: Record<string, unknown>;
 }
@@ -75,7 +74,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
 		// イベントリスナー管理
 		const eventListeners = new Map<string, number[]>();
-		const invocationCounts = new Map<string, number>();
 		const agentSessionNotices = new Map<
 			string,
 			{ operation: string; message: string }
@@ -441,20 +439,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 						state: { type: "accepted" },
 					};
 				}
-				if (
-					value &&
-					typeof value === "object" &&
-					"__mockSequence" in (value as Record<string, unknown>)
-				) {
-					const sequence = (value as { __mockSequence: unknown[] })
-						.__mockSequence;
-					const index = invocationCounts.get(cmd) ?? 0;
-					invocationCounts.set(cmd, index + 1);
-					value =
-						sequence.length === 0
-							? null
-							: sequence[Math.min(index, sequence.length - 1)];
-				}
 				// { __mockError: "message" } の場合はエラーを投げる
 				if (
 					value &&
@@ -524,7 +508,6 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			invocations,
 			setMockResponse: (cmd: string, value: unknown) => {
 				cfg.ipcHandler[cmd] = value;
-				invocationCounts.delete(cmd);
 			},
 			metadata: {
 				currentWindow: { label: "main" },

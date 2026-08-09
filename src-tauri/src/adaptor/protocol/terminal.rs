@@ -126,31 +126,6 @@ impl From<GetOrSpawnTerminalDto> for GetOrSpawnTerminalV1 {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct TerminalSurfaceInfoV1 {
-    pub session_key: String,
-    pub worktree_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    pub is_exited: bool,
-}
-
-impl From<TerminalSurfaceSummaryDto> for TerminalSurfaceInfoV1 {
-    fn from(surface: TerminalSurfaceSummaryDto) -> Self {
-        Self {
-            session_key: surface.session_key,
-            worktree_path: surface.worktree_path,
-            label: surface.label,
-            is_exited: surface.is_exited,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct TerminalSurfaceAvailabilityV1 {
-    pub unavailable_session_keys: Vec<String>,
-}
-
 /// terminal WebSocket認証に使うsubprotocolのprefix。クライアントは
 /// `{prefix}{bearer_token}` を Sec-WebSocket-Protocol として送る。
 pub const TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX: &str = "releash-bearer.";

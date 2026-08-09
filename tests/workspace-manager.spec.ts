@@ -284,10 +284,7 @@ test.describe("Workspace Manager", () => {
 				workspaceIdentity: worktreePath,
 				worktreePath,
 				provider: "codex",
-				origin: { kind: "standalone" },
 				lifecycle: "open",
-				providerSessionId: null,
-				transcriptRef: null,
 				operations: {
 					canArchive: true,
 					canRestore: false,

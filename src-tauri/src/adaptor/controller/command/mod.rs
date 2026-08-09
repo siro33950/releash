@@ -387,7 +387,6 @@ mod tests {
             "build_diff_file_tree",
             "build_review_thread_handoff",
             "cancel_agent_queued_turn",
-            "check_pr_provider_status",
             "close_workspace_node",
             "compute_hidden_ranges",
             "compute_hidden_ranges_from_content",
@@ -511,7 +510,6 @@ mod tests {
             "list_provider_agent_session_history",
             "list_provider_agent_sessions",
             "list_provider_hook_health_warnings",
-            "list_terminal_surfaces",
             "list_review_threads",
             "list_session_statuses",
             "list_sessions",
@@ -536,7 +534,6 @@ mod tests {
             "sync_worktree_node_statuses",
             "query_notion_tasks",
             "quit_after_startup_failure",
-            "reconcile_terminal_surfaces",
             "record_terminal_launch_renderer_phase",
             "remove_repo_path",
             "remove_worktree",
@@ -676,10 +673,7 @@ mod tests {
 
         git_host::register(&mut router);
 
-        assert_eq!(
-            router.domain_route_index("check_pr_provider_status"),
-            Some(0)
-        );
+        assert_eq!(router.domain_route_index("fetch_pr_status"), Some(0));
         assert_eq!(router.domain_route_index("get_cached_issues"), Some(0));
         assert_eq!(router.domain_route_index("get_git_status"), None);
     }

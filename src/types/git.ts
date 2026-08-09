@@ -38,13 +38,6 @@ export interface WorktreeBranch {
 	agent_state_timestamp?: number;
 }
 
-export type ProviderStatus =
-	| "available"
-	| { cli_not_found: { cli: string } }
-	| "not_authenticated"
-	| "unsupported_platform"
-	| "no_remote";
-
 interface PrInfo {
 	number: number;
 	url: string;

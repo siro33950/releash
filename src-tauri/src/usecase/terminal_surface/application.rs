@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use crate::domain::terminal_surface::entities::{
@@ -258,14 +258,6 @@ impl TerminalSurfaceApplication {
         Ok(lifecycle)
     }
 
-    pub(crate) fn list(&self) -> Vec<TerminalSurfaceSummaryDto> {
-        self.gateway
-            .list_summaries()
-            .into_iter()
-            .map(summary_dto)
-            .collect()
-    }
-
     pub(crate) fn summaries(&self) -> Vec<TerminalSurfaceSummary> {
         self.gateway.list_summaries()
     }
@@ -274,20 +266,6 @@ impl TerminalSurfaceApplication {
         &self,
     ) -> crate::domain::terminal_surface::gateway::TerminalSurfaceEventStream {
         self.event_source.subscribe()
-    }
-
-    pub(crate) fn reconcile_unavailable(&self, referenced_session_keys: &[String]) -> Vec<String> {
-        let live_session_keys: HashSet<String> = self
-            .gateway
-            .list_summaries()
-            .into_iter()
-            .map(|surface| surface.session_key)
-            .collect();
-        referenced_session_keys
-            .iter()
-            .filter(|session_key| !live_session_keys.contains(*session_key))
-            .cloned()
-            .collect()
     }
 
     /// registryのsummaryだけで答える読み取り。scrollback全量のreplay再構築

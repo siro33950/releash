@@ -4,7 +4,6 @@ pub(crate) mod pr;
 use crate::other::AppError;
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
-    "check_pr_provider_status",
     "fetch_pr_status",
     "get_cached_pr_status",
     "fetch_issues",
@@ -18,7 +17,6 @@ pub(crate) fn register(router: &mut super::CommandRouter) {
 pub(crate) fn invoke_handler(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
-        pr::check_pr_provider_status,
         pr::fetch_pr_status,
         pr::get_cached_pr_status,
         issue::fetch_issues,

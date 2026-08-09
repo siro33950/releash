@@ -1,5 +1,1 @@
-export {
-	type ProviderAgentSessionItem,
-	ProviderAgentSessionPanel,
-	ProviderAgentSessionRoute,
-} from "./ProviderAgentSessionPanel";
+export { ProviderAgentSessionRoute } from "./ProviderAgentSessionPanel";

@@ -4,8 +4,6 @@ import { useEffect, useState } from "react";
 
 interface ProviderHookHealthWarning {
 	provider: string;
-	launchId: string;
-	reason: string;
 }
 
 const REFRESH_INTERVAL_MS = 5_000;

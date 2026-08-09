@@ -138,10 +138,6 @@ export interface TerminalSurfacePerformanceReport {
 	throughputMiBPerSecond: number;
 }
 
-export interface TerminalPerformanceReport
-	extends TerminalSurfacePerformanceReport,
-		TerminalLaunchPerformanceReport {}
-
 export interface TerminalLaunchPerformanceReport {
 	schemaVersion: 1;
 	launchSource: TerminalPerformanceSamples["launchSource"];
@@ -315,74 +311,6 @@ function assertLaunchSamples(
 	}
 }
 
-function assertSamples(
-	value: unknown,
-): asserts value is TerminalPerformanceSamples {
-	assertSurfaceSamples(value);
-	assertLaunchSamples(value);
-	const samples = value as Record<string, unknown>;
-	const keyLatencyMs = samples.keyLatencyMs;
-	assertFiniteSamples(keyLatencyMs, "keyLatencyMs");
-	if (keyLatencyMs.length < 16) {
-		throw new Error("keyLatencyMs must contain at least 16 samples");
-	}
-	if (
-		samples.transport !== "mocked-channel" &&
-		samples.transport !== "tauri-ipc"
-	) {
-		throw new Error("transport must identify mocked-channel or tauri-ipc");
-	}
-	if (samples.transport === "tauri-ipc") {
-		const traces = samples.inputTraceSamples;
-		if (!Array.isArray(traces) || traces.length !== keyLatencyMs.length) {
-			throw new Error(
-				"inputTraceSamples must correlate every end-to-end key sample",
-			);
-		}
-		for (const [index, trace] of traces.entries()) {
-			for (const phase of [
-				...TERMINAL_INPUT_TRACE_PHASES,
-				"totalMs",
-			] as const) {
-				const value = trace?.[phase];
-				if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-					throw new Error(
-						`inputTraceSamples[${index}].${phase} must be finite and non-negative`,
-					);
-				}
-			}
-			if (Math.abs(trace.totalMs - keyLatencyMs[index]) > 0.001) {
-				throw new Error(
-					`inputTraceSamples[${index}].totalMs must match keyLatencyMs`,
-				);
-			}
-		}
-	}
-	if (!samples.fixture || typeof samples.fixture !== "object") {
-		throw new Error("fixture is required");
-	}
-	const fixture = samples.fixture as Record<string, unknown>;
-	if (fixture.kind !== "agent-tui") {
-		throw new Error("fixture.kind must be agent-tui");
-	}
-	if (
-		typeof fixture.byteLength !== "number" ||
-		fixture.byteLength < 10 * 1024 * 1024
-	) {
-		throw new Error("fixture.byteLength must be at least 10 MiB");
-	}
-	for (const field of [
-		"containsAnsi",
-		"containsUnicode",
-		"containsWideCharacters",
-		"containsCursorRedraw",
-	] as const) {
-		if (fixture[field] !== true) {
-			throw new Error(`fixture.${field} must be true`);
-		}
-	}
-}
-
 function distribution(samples: number[]): Distribution {
 	const sorted = [...samples].sort((left, right) => left - right);
 	const middle = Math.floor(sorted.length / 2);
@@ -437,16 +365,6 @@ export function buildTerminalSurfacePerformanceReport(
 		snapshotResyncs: value.snapshotResyncs,
 		rendererLongStallsOver100Ms: value.rendererLongStallsOver100Ms,
 		throughputMiBPerSecond: value.throughputMiBPerSecond,
-	};
-}
-
-export function buildTerminalPerformanceReport(
-	value: unknown,
-): TerminalPerformanceReport {
-	assertSamples(value);
-	return {
-		...buildTerminalSurfacePerformanceReport(value),
-		...buildTerminalLaunchPerformanceReport(value),
 	};
 }
 

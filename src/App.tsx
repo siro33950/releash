@@ -13,7 +13,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { MainLayout } from "@/screens/MainLayout";
-import type { ProviderStatus, WorktreeEntry } from "@/types/git";
+import type { WorktreeEntry } from "@/types/git";
 import type {
 	CenterSelection,
 	NewSessionCreationRequest,
@@ -109,10 +109,6 @@ function WorkbenchApp() {
 		useWorkspaceNavigation();
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
-	const [, setInitializing] = useState(true);
-	const [, setProviderStatuses] = useState<
-		Record<string, ProviderStatus | null>
-	>({});
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
 		Record<string, WorktreeCenterState>
@@ -181,45 +177,12 @@ function WorkbenchApp() {
 				if (worktrees.length === 1) {
 					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
 					openWorktreeTab(worktrees[0].path, worktrees[0].branch, repoName);
-					setInitializing(false);
-					return;
 				}
 			} catch {
 				// git リポジトリ外
 			}
-			setInitializing(false);
 		})();
 	}, [openWorktreeTab, initFromCwd]);
-
-	useEffect(() => {
-		if (repoPaths.length === 0) {
-			setProviderStatuses({});
-			return;
-		}
-		let cancelled = false;
-		const fetchStatuses = async () => {
-			const entries = await Promise.all(
-				repoPaths.map(async (repoPath) => {
-					try {
-						const status = await invoke<ProviderStatus>(
-							"check_pr_provider_status",
-							{ repoPath },
-						);
-						return [repoPath, status] as const;
-					} catch {
-						return [repoPath, null] as const;
-					}
-				}),
-			);
-			if (!cancelled) {
-				setProviderStatuses(Object.fromEntries(entries));
-			}
-		};
-		fetchStatuses();
-		return () => {
-			cancelled = true;
-		};
-	}, [repoPaths]);
 
 	const handleAddRepo = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });

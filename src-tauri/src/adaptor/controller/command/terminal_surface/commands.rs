@@ -4,9 +4,9 @@ use tauri::{ipc::Channel, Manager, State};
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::protocol::terminal::{
     GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
-    TerminalPerformanceSwitchesV1, TerminalStreamEndpointV1, TerminalSurfaceAvailabilityV1,
-    TerminalSurfaceInfoV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
-    TerminalSurfaceSummaryV1, TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX, TERMINAL_WS_PATH,
+    TerminalPerformanceSwitchesV1, TerminalStreamEndpointV1, TerminalSurfaceOwnerV1,
+    TerminalSurfaceStreamItemV1, TerminalSurfaceSummaryV1, TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
+    TERMINAL_WS_PATH,
 };
 use crate::usecase::terminal_surface::application::{
     TerminalSurfaceApplication, TerminalSurfaceAttachmentStream,
@@ -176,26 +176,6 @@ pub fn resize_terminal_surface(
         .terminal_surface
         .resize(&owner, rows, cols)
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command(async)]
-pub fn list_terminal_surfaces(state: State<'_, AppState>) -> Vec<TerminalSurfaceInfoV1> {
-    state
-        .terminal_surface
-        .list()
-        .into_iter()
-        .map(Into::into)
-        .collect()
-}
-
-#[tauri::command(async)]
-pub fn reconcile_terminal_surfaces(
-    state: State<'_, AppState>,
-    session_keys: Vec<String>,
-) -> TerminalSurfaceAvailabilityV1 {
-    TerminalSurfaceAvailabilityV1 {
-        unavailable_session_keys: state.terminal_surface.reconcile_unavailable(&session_keys),
-    }
 }
 
 #[tauri::command(async)]

@@ -34,12 +34,9 @@ function session(id: string): ProviderAgentSessionItem {
 		workspaceIdentity: "/repo/worktree",
 		worktreePath: "/repo/worktree",
 		provider: "claude",
-		origin: { kind: "standalone" },
 		lifecycle: "open",
 		activity: "idle",
 		lastExitAbnormal: false,
-		providerSessionId: `provider-${id}`,
-		transcriptRef: null,
 		operations: {
 			canArchive: true,
 			canRestore: false,

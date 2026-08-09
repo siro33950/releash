@@ -19,16 +19,8 @@ describe("ProviderHookHealthBanner", () => {
 
 	it("Provider別の未解消healthをアプリ全体の警告一つに集約する", async () => {
 		mockInvoke.mockResolvedValueOnce([
-			{
-				provider: "claude",
-				launchId: "launch-claude",
-				reason: "provider_hook_configuration_rejected",
-			},
-			{
-				provider: "codex",
-				launchId: "launch-codex",
-				reason: "codex_hook_delivery_unconfirmed",
-			},
+			{ provider: "claude" },
+			{ provider: "codex" },
 		]);
 
 		render(<ProviderHookHealthBanner />);
@@ -43,13 +35,7 @@ describe("ProviderHookHealthBanner", () => {
 
 	it("後続SessionStartでbackend healthが解消されたら警告を消す", async () => {
 		mockInvoke
-			.mockResolvedValueOnce([
-				{
-					provider: "codex",
-					launchId: "launch-codex",
-					reason: "codex_hook_delivery_unconfirmed",
-				},
-			])
+			.mockResolvedValueOnce([{ provider: "codex" }])
 			.mockResolvedValueOnce([]);
 
 		render(<ProviderHookHealthBanner />);

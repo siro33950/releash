@@ -25,12 +25,9 @@ const session = {
 	workspaceIdentity: "/repo",
 	worktreePath: "/repo/worktree",
 	provider: "claude" as const,
-	origin: { kind: "standalone" as const },
 	lifecycle: "open" as const,
 	activity: "idle" as const,
 	lastExitAbnormal: false,
-	providerSessionId: "provider-1",
-	transcriptRef: null,
 	operations: {
 		canArchive: true,
 		canRestore: false,
@@ -126,11 +123,6 @@ describe("ProviderAgentSessionPanel", () => {
 			<ProviderAgentSessionPanel
 				session={{
 					...session,
-					origin: {
-						kind: "workflow_node",
-						workflow_execution_id: "workflow-1",
-						node_execution_id: "node-1",
-					},
 					operations: {
 						canArchive: false,
 						canRestore: false,
