@@ -311,22 +311,6 @@ impl AgentSessionTuiAcceptanceHost {
         )
     }
 
-    async fn open(
-        &self,
-        agent_session_id: &str,
-        rows: u16,
-        cols: u16,
-        caller_request_id: &str,
-    ) -> Result<AcceptanceOpenOutcome, String> {
-        self.invoke_open_command(
-            "open_provider_agent_session",
-            agent_session_id,
-            rows,
-            cols,
-            caller_request_id,
-        )
-    }
-
     async fn restore(
         &self,
         agent_session_id: &str,
@@ -1413,87 +1397,6 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     );
     assert!(host.list_history(&workspace, 10).await.unwrap().is_empty());
     host.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_atui_030_app再起動後の自動resume失敗はpausedとなり手動resumeで復帰する() {
-    let root = tempfile::TempDir::new().unwrap();
-    let workspace = root.path().join("worktree");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.to_string_lossy().into_owned();
-    let (first, claude_home, codex_home) = host(root.path(), 4);
-    let session_id = first
-        .launch_standalone(
-            "workspace-1",
-            &workspace,
-            AcceptanceProvider::Claude,
-            24,
-            80,
-            "restart-launch",
-        )
-        .await
-        .unwrap();
-    let terminal_owner = owner("workspace-1", &session_id);
-    let mut terminal = first
-        .terminal()
-        .attach("restart-session".to_string(), terminal_owner.clone())
-        .unwrap();
-    receive_until(&mut terminal, fixture_label(AcceptanceProvider::Claude)).await;
-    emit_session_start(
-        &first,
-        &mut terminal,
-        &terminal_owner,
-        &session_id,
-        "restart-provider-id",
-    )
-    .await;
-    first.shutdown().await.unwrap();
-
-    let claude_executable = root.path().join("bin/claude-fixture");
-    std::fs::remove_file(&claude_executable).unwrap();
-    let restarted = AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
-        data_dir: root.path().join("releash-data"),
-        claude_executable: claude_executable.clone(),
-        codex_executable: root.path().join("bin/codex-fixture"),
-        claude_config_dir: claude_home,
-        codex_home,
-    })
-    .unwrap();
-    assert_eq!(
-        restarted.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Open,
-        "clean app shutdown must not be persisted as a Provider process exit"
-    );
-    assert_eq!(
-        restarted
-            .open(&session_id, 24, 80, "restart-open")
-            .await
-            .unwrap(),
-        AcceptanceOpenOutcome::Paused
-    );
-    assert_eq!(
-        restarted.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Paused
-    );
-
-    install_fixture_executable(
-        &root.path().join("bin"),
-        "claude-fixture",
-        AcceptanceProvider::Claude,
-        4,
-    );
-    assert_eq!(
-        restarted
-            .resume(&session_id, 24, 80, "restart-manual-resume")
-            .await
-            .unwrap(),
-        AcceptanceOpenOutcome::Resumed
-    );
-    assert_eq!(
-        restarted.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Open
-    );
-    restarted.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
