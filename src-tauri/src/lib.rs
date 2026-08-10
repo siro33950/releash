@@ -7,6 +7,8 @@ mod infrastructure;
 mod other;
 #[cfg(debug_assertions)]
 pub mod provider_lifecycle_acceptance;
+#[cfg(debug_assertions)]
+pub mod workflow_control_plane_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
@@ -1042,6 +1044,7 @@ pub fn run() {
             let provider_agent_session_exit = provider_agent_sessions.exit.clone();
             let provider_availability = provider_agent_sessions.availability_gateway.clone();
             let provider_lifecycle_ingress = provider_agent_sessions.lifecycle_ingress.clone();
+            let provider_workflow_stops = provider_agent_sessions.workflow_stops.clone();
             terminal_surface_runtime
                 .bind_agent_session_activity(provider_agent_sessions.activity.clone());
             let provider_agent_terminal_events = terminal_surface.subscribe_events();
@@ -1332,7 +1335,6 @@ pub fn run() {
                     adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
                         app.handle().clone(),
                         runtime_session_store.clone(),
-                        stored_lifecycle_runtime.clone(),
                         stored_lifecycle_open_tabs,
                     ),
                 );
@@ -1411,20 +1413,6 @@ pub fn run() {
                 ),
             );
             app.manage(lifecycle_operation.clone());
-            let workspace_node_resolver: Arc<
-                dyn usecase::workflow::WorkspaceNodeActionResolver,
-            > = app
-                .state::<adaptor::controller::state::AppState>()
-                .workflow_usecase
-                .clone();
-            app.manage(Arc::new(
-                adaptor::controller::wiring::build_workspace_node_command_usecase(
-                    workspace_node_resolver,
-                    lifecycle_operation.clone(),
-                    session_store.clone(),
-                    data_dir.clone(),
-                ),
-            ));
             let stop_operation = Arc::new(
                 usecase::agent_session::operation::StopOperationUsecase::new(
                     operation_repository.clone(),
@@ -1450,12 +1438,6 @@ pub fn run() {
             );
             operation_gate.bind_send_operation(Arc::downgrade(&send_operation));
             send_operation_gate.bind_status_sink(Arc::downgrade(&send_operation));
-            adaptor::controller::agent_session_operation_wiring::bind_runtime_durable_workflow_send_driver(
-                &agent_runtime,
-                send_operation.clone(),
-                session_store.clone(),
-                data_dir.clone(),
-            );
             adaptor::controller::agent_session_operation_wiring::bind_runtime_terminal_operation_participant_provider(
                 &session_store,
                 stop_operation.clone(),
@@ -1582,6 +1564,22 @@ pub fn run() {
                 )
                 .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
             );
+            let workspace_node_resolver: Arc<
+                dyn usecase::workflow::WorkspaceNodeActionResolver,
+            > = app
+                .state::<adaptor::controller::state::AppState>()
+                .workflow_usecase
+                .clone();
+            app.manage(Arc::new(
+                adaptor::controller::wiring::build_workspace_node_command_usecase(
+                    workspace_node_resolver,
+                    lifecycle_operation.clone(),
+                    session_store.clone(),
+                    data_dir.clone(),
+                    workflow_runtime_usecase.clone(),
+                ),
+            ));
+            provider_workflow_stops.bind(workflow_runtime_usecase.clone());
             send_operation_gate
                 .bind_workflow_runtime(Arc::downgrade(&workflow_runtime_usecase));
             let workflow_runtime_agent_notifier = Arc::new(

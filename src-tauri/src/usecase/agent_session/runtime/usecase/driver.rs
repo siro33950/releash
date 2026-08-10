@@ -34,6 +34,7 @@ impl AgentSessionRuntimeUsecase {
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
                 accepted_send_obligation_driver: Arc::new(RwLock::new(None)),
+                #[cfg(test)]
                 durable_workflow_send_driver: Arc::new(RwLock::new(None)),
                 durable_stop_driver: Arc::new(RwLock::new(None)),
                 lifecycle_repository: Arc::new(RwLock::new(None)),
@@ -80,6 +81,7 @@ impl AgentSessionRuntimeUsecase {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(driver);
     }
 
+    #[cfg(test)]
     pub(crate) fn set_durable_workflow_send_driver(
         &self,
         driver: Arc<dyn DurableWorkflowSendDriver>,
@@ -521,15 +523,6 @@ impl AgentSessionRuntimeUsecase {
                 )
             })
         })
-    }
-
-    /// Read-only recovery fence for workflow and other aggregate operations.
-    /// This deliberately does not open or hydrate a live provider session.
-    pub(crate) fn ensure_recovery_operation_allowed(
-        &self,
-        session_id: &str,
-    ) -> Result<(), AgentRuntimeError> {
-        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)
     }
 
     #[cfg(test)]
@@ -1151,12 +1144,14 @@ impl AgentSessionRuntimeUsecase {
     /// This is the normal teardown entry point. It may also reconcile the durable
     /// event log before returning session control, including persisting an
     /// interrupted recovery failure and publishing its user-facing error part.
+    #[cfg(test)]
     pub async fn close_session(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
         self.run_session_close(session_id, || async { Ok(()) })
             .await?;
         Ok(())
     }
 
+    #[cfg(test)]
     async fn run_session_close<T, F, Fut>(
         &self,
         session_id: &str,
@@ -1250,6 +1245,7 @@ impl AgentSessionRuntimeUsecase {
             .map_err(AgentRuntimeError::Other)
     }
 
+    #[cfg(test)]
     async fn begin_session_close_locked(
         &self,
         session_id: &str,
@@ -1270,6 +1266,7 @@ impl AgentSessionRuntimeUsecase {
         Ok(should_finalize)
     }
 
+    #[cfg(test)]
     async fn finalize_session_close_locked(
         &self,
         session_id: &str,
@@ -1323,6 +1320,7 @@ impl AgentSessionRuntimeUsecase {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn drain_closing_turn(&self, session_id: &str) {
         let deadline = tokio::time::Instant::now() + CLOSE_DRAIN_TIMEOUT;
         loop {
@@ -1712,10 +1710,6 @@ impl AgentSessionRuntimeUsecase {
     }
 
     #[cfg(test)]
-    pub(crate) fn session_runtime_lock_is_held_for_test(&self, session_id: &str) -> bool {
-        self.ctx.session_locks.is_held_for_test(session_id)
-    }
-
     pub(crate) async fn start_workflow_turn_locked(
         &self,
         request: DurableWorkflowTurnRequest,

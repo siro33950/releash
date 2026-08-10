@@ -2,9 +2,6 @@ use super::*;
 use crate::adaptor::gateway::app_config::config_models::{
     NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
 };
-use crate::adaptor::gateway::workflow::failure_wire::{
-    submission_violation_reason, SubmissionViolation,
-};
 use crate::adaptor::gateway::workflow::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
 use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
     LoopGuardResult, TurnCompleteAction,
@@ -36,6 +33,17 @@ fn node_execution_fixture(
     session_id: Option<&str>,
     fanout_parent: Option<FanoutParentRef>,
 ) -> NodeExecution {
+    let completion_signals = match status {
+        NodeExecutionStatus::WaitingApproval | NodeExecutionStatus::Succeeded => {
+            crate::domain::workflow::NodeCompletionSignalState::Ready
+        }
+        NodeExecutionStatus::Running
+        | NodeExecutionStatus::Paused
+        | NodeExecutionStatus::Failed
+        | NodeExecutionStatus::Aborted => {
+            crate::domain::workflow::NodeCompletionSignalState::Pending
+        }
+    };
     NodeExecution {
         id: id.to_string(),
         execution_id: execution_id.to_string(),
@@ -49,6 +57,7 @@ fn node_execution_fixture(
         token_usage: None,
         failure: None,
         fanout_parent,
+        completion_signals,
         started_at: 1000.0,
         completed_at: None,
     }
@@ -227,60 +236,6 @@ async fn test_workflow完了_完了nodeのagent_sessionを終了対象にしな�
     );
 }
 
-#[tokio::test]
-async fn terminal_state_cleanup_targets_current_and_fanout_node_sessions() {
-    let driver = WorkflowRuntimeHost::new_for_test();
-    let mut exec = driver
-        .insert_test_approval_execution(
-            "/repo",
-            TEST_NODE_SESSION_ID,
-            RuntimeExecutionState::Running,
-        )
-        .await;
-    exec.current_session_id = Some("current-node-session".to_string());
-    exec.node_executions[0].session_id = exec.current_session_id.clone();
-    let execution_id = exec.execution_id.clone();
-    exec.node_executions.extend([
-        node_execution_fixture(
-            &execution_id,
-            "node-execution-review-a",
-            "review-a",
-            1,
-            NodeExecutionStatus::Running,
-            Some("fanout-a-session"),
-            Some(FanoutParentRef {
-                parent_node: "fanout-review".to_string(),
-                parent_attempt: 1,
-                item_index: None,
-                child_index: 0,
-            }),
-        ),
-        node_execution_fixture(
-            &execution_id,
-            "node-execution-review-b",
-            "review-b",
-            1,
-            NodeExecutionStatus::Running,
-            Some("fanout-b-session"),
-            Some(FanoutParentRef {
-                parent_node: "fanout-review".to_string(),
-                parent_attempt: 1,
-                item_index: None,
-                child_index: 1,
-            }),
-        ),
-    ]);
-
-    assert_eq!(
-        workflow_runtime_commit::terminal_node_session_ids(&exec),
-        vec![
-            "current-node-session".to_string(),
-            "fanout-a-session".to_string(),
-            "fanout-b-session".to_string()
-        ]
-    );
-}
-
 use crate::domain::workflow::{Rule, SchemaDef, WorkflowDefinition};
 
 fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
@@ -335,9 +290,7 @@ fn make_minimal_approval_exec(
     crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: execution_id.to_string(),
         workflow,
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(
-            RuntimeExecutionState::WaitingApproval,
-        ),
+        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::from([(node_name.to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -561,10 +514,11 @@ async fn agent_stall_observed_updates_commit_snapshot_without_completing_node() 
         .get_state_by_execution_id(&execution_id)
         .await
         .unwrap();
-    assert!(matches!(
-        state.state,
-        RuntimeExecutionState::WaitingApproval
-    ));
+    assert!(matches!(state.state, RuntimeExecutionState::Running));
+    assert_eq!(
+        state.node_executions[0].status,
+        NodeExecutionStatus::WaitingApproval
+    );
     assert_eq!(state.current_session_id.as_deref(), Some(session_id));
     assert_eq!(state.node_history.len(), 0);
     let observations = driver
@@ -1083,9 +1037,8 @@ fn workflow_execution_to_commit_snapshot() {
         },
     };
 
-    let state = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let state =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(state.execution_id, "exec-1");
     assert_eq!(state.workflow_name, "test-workflow");
     assert_eq!(state.state, RuntimeExecutionState::Running);
@@ -1190,40 +1143,6 @@ fn is_active_completed() {
 }
 
 #[test]
-fn is_active_failed() {
-    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
-        id: "exec-1".to_string(),
-        workflow: make_test_workflow(),
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Failed {
-            reason: "err".to_string(),
-            kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-        }),
-        current_node_index: 0,
-        node_execution_counts: HashMap::new(),
-        loop_guard_reset_baselines: Default::default(),
-        node_history: Vec::new(),
-        started_at: 1000.0,
-        updated_at: 1000.0,
-        current_session_id: None,
-        current_node_token_usage: TokenUsage::default(),
-        artifacts: HashMap::new(),
-        node_executions: Vec::new(),
-        request: None,
-        fanout_runtime: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        created_from: ExecutionOrigin::Agent,
-        error_reason: None,
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-    assert!(!exec.is_active());
-}
-
-#[test]
 fn is_active_aborted() {
     let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
@@ -1285,70 +1204,10 @@ fn to_commit_snapshot_waiting_approval() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let ws = RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::WaitingApproval);
     assert_eq!(ws.current_node_name, "report");
     assert_eq!(ws.current_node_index, 3);
-}
-
-#[test]
-fn to_commit_snapshot_failed() {
-    let workflow = make_test_workflow();
-    let exec = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
-        id: "exec-1".to_string(),
-        workflow,
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Failed {
-            reason: "exit code 1".to_string(),
-            kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-        }),
-        current_node_index: 1,
-        node_execution_counts: HashMap::new(),
-        loop_guard_reset_baselines: Default::default(),
-        node_history: vec![NodeHistoryEntry {
-            node_name: "plan".to_string(),
-            completed_at: 1000.5,
-            result: None,
-            session_id: None,
-            token_usage: None,
-            artifact: None,
-
-            attempt: 0,
-            fanout_children: None,
-            state: crate::domain::workflow::value_objects::default_node_history_status(),
-        }],
-        started_at: 1000.0,
-        updated_at: 1001.0,
-        current_session_id: None,
-        current_node_token_usage: TokenUsage::default(),
-        artifacts: HashMap::new(),
-        node_executions: Vec::new(),
-        request: None,
-        fanout_runtime: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        created_from: ExecutionOrigin::Agent,
-        error_reason: None,
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-    let ws = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
-    assert_eq!(
-        ws.state,
-        RuntimeExecutionState::Failed {
-            reason: "exit code 1".to_string(),
-            kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-        }
-    );
-    assert_eq!(ws.current_node_name, "implement");
-    assert_eq!(ws.node_history.len(), 1);
 }
 
 #[test]
@@ -1379,9 +1238,7 @@ fn to_commit_snapshot_aborted() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let ws = RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::Aborted);
 }
 
@@ -1413,9 +1270,7 @@ fn to_commit_snapshot_completed() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let ws = RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(ws.state, RuntimeExecutionState::Completed);
     assert_eq!(ws.workflow_definition.nodes.len(), 4);
 }
@@ -1585,7 +1440,7 @@ fn command_artifact_test_workflow(
 #[test]
 fn command_artifact_without_contract_sets_standard_result_and_limits_output() {
     let workflow = command_artifact_test_workflow(Default::default());
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
     let long_stdout = "x".repeat(workflow_output_limit::MAX_OUTPUT_SIZE + 100);
 
     let artifact = build_command_artifact(
@@ -1614,7 +1469,7 @@ fn command_artifact_with_contract_merges_contract_fields_and_sets_ok() {
             .into_iter()
             .collect(),
     );
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
 
     let artifact = build_command_artifact(
         &schemas,
@@ -1637,7 +1492,7 @@ fn command_contract_validation_failure_keeps_standard_result_only() {
             .into_iter()
             .collect(),
     );
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
 
     let artifact = build_command_artifact(
         &schemas,
@@ -1660,7 +1515,7 @@ fn command_artifact_valid_contract_with_nonzero_exit_keeps_contract_and_ok_false
             .into_iter()
             .collect(),
     );
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
 
     let artifact = build_command_artifact(
         &schemas,
@@ -1682,7 +1537,7 @@ fn command_contract_validation_uses_raw_stdout_before_display_truncation() {
             .into_iter()
             .collect(),
     );
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
     let stdout = format!(
         r#"{{"passed":true,"padding":"{}"}}"#,
         "x".repeat(workflow_output_limit::MAX_OUTPUT_SIZE)
@@ -1710,7 +1565,7 @@ fn command_artifact_redacts_secrets_from_standard_and_artifact() {
             .into_iter()
             .collect(),
     );
-    let schemas = workflow_schemas_to_domain(&workflow.schemas);
+    let schemas = workflow.schemas.clone();
     let secrets = vec!["CONFIGURED_SECRET_123".to_string()];
 
     let artifact = build_command_artifact(
@@ -1920,18 +1775,14 @@ fn apply_advance_fails_on_switch_no_match_without_next() {
         structured_node_output("judge", serde_json::json!({"decision": "HOLD"})),
     );
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
-
-    assert!(matches!(outcome, NodeOutcome::Persist(_)));
-    assert!(matches!(
-        exec.state().clone(),
-        RuntimeExecutionState::Failed {
-            kind: NodeExecutionFailureKind::ValidationFailure,
-            ..
-        }
-    ));
+    let before = exec.clone();
+    assert!(workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0
+    )
+    .is_err());
+    assert_eq!(exec, before);
 }
 
 #[test]
@@ -1951,16 +1802,14 @@ fn apply_advance_fails_on_unknown_route_target() {
     };
     let mut exec = workflow_exec(workflow, 0);
 
-    exec.apply_advance()
-        .expect("advance must produce an outcome");
-
-    assert!(matches!(
-        exec.state().clone(),
-        RuntimeExecutionState::Failed {
-            kind: NodeExecutionFailureKind::ValidationFailure,
-            ..
-        }
-    ));
+    let before = exec.clone();
+    assert!(workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0
+    )
+    .is_err());
+    assert_eq!(exec, before);
 }
 
 // ---- check_loop_guard ----
@@ -2027,7 +1876,7 @@ fn apply_advance_records_normal_node_reset_boundary_before_routing() {
         LoopGuardResult::Exceeded { count: 3, .. }
     ));
 
-    exec.apply_advance()
+    workflow_runtime_driver::apply_advance(&mut exec, "next-node-execution".to_string(), 1002.0)
         .expect("advance must produce an outcome");
 
     assert_eq!(
@@ -2070,9 +1919,12 @@ fn apply_advance_records_fanout_parent_reset_only_when_parent_completes() {
     exec.node_execution_counts.insert("round".to_string(), 1);
     exec.node_execution_counts.insert("fix".to_string(), 2);
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
 
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "fix");
@@ -2199,7 +2051,9 @@ fn turn_complete_action_auto_no_rules_returns_auto_evaluate_empty() {
 #[test]
 fn decide_approve_action_advances() {
     let mut exec = make_exec(3); // report (approval)
-    exec.force_state_for_test(RuntimeExecutionState::WaitingApproval);
+    let node_execution_id =
+        exec.start_current_node_execution("node-execution-1".to_string(), 1001.0);
+    exec.mark_node_waiting_approval(&node_execution_id, 1002.0);
     exec.decide_approve_action().unwrap();
 }
 
@@ -2273,17 +2127,6 @@ fn validate_start_accepts_command_node() {
 fn is_terminal_completed() {
     let mut exec = make_exec(0);
     exec.force_state_for_test(RuntimeExecutionState::Completed);
-    assert!(exec.is_terminal());
-}
-
-#[test]
-fn is_terminal_failed() {
-    let mut exec = make_exec(0);
-    exec.force_state_for_test(RuntimeExecutionState::Failed {
-        reason: "err".to_string(),
-        kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-        retry_count: None,
-    });
     assert!(exec.is_terminal());
 }
 
@@ -2497,9 +2340,8 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
     .unwrap();
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
 
-    let state = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let state =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     let state_artifacts = state
         .artifacts
         .values()
@@ -2876,14 +2718,14 @@ fn build_node_prompt_expands_artifact_field_references_in_user_message() {
 #[derive(Default)]
 struct RecordingNodeSessionDeps {
     launch_count: std::sync::atomic::AtomicUsize,
+    activation_count: std::sync::atomic::AtomicUsize,
     rollback_count: std::sync::atomic::AtomicUsize,
-    dispatch_initial_instruction_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
     requested_providers: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
     launch_owners: std::sync::Mutex<Vec<(String, String)>>,
-    dispatched_instructions: std::sync::Mutex<Vec<String>>,
+    startup_instructions: std::sync::Mutex<Vec<String>>,
     calls: std::sync::Mutex<Vec<&'static str>>,
 }
 
@@ -2897,8 +2739,8 @@ impl RecordingNodeSessionDeps {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn dispatch_initial_instruction_count(&self) -> usize {
-        self.dispatch_initial_instruction_count
+    fn activation_count(&self) -> usize {
+        self.activation_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -2925,8 +2767,8 @@ impl RecordingNodeSessionDeps {
         self.launch_owners.lock().unwrap().clone()
     }
 
-    fn dispatched_instructions(&self) -> Vec<String> {
-        self.dispatched_instructions.lock().unwrap().clone()
+    fn startup_instructions(&self) -> Vec<String> {
+        self.startup_instructions.lock().unwrap().clone()
     }
 
     fn calls(&self) -> Vec<&'static str> {
@@ -2936,12 +2778,13 @@ impl RecordingNodeSessionDeps {
 
 #[async_trait::async_trait]
 impl NodeSessionDeps for RecordingNodeSessionDeps {
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         _worktree_path: &str,
         provider: crate::domain::provider_lifecycle::ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         self.launch_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2950,25 +2793,24 @@ impl NodeSessionDeps for RecordingNodeSessionDeps {
             workflow_execution_id.to_string(),
             node_execution_id.to_string(),
         ));
-        self.calls.lock().unwrap().push("launch");
+        self.startup_instructions
+            .lock()
+            .unwrap()
+            .push(initial_instruction.to_string());
+        self.calls.lock().unwrap().push("prepare");
         Ok(NodeSessionInfo {
             id: "node-session-id".to_string(),
         })
     }
 
-    async fn dispatch_initial_instruction(
+    async fn activate_workflow_agent_session(
         &self,
         _node_session_id: &str,
         _node_execution_id: &str,
-        instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.dispatch_initial_instruction_count
+        self.activation_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.dispatched_instructions
-            .lock()
-            .unwrap()
-            .push(instruction.to_string());
-        self.calls.lock().unwrap().push("dispatch");
+        self.calls.lock().unwrap().push("activate");
         Ok(())
     }
 
@@ -3013,9 +2855,11 @@ struct RecordingWorkflowAgentSessionPort {
     providers: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
     owners: std::sync::Mutex<Vec<(String, String)>>,
     instructions: std::sync::Mutex<Vec<(String, String)>>,
+    pending_instructions: std::sync::Mutex<HashMap<String, String>>,
     rollbacks: std::sync::Mutex<Vec<(String, String)>>,
     unavailable: std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderKind>>,
     fail_next_dispatch: std::sync::atomic::AtomicBool,
+    fail_next_activation: std::sync::atomic::AtomicBool,
     launch_attempts: std::sync::atomic::AtomicUsize,
     fail_launch_attempt: std::sync::atomic::AtomicUsize,
 }
@@ -3046,6 +2890,11 @@ impl RecordingWorkflowAgentSessionPort {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    fn fail_next_activation(&self) {
+        self.fail_next_activation
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn fail_launch_at(&self, one_based_attempt: usize) {
         self.fail_launch_attempt
             .store(one_based_attempt, std::sync::atomic::Ordering::SeqCst);
@@ -3061,12 +2910,13 @@ impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessionPort {
         !self.unavailable.lock().unwrap().contains(&provider)
     }
 
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         _worktree_path: &str,
         provider: crate::domain::provider_lifecycle::ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         let attempt = self
             .launch_attempts
@@ -3086,9 +2936,42 @@ impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessionPort {
             workflow_execution_id.to_string(),
             node_execution_id.to_string(),
         ));
-        Ok(NodeSessionInfo {
-            id: format!("provider-agent-session-{node_execution_id}"),
-        })
+        let id = format!("provider-agent-session-{node_execution_id}");
+        self.pending_instructions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), initial_instruction.to_string());
+        Ok(NodeSessionInfo { id })
+    }
+
+    async fn activate_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        if self
+            .fail_next_activation
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkflowRuntimeError::AgentSession(
+                "injected Provider TUI activation failure".to_string(),
+            ));
+        }
+        let instruction = self
+            .pending_instructions
+            .lock()
+            .unwrap()
+            .remove(node_session_id)
+            .ok_or_else(|| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "missing prepared Provider TUI launch for '{node_session_id}'"
+                ))
+            })?;
+        self.instructions
+            .lock()
+            .unwrap()
+            .push((node_session_id.to_string(), instruction));
+        Ok(())
     }
 
     async fn dispatch_initial_instruction(
@@ -3156,7 +3039,7 @@ async fn test_workflow_session_node_設定providerでtui_agent_sessionだけを�
         deps.launch_owners(),
         vec![("exec-id".to_string(), "node-execution-current".to_string())]
     );
-    assert_eq!(deps.dispatch_initial_instruction_count(), 1);
+    assert_eq!(deps.activation_count(), 1);
 }
 
 #[tokio::test]
@@ -3344,7 +3227,7 @@ async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_f
         "AgentSession launch must NOT run when prompt synthesis fails"
     );
     assert_eq!(
-        deps.dispatch_initial_instruction_count(),
+        deps.activation_count(),
         0,
         "initial instruction must NOT be dispatched when prompt synthesis fails"
     );
@@ -3407,14 +3290,14 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
     assert_eq!(deps.rollback_count(), 0);
     assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(deps.broadcast_state_count(), 1);
-    assert_eq!(deps.dispatch_initial_instruction_count(), 1);
+    assert_eq!(deps.activation_count(), 1);
     assert_eq!(
         deps.launch_owners(),
         vec![("exec-id".to_string(), "node-execution-current".to_string())]
     );
     assert_eq!(
         deps.calls(),
-        vec!["launch", "append", "broadcast", "dispatch"]
+        vec!["prepare", "append", "broadcast", "activate"]
     );
 
     // session_workflow_refs に SequentialNode として登録されている
@@ -3436,7 +3319,7 @@ async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success()
 }
 
 #[tokio::test]
-async fn test_workflow_session_node_初期指示を一度だけdispatchする() {
+async fn test_workflow_session_node_初期指示を一度だけ起動時promptへ渡す() {
     let driver = WorkflowRuntimeHost::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
@@ -3473,20 +3356,22 @@ async fn test_workflow_session_node_初期指示を一度だけdispatchする() 
         .await
         .expect("start_node_session_with_deps must succeed");
 
-    let dispatched = deps.dispatched_instructions();
-    assert_eq!(dispatched.len(), 1);
+    let startup_instructions = deps.startup_instructions();
+    assert_eq!(startup_instructions.len(), 1);
     assert!(
-        dispatched[0].contains("Keep this instruction private."),
-        "rendered workflow instruction must be dispatched to the TUI AgentSession"
+        startup_instructions[0].contains("Keep this instruction private."),
+        "rendered workflow instruction must be passed to the Provider startup prompt"
     );
     assert_eq!(
-        dispatched[0]
+        startup_instructions[0]
             .matches("Keep this instruction private.")
             .count(),
         1
     );
     assert_eq!(
-        dispatched[0].matches("Follow the workflow policy.").count(),
+        startup_instructions[0]
+            .matches("Follow the workflow policy.")
+            .count(),
         1
     );
 }
@@ -3532,7 +3417,7 @@ async fn start_node_session_with_deps_propagates_node_session_append_failure() {
         "broadcast_state must not run after append failure"
     );
     assert_eq!(
-        deps.dispatch_initial_instruction_count(),
+        deps.activation_count(),
         0,
         "initial instruction must not run after append failure"
     );
@@ -3694,6 +3579,12 @@ fn make_approval_exec(
     state: RuntimeExecutionState,
     rules: Vec<Rule>,
 ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution {
+    let node_is_waiting_approval = state == RuntimeExecutionState::WaitingApproval;
+    let lifecycle_state = if node_is_waiting_approval {
+        RuntimeExecutionState::Running
+    } else {
+        state
+    };
     crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
         id: "exec-1".to_string(),
         workflow: WorkflowDefinition {
@@ -3707,9 +3598,13 @@ fn make_approval_exec(
                 rules,
             )],
         },
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(state),
+        lifecycle: DomainWorkflowExecution::lifecycle_from_state(lifecycle_state),
         current_node_index: 0,
-        node_execution_counts: HashMap::new(),
+        node_execution_counts: if node_is_waiting_approval {
+            HashMap::from([("review".to_string(), 1)])
+        } else {
+            HashMap::new()
+        },
         loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         started_at: 1000.0,
@@ -3717,7 +3612,18 @@ fn make_approval_exec(
         current_session_id: None,
         current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
-        node_executions: Vec::new(),
+        node_executions: node_is_waiting_approval
+            .then(|| node_execution_fixture(
+                "exec-1",
+                "node-execution-review",
+                "review",
+                1,
+                NodeExecutionStatus::WaitingApproval,
+                None,
+                None,
+            ))
+            .into_iter()
+            .collect(),
         request: None,
         fanout_runtime: None,
         current_stall_observations: Vec::new(),
@@ -3798,11 +3704,6 @@ fn validate_approval_target_non_waiting_returns_invalid_state() {
 fn validate_approval_target_terminal_states_return_invalid_state_without_mutation() {
     for state in [
         RuntimeExecutionState::Completed,
-        RuntimeExecutionState::Failed {
-            reason: "failed".to_string(),
-            kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-        },
         RuntimeExecutionState::Aborted,
         RuntimeExecutionState::Interrupted,
     ] {
@@ -3837,7 +3738,7 @@ async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mu
 
     let execs = driver.executions.lock().await;
     let original = execs.get("/repo-a").unwrap();
-    assert_eq!(original.state(), &RuntimeExecutionState::WaitingApproval);
+    assert_eq!(original.state(), &RuntimeExecutionState::Running);
     assert!(original.node_history.is_empty());
 }
 
@@ -4120,9 +4021,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
                 make_test_node("fix", TestKind::Session, "Fix", vec![], None),
             ],
         },
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(
-            RuntimeExecutionState::WaitingApproval,
-        ),
+        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
@@ -4136,7 +4035,15 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         current_session_id: Some("policy-session".to_string()),
         current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
-        node_executions: Vec::new(),
+        node_executions: vec![node_execution_fixture(
+            "exec-1",
+            "node-execution-fix-policy",
+            "fix_policy",
+            1,
+            NodeExecutionStatus::WaitingApproval,
+            Some("policy-session"),
+            None,
+        )],
         request: None,
         fanout_runtime: None,
         current_stall_observations: Vec::new(),
@@ -4211,9 +4118,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
                 make_fanout_node("code_review_fanout", vec![]),
             ],
         },
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(
-            RuntimeExecutionState::WaitingApproval,
-        ),
+        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 0,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -4223,7 +4128,15 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         current_session_id: Some("policy-session".to_string()),
         current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
-        node_executions: Vec::new(),
+        node_executions: vec![node_execution_fixture(
+            "exec-auto-approve",
+            "node-execution-implementation-fix-policy",
+            "implementation_fix_policy",
+            1,
+            NodeExecutionStatus::WaitingApproval,
+            Some("policy-session"),
+            None,
+        )],
         request: None,
         fanout_runtime: None,
         current_stall_observations: Vec::new(),
@@ -4235,9 +4148,8 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let snapshot =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&snapshot, true),
         Some((
@@ -4325,9 +4237,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
                 fix_node,
             ],
         },
-        lifecycle: DomainWorkflowExecution::lifecycle_from_state(
-            RuntimeExecutionState::WaitingApproval,
-        ),
+        lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
         current_node_index: 1,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
         loop_guard_reset_baselines: Default::default(),
@@ -4337,7 +4247,15 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         current_session_id: Some(policy_session_id.clone()),
         current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
-        node_executions: Vec::new(),
+        node_executions: vec![node_execution_fixture(
+            "exec-auto-approve",
+            "node-execution-implementation-fix-policy",
+            "implementation_fix_policy",
+            1,
+            NodeExecutionStatus::WaitingApproval,
+            Some(&policy_session_id),
+            None,
+        )],
         request: None,
         fanout_runtime: None,
         current_stall_observations: Vec::new(),
@@ -4349,9 +4267,8 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let snapshot =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     let execution_id = exec.id.clone();
     driver
         .executions
@@ -4395,9 +4312,8 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
 fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let waiting =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
 
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&waiting, true),
@@ -4408,10 +4324,10 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
         None
     );
 
-    exec.force_state_for_test(RuntimeExecutionState::Running);
-    let running = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let node_execution_id = exec.node_executions[0].id.clone();
+    exec.mark_node_running(&node_execution_id, 1001.0);
+    let running =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&running, true),
         None
@@ -4422,16 +4338,15 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
 fn workflow_approval_auto_approve_flag_controls_waiting_approval_snapshots() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let waiting =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert!(workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, true));
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, false));
 
-    exec.force_state_for_test(RuntimeExecutionState::Running);
-    let running = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let node_execution_id = exec.node_executions[0].id.clone();
+    exec.mark_node_running(&node_execution_id, 1001.0);
+    let running =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&running, true));
 }
 
@@ -4441,9 +4356,8 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     exec.current_session_id = Some("policy-session".to_string());
     let agent_auto_approve_permission_mode = "full";
     let workflow_approval_auto_approve_enabled = false;
-    let snapshot = exec
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let snapshot =
+        RuntimeCommitSnapshot::from_execution(&exec).expect("commit snapshot must be valid");
 
     assert_eq!(agent_auto_approve_permission_mode, "full");
     assert!(
@@ -4517,24 +4431,40 @@ fn make_normal_node_exec_with_stall_observation(
 #[test]
 fn normal_node_completion_retry_and_transition_clear_stall_observations() {
     let mut completed = make_normal_node_exec_with_stall_observation();
-    let entry = completed.make_node_history_entry(Some("done".to_string()), None, None);
+    let entry = workflow_runtime_driver::make_node_history_entry(
+        &mut completed,
+        Some("done".to_string()),
+        None,
+        None,
+        1002.0,
+    );
     completed.node_history.push(entry);
     assert!(completed.current_stall_observations.is_empty());
 
     let mut retried = make_normal_node_exec_with_stall_observation();
-    assert!(matches!(
-        retried
-            .retry_current_node()
-            .expect("retry must produce an outcome"),
-        NodeOutcome::RetryCurrentNode(_)
-    ));
+    let retry_target = retried.start_current_node_execution("retry-target".to_string(), 1001.0);
+    assert_eq!(
+        retried.record_node_completion_signal(
+            &retry_target,
+            crate::domain::workflow::NodeCompletionSignal::Stop,
+            1002.0,
+        ),
+        crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+    );
+    assert_eq!(
+        retried.retry_current_node_at("retry-attempt".to_string(), 1003.0),
+        crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+    );
     assert!(retried.current_stall_observations.is_empty());
 
     let mut transitioned = make_normal_node_exec_with_stall_observation();
     assert!(matches!(
-        transitioned
-            .apply_advance()
-            .expect("advance must produce an outcome"),
+        workflow_runtime_driver::apply_advance(
+            &mut transitioned,
+            "next-node-execution".to_string(),
+            1002.0
+        )
+        .expect("advance must produce an outcome"),
         NodeOutcome::TransitionAndStart(_)
     ));
     assert!(transitioned.current_stall_observations.is_empty());
@@ -4574,10 +4504,12 @@ fn make_node_history_entry_saves_contract_result_to_node_output() {
     };
 
     let structured = serde_json::json!({"verdict": "LGTM", "findings": []});
-    let entry = exec.make_node_history_entry(
+    let entry = workflow_runtime_driver::make_node_history_entry(
+        &mut exec,
         Some("LGTM".to_string()),
         Some(structured.clone()),
         Some("review-verdict".to_string()),
+        1002.0,
     );
 
     assert_eq!(entry.result.as_deref(), Some("LGTM"));
@@ -4624,7 +4556,13 @@ fn make_node_history_entry_no_artifact_no_node_output() {
         },
     };
 
-    let entry = exec.make_node_history_entry(Some("complete".to_string()), None, None);
+    let entry = workflow_runtime_driver::make_node_history_entry(
+        &mut exec,
+        Some("complete".to_string()),
+        None,
+        None,
+        1002.0,
+    );
 
     assert_eq!(entry.result.as_deref(), Some("complete"));
     assert!(entry.artifact.is_none());
@@ -4702,9 +4640,12 @@ fn on_exhausted_transitions_to_fallback_node() {
     };
 
     // review の next=fix → ガード超過 → on_exhausted で approval へ
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -4829,9 +4770,12 @@ fn on_exhausted_chain_transitions() {
     };
 
     // start の next=node_a → exhausted → node_b → exhausted → node_c
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "node_c");
 }
@@ -4882,19 +4826,14 @@ fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
     exec.node_execution_counts =
         HashMap::from([("node_a".to_string(), 1), ("node_b".to_string(), 1)]);
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
-
-    assert!(matches!(outcome, NodeOutcome::Persist(_)));
-    assert!(matches!(
-        exec.state().clone(),
-        RuntimeExecutionState::Failed {
-            ref reason,
-            kind: NodeExecutionFailureKind::ValidationFailure,
-            ..
-        } if reason == "validation_error: loop_guard on_exhausted chain depth exceeded"
-    ));
+    let before = exec.clone();
+    assert!(workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0
+    )
+    .is_err());
+    assert_eq!(exec, before);
 }
 
 #[test]
@@ -4939,9 +4878,12 @@ fn apply_advance_clears_artifacts_for_new_node() {
     exec.artifacts
         .insert("plan".to_string(), make_node_output_fixture("plan", 1));
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -4962,9 +4904,12 @@ fn apply_advance_clears_artifacts_for_loop_target_node() {
         make_node_output_fixture("implement", 1),
     );
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
@@ -5033,9 +4978,12 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
         },
     };
 
-    let outcome = exec
-        .apply_advance()
-        .expect("advance must produce an outcome");
+    let outcome = workflow_runtime_driver::apply_advance(
+        &mut exec,
+        "next-node-execution".to_string(),
+        1002.0,
+    )
+    .expect("advance must produce an outcome");
     assert!(matches!(outcome, NodeOutcome::StartFanout(_)));
     assert!(!exec.artifacts.contains_key("code_review_fanout"));
     assert!(!exec.artifacts.contains_key("review_security"));
@@ -5682,58 +5630,6 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
     assert!(matches!(err, WorkflowRuntimeError::AlreadyActive(_)));
 }
 
-#[tokio::test]
-async fn interrupted_snapshot_without_a_reason_is_rejected_instead_of_guessing_crash() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let driver = WorkflowRuntimeHost::new_for_test();
-    driver
-        .set_execution_store_data_dir(tmp.path().to_path_buf())
-        .await;
-    let execution_id = uuid::Uuid::new_v4().to_string();
-    let worktree_path = "/wt/unclassified-interruption";
-    driver
-        .seed_active_execution_for_test(
-            execution_id.clone(),
-            make_minimal_workflow(),
-            RuntimeExecutionState::Running,
-            worktree_path.to_string(),
-            ExecutionOrigin::DesktopUi,
-        )
-        .await;
-    let running_snapshot = driver
-        .executions
-        .lock()
-        .await
-        .get(&execution_id)
-        .unwrap()
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
-    let snapshot = RuntimeCommitSnapshot {
-        state: RuntimeExecutionState::Interrupted,
-        error_reason: None,
-        ..running_snapshot
-    };
-
-    let error = workflow_runtime_commit::sync_execution_store_from_snapshot(
-        driver.execution_store(),
-        &execution_id,
-        &snapshot,
-    )
-    .await
-    .expect_err("an interrupted snapshot requires a classified reason");
-
-    assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
-    assert_eq!(
-        driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap()
-            .status,
-        ExecutionStatus::Running
-    );
-}
-
 /// Spec issues-1011 finding 10: authoritative sync により、active な execution が
 /// terminal に遷移したとき Execution Store の active から外れて completed に
 /// 追加され、failed/aborted も同じく completed 一覧に現れる。
@@ -5749,14 +5645,6 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
 
     let cases = [
         ("completed", RuntimeExecutionState::Completed),
-        (
-            "failed",
-            RuntimeExecutionState::Failed {
-                reason: "boom".to_string(),
-                kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                retry_count: None,
-            },
-        ),
         ("aborted", RuntimeExecutionState::Aborted),
     ];
     let mut ids = Vec::new();
@@ -5814,9 +5702,9 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
         ids.push(execution_id);
     }
 
-    // 3 件とも active からは外れている
+    // 2 件とも active からは外れている
     assert!(driver.list_active_executions().await.is_empty());
-    // 3 件とも completed に並ぶ
+    // 2 件とも completed に並ぶ
     let completed = driver.list_completed_executions().await;
     let completed_ids: std::collections::HashSet<&str> =
         completed.iter().map(|r| r.execution_id.as_str()).collect();
@@ -5870,14 +5758,10 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
     let bad_data_dir = tmp.path().join("not-a-directory");
     std::fs::write(&bad_data_dir, "file").unwrap();
     driver.set_execution_store_data_dir(bad_data_dir).await;
-    let snapshot = driver
-        .executions
-        .lock()
-        .await
-        .get(&execution_id)
-        .unwrap()
-        .to_commit_snapshot()
-        .expect("commit snapshot must be valid");
+    let snapshot = RuntimeCommitSnapshot::from_execution(
+        driver.executions.lock().await.get(&execution_id).unwrap(),
+    )
+    .expect("commit snapshot must be valid");
     let err = workflow_runtime_commit::sync_execution_store_from_snapshot(
         driver.execution_store(),
         &execution_id,
@@ -5976,10 +5860,12 @@ async fn approval_for_execution_id_updates_only_target_execution_when_worktree_i
     let mut target = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     target.id = target_execution_id.clone();
     target.worktree_path = worktree_path.to_string();
+    target.node_executions[0].execution_id = target_execution_id.clone();
 
     let mut sibling = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     sibling.id = sibling_execution_id.clone();
     sibling.worktree_path = worktree_path.to_string();
+    sibling.node_executions[0].execution_id = sibling_execution_id.clone();
 
     {
         let mut execs = driver.executions.lock().await;
@@ -6002,7 +5888,7 @@ async fn approval_for_execution_id_updates_only_target_execution_when_worktree_i
     let sibling = execs.get(&sibling_execution_id).unwrap();
     assert_eq!(target.state(), &RuntimeExecutionState::Completed);
     assert_eq!(target.node_history.len(), 1);
-    assert_eq!(sibling.state(), &RuntimeExecutionState::WaitingApproval);
+    assert_eq!(sibling.state(), &RuntimeExecutionState::Running);
     assert!(sibling.node_history.is_empty());
 }
 
@@ -6212,10 +6098,10 @@ async fn active_only_summary(driver: &WorkflowRuntimeHost) -> Vec<String> {
         .collect()
 }
 
-/// Spec issues-1011 finding 15: completed / failed / aborted の代表経路で
+/// Spec issues-1011 finding 15: completed / aborted の代表経路で
 /// active 一覧から消えて completed 一覧に status 付きで現れる。
 /// production の権威遷移経路で必ず呼ばれる `sync_execution_store_from_snapshot` を直接呼び、
-/// 3 ステータスすべてで「Execution Store の owner が active → completed に推移する」ことを
+/// 2 ステータスすべてで「Execution Store の owner が active → completed に推移する」ことを
 /// 1 つのテストでまとめて検証する（既存の同種テストとは別に、status 観測も加える）。
 #[tokio::test]
 async fn execution_store_terminal_statuses_propagate_status_field_in_completed_listing() {
@@ -6228,17 +6114,11 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
     let mut expectations: Vec<(String, ExecutionStatus)> = Vec::new();
     for state in [
         RuntimeExecutionState::Completed,
-        RuntimeExecutionState::Failed {
-            reason: "boom".to_string(),
-            kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-        },
         RuntimeExecutionState::Aborted,
     ] {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let expected_status = match state {
             RuntimeExecutionState::Completed => ExecutionStatus::Completed,
-            RuntimeExecutionState::Failed { .. } => ExecutionStatus::Failed,
             RuntimeExecutionState::Aborted => ExecutionStatus::Aborted,
             RuntimeExecutionState::Interrupted => ExecutionStatus::Interrupted,
             _ => unreachable!(),
@@ -6364,13 +6244,8 @@ async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
 async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
     let driver = WorkflowRuntimeHost::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
-    let mut exec = make_exec_with(
-        &execution_id,
-        "/wt/x",
-        RuntimeExecutionState::WaitingApproval,
-    );
-    exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
-    exec.current_session_id = Some("node-sess".to_string());
+    let mut exec = make_minimal_approval_exec(&execution_id, "node-sess", "review");
+    exec.worktree_path = "/wt/x".to_string();
     driver
         .executions
         .lock()
@@ -6465,25 +6340,159 @@ mod dispatch_boundary_tests {
     };
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::workflow_host::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
-    use crate::adaptor::gateway::workflow::workflow_host::internal_node_command::InternalNodeCommand;
     use crate::domain::workflow::RuntimeExecutionState;
-    use crate::domain::workflow::WorkflowError;
     use crate::domain::workflow::WorkflowEvent;
     use crate::domain::workflow::{ItemsSource, Rule, WorkflowDefinition};
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
-    use crate::usecase::workflow::command::{
-        AbortExecutionCommand, ResumeExecutionCommand, WorkflowAbortExecutionUsecase,
-        WorkflowResumeExecutionUsecase,
-    };
+    use crate::usecase::workflow::internal_node_command::InternalNodeCommand;
     use crate::usecase::workflow::ports::{
-        WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway,
         WorkflowTurnCompleteNotification, WorkflowTurnCompleteRecoveryCommand,
         WorkflowTurnCompleteRecoveryOutcome, WorkflowTurnTokenUsage,
     };
     use async_trait::async_trait;
     use tauri::Manager;
     use tempfile::TempDir;
+
+    #[async_trait]
+    #[allow(clippy::too_many_arguments)]
+    trait TestWorkflowControlPlane {
+        async fn submit_workflow_output(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            execution_id: &str,
+            node_name: String,
+            node_execution_id: String,
+            artifact: Option<(String, serde_json::Value)>,
+        ) -> Result<(), WorkflowRuntimeError>;
+
+        async fn retry_workflow_node(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            execution_id: &str,
+            node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError>;
+
+        async fn record_provider_stop(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+            lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+        ) -> Result<(), WorkflowRuntimeError>;
+    }
+
+    #[async_trait]
+    impl TestWorkflowControlPlane for WorkflowRuntimeHost {
+        async fn submit_workflow_output(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            execution_id: &str,
+            node_name: String,
+            node_execution_id: String,
+            artifact: Option<(String, serde_json::Value)>,
+        ) -> Result<(), WorkflowRuntimeError> {
+            test_control_plane_usecase(app, self, session_store, agent_runtime)
+                .submit_output(crate::usecase::workflow::command::SubmitOutputCommand {
+                    execution_id: execution_id.to_string(),
+                    node_name,
+                    node_execution_id,
+                    artifact: artifact.map(|(contract, value)| {
+                        crate::usecase::workflow::command::SubmitOutputArtifact { contract, value }
+                    }),
+                })
+                .await
+                .map_err(test_control_plane_error)
+        }
+
+        async fn retry_workflow_node(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            execution_id: &str,
+            node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            test_control_plane_usecase(app, self, session_store, agent_runtime)
+                .retry_node(crate::usecase::workflow::command::RetryNodeCommand {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                })
+                .await
+                .map_err(test_control_plane_error)
+        }
+
+        async fn record_provider_stop(
+            &self,
+            app: &tauri::AppHandle<tauri::test::MockRuntime>,
+            session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+            agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+            command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+            lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+        ) -> Result<(), WorkflowRuntimeError> {
+            test_control_plane_usecase(app, self, session_store, agent_runtime)
+                .record_provider_stop(command, lifecycle_events)
+                .await
+                .map_err(test_control_plane_error)
+        }
+    }
+
+    fn test_control_plane_usecase(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        driver: &WorkflowRuntimeHost,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+    ) -> crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase {
+        let store = app.state::<DispatchCanonicalStore>().0.clone();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        let gateway = Arc::new(
+            crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway::new_with_driver(
+                app.clone(),
+                Arc::new(driver.clone()),
+                session_store.clone(),
+                agent_runtime.clone(),
+                repository,
+                store.installation_id().to_string(),
+            ),
+        );
+        crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase::new(gateway)
+    }
+
+    fn test_control_plane_error(
+        error: crate::domain::workflow::WorkflowError,
+    ) -> WorkflowRuntimeError {
+        match error {
+            crate::domain::workflow::WorkflowError::Validation(message) => {
+                WorkflowRuntimeError::ValidationError(message)
+            }
+            crate::domain::workflow::WorkflowError::InvalidState(message) => {
+                WorkflowRuntimeError::InvalidState(message)
+            }
+            crate::domain::workflow::WorkflowError::Conflict(message) => {
+                WorkflowRuntimeError::Conflict(message)
+            }
+            crate::domain::workflow::WorkflowError::NotFound(message) => {
+                WorkflowRuntimeError::ExecutionNotFound(message)
+            }
+            crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(message) => {
+                WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
+            }
+            crate::domain::workflow::WorkflowError::External(message)
+            | crate::domain::workflow::WorkflowError::CorruptStoredState(message)
+            | crate::domain::workflow::WorkflowError::IncompatibleStoredEvent(message)
+            | crate::domain::workflow::WorkflowError::StorageUnavailable { message, .. } => {
+                WorkflowRuntimeError::SessionStore(message)
+            }
+        }
+    }
 
     /// 実バックエンドと同じ供給経路（`fixed_models()`）でモデル一覧を返す
     /// dispatch テスト用 backend。claude / codex の固定モデル定数をそのまま供給し、
@@ -6672,6 +6681,7 @@ mod dispatch_boundary_tests {
                 token_usage: None,
                 failure: None,
                 fanout_parent: None,
+                completion_signals: Default::default(),
                 started_at: 1000.0,
                 completed_at: None,
             }],
@@ -6755,6 +6765,7 @@ mod dispatch_boundary_tests {
                             item_index: None,
                             child_index,
                         }),
+                        completion_signals: Default::default(),
                         started_at,
                         completed_at: child.completed_at,
                     }),
@@ -7097,12 +7108,13 @@ mod dispatch_boundary_tests {
             true
         }
 
-        async fn launch_workflow_agent_session(
+        async fn prepare_workflow_agent_session(
             &self,
             worktree_path: &str,
             provider: crate::domain::provider_lifecycle::ProviderKind,
             workflow_execution_id: &str,
             node_execution_id: &str,
+            _initial_instruction: &str,
         ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
             let id = format!(
                 "provider-agent-session-{}-{node_execution_id}",
@@ -7136,6 +7148,14 @@ mod dispatch_boundary_tests {
             Ok(NodeSessionInfo { id })
         }
 
+        async fn activate_workflow_agent_session(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            Ok(())
+        }
+
         async fn dispatch_initial_instruction(
             &self,
             _node_session_id: &str,
@@ -7154,72 +7174,29 @@ mod dispatch_boundary_tests {
         }
     }
 
-    #[derive(Clone)]
-    struct RecoveredOrphanCommandGateway {
-        app: tauri::AppHandle<tauri::test::MockRuntime>,
-        driver: Arc<WorkflowRuntimeHost>,
-        session_store: Arc<crate::usecase::agent_session::session::SessionStore>,
-        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
-    }
-
-    #[async_trait]
-    impl WorkflowResumeExecutionGateway for RecoveredOrphanCommandGateway {
-        async fn resume_execution(
-            &self,
-            command: ResumeExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.driver
-                .resume_workflow_execution(
-                    &self.app,
-                    &self.session_store,
-                    &self.agent_runtime,
-                    &command.execution_id,
-                )
-                .await
-                .map_err(|error| WorkflowError::external(error.to_string()))
-        }
-    }
-
-    #[async_trait]
-    impl WorkflowAbortExecutionGateway for RecoveredOrphanCommandGateway {
-        async fn abort_execution(
-            &self,
-            command: AbortExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.driver
-                .abort_workflow_execution(
-                    &self.app,
-                    &self.session_store,
-                    &self.agent_runtime,
-                    &command.execution_id,
-                    command.expected_node_name.as_deref(),
-                )
-                .await
-                .map_err(|error| WorkflowError::external(error.to_string()))
-        }
-    }
-
-    async fn seed_resumable_orphan_execution(
+    async fn seed_restart_session_execution(
         store: &crate::adaptor::gateway::workflow::execution_store::ExecutionStore,
         data_dir: &std::path::Path,
         execution_id: &str,
-        worktree_path: &str,
-    ) {
+        status: ExecutionStatus,
+    ) -> String {
+        let node_execution_id = format!("{execution_id}-session-1");
+        let session_id = format!("{execution_id}-provider-session");
         store
             .register_active_execution(WorkflowExecutionMetadata {
                 execution_id: execution_id.to_string(),
-                workflow_name: "wf".to_string(),
-                status: ExecutionStatus::Running,
-                worktree_path: worktree_path.to_string(),
-                current_node: Some("plan".to_string()),
+                workflow_name: "restart-wf".to_string(),
+                status,
+                worktree_path: "/wt/restart".to_string(),
+                current_node: Some("session".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 100.0,
-                updated_at: 100.0,
+                updated_at: 102.0,
                 completed_at: None,
                 error_reason: None,
                 interruption_reason: None,
                 resume_from_node: None,
-                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+                total_token_usage: Default::default(),
             })
             .await
             .unwrap();
@@ -7227,55 +7204,102 @@ mod dispatch_boundary_tests {
             .append_batch(&[
                 WorkflowEvent::ExecutionStarted {
                     execution_id: execution_id.to_string(),
-                    workflow_name: "wf".to_string(),
-                    worktree_path: worktree_path.to_string(),
-                    created_from: ExecutionOrigin::Agent,
-                    request: String::new(),
+                    workflow_name: "restart-wf".to_string(),
+                    worktree_path: "/wt/restart".to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: "continue".to_string(),
                     permission_mode: "ask".to_string(),
                     definition: WorkflowDefinition {
-                        name: "wf".to_string(),
-                        description: String::new(),
-                        builtin: false,
-                        schemas: Default::default(),
-                        nodes: vec![
-                            make_test_node(
-                                "plan",
-                                TestKind::Session,
-                                "review-acceptance",
-                                vec![Rule::Next("review".to_string())],
-                                None,
-                            ),
-                            make_test_node(
-                                "review",
-                                TestKind::Session,
-                                "review-acceptance",
-                                vec![],
-                                None,
-                            ),
-                        ],
+                        name: "restart-wf".to_string(),
+                        nodes: vec![make_test_node(
+                            "session",
+                            TestKind::Session,
+                            "review-acceptance",
+                            vec![],
+                            None,
+                        )],
+                        ..Default::default()
                     },
                     timestamp: 100.0,
                 },
                 WorkflowEvent::NodeStarted {
                     execution_id: execution_id.to_string(),
-                    node_execution_id: format!("{execution_id}-plan-1"),
-                    node_name: "plan".to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: "session".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
                     fanout_parent: None,
                     timestamp: 101.0,
                 },
-                WorkflowEvent::NodeCompleted {
+                WorkflowEvent::SessionAttached {
                     execution_id: execution_id.to_string(),
-                    node_execution_id: format!("{execution_id}-plan-1"),
-                    node_name: "plan".to_string(),
-                    attempt: 1,
-                    result_summary: Some("planned".to_string()),
-                    token_usage: None,
+                    node_execution_id: node_execution_id.clone(),
+                    session_id,
                     timestamp: 102.0,
                 },
             ])
             .unwrap();
+        node_execution_id
+    }
+
+    async fn seed_restart_command_execution(
+        store: &crate::adaptor::gateway::workflow::execution_store::ExecutionStore,
+        data_dir: &std::path::Path,
+        execution_id: &str,
+    ) -> String {
+        let node_execution_id = format!("{execution_id}-command-1");
+        store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.to_string(),
+                workflow_name: "restart-command-wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/restart-command".to_string(),
+                current_node: Some("command".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 102.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: Default::default(),
+            })
+            .await
+            .unwrap();
+        WorkflowEventLog::new(data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "restart-command-wf".to_string(),
+                    worktree_path: "/wt/restart-command".to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: "continue".to_string(),
+                    permission_mode: "ask".to_string(),
+                    definition: WorkflowDefinition {
+                        name: "restart-command-wf".to_string(),
+                        nodes: vec![command_node("command", "printf resumed", vec![])],
+                        ..Default::default()
+                    },
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: "command".to_string(),
+                    kind: NodeKindName::Command,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::CommandPrepared {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    display_command: "printf resumed".to_string(),
+                    timestamp: 102.0,
+                },
+            ])
+            .unwrap();
+        node_execution_id
     }
 
     async fn seed_pending_sequential_turn_completion(
@@ -7380,7 +7404,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn restart_turn_completion_replays_exact_context_once_without_provider_activation() {
+    async fn restart_retires_legacy_success_without_bypassing_completion_handshake() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let previous_store =
@@ -7424,44 +7448,21 @@ mod dispatch_boundary_tests {
                 )
                 .await
                 .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::Applied
+            WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded
+            )
         );
         let after_first = read_dispatch_events(&app, &execution_id);
-        assert_eq!(
-            after_first
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::NodeCompleted {
-                        node_execution_id,
-                        node_name,
-                        attempt: 1,
-                        token_usage: Some(usage),
-                        ..
-                    } if node_execution_id == &command.node_execution_id
-                        && node_name == "fix"
-                        && usage.input_tokens == 11
-                        && usage.output_tokens == 7
-                ))
-                .count(),
-            1
-        );
-        let next_node_execution_id = after_first.iter().find_map(|event| match event {
-            WorkflowEvent::NodeStarted {
-                node_execution_id,
-                node_name,
-                ..
-            } if node_name == "verify" => Some(node_execution_id.as_str()),
-            _ => None,
-        });
-        assert!(next_node_execution_id.is_some());
+        assert_eq!(after_first.len(), before.len());
         assert!(after_first.iter().all(|event| !matches!(
             event,
-            WorkflowEvent::SessionAttached {
-                node_execution_id,
-                ..
-            } if Some(node_execution_id.as_str()) == next_node_execution_id
-        )), "restart replay may commit the next workflow checkpoint but must not activate its provider session");
+            WorkflowEvent::NodeCompleted { node_execution_id, .. }
+                if node_execution_id == &command.node_execution_id
+        )));
+        assert!(after_first.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::NodeStarted { node_name, .. } if node_name == "verify"
+        )));
         assert!(!driver.executions.lock().await.contains_key(&execution_id));
         assert!(!driver
             .session_workflow_refs
@@ -7469,130 +7470,11 @@ mod dispatch_boundary_tests {
             .await
             .contains_key(&session_id));
 
-        // A crash after workflow commit but before outbox consumption reaches
-        // this exact call on the next restart. It must only read back the
-        // canonical fact and must not append or activate anything again.
+        // A repeated recovery remains a no-op because legacy success never owns
+        // the Submit / Stop completion authority.
         assert_eq!(
             driver
                 .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command,)
-                .await
-                .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied
-        );
-        assert_eq!(
-            read_dispatch_events(&app, &execution_id).len(),
-            after_first.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn issue_1558_interrupted_turn_completion_is_recorded_once_without_live_progress() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-        let previous_store =
-            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
-        previous_store.set_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let session_id = format!("session-{execution_id}");
-        let command = seed_pending_sequential_turn_completion(
-            &previous_store,
-            &data_dir,
-            &execution_id,
-            "/wt/turn-recovery-interrupted",
-            &session_id,
-        )
-        .await;
-        WorkflowEventLog::new(&data_dir)
-            .append(&WorkflowEvent::ExecutionInterrupted {
-                execution_id: execution_id.clone(),
-                reason: ExecutionInterruptionReason::Stop,
-                timestamp: 103.0,
-            })
-            .unwrap();
-
-        let driver = WorkflowRuntimeHost::new_for_test();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
-        assert_eq!(
-            driver
-                .recover_turn_complete(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    command.clone(),
-                )
-                .await
-                .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::Applied
-        );
-        let events = read_dispatch_events(&app, &execution_id);
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::NodeCompleted {
-                        node_execution_id,
-                        attempt: 1,
-                        ..
-                    } if node_execution_id == &command.node_execution_id
-                ))
-                .count(),
-            1
-        );
-        assert!(events
-            .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionResumed { .. })));
-        assert!(events.iter().all(|event| !matches!(
-            event,
-            WorkflowEvent::NodeStarted {
-                node_name,
-                attempt: 1,
-                ..
-            } if node_name == "verify"
-        )));
-        assert_eq!(
-            driver
-                .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command)
-                .await
-                .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied
-        );
-    }
-
-    #[tokio::test]
-    async fn finished_turn_completion_is_terminally_superseded_without_new_fact() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-        let previous_store =
-            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
-        previous_store.set_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let session_id = format!("session-{execution_id}");
-        let command = seed_pending_sequential_turn_completion(
-            &previous_store,
-            &data_dir,
-            &execution_id,
-            "/wt/turn-recovery-finished",
-            &session_id,
-        )
-        .await;
-        WorkflowEventLog::new(&data_dir)
-            .append(&WorkflowEvent::ExecutionFailed {
-                execution_id: execution_id.clone(),
-                reason: "already decided".to_string(),
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                timestamp: 103.0,
-            })
-            .unwrap();
-        let before = read_dispatch_events(&app, &execution_id);
-
-        let driver = WorkflowRuntimeHost::new_for_test();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
-        assert_eq!(
-            driver
-                .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command)
                 .await
                 .unwrap(),
             WorkflowTurnCompleteRecoveryOutcome::Retired(
@@ -7601,12 +7483,12 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(
             read_dispatch_events(&app, &execution_id).len(),
-            before.len()
+            after_first.len()
         );
     }
 
     #[tokio::test]
-    async fn restart_turn_completion_rehydrates_and_commits_the_exact_fanout_child() {
+    async fn restart_retires_legacy_fanout_success_without_completing_the_child() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let previous_store =
@@ -7746,7 +7628,9 @@ mod dispatch_boundary_tests {
                 )
                 .await
                 .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::Applied
+            WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded
+            )
         );
         let events = read_dispatch_events(&app, &execution_id);
         assert_eq!(
@@ -7762,7 +7646,7 @@ mod dispatch_boundary_tests {
                     } if node_execution_id == &child_a_id && node_name == "review-a"
                 ))
                 .count(),
-            1
+            0
         );
         assert!(events.iter().all(|event| !matches!(
             event,
@@ -7773,7 +7657,9 @@ mod dispatch_boundary_tests {
                 .recover_turn_complete(app.handle(), &session_store, &agent_runtime, command,)
                 .await
                 .unwrap(),
-            WorkflowTurnCompleteRecoveryOutcome::AlreadyApplied
+            WorkflowTurnCompleteRecoveryOutcome::Retired(
+                crate::domain::local_event::WorkflowObligationRetirementReason::Superseded
+            )
         );
     }
 
@@ -8032,6 +7918,7 @@ mod dispatch_boundary_tests {
                     token_usage: None,
                     failure: None,
                     fanout_parent: None,
+                    completion_signals: Default::default(),
                     started_at: 1000.0,
                     completed_at: Some(1002.0),
                 },
@@ -8048,6 +7935,7 @@ mod dispatch_boundary_tests {
                     token_usage: None,
                     failure: None,
                     fanout_parent: None,
+                    completion_signals: Default::default(),
                     started_at: 1003.0,
                     completed_at: None,
                 },
@@ -8136,10 +8024,274 @@ mod dispatch_boundary_tests {
             .unwrap();
     }
 
-    async fn assert_event_log_resume_after_interruption(
-        reason: ExecutionInterruptionReason,
-        permission_mode: &str,
-    ) {
+    #[tokio::test]
+    async fn pause_keeps_partial_submit_on_the_same_node_attempt_without_interrupting_workflow() {
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (_session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut execution =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        let node_execution_id = execution.node_executions[1].id.clone();
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                crate::domain::workflow::NodeCompletionSignal::Submit,
+                1004.0,
+            ),
+            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+        );
+        append_resumable_two_node_events(&data_dir, &execution);
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                timestamp: 1004.0,
+            })
+            .unwrap();
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+
+        driver
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        let metadata = driver
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Running);
+        assert_eq!(metadata.interruption_reason, None);
+        assert_eq!(metadata.resume_from_node, None);
+        let executions = driver.executions.lock().await;
+        let execution = executions
+            .get(&execution_id)
+            .expect("Pause must retain the live Workflow aggregate");
+        let node = execution
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.attempt, 1);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+        );
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_pause_agent停止失敗時は同一attemptをrunningへ補償する() {
+        struct RejectingPauseStop;
+
+        #[async_trait::async_trait]
+        impl crate::usecase::agent_session::runtime::DurableStopDriver for RejectingPauseStop {
+            async fn stop(
+                &self,
+                _session_id: &str,
+                _turn_id: u64,
+                _expected_session_revision: u64,
+            ) -> Result<(), String> {
+                Err("injected Pause Stop failure".to_string())
+            }
+        }
+
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &session_store,
+                worktree.path(),
+                &worktree_path,
+                Some("codex".to_string()),
+                PermissionMode::Edit,
+                crate::usecase::agent_session::session::SessionCreationAttributes {
+                    selected_model: Some("gpt-5".to_string()),
+                    workflow_node_session: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        agent_runtime
+            .insert_runtime_state_for_test(
+                &session.id,
+                crate::usecase::agent_session::status::TurnPhase::Streaming,
+                false,
+            )
+            .await;
+        agent_runtime.set_durable_stop_driver(Arc::new(RejectingPauseStop));
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut execution = resumable_two_node_execution(&execution_id, &worktree_path);
+        execution.current_session_id = Some(session.id.clone());
+        execution.node_executions[1].session_id = Some(session.id.clone());
+        append_resumable_two_node_events(&data_dir, &execution);
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+
+        let error = driver
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
+            .await
+            .expect_err("Pause must fail when the Agent Turn cannot be stopped durably");
+
+        assert!(error.to_string().contains("injected Pause Stop failure"));
+        let executions = driver.executions.lock().await;
+        assert_eq!(
+            executions.get(&execution_id).unwrap().node_executions[1].status,
+            NodeExecutionStatus::Running
+        );
+        drop(executions);
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::NodePaused { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::NodeResumed { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_pause_nodepaused永続化失敗時はagent_runtimeを停止しない() {
+        struct RecordingPauseStop {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::usecase::agent_session::runtime::DurableStopDriver for RecordingPauseStop {
+            async fn stop(
+                &self,
+                _session_id: &str,
+                _turn_id: u64,
+                _expected_session_revision: u64,
+            ) -> Result<(), String> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &session_store,
+                worktree.path(),
+                &worktree_path,
+                Some("codex".to_string()),
+                PermissionMode::Edit,
+                crate::usecase::agent_session::session::SessionCreationAttributes {
+                    selected_model: Some("gpt-5".to_string()),
+                    workflow_node_session: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        agent_runtime
+            .insert_runtime_state_for_test(
+                &session.id,
+                crate::usecase::agent_session::status::TurnPhase::Streaming,
+                false,
+            )
+            .await;
+        let stop_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        agent_runtime.set_durable_stop_driver(Arc::new(RecordingPauseStop {
+            calls: stop_calls.clone(),
+        }));
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut execution = resumable_two_node_execution(&execution_id, &worktree_path);
+        execution.current_session_id = Some(session.id.clone());
+        execution.node_executions[1].session_id = Some(session.id);
+        append_resumable_two_node_events(&data_dir, &execution);
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+        driver.fail_next_required_event_append_for_test();
+
+        let result = driver
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(stop_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            driver
+                .executions
+                .lock()
+                .await
+                .get(&execution_id)
+                .unwrap()
+                .node_executions[1]
+                .status,
+            NodeExecutionStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime起動失敗_nodefailed永続化を一時的失敗後に再試行する() {
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let execution = resumable_two_node_execution(&execution_id, &worktree_path);
+        let node_execution_id = execution.node_executions[1].id.clone();
+        append_resumable_two_node_events(&data_dir, &execution);
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+        driver.fail_next_required_event_append_for_test();
+
+        let result = driver
+            .settle_runtime_failure_for_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &worktree_path,
+                &execution_id,
+                &node_execution_id,
+                &WorkflowRuntimeError::AgentSession("injected activation failure".to_string()),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            driver
+                .executions
+                .lock()
+                .await
+                .get(&execution_id)
+                .unwrap()
+                .node_executions[1]
+                .status,
+            NodeExecutionStatus::Failed
+        );
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(
+                event,
+                WorkflowEvent::NodeFailed {
+                    node_execution_id: failed_id,
+                    ..
+                } if failed_id == &node_execution_id
+            )));
+    }
+
+    #[tokio::test]
+    async fn resume_reopens_the_same_paused_attempt_and_preserves_partial_submit() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -8147,33 +8299,27 @@ mod dispatch_boundary_tests {
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
         let worktree = TempDir::new().unwrap();
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let mut exec =
+        let mut execution =
             resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
-        exec.workflow_defaults.permission_mode = permission_mode.to_string();
-        append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-
-        if reason == ExecutionInterruptionReason::Stop {
-            driver
-                .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-                .await
-                .unwrap();
-        } else {
-            assert!(driver
-                .interrupt_active_execution(app.handle(), &agent_runtime, &execution_id, reason,)
-                .await
-                .unwrap());
-        }
-
-        let interrupted = driver
-            .execution_store()
-            .get_execution(&execution_id)
+        let node_execution_id = execution.node_executions[1].id.clone();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            crate::domain::workflow::NodeCompletionSignal::Submit,
+            1004.0,
+        );
+        append_resumable_two_node_events(&data_dir, &execution);
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                timestamp: 1004.0,
+            })
+            .unwrap();
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
+        driver
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
-        assert_eq!(interrupted.status, ExecutionStatus::Interrupted);
-        assert_eq!(interrupted.interruption_reason, Some(reason));
-        assert_eq!(interrupted.resume_from_node.as_deref(), Some("execute"));
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
 
         driver
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
@@ -8181,310 +8327,153 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         let executions = driver.executions.lock().await;
-        let resumed = executions.get(&execution_id).expect("resumed runtime");
-        assert_eq!(resumed.state(), &RuntimeExecutionState::Running);
-        assert_eq!(resumed.current_node_index, 1);
-        assert_eq!(resumed.node_execution_counts["prepare"], 1);
-        assert_eq!(resumed.node_execution_counts["execute"], 2);
-        assert_eq!(resumed.workflow_defaults.permission_mode, permission_mode);
-        assert_eq!(resumed.node_history.len(), 1);
-        assert_eq!(resumed.node_history[0].node_name, "prepare");
+        let execution = executions.get(&execution_id).unwrap();
+        let attempts = execution
+            .node_executions
+            .iter()
+            .filter(|node| node.node_name == "execute")
+            .collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].id, node_execution_id);
+        assert_eq!(attempts[0].attempt, 1);
+        assert_eq!(attempts[0].status, NodeExecutionStatus::Running);
         assert_eq!(
-            resumed.artifacts["prepare"].artifact,
-            Some(serde_json::json!({"prepared": true}))
+            attempts[0].completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
         );
-        assert_ne!(
-            resumed.current_session_id.as_deref(),
-            Some("old-unconfirmed-session")
-        );
-        assert!(resumed.current_session_id.is_some());
         drop(executions);
-
-        let resumed_metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(resumed_metadata.status, ExecutionStatus::Running);
-        assert_eq!(resumed_metadata.current_node.as_deref(), Some("execute"));
-        assert_eq!(resumed_metadata.interruption_reason, None);
-        assert_eq!(resumed_metadata.resume_from_node, None);
-
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeResumed {
+                node_execution_id: resumed_id,
+                ..
+            } if resumed_id == &node_execution_id
+        )));
         assert_eq!(
             events
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    WorkflowEvent::NodeStarted { node_name, .. } if node_name == "prepare"
+                    WorkflowEvent::NodeStarted { node_name, .. } if node_name == "execute"
                 ))
                 .count(),
-            1,
-            "confirmed node must not execute again"
+            1
         );
-        let execute_attempts = events
-            .iter()
-            .filter_map(|event| match event {
-                WorkflowEvent::NodeStarted {
-                    node_name, attempt, ..
-                } if node_name == "execute" => Some(*attempt),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(execute_attempts, vec![1, 2]);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionResumed {
-                resume_from_node,
-                ..
-            } if resume_from_node == "execute"
-        )));
     }
 
     #[tokio::test]
-    async fn crash_stale_and_explicit_stop_resume_from_the_first_unconfirmed_node() {
-        for reason in [
-            ExecutionInterruptionReason::Crash,
-            ExecutionInterruptionReason::Stale,
-            ExecutionInterruptionReason::Stop,
-        ] {
-            assert_event_log_resume_after_interruption(reason, PermissionMode::ASK).await;
-        }
-    }
-
-    #[tokio::test]
-    async fn explicit_stop_resume_preserves_non_default_permission_modes() {
-        for permission_mode in [PermissionMode::EDIT, PermissionMode::FULL] {
-            assert_event_log_resume_after_interruption(
-                ExecutionInterruptionReason::Stop,
-                permission_mode,
-            )
-            .await;
-        }
-    }
-
-    #[tokio::test]
-    async fn public_resume_preserves_reset_aware_routing_parity_with_uninterrupted_execution() {
+    async fn resume_starts_a_new_turn_in_the_existing_agent_session_without_launching_another() {
         let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
         let data_dir = dispatch_data_dir(app.handle());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree = TempDir::new().unwrap();
-        let workflow = WorkflowDefinition {
-            name: "reset-aware-public-resume".to_string(),
-            description: "resume with loop guard reset baseline".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_test_node(
-                    "fix",
-                    TestKind::Session,
-                    "review-acceptance",
-                    vec![Rule::Next("round".to_string())],
-                    Some(Rule::LoopGuard {
-                        max_iterations: 2,
-                        on_exhausted: "done".to_string(),
-                        reset_on: Some("round".to_string()),
-                    }),
-                ),
-                make_test_node(
-                    "round",
-                    TestKind::Session,
-                    "review-acceptance",
-                    vec![Rule::Next("route".to_string())],
-                    None,
-                ),
-                make_test_node(
-                    "route",
-                    TestKind::Session,
-                    "review-acceptance",
-                    vec![Rule::Next("fix".to_string())],
-                    None,
-                ),
-                make_test_node("done", TestKind::Session, "review-acceptance", vec![], None),
-            ],
-        };
-        let mut counts_at_reset = HashMap::from([("fix".to_string(), 2), ("round".to_string(), 1)]);
-        let domain_workflow =
-            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
-                &workflow,
-            );
-        let mut reset_baselines =
-            crate::domain::workflow::services::routing::LoopGuardResetBaselines::default();
-        reset_baselines.record_successful_completion(&domain_workflow, "round", &counts_at_reset);
-        counts_at_reset.insert("fix".to_string(), 3);
-        counts_at_reset.insert("route".to_string(), 1);
-
-        let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
-            id: execution_id.clone(),
-            workflow: workflow.clone(),
-            lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
-            current_node_index: 2,
-            node_execution_counts: counts_at_reset.clone(),
-            loop_guard_reset_baselines: reset_baselines.clone(),
-            node_history: Vec::new(),
-            worktree_path: worktree.path().to_string_lossy().into_owned(),
-            created_from: ExecutionOrigin::DesktopUi,
-            error_reason: None,
-            started_at: 1000.0,
-            updated_at: 1010.0,
-            current_session_id: Some("route-session-before-crash".to_string()),
-            current_node_token_usage: TokenUsage::default(),
-            artifacts: HashMap::new(),
-            node_executions: Vec::new(),
-            request: Some("continue reset-aware routing".to_string()),
-            fanout_runtime: None,
-            current_stall_observations: Vec::new(),
-            workflow_defaults: WorkflowDefaults {
-                backend_id: None,
-                permission_mode: PermissionMode::ASK.to_string(),
-            },
-        };
-        let mut events = vec![WorkflowEvent::ExecutionStarted {
-            execution_id: execution_id.clone(),
-            workflow_name: workflow.name.clone(),
-            worktree_path: execution.worktree_path.clone(),
-            created_from: execution.created_from,
-            request: execution.request.clone().unwrap(),
-            permission_mode: execution.workflow_defaults.permission_mode.clone(),
-            definition: workflow.clone(),
-            timestamp: 1000.0,
-        }];
-        for (node_name, attempt, started_at, completed_at) in [
-            ("fix", 1, 1001.0, 1002.0),
-            ("fix", 2, 1003.0, 1004.0),
-            ("round", 1, 1005.0, 1006.0),
-            ("fix", 3, 1007.0, 1008.0),
-        ] {
-            let node_execution_id = format!("{execution_id}-{node_name}-{attempt}");
-            let mut node_execution = node_execution_fixture(
-                &execution_id,
-                &node_execution_id,
-                node_name,
-                attempt,
-                NodeExecutionStatus::Succeeded,
-                None,
-                None,
-            );
-            node_execution.started_at = started_at;
-            node_execution.completed_at = Some(completed_at);
-            execution.node_executions.push(node_execution);
-            events.extend([
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: node_execution_id.clone(),
-                    node_name: node_name.to_string(),
-                    kind: NodeKindName::Session,
-                    attempt,
-                    fanout_parent: None,
-                    timestamp: started_at,
-                },
-                WorkflowEvent::NodeCompleted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id,
-                    node_name: node_name.to_string(),
-                    attempt,
-                    result_summary: None,
-                    token_usage: None,
-                    timestamp: completed_at,
-                },
-            ]);
-        }
-        let route_node_execution_id = format!("{execution_id}-route-1");
-        let mut route_execution = node_execution_fixture(
-            &execution_id,
-            &route_node_execution_id,
-            "route",
-            1,
-            NodeExecutionStatus::Running,
-            Some("route-session-before-crash"),
-            None,
-        );
-        route_execution.started_at = 1009.0;
-        execution.node_executions.push(route_execution);
-        events.extend([
-            WorkflowEvent::NodeStarted {
-                execution_id: execution_id.clone(),
-                node_execution_id: route_node_execution_id.clone(),
-                node_name: "route".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-                fanout_parent: None,
-                timestamp: 1009.0,
-            },
-            WorkflowEvent::SessionAttached {
-                execution_id: execution_id.clone(),
-                node_execution_id: route_node_execution_id,
-                session_id: "route-session-before-crash".to_string(),
-                timestamp: 1009.0,
-            },
-        ]);
-        WorkflowEventLog::new(&data_dir)
-            .append_batch(&events)
-            .unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let execution =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        let session_id = execution.node_executions[1].session_id.clone().unwrap();
+        append_resumable_two_node_events(&data_dir, &execution);
         insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
-
-        assert!(driver
-            .interrupt_active_execution(
-                app.handle(),
-                &agent_runtime,
-                &execution_id,
-                ExecutionInterruptionReason::Crash,
-            )
+        driver
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
-            .unwrap());
+            .unwrap();
+
         driver
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
             .unwrap();
-        let resumed_session_id = driver
-            .executions
-            .lock()
-            .await
-            .get(&execution_id)
-            .and_then(|execution| execution.current_session_id.clone())
-            .expect("resumed route session");
 
-        let mut uninterrupted = workflow_exec(workflow, 2);
-        uninterrupted.node_execution_counts = counts_at_reset;
-        uninterrupted.loop_guard_reset_baselines = reset_baselines;
-        uninterrupted
-            .apply_advance()
-            .expect("advance must produce an outcome");
-        let expected_node = uninterrupted.workflow.nodes[uninterrupted.current_node_index]
-            .name
-            .clone();
-        let expected_fix_count = uninterrupted.node_execution_counts["fix"];
+        assert!(workflow_agent_sessions.owners().is_empty());
+        let instructions = workflow_agent_sessions.instructions();
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0].0, session_id);
+        assert!(!instructions[0].1.trim().is_empty());
+    }
 
+    #[tokio::test]
+    async fn resume_dispatch_failure_restores_the_same_attempt_to_paused_for_another_resume() {
+        let app = make_dispatch_app();
+        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
+            workflow_agent_sessions.clone(),
+        );
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut execution =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        let node_execution_id = execution.node_executions[1].id.clone();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            crate::domain::workflow::NodeCompletionSignal::Submit,
+            1004.0,
+        );
+        append_resumable_two_node_events(&data_dir, &execution);
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                timestamp: 1004.0,
+            })
+            .unwrap();
+        insert_execution_and_register_active(&driver, execution, ExecutionOrigin::DesktopUi).await;
         driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &resumed_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "route after resume".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
 
+        workflow_agent_sessions.fail_next_dispatch();
+        let error = driver
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected Provider TUI dispatch failure"));
+
+        {
+            let executions = driver.executions.lock().await;
+            let node = executions
+                .get(&execution_id)
+                .unwrap()
+                .node_executions
+                .iter()
+                .find(|node| node.id == node_execution_id)
+                .unwrap();
+            assert_eq!(node.status, NodeExecutionStatus::Paused);
+            assert_eq!(node.attempt, 1);
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            );
+        }
+
+        driver
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
         let executions = driver.executions.lock().await;
-        let resumed = executions.get(&execution_id).expect("resumed execution");
-        assert_eq!(expected_node, "fix");
+        let node = executions
+            .get(&execution_id)
+            .unwrap()
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::Running);
+        assert_eq!(node.attempt, 1);
         assert_eq!(
-            resumed.workflow.nodes[resumed.current_node_index].name,
-            expected_node
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
         );
-        assert_eq!(resumed.node_execution_counts["fix"], expected_fix_count);
     }
 
     #[tokio::test]
@@ -8518,14 +8507,14 @@ mod dispatch_boundary_tests {
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("ExecutionResumed log failed"));
+        assert!(!error.to_string().is_empty());
 
         let checkpoint_after = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(checkpoint_after.status, ExecutionStatus::Interrupted);
+        assert_eq!(checkpoint_after.status, ExecutionStatus::Running);
         assert_eq!(
             checkpoint_after.interruption_reason,
             checkpoint_before.interruption_reason
@@ -8539,7 +8528,7 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(!events
             .iter()
-            .any(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. })));
+            .any(|event| matches!(event, WorkflowEvent::NodeResumed { .. })));
         assert!(!events.iter().any(|event| matches!(
             event,
             WorkflowEvent::NodeStarted {
@@ -8548,23 +8537,13 @@ mod dispatch_boundary_tests {
                 ..
             } if node_name == "execute"
         )));
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        assert!(!driver
-            .execution_facet_contents
-            .lock()
-            .await
-            .contains_key(&execution_id));
-        assert!(!driver
-            .fanout_resume_checkpoints
-            .lock()
-            .await
-            .contains_key(&execution_id));
-        assert!(
-            !driver
-                .execution_store
-                .interrupted_transition_pending(&execution_id)
-                .await
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(
+            execution.node_executions[1].status,
+            NodeExecutionStatus::Paused
         );
+        drop(executions);
 
         driver
             .abort_workflow_execution(
@@ -8588,646 +8567,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn b040_workflow_resume_is_rejected_before_mutation_for_owned_session_recovery() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let worktree = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let owned_session_id = uuid::Uuid::new_v4().to_string();
-        let mut exec =
-            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
-        exec.current_session_id = Some(owned_session_id.clone());
-        exec.node_executions[1].session_id = Some(owned_session_id.clone());
-        append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-        driver
-            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-
-        session_store
-            .save_full_session_for_restore(
-                &data_dir,
-                &chat_session_for_test(
-                    &owned_session_id,
-                    worktree.path().to_string_lossy().as_ref(),
-                    None,
-                    true,
-                ),
-            )
-            .unwrap();
-        session_store
-            .begin_backend_session_recovery(
-                &data_dir,
-                &owned_session_id,
-                "workflow-resume-recovery",
-                crate::usecase::agent_session::event_log::BackendSessionRecoveryReason::BackendSessionLost,
-            )
-            .unwrap();
-
-        let metadata_before = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        let event_count_before = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap()
-            .len();
-
-        let error = driver
-            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
-            .await
-            .unwrap_err();
-
-        let message = error.to_string();
-        assert!(message.contains(&owned_session_id), "{message}");
-        assert!(message.contains("workflow-resume-recovery"), "{message}");
-        assert!(message.contains("unresolved recovery"), "{message}");
-        assert_eq!(
-            driver
-                .execution_store()
-                .get_execution(&execution_id)
-                .await
-                .unwrap(),
-            metadata_before
-        );
-        assert_eq!(
-            WorkflowEventLog::new(&data_dir)
-                .read_log(&execution_id)
-                .unwrap()
-                .len(),
-            event_count_before
-        );
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        assert!(!agent_runtime.has_live_runtime(&owned_session_id).await);
-
-        session_store
-            .complete_backend_session_recovery(
-                &data_dir,
-                &owned_session_id,
-                "workflow-resume-recovery",
-                0,
-                "recovered-provider-session".to_string(),
-            )
-            .unwrap();
-        let publication_error = driver
-            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            publication_error.contains("workflow-resume-recovery"),
-            "{publication_error}"
-        );
-        assert!(
-            publication_error.contains("publication"),
-            "{publication_error}"
-        );
-        assert_eq!(
-            driver
-                .execution_store()
-                .get_execution(&execution_id)
-                .await
-                .unwrap(),
-            metadata_before
-        );
-        assert_eq!(
-            WorkflowEventLog::new(&data_dir)
-                .read_log(&execution_id)
-                .unwrap()
-                .len(),
-            event_count_before
-        );
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        assert!(!agent_runtime.has_live_runtime(&owned_session_id).await);
-    }
-
-    #[tokio::test]
-    async fn resume_metadata_commit_failure_is_accepted_with_a_crash_checkpoint() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let worktree = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let exec =
-            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
-        append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-        driver
-            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-
-        driver.execution_store.fail_next_resume_commit_for_test();
-        driver
-            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
-            .await
-            .expect("durable Resume remains accepted after metadata projection failure");
-
-        let metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            metadata.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::NodeStarted {
-                        node_name,
-                        attempt: 2,
-                        ..
-                    } if node_name == "execute"
-                ))
-                .count(),
-            1
-        );
-        assert!(matches!(
-            events.last(),
-            Some(WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
-                ..
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn resume_runtime_start_failure_is_accepted_with_a_classified_terminal_failure() {
-        let app = make_dispatch_app();
-        let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
-        let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
-            workflow_agent_sessions.clone(),
-        );
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let agent_runtime = crate::test_support::build_agent_runtime_usecase(
-            session_store.clone(),
-            data_dir.clone(),
-        );
-        let worktree = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let exec =
-            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
-        append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-        driver
-            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-
-        workflow_agent_sessions.fail_next_dispatch();
-        driver
-            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
-            .await
-            .expect("durable Resume remains accepted after runtime activation failure");
-
-        let metadata = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Failed);
-        assert_eq!(metadata.interruption_reason, None);
-        assert_eq!(metadata.resume_from_node, None);
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::NodeStarted {
-                        node_name,
-                        attempt: 2,
-                        ..
-                    } if node_name == "execute"
-                ))
-                .count(),
-            1
-        );
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                ..
-            }
-        )));
-        assert!(events.iter().all(|event| !matches!(
-            event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
-                ..
-            }
-        )));
-    }
-
-    #[tokio::test]
-    async fn partial_fanout_resume_reuses_confirmed_child_and_restarts_only_pending_child() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let worktree = TempDir::new().unwrap();
-        let worktree_path = worktree.path().to_string_lossy().to_string();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = WorkflowDefinition {
-            name: "partial-fanout-resume".to_string(),
-            description: "reuse confirmed fanout artifacts".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                make_test_node(
-                    "review-a",
-                    TestKind::Command,
-                    "printf confirmed",
-                    vec![],
-                    None,
-                ),
-                make_test_node(
-                    "review-b",
-                    TestKind::Session,
-                    "review-acceptance",
-                    vec![],
-                    None,
-                ),
-            ],
-        };
-        let parent_v1 = format!("{execution_id}-parent-1");
-        let child_a_v1 = format!("{execution_id}-review-a-1");
-        let child_b_v1 = format!("{execution_id}-review-b-1");
-        WorkflowEventLog::new(&data_dir)
-            .append_batch(&[
-                WorkflowEvent::ExecutionStarted {
-                    execution_id: execution_id.clone(),
-                    workflow_name: workflow.name.clone(),
-                    worktree_path: worktree_path.clone(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                    request: "review in fanout".to_string(),
-                    permission_mode: "ask".to_string(),
-                    definition: workflow.clone(),
-                    timestamp: 1.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: parent_v1,
-                    node_name: "fanout-review".to_string(),
-                    kind: NodeKindName::Fanout,
-                    attempt: 1,
-                    fanout_parent: None,
-                    timestamp: 2.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_a_v1.clone(),
-                    node_name: "review-a".to_string(),
-                    kind: NodeKindName::Command,
-                    attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "fanout-review".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 0,
-                    }),
-                    timestamp: 3.0,
-                },
-                WorkflowEvent::CommandPrepared {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_a_v1.clone(),
-                    display_command: "printf confirmed".to_string(),
-                    timestamp: 3.1,
-                },
-                WorkflowEvent::ArtifactProduced {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_a_v1.clone(),
-                    node_name: "review-a".to_string(),
-                    contract: None,
-                    value: serde_json::json!({"verdict": "confirmed"}),
-                    request_id: None,
-                    submitted_at: None,
-                    timestamp: 4.0,
-                },
-                WorkflowEvent::NodeCompleted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_a_v1,
-                    node_name: "review-a".to_string(),
-                    attempt: 1,
-                    result_summary: Some("confirmed review".to_string()),
-                    token_usage: Some(crate::domain::workflow::TokenUsage {
-                        input_tokens: 11,
-                        output_tokens: 7,
-                    }),
-                    timestamp: 5.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_b_v1.clone(),
-                    node_name: "review-b".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "fanout-review".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 1,
-                    }),
-                    timestamp: 3.0,
-                },
-                WorkflowEvent::SessionAttached {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: child_b_v1,
-                    session_id: "old-review-b-session".to_string(),
-                    timestamp: 3.1,
-                },
-                WorkflowEvent::ExecutionInterrupted {
-                    execution_id: execution_id.clone(),
-                    reason: ExecutionInterruptionReason::Crash,
-                    timestamp: 6.0,
-                },
-            ])
-            .unwrap();
-        driver
-            .execution_store
-            .register_active_execution(WorkflowExecutionMetadata {
-                execution_id: execution_id.clone(),
-                workflow_name: workflow.name.clone(),
-                status: ExecutionStatus::Running,
-                worktree_path: worktree_path.clone(),
-                current_node: Some("fanout-review".to_string()),
-                created_from: ExecutionOrigin::DesktopUi,
-                started_at: 1.0,
-                updated_at: 5.0,
-                completed_at: None,
-                error_reason: None,
-                interruption_reason: None,
-                resume_from_node: None,
-                total_token_usage: crate::domain::workflow::TokenUsage::default(),
-            })
-            .await
-            .unwrap();
-        driver
-            .execution_store
-            .interrupt_execution(
-                &execution_id,
-                ExecutionInterruptionReason::Crash,
-                Some("fanout-review".to_string()),
-                6.0,
-            )
-            .await
-            .unwrap();
-
-        let attachment_visible_at_child_broadcast =
-            Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
-        let attachment_visible_for_listener = Arc::clone(&attachment_visible_at_child_broadcast);
-        let data_dir_for_listener = data_dir.clone();
-        let execution_id_for_listener = execution_id.clone();
-        app.listen("workflow-execution-changed", move |event| {
-            let Ok(payload): Result<serde_json::Value, _> = serde_json::from_str(event.payload())
-            else {
-                return;
-            };
-            if payload["workflowExecution"]["id"].as_str()
-                != Some(execution_id_for_listener.as_str())
-            {
-                return;
-            }
-            let events = WorkflowEventLog::new(&data_dir_for_listener)
-                .read_log(&execution_id_for_listener)
-                .expect("fanout broadcast must have a readable durable projection");
-            let restarted_child_is_visible = events.iter().any(|event| {
-                matches!(
-                    event,
-                    WorkflowEvent::NodeStarted {
-                        node_name,
-                        attempt: 2,
-                        ..
-                    } if node_name == "review-b"
-                )
-            });
-            if !restarted_child_is_visible {
-                return;
-            }
-            let replay = project_workflow_execution(&execution_id_for_listener, &events)
-                .expect("fanout broadcast projection must replay")
-                .expect("fanout broadcast projection must exist");
-            attachment_visible_for_listener.lock().unwrap().push(
-                replay.node_executions.iter().any(|node| {
-                    node.node_name == "review-b" && node.attempt == 2 && node.session_id.is_some()
-                }),
-            );
-        });
-
-        driver
-            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            attachment_visible_at_child_broadcast
-                .lock()
-                .unwrap()
-                .first()
-                .copied(),
-            Some(true),
-            "the first child-visible broadcast must follow durable SessionAttached facts"
-        );
-
-        let executions = driver.executions.lock().await;
-        let resumed = executions
-            .get(&execution_id)
-            .expect("resumed fanout runtime");
-        assert_eq!(resumed.node_execution_counts["fanout-review"], 2);
-        assert_eq!(resumed.node_execution_counts["review-a"], 2);
-        assert_eq!(resumed.node_execution_counts["review-b"], 2);
-        let fanout = resumed.fanout_runtime.as_ref().expect("active fanout");
-        let reused = fanout
-            .children
-            .iter()
-            .find(|child| child.node_name == "review-a")
-            .unwrap();
-        let pending = fanout
-            .children
-            .iter()
-            .find(|child| child.node_name == "review-b")
-            .unwrap();
-        assert_eq!(reused.state, FanoutChildRuntimeState::Completed);
-        assert!(reused.session_id.is_empty());
-        assert_eq!(
-            reused.artifact,
-            Some(serde_json::json!({"verdict": "confirmed"}))
-        );
-        assert_eq!(reused.result.as_deref(), Some("confirmed review"));
-        assert_eq!(reused.token_usage.input_tokens, 11);
-        assert_eq!(reused.token_usage.output_tokens, 7);
-        assert_eq!(
-            resumed
-                .node_executions
-                .iter()
-                .find(|node| node.id == reused.node_execution_id)
-                .and_then(|node| node.display_command.as_deref()),
-            Some("printf confirmed")
-        );
-        assert_eq!(pending.state, FanoutChildRuntimeState::Running);
-        assert!(!pending.session_id.is_empty());
-        assert_ne!(pending.session_id, "old-review-b-session");
-        let reused_node_execution_id = reused.node_execution_id.clone();
-        let pending_node_execution_id = pending.node_execution_id.clone();
-        let pending_session_id = pending.session_id.clone();
-        drop(executions);
-
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::CommandPrepared {
-                node_execution_id,
-                display_command,
-                ..
-            } if node_execution_id == &reused_node_execution_id
-                && display_command == "printf confirmed"
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ArtifactProduced {
-                node_execution_id,
-                value,
-                ..
-            } if node_execution_id == &reused_node_execution_id
-                && value == &serde_json::json!({"verdict": "confirmed"})
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeCompleted {
-                node_execution_id,
-                ..
-            } if node_execution_id == &reused_node_execution_id
-        )));
-        assert!(events.iter().all(|event| !matches!(
-            event,
-            WorkflowEvent::SessionAttached {
-                node_execution_id,
-                ..
-            } if node_execution_id == &reused_node_execution_id
-        )));
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::SessionAttached {
-                        node_execution_id,
-                        session_id,
-                        ..
-                    } if node_execution_id == &pending_node_execution_id
-                        && session_id != "old-review-b-session"
-                ))
-                .count(),
-            1,
-            "a newly activated fanout Session must be attached exactly once"
-        );
-
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &pending_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "pending review complete".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
-        wait_for_execution_terminal(&app, &driver, &execution_id).await;
-
-        let completed = driver
-            .execution_store()
-            .get_execution(&execution_id)
-            .await
-            .expect("completed resumed fanout metadata");
-        assert_eq!(completed.status, ExecutionStatus::Completed);
-        assert_eq!(completed.total_token_usage.input_tokens, 11);
-        assert_eq!(completed.total_token_usage.output_tokens, 7);
-        let completed_events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert!(completed_events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeCompleted {
-                node_execution_id,
-                ..
-            } if node_execution_id == &pending_node_execution_id
-        )));
-        let parent_artifact = completed_events
-            .iter()
-            .find_map(|event| match event {
-                WorkflowEvent::ArtifactProduced {
-                    node_name, value, ..
-                } if node_name == "fanout-review" => Some(value),
-                _ => None,
-            })
-            .expect("resumed fanout parent artifact");
-        assert_eq!(
-            parent_artifact,
-            &serde_json::json!([{"verdict": "confirmed"}, null])
-        );
-        assert!(completed_events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeCompleted {
-                node_name,
-                attempt: 2,
-                ..
-            } if node_name == "fanout-review"
-        )));
-        assert!(completed_events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionCompleted { total_token_usage, .. }
-                if total_token_usage.input_tokens == 11
-                    && total_token_usage.output_tokens == 7
-        )));
-    }
-
-    #[tokio::test]
-    async fn test_explicit_stop_accepts_waiting_approval() {
+    async fn explicit_pause_leaves_waiting_approval_node_unchanged() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -9235,10 +8575,11 @@ mod dispatch_boundary_tests {
         let (_session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree = TempDir::new().unwrap();
-        let exec = make_waiting_approval_execution(
+        let mut exec = make_waiting_approval_execution(
             &execution_id,
             worktree.path().to_string_lossy().as_ref(),
         );
+        exec.force_state_for_test(RuntimeExecutionState::Running);
         append_started_events_for_execution(&data_dir, &exec);
         insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
 
@@ -9252,12 +8593,21 @@ mod dispatch_boundary_tests {
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            metadata.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
-        );
-        assert_eq!(metadata.resume_from_node.as_deref(), Some("review"));
+        assert_eq!(metadata.status, ExecutionStatus::Running);
+        assert_eq!(metadata.interruption_reason, None);
+        assert_eq!(metadata.resume_from_node, None);
+        let executions = driver.executions.lock().await;
+        let node = executions
+            .get(&execution_id)
+            .unwrap()
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "review")
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::WaitingApproval);
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::NodePaused { .. })));
     }
 
     #[tokio::test]
@@ -9328,84 +8678,8 @@ mod dispatch_boundary_tests {
                     &running_id,
                 )
                 .await,
-            Err(WorkflowRuntimeError::InvalidState(_))
+            Err(WorkflowRuntimeError::ExecutionNotFound(_))
         ));
-        driver
-            .execution_store
-            .interrupt_execution(
-                &running_id,
-                ExecutionInterruptionReason::Stale,
-                Some("review".to_string()),
-                2.0,
-            )
-            .await
-            .unwrap();
-        WorkflowEventLog::new(&data_dir)
-            .append_batch(&[
-                WorkflowEvent::ExecutionStarted {
-                    execution_id: running_id.clone(),
-                    workflow_name: "state-validation".to_string(),
-                    worktree_path: "/wt/resume-running".to_string(),
-                    created_from: ExecutionOrigin::Api,
-                    request: String::new(),
-                    permission_mode: "ask".to_string(),
-                    definition: WorkflowDefinition {
-                        name: "state-validation".to_string(),
-                        description: String::new(),
-                        builtin: false,
-                        schemas: Default::default(),
-                        nodes: vec![make_test_node(
-                            "review",
-                            TestKind::Session,
-                            "review",
-                            vec![],
-                            None,
-                        )],
-                    },
-                    timestamp: 1.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: running_id.clone(),
-                    node_execution_id: format!("{running_id}-review-1"),
-                    node_name: "review".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    fanout_parent: None,
-                    timestamp: 1.5,
-                },
-                WorkflowEvent::ExecutionInterrupted {
-                    execution_id: running_id.clone(),
-                    reason: ExecutionInterruptionReason::Stale,
-                    timestamp: 2.0,
-                },
-            ])
-            .unwrap();
-        assert!(matches!(
-            driver
-                .stop_workflow_execution(app.handle(), &agent_runtime, &running_id,)
-                .await,
-            Err(WorkflowRuntimeError::InvalidState(_))
-        ));
-        driver
-            .abort_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &running_id,
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            driver
-                .execution_store()
-                .get_execution(&running_id)
-                .await
-                .unwrap()
-                .status,
-            ExecutionStatus::Aborted
-        );
-
         let completed_id = uuid::Uuid::new_v4().to_string();
         driver
             .execution_store
@@ -9705,6 +8979,37 @@ mod dispatch_boundary_tests {
         panic!("command process for execution '{execution_id}' did not stop");
     }
 
+    async fn wait_for_node_execution_status(
+        driver: &WorkflowRuntimeHost,
+        execution_id: &str,
+        node_name: &str,
+        expected: NodeExecutionStatus,
+    ) {
+        for _ in 0..3000 {
+            let status = driver
+                .executions
+                .lock()
+                .await
+                .get(execution_id)
+                .and_then(|execution| {
+                    execution
+                        .node_executions
+                        .iter()
+                        .rev()
+                        .find(|node| node.node_name == node_name)
+                        .map(|node| node.status)
+                });
+            if status == Some(expected) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let execution = driver.executions.lock().await.get(execution_id).cloned();
+        panic!(
+            "Node '{node_name}' in execution '{execution_id}' did not become {expected:?}; execution={execution:?}"
+        );
+    }
+
     #[cfg(unix)]
     async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
         for _ in 0..3000 {
@@ -9754,7 +9059,6 @@ mod dispatch_boundary_tests {
                 matches!(
                     event,
                     WorkflowEvent::ExecutionCompleted { .. }
-                        | WorkflowEvent::ExecutionFailed { .. }
                         | WorkflowEvent::ExecutionAborted { .. }
                         | WorkflowEvent::ExecutionInterrupted { .. }
                 )
@@ -9769,26 +9073,6 @@ mod dispatch_boundary_tests {
         panic!(
             "execution '{execution_id}' did not become terminal; status={status:?}; events={events:?}"
         );
-    }
-
-    async fn wait_for_execution_status(
-        driver: &WorkflowRuntimeHost,
-        execution_id: &str,
-        expected: ExecutionStatus,
-    ) {
-        for _ in 0..3000 {
-            if driver
-                .execution_store()
-                .get_execution(execution_id)
-                .await
-                .is_some_and(|execution| execution.status == expected)
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        let status = driver.execution_store().get_execution(execution_id).await;
-        panic!("execution '{execution_id}' did not become {expected:?}; status={status:?}");
     }
 
     fn canonical_full_pipeline_runtime_workflow(
@@ -10066,36 +9350,28 @@ mod dispatch_boundary_tests {
     ) {
         let (session_id, node_execution_id) =
             wait_for_top_level_session(driver, execution_id, node_name).await;
-        if let Some((contract, value)) = artifact {
-            driver
-                .submit_workflow_output(
-                    app.handle(),
-                    session_store,
-                    agent_runtime,
-                    execution_id,
-                    node_name.to_string(),
-                    Some(node_execution_id),
-                    contract.to_string(),
-                    value,
-                )
-                .await
-                .unwrap();
-        }
-        let completion = driver
-            .on_turn_complete(
+        driver
+            .submit_workflow_output(
                 app.handle(),
                 session_store,
                 agent_runtime,
-                &session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: format!("stub completed {node_name}"),
-                    parent_tool_use_id: None,
-                }],
-                None,
+                execution_id,
+                node_name.to_string(),
+                node_execution_id.clone(),
+                artifact.map(|(contract, value)| (contract.to_string(), value)),
             )
-            .await;
+            .await
+            .unwrap();
+        let completion = record_test_provider_stop(
+            app,
+            driver,
+            session_store,
+            agent_runtime,
+            execution_id,
+            &node_execution_id,
+            &session_id,
+        )
+        .await;
         if let Err(error) = completion {
             let live = driver.executions.lock().await.get(execution_id).cloned();
             let metadata = driver.execution_store().get_execution(execution_id).await;
@@ -10105,6 +9381,80 @@ mod dispatch_boundary_tests {
                  live={live:?}; metadata={metadata:?}; events={events:?}"
             );
         }
+    }
+
+    async fn record_test_provider_stop(
+        app: &DispatchTestApp,
+        driver: &WorkflowRuntimeHost,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        node_execution_id: &str,
+        session_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        driver
+            .record_provider_stop(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: session_id.to_string(),
+                    workflow_execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    binding_id: format!("test-binding-{node_execution_id}"),
+                },
+                Vec::new(),
+            )
+            .await
+    }
+
+    async fn complete_agent_session_by_handshake(
+        app: &DispatchTestApp,
+        driver: &WorkflowRuntimeHost,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        session_id: &str,
+    ) {
+        let (node_name, node_execution_id) = {
+            let executions = driver.executions.lock().await;
+            let execution = executions
+                .get(execution_id)
+                .unwrap_or_else(|| panic!("Workflow execution '{execution_id}' is not active"));
+            let node = execution
+                .node_executions
+                .iter()
+                .find(|node| node.session_id.as_deref() == Some(session_id))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "AgentSession '{session_id}' is not attached to Workflow '{execution_id}'"
+                    )
+                });
+            (node.node_name.clone(), node.id.clone())
+        };
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                execution_id,
+                node_name,
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        record_test_provider_stop(
+            app,
+            driver,
+            session_store,
+            agent_runtime,
+            execution_id,
+            &node_execution_id,
+            session_id,
+        )
+        .await
+        .unwrap();
     }
 
     async fn complete_review_fanout(
@@ -10124,30 +9474,27 @@ mod dispatch_boundary_tests {
                     agent_runtime,
                     execution_id,
                     node_name.clone(),
-                    Some(node_execution_id.clone()),
-                    "review_verdict".to_string(),
-                    serde_json::json!({"lgtm": lgtm}),
+                    node_execution_id.clone(),
+                    Some((
+                        "review_verdict".to_string(),
+                        serde_json::json!({"lgtm": lgtm}),
+                    )),
                 )
                 .await
                 .unwrap();
         }
-        for (node_name, session_id, _) in children {
-            driver
-                .on_turn_complete(
-                    app.handle(),
-                    session_store,
-                    agent_runtime,
-                    &session_id,
-                    0,
-                    None,
-                    &[MessagePart::Text {
-                        content: format!("stub completed {node_name}"),
-                        parent_tool_use_id: None,
-                    }],
-                    None,
-                )
-                .await
-                .unwrap();
+        for (_, session_id, node_execution_id) in children {
+            record_test_provider_stop(
+                app,
+                driver,
+                session_store,
+                agent_runtime,
+                execution_id,
+                &node_execution_id,
+                &session_id,
+            )
+            .await
+            .unwrap();
         }
     }
 
@@ -10168,28 +9515,22 @@ mod dispatch_boundary_tests {
                 agent_runtime,
                 execution_id,
                 node_name.clone(),
-                Some(node_execution_id.clone()),
-                "fix_result".to_string(),
-                serde_json::json!({"fixed": true}),
+                node_execution_id.clone(),
+                Some(("fix_result".to_string(), serde_json::json!({"fixed": true}))),
             )
             .await
             .unwrap();
-        driver
-            .on_turn_complete(
-                app.handle(),
-                session_store,
-                agent_runtime,
-                &session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "stub fix complete".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        record_test_provider_stop(
+            app,
+            driver,
+            session_store,
+            agent_runtime,
+            execution_id,
+            &node_execution_id,
+            &session_id,
+        )
+        .await
+        .unwrap();
         agent_runtime
             .insert_runtime_state_for_test(
                 &session_id,
@@ -10222,21 +9563,28 @@ mod dispatch_boundary_tests {
         let (session_id, node_execution_id) =
             wait_for_top_level_session(driver, execution_id, node_name).await;
         driver
-            .on_turn_complete(
+            .submit_workflow_output(
                 app.handle(),
                 session_store,
                 agent_runtime,
-                &session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: format!("stub completed {node_name}"),
-                    parent_tool_use_id: None,
-                }],
+                execution_id,
+                node_name.to_string(),
+                node_execution_id.clone(),
                 None,
             )
             .await
             .unwrap();
+        record_test_provider_stop(
+            app,
+            driver,
+            session_store,
+            agent_runtime,
+            execution_id,
+            &node_execution_id,
+            &session_id,
+        )
+        .await
+        .unwrap();
         agent_runtime
             .insert_runtime_state_for_test(
                 &session_id,
@@ -11207,12 +10555,12 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_command_crash_clears_stall_observations_and_preserves_a_resumable_checkpoint() {
+    async fn test_fanout_command_runtime障害は対象nodeだけをfailedにする() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (_session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
         let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let received_for_listener = Arc::clone(&received_payloads);
@@ -11297,31 +10645,40 @@ mod dispatch_boundary_tests {
             },
         );
 
-        assert!(driver
-            .interrupt_active_execution(
+        driver
+            .fail_current_command_node(
                 app.handle(),
+                &session_store,
                 &handles,
-                &execution_id,
-                ExecutionInterruptionReason::Crash,
+                &CommandExecutionInput {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: command_node_execution_id.clone(),
+                    node_name: "shell-command".to_string(),
+                    attempt: 1,
+                    worktree_path: worktree_path.to_string(),
+                    raw_command: Some("false".to_string()),
+                    contract: None,
+                    schemas: BTreeMap::new(),
+                    fanout_parent: Some("fanout-review".to_string()),
+                    session_id: None,
+                },
+                "command runtime failed: injected wait failure".to_string(),
             )
             .await
-            .unwrap());
+            .unwrap();
 
         assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "interrupted fanout command must release the live runtime"
+            driver.contains_execution_for_test(&execution_id).await,
+            "fanout command failure must retain the live Workflow"
         );
         let execution = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
-            .expect("interrupted execution metadata must be stored");
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            execution.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(execution.resume_from_node.as_deref(), Some("fanout-review"));
+            .expect("active execution metadata must be stored");
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.interruption_reason, None);
+        assert_eq!(execution.resume_from_node, None);
         assert!(execution.completed_at.is_none());
 
         let live_payload = received_payloads
@@ -11329,23 +10686,9 @@ mod dispatch_boundary_tests {
             .unwrap()
             .last()
             .cloned()
-            .expect("interruption must broadcast live snapshot");
+            .expect("node failure must broadcast live snapshot");
         let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
-        assert_eq!(live_json["workflowExecution"]["status"], "interrupted");
-        assert_eq!(
-            live_json["workflowExecution"]["interruptionReason"],
-            "crash"
-        );
-        assert_eq!(
-            live_json["workflowExecution"]["resumeFromNode"],
-            "fanout-review"
-        );
-        let live_stall_observations =
-            live_json["workflowExecution"]["stallObservations"].as_array();
-        assert!(
-            live_stall_observations.is_none_or(|observations| observations.is_empty()),
-            "fanout command interruption must clear live stall observations: {live_json}"
-        );
+        assert_eq!(live_json["workflowExecution"]["status"], "running");
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
             .expect("live payload must expose node executions");
@@ -11356,27 +10699,30 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status_by_id(&parent_node_execution_id), "aborted");
-        assert_eq!(live_status_by_id(&command_node_execution_id), "aborted");
-        assert_eq!(live_status_by_id(&sibling_node_execution_id), "aborted");
+        assert_eq!(live_status_by_id(&parent_node_execution_id), "running");
+        assert_eq!(live_status_by_id(&command_node_execution_id), "failed");
+        assert_eq!(live_status_by_id(&sibling_node_execution_id), "running");
 
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
-                ..
-            }
+            WorkflowEvent::NodeFailed { node_execution_id, .. }
+                if node_execution_id == &command_node_execution_id
         )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::StallObserved { node_execution_id, .. }
+                if node_execution_id == &sibling_node_execution_id
+        )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            projected.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(projected.resume_from_node.as_deref(), Some("fanout-review"));
+        assert_eq!(projected.status, ExecutionStatus::Running);
+        assert_eq!(projected.interruption_reason, None);
+        assert_eq!(projected.resume_from_node, None);
         let projected_status_by_id = |node_execution_id: &str| {
             projected
                 .node_executions
@@ -11387,15 +10733,15 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status_by_id(&parent_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
         assert_eq!(
             projected_status_by_id(&command_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status_by_id(&sibling_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
     }
 
@@ -11438,22 +10784,15 @@ mod dispatch_boundary_tests {
         let review_session_id =
             wait_for_fanout_child_session(&driver, &execution_id, "review-session").await;
 
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                &review_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "LGTM".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            &review_session_id,
+        )
+        .await;
         wait_for_execution_terminal(&app, &driver, &execution_id).await;
 
         let events = read_dispatch_events(&app, &execution_id);
@@ -11601,19 +10940,15 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap();
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                judge_session_id,
-                0,
-                None,
-                &[],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            judge_session_id,
+        )
+        .await;
         wait_for_execution_terminal(&app, &driver, &execution_id).await;
 
         let execution = driver
@@ -11683,7 +11018,7 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn explicit_stop_kills_the_active_command_process_group_and_records_stop_checkpoint() {
+    async fn explicit_pause_kills_the_active_command_process_group_and_records_node_pause() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
@@ -11713,38 +11048,29 @@ mod dispatch_boundary_tests {
 
         wait_for_inactive_command(&driver, &execution_id).await;
         wait_for_process_exit(child_pid).await;
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
+        assert!(driver.contains_execution_for_test(&execution_id).await);
         let metadata = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            metadata.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
-        );
-        assert_eq!(metadata.resume_from_node.as_deref(), Some("long"));
+        assert_eq!(metadata.status, ExecutionStatus::Running);
+        assert_eq!(metadata.interruption_reason, None);
+        assert_eq!(metadata.resume_from_node, None);
         assert!(read_dispatch_events(&app, &execution_id)
             .iter()
-            .any(|event| matches!(
-                event,
-                WorkflowEvent::ExecutionInterrupted {
-                    reason: ExecutionInterruptionReason::Stop,
-                    ..
-                }
-            )));
+            .any(|event| matches!(event, WorkflowEvent::NodePaused { .. })));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn explicit_stop_then_resume_restarts_command_attempt_and_completes() {
+    async fn explicit_pause_then_resume_retries_command_in_a_new_attempt_and_completes() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
         let workflow = WorkflowDefinition {
             name: "command-stop-resume".to_string(),
-            description: "resume starts a fresh command attempt".to_string(),
+            description: "resume retries the command in a new attempt".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![command_node(
@@ -11768,8 +11094,8 @@ mod dispatch_boundary_tests {
         wait_for_inactive_command(&driver, &execution_id).await;
         wait_for_process_exit(child_pid).await;
 
-        let attempt_one_events = read_dispatch_events(&app, &execution_id);
-        assert!(attempt_one_events.iter().all(|event| {
+        let paused_events = read_dispatch_events(&app, &execution_id);
+        assert!(paused_events.iter().all(|event| {
             !matches!(
                 event,
                 WorkflowEvent::NodeCompleted {
@@ -11853,22 +11179,16 @@ mod dispatch_boundary_tests {
 
         wait_for_inactive_command(&driver, &execution_id).await;
         wait_for_process_exit(child_pid).await;
-        assert!(!driver.contains_execution_for_test(&execution_id).await);
+        assert!(driver.contains_execution_for_test(&execution_id).await);
         assert!(
-            driver
+            !driver
                 .execution_store
                 .interrupted_transition_pending(&execution_id)
                 .await
         );
         assert!(read_dispatch_events(&app, &execution_id)
             .iter()
-            .any(|event| matches!(
-                event,
-                WorkflowEvent::ExecutionInterrupted {
-                    reason: ExecutionInterruptionReason::Stop,
-                    ..
-                }
-            )));
+            .any(|event| matches!(event, WorkflowEvent::NodePaused { .. })));
     }
 
     #[cfg(unix)]
@@ -11985,7 +11305,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn command_runtime_completion_append_failure_records_crash_checkpoint() {
+    async fn command_runtime_completion_append_failure_fails_only_the_command_attempt() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let worktree = TempDir::new().unwrap();
@@ -12006,31 +11326,30 @@ mod dispatch_boundary_tests {
         wait_for_active_command(&driver, &execution_id).await;
         driver.fail_next_required_event_append_for_test();
         std::fs::write(worktree.path().join(".command-go"), "go").unwrap();
-        wait_for_execution_status(&driver, &execution_id, ExecutionStatus::Interrupted).await;
+        wait_for_node_execution_status(&driver, &execution_id, "gate", NodeExecutionStatus::Failed)
+            .await;
 
         let execution = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            execution.interruption_reason,
-            Some(ExecutionInterruptionReason::Crash)
-        );
-        assert_eq!(execution.resume_from_node.as_deref(), Some("gate"));
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.interruption_reason, None);
+        assert_eq!(execution.resume_from_node, None);
         assert!(execution.error_reason.is_none());
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Crash,
+            WorkflowEvent::NodeFailed {
+                node_name,
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
                 ..
-            }
+            } if node_name == "gate"
         )));
         assert!(events
             .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
         assert!(events
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::ArtifactProduced { .. })));
@@ -12973,6 +12292,7 @@ mod dispatch_boundary_tests {
                 token_usage: None,
                 failure: None,
                 fanout_parent: None,
+                completion_signals: Default::default(),
                 started_at: 0.0,
                 completed_at: None,
             }],
@@ -12986,7 +12306,7 @@ mod dispatch_boundary_tests {
     /// atomic commit 関数として機能する（spec [05]: 発行点が typed command 経路に
     /// 集約 / state mutation と event 発行を同一 commit 境界に集約）。
     #[test]
-    fn dispatch_internal_node_command_projects_complete_and_fail_commands() {
+    fn dispatch_internal_node_command_projects_complete_command() {
         // Complete は snapshot.node_history 末尾 entry と command effect の整合を
         // 検証する（commit 関数: 上流 push との同期境界）。
         let mut snapshot =
@@ -13002,7 +12322,7 @@ mod dispatch_boundary_tests {
             fanout_children: None,
             state: crate::domain::workflow::value_objects::default_node_history_status(),
         });
-        let complete = InternalNodeCommand::CompleteNode {
+        let complete = InternalNodeCommand {
             execution_id: "00000000-0000-0000-0000-000000000602".to_string(),
             workflow_name: "wf".to_string(),
             node_execution_id: "ne-node-1".to_string(),
@@ -13030,48 +12350,12 @@ mod dispatch_boundary_tests {
             other => panic!("expected NodeCompleted, got {other:?}"),
         }
 
-        let mut fail_snapshot =
-            dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000603", "wf");
-        let fail = InternalNodeCommand::FailNode {
-            execution_id: "00000000-0000-0000-0000-000000000603".to_string(),
-            workflow_name: "wf".to_string(),
-            node_execution_id: "ne-node-1".to_string(),
-            node_name: "node-1".to_string(),
-            attempt: 1,
-            reason: "boom".to_string(),
-            failure_kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-            retry_count: None,
-            timestamp: 200.0,
-        };
-        match workflow_runtime_events::dispatch_internal_node_command(&mut fail_snapshot, fail) {
-            Ok(WorkflowEvent::NodeFailed {
-                execution_id,
-                node_name,
-                reason,
-                timestamp,
-                ..
-            }) => {
-                assert_eq!(execution_id, "00000000-0000-0000-0000-000000000603");
-                assert_eq!(node_name, "node-1");
-                assert_eq!(reason, "boom");
-                assert_eq!(timestamp, 200.0);
-            }
-            other => panic!("expected NodeFailed, got {other:?}"),
-        }
-        // state mutation: Fail 受領後 snapshot.state は Failed { reason } に遷移し、
-        // updated_at は command の timestamp と一致する。
-        assert!(matches!(
-            fail_snapshot.state,
-            RuntimeExecutionState::Failed { ref reason, .. } if reason == "boom"
-        ));
-        assert_eq!(fail_snapshot.updated_at, 200.0);
-
         // Complete で snapshot の node_history 末尾と node_name が不一致な場合、
         // commit 関数は ValidationError を返す（spec [05] commit 境界: snapshot が
         // command effect を含まないことの検出）。
         let mut mismatched =
             dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000604", "wf");
-        let mismatched_cmd = InternalNodeCommand::CompleteNode {
+        let mismatched_cmd = InternalNodeCommand {
             execution_id: "00000000-0000-0000-0000-000000000604".to_string(),
             workflow_name: "wf".to_string(),
             node_execution_id: "ne-node-1".to_string(),
@@ -13119,7 +12403,7 @@ mod dispatch_boundary_tests {
             s
         }
         fn base_command() -> InternalNodeCommand {
-            InternalNodeCommand::CompleteNode {
+            InternalNodeCommand {
                 execution_id: "00000000-0000-0000-0000-000000000620".to_string(),
                 workflow_name: "table-wf".to_string(),
                 node_execution_id: "ne-node-1".to_string(),
@@ -13149,13 +12433,7 @@ mod dispatch_boundary_tests {
                 "execution_id",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        execution_id: ref mut r,
-                        ..
-                    } = c
-                    {
-                        *r = "00000000-0000-0000-0000-000000000999".to_string();
-                    }
+                    c.execution_id = "00000000-0000-0000-0000-000000000999".to_string();
                     c
                 }),
             ),
@@ -13163,13 +12441,7 @@ mod dispatch_boundary_tests {
                 "workflow_name",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        workflow_name: ref mut w,
-                        ..
-                    } = c
-                    {
-                        *w = "other-wf".to_string();
-                    }
+                    c.workflow_name = "other-wf".to_string();
                     c
                 }),
             ),
@@ -13177,13 +12449,7 @@ mod dispatch_boundary_tests {
                 "node_name",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        node_name: ref mut n,
-                        ..
-                    } = c
-                    {
-                        *n = "node-X".to_string();
-                    }
+                    c.node_name = "node-X".to_string();
                     c
                 }),
             ),
@@ -13191,12 +12457,7 @@ mod dispatch_boundary_tests {
                 "result",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        result: ref mut r, ..
-                    } = c
-                    {
-                        *r = Some("DIFFERENT".to_string());
-                    }
+                    c.result = Some("DIFFERENT".to_string());
                     c
                 }),
             ),
@@ -13204,13 +12465,7 @@ mod dispatch_boundary_tests {
                 "session_id",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        session_id: ref mut s,
-                        ..
-                    } = c
-                    {
-                        *s = Some("sess-X".to_string());
-                    }
+                    c.session_id = Some("sess-X".to_string());
                     c
                 }),
             ),
@@ -13218,16 +12473,10 @@ mod dispatch_boundary_tests {
                 "token_usage",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        token_usage: ref mut t,
-                        ..
-                    } = c
-                    {
-                        *t = Some(TokenUsage {
-                            input_tokens: 999,
-                            output_tokens: 999,
-                        });
-                    }
+                    c.token_usage = Some(TokenUsage {
+                        input_tokens: 999,
+                        output_tokens: 999,
+                    });
                     c
                 }),
             ),
@@ -13235,13 +12484,7 @@ mod dispatch_boundary_tests {
                 "artifact",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        artifact: ref mut so,
-                        ..
-                    } = c
-                    {
-                        *so = Some(serde_json::json!({"k":"other"}));
-                    }
+                    c.artifact = Some(serde_json::json!({"k":"other"}));
                     c
                 }),
             ),
@@ -13249,12 +12492,7 @@ mod dispatch_boundary_tests {
                 "attempt",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        attempt: ref mut r, ..
-                    } = c
-                    {
-                        *r = Some(99);
-                    }
+                    c.attempt = Some(99);
                     c
                 }),
             ),
@@ -13262,13 +12500,7 @@ mod dispatch_boundary_tests {
                 "timestamp",
                 Box::new(|_cmd| {
                     let mut c = base_command();
-                    if let InternalNodeCommand::CompleteNode {
-                        timestamp: ref mut t,
-                        ..
-                    } = c
-                    {
-                        *t = 999.0;
-                    }
+                    c.timestamp = 999.0;
                     c
                 }),
             ),
@@ -13286,85 +12518,8 @@ mod dispatch_boundary_tests {
         }
     }
 
-    /// Spec [05] commit 境界: `FailNode` の整合検証も execution_id / workflow_name / node_name の
-    /// 各次元で snapshot との mismatch を ValidationError として検出することを担保する。
-    #[test]
-    fn dispatch_internal_fail_node_validates_all_effect_fields() {
-        fn base_snapshot() -> RuntimeCommitSnapshot {
-            let mut s =
-                dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000621", "fail-wf");
-            s.current_node_name = "node-1".to_string();
-            s
-        }
-        fn base_command() -> InternalNodeCommand {
-            InternalNodeCommand::FailNode {
-                execution_id: "00000000-0000-0000-0000-000000000621".to_string(),
-                workflow_name: "fail-wf".to_string(),
-                node_execution_id: "ne-node-1".to_string(),
-                node_name: "node-1".to_string(),
-                attempt: 1,
-                reason: "boom".to_string(),
-                failure_kind:
-                    crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                retry_count: None,
-                timestamp: 200.0,
-            }
-        }
-
-        // baseline は受理される。
-        let mut s = base_snapshot();
-        assert!(
-            workflow_runtime_events::dispatch_internal_node_command(&mut s, base_command()).is_ok()
-        );
-
-        // execution_id mismatch
-        let mut s = base_snapshot();
-        let mut bad = base_command();
-        if let InternalNodeCommand::FailNode {
-            execution_id: ref mut r,
-            ..
-        } = bad
-        {
-            *r = "00000000-0000-0000-0000-000000000999".to_string();
-        }
-        assert!(matches!(
-            workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowRuntimeError::ValidationError(_))
-        ));
-
-        // workflow_name mismatch
-        let mut s = base_snapshot();
-        let mut bad = base_command();
-        if let InternalNodeCommand::FailNode {
-            workflow_name: ref mut w,
-            ..
-        } = bad
-        {
-            *w = "other-wf".to_string();
-        }
-        assert!(matches!(
-            workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowRuntimeError::ValidationError(_))
-        ));
-
-        // node_name mismatch
-        let mut s = base_snapshot();
-        let mut bad = base_command();
-        if let InternalNodeCommand::FailNode {
-            node_name: ref mut n,
-            ..
-        } = bad
-        {
-            *n = "node-X".to_string();
-        }
-        assert!(matches!(
-            workflow_runtime_events::dispatch_internal_node_command(&mut s, bad),
-            Err(WorkflowRuntimeError::ValidationError(_))
-        ));
-    }
-
     #[tokio::test]
-    async fn stale_turn_complete_failure_records_resumable_checkpoint() {
+    async fn timeout_like_agent_exit_marks_only_the_node_attempt_failed() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -13413,21 +12568,24 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "stale timeout releases live runtime after checkpointing"
+        assert!(driver.contains_execution_for_test(&execution_id).await);
+        let executions = driver.executions.lock().await;
+        let live = executions.get(&execution_id).unwrap();
+        assert_eq!(live.state(), &RuntimeExecutionState::Running);
+        assert_eq!(live.node_executions.len(), 1);
+        assert_eq!(
+            live.node_executions[0].status,
+            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
         );
+        drop(executions);
         let execution = driver
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep interrupted checkpoint metadata");
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            execution.interruption_reason,
-            Some(ExecutionInterruptionReason::Stale)
-        );
-        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
+            .expect("ExecutionStore must keep active metadata");
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.interruption_reason, None);
+        assert_eq!(execution.resume_from_node, None);
         assert!(execution.error_reason.is_none());
 
         let events = WorkflowEventLog::new(&data_dir)
@@ -13435,19 +12593,18 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted {
-                reason: ExecutionInterruptionReason::Stale,
+            WorkflowEvent::NodeFailed {
+                failure_kind: NodeExecutionFailureKind::StaleRuntimeTimeout,
                 ..
             }
         )));
         assert!(events
             .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
     }
 
     #[tokio::test]
-    async fn issue_1558_fanout_child_nonzero_exit_commits_canonical_failure_before_terminal_state()
-    {
+    async fn failed_fanout_child_marks_only_that_attempt_and_keeps_its_sibling_running() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -13527,45 +12684,43 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "terminal fanout failure must release the live runtime"
-        );
+        assert!(driver.contains_execution_for_test(&execution_id).await);
+        let executions = driver.executions.lock().await;
+        let live = executions.get(&execution_id).unwrap();
+        assert_eq!(live.state(), &RuntimeExecutionState::Running);
+        let fanout = live.fanout_runtime.as_ref().unwrap();
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Failed);
+        assert_eq!(fanout.children[1].state, FanoutChildRuntimeState::Running);
+        drop(executions);
         let stored = driver
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep terminal metadata");
-        assert_eq!(stored.status, ExecutionStatus::Failed);
+            .expect("ExecutionStore must keep active metadata");
+        assert_eq!(stored.status, ExecutionStatus::Running);
         assert_eq!(stored.interruption_reason, None);
         assert_eq!(stored.resume_from_node, None);
-        assert!(stored.error_reason.is_some());
+        assert!(stored.error_reason.is_none());
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
-        let node_failed_index = events
+        assert!(events
             .iter()
-            .position(|event| matches!(event, WorkflowEvent::NodeFailed { .. }))
-            .expect("observed child turn must produce a canonical NodeFailed fact");
-        let execution_failed_index = events
-            .iter()
-            .position(|event| matches!(event, WorkflowEvent::ExecutionFailed { .. }))
-            .expect("terminal fanout policy must produce ExecutionFailed");
-        assert!(
-            node_failed_index < execution_failed_index,
-            "canonical child fact must precede execution terminalization; got {events:?}"
-        );
+            .any(|event| matches!(event, WorkflowEvent::NodeFailed { .. })));
         assert!(
             events
                 .iter()
                 .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })),
-            "a child nonzero exit is not an execution interruption; got {events:?}"
+            "a child failure is not a Workflow terminal result; got {events:?}"
         );
         let refs = driver.session_workflow_refs.lock().await;
-        assert!(
-            refs.values()
-                .all(|session_ref| session_ref.execution_id != execution_id),
-            "interruption cleanup must remove all session refs for the fanout"
+        assert_eq!(
+            refs.get(failed_child_session_id).unwrap().execution_id,
+            execution_id
+        );
+        assert_eq!(
+            refs.get(interrupted_child_session_id).unwrap().execution_id,
+            execution_id
         );
     }
 
@@ -13631,22 +12786,15 @@ mod dispatch_boundary_tests {
             },
         );
 
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                completed_child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "LGTM".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            completed_child_session_id,
+        )
+        .await;
 
         let execs = driver.executions.lock().await;
         let exec = execs
@@ -13798,22 +12946,15 @@ mod dispatch_boundary_tests {
             );
         }
 
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                first_child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "first item complete".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            first_child_session_id,
+        )
+        .await;
 
         let (workflow, live_counts, live_baselines) = {
             let executions = driver.executions.lock().await;
@@ -13828,19 +12969,12 @@ mod dispatch_boundary_tests {
                 execution.loop_guard_reset_baselines.clone(),
             )
         };
-        let mut interrupted_events = WorkflowEventLog::new(&data_dir)
+        let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
-        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
-            execution_id: execution_id.clone(),
-            reason: ExecutionInterruptionReason::Crash,
-            timestamp: current_timestamp() + 1.0,
-        });
-        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
-            &execution_id,
-            &interrupted_events,
-        )
-        .unwrap();
+        let checkpoint =
+            workflow_resume_projection::project_turn_completion_checkpoint(&execution_id, &events)
+                .unwrap();
         let live_count = live_baselines.execution_count("fix", live_counts["fix"], Some(reset_on));
         let replay_count = checkpoint.loop_guard_reset_baselines.execution_count(
             "fix",
@@ -13849,10 +12983,7 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(live_count, expected_count_after_first_child);
         assert_eq!(replay_count, live_count);
-        let domain_workflow =
-            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
-                &workflow,
-            );
+        let domain_workflow = workflow.clone();
         let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
             &domain_workflow,
             0,
@@ -13877,22 +13008,15 @@ mod dispatch_boundary_tests {
             )
         );
 
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                second_child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "second item complete".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            second_child_session_id,
+        )
+        .await;
 
         let (live_counts, live_baselines) = {
             let executions = driver.executions.lock().await;
@@ -13906,20 +13030,16 @@ mod dispatch_boundary_tests {
                 execution.loop_guard_reset_baselines.clone(),
             )
         };
-        let mut interrupted_events = WorkflowEventLog::new(&data_dir)
+        let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
-        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
-            execution_id: execution_id.clone(),
-            reason: ExecutionInterruptionReason::Crash,
-            timestamp: current_timestamp() + 1.0,
-        });
-        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
-            &execution_id,
-            &interrupted_events,
-        )
-        .unwrap();
-        assert_eq!(checkpoint.resume_from_node, "fix");
+        let checkpoint =
+            workflow_resume_projection::project_turn_completion_checkpoint(&execution_id, &events)
+                .unwrap();
+        assert_eq!(
+            checkpoint.projected_execution.current_node.as_deref(),
+            Some("fix")
+        );
         assert_eq!(checkpoint.node_execution_counts, live_counts);
         assert_eq!(
             checkpoint.loop_guard_reset_baselines.execution_count(
@@ -14043,19 +13163,12 @@ mod dispatch_boundary_tests {
                 execution.loop_guard_reset_baselines.clone(),
             )
         };
-        let mut interrupted_events = WorkflowEventLog::new(data_dir)
+        let events = WorkflowEventLog::new(data_dir)
             .read_log(execution_id)
             .unwrap();
-        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
-            execution_id: execution_id.to_string(),
-            reason: ExecutionInterruptionReason::Crash,
-            timestamp: current_timestamp() + 1.0,
-        });
-        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
-            execution_id,
-            &interrupted_events,
-        )
-        .unwrap();
+        let checkpoint =
+            workflow_resume_projection::project_turn_completion_checkpoint(execution_id, &events)
+                .unwrap();
 
         assert_eq!(checkpoint.node_execution_counts, live_counts);
         assert_eq!(checkpoint.loop_guard_reset_baselines, live_baselines);
@@ -14063,10 +13176,7 @@ mod dispatch_boundary_tests {
             live_baselines.execution_count("fix", live_counts["fix"], Some("worker")),
             expected_range_count
         );
-        let domain_workflow =
-            crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain(
-                &workflow,
-            );
+        let domain_workflow = workflow.clone();
         let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
             &domain_workflow,
             0,
@@ -14459,6 +13569,18 @@ mod dispatch_boundary_tests {
                 );
             }
         }
+        let waiting_child_node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .unwrap()
+            .node_executions
+            .iter()
+            .find(|execution| execution.node_name == "review-b")
+            .unwrap()
+            .id
+            .clone();
 
         driver
             .submit_workflow_output(
@@ -14467,28 +13589,25 @@ mod dispatch_boundary_tests {
                 &handles,
                 &execution_id,
                 "review-b".to_string(),
-                None,
-                "review-verdict".to_string(),
-                serde_json::json!({"verdict": "LGTM"}),
+                waiting_child_node_execution_id.clone(),
+                Some((
+                    "review-verdict".to_string(),
+                    serde_json::json!({"verdict": "LGTM"}),
+                )),
             )
             .await
             .unwrap();
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                waiting_child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "confirmed review".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        record_test_provider_stop(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            &waiting_child_node_execution_id,
+            waiting_child_session_id,
+        )
+        .await
+        .unwrap();
 
         let turn_complete =
             workflow_turn_complete_notification_from_typed_refusal(refused_child_session_id);
@@ -14525,17 +13644,32 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "fanout failure must release the terminal runtime"
+            driver.contains_execution_for_test(&execution_id).await,
+            "one failed fanout child must keep the Workflow available for explicit Retry"
         );
         let stored = driver
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep terminal failure metadata");
-        assert_eq!(stored.status, ExecutionStatus::Failed);
+            .expect("ExecutionStore must keep the active Workflow projection");
+        assert_eq!(stored.status, ExecutionStatus::Running);
         assert_eq!(stored.interruption_reason, None);
         assert_eq!(stored.resume_from_node, None);
+
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        let status = |node_name: &str| {
+            execution
+                .node_executions
+                .iter()
+                .find(|node| node.node_name == node_name)
+                .map(|node| node.status)
+                .unwrap()
+        };
+        assert_eq!(status("fanout-review"), NodeExecutionStatus::Running);
+        assert_eq!(status("review-a"), NodeExecutionStatus::Failed);
+        assert_eq!(status("review-b"), NodeExecutionStatus::Succeeded);
+        drop(executions);
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -14564,13 +13698,6 @@ mod dispatch_boundary_tests {
         assert!(events
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::ModelRefusal,
-                ..
-            }
-        )));
         assert!(events.iter().all(|event| !matches!(
             event,
             WorkflowEvent::ArtifactProduced { node_name, .. } if node_name == "fanout-review"
@@ -14717,218 +13844,12 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_missing_output_after_repair_limit_fails_without_crash_fact() {
+    async fn approval_fanout_child_accepts_submit_without_optional_artifact() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         driver.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir.clone());
-        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let received_for_listener = Arc::clone(&received_payloads);
-        app.listen("workflow-execution-changed", move |event| {
-            received_for_listener
-                .lock()
-                .unwrap()
-                .push(event.payload().to_string());
-        });
-
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/fanout-missing-output-repair-limit";
-        let missing_child_session_id = "fanout-missing-output-limit-session";
-        let sibling_session_id = "fanout-missing-output-limit-sibling-session";
-        let mut review_a = make_fanout_child("review-a");
-        review_a.artifact = Some("review-verdict".to_string());
-        let workflow = WorkflowDefinition {
-            name: "fanout-missing-output-limit-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                review_a,
-                make_fanout_child("review-b"),
-            ],
-        };
-        let mut exec =
-            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.force_state_for_test(RuntimeExecutionState::Running);
-        exec.current_node_index = 0;
-        exec.current_session_id = None;
-        exec.node_execution_counts = HashMap::from([
-            ("fanout-review".to_string(), 1),
-            ("review-a".to_string(), 1),
-            ("review-b".to_string(), 1),
-        ]);
-        let mut missing_child = test_fanout_child(
-            "review-a",
-            missing_child_session_id,
-            FanoutChildRuntimeState::Running,
-            0,
-        );
-        missing_child.contract = Some("review-verdict".to_string());
-        install_test_fanout(
-            &mut exec,
-            vec![
-                missing_child,
-                test_fanout_child(
-                    "review-b",
-                    sibling_session_id,
-                    FanoutChildRuntimeState::Running,
-                    1,
-                ),
-            ],
-        );
-        append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-        {
-            let mut refs = driver.session_workflow_refs.lock().await;
-            refs.insert(
-                missing_child_session_id.to_string(),
-                SessionWorkflowRef {
-                    execution_id: execution_id.clone(),
-                },
-            );
-            refs.insert(
-                sibling_session_id.to_string(),
-                SessionWorkflowRef {
-                    execution_id: execution_id.clone(),
-                },
-            );
-        }
-        let log = WorkflowEventLog::new(&data_dir);
-        for attempt in 1..=2 {
-            log.append(&WorkflowEvent::ContractViolated {
-                execution_id: execution_id.clone(),
-                node_execution_id: "ne-review-a-0".to_string(),
-                node_name: "review-a".to_string(),
-                violations: vec![crate::domain::workflow::ContractViolationRecord {
-                    path: "$".to_string(),
-                    reason: submission_violation_reason(SubmissionViolation::MissingSubmitOutput)
-                        .to_string(),
-                }],
-                request_id: None,
-                repair_attempt: attempt,
-                timestamp: 1000.0 + f64::from(attempt),
-            })
-            .unwrap();
-        }
-
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                missing_child_session_id,
-                0,
-                None,
-                &[],
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "repair limit fanout missing-output failure must release the terminal execution"
-        );
-        let live_payload = received_payloads
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("partial failure must broadcast live snapshot");
-        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
-        let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
-            .as_array()
-            .expect("live payload must expose node executions");
-        let live_status = |node_name: &str| {
-            live_node_executions
-                .iter()
-                .find(|execution| execution["nodeName"] == node_name)
-                .and_then(|execution| execution["status"].as_str())
-                .expect("node execution status must be present")
-        };
-        assert_eq!(live_status("fanout-review"), "failed");
-        assert_eq!(live_status("review-a"), "failed");
-        assert_eq!(live_status("review-b"), "aborted");
-
-        let events = read_dispatch_events(&app, &execution_id);
-        let projected = project_workflow_execution(&execution_id, &events)
-            .unwrap()
-            .unwrap();
-        let projected_status = |node_name: &str| {
-            projected
-                .node_executions
-                .iter()
-                .find(|execution| execution.node_name == node_name)
-                .map(|execution| execution.status)
-                .expect("projected node execution must exist")
-        };
-        assert_eq!(
-            projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status("review-a"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status("review-b"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
-        );
-        for node_name in ["review-a", "review-b"] {
-            assert!(
-                projected
-                    .node_executions
-                    .iter()
-                    .find(|execution| execution.node_name == node_name)
-                    .and_then(|execution| execution.session_id.as_deref())
-                    .is_some(),
-                "fanout Session attachment for {node_name} must survive partial interruption replay"
-            );
-        }
-        assert!(projected
-            .node_executions
-            .iter()
-            .all(|execution| !execution.status.is_active()));
-        assert_eq!(projected.status, ExecutionStatus::Failed);
-        assert!(events
-            .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
-                ..
-            }
-        )));
-        let stored = driver
-            .execution_store
-            .get_execution(&execution_id)
-            .await
-            .expect("repair exhaustion remains terminally observable");
-        assert_eq!(stored.status, ExecutionStatus::Failed);
-        assert_eq!(stored.resume_from_node, None);
-    }
-
-    #[tokio::test]
-    async fn approval_fanout_child_missing_output_after_repair_limit_fails_without_crash_fact() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
-        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let received_for_listener = Arc::clone(&received_payloads);
-        app.listen("workflow-execution-changed", move |event| {
-            received_for_listener
-                .lock()
-                .unwrap()
-                .push(event.payload().to_string());
-        });
-
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/approval-fanout-missing-output-repair-limit";
         let approval_child_session_id = "approval-fanout-missing-output-limit-session";
@@ -14979,12 +13900,17 @@ mod dispatch_boundary_tests {
         let parent_node_execution_id = fanout.parent_node_execution_id.clone();
         let approval_child_node_execution_id = fanout.children[0].node_execution_id.clone();
         let sibling_node_execution_id = fanout.children[1].node_execution_id.clone();
-        let approval_node_execution = exec
-            .node_executions
-            .iter_mut()
-            .find(|execution| execution.id == approval_child_node_execution_id)
-            .expect("approval child node execution");
-        let _ = approval_node_execution.wait_for_approval();
+        exec.record_node_completion_signal(
+            &approval_child_node_execution_id,
+            crate::domain::workflow::NodeCompletionSignal::Submit,
+            1001.0,
+        );
+        exec.record_node_completion_signal(
+            &approval_child_node_execution_id,
+            crate::domain::workflow::NodeCompletionSignal::Stop,
+            1002.0,
+        );
+        exec.mark_node_waiting_approval(&approval_child_node_execution_id, 1003.0);
         append_started_events_for_execution(&data_dir, &exec);
         insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
         driver.session_workflow_refs.lock().await.insert(
@@ -15001,24 +13927,6 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        let log = WorkflowEventLog::new(&data_dir);
-        for attempt in 1..=2 {
-            log.append(&WorkflowEvent::ContractViolated {
-                execution_id: execution_id.clone(),
-                node_execution_id: approval_child_node_execution_id.clone(),
-                node_name: "review-a".to_string(),
-                violations: vec![crate::domain::workflow::ContractViolationRecord {
-                    path: "$".to_string(),
-                    reason: submission_violation_reason(SubmissionViolation::MissingSubmitOutput)
-                        .to_string(),
-                }],
-                request_id: None,
-                repair_attempt: attempt,
-                timestamp: 1000.0 + f64::from(attempt),
-            })
-            .unwrap();
-        }
-
         let result = driver
             .resolve_workflow_approval(
                 app.handle(),
@@ -15031,292 +13939,51 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(WorkflowRuntimeError::ValidationError(message))
-                if message == "required structured output has not been submitted"
-        ));
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "repair limit approval fanout missing-output failure must release the terminal execution"
-        );
-        let live_payload = received_payloads
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("partial failure must broadcast live snapshot");
-        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
-        let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
-            .as_array()
-            .expect("live payload must expose node executions");
-        let live_status_by_id = |node_execution_id: &str| {
-            live_node_executions
-                .iter()
-                .find(|execution| execution["id"] == node_execution_id)
-                .and_then(|execution| execution["status"].as_str())
-                .expect("node execution status must be present")
-        };
-        assert_eq!(live_status_by_id(&parent_node_execution_id), "failed");
+        result.unwrap();
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
         assert_eq!(
-            live_status_by_id(&approval_child_node_execution_id),
-            "failed"
+            execution
+                .node_executions
+                .iter()
+                .find(|node| node.id == parent_node_execution_id)
+                .unwrap()
+                .status,
+            NodeExecutionStatus::Running
         );
-        assert_eq!(live_status_by_id(&sibling_node_execution_id), "aborted");
-
+        assert_eq!(
+            execution
+                .node_executions
+                .iter()
+                .find(|node| node.id == approval_child_node_execution_id)
+                .unwrap()
+                .status,
+            NodeExecutionStatus::Succeeded
+        );
+        assert_eq!(
+            execution
+                .node_executions
+                .iter()
+                .find(|node| node.id == sibling_node_execution_id)
+                .unwrap()
+                .status,
+            NodeExecutionStatus::Running
+        );
+        drop(executions);
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::NodeFailed {
+            WorkflowEvent::ApprovalResolved {
                 node_execution_id,
-                node_name,
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
                 ..
             } if node_execution_id == &approval_child_node_execution_id
-                && node_name == "review-a"
-        )));
-        let projected = project_workflow_execution(&execution_id, &events)
-            .unwrap()
-            .unwrap();
-        let projected_status_by_id = |node_execution_id: &str| {
-            projected
-                .node_executions
-                .iter()
-                .find(|execution| execution.id == node_execution_id)
-                .map(|execution| execution.status)
-                .expect("projected node execution must exist")
-        };
-        assert_eq!(
-            projected_status_by_id(&parent_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status_by_id(&approval_child_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status_by_id(&sibling_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
-        );
-        assert_eq!(projected.status, ExecutionStatus::Failed);
-        assert!(events
-            .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
-                ..
-            }
-        )));
-    }
-
-    #[tokio::test]
-    async fn fanout_child_missing_output_repair_start_failure_checkpoints_structured_mismatch_in_live_and_replay(
-    ) {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
-        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let received_for_listener = Arc::clone(&received_payloads);
-        app.listen("workflow-execution-changed", move |event| {
-            received_for_listener
-                .lock()
-                .unwrap()
-                .push(event.payload().to_string());
-        });
-
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/fanout-missing-output-repair-start";
-        let missing_child_session_id = "aaaaaaaa-0000-4000-8000-000000000132";
-        let sibling_session_id = "fanout-missing-output-start-sibling-session";
-        let mut review_a = make_fanout_child("review-a");
-        review_a.artifact = Some("review-verdict".to_string());
-        let workflow = WorkflowDefinition {
-            name: "fanout-missing-output-start-wf".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                review_a,
-                make_fanout_child("review-b"),
-            ],
-        };
-        let mut exec =
-            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
-        exec.force_state_for_test(RuntimeExecutionState::Running);
-        exec.current_node_index = 0;
-        exec.current_session_id = None;
-        exec.node_execution_counts = HashMap::from([
-            ("fanout-review".to_string(), 1),
-            ("review-a".to_string(), 1),
-            ("review-b".to_string(), 1),
-        ]);
-        let mut missing_child = test_fanout_child(
-            "review-a",
-            missing_child_session_id,
-            FanoutChildRuntimeState::Running,
-            0,
-        );
-        missing_child.contract = Some("review-verdict".to_string());
-        install_test_fanout(
-            &mut exec,
-            vec![
-                missing_child,
-                test_fanout_child(
-                    "review-b",
-                    sibling_session_id,
-                    FanoutChildRuntimeState::Running,
-                    1,
-                ),
-            ],
-        );
-        append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_register_active(&driver, exec, ExecutionOrigin::DesktopUi).await;
-        {
-            let mut refs = driver.session_workflow_refs.lock().await;
-            refs.insert(
-                missing_child_session_id.to_string(),
-                SessionWorkflowRef {
-                    execution_id: execution_id.clone(),
-                },
-            );
-            refs.insert(
-                sibling_session_id.to_string(),
-                SessionWorkflowRef {
-                    execution_id: execution_id.clone(),
-                },
-            );
-        }
-        session_store
-            .save_full_session_for_restore(
-                &data_dir,
-                &chat_session_for_test(missing_child_session_id, worktree_path, None, true),
-            )
-            .unwrap();
-        handles
-            .insert_failing_runtime_state_for_test(missing_child_session_id)
-            .await;
-
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                missing_child_session_id,
-                0,
-                None,
-                &[],
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "repair start failure must release the terminal fanout"
-        );
-        let live_payload = received_payloads
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("terminal failure must broadcast live snapshot");
-        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
-        let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
-            .as_array()
-            .expect("live payload must expose node executions");
-        let live_status = |node_name: &str| {
-            live_node_executions
-                .iter()
-                .find(|execution| execution["nodeName"] == node_name)
-                .and_then(|execution| execution["status"].as_str())
-                .expect("node execution status must be present")
-        };
-        assert_eq!(live_status("fanout-review"), "failed");
-        assert_eq!(live_status("review-a"), "failed");
-        assert_eq!(live_status("review-b"), "aborted");
-
-        let events = read_dispatch_events(&app, &execution_id);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ContractViolated {
-                node_name,
-                repair_attempt: 1,
-                ..
-            } if node_name == "review-a"
-        )));
-        let projected = project_workflow_execution(&execution_id, &events)
-            .unwrap()
-            .unwrap();
-        let projected_status = |node_name: &str| {
-            projected
-                .node_executions
-                .iter()
-                .find(|execution| execution.node_name == node_name)
-                .map(|execution| execution.status)
-                .expect("projected node execution must exist")
-        };
-        assert_eq!(
-            projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status("review-a"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
-        );
-        assert_eq!(
-            projected_status("review-b"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
-        );
-        for node_name in ["review-a", "review-b"] {
-            assert!(
-                projected
-                    .node_executions
-                    .iter()
-                    .find(|execution| execution.node_name == node_name)
-                    .and_then(|execution| execution.session_id.as_deref())
-                    .is_some(),
-                "fanout Session attachment for {node_name} must survive activation failure replay"
-            );
-        }
-        assert!(projected
-            .node_executions
-            .iter()
-            .all(|execution| !execution.status.is_active()));
-        assert_eq!(projected.status, ExecutionStatus::Failed);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeFailed {
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
-                ..
-            }
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
-                ..
-            }
         )));
         assert!(events
             .iter()
-            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+            .all(|event| !matches!(event, WorkflowEvent::NodeFailed { .. })));
     }
 
-    /// Spec [05] commit 境界: production 経路 `execute_outcome` の pre-commit phase で
-    /// `write_log_required_batch` が失敗した場合、`sync_execution_store_from_snapshot` /
-    /// `persist_state` は実行されず、ExecutionStore は active のまま / NDJSON 上にも terminal
-    /// event が残らないことを直接検証する（spec [05]: state mutation と event log の
-    /// 分離を防ぐ rollback 境界）。
-    ///
-    /// 障害シミュレーション: workflow_execution_logs ディレクトリパスに通常ファイルを置くと、
-    /// `WorkflowEventLog::append_batch` 内の `create_dir_all` が失敗し、batch append が
-    /// `Err` を返す。
     #[tokio::test]
     async fn execute_outcome_pre_commit_append_failure_keeps_execution_store_active() {
         let app = make_dispatch_app();
@@ -15345,23 +14012,13 @@ mod dispatch_boundary_tests {
         }
         std::fs::write(&log_dir, b"block").unwrap();
 
-        // snapshot を Failed terminal に遷移させ、execute_outcome に persist 経路で渡す。
+        // snapshot を Completed terminal に遷移させ、execute_outcome に persist 経路で渡す。
         let mut snapshot = {
             let execs = driver.executions.lock().await;
-            execs
-                .get(&execution_id)
-                .unwrap()
-                .to_commit_snapshot()
+            RuntimeCommitSnapshot::from_execution(execs.get(&execution_id).unwrap())
                 .expect("commit snapshot must be valid")
         };
-        snapshot.apply_lifecycle_projection(
-            RuntimeExecutionState::Failed {
-                reason: "node failure".to_string(),
-                kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                retry_count: None,
-            },
-            9999.0,
-        );
+        snapshot.apply_lifecycle_projection(RuntimeExecutionState::Completed, 9999.0);
 
         let result = driver
             .execute_outcome_persist_failed_for_test(
@@ -15400,118 +14057,87 @@ mod dispatch_boundary_tests {
             .read_log(&execution_id)
             .unwrap();
         assert!(
-            events.iter().all(|event| !matches!(
-                event,
-                WorkflowEvent::NodeFailed { .. } | WorkflowEvent::ExecutionFailed { .. }
-            )),
+            events
+                .iter()
+                .all(|event| !matches!(event, WorkflowEvent::NodeFailed { .. })),
             "terminal events must not be appended when pre-commit append fails; got {events:?}"
         );
     }
 
-    /// Spec [05] Rule: snapshot に Failed state が反映済みの場合、`write_terminal_log` の
-    /// 単体経路 (`terminal_events_for_snapshot` → `write_log_required_batch`) が
-    /// startup timeout の `failure_kind` / retry count を保ったまま
-    /// `NodeFailed` + `ExecutionFailed` を順序通り append することを直接検証する。
-    #[test]
-    fn write_terminal_log_emits_startup_timeout_node_failed_followed_by_execution_failed() {
+    #[tokio::test]
+    async fn atui_040_provider_stop_without_submit_keeps_auto_node_open() {
         let app = make_dispatch_app();
         let driver = WorkflowRuntimeHost::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
-        let execution_id = "00000000-0000-0000-0000-000000000605".to_string();
-
-        let snapshot = RuntimeCommitSnapshot {
-            execution_id: execution_id.clone(),
-            workflow_name: "fail-wf".to_string(),
-            worktree_path: "/repo".to_string(),
-            created_from: ExecutionOrigin::Agent,
-            request: String::new(),
-            error_reason: Some("startup timeout".to_string()),
-            state: RuntimeExecutionState::Failed {
-                reason: "startup timeout".to_string(),
-                kind: crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout,
-                retry_count: Some(2),
-            },
-            current_node_index: 0,
-            current_node_name: "node-1".to_string(),
-            current_session_id: None,
-            node_history: vec![],
-            node_execution_counts: HashMap::from([("node-1".to_string(), 1)]),
-            workflow_definition: crate::domain::workflow::WorkflowDefinition {
-                name: "fail-wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: vec![make_test_node(
-                    "node-1",
-                    TestKind::Session,
-                    "node-1",
-                    vec![],
-                    None,
-                )],
-            },
-            total_token_usage: TokenUsage::default(),
-            artifacts: HashMap::new(),
-            node_executions: vec![node_execution_fixture(
-                &execution_id,
-                "node-execution-node-1",
-                "node-1",
-                1,
-                NodeExecutionStatus::Failed,
-                None,
-                None,
-            )],
-            started_at: 900.0,
-            updated_at: 1000.0,
-        };
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/atui-040-stop-only";
+        let session_id = "atui-040-stop-only-session";
 
         driver
-            .write_terminal_log(app.handle(), &snapshot)
-            .expect("write_terminal_log must succeed");
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_running_session_workflow(),
+                RuntimeExecutionState::Running,
+                worktree_path.to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions
+                .get_mut(&execution_id)
+                .expect("seeded Workflow execution");
+            execution.current_session_id = Some(session_id.to_string());
+            execution
+                .node_executions
+                .last_mut()
+                .expect("seeded Node execution")
+                .session_id = Some(session_id.to_string());
+        }
+        let node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .unwrap()
+            .node_executions
+            .last()
+            .unwrap()
+            .id
+            .clone();
 
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: session_id.to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id,
+                    binding_id: "atui-040-binding".to_string(),
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("validated Provider Stop must be recorded");
+
+        let executions = driver.executions.lock().await;
+        let execution = executions
+            .get(&execution_id)
+            .expect("Stop without Submit must not complete the Workflow");
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
         assert_eq!(
-            events.len(),
-            2,
-            "terminal log must contain NodeFailed + ExecutionFailed; got {events:?}"
+            execution
+                .node_executions
+                .last()
+                .expect("current Node execution")
+                .status,
+            NodeExecutionStatus::Running,
+            "Stop without Submit must keep the Auto Node incomplete"
         );
-        match &events[0] {
-            WorkflowEvent::NodeFailed {
-                execution_id: ev_execution_id,
-                node_name,
-                reason,
-                failure_kind,
-                retry_count,
-                ..
-            } => {
-                assert_eq!(ev_execution_id, &execution_id);
-                assert_eq!(node_name, "node-1");
-                assert_eq!(reason, "startup timeout");
-                assert_eq!(
-                    *failure_kind,
-                    crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
-                );
-                assert_eq!(*retry_count, Some(2));
-            }
-            other => panic!("expected NodeFailed first, got {other:?}"),
-        }
-        match &events[1] {
-            WorkflowEvent::ExecutionFailed {
-                execution_id: ev_execution_id,
-                reason,
-                failure_kind,
-                ..
-            } => {
-                assert_eq!(ev_execution_id, &execution_id);
-                assert_eq!(reason, "startup timeout");
-                assert_eq!(
-                    *failure_kind,
-                    crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
-                );
-            }
-            other => panic!("expected ExecutionFailed second, got {other:?}"),
-        }
     }
 
     /// Spec [04] Rule「対象不在 / 既に終了した command は受理されない」:
@@ -15545,7 +14171,7 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] Rule「既に終了した execution に対する操作 command が要求される」:
-    /// terminal な execution（Completed/Failed/Aborted）に対する Abort は `AlreadyTerminal`
+    /// terminal な execution（Completed/Aborted）に対する Abort は `AlreadyTerminal`
     /// として lookup 段階で非受理になる。
     #[tokio::test]
     async fn abort_target_lookup_returns_already_terminal_for_terminal_execution() {
@@ -15554,11 +14180,6 @@ mod dispatch_boundary_tests {
         for terminal_state in [
             RuntimeExecutionState::Completed,
             RuntimeExecutionState::Aborted,
-            RuntimeExecutionState::Failed {
-                reason: "x".to_string(),
-                kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                retry_count: None,
-            },
         ] {
             let mut exec = make_waiting_approval_execution(&execution_id, "/wt/term");
             exec.force_state_for_test(terminal_state.clone());
@@ -15588,10 +14209,6 @@ mod dispatch_boundary_tests {
 
         for (terminal_status, error_reason) in [
             (TerminalExecutionStatus::Completed, None),
-            (
-                TerminalExecutionStatus::Failed,
-                Some("failed after release".to_string()),
-            ),
             (TerminalExecutionStatus::Aborted, None),
         ] {
             let execution_id = uuid::Uuid::new_v4().to_string();
@@ -15647,14 +14264,6 @@ mod dispatch_boundary_tests {
 
         for (label, terminal_state) in [
             ("completed", RuntimeExecutionState::Completed),
-            (
-                "failed",
-                RuntimeExecutionState::Failed {
-                    reason: "boom".to_string(),
-                    kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                    retry_count: None,
-                },
-            ),
             ("aborted", RuntimeExecutionState::Aborted),
         ] {
             let execution_id = uuid::Uuid::new_v4().to_string();
@@ -15811,6 +14420,7 @@ mod dispatch_boundary_tests {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/idempotent");
         exec.force_state_for_test(RuntimeExecutionState::Completed);
+        exec.node_executions[0].status = NodeExecutionStatus::Succeeded;
         let err = workflow_approval_runtime::validate_approval_target_snapshot(
             &exec,
             Some(&execution_id),
@@ -15977,116 +14587,6 @@ mod dispatch_boundary_tests {
         assert_eq!(active[0].status, ExecutionStatus::Running);
         // ChatSession.workflow_state は撤去済みのため parent session 経由の rollback 観測は省略。
         assert!(read_dispatch_events(&app, &execution_id).is_empty());
-    }
-
-    /// Interrupted abort も append-only event log を最初の永続 commit point とする。
-    /// ExecutionAborted append が失敗した場合、metadata は再開可能な checkpoint のままで、
-    /// append 前に Aborted が外部可視にならない。
-    #[tokio::test]
-    async fn dispatch_abort_interrupted_append_failure_keeps_checkpoint() {
-        let app = make_dispatch_app();
-        let driver = WorkflowRuntimeHost::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
-        let worktree = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        driver
-            .execution_store
-            .register_active_execution(WorkflowExecutionMetadata {
-                execution_id: execution_id.clone(),
-                workflow_name: "wf".to_string(),
-                status: ExecutionStatus::Running,
-                worktree_path: worktree.path().to_string_lossy().into_owned(),
-                current_node: Some("plan".to_string()),
-                created_from: ExecutionOrigin::DesktopUi,
-                started_at: 100.0,
-                updated_at: 100.0,
-                completed_at: None,
-                error_reason: None,
-                interruption_reason: None,
-                resume_from_node: None,
-                total_token_usage: crate::domain::workflow::TokenUsage::default(),
-            })
-            .await
-            .unwrap();
-        driver
-            .execution_store
-            .interrupt_execution(
-                &execution_id,
-                ExecutionInterruptionReason::Stop,
-                Some("plan".to_string()),
-                110.0,
-            )
-            .await
-            .unwrap();
-        let worktree_path = worktree.path().to_string_lossy().into_owned();
-        WorkflowEventLog::new(&data_dir)
-            .append_batch(&[
-                WorkflowEvent::ExecutionStarted {
-                    execution_id: execution_id.clone(),
-                    workflow_name: "wf".to_string(),
-                    worktree_path,
-                    created_from: ExecutionOrigin::DesktopUi,
-                    request: String::new(),
-                    permission_mode: "ask".to_string(),
-                    definition: WorkflowDefinition {
-                        name: "wf".to_string(),
-                        description: String::new(),
-                        builtin: false,
-                        schemas: Default::default(),
-                        nodes: vec![make_test_node(
-                            "plan",
-                            TestKind::Session,
-                            "review-acceptance",
-                            vec![],
-                            None,
-                        )],
-                    },
-                    timestamp: 100.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: format!("{execution_id}-plan-1"),
-                    node_name: "plan".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    fanout_parent: None,
-                    timestamp: 101.0,
-                },
-                WorkflowEvent::ExecutionInterrupted {
-                    execution_id: execution_id.clone(),
-                    reason: ExecutionInterruptionReason::Stop,
-                    timestamp: 110.0,
-                },
-            ])
-            .unwrap();
-        driver.fail_next_required_event_append_for_test();
-
-        let result = driver
-            .abort_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-                None,
-            )
-            .await;
-
-        assert!(matches!(result, Err(WorkflowRuntimeError::SessionStore(_))));
-        let checkpoint = driver
-            .execution_store
-            .get_execution_record(&execution_id)
-            .await
-            .expect("canonical checkpoint read must succeed")
-            .expect("interrupted checkpoint must remain after append failure");
-        assert_eq!(checkpoint.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            checkpoint.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
-        );
-        assert_eq!(checkpoint.resume_from_node.as_deref(), Some("plan"));
-        assert!(checkpoint.completed_at.is_none());
     }
 
     /// Spec [04] テスト境界: StartExecution は production start primitive 入口で
@@ -16901,6 +15401,7 @@ mod dispatch_boundary_tests {
             make_waiting_approval_execution(&resolved_execution_id, resolved_worktree);
         resolved_exec.current_session_id = None;
         resolved_exec.force_state_for_test(RuntimeExecutionState::Completed);
+        resolved_exec.node_executions[0].status = NodeExecutionStatus::Succeeded;
         let resolved_before = resolved_exec.clone();
         driver
             .executions
@@ -16947,10 +15448,10 @@ mod dispatch_boundary_tests {
                 Some("review"),
             )
             .await;
-        assert!(matches!(
-            resolved,
-            Err(WorkflowRuntimeError::InvalidState(_))
-        ));
+        assert!(
+            matches!(resolved, Err(WorkflowRuntimeError::InvalidState(_))),
+            "{resolved:?}"
+        );
         let execs = driver.executions.lock().await;
         let resolved_after = execs.get(&resolved_execution_id).unwrap();
         assert_eq!(resolved_after.state(), resolved_before.state());
@@ -17079,6 +15580,7 @@ mod dispatch_boundary_tests {
             make_waiting_approval_execution(&resolved_execution_id, "/wt/approve-resolved");
         resolved_exec.current_session_id = None;
         resolved_exec.force_state_for_test(RuntimeExecutionState::Completed);
+        resolved_exec.node_executions[0].status = NodeExecutionStatus::Succeeded;
         let resolved_before = resolved_exec.clone();
         driver
             .executions
@@ -17096,10 +15598,10 @@ mod dispatch_boundary_tests {
                 None,
             )
             .await;
-        assert!(matches!(
-            resolved,
-            Err(WorkflowRuntimeError::InvalidState(_))
-        ));
+        assert!(
+            matches!(resolved, Err(WorkflowRuntimeError::InvalidState(_))),
+            "{resolved:?}"
+        );
         let execs = driver.executions.lock().await;
         let restored = execs.get(&resolved_execution_id).unwrap();
         assert_eq!(restored.state(), resolved_before.state());
@@ -17234,164 +15736,187 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn recover_orphan_executions_leaves_resumable_interrupted_checkpoint() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-
-        // 前回プロセスの状態を模擬: metadata.current_node は plan のままだが、event log では
-        // plan の NodeCompleted まで確定し、次の review の NodeStarted 前に crash している。
-        let prev_store = std::sync::Arc::new(
-            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new(),
-        );
-        prev_store.set_data_dir(data_dir.clone()).await;
-        let orphan_id = uuid::Uuid::new_v4().to_string();
-        seed_resumable_orphan_execution(&prev_store, &data_dir, &orphan_id, "/wt/a").await;
-
-        // 起動直後を模擬した driver (空の in-memory state + 同じ data_dir)。
-        let driver = std::sync::Arc::new(WorkflowRuntimeHost::new_for_test());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        driver
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-
-        // metadata は terminal にせず、Orphan 理由と再開点を持つ Interrupted checkpoint になる。
-        let summary = driver
-            .execution_store
-            .get_execution(&orphan_id)
-            .await
-            .expect("metadata must remain after recovery");
-        assert_eq!(summary.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            summary.interruption_reason,
-            Some(ExecutionInterruptionReason::Orphan)
-        );
-        assert_eq!(summary.resume_from_node.as_deref(), Some("review"));
-        assert_eq!(summary.current_node, None);
-        assert!(summary.completed_at.is_none());
-        assert!(summary.error_reason.is_none());
-        assert!(summary.status.can_resume());
-        assert!(summary.status.can_abort());
-
-        // 末尾 event と event-log projection も同じ Interrupted checkpoint を返す。
-        let events = read_dispatch_events(&app, &orphan_id);
-        assert!(
-            matches!(
-                events.last(),
-                Some(WorkflowEvent::ExecutionInterrupted {
-                    reason: ExecutionInterruptionReason::Orphan,
-                    ..
-                })
-            ),
-            "log の末尾は ExecutionInterrupted(Orphan): {:?}",
-            events.last()
-        );
-        let projected =
-            crate::domain::workflow::services::event_replay::project_workflow_execution(
-                &orphan_id, &events,
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            projected.interruption_reason,
-            Some(ExecutionInterruptionReason::Orphan)
-        );
-        assert_eq!(projected.resume_from_node.as_deref(), Some("review"));
-        assert_eq!(
-            projected
-                .node_executions
-                .iter()
-                .find(|node| node.node_name == "plan")
-                .expect("confirmed plan NodeExecution must remain in projection")
-                .status,
-            crate::domain::workflow::NodeExecutionStatus::Succeeded
-        );
-        assert!(projected.completed_at.is_none());
-    }
-
-    #[tokio::test]
-    async fn issue_1558_unresolved_turn_completion_blocks_only_its_own_orphan_recovery() {
+    async fn restart_pauses_submit_received_agent_attempt_without_interrupting_workflow() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let previous_store =
-            Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
         previous_store.set_data_dir(data_dir.clone()).await;
-        let blocked_id = uuid::Uuid::new_v4().to_string();
-        let independent_id = uuid::Uuid::new_v4().to_string();
-        seed_resumable_orphan_execution(
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let node_execution_id = seed_restart_session_execution(
             &previous_store,
             &data_dir,
-            &blocked_id,
-            "/wt/blocked-recovery",
+            &execution_id,
+            ExecutionStatus::Running,
         )
         .await;
-        seed_resumable_orphan_execution(
-            &previous_store,
-            &data_dir,
-            &independent_id,
-            "/wt/independent-recovery",
-        )
-        .await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                timestamp: 103.0,
+            })
+            .unwrap();
 
         let driver = WorkflowRuntimeHost::new_for_test();
         driver.set_execution_store_data_dir(data_dir).await;
         driver
-            .recover_orphan_executions_excluding(
-                app.handle(),
-                &std::collections::BTreeSet::from([blocked_id.clone()]),
-            )
+            .recover_orphan_executions(app.handle())
             .await
             .unwrap();
 
+        let summary = driver
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, ExecutionStatus::Running);
+        assert_eq!(summary.interruption_reason, None);
+        let executions = driver.executions.lock().await;
+        let node = executions
+            .get(&execution_id)
+            .expect("restart reconciliation must restore the live aggregate")
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::Paused);
+        assert_eq!(node.attempt, 1);
         assert_eq!(
-            driver
-                .execution_store
-                .get_execution(&blocked_id)
-                .await
-                .unwrap()
-                .status,
-            ExecutionStatus::Running
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
         );
-        assert_eq!(
-            driver
-                .execution_store
-                .get_execution(&independent_id)
-                .await
-                .unwrap()
-                .status,
-            ExecutionStatus::Interrupted
-        );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodePaused {
+                node_execution_id: paused_id,
+                ..
+            } if paused_id == &node_execution_id
+        )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
     }
 
     #[tokio::test]
-    async fn orphan_recovery_required_commit_failure_is_returned_and_retried() {
+    async fn restart_pauses_running_command_attempt() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let previous_store =
-            Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
         previous_store.set_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        seed_resumable_orphan_execution(
+        let node_execution_id =
+            seed_restart_command_execution(&previous_store, &data_dir, &execution_id).await;
+
+        let driver = WorkflowRuntimeHost::new_for_test();
+        driver.set_execution_store_data_dir(data_dir).await;
+        driver
+            .recover_orphan_executions(app.handle())
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let node = executions
+            .get(&execution_id)
+            .expect("restart reconciliation must restore the live aggregate")
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::Paused);
+        assert_eq!(node.attempt, 1);
+        drop(executions);
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::NodePaused { node_execution_id: paused_id, .. } if paused_id == &node_execution_id)));
+    }
+
+    #[tokio::test]
+    async fn restart_keeps_stop_received_agent_attempt_waiting_for_submit() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let node_execution_id = seed_restart_session_execution(
             &previous_store,
             &data_dir,
             &execution_id,
-            "/wt/orphan-retry",
+            ExecutionStatus::Running,
         )
         .await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::NodeStopReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                timestamp: 103.0,
+            })
+            .unwrap();
 
         let driver = WorkflowRuntimeHost::new_for_test();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        driver.fail_next_required_event_append_for_test();
-        let error = driver
+        driver.set_execution_store_data_dir(data_dir).await;
+        driver
             .recover_orphan_executions(app.handle())
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("atomic interruption commit failed"),
-            "{error}"
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let node = executions
+            .get(&execution_id)
+            .expect("restart reconciliation must restore the live aggregate")
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::Running);
+        assert_eq!(node.attempt, 1);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived
         );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::NodePaused { .. })));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+    }
+
+    #[tokio::test]
+    async fn restart_preserves_waiting_approval_without_adding_pause() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let node_execution_id = seed_restart_session_execution(
+            &previous_store,
+            &data_dir,
+            &execution_id,
+            ExecutionStatus::Running,
+        )
+        .await;
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::ApprovalRequested {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: "session".to_string(),
+                timestamp: 103.0,
+            })
+            .unwrap();
+
+        let driver = WorkflowRuntimeHost::new_for_test();
+        driver.set_execution_store_data_dir(data_dir).await;
+        driver
+            .recover_orphan_executions(app.handle())
+            .await
+            .unwrap();
+
         assert_eq!(
             driver
                 .execution_store
@@ -17401,136 +15926,22 @@ mod dispatch_boundary_tests {
                 .status,
             ExecutionStatus::Running
         );
-        assert!(read_dispatch_events(&app, &execution_id)
+        let executions = driver.executions.lock().await;
+        let node = executions
+            .get(&execution_id)
+            .expect("restart reconciliation must restore the live aggregate")
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::WaitingApproval);
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::NodePaused { .. })));
+        assert!(events
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
-
-        driver
-            .recover_orphan_executions(app.handle())
-            .await
-            .expect("the same durable orphan inventory remains retryable");
-        assert_eq!(
-            driver
-                .execution_store
-                .get_execution(&execution_id)
-                .await
-                .unwrap()
-                .status,
-            ExecutionStatus::Interrupted
-        );
-        assert_eq!(
-            read_dispatch_events(&app, &execution_id)
-                .iter()
-                .filter(|event| matches!(event, WorkflowEvent::ExecutionInterrupted { .. }))
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn recovered_orphans_accept_typed_resume_and_abort_commands() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-        let previous_store =
-            Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
-        previous_store.set_data_dir(data_dir.clone()).await;
-        let resume_id = uuid::Uuid::new_v4().to_string();
-        let abort_id = uuid::Uuid::new_v4().to_string();
-        seed_resumable_orphan_execution(
-            &previous_store,
-            &data_dir,
-            &resume_id,
-            "/wt/orphan-resume",
-        )
-        .await;
-        seed_resumable_orphan_execution(&previous_store, &data_dir, &abort_id, "/wt/orphan-abort")
-            .await;
-
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        driver
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-
-        for execution_id in [&resume_id, &abort_id] {
-            let checkpoint = driver
-                .execution_store
-                .get_execution(execution_id)
-                .await
-                .expect("orphan recovery must retain the checkpoint");
-            assert_eq!(checkpoint.status, ExecutionStatus::Interrupted);
-            assert_eq!(
-                checkpoint.interruption_reason,
-                Some(ExecutionInterruptionReason::Orphan)
-            );
-            assert_eq!(checkpoint.resume_from_node.as_deref(), Some("review"));
-        }
-
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
-        let gateway = Arc::new(RecoveredOrphanCommandGateway {
-            app: app.handle().clone(),
-            driver: driver.clone(),
-            session_store,
-            agent_runtime,
-        });
-        WorkflowResumeExecutionUsecase::new(gateway.clone())
-            .execute(ResumeExecutionCommand {
-                execution_id: resume_id.clone(),
-            })
-            .await
-            .expect("typed ResumeExecution must accept a recovered orphan checkpoint");
-        WorkflowAbortExecutionUsecase::new(gateway)
-            .execute(AbortExecutionCommand {
-                execution_id: abort_id.clone(),
-                expected_node_name: None,
-            })
-            .await
-            .expect("typed AbortExecution must accept a recovered orphan checkpoint");
-
-        let resumed = driver
-            .execution_store
-            .get_execution(&resume_id)
-            .await
-            .expect("resumed metadata");
-        assert_eq!(resumed.status, ExecutionStatus::Running);
-        assert_eq!(resumed.current_node.as_deref(), Some("review"));
-        assert_eq!(resumed.interruption_reason, None);
-        assert_eq!(resumed.resume_from_node, None);
-        let resumed_events = read_dispatch_events(&app, &resume_id);
-        assert!(resumed_events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionResumed {
-                resume_from_node,
-                ..
-            } if resume_from_node == "review"
-        )));
-        assert_eq!(
-            resumed_events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    WorkflowEvent::NodeStarted { node_name, .. } if node_name == "plan"
-                ))
-                .count(),
-            1,
-            "confirmed plan must not run again after orphan resume"
-        );
-
-        let aborted = driver
-            .execution_store
-            .get_execution(&abort_id)
-            .await
-            .expect("aborted metadata");
-        assert_eq!(aborted.status, ExecutionStatus::Aborted);
-        assert!(aborted.completed_at.is_some());
-        assert!(matches!(
-            read_dispatch_events(&app, &abort_id).last(),
-            Some(WorkflowEvent::ExecutionAborted {
-                aborted_node: Some(node),
-                ..
-            }) if node == "review"
-        ));
     }
 
     /// 起動時 recovery: 既に terminal な metadata は変更されない（idempotent）。
@@ -17688,102 +16099,6 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn recover_orphan_executions_repairs_interrupted_metadata_after_durable_abort() {
-        let app = make_dispatch_app();
-        let data_dir = dispatch_data_dir(app.handle());
-        let prev_store = crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
-        prev_store.set_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        prev_store
-            .register_active_execution(WorkflowExecutionMetadata {
-                execution_id: execution_id.clone(),
-                workflow_name: "wf".to_string(),
-                status: ExecutionStatus::Running,
-                worktree_path: "/wt/interrupted-abort-repair".to_string(),
-                current_node: Some("plan".to_string()),
-                created_from: ExecutionOrigin::DesktopUi,
-                started_at: 100.0,
-                updated_at: 100.0,
-                completed_at: None,
-                error_reason: None,
-                interruption_reason: None,
-                resume_from_node: None,
-                total_token_usage: Default::default(),
-            })
-            .await
-            .unwrap();
-        prev_store
-            .interrupt_execution(
-                &execution_id,
-                ExecutionInterruptionReason::Stop,
-                Some("plan".to_string()),
-                102.0,
-            )
-            .await
-            .unwrap();
-        WorkflowEventLog::new(&data_dir)
-            .append_batch(&[
-                WorkflowEvent::ExecutionStarted {
-                    execution_id: execution_id.clone(),
-                    workflow_name: "wf".to_string(),
-                    worktree_path: "/wt/interrupted-abort-repair".to_string(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                    request: String::new(),
-                    permission_mode: "ask".to_string(),
-                    definition: WorkflowDefinition {
-                        name: "wf".to_string(),
-                        nodes: vec![make_test_node(
-                            "plan",
-                            TestKind::Session,
-                            "plan",
-                            vec![],
-                            None,
-                        )],
-                        ..Default::default()
-                    },
-                    timestamp: 100.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    execution_id: execution_id.clone(),
-                    node_execution_id: "plan-1".to_string(),
-                    node_name: "plan".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    fanout_parent: None,
-                    timestamp: 101.0,
-                },
-                WorkflowEvent::ExecutionInterrupted {
-                    execution_id: execution_id.clone(),
-                    reason: ExecutionInterruptionReason::Stop,
-                    timestamp: 102.0,
-                },
-                WorkflowEvent::ExecutionAborted {
-                    execution_id: execution_id.clone(),
-                    aborted_node: Some("plan".to_string()),
-                    timestamp: 103.0,
-                },
-            ])
-            .unwrap();
-
-        let driver = WorkflowRuntimeHost::new_for_test();
-        driver.set_execution_store_data_dir(data_dir).await;
-        driver
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-
-        let summary = driver
-            .execution_store
-            .get_execution(&execution_id)
-            .await
-            .unwrap();
-        assert_eq!(summary.status, ExecutionStatus::Aborted);
-        assert_eq!(summary.completed_at, Some(103.0));
-        assert_eq!(summary.interruption_reason, None);
-        assert_eq!(summary.resume_from_node, None);
-    }
-
-    #[tokio::test]
     async fn recover_orphan_executions_removes_an_uncommitted_start_reservation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
@@ -17866,6 +16181,19 @@ mod dispatch_boundary_tests {
         _request_id: Option<&str>,
         _submitted_at: Option<f64>,
     ) -> Result<(), WorkflowRuntimeError> {
+        let node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(execution_id)
+            .and_then(|execution| {
+                execution
+                    .node_executions
+                    .iter()
+                    .find(|attempt| attempt.status.is_active())
+            })
+            .map(|attempt| attempt.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         driver
             .submit_workflow_output(
                 app,
@@ -17873,9 +16201,8 @@ mod dispatch_boundary_tests {
                 agent_runtime,
                 execution_id,
                 node_name.to_string(),
-                None,
-                contract.to_string(),
-                artifact,
+                node_execution_id,
+                Some((contract.to_string(), artifact)),
             )
             .await
     }
@@ -17914,6 +16241,1339 @@ mod dispatch_boundary_tests {
             .await
             .get(execution_id)
             .and_then(|exec| exec.artifacts.get(node_name).cloned())
+    }
+
+    #[tokio::test]
+    async fn submit_without_artifact_records_only_the_attempt_submit_signal() {
+        let app = make_dispatch_app();
+        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/submit-without-artifact".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .unwrap()
+            .node_executions[0]
+            .id
+            .clone();
+        let (session_store, agent_runtime) = make_dispatch_deps(dispatch_data_dir(app.handle()));
+
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(
+            execution.node_executions[0].completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+        );
+        assert!(execution.artifacts.is_empty());
+        drop(executions);
+        let events = read_submit_output_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeSubmitReceived {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ArtifactProduced { .. })));
+    }
+
+    #[tokio::test]
+    async fn provider_stop_atomically_records_provider_and_workflow_facts() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = Arc::new(make_canonical_dispatch_driver(
+            data_dir.clone(),
+            canonical_store.clone(),
+        ));
+        driver.set_execution_store_data_dir(data_dir).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/provider-stop".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let agent_session_id = "agent-provider-stop";
+        let node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            execution.node_executions[0].session_id = Some(agent_session_id.to_string());
+            execution.node_executions[0].id.clone()
+        };
+        let scope =
+            crate::domain::provider_lifecycle::ProviderLifecycleScope::new(agent_session_id)
+                .unwrap();
+        let provider_event = crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent::new(
+            scope,
+            crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed(
+                "binding-provider-stop",
+            )
+            .unwrap(),
+        );
+        let (session_store, agent_runtime) =
+            make_canonical_dispatch_deps(dispatch_data_dir(app.handle()), canonical_store.clone());
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: agent_session_id.to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    binding_id: "binding-provider-stop".to_string(),
+                },
+                vec![provider_event],
+            )
+            .await
+            .unwrap();
+
+        let durable_events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            durable_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStopReceived {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            durable_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeCompleted {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            durable_events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. }))
+                .count(),
+            1
+        );
+        let provider_stream =
+            crate::domain::local_event::StreamId::provider_lifecycle(agent_session_id).unwrap();
+        let provider_page =
+            crate::domain::local_event::LocalEventTransactionRepository::load_stream(
+                canonical_store.as_ref(),
+                crate::domain::local_event::LoadStreamRequest {
+                    stream_id: provider_stream,
+                    after: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider_page.events.len(), 1);
+
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: agent_session_id.to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    binding_id: "binding-provider-stop".to_string(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        let events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeSubmitReceived {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStopReceived {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_stop_before_startup_recovery_never_commits_lifecycle_only() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = Arc::new(make_canonical_dispatch_driver(
+            data_dir.clone(),
+            canonical_store.clone(),
+        ));
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let agent_session_id = "agent-provider-stop-before-recovery";
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/provider-stop-before-recovery".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            execution.node_executions[0].session_id = Some(agent_session_id.to_string());
+            execution.node_executions[0].id.clone()
+        };
+        driver
+            .write_log_required_batch(
+                app.handle(),
+                &[WorkflowEvent::SessionAttached {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    session_id: agent_session_id.to_string(),
+                    timestamp: 1001.0,
+                }],
+            )
+            .unwrap();
+        driver.executions.lock().await.clear();
+        driver.session_workflow_refs.lock().await.clear();
+
+        let scope =
+            crate::domain::provider_lifecycle::ProviderLifecycleScope::new(agent_session_id)
+                .unwrap();
+        let provider_event = crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent::new(
+            scope,
+            crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed(
+                "binding-provider-stop-before-recovery",
+            )
+            .unwrap(),
+        );
+        let (session_store, agent_runtime) =
+            make_canonical_dispatch_deps(data_dir, canonical_store.clone());
+
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: agent_session_id.to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    binding_id: "binding-provider-stop-before-recovery".to_string(),
+                },
+                vec![provider_event],
+            )
+            .await
+            .unwrap();
+
+        let workflow_events = read_dispatch_events(&app, &execution_id);
+        assert!(workflow_events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeStopReceived {
+                node_execution_id: recorded,
+                ..
+            } if recorded == &node_execution_id
+        )));
+        let provider_stream =
+            crate::domain::local_event::StreamId::provider_lifecycle(agent_session_id).unwrap();
+        let provider_page =
+            crate::domain::local_event::LocalEventTransactionRepository::load_stream(
+                canonical_store.as_ref(),
+                crate::domain::local_event::LoadStreamRequest {
+                    stream_id: provider_stream,
+                    after: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider_page.events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_partial_signal_starts_a_new_agent_session_and_ignores_old_stop() {
+        let app = make_dispatch_app();
+        let sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver =
+            WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(sessions.clone());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/retry-partial".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        driver.execution_facet_contents.lock().await.insert(
+            execution_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::from_node_for_test(
+                "review",
+                instruction_contents("Review the current change."),
+            ),
+        );
+        let previous_node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            let node_execution_id = execution.node_executions[0].id.clone();
+            assert_eq!(
+                execution.attach_node_session(
+                    &node_execution_id,
+                    "old-agent-session".to_string(),
+                    1001.0,
+                ),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            );
+            node_execution_id
+        };
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                previous_node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        driver
+            .retry_workflow_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                &previous_node_execution_id,
+            )
+            .await
+            .unwrap();
+
+        let metadata_after_retry = driver.execution_store.get_execution(&execution_id).await;
+        let (new_node_execution_id, new_session_id) = {
+            let executions = driver.executions.lock().await;
+            let execution = executions.get(&execution_id).unwrap_or_else(|| {
+                panic!(
+                    "retry execution disappeared; metadata={:?}; owners={:?}; events={:?}",
+                    metadata_after_retry,
+                    sessions.owners(),
+                    read_dispatch_events(&app, &execution_id)
+                )
+            });
+            assert_eq!(execution.node_executions.len(), 2);
+            assert_eq!(
+                execution.node_executions[0].status,
+                crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Aborted
+            );
+            assert_eq!(
+                execution.node_executions[0].completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            );
+            let current = &execution.node_executions[1];
+            assert_eq!(current.attempt, 2);
+            assert_eq!(
+                current.status,
+                crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+            );
+            assert_eq!(
+                current.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::Pending
+            );
+            (
+                current.id.clone(),
+                current.session_id.clone().expect("new AgentSession"),
+            )
+        };
+        assert_ne!(new_node_execution_id, previous_node_execution_id);
+        assert_ne!(new_session_id, "old-agent-session");
+        assert_eq!(
+            sessions.owners(),
+            vec![(execution_id.clone(), new_node_execution_id.clone())]
+        );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeRetryRequested {
+                node_execution_id,
+                ..
+            } if node_execution_id == &previous_node_execution_id
+        )));
+
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: "old-agent-session".to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id: previous_node_execution_id,
+                    binding_id: "old-binding".to_string(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(
+            execution.node_executions[1].completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_activation_failure_fails_only_the_new_node_attempt() {
+        let app = make_dispatch_app();
+        let sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        sessions.fail_launch_at(1);
+        let driver =
+            WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(sessions.clone());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/retry-activation-failure".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        driver.execution_facet_contents.lock().await.insert(
+            execution_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::from_node_for_test(
+                "review",
+                instruction_contents("Review the current change."),
+            ),
+        );
+        let previous_node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .unwrap()
+            .node_executions[0]
+            .id
+            .clone();
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                previous_node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        driver
+            .retry_workflow_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                &previous_node_execution_id,
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions
+            .get(&execution_id)
+            .expect("a Node failure must not terminate or release its Workflow");
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
+        assert_eq!(execution.node_executions.len(), 2);
+        assert_eq!(
+            execution.node_executions[1].status,
+            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+        );
+        assert!(execution.node_executions[1].failure.is_some());
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                ..
+            } if node_execution_id == &execution.node_executions[1].id
+        )));
+    }
+
+    #[tokio::test]
+    async fn retry_fanout_child_replaces_only_that_child_and_starts_one_new_session() {
+        let app = make_dispatch_app();
+        let sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        let driver =
+            WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(sessions.clone());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "fanout-retry".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_test_node("review-a", TestKind::Session, "review", vec![], None),
+                make_test_node("review-b", TestKind::Session, "review", vec![], None),
+            ],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/retry-fanout-child".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        driver.execution_facet_contents.lock().await.insert(
+            execution_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::from_node_for_test(
+                "review-a",
+                instruction_contents("Review A."),
+            ),
+        );
+        let first = test_fanout_child(
+            "review-a",
+            "old-session-a",
+            FanoutChildRuntimeState::Running,
+            0,
+        );
+        let second = test_fanout_child(
+            "review-b",
+            "existing-session-b",
+            FanoutChildRuntimeState::Running,
+            1,
+        );
+        let previous_node_execution_id = first.node_execution_id.clone();
+        let sibling_node_execution_id = second.node_execution_id.clone();
+        {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            install_test_fanout(execution, vec![first, second]);
+            assert_eq!(
+                execution.record_node_completion_signal(
+                    &previous_node_execution_id,
+                    crate::domain::workflow::NodeCompletionSignal::Submit,
+                    1001.0,
+                ),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            );
+        }
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        driver
+            .retry_workflow_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                &previous_node_execution_id,
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        let previous = execution
+            .node_executions
+            .iter()
+            .find(|node| node.id == previous_node_execution_id)
+            .unwrap();
+        assert_eq!(
+            previous.status,
+            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Aborted
+        );
+        assert_eq!(
+            previous.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+        );
+        let fanout = execution.fanout_runtime.as_ref().unwrap();
+        assert_eq!(fanout.children.len(), 2);
+        assert_eq!(
+            fanout.children[1].node_execution_id,
+            sibling_node_execution_id
+        );
+        assert_eq!(fanout.children[1].session_id, "existing-session-b");
+        assert_eq!(fanout.children[1].state, FanoutChildRuntimeState::Running);
+        assert_ne!(
+            fanout.children[0].node_execution_id,
+            previous_node_execution_id
+        );
+        assert_eq!(fanout.children[0].node_name, "review-a");
+        assert_eq!(fanout.children[0].attempt, 2);
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Running);
+        assert!(!fanout.children[0].session_id.is_empty());
+        assert_eq!(sessions.owners().len(), 1);
+        assert_eq!(
+            sessions.owners()[0],
+            (
+                execution_id.clone(),
+                fanout.children[0].node_execution_id.clone()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_fanout_child_activation_failure_fails_only_the_new_child_attempt() {
+        let app = make_dispatch_app();
+        let sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
+        sessions.fail_launch_at(1);
+        let driver =
+            WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(sessions.clone());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "fanout-retry-failure".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_test_node("review-a", TestKind::Session, "review", vec![], None),
+                make_test_node("review-b", TestKind::Session, "review", vec![], None),
+            ],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/retry-fanout-child-failure".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        driver.execution_facet_contents.lock().await.insert(
+            execution_id.clone(),
+            crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::from_node_for_test(
+                "review-a",
+                instruction_contents("Review A."),
+            ),
+        );
+        let first = test_fanout_child(
+            "review-a",
+            "old-session-a",
+            FanoutChildRuntimeState::Running,
+            0,
+        );
+        let second = test_fanout_child(
+            "review-b",
+            "existing-session-b",
+            FanoutChildRuntimeState::Running,
+            1,
+        );
+        let previous_node_execution_id = first.node_execution_id.clone();
+        let sibling_node_execution_id = second.node_execution_id.clone();
+        {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            install_test_fanout(execution, vec![first, second]);
+            assert_eq!(
+                execution.record_node_completion_signal(
+                    &previous_node_execution_id,
+                    crate::domain::workflow::NodeCompletionSignal::Stop,
+                    1001.0,
+                ),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            );
+        }
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        let result = driver
+            .retry_workflow_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                &previous_node_execution_id,
+            )
+            .await;
+
+        assert!(result.is_ok(), "durably accepted Retry returned {result:?}");
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
+        let fanout = execution.fanout_runtime.as_ref().unwrap();
+        assert_eq!(fanout.children.len(), 2);
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Failed);
+        assert_eq!(
+            fanout.children[1].node_execution_id,
+            sibling_node_execution_id
+        );
+        assert_eq!(fanout.children[1].state, FanoutChildRuntimeState::Running);
+        let failed_node_execution_id = fanout.children[0].node_execution_id.clone();
+        assert!(execution.node_executions.iter().any(|node| {
+            node.id == failed_node_execution_id
+                && node.status
+                    == crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+        }));
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                ..
+            } if node_execution_id == &failed_node_execution_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn failed_agent_turn_marks_only_the_node_attempt_and_never_retries_automatically() {
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "manual-retry-only".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![make_test_node(
+                "review",
+                TestKind::Session,
+                "review",
+                vec![],
+                None,
+            )],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/manual-retry-only".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let session_id = "failed-agent-session";
+        let node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            let node_execution_id = execution.node_executions[0].id.clone();
+            assert_eq!(
+                execution.attach_node_session(&node_execution_id, session_id.to_string(), 1001.0,),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            );
+            node_execution_id
+        };
+        driver.session_workflow_refs.lock().await.insert(
+            session_id.to_string(),
+            SessionWorkflowRef {
+                execution_id: execution_id.clone(),
+            },
+        );
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        driver
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                session_id,
+                1,
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions
+            .get(&execution_id)
+            .expect("a failed Node Attempt must not terminate its Workflow");
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
+        assert_eq!(execution.node_executions.len(), 1);
+        assert_eq!(execution.node_executions[0].id, node_execution_id);
+        assert_eq!(
+            execution.node_executions[0].status,
+            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+        );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::NodeFailed { .. }))
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+    }
+
+    #[tokio::test]
+    async fn successful_legacy_turn_completion_does_not_bypass_submit_stop_handshake() {
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "handshake-only".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![make_test_node(
+                "review",
+                TestKind::Session,
+                "review",
+                vec![],
+                None,
+            )],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/legacy-turn-does-not-complete".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let session_id = "legacy-turn-session";
+        let node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            let node_execution_id = execution.node_executions[0].id.clone();
+            execution.attach_node_session(&node_execution_id, session_id.to_string(), 1001.0);
+            node_execution_id
+        };
+        driver.session_workflow_refs.lock().await.insert(
+            session_id.to_string(),
+            SessionWorkflowRef {
+                execution_id: execution_id.clone(),
+            },
+        );
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        driver
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                session_id,
+                0,
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        let node = execution
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .unwrap();
+        assert_eq!(node.status, NodeExecutionStatus::Running);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::Pending
+        );
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::NodeCompleted { .. }
+                | WorkflowEvent::ApprovalRequested { .. }
+                | WorkflowEvent::ExecutionCompleted { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn retry_failed_command_starts_a_new_process_attempt_and_preserves_the_old_attempt() {
+        let app = make_dispatch_app();
+        let driver = WorkflowRuntimeHost::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let worktree = TempDir::new().unwrap();
+        let marker = worktree.path().join("retried-command");
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "retry-command".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_node(
+                "run",
+                "sleep 1; printf retried > retried-command",
+                vec![],
+            )],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                worktree.path().to_string_lossy().to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let previous_node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            let node_execution_id = execution.node_executions[0].id.clone();
+            assert_eq!(
+                execution.fail_node_execution(
+                    &node_execution_id,
+                    "initial process failed".to_string(),
+                    NodeExecutionFailureKind::ValidationFailure,
+                    1001.0,
+                ),
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+            );
+            node_execution_id
+        };
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        driver
+            .retry_workflow_node(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                &previous_node_execution_id,
+            )
+            .await
+            .unwrap();
+        wait_for_active_command(&driver, &execution_id).await;
+
+        {
+            let executions = driver.executions.lock().await;
+            let execution = executions.get(&execution_id).unwrap();
+            assert_eq!(execution.node_executions.len(), 2);
+            assert_eq!(
+                execution.node_executions[0].status,
+                crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+            );
+            assert_eq!(execution.node_executions[0].id, previous_node_execution_id);
+            assert_eq!(execution.node_executions[1].attempt, 2);
+            assert_eq!(
+                execution.node_executions[1].status,
+                crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+            );
+        }
+        wait_for_execution_terminal(&app, &driver, &execution_id).await;
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "retried");
+        let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeRetryRequested {
+                node_execution_id,
+                ..
+            } if node_execution_id == &previous_node_execution_id
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::NodeCompleted { attempt: 2, .. })));
+    }
+
+    #[tokio::test]
+    async fn fanout_children_settle_independently_and_advance_once_after_all_complete() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = Arc::new(make_canonical_dispatch_driver(
+            data_dir.clone(),
+            canonical_store.clone(),
+        ));
+        driver.set_execution_store_data_dir(data_dir).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinition {
+            name: "fanout-handshake".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-child"]),
+                make_test_node("review-child", TestKind::Session, "review", vec![], None),
+            ],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/fanout-handshake".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let child_ids = ["fanout-child-1", "fanout-child-2"];
+        let session_ids = ["fanout-agent-1", "fanout-agent-2"];
+        {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            install_test_fanout(
+                execution,
+                child_ids
+                    .iter()
+                    .zip(session_ids)
+                    .map(|(node_execution_id, session_id)| FanoutChildRuntime {
+                        node_execution_id: (*node_execution_id).to_string(),
+                        node_name: "review-child".to_string(),
+                        session_id: session_id.to_string(),
+                        state: FanoutChildRuntimeState::Running,
+                        result: None,
+                        artifact: None,
+                        contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
+                        token_usage: TokenUsage::default(),
+                        attempt: 1,
+                        completed_at: None,
+                    })
+                    .collect(),
+            );
+        }
+        let (session_store, agent_runtime) =
+            make_canonical_dispatch_deps(dispatch_data_dir(app.handle()), canonical_store);
+
+        for index in 0..2 {
+            driver
+                .submit_workflow_output(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &execution_id,
+                    "review-child".to_string(),
+                    child_ids[index].to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+            driver
+                .record_provider_stop(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                        agent_session_id: session_ids[index].to_string(),
+                        workflow_execution_id: execution_id.clone(),
+                        node_execution_id: child_ids[index].to_string(),
+                        binding_id: format!("fanout-binding-{index}"),
+                    },
+                    vec![
+                        crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent::new(
+                            crate::domain::provider_lifecycle::ProviderLifecycleScope::new(
+                                session_ids[index],
+                            )
+                            .unwrap(),
+                            crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed(
+                                format!("fanout-binding-{index}"),
+                            )
+                            .unwrap(),
+                        ),
+                    ],
+                )
+                .await
+                .unwrap();
+
+            if index == 0 {
+                let executions = driver.executions.lock().await;
+                let execution = executions.get(&execution_id).unwrap();
+                assert_eq!(
+                    execution
+                        .node_executions
+                        .iter()
+                        .find(|node| node.id == child_ids[0])
+                        .unwrap()
+                        .status,
+                    NodeExecutionStatus::Succeeded
+                );
+                assert_eq!(
+                    execution
+                        .node_executions
+                        .iter()
+                        .find(|node| node.id == child_ids[1])
+                        .unwrap()
+                        .status,
+                    NodeExecutionStatus::Running
+                );
+            }
+        }
+
+        let events = read_dispatch_events(&app, &execution_id);
+        for child_id in child_ids {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        WorkflowEvent::NodeCompleted {
+                            node_execution_id,
+                            ..
+                        } if node_execution_id == child_id
+                    ))
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_node_requests_approval_once_only_after_submit_and_stop() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let canonical_store = app.state::<DispatchCanonicalStore>().0.clone();
+        assert!(app.manage(canonical_store.clone()));
+        let driver = Arc::new(make_canonical_dispatch_driver(
+            data_dir.clone(),
+            canonical_store.clone(),
+        ));
+        driver.set_execution_store_data_dir(data_dir).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut approval_node = make_approval_gated_session("review", "review", vec![]);
+        approval_node.artifact = Some("review-verdict".to_string());
+        let workflow = WorkflowDefinition {
+            name: "approval-handshake".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: submit_test_schemas(),
+            nodes: vec![approval_node],
+        };
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/approval-handshake".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let agent_session_id = "approval-agent";
+        let node_execution_id = {
+            let mut executions = driver.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).unwrap();
+            execution.node_executions[0].session_id = Some(agent_session_id.to_string());
+            execution.node_executions[0].id.clone()
+        };
+        let (session_store, agent_runtime) =
+            make_canonical_dispatch_deps(dispatch_data_dir(app.handle()), canonical_store);
+
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ApprovalRequested { .. })));
+        driver
+            .record_provider_stop(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand {
+                    agent_session_id: agent_session_id.to_string(),
+                    workflow_execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    binding_id: "approval-binding".to_string(),
+                },
+                vec![
+                    crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent::new(
+                        crate::domain::provider_lifecycle::ProviderLifecycleScope::new(
+                            agent_session_id,
+                        )
+                        .unwrap(),
+                        crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed(
+                            "approval-binding",
+                        )
+                        .unwrap(),
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let executions = driver.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
+        assert_eq!(
+            execution.node_executions[0].status,
+            NodeExecutionStatus::WaitingApproval
+        );
+        drop(executions);
+        let events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::ApprovalRequested {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_execution_id: recorded,
+                ..
+            } if recorded == &node_execution_id
+        )));
+
+        driver
+            .resolve_workflow_approval(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+                "review",
+                Some(&node_execution_id),
+            )
+            .await
+            .unwrap();
+        let events = read_dispatch_events(&app, &execution_id);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeCompleted {
+                        node_execution_id: recorded,
+                        ..
+                    } if recorded == &node_execution_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. }))
+                .count(),
+            1
+        );
     }
 
     /// [08] 振る舞い定義 Rule 1（適合する場合）: contract に適合する構造化出力は
@@ -18049,10 +17709,8 @@ mod dispatch_boundary_tests {
         assert!(!response_text.contains(secret));
     }
 
-    /// #1250: contract 不適合の SubmitOutput は即 reject せず repair policy に渡す。
-    /// invalid payload 自体は保存せず、ContractRepairRequested のみを append する。
     #[tokio::test]
-    async fn submit_output_invalid_contract_requests_repair_without_persisting_output() {
+    async fn invalid_artifact_rejects_the_entire_submit_without_persisting_facts() {
         let app = make_dispatch_app();
         let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
         let data_dir =
@@ -18113,7 +17771,7 @@ mod dispatch_boundary_tests {
             Some(900.0),
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
         // artifacts は更新されない
         assert!(node_output_for(&driver, &execution_id, "review")
@@ -18124,23 +17782,83 @@ mod dispatch_boundary_tests {
         assert!(events
             .iter()
             .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
-        assert!(events.iter().any(|event| matches!(
+        assert!(events.iter().all(|event| !matches!(
             event,
-            WorkflowEvent::ContractViolated {
-                node_name,
-                request_id: None,
-                repair_attempt: 1,
-                violations,
-                ..
-            } if node_name == "review"
-                && !violations.is_empty()
-                && violations.iter().all(|violation|
-                    !violation.path.is_empty() && !violation.reason.is_empty())
+            WorkflowEvent::NodeSubmitReceived { .. } | WorkflowEvent::ContractViolated { .. }
         )));
+        let executions = driver.executions.lock().await;
+        assert_eq!(
+            executions.get(&execution_id).unwrap().node_executions[0].completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::Pending
+        );
     }
 
     #[tokio::test]
-    async fn fanout_child_invalid_submit_repairs_the_selected_node_execution() {
+    async fn duplicate_submit_still_rejects_an_invalid_artifact() {
+        let app = make_dispatch_app();
+        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        driver.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut workflow = make_submit_output_workflow();
+        workflow.nodes[0].artifact = Some("spec-directory".to_string());
+        driver
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                "/wt/duplicate-submit-invalid".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        let node_execution_id = driver
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .unwrap()
+            .node_executions[0]
+            .id
+            .clone();
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+
+        driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = driver
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                &execution_id,
+                "review".to_string(),
+                node_execution_id,
+                Some(("spec-directory".to_string(), serde_json::json!({}))),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkflowRuntimeError::ValidationError(_))
+        ));
+        let events = read_submit_output_events(&app, &execution_id);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ArtifactProduced { .. })));
+    }
+
+    #[tokio::test]
+    async fn fanout_child_invalid_artifact_rejects_the_entire_submit() {
         let app = make_dispatch_app();
         let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
         let data_dir =
@@ -18233,30 +17951,19 @@ mod dispatch_boundary_tests {
                 &handles,
                 &execution_id,
                 "review-child".to_string(),
-                Some(selected_node_execution_id.clone()),
-                "spec-directory".to_string(),
-                serde_json::json!({}),
+                selected_node_execution_id.clone(),
+                Some(("spec-directory".to_string(), serde_json::json!({}))),
             )
             .await
-            .unwrap();
+            .unwrap_err();
 
         let events = read_submit_output_events(&app, &execution_id);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ContractViolated {
-                node_execution_id,
-                node_name,
-                repair_attempt: 1,
-                violations,
-                ..
-            } if node_execution_id == &selected_node_execution_id
-                && node_name == "review-child"
-                && !violations.is_empty()
-        )));
         assert!(events.iter().all(|event| !matches!(
             event,
-            WorkflowEvent::ContractViolated { node_execution_id, .. }
-                if node_execution_id == &sibling_node_execution_id
+            WorkflowEvent::NodeSubmitReceived { node_execution_id, .. }
+                | WorkflowEvent::ContractViolated { node_execution_id, .. }
+                if node_execution_id == &selected_node_execution_id
+                    || node_execution_id == &sibling_node_execution_id
         )));
     }
 
@@ -18544,586 +18251,6 @@ mod dispatch_boundary_tests {
     /// 表現が含まれていても、明示的提出が無い限り artifacts は更新されず、
     /// ArtifactProduced event も追記されない（prose 抽出経路の完全廃止）。
     #[tokio::test]
-    async fn agent_free_text_workflow_output_block_does_not_confirm_node_output() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                "/wt/agent-freetext".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let outputs_before = driver
-            .executions
-            .lock()
-            .await
-            .get(&execution_id)
-            .map(|e| e.artifacts.clone())
-            .unwrap();
-        let events_before = read_submit_output_events(&app, &execution_id);
-
-        let final_text = r#"承認します。
-<workflow_output type="review-verdict">{"verdict":"LGTM"}</workflow_output>"#;
-        let final_parts = vec![MessagePart::Text {
-            content: final_text.to_string(),
-            parent_tool_use_id: None,
-        }];
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        // 自由文経路は prose 抽出を行わないため、artifacts は変化せず、
-        // contract がある node は明示的提出なしでは完了しない。
-        // [08] handle_auto_complete のエラーを .ok() で握り潰さないこと（review 指摘）。
-        // 完了経路を通って初めて「自由文出力中の `<workflow_output>` は無視される」を
-        // 検証できるため、.expect で経路実行を保証する。
-        driver
-            .handle_auto_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                "/wt/agent-freetext",
-                &final_parts,
-                "review",
-            )
-            .await
-            .expect("handle_auto_complete must succeed for agent free-text path");
-
-        let outputs_after = driver
-            .executions
-            .lock()
-            .await
-            .get(&execution_id)
-            .map(|e| e.artifacts.clone())
-            .unwrap_or_default();
-        // artifacts 数は変わらず、artifact を持つ entry が追加されていない
-        assert_eq!(outputs_before.len(), outputs_after.len());
-
-        // ArtifactProduced event も追記されていない
-        let events_after = read_submit_output_events(&app, &execution_id);
-        let submitted_count_before = events_before
-            .iter()
-            .filter(|e| matches!(e, WorkflowEvent::ArtifactProduced { .. }))
-            .count();
-        let submitted_count_after = events_after
-            .iter()
-            .filter(|e| matches!(e, WorkflowEvent::ArtifactProduced { .. }))
-            .count();
-        assert_eq!(submitted_count_before, submitted_count_after);
-        let node_completed = events_after
-            .iter()
-            .filter(|e| matches!(e, WorkflowEvent::NodeCompleted { node_name, .. } if node_name == "review"))
-            .count();
-        assert_eq!(
-            node_completed, 0,
-            "handle_auto_complete must not advance a contract node without SubmitOutput"
-        );
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "seeded test execution has no active session, so missing SubmitOutput fails and releases the terminal execution"
-        );
-        assert!(
-            events_after
-                .iter()
-                .any(|event| matches!(event, WorkflowEvent::ExecutionFailed { .. })),
-            "terminal failure must be recorded in the event log"
-        );
-    }
-
-    #[tokio::test]
-    async fn issue_1557_done_session_accepts_missing_output_repair_turn() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-within-limit";
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let mut session = chat_session_for_test(session_id, worktree_path, None, true);
-        session.state = crate::usecase::agent_session::session::SessionState::Done;
-        session_store
-            .save_full_session_for_restore(&data_dir, &session)
-            .unwrap();
-        insert_ready_agent_process_for_internal_turn_test(
-            &handles,
-            &session_store,
-            &data_dir,
-            session_id,
-        )
-        .await;
-
-        driver
-            .handle_missing_required_output(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                &execution_id,
-                "submit-wf",
-                "review",
-                "review-verdict",
-                1,
-                Some(session_id),
-                None,
-                None,
-                SubmissionViolation::MissingSubmitOutput,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            driver.contains_execution_for_test(&execution_id).await,
-            "repairable mismatch must keep the execution active"
-        );
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert!(
-            events.iter().any(|event| matches!(
-                event,
-                WorkflowEvent::ContractViolated {
-                    node_name,
-                    repair_attempt: 1,
-                    ..
-                } if node_name == "review"
-            )),
-            "repair attempt must append ContractRepairRequested; got {events:?}"
-        );
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })),
-            "within-limit repair request must not terminally fail the execution; got {events:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_required_output_fails_when_repair_turn_cannot_start() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-start-failure";
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-        session_store
-            .save_full_session_for_restore(
-                &data_dir,
-                &chat_session_for_test(session_id, worktree_path, None, true),
-            )
-            .unwrap();
-        handles
-            .insert_failing_runtime_state_for_test(session_id)
-            .await;
-        let lock_states_at_broadcast = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let lock_states_for_listener = Arc::clone(&lock_states_at_broadcast);
-        let handles_for_listener = Arc::clone(&handles);
-        let session_id_for_listener = session_id.to_string();
-        app.listen("workflow-execution-changed", move |_| {
-            lock_states_for_listener.lock().unwrap().push(
-                handles_for_listener
-                    .session_runtime_lock_is_held_for_test(&session_id_for_listener),
-            );
-        });
-
-        driver
-            .handle_missing_required_output(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                &execution_id,
-                "submit-wf",
-                "review",
-                "review-verdict",
-                1,
-                Some(session_id),
-                None,
-                None,
-                SubmissionViolation::MissingSubmitOutput,
-                None,
-            )
-            .await
-            .unwrap();
-
-        {
-            let lock_states_at_broadcast = lock_states_at_broadcast.lock().unwrap();
-            assert!(
-                !lock_states_at_broadcast.is_empty(),
-                "repair start failure must broadcast the terminal workflow state"
-            );
-            assert!(
-                lock_states_at_broadcast.iter().all(|is_held| !is_held),
-                "terminal workflow state must be broadcast after the session runtime lock is released"
-            );
-        }
-
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "repair start failure must terminally release the execution"
-        );
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert!(
-            events.iter().any(|event| matches!(
-                event,
-                WorkflowEvent::ContractViolated {
-                    node_name,
-                    repair_attempt: 1,
-                    ..
-                } if node_name == "review"
-            )),
-            "the attempted repair must be observable before terminal failure; got {events:?}"
-        );
-        let execution_failed = events.iter().find_map(|event| match event {
-            WorkflowEvent::ExecutionFailed {
-                reason,
-                failure_kind,
-                ..
-            } => Some((reason, failure_kind)),
-            _ => None,
-        });
-        let Some((reason, failure_kind)) = execution_failed else {
-            panic!("repair start failure must append ExecutionFailed; got {events:?}");
-        };
-        assert_eq!(
-            *failure_kind,
-            NodeExecutionFailureKind::StructuredOutputMismatch
-        );
-        assert!(
-            reason.contains("contract output repair turn failed to start"),
-            "terminal reason must include repair startup failure; got {reason}"
-        );
-    }
-
-    #[tokio::test]
-    async fn repair_turn_startup_timeout_failure_preserves_failure_metadata() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-startup-timeout";
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let error = WorkflowRuntimeError::with_agent_runtime_context(
-            "contract output repair turn failed to start",
-            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
-                retry_count: 2,
-                max_retries: 2,
-            },
-        );
-
-        driver
-            .fail_missing_required_output_with_metadata(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                &execution_id,
-                "review",
-                "review-verdict",
-                &error.to_string(),
-                error.workflow_failure_kind(),
-                error.retry_count(),
-                None,
-            )
-            .await
-            .unwrap();
-
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        let execution_failed = events.iter().find_map(|event| match event {
-            WorkflowEvent::ExecutionFailed {
-                reason,
-                failure_kind,
-                ..
-            } => Some((reason, failure_kind)),
-            _ => None,
-        });
-        let Some((reason, failure_kind)) = execution_failed else {
-            panic!("repair startup timeout must append ExecutionFailed; got {events:?}");
-        };
-        assert_eq!(*failure_kind, NodeExecutionFailureKind::StartupTimeout);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeFailed {
-                retry_count: Some(2),
-                failure_kind: NodeExecutionFailureKind::StartupTimeout,
-                ..
-            }
-        )));
-        assert!(
-            reason.contains("contract output repair turn failed to start"),
-            "terminal reason must include repair startup timeout context; got {reason}"
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_required_output_fails_with_structured_mismatch_after_repair_limit() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-limit";
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-        let node_execution_id = driver
-            .executions
-            .lock()
-            .await
-            .get(&execution_id)
-            .and_then(|execution| execution.node_executions.first())
-            .map(|execution| execution.id.clone())
-            .expect("seeded node execution");
-        let log = WorkflowEventLog::new(&data_dir);
-        for attempt in 1..=2 {
-            log.append(&WorkflowEvent::ContractViolated {
-                execution_id: execution_id.clone(),
-                node_execution_id: node_execution_id.clone(),
-                node_name: "review".to_string(),
-                violations: vec![crate::domain::workflow::ContractViolationRecord {
-                    path: "$".to_string(),
-                    reason: submission_violation_reason(SubmissionViolation::MissingSubmitOutput)
-                        .to_string(),
-                }],
-                request_id: None,
-                repair_attempt: attempt,
-                timestamp: 1000.0 + f64::from(attempt),
-            })
-            .unwrap();
-        }
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        driver
-            .handle_missing_required_output(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                &execution_id,
-                "submit-wf",
-                "review",
-                "review-verdict",
-                1,
-                Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
-                None,
-                None,
-                SubmissionViolation::MissingSubmitOutput,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "exhausted repair attempts must terminally release the execution"
-        );
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        let execution_failed_kind = events.iter().find_map(|event| match event {
-            WorkflowEvent::ExecutionFailed { failure_kind, .. } => Some(*failure_kind),
-            _ => None,
-        });
-        assert_eq!(
-            execution_failed_kind,
-            Some(NodeExecutionFailureKind::StructuredOutputMismatch)
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_required_output_repair_attempts_are_scoped_to_attempt() {
-        let app = make_dispatch_app();
-        let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        driver.set_execution_store_data_dir(data_dir.clone()).await;
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-execution-index";
-        driver
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_submit_output_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-        let session_id = "11111111-1111-4111-8111-111111111111";
-        let second_node_execution_id = uuid::Uuid::new_v4().to_string();
-        let first_node_execution_id = {
-            let mut executions = driver.executions.lock().await;
-            let execution = executions.get_mut(&execution_id).expect("seeded execution");
-            let first_node_execution_id = execution.node_executions[0].id.clone();
-            let _ = execution.node_executions[0].record_failed(
-                "seeded prior attempt".to_string(),
-                crate::domain::workflow::NodeExecutionFailureKind::ValidationFailure,
-                1001.0,
-            );
-            execution
-                .node_execution_counts
-                .insert("review".to_string(), 2);
-            execution.current_session_id = Some(session_id.to_string());
-            execution.node_executions.push(node_execution_fixture(
-                &execution_id,
-                &second_node_execution_id,
-                "review",
-                2,
-                NodeExecutionStatus::Running,
-                Some(session_id),
-                None,
-            ));
-            first_node_execution_id
-        };
-        let log = WorkflowEventLog::new(&data_dir);
-        log.append_batch(&[
-            WorkflowEvent::NodeStarted {
-                execution_id: execution_id.clone(),
-                node_execution_id: second_node_execution_id.clone(),
-                node_name: "review".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 2,
-                fanout_parent: None,
-                timestamp: 1002.0,
-            },
-            WorkflowEvent::SessionAttached {
-                execution_id: execution_id.clone(),
-                node_execution_id: second_node_execution_id.clone(),
-                session_id: session_id.to_string(),
-                timestamp: 1002.0,
-            },
-        ])
-        .unwrap();
-        for attempt in 1..=2 {
-            log.append(&WorkflowEvent::ContractViolated {
-                execution_id: execution_id.clone(),
-                node_execution_id: first_node_execution_id.clone(),
-                node_name: "review".to_string(),
-                violations: vec![crate::domain::workflow::ContractViolationRecord {
-                    path: "$".to_string(),
-                    reason: submission_violation_reason(SubmissionViolation::MissingSubmitOutput)
-                        .to_string(),
-                }],
-                request_id: None,
-                repair_attempt: attempt,
-                timestamp: 1000.0 + f64::from(attempt),
-            })
-            .unwrap();
-        }
-
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        session_store
-            .save_full_session_for_restore(
-                &data_dir,
-                &chat_session_for_test(session_id, worktree_path, None, true),
-            )
-            .unwrap();
-        insert_ready_agent_process_for_internal_turn_test(
-            &handles,
-            &session_store,
-            &data_dir,
-            session_id,
-        )
-        .await;
-
-        driver
-            .handle_missing_required_output(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                &execution_id,
-                "submit-wf",
-                "review",
-                "review-verdict",
-                2,
-                Some(session_id),
-                None,
-                None,
-                SubmissionViolation::MissingSubmitOutput,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ContractViolated {
-                node_execution_id,
-                node_name,
-                repair_attempt: 1,
-                ..
-            } if node_execution_id == &second_node_execution_id && node_name == "review"
-        )));
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })),
-            "prior attempt repair attempts must not force GiveUp for a new attempt; got {events:?}"
-        );
-    }
-
-    /// [08] 振る舞い定義 Rule 1: ArtifactProduced append が失敗した場合、
-    /// artifacts / artifacts / event log は提出前状態のまま保たれる。
-    /// `write_log_required` の挿入 fail 経由で append 失敗を再現し、rollback の事実を
-    /// 直接検証する（spec [08]: 「副作用なしで提出前状態のまま保つ」）。
-    #[tokio::test]
     async fn submit_output_rolls_back_state_when_event_append_fails() {
         let app = make_dispatch_app();
         let driver = Arc::new(WorkflowRuntimeHost::new_for_test());
@@ -19370,22 +18497,15 @@ mod dispatch_boundary_tests {
             },
         );
 
-        driver
-            .on_turn_complete(
-                app.handle(),
-                &session_store,
-                &handles,
-                child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "LGTM".to_string(),
-                    parent_tool_use_id: None,
-                }],
-                None,
-            )
-            .await
-            .unwrap();
+        complete_agent_session_by_handshake(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            child_session_id,
+        )
+        .await;
 
         let executions = driver.executions.lock().await;
         let execution = executions
@@ -19431,7 +18551,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_activation_failure_is_terminal_without_claiming_a_crash() {
+    async fn fanout_activation_failure_fails_only_the_affected_child_attempt() {
         let app = make_dispatch_app();
         let workflow_agent_sessions = Arc::new(RecordingWorkflowAgentSessionPort::default());
         let driver = WorkflowRuntimeHost::new_for_test_with_workflow_agent_sessions(
@@ -19444,7 +18564,7 @@ mod dispatch_boundary_tests {
             session_store.clone(),
             data_dir.clone(),
         );
-        workflow_agent_sessions.fail_next_dispatch();
+        workflow_agent_sessions.fail_next_activation();
         let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let received_for_listener = Arc::clone(&received_payloads);
@@ -19483,23 +18603,20 @@ mod dispatch_boundary_tests {
             .await
             .expect("initial event batch commits before runtime activation");
 
-        assert!(
-            !driver.contains_execution_for_test(&execution_id).await,
-            "activation failure must release the terminal live execution"
-        );
+        assert!(driver.contains_execution_for_test(&execution_id).await);
         let execution = driver
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Failed);
+        assert_eq!(execution.status, ExecutionStatus::Running);
         assert_eq!(execution.interruption_reason, None);
         assert_eq!(execution.resume_from_node, None);
 
         let payloads = received_payloads.lock().unwrap().clone();
         let live_payload = payloads
             .last()
-            .expect("activation failure must broadcast its terminal snapshot");
+            .expect("activation failure must broadcast the Node failure");
         let live_json: serde_json::Value = serde_json::from_str(live_payload).unwrap();
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -19511,15 +18628,15 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "failed");
-        assert_eq!(live_status("review-a"), "aborted");
-        assert_eq!(live_status("review-b"), "aborted");
+        assert_eq!(live_status("fanout-review"), "running");
+        assert_eq!(live_status("review-a"), "failed");
+        assert_eq!(live_status("review-b"), "running");
 
         let events = read_dispatch_events(&app, &execution_id);
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Failed);
+        assert_eq!(projected.status, ExecutionStatus::Running);
         let projected_status = |node_name: &str| {
             projected
                 .node_executions
@@ -19530,15 +18647,15 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
         assert_eq!(
             projected_status("review-a"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
             projected_status("review-b"),
-            crate::domain::workflow::NodeExecutionStatus::Aborted
+            crate::domain::workflow::NodeExecutionStatus::Running
         );
         for node_name in ["review-a", "review-b"] {
             assert!(
@@ -19551,16 +18668,13 @@ mod dispatch_boundary_tests {
                 "fanout Session attachment for {node_name} must survive activation failure replay"
             );
         }
-        assert!(projected
-            .node_executions
-            .iter()
-            .all(|execution| execution.completed_at.is_some()));
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionFailed {
+            WorkflowEvent::NodeFailed {
+                node_name,
                 failure_kind: NodeExecutionFailureKind::ValidationFailure,
                 ..
-            }
+            } if node_name == "review-a"
         )));
         assert!(events
             .iter()
@@ -19612,23 +18726,30 @@ mod dispatch_boundary_tests {
             },
         );
 
-        driver.fail_next_required_event_append_for_test();
-        let error = driver
-            .on_turn_complete(
+        driver
+            .submit_workflow_output(
                 app.handle(),
                 &session_store,
                 &handles,
-                child_session_id,
-                0,
-                None,
-                &[MessagePart::Text {
-                    content: "LGTM".to_string(),
-                    parent_tool_use_id: None,
-                }],
+                &execution_id,
+                "review-child".to_string(),
+                child_node_execution_id.clone(),
                 None,
             )
             .await
-            .expect_err("last child completion must fail when its event batch cannot append");
+            .unwrap();
+        driver.fail_next_required_event_append_for_test();
+        let error = record_test_provider_stop(
+            &app,
+            &driver,
+            &session_store,
+            &handles,
+            &execution_id,
+            &child_node_execution_id,
+            child_session_id,
+        )
+        .await
+        .expect_err("last child completion must fail when its event batch cannot append");
         assert!(
             matches!(error, WorkflowRuntimeError::SessionStore(_)),
             "required append failure must propagate: {error:?}"

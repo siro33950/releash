@@ -32,6 +32,7 @@ pub(crate) struct ProviderAgentSessionCreateRequest {
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
     pub(crate) origin: AgentSessionOrigin,
+    pub(crate) admit_initial_instruction: bool,
 }
 
 pub(crate) struct ProviderAgentSessionUsecase {
@@ -92,7 +93,7 @@ impl ProviderAgentSessionUsecase {
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         caller_request_id: &str,
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionUsecaseError> {
-        let session = AgentSession::create(
+        let mut session = AgentSession::create(
             &request.agent_session_id,
             request.workspace,
             &request.worktree_path,
@@ -100,6 +101,11 @@ impl ProviderAgentSessionUsecase {
             request.origin,
         )
         .map_err(|_| ProviderAgentSessionUsecaseError::InvalidOperation)?;
+        if request.admit_initial_instruction {
+            session
+                .admit_initial_instruction()
+                .map_err(|_| ProviderAgentSessionUsecaseError::InvalidOperation)?;
+        }
         self.repository
             .create_with_lifecycle_events(session, lifecycle_events, caller_request_id)
             .await

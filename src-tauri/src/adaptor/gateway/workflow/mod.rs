@@ -57,9 +57,7 @@ pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRe
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
 #[cfg(test)]
 pub(crate) use node_lifecycle_adapters::close_node_session_tab_state;
-pub(crate) use node_lifecycle_adapters::{
-    release_node_runtime_on_done, TauriNodeExecutionLifecycleGateway,
-};
+pub(crate) use node_lifecycle_adapters::TauriNodeExecutionLifecycleGateway;
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
 };

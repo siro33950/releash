@@ -1,5 +1,30 @@
 use super::{Artifact, NodeExecutionFailureKind, NodeKindName, TokenUsage};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeCompletionSignalState {
+    #[default]
+    Pending,
+    SubmitReceived,
+    StopReceived,
+    Ready,
+}
+
+impl NodeCompletionSignalState {
+    pub fn is_ready(self) -> bool {
+        self == Self::Ready
+    }
+
+    pub fn is_partial(self) -> bool {
+        matches!(self, Self::SubmitReceived | Self::StopReceived)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeCompletionSignal {
+    Submit,
+    Stop,
+}
+
 /// fanout child execution が属する親 fanout と、宣言順上の位置。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +39,7 @@ pub struct FanoutParentRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeExecutionStatus {
     Running,
+    Paused,
     WaitingApproval,
     Succeeded,
     Failed,
@@ -24,6 +50,7 @@ impl NodeExecutionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::WaitingApproval => "waiting_approval",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -32,7 +59,7 @@ impl NodeExecutionStatus {
     }
 
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
+        matches!(self, Self::Running | Self::Paused | Self::WaitingApproval)
     }
 }
 
@@ -58,11 +85,20 @@ pub struct NodeExecution {
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<NodeExecutionFailure>,
     pub fanout_parent: Option<FanoutParentRef>,
+    pub completion_signals: NodeCompletionSignalState,
     pub started_at: f64,
     pub completed_at: Option<f64>,
 }
 
 impl NodeExecution {
+    pub fn can_retry(&self) -> bool {
+        self.status == NodeExecutionStatus::Failed
+            || (matches!(
+                self.status,
+                NodeExecutionStatus::Running | NodeExecutionStatus::Paused
+            ) && self.completion_signals.is_partial())
+    }
+
     pub fn replay_completed(
         &mut self,
         result_summary: Option<String>,
@@ -86,6 +122,14 @@ impl NodeExecution {
         self.status = NodeExecutionStatus::WaitingApproval;
     }
 
+    pub fn replay_paused(&mut self) {
+        self.status = NodeExecutionStatus::Paused;
+    }
+
+    pub fn replay_resumed(&mut self) {
+        self.status = NodeExecutionStatus::Running;
+    }
+
     pub fn replay_approval_resolved(&mut self) {
         self.status = NodeExecutionStatus::Running;
     }
@@ -107,5 +151,33 @@ mod tests {
         assert!(NodeExecutionStatus::WaitingApproval.is_active());
         assert!(!NodeExecutionStatus::Succeeded.is_active());
         assert_eq!(NodeExecutionStatus::Succeeded.as_str(), "succeeded");
+    }
+
+    #[test]
+    fn retry_admission_belongs_to_the_node_execution() {
+        let mut node = NodeExecution {
+            id: "node-1".to_string(),
+            execution_id: "execution-1".to_string(),
+            node_name: "review".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            status: NodeExecutionStatus::Running,
+            session_id: None,
+            display_command: None,
+            result_summary: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            completion_signals: NodeCompletionSignalState::StopReceived,
+            started_at: 1.0,
+            completed_at: None,
+        };
+
+        assert!(node.can_retry());
+        node.completion_signals = NodeCompletionSignalState::Pending;
+        assert!(!node.can_retry());
+        node.status = NodeExecutionStatus::Failed;
+        assert!(node.can_retry());
     }
 }

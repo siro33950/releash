@@ -64,6 +64,7 @@ export function providerAgentSessionIconPresentation(
 export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 	queued: "text-muted-foreground",
 	running: "text-blue-600 dark:text-blue-300",
+	paused: "text-muted-foreground",
 	failed: "text-red-600 dark:text-red-300",
 	error: "text-destructive",
 	waiting: "text-yellow-600 dark:text-yellow-300",

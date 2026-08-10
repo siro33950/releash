@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use crate::adaptor::controller::command::workflow::validate_execution_id;
 use crate::adaptor::controller::state::AppState;
-use crate::usecase::workflow::command::SubmitOutputCommand;
+use crate::adaptor::protocol::workflow::{
+    WorkflowGetOutputResponse, WorkflowSubmitArtifactInput, WorkflowValidateOutputResponse,
+};
+use crate::usecase::workflow::command::{SubmitOutputArtifact, SubmitOutputCommand};
 use crate::usecase::workflow::{
     WorkflowGetOutputResult, WorkflowRuntimeUsecase, WorkflowValidateOutputResult,
 };
 
 /// [08] `workflow output` 系 Tauri command の共通 authorize ヘルパー。
 ///
-/// 3 ハンドラ（submit / validate / get）で「`validate_execution_id` →
-/// `WorkflowUsecase::authorize_execution_summary_for_worktree`」を完全に同一フローで行うため、
-/// 共通化する。
+/// 3 ハンドラ（submit / validate / get）を同じUsecase認可境界へ接続する。
 /// 認可外 worktree / 不存在 execution のいずれも `Workflow execution not found` 同表現で
 /// 拒否し、存在情報を漏らさない（spec [08] L169 / L182）。
 async fn authorize_output_execution_access(
@@ -19,24 +19,15 @@ async fn authorize_output_execution_access(
     worktree_path: String,
     execution_id: &str,
 ) -> Result<(), String> {
-    validate_execution_id(execution_id)?;
     let query = query.clone();
     let execution_id = execution_id.to_string();
-    let execution_id_for_lookup = execution_id.clone();
     tokio::task::spawn_blocking(move || {
         query
-            .authorize_execution_summary_for_worktree(&execution_id_for_lookup, &worktree_path)
+            .authorize_execution_access_for_worktree(&execution_id, &worktree_path)
             .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
-    .and_then(|summary| {
-        if summary.is_some() {
-            Ok(())
-        } else {
-            Err(format!("Workflow execution not found: {execution_id}"))
-        }
-    })
 }
 
 /// [08] Tauri command 経路: node に対する構造化出力を typed 提出する。
@@ -53,9 +44,8 @@ pub async fn workflow_submit_output(
     worktree_path: String,
     execution_id: String,
     node_name: String,
-    node_execution_id: Option<String>,
-    contract: String,
-    artifact: serde_json::Value,
+    node_execution_id: String,
+    artifact: Option<WorkflowSubmitArtifactInput>,
 ) -> Result<(), String> {
     authorize_output_execution_access(&state.workflow_usecase, worktree_path, &execution_id)
         .await?;
@@ -64,8 +54,10 @@ pub async fn workflow_submit_output(
             execution_id,
             node_name,
             node_execution_id,
-            contract,
-            artifact,
+            artifact: artifact.map(|artifact| SubmitOutputArtifact {
+                contract: artifact.contract,
+                value: artifact.value,
+            }),
         })
         .await
         .map_err(|e| e.to_string())
@@ -143,26 +135,4 @@ pub async fn workflow_get_output(
         },
         WorkflowGetOutputResult::NotSubmitted => WorkflowGetOutputResponse::NotSubmitted,
     })
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum WorkflowValidateOutputResponse {
-    Valid,
-    Invalid { reason: String, details: String },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum WorkflowGetOutputResponse {
-    Submitted {
-        contract: Option<String>,
-        structured_output: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        submitted_at: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        request_id: Option<String>,
-        timestamp: f64,
-    },
-    NotSubmitted,
 }

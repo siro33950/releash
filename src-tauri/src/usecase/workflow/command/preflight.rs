@@ -68,7 +68,14 @@ impl WorkflowRuntimeCommandPreflight {
     ) -> Result<(), WorkflowError> {
         WorkflowExecutionId::new(command.execution_id.clone())?;
         NodeDefinitionName::new(command.node_name.clone())?;
-        ContractType::new(command.contract.clone())?;
+        if command.node_execution_id.trim().is_empty() {
+            return Err(WorkflowError::validation(
+                "node_execution_id must not be empty",
+            ));
+        }
+        if let Some(artifact) = &command.artifact {
+            ContractType::new(artifact.contract.clone())?;
+        }
         Ok(())
     }
 

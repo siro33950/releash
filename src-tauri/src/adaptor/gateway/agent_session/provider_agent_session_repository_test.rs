@@ -86,6 +86,38 @@ async fn test_provider_agent_session_repository_create後に再起動して同�
 }
 
 #[tokio::test]
+async fn test_provider_agent_session_repository_workflow生成時の初回指示admissionを同時に永続化する(
+) {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let mut session = AgentSession::create(
+        "agent-session-workflow",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        AgentSessionOrigin::workflow_node("workflow-1", "node-execution-1").unwrap(),
+    )
+    .unwrap();
+    session.admit_initial_instruction().unwrap();
+
+    let saved = repository
+        .create_with_lifecycle_events(session, Vec::new(), "create-workflow-request-1")
+        .await
+        .unwrap();
+
+    assert_eq!(saved.revision(), 2);
+    assert!(saved.session().initial_instruction_admitted());
+    let loaded = repository
+        .find("agent-session-workflow")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.revision(), 2);
+    assert!(loaded.session().initial_instruction_admitted());
+}
+
+#[tokio::test]
 async fn test_provider_agent_session_repository_provider紐付けと状態遷移を永続化する() {
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);

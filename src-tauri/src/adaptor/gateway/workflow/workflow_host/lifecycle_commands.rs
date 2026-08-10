@@ -35,111 +35,11 @@ impl WorkflowRuntimeHost {
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
         if let Some(expected_node_name) = expected_node_name {
-            let target_node = if metadata.status == ExecutionStatus::Interrupted {
-                metadata.resume_from_node.as_deref()
-            } else {
-                metadata.current_node.as_deref()
-            };
-            if target_node != Some(expected_node_name) {
+            if metadata.current_node.as_deref() != Some(expected_node_name) {
                 return Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(
                     "node does not match".to_string(),
                 ));
             }
-        }
-        if metadata.status == ExecutionStatus::Interrupted {
-            let timestamp = current_timestamp();
-            let data_dir = match self.execution_store.configured_data_dir().await {
-                Some(data_dir) => data_dir,
-                None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-                    .map_err(|error| {
-                        WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {error}"))
-                    })?,
-            };
-            let events = self
-                .durable_workflow_event_log(&data_dir)
-                .await?
-                .read_log_durable(execution_id)
-                .await
-                .map_err(WorkflowRuntimeError::SessionStore)?;
-            let projected =
-                crate::domain::workflow::services::event_replay::project_workflow_execution(
-                    execution_id,
-                    &events,
-                )
-                .map_err(WorkflowRuntimeError::InvalidState)?
-                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
-            if projected.status != ExecutionStatus::Interrupted {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "execution {execution_id} event log has status {} instead of interrupted",
-                    projected.status.as_str()
-                )));
-            }
-            if projected.worktree_path != metadata.worktree_path
-                || projected.resume_from_node != metadata.resume_from_node
-            {
-                return Err(WorkflowRuntimeError::UnauthorizedWorktree(format!(
-                    "execution {execution_id} metadata does not match its event-log checkpoint"
-                )));
-            }
-            let reservation = self
-                .execution_store
-                .reserve_interrupted_for_abort(execution_id, timestamp)
-                .await
-                .map_err(|error| match error {
-                    ExecutionStoreError::ExecutionNotFound { .. } => {
-                        WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string())
-                    }
-                    ExecutionStoreError::InvalidStatusTransition { .. }
-                    | ExecutionStoreError::TransitionInProgress { .. } => {
-                        WorkflowRuntimeError::InvalidState(error.to_string())
-                    }
-                    other => WorkflowRuntimeError::SessionStore(format!(
-                        "ExecutionStore interrupted abort reservation failed: {other}"
-                    )),
-                })?;
-            let projection_mutations = self
-                .execution_store
-                .prepare_atomic_interrupted_abort_metadata_mutations(
-                    &reservation.interrupted,
-                    reservation.aborted.updated_at,
-                )
-                .await
-                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
-            let append_result = self.write_log_required_batch_with_mutations_as(
-                app,
-                CommitOperationKind::UserMutation,
-                &[WorkflowEvent::ExecutionAborted {
-                    execution_id: execution_id.to_string(),
-                    aborted_node: metadata.resume_from_node.clone(),
-                    timestamp,
-                }],
-                projection_mutations,
-            );
-            if let Err(error) = append_result {
-                self.execution_store
-                    .rollback_interrupted_abort(reservation)
-                    .await
-                    .map_err(|rollback_error| {
-                        WorkflowRuntimeError::SessionStore(format!(
-                            "ExecutionAborted log failed: {error}; interrupted metadata rollback failed: {rollback_error}"
-                        ))
-                    })?;
-                return Err(WorkflowRuntimeError::SessionStore(format!(
-                    "ExecutionAborted log failed: {error}"
-                )));
-            }
-            if let Err(error) = self
-                .execution_store
-                .commit_interrupted_abort(reservation)
-                .await
-            {
-                // Event log と persisted metadata は既に Aborted で一致している。reservation
-                // cleanup の失敗を accepted command の失敗へ射影しない。
-                log::warn!(
-                    "ExecutionStore interrupted abort reservation cleanup failed for {execution_id}: {error}"
-                );
-            }
-            return Ok(());
         }
         if !metadata.status.is_active() {
             return Err(WorkflowRuntimeError::InvalidState(format!(
@@ -257,8 +157,8 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    /// Explicit stop command. The accepted fact is `ExecutionInterrupted(Stop)`; process and
-    /// session cancellation happen only after that fact and its metadata projection commit.
+    /// Pause all currently running Node Attempts without changing the Workflow lifecycle.
+    /// NodePaused is published only after every targeted runtime has accepted cancellation.
     pub(crate) async fn stop_workflow_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -266,34 +166,215 @@ impl WorkflowRuntimeHost {
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
-        if !matches!(
-            metadata.status,
-            ExecutionStatus::Running | ExecutionStatus::WaitingApproval
-        ) {
+        if !metadata.status.is_active() {
             return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be stopped from status {}",
                 metadata.status.as_str()
             )));
         }
-        if !self
-            .interrupt_active_execution_as(
-                app,
-                agent_runtime,
-                execution_id,
-                ExecutionInterruptionReason::Stop,
-                CommitOperationKind::UserMutation,
+        let timestamp = current_timestamp();
+        let (snapshot_before, candidate, events, session_targets, command_ids, worktree_path) = {
+            let executions = self.executions.lock().await;
+            let snapshot_before = executions
+                .get(execution_id)
+                .cloned()
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            let mut candidate = snapshot_before.clone();
+            let targets = candidate
+                .node_executions
+                .iter()
+                .filter(|node| node.status == NodeExecutionStatus::Running)
+                .map(|node| (node.id.clone(), node.kind, node.session_id.clone()))
+                .collect::<Vec<_>>();
+            let mut events = Vec::new();
+            let mut session_targets = Vec::new();
+            let mut command_ids = Vec::new();
+            for (node_execution_id, kind, session_id) in targets {
+                if candidate.pause_node_execution(&node_execution_id, timestamp)
+                    != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                {
+                    continue;
+                }
+                events.push(WorkflowEvent::NodePaused {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    timestamp,
+                });
+                match kind {
+                    NodeKindName::Session => {
+                        if let Some(session_id) = session_id {
+                            session_targets.push((node_execution_id.clone(), session_id));
+                        }
+                    }
+                    NodeKindName::Command => command_ids.push(node_execution_id),
+                    NodeKindName::Fanout => {}
+                }
+            }
+            let worktree_path = candidate.worktree_path.clone();
+            (
+                snapshot_before,
+                candidate,
+                events,
+                session_targets,
+                command_ids,
+                worktree_path,
             )
-            .await?
-        {
-            return Err(WorkflowRuntimeError::InvalidState(format!(
-                "execution {execution_id} is not active"
-            )));
+        };
+        if events.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self
+            .commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    operation_kind: CommitOperationKind::UserMutation,
+                    execution_id,
+                    snapshot_before,
+                    candidate,
+                    events: &events,
+                    provider_events: Vec::new(),
+                },
+            )
+            .await?;
+        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        let mut unstopped_node_execution_ids = HashSet::new();
+        let mut stop_failures = Vec::new();
+        for (node_execution_id, session_id) in session_targets {
+            if let Err(error) =
+                workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await
+            {
+                unstopped_node_execution_ids.insert(node_execution_id);
+                stop_failures.push(error.to_string());
+            }
+        }
+        if !command_ids.is_empty() {
+            let handles = self.active_commands.lock().await;
+            for node_execution_id in &command_ids {
+                if let Some(handle) = handles.get(node_execution_id) {
+                    handle.request_shutdown();
+                }
+            }
+        }
+        if !unstopped_node_execution_ids.is_empty() {
+            self.restore_unstopped_pauses_to_running(
+                app,
+                execution_id,
+                &unstopped_node_execution_ids,
+            )
+            .await
+            .map_err(|compensation_error| {
+                WorkflowRuntimeError::InvalidState(format!(
+                    "{}; failed to restore unstopped paused nodes: {compensation_error}",
+                    stop_failures.join("; ")
+                ))
+            })?;
+            return Err(WorkflowRuntimeError::AgentSession(stop_failures.join("; ")));
         }
         Ok(())
     }
 
-    /// Rebuilds an interrupted execution exclusively from its append-only event stream and starts
-    /// a fresh runtime for the first unconfirmed node attempt.
+    async fn restore_unstopped_pauses_to_running<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution_id: &str,
+        node_execution_ids: &HashSet<String>,
+    ) -> Result<(), WorkflowRuntimeError> {
+        let timestamp = current_timestamp();
+        let (snapshot_before, candidate, events, worktree_path) = {
+            let executions = self.executions.lock().await;
+            let snapshot_before = executions
+                .get(execution_id)
+                .cloned()
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            let mut candidate = snapshot_before.clone();
+            let mut events = Vec::new();
+            for node_execution_id in node_execution_ids {
+                if candidate.resume_node_execution(node_execution_id, timestamp)
+                    == crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                {
+                    events.push(WorkflowEvent::NodeResumed {
+                        execution_id: execution_id.to_string(),
+                        node_execution_id: node_execution_id.clone(),
+                        timestamp,
+                    });
+                }
+            }
+            let worktree_path = candidate.worktree_path.clone();
+            (snapshot_before, candidate, events, worktree_path)
+        };
+        if events.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self
+            .commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    operation_kind: CommitOperationKind::Workflow,
+                    execution_id,
+                    snapshot_before,
+                    candidate,
+                    events: &events,
+                    provider_events: Vec::new(),
+                },
+            )
+            .await?;
+        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        Ok(())
+    }
+
+    /// Restore Agent Node Attempts that failed to activate after an in-place Resume.
+    async fn restore_unactivated_resumes_to_paused<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution_id: &str,
+        node_execution_ids: &HashSet<String>,
+    ) -> Result<(), WorkflowRuntimeError> {
+        if node_execution_ids.is_empty() {
+            return Ok(());
+        }
+        let timestamp = current_timestamp();
+        let (snapshot_before, candidate, events, worktree_path) = {
+            let executions = self.executions.lock().await;
+            let snapshot_before = executions
+                .get(execution_id)
+                .cloned()
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            let mut candidate = snapshot_before.clone();
+            let mut events = Vec::new();
+            for node_execution_id in node_execution_ids {
+                if candidate.pause_node_execution(node_execution_id, timestamp)
+                    == crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                {
+                    events.push(WorkflowEvent::NodePaused {
+                        execution_id: execution_id.to_string(),
+                        node_execution_id: node_execution_id.clone(),
+                        timestamp,
+                    });
+                }
+            }
+            let worktree_path = candidate.worktree_path.clone();
+            (snapshot_before, candidate, events, worktree_path)
+        };
+        if events.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self
+            .commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    operation_kind: CommitOperationKind::Workflow,
+                    execution_id,
+                    snapshot_before,
+                    candidate,
+                    events: &events,
+                    provider_events: Vec::new(),
+                },
+            )
+            .await?;
+        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        Ok(())
+    }
+
     pub(crate) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -301,14 +382,125 @@ impl WorkflowRuntimeHost {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        resume_orchestration::resume_workflow_execution(
-            self,
-            app,
-            session_store,
-            agent_runtime,
-            execution_id,
-        )
-        .await
+        let metadata = self.validate_execution_command_target(execution_id).await?;
+        if metadata.status != ExecutionStatus::Running {
+            return Err(WorkflowRuntimeError::InvalidState(format!(
+                "execution {execution_id} cannot be resumed from status {}",
+                metadata.status.as_str()
+            )));
+        }
+        let timestamp = current_timestamp();
+        let (snapshot_before, candidate, events, resumed_sessions, paused_commands, worktree_path) = {
+            let executions = self.executions.lock().await;
+            let snapshot_before = executions
+                .get(execution_id)
+                .cloned()
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            let mut candidate = snapshot_before.clone();
+            let targets = candidate
+                .node_executions
+                .iter()
+                .filter(|node| node.status == NodeExecutionStatus::Paused)
+                .map(|node| (node.id.clone(), node.kind, node.session_id.clone()))
+                .collect::<Vec<_>>();
+            let mut events = Vec::new();
+            let mut resumed_sessions = Vec::new();
+            let mut paused_commands = Vec::new();
+            for (node_execution_id, kind, session_id) in targets {
+                if kind == NodeKindName::Command {
+                    paused_commands.push(node_execution_id);
+                    continue;
+                }
+                if candidate.resume_node_execution(&node_execution_id, timestamp)
+                    != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                {
+                    continue;
+                }
+                events.push(WorkflowEvent::NodeResumed {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    timestamp,
+                });
+                if kind == NodeKindName::Session {
+                    let session_id = session_id.ok_or_else(|| {
+                        WorkflowRuntimeError::InvalidState(format!(
+                            "paused Session NodeExecution '{node_execution_id}' has no AgentSession"
+                        ))
+                    })?;
+                    resumed_sessions.push((node_execution_id, session_id));
+                }
+            }
+            let worktree_path = candidate.worktree_path.clone();
+            (
+                snapshot_before,
+                candidate,
+                events,
+                resumed_sessions,
+                paused_commands,
+                worktree_path,
+            )
+        };
+        if events.is_empty() && paused_commands.is_empty() {
+            return Ok(());
+        }
+        let snapshot = if events.is_empty() {
+            None
+        } else {
+            Some(
+                self.commit_control_plane_candidate(
+                    app,
+                    ControlPlaneCommitCandidate {
+                        operation_kind: CommitOperationKind::UserMutation,
+                        execution_id,
+                        snapshot_before,
+                        candidate,
+                        events: &events,
+                        provider_events: Vec::new(),
+                    },
+                )
+                .await?,
+            )
+        };
+        let mut unactivated = resumed_sessions
+            .iter()
+            .map(|(node_execution_id, _)| node_execution_id.clone())
+            .collect::<HashSet<_>>();
+        for (node_execution_id, session_id) in resumed_sessions {
+            let activation = self
+                .workflow_agent_sessions
+                .dispatch_initial_instruction(
+                    &session_id,
+                    &node_execution_id,
+                    "Continue the paused workflow node from the existing conversation context.",
+                )
+                .await;
+            if let Err(error) = activation {
+                if let Err(compensation_error) = self
+                    .restore_unactivated_resumes_to_paused(app, execution_id, &unactivated)
+                    .await
+                {
+                    return Err(WorkflowRuntimeError::InvalidState(format!(
+                        "{error}; failed to restore unactivated resumed nodes: {compensation_error}"
+                    )));
+                }
+                return Err(error);
+            }
+            unactivated.remove(&node_execution_id);
+        }
+        for node_execution_id in paused_commands {
+            self.restart_paused_command_node(
+                app,
+                session_store,
+                agent_runtime,
+                execution_id,
+                &node_execution_id,
+            )
+            .await?;
+        }
+        if let Some(snapshot) = snapshot {
+            workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        }
+        Ok(())
     }
     pub(super) async fn validate_execution_command_target(
         &self,
@@ -508,7 +700,7 @@ impl WorkflowRuntimeHost {
 
             let _ = exec.transition_aborted();
             exec.clear_node_stalls(timestamp);
-            let snapshot_state = exec.to_commit_snapshot()?;
+            let snapshot_state = RuntimeCommitSnapshot::from_execution(exec)?;
             (snapshot_before, snapshot_state, aborted_node_for_event)
         };
 
@@ -576,15 +768,15 @@ impl WorkflowRuntimeHost {
             .await;
         let interrupt_result =
             workflow_runtime_session::interrupt_agents(agent_runtime, session_ids).await;
-        self.finalize_terminal_transition_after_required_append(app, agent_runtime, execution_id)
+        self.finalize_terminal_transition_after_required_append(app, execution_id)
             .await;
         interrupt_result
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
     /// 遷移済みで、`ExecutionAborted` event は必須 append 済み、かつ Execution Store sync も
-    /// 完了済みである前提。ChatSession persist / node session release / refs cleanup /
-    /// broadcast を実行する。
+    /// 完了済みである前提。Workflow refs cleanup / broadcast / in-memory runtime releaseを
+    /// 実行する。AgentSessionとPTYはWorkflow終端後もユーザー操作のため保持する。
     ///
     /// [04] post-commit 失敗は warn ログのみで command 結果に伝播させない。観測可能な
     /// 事実は既に ExecutionAborted で確定しており、ここでの副作用失敗を command failure に
@@ -593,7 +785,6 @@ impl WorkflowRuntimeHost {
     pub(super) async fn finalize_terminal_transition_after_required_append<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) {
         let (snapshot, worktree_path) = {
@@ -601,7 +792,7 @@ impl WorkflowRuntimeHost {
             let Some(exec) = execs.get(execution_id) else {
                 return;
             };
-            let snapshot = match exec.to_commit_snapshot() {
+            let snapshot = match RuntimeCommitSnapshot::from_execution(exec) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     log::warn!("terminal transition cleanup skipped for '{execution_id}': {error}");
@@ -611,13 +802,6 @@ impl WorkflowRuntimeHost {
             (snapshot, exec.worktree_path.clone())
         };
 
-        // terminal session の release と refs cleanup。
-        let terminal_session_ids = workflow_runtime_commit::terminal_node_session_ids(&snapshot);
-        workflow_runtime_session::release_completed_node_sessions(
-            agent_runtime,
-            &terminal_session_ids,
-        )
-        .await;
         self.cleanup_session_workflow_refs_by_execution_id(execution_id)
             .await;
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;

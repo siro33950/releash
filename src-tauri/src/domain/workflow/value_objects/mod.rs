@@ -36,7 +36,8 @@ pub use ids::{
     NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
 };
 pub use node_execution::{
-    FanoutParentRef, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
+    FanoutParentRef, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
+    NodeExecutionFailure, NodeExecutionStatus,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 pub use runtime_projection::{

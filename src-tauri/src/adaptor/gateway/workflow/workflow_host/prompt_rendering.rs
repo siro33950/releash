@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
-use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_schemas_to_domain;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::prompt_composition;
 use crate::domain::workflow::services::reference::{
@@ -188,7 +187,7 @@ pub(crate) fn append_artifact_completion_action(
     let Some(contract) = artifact else {
         return;
     };
-    let domain_schemas = workflow_schemas_to_domain(schemas);
+    let domain_schemas = schemas.clone();
     let schema_guidance =
         workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
     let action = prompt_composition::artifact_completion_action(

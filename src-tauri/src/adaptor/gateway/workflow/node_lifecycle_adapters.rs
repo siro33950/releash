@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
+#[cfg(test)]
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::workflow::node_lifecycle::{
-    release_node_runtime_on_done_with_gateways, NodeExecutionLifecycleError,
-    NodeExecutionRuntimeGateway, ResolvedWorkflowNodeSession, WorkflowNodeSessionGateway,
+    NodeExecutionLifecycleError, ResolvedWorkflowNodeSession, WorkflowNodeSessionGateway,
 };
 
 pub(crate) fn resolve_node_session_with_data_dir(
@@ -45,27 +45,9 @@ pub(crate) fn try_close_node_session_tab_state(
     open_tabs.is_some_and(|open_tabs| open_tabs.remove(session_id))
 }
 
-struct TauriNodeExecutionRuntimeGateway<'a> {
-    runtime: &'a AgentSessionRuntimeUsecase,
-}
-
-#[async_trait::async_trait]
-impl NodeExecutionRuntimeGateway for TauriNodeExecutionRuntimeGateway<'_> {
-    async fn close_runtime_on_node_done(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError> {
-        self.runtime
-            .force_close_session(session_id)
-            .await
-            .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
-    }
-}
-
 pub(crate) struct TauriNodeExecutionLifecycleGateway {
     app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
-    runtime: Arc<AgentSessionRuntimeUsecase>,
     open_tabs: Arc<OpenTabRegistry>,
 }
 
@@ -73,13 +55,11 @@ impl TauriNodeExecutionLifecycleGateway {
     pub(crate) fn new(
         app: tauri::AppHandle,
         session_store: Arc<SessionStore>,
-        runtime: Arc<AgentSessionRuntimeUsecase>,
         open_tabs: Arc<OpenTabRegistry>,
     ) -> Self {
         Self {
             app,
             session_store,
-            runtime,
             open_tabs,
         }
     }
@@ -114,29 +94,6 @@ impl WorkflowNodeSessionGateway for TauriNodeExecutionLifecycleGateway {
     }
 }
 
-#[async_trait::async_trait]
-impl NodeExecutionRuntimeGateway for TauriNodeExecutionLifecycleGateway {
-    async fn close_runtime_on_node_done(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError> {
-        self.runtime
-            .close_session(session_id)
-            .await
-            .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
-    }
-}
-
-pub(crate) async fn release_node_runtime_on_done(
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    session_id: &str,
-) {
-    let runtime_gateway = TauriNodeExecutionRuntimeGateway {
-        runtime: runtime.as_ref(),
-    };
-    release_node_runtime_on_done_with_gateways(&runtime_gateway, session_id).await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,18 +101,6 @@ mod tests {
 
     use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState};
     use crate::usecase::agent_session::status::TurnPhase;
-
-    async fn release_node_runtime_on_done_state<F, Fut>(close_runtime: F)
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<(), NodeExecutionLifecycleError>>,
-    {
-        if let Err(_e) = close_runtime().await {
-            log::warn!(
-                "workflow_node_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
-            );
-        }
-    }
 
     fn runtime_for_test() -> Arc<AgentSessionRuntimeUsecase> {
         let data_dir =
@@ -176,20 +121,6 @@ mod tests {
         runtime
             .insert_runtime_state_for_test(session_id, phase, queued)
             .await;
-    }
-
-    async fn release_on_node_done_for_test(
-        runtime: &Arc<AgentSessionRuntimeUsecase>,
-        session_id: &str,
-    ) {
-        release_node_runtime_on_done_state(|| async {
-            runtime
-                .force_close_session(session_id)
-                .await
-                .map_err(|error| NodeExecutionLifecycleError::AgentSession(error.to_string()))?;
-            Ok(())
-        })
-        .await;
     }
 
     fn workflow_node_session_for_test(
@@ -335,107 +266,6 @@ mod tests {
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.updated_at, updated_at);
-    }
-
-    #[tokio::test]
-    async fn release_on_node_done_releases_runtime_without_closing_node() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = crate::test_support::build_session_store();
-        let open_tabs = OpenTabRegistry::default();
-        let handles = runtime_for_test();
-        let session_id = uuid::Uuid::new_v4().to_string();
-
-        session_store
-            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
-            .unwrap();
-        open_tabs.add(&session_id);
-        insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
-
-        release_on_node_done_for_test(&handles, &session_id).await;
-
-        assert!(!handles.has_live_runtime(&session_id).await);
-        assert!(open_tabs.contains(&session_id));
-        let session = session_store
-            .load_full_session_for_restore(tmp.path(), &session_id)
-            .unwrap()
-            .expect("node history session remains");
-        assert_eq!(session.state, SessionState::Idle);
-        assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
-        assert_eq!(session.messages.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn release_on_node_done_releases_runtime_when_tab_already_closed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = crate::test_support::build_session_store();
-        let open_tabs = OpenTabRegistry::default();
-        let handles = runtime_for_test();
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let mut session = workflow_node_session_for_test(&session_id);
-        session.state = SessionState::Closed;
-
-        session_store
-            .save_full_session_for_restore(tmp.path(), &session)
-            .unwrap();
-        insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
-
-        release_on_node_done_for_test(&handles, &session_id).await;
-
-        assert!(!handles.has_live_runtime(&session_id).await);
-        assert!(!open_tabs.contains(&session_id));
-        let session = session_store
-            .load_full_session_for_restore(tmp.path(), &session_id)
-            .unwrap()
-            .expect("node history session remains");
-        assert_eq!(session.state, SessionState::Closed);
-        assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
-        assert_eq!(session.messages.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn release_on_node_done_releases_busy_runtime_without_closing_node() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = crate::test_support::build_session_store();
-        let open_tabs = OpenTabRegistry::default();
-        let handles = runtime_for_test();
-        let session_id = uuid::Uuid::new_v4().to_string();
-
-        session_store
-            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
-            .unwrap();
-        open_tabs.add(&session_id);
-        insert_runtime(&handles, &session_id, TurnPhase::Idle, true).await;
-
-        release_on_node_done_for_test(&handles, &session_id).await;
-
-        assert!(!handles.has_live_runtime(&session_id).await);
-        assert!(open_tabs.contains(&session_id));
-        let session = session_store
-            .load_full_session_for_restore(tmp.path(), &session_id)
-            .unwrap()
-            .expect("node history session remains");
-        assert_eq!(session.state, SessionState::Idle);
-    }
-
-    #[tokio::test]
-    async fn release_and_tab_close_converge_to_closed_runtime_and_tab() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = crate::test_support::build_session_store();
-        let open_tabs = OpenTabRegistry::default();
-        let handles = runtime_for_test();
-        let session_id = uuid::Uuid::new_v4().to_string();
-
-        session_store
-            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
-            .unwrap();
-        open_tabs.add(&session_id);
-        insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
-
-        release_on_node_done_for_test(&handles, &session_id).await;
-        try_close_node_session_tab_state(Some(&open_tabs), &session_id);
-
-        assert!(!handles.has_live_runtime(&session_id).await);
-        assert!(!open_tabs.contains(&session_id));
     }
 
     // R4-01: Spec「runtime 起動中の node を再オープンしても runtime 状態は変化しない」

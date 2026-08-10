@@ -469,6 +469,7 @@ mod tests {
                 token_usage: None,
                 failure: None,
                 fanout_parent: None,
+                completion_signals: Default::default(),
                 started_at: 1.0,
                 completed_at: None,
             }],

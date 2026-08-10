@@ -66,6 +66,8 @@ fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseす�
             execution_id,
             "--node",
             "review",
+            "--node-execution",
+            "550e8400-e29b-41d4-a716-446655440001",
             "--type",
             "review-verdict",
             "--json",
@@ -112,6 +114,39 @@ fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseす�
 }
 
 #[test]
+fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_artifact() {
+    let execution_id = "550e8400-e29b-41d4-a716-446655440000";
+    let node_execution_id = "550e8400-e29b-41d4-a716-446655440001";
+
+    assert!(Cli::try_parse_from([
+        "releash",
+        "workflow",
+        "output",
+        "submit",
+        execution_id,
+        "--node",
+        "review",
+        "--node-execution",
+        node_execution_id,
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "releash",
+        "workflow",
+        "output",
+        "submit",
+        execution_id,
+        "--node",
+        "review",
+        "--node-execution",
+        node_execution_id,
+        "--type",
+        "review-verdict",
+    ])
+    .is_err());
+}
+
+#[test]
 fn test_workflow_output_submit_実行中アプリを要求する() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(10);
@@ -121,8 +156,8 @@ fn test_workflow_output_submit_実行中アプリを要求する() {
         temp.path(),
         &execution_id,
         "review",
-        Some("node-execution-review".to_string()),
-        "review-verdict",
+        "550e8400-e29b-41d4-a716-446655440001".to_string(),
+        Some("review-verdict"),
         Some(r#"{"verdict":"LGTM"}"#.to_string()),
         None,
     )

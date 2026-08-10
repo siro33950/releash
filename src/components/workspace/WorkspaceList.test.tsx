@@ -114,7 +114,7 @@ const directNode: WorkspaceTreeItem = {
 	title: "Direct session",
 	status: "running",
 	contentKind: "session",
-	capabilities: { canApprove: false, canClose: true },
+	capabilities: { canApprove: false, canRetry: false, canClose: true },
 	updatedAt: 1,
 };
 
@@ -150,7 +150,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				title: "Prepare",
 				status: "completed",
 				contentKind: "session",
-				capabilities: { canApprove: false, canClose: false },
+				capabilities: { canApprove: false, canRetry: false, canClose: false },
 				updatedAt: 3,
 			},
 			{
@@ -166,7 +166,11 @@ const recursiveTree: WorkspaceTreeItem[] = [
 						title: "Architecture review",
 						status: "running",
 						contentKind: "command",
-						capabilities: { canApprove: false, canClose: false },
+						capabilities: {
+							canApprove: false,
+							canRetry: false,
+							canClose: false,
+						},
 						updatedAt: 5,
 					},
 				],
@@ -1127,7 +1131,7 @@ describe("WorkspaceList", () => {
 			title: "A",
 			status: "completed",
 			contentKind: "session",
-			capabilities: { canApprove: false, canClose: false },
+			capabilities: { canApprove: false, canRetry: false, canClose: false },
 			updatedAt: 1,
 		};
 		const occurrenceB: WorkspaceTreeItem = {

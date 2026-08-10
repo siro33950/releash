@@ -1,6 +1,5 @@
 //! Start command admission and domain validation mapping.
 
-use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_definition_to_domain;
 use crate::domain::workflow as domain;
 use crate::domain::workflow::WorkflowDefinition;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
@@ -8,9 +7,8 @@ use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 pub(crate) fn validate_workflow_shape(
     workflow: &WorkflowDefinition,
 ) -> Result<(), WorkflowRuntimeError> {
-    let definition = workflow_definition_to_domain(workflow);
-    domain::validation::validate_workflow_shape(&definition)
-        .map_err(|err| domain_validation_to_runtime_error(err, &definition))
+    domain::validation::validate_workflow_shape(workflow)
+        .map_err(|err| domain_validation_to_runtime_error(err, workflow))
 }
 
 pub(crate) fn validate_start(
@@ -38,6 +36,7 @@ fn domain_validation_to_runtime_error(
             WorkflowRuntimeError::InvalidWorkflow(message)
         }
         domain::WorkflowError::InvalidState(message) => WorkflowRuntimeError::InvalidState(message),
+        domain::WorkflowError::Conflict(message) => WorkflowRuntimeError::Conflict(message),
         domain::WorkflowError::UnauthorizedApprovalTarget(message) => {
             WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
         }

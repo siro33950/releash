@@ -277,10 +277,12 @@ impl AgentStatusCenter {
         use crate::domain::workflow::RuntimeExecutionState;
         match state {
             RuntimeExecutionState::Running => Some(AgentState::Running),
+            #[cfg(test)]
             RuntimeExecutionState::WaitingApproval => Some(AgentState::Waiting),
-            RuntimeExecutionState::Failed { .. } => Some(AgentState::Error),
             RuntimeExecutionState::Completed => Some(AgentState::Done),
-            RuntimeExecutionState::Aborted | RuntimeExecutionState::Interrupted => None,
+            RuntimeExecutionState::Aborted => None,
+            #[cfg(test)]
+            RuntimeExecutionState::Interrupted => None,
         }
     }
 
@@ -2201,16 +2203,6 @@ mod tests {
                 &RuntimeExecutionState::WaitingApproval
             ),
             Some(AgentState::Waiting)
-        );
-        assert_eq!(
-            AgentStatusCenter::workflow_execution_status_to_agent_state(
-                &RuntimeExecutionState::Failed {
-                    reason: "boom".into(),
-                    kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                    retry_count: None,
-                }
-            ),
-            Some(AgentState::Error)
         );
         assert_eq!(
             AgentStatusCenter::workflow_execution_status_to_agent_state(

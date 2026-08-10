@@ -177,3 +177,20 @@ export async function approveWorkspaceNode({
 		nodeId,
 	});
 }
+
+export async function retryWorkspaceNode({
+	worktreePath,
+	nodeId,
+}: {
+	worktreePath: string;
+	nodeId: string;
+}): Promise<WorkspaceNodeDetail | null> {
+	await invoke("retry_workspace_node", { worktreePath, nodeId });
+	window.dispatchEvent(
+		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
+	);
+	return invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
+		worktreePath,
+		nodeId,
+	});
+}

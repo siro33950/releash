@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use futures_util::future::{BoxFuture, FutureExt, Shared};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{AgentSessionOrigin, ManagedPtyPresence};
 use crate::domain::agent_session::repository::VersionedProviderAgentSession;
@@ -42,6 +42,7 @@ pub(crate) struct ProviderAgentWorkflowSessionLaunchRequest {
     pub(crate) provider: ProviderKind,
     pub(crate) workflow_execution_id: String,
     pub(crate) node_execution_id: String,
+    pub(crate) initial_instruction: String,
     pub(crate) rows: u16,
     pub(crate) cols: u16,
     pub(crate) caller_request_id: String,
@@ -147,6 +148,21 @@ pub(crate) struct ProviderAgentSessionLaunchUsecase {
     history: Arc<dyn ProviderAgentSessionHistoryGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
+    pending_workflow_launches: Mutex<HashMap<String, PreparedProviderAgentLaunch>>,
+}
+
+struct PreparedProviderAgentLaunch {
+    durable: DurableProviderAgentLaunch,
+    prepared: crate::domain::agent_session::PreparedProviderLaunch,
+    rows: u16,
+    cols: u16,
+    caller_request_id: String,
+}
+
+struct DurableProviderAgentLaunch {
+    operation: OwnedMutexGuard<()>,
+    created: VersionedProviderAgentSession,
+    armed: ArmedProviderLifecycle,
 }
 
 impl ProviderAgentSessionLaunchUsecase {
@@ -168,6 +184,7 @@ impl ProviderAgentSessionLaunchUsecase {
             history,
             hook_health,
             standalone_requests: Mutex::new(StandaloneLaunchRequestRegistry::default()),
+            pending_workflow_launches: Mutex::new(HashMap::new()),
         }
     }
 
@@ -220,15 +237,18 @@ impl ProviderAgentSessionLaunchUsecase {
         request: ProviderAgentSessionLaunchRequest,
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
-        self.launch_new_session(
-            agent_session_id,
-            request,
-            Ok(AgentSessionOrigin::Standalone),
-        )
-        .await
+        let pending = self
+            .prepare_new_session(
+                agent_session_id,
+                request,
+                Ok(AgentSessionOrigin::Standalone),
+                ProviderSessionLaunch::New,
+            )
+            .await?;
+        self.spawn_prepared(pending).await
     }
 
-    pub(crate) async fn launch_workflow_node(
+    pub(crate) async fn prepare_workflow_node(
         &self,
         request: ProviderAgentWorkflowSessionLaunchRequest,
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
@@ -238,34 +258,64 @@ impl ProviderAgentSessionLaunchUsecase {
         )
         .map_err(|_| ProviderAgentSessionLaunchUsecaseError::InvalidInput);
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
-        self.launch_new_session(
-            agent_session_id,
-            ProviderAgentSessionLaunchRequest {
-                workspace: request.workspace,
-                worktree_path: request.worktree_path,
-                provider: request.provider,
-                rows: request.rows,
-                cols: request.cols,
-                caller_request_id: request.caller_request_id,
-            },
-            origin,
-        )
-        .await
+        let launch =
+            ProviderSessionLaunch::new_with_initial_instruction(request.initial_instruction)
+                .map_err(|_| ProviderAgentSessionLaunchUsecaseError::InvalidInput)?;
+        let pending = self
+            .prepare_new_session(
+                agent_session_id.clone(),
+                ProviderAgentSessionLaunchRequest {
+                    workspace: request.workspace,
+                    worktree_path: request.worktree_path,
+                    provider: request.provider,
+                    rows: request.rows,
+                    cols: request.cols,
+                    caller_request_id: request.caller_request_id,
+                },
+                origin,
+                launch,
+            )
+            .await?;
+        let created = pending.durable.created.clone();
+        if self
+            .pending_workflow_launches
+            .lock()
+            .await
+            .insert(agent_session_id, pending)
+            .is_some()
+        {
+            return Err(ProviderAgentSessionLaunchUsecaseError::Corrupt);
+        }
+        Ok(created)
     }
 
-    async fn launch_new_session(
+    pub(crate) async fn activate_workflow_node(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
+        let pending = self
+            .pending_workflow_launches
+            .lock()
+            .await
+            .remove(agent_session_id)
+            .ok_or(ProviderAgentSessionLaunchUsecaseError::InvalidInput)?;
+        self.spawn_prepared(pending).await
+    }
+
+    async fn prepare_new_session(
         &self,
         agent_session_id: String,
         request: ProviderAgentSessionLaunchRequest,
         origin: Result<AgentSessionOrigin, ProviderAgentSessionLaunchUsecaseError>,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
+        launch: ProviderSessionLaunch,
+    ) -> Result<PreparedProviderAgentLaunch, ProviderAgentSessionLaunchUsecaseError> {
         let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::AvailabilityAndLock,
         );
         if !self.availability.is_available(request.provider) {
             return Err(ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable);
         }
-        let _operation = self
+        let operation = self
             .sessions
             .lock_operation(&agent_session_id)
             .await
@@ -290,6 +340,7 @@ impl ProviderAgentSessionLaunchUsecase {
                             worktree_path: request.worktree_path.clone(),
                             provider: request.provider,
                             origin,
+                            admit_initial_instruction: launch.initial_instruction().is_some(),
                         },
                         lifecycle_events,
                         &request.caller_request_id,
@@ -299,12 +350,17 @@ impl ProviderAgentSessionLaunchUsecase {
             })
             .await?;
         durable_create.finish();
-        self.spawn_newly_created(
+        let durable = DurableProviderAgentLaunch {
+            operation,
             created,
             armed,
+        };
+        self.prepare_newly_created(
+            durable,
             request.rows,
             request.cols,
             &request.caller_request_id,
+            launch,
         )
         .await
     }
@@ -314,11 +370,12 @@ impl ProviderAgentSessionLaunchUsecase {
         agent_session_id: &str,
         caller_request_id: &str,
     ) -> Result<(), ProviderAgentSessionLaunchUsecaseError> {
-        let _operation = self
-            .sessions
-            .lock_operation(agent_session_id)
+        let _pending = self
+            .pending_workflow_launches
+            .lock()
             .await
-            .map_err(map_session_error)?;
+            .remove(agent_session_id)
+            .ok_or(ProviderAgentSessionLaunchUsecaseError::InvalidInput)?;
         let session = self
             .sessions
             .find(agent_session_id)
@@ -362,27 +419,27 @@ impl ProviderAgentSessionLaunchUsecase {
         Ok(())
     }
 
-    async fn spawn_newly_created(
+    async fn prepare_newly_created(
         &self,
-        created: VersionedProviderAgentSession,
-        armed: ArmedProviderLifecycle,
+        durable: DurableProviderAgentLaunch,
         rows: u16,
         cols: u16,
         caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
+        launch: ProviderSessionLaunch,
+    ) -> Result<PreparedProviderAgentLaunch, ProviderAgentSessionLaunchUsecaseError> {
         let launch_file_materialize = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::LaunchFileMaterialize,
         );
         let prepared = match self
             .launch_gateway
-            .prepare(&armed, ProviderSessionLaunch::New)
+            .prepare(&durable.armed, launch)
             .map_err(map_launch_error)
         {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.rollback_failed_new_launch_preserving_cause(
-                    &created,
-                    &armed,
+                    &durable.created,
+                    &durable.armed,
                     caller_request_id,
                 )
                 .await;
@@ -390,6 +447,31 @@ impl ProviderAgentSessionLaunchUsecase {
             }
         };
         launch_file_materialize.finish();
+        Ok(PreparedProviderAgentLaunch {
+            durable,
+            prepared,
+            rows,
+            cols,
+            caller_request_id: caller_request_id.to_string(),
+        })
+    }
+
+    async fn spawn_prepared(
+        &self,
+        pending: PreparedProviderAgentLaunch,
+    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionLaunchUsecaseError> {
+        let PreparedProviderAgentLaunch {
+            durable,
+            prepared,
+            rows,
+            cols,
+            caller_request_id,
+        } = pending;
+        let DurableProviderAgentLaunch {
+            operation: _operation,
+            created,
+            armed,
+        } = durable;
         let initial_hook_warning = prepared.initial_hook_warning();
         if self
             .terminal
@@ -402,7 +484,7 @@ impl ProviderAgentSessionLaunchUsecase {
             )
             .is_err()
         {
-            self.rollback_failed_new_launch_preserving_cause(&created, &armed, caller_request_id)
+            self.rollback_failed_new_launch_preserving_cause(&created, &armed, &caller_request_id)
                 .await;
             return Err(ProviderAgentSessionLaunchUsecaseError::TerminalUnavailable);
         }
@@ -410,7 +492,7 @@ impl ProviderAgentSessionLaunchUsecase {
             created.session().provider(),
             armed.slot_id().as_str(),
             initial_hook_warning,
-            caller_request_id,
+            &caller_request_id,
         );
         Ok(created)
     }

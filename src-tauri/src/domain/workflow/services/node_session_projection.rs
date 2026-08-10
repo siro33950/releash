@@ -123,21 +123,6 @@ pub fn collect_node_session_ids(state: &WorkflowRuntimeSnapshot) -> HashSet<Stri
         .collect::<HashSet<_>>()
 }
 
-pub fn collect_terminal_node_session_ids(state: &WorkflowRuntimeSnapshot) -> Vec<String> {
-    let mut ids = Vec::new();
-    ids.extend(state.current_session_id.iter().cloned());
-    ids.extend(
-        state
-            .node_executions
-            .iter()
-            .filter(|execution| execution.status.is_active())
-            .filter_map(|execution| execution.session_id.clone()),
-    );
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +196,7 @@ mod tests {
                     item_index: None,
                     child_index: 0,
                 }),
+                completion_signals: Default::default(),
                 started_at: 1.5,
                 completed_at: None,
             }],
@@ -240,13 +226,6 @@ mod tests {
         assert_eq!(fanout.progress, NodeProgress::Running);
         assert_eq!(fanout.representative, RepresentativeStatus::Running);
         assert_eq!(fanout.order, 0);
-    }
-
-    #[test]
-    fn terminal_node_session_ids_use_current_and_active_node_executions() {
-        let ids = collect_terminal_node_session_ids(&state());
-
-        assert_eq!(ids, vec!["current-session", "fanout-session"]);
     }
 
     #[test]

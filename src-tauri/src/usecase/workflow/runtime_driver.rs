@@ -12,8 +12,79 @@
 //! Concrete event stores, agent runtimes, process handles, and notification
 //! transports implement the closures/ports consumed here.
 
+use crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision;
 use crate::domain::workflow::entities::workflow_execution::{TransitionOutcome, WorkflowExecution};
 use crate::domain::workflow::WorkflowEvent;
+use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
+
+pub(crate) enum NodeOutcome {
+    Persist(RuntimeCommitSnapshot),
+    RetryCurrentNode(RuntimeCommitSnapshot),
+    TransitionAndStart(RuntimeCommitSnapshot),
+    StartFanout(RuntimeCommitSnapshot),
+}
+
+impl NodeOutcome {
+    pub(crate) fn snapshot(&self) -> &RuntimeCommitSnapshot {
+        match self {
+            Self::Persist(snapshot)
+            | Self::RetryCurrentNode(snapshot)
+            | Self::TransitionAndStart(snapshot)
+            | Self::StartFanout(snapshot) => snapshot,
+        }
+    }
+
+    pub(crate) fn snapshot_mut(&mut self) -> &mut RuntimeCommitSnapshot {
+        match self {
+            Self::Persist(snapshot)
+            | Self::RetryCurrentNode(snapshot)
+            | Self::TransitionAndStart(snapshot)
+            | Self::StartFanout(snapshot) => snapshot,
+        }
+    }
+}
+
+pub(crate) fn make_node_history_entry(
+    execution: &mut WorkflowExecution,
+    result: Option<String>,
+    artifact: Option<serde_json::Value>,
+    contract: Option<String>,
+    timestamp: f64,
+) -> crate::domain::workflow::NodeHistoryEntry {
+    execution.make_node_history_entry_at(result, artifact, contract, timestamp)
+}
+
+pub(crate) fn apply_advance(
+    execution: &mut WorkflowExecution,
+    next_node_execution_id: String,
+    timestamp: f64,
+) -> Result<NodeOutcome, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
+    let decision = execution
+        .apply_advance_at(next_node_execution_id, timestamp)
+        .map_err(|error| {
+            crate::usecase::workflow::runtime_error::WorkflowRuntimeError::InvalidState(
+                error.to_string(),
+            )
+        })?;
+    let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
+    Ok(match decision {
+        ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
+        ExecutionAdvanceDecision::TransitionAndStart => NodeOutcome::TransitionAndStart(snapshot),
+        ExecutionAdvanceDecision::StartFanout => NodeOutcome::StartFanout(snapshot),
+    })
+}
+
+pub(crate) fn node_outcome_from_advance(
+    execution: &WorkflowExecution,
+    decision: ExecutionAdvanceDecision,
+) -> Result<NodeOutcome, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
+    let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
+    Ok(match decision {
+        ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
+        ExecutionAdvanceDecision::TransitionAndStart => NodeOutcome::TransitionAndStart(snapshot),
+        ExecutionAdvanceDecision::StartFanout => NodeOutcome::StartFanout(snapshot),
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkflowRuntimeEffect {
@@ -80,7 +151,7 @@ impl PreparedWorkflowTransaction {
     ///
     /// This is used during migration of legacy callers: mutation validity still
     /// comes exclusively from aggregate methods, while this use-case takes over
-    /// the durable commit/rollback boundary.
+    /// the durable commit and publication boundary.
     pub(crate) fn capture_applied(
         before: WorkflowExecution,
         after: WorkflowExecution,
@@ -116,8 +187,8 @@ impl PreparedWorkflowTransaction {
         &self.decision.events
     }
 
-    /// Persists canonical facts and atomically publishes or rolls back the
-    /// aggregate candidate. Effects stay inaccessible until this succeeds.
+    /// Persists canonical facts and publishes the aggregate candidate only
+    /// after persistence succeeds. Effects stay inaccessible until then.
     pub(crate) fn persist<E, P>(
         self,
         current: &mut WorkflowExecution,
@@ -126,13 +197,11 @@ impl PreparedWorkflowTransaction {
     where
         P: FnOnce(&[WorkflowEvent]) -> Result<(), E>,
     {
-        if current != &self.after {
+        if current != &self.before {
             return Err(WorkflowTransactionCommitError::StaleCandidate);
         }
-        if let Err(error) = persist(self.events()) {
-            *current = self.before;
-            return Err(WorkflowTransactionCommitError::Persistence(error));
-        }
+        persist(self.events()).map_err(WorkflowTransactionCommitError::Persistence)?;
+        *current = self.after;
         Ok(DurableWorkflowTransaction {
             #[cfg(test)]
             outcome: self.decision.outcome,
@@ -174,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_failure_restores_exact_aggregate_and_releases_no_effects() {
+    fn persistence_failure_keeps_exact_pre_commit_aggregate_and_releases_no_effects() {
         let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
         let before = live.clone();
         let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
@@ -186,8 +255,6 @@ mod tests {
             })
         })
         .unwrap();
-        live.stop();
-
         let result = prepared.persist(&mut live, |_| Err("disk"));
 
         assert!(matches!(
@@ -209,8 +276,6 @@ mod tests {
             })
         })
         .unwrap();
-        live.stop();
-
         let durable = prepared.persist(&mut live, |_| Ok::<_, ()>(())).unwrap();
 
         assert_eq!(durable.outcome(), TransitionOutcome::Applied);

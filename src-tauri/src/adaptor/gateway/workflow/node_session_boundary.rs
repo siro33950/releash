@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::execution_store::ExecutionStore;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
-use crate::adaptor::gateway::workflow::workflow_host::runtime_events as workflow_runtime_events;
 use crate::adaptor::gateway::workflow::workflow_host::runtime_session as workflow_runtime_session;
 use crate::domain::agent_session::ProviderAvailabilityGateway;
 use crate::domain::provider_lifecycle::ProviderKind;
@@ -12,18 +11,26 @@ use crate::usecase::agent_session::{
     ProviderAgentWorkflowSessionLaunchRequest,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
+use crate::usecase::workflow::runtime_events as workflow_runtime_events;
 
 #[async_trait::async_trait]
 pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
     fn is_provider_available(&self, provider: ProviderKind) -> bool;
 
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
         provider: ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError>;
+
+    async fn activate_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
 
     async fn dispatch_initial_instruction(
         &self,
@@ -65,21 +72,23 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
         self.availability.is_available(provider)
     }
 
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
         provider: ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         let launched = self
             .launch
-            .launch_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
+            .prepare_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
                 workspace: WorkspaceIdentity::new(worktree_path),
                 worktree_path: worktree_path.to_string(),
                 provider,
                 workflow_execution_id: workflow_execution_id.to_string(),
                 node_execution_id: node_execution_id.to_string(),
+                initial_instruction: initial_instruction.to_string(),
                 rows: 24,
                 cols: 80,
                 caller_request_id: format!("workflow-node-launch-{node_execution_id}"),
@@ -93,6 +102,22 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
         Ok(NodeSessionInfo {
             id: launched.session().id().to_string(),
         })
+    }
+
+    async fn activate_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.launch
+            .activate_workflow_node(node_session_id)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "activate Workflow AgentSession '{node_session_id}': {error:?}"
+                ))
+            })?;
+        Ok(())
     }
 
     async fn dispatch_initial_instruction(
@@ -137,19 +162,19 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
 
 #[async_trait::async_trait]
 pub(crate) trait NodeSessionDeps: Send + Sync {
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
         provider: ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError>;
 
-    async fn dispatch_initial_instruction(
+    async fn activate_workflow_agent_session(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
-        instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
     async fn rollback_workflow_agent_session(
@@ -179,31 +204,32 @@ pub(crate) struct RealNodeSessionDeps<'a, R: tauri::Runtime> {
 
 #[async_trait::async_trait]
 impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
-    async fn launch_workflow_agent_session(
+    async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
         provider: ProviderKind,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         self.agent_sessions
-            .launch_workflow_agent_session(
+            .prepare_workflow_agent_session(
                 worktree_path,
                 provider,
                 workflow_execution_id,
                 node_execution_id,
+                initial_instruction,
             )
             .await
     }
 
-    async fn dispatch_initial_instruction(
+    async fn activate_workflow_agent_session(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
-        instruction: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         self.agent_sessions
-            .dispatch_initial_instruction(node_session_id, node_execution_id, instruction)
+            .activate_workflow_agent_session(node_session_id, node_execution_id)
             .await
     }
 

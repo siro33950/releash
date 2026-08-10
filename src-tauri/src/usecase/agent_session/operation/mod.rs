@@ -68,9 +68,10 @@ pub(crate) use recovery::{
 pub(crate) use runtime_adapter::{
     CanonicalSendCommandCodec, DecodedSendCommand, DecodedSendTarget,
 };
+#[cfg(test)]
+pub(crate) use runtime_drivers::bind_runtime_durable_workflow_send_driver;
 pub(crate) use runtime_drivers::{
-    bind_runtime_durable_stop_driver, bind_runtime_durable_workflow_send_driver,
-    bind_runtime_terminal_operation_participant_provider,
+    bind_runtime_durable_stop_driver, bind_runtime_terminal_operation_participant_provider,
 };
 pub(crate) use send::{
     AcceptedSendOperation, AgentSendOperationUsecase, GetSendOperationError,

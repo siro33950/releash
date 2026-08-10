@@ -66,7 +66,6 @@ fn execution_status_name(status: ExecutionStatusView) -> &'static str {
         ExecutionStatusView::WaitingApproval => "waiting_approval",
         ExecutionStatusView::Interrupted => "interrupted",
         ExecutionStatusView::Completed => "completed",
-        ExecutionStatusView::Failed => "failed",
         ExecutionStatusView::Aborted => "aborted",
     }
 }

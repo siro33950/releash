@@ -65,17 +65,20 @@ pub use send_operation_policy::{
     accepted_queued_effect_has_durable_identity, accepted_queued_effect_identity_is_consistent,
     accepted_queued_effect_matches, accepted_queued_effect_reservation_conflicts,
     accepted_queued_effect_should_retain, accepted_send_artifact_digest, accepted_send_retry_delay,
-    accepted_send_target_matches, accepted_worktree_matches, admit_workflow_send_target,
-    allocate_next_turn_identity, decide_accepted_queued_effect_queue, decide_runtime_turn_recovery,
-    durable_workflow_turn_operation_id, queue_item_identity_matches,
+    accepted_send_target_matches, accepted_worktree_matches, allocate_next_turn_identity,
+    decide_accepted_queued_effect_queue, decide_runtime_turn_recovery, queue_item_identity_matches,
     queued_effect_remains_unstarted, turn_identity_advances, turn_preclaim_failure_disposition,
-    validate_accepted_effect_runtime_identity, workflow_send_receipt_matches,
-    workflow_send_should_retry, workflow_turn_principal_is_authorized,
+    validate_accepted_effect_runtime_identity, workflow_turn_principal_is_authorized,
     AcceptedEffectExecutionIdentity, AcceptedEffectIdentityRejection, AcceptedQueuedEffectIdentity,
     AcceptedQueuedEffectQueueDecision, AcceptedSendTarget, CanonicalQueuedEffectIdentity,
     ReservedTurnIdentity, RuntimeTurnRecoveryDecision, TurnIdentityAllocationError,
-    TurnPreclaimFailureDisposition, WorkflowSendTargetRejection,
-    INTERNAL_WORKFLOW_OPERATION_PRINCIPAL, WORKFLOW_SEND_RETRY_ATTEMPTS,
+    TurnPreclaimFailureDisposition,
+};
+#[cfg(test)]
+pub use send_operation_policy::{
+    admit_workflow_send_target, durable_workflow_turn_operation_id, workflow_send_receipt_matches,
+    workflow_send_should_retry, WorkflowSendTargetRejection, INTERNAL_WORKFLOW_OPERATION_PRINCIPAL,
+    WORKFLOW_SEND_RETRY_ATTEMPTS,
 };
 #[cfg(test)]
 pub use session_metadata_policy::should_apply_session_configuration;

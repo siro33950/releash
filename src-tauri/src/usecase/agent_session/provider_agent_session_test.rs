@@ -1440,7 +1440,8 @@ async fn test_provider_agent_session_usecase_gcはpty不在確定時だけunknow
 }
 
 #[tokio::test]
-async fn test_provider_agent_workflow_session_launch_node所有sessionをprovider_tuiで起動する() {
+async fn test_provider_agent_workflow_session_launch_workflow関連付け後に初回指示付きprovider_tuiを起動する(
+) {
     let directory = tempfile::tempdir().unwrap();
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
@@ -1475,12 +1476,13 @@ async fn test_provider_agent_workflow_session_launch_node所有sessionをprovide
     );
 
     let launched = usecase
-        .launch_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
+        .prepare_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
             workflow_execution_id: "workflow-1".to_string(),
             node_execution_id: "node-1".to_string(),
+            initial_instruction: "Implement the workflow node.".to_string(),
             rows: 24,
             cols: 80,
             caller_request_id: "workflow-launch-1".to_string(),
@@ -1494,8 +1496,18 @@ async fn test_provider_agent_workflow_session_launch_node所有sessionをprovide
     );
     assert_eq!(
         launch_gateway.launches.lock().unwrap().as_slice(),
-        &[ProviderSessionLaunch::New]
+        &[
+            ProviderSessionLaunch::new_with_initial_instruction("Implement the workflow node.")
+                .unwrap()
+        ]
     );
+    assert!(launched.session().initial_instruction_admitted());
+    assert!(terminal.spawns.lock().unwrap().is_empty());
+
+    usecase
+        .activate_workflow_node(launched.session().id())
+        .await
+        .unwrap();
     assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
 }
 
@@ -1618,7 +1630,7 @@ async fn test_provider_agent_session_launch_rollbackのterminal削除失敗で�
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &[expected_id.clone()]
+        std::slice::from_ref(&expected_id)
     );
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
 }

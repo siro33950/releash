@@ -58,6 +58,42 @@ pub fn workflow_fact(
             session_id: session_id.clone(),
             timestamp: *timestamp,
         },
+        E::NodeExecutionSubmitReceived {
+            execution_id,
+            node_execution_id,
+            timestamp,
+        } => F::NodeSubmitReceived {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            timestamp: *timestamp,
+        },
+        E::NodeExecutionStopReceived {
+            execution_id,
+            node_execution_id,
+            timestamp,
+        } => F::NodeStopReceived {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            timestamp: *timestamp,
+        },
+        E::NodeExecutionPaused {
+            execution_id,
+            node_execution_id,
+            timestamp,
+        } => F::NodePaused {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            timestamp: *timestamp,
+        },
+        E::NodeExecutionResumed {
+            execution_id,
+            node_execution_id,
+            timestamp,
+        } => F::NodeResumed {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            timestamp: *timestamp,
+        },
         E::NodeExecutionCommandPrepared {
             execution_id,
             node_execution_id,
@@ -79,7 +115,7 @@ pub fn workflow_fact(
             let result = serde_json::from_str::<serde_json::Value>(value.as_str())
                 .ok()
                 .and_then(|value| command_result_from_value(&value));
-            F::NodeCommandResult {
+            F::NodeArtifactProduced {
                 execution_id: execution_id.clone(),
                 node_execution_id: node_execution_id.clone(),
                 result,
@@ -208,7 +244,7 @@ pub fn runtime_snapshot_nodes(
             });
         }
         if let Some(value) = &node.artifact {
-            facts.push(F::NodeCommandResult {
+            facts.push(F::NodeArtifactProduced {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
                 result: command_result_from_value(value),
@@ -216,7 +252,7 @@ pub fn runtime_snapshot_nodes(
             });
         }
         match node.status {
-            S::Running => {}
+            S::Running | S::Paused => {}
             S::WaitingApproval => facts.push(F::NodeApprovalRequested {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
@@ -260,12 +296,42 @@ pub fn runtime_snapshot_nodes(
     });
     let mut tree = WorkspaceTree::empty(workspace_identity);
     WorkspaceTreeProjector::project(&mut tree, facts).map_err(|error| error.to_string())?;
-    Ok(tree
+    let mut projected = tree
         .nodes()
         .iter()
         .filter(|node| node.execution_id.as_deref() == Some(execution_id))
         .cloned()
-        .collect())
+        .collect::<Vec<_>>();
+    for node in &mut projected {
+        let Some(node_execution_id) = node.node_execution_id.as_deref() else {
+            continue;
+        };
+        let Some(runtime) = node_executions
+            .iter()
+            .find(|runtime| runtime.id == node_execution_id)
+        else {
+            continue;
+        };
+        node.completion_signals = runtime.completion_signals;
+        node.has_artifact = runtime.artifact.is_some();
+        node.can_retry = runtime.can_retry()
+            && node_executions.iter().all(|candidate| {
+                !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
+            })
+            && (runtime.fanout_parent.is_some()
+                || execution.current_node.as_deref() == Some(runtime.node_name.as_str()));
+        if runtime.status == S::Paused {
+            node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
+        }
+    }
+    Ok(projected)
+}
+
+fn same_retry_target(
+    left: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
+    right: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
+) -> bool {
+    left.node_name == right.node_name && left.fanout_parent == right.fanout_parent
 }
 
 #[cfg(test)]
@@ -276,8 +342,8 @@ mod tests {
         RuntimeNodeExecution, RuntimeNodeExecutionFailure, RuntimeNodeExecutionStatus,
     };
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, NodeDefinition, NodeExecutionFailureKind, NodeKindName,
-        TokenUsage, WorkflowDefinition,
+        ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition,
+        NodeExecutionFailureKind, NodeKindName, TokenUsage, WorkflowDefinition,
     };
     use crate::domain::workspace_tree::WorkspaceNodeStatus;
 
@@ -302,6 +368,7 @@ mod tests {
             token_usage: None,
             failure: None,
             fanout_parent: None,
+            completion_signals: NodeCompletionSignalState::Pending,
             started_at: 2.0,
             completed_at: None,
         }
@@ -384,12 +451,63 @@ mod tests {
     }
 
     #[test]
+    fn runtime_snapshot_projects_completion_wait_and_retry_from_the_current_attempt() {
+        let mut waiting = node(
+            "waiting-submit",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Running,
+        );
+        waiting.kind = NodeKindName::Session;
+        waiting.display_command = None;
+        waiting.completion_signals = NodeCompletionSignalState::SubmitReceived;
+        waiting.artifact = Some(serde_json::json!({"result": "ready"}));
+        let definition = WorkflowDefinition {
+            name: "workflow".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "test".to_string(),
+                ..NodeDefinition::default()
+            }],
+            ..WorkflowDefinition::default()
+        };
+        let execution = execution();
+
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &definition,
+            node_executions: &[waiting],
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+        })
+        .unwrap();
+
+        let waiting = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("waiting-submit"))
+            .unwrap();
+        assert_eq!(
+            waiting.completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+        assert!(waiting.has_artifact);
+        assert!(waiting.can_retry);
+    }
+
+    #[test]
     fn started_nodes_keep_every_execution_status() {
         let cases = [
             (
                 "running",
                 RuntimeNodeExecutionStatus::Running,
                 WorkspaceNodeStatus::Running,
+            ),
+            (
+                "paused",
+                RuntimeNodeExecutionStatus::Paused,
+                WorkspaceNodeStatus::Paused,
             ),
             (
                 "waiting",

@@ -184,6 +184,9 @@ impl ProviderLaunchSpec {
                 }
             }
         }
+        if let Some(initial_instruction) = launch.initial_instruction() {
+            arguments.push(initial_instruction.to_string());
+        }
         TerminalProcessLaunch::new(executable, arguments, self.environment.clone())
             .map_err(|_| ProviderLaunchSpecError::InvalidGeneratedLaunch)
     }

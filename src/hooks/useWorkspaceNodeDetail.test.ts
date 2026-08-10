@@ -4,6 +4,7 @@ import type { SessionStatus } from "@/types/session";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 import {
 	approveWorkspaceNode,
+	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "./useWorkspaceNodeDetail";
 
@@ -24,7 +25,10 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 		id,
 		title,
 		status: "running",
-		capabilities: { canApprove: false, canClose: false },
+		submitReceived: false,
+		stopReceived: false,
+		hasArtifact: false,
+		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
 		content: { kind: "session", sessionId: `session-${id}` },
 	};
@@ -383,6 +387,31 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 
 		expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workspace_node", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+		expect(result).toEqual(detail("node"));
+	});
+
+	it("retries through the opaque workspace node command and reloads detail", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "retry_workspace_node") return Promise.resolve(null);
+			if (command === "get_workspace_node_detail") {
+				return Promise.resolve(detail("node"));
+			}
+			return Promise.resolve(null);
+		});
+
+		const result = await retryWorkspaceNode({
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "retry_workspace_node", {
 			worktreePath: "/repo",
 			nodeId: "node",
 		});

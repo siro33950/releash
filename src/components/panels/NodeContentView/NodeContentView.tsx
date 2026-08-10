@@ -9,6 +9,7 @@ import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatu
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import {
 	approveWorkspaceNode,
+	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
 import type { AgentEditorSelection, MentionReference } from "@/types/session";
@@ -139,6 +140,7 @@ function NodeHeader({
 	worktreePath: string;
 }) {
 	const [approving, setApproving] = useState(false);
+	const [retrying, setRetrying] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 
 	const approve = useCallback(async () => {
@@ -154,6 +156,32 @@ function NodeHeader({
 		}
 	}, [approving, detail.capabilities.canApprove, detail.id, worktreePath]);
 
+	const retry = useCallback(async () => {
+		if (retrying || !detail.capabilities.canRetry) return;
+		setRetrying(true);
+		try {
+			await retryWorkspaceNode({ worktreePath, nodeId: detail.id });
+			setActionError(null);
+		} catch (error) {
+			setActionError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setRetrying(false);
+		}
+	}, [detail.capabilities.canRetry, detail.id, retrying, worktreePath]);
+
+	const waitingMessage =
+		detail.waitingFor === "stop"
+			? "Submit received · waiting for Stop"
+			: detail.waitingFor === "submit"
+				? "Stop received · waiting for Submit"
+				: null;
+	const visibleErrorReason =
+		detail.status === "failed" ||
+		detail.status === "error" ||
+		detail.status === "paused"
+			? detail.errorReason
+			: null;
+
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
 			<span
@@ -168,6 +196,31 @@ function NodeHeader({
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}
 			</span>
+			{detail.attempt != null && (
+				<span className="shrink-0 text-xs text-muted-foreground">
+					Attempt {detail.attempt}
+				</span>
+			)}
+			{waitingMessage && (
+				<span className="min-w-0 truncate text-xs text-yellow-600 dark:text-yellow-300">
+					{waitingMessage}
+				</span>
+			)}
+			{detail.hasArtifact && (
+				<span className="shrink-0 text-xs text-muted-foreground">
+					Artifact submitted
+				</span>
+			)}
+			{visibleErrorReason && (
+				<span className="min-w-0 truncate text-xs text-destructive">
+					{visibleErrorReason}
+				</span>
+			)}
+			{detail.recoveryReason && (
+				<span className="min-w-0 truncate text-xs text-orange-600 dark:text-orange-300">
+					{detail.recoveryReason}
+				</span>
+			)}
 			{actionError && (
 				<span
 					role="alert"
@@ -181,6 +234,11 @@ function NodeHeader({
 			{detail.capabilities.canApprove && (
 				<Button type="button" size="xs" disabled={approving} onClick={approve}>
 					{approving ? "Approving..." : "Approve"}
+				</Button>
+			)}
+			{detail.capabilities.canRetry && (
+				<Button type="button" size="xs" disabled={retrying} onClick={retry}>
+					{retrying ? "Retrying..." : "Retry"}
 				</Button>
 			)}
 		</div>

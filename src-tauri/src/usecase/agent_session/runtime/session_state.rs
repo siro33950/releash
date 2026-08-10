@@ -479,10 +479,12 @@ impl RuntimeSessionState {
         self.queue_pause.resume_if_matches(expected_paused_at)
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_closing(&mut self) {
         self.runtime_admission.begin_closing();
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_closing(&mut self) {
         self.runtime_admission.cancel_closing();
     }

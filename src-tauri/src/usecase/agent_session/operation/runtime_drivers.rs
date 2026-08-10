@@ -1,24 +1,30 @@
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::domain::agent_session::services::runtime_stop_request_id;
+#[cfg(test)]
 use crate::domain::agent_session::services::{
-    admit_workflow_send_target, runtime_stop_request_id, workflow_send_receipt_matches,
-    workflow_send_should_retry, WorkflowSendTargetRejection, INTERNAL_WORKFLOW_OPERATION_PRINCIPAL,
+    admit_workflow_send_target, workflow_send_receipt_matches, workflow_send_should_retry,
+    WorkflowSendTargetRejection, INTERNAL_WORKFLOW_OPERATION_PRINCIPAL,
     WORKFLOW_SEND_RETRY_ATTEMPTS,
 };
+use crate::usecase::agent_session::runtime::DurableStopDriver;
+#[cfg(test)]
 use crate::usecase::agent_session::runtime::{
-    DurableStopDriver, DurableWorkflowSendDriver, DurableWorkflowSendError,
-    DurableWorkflowSendPayloadEncoder, DurableWorkflowTurnRequest,
+    DurableWorkflowSendDriver, DurableWorkflowSendError, DurableWorkflowSendPayloadEncoder,
+    DurableWorkflowTurnRequest,
 };
 use crate::usecase::agent_session::session::{
     RuntimeTerminalParticipantProvider, RuntimeTerminalParticipants, SessionStore,
 };
 
 use super::{
-    AgentSendOperationUsecase, SendCommandOutcome, SendOperationRequest, StopCommandOutcome,
-    StopOperationError, StopOperationRequest, StopOperationState, StopOperationUsecase,
-    LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
+    AgentSendOperationUsecase, StopCommandOutcome, StopOperationError, StopOperationRequest,
+    StopOperationState, StopOperationUsecase, LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
 };
+#[cfg(test)]
+use super::{SendCommandOutcome, SendOperationRequest};
 
 struct DurableStopOperationDriver {
     operation: Arc<StopOperationUsecase>,
@@ -106,6 +112,7 @@ pub(crate) fn bind_runtime_durable_stop_driver(
     runtime.set_durable_stop_driver(Arc::new(DurableStopOperationDriver::new(operation)));
 }
 
+#[cfg(test)]
 struct DurableWorkflowSendOperationDriver {
     operation: Arc<AgentSendOperationUsecase>,
     session_store: Arc<SessionStore>,
@@ -113,6 +120,7 @@ struct DurableWorkflowSendOperationDriver {
     payload_encoder: Arc<dyn DurableWorkflowSendPayloadEncoder>,
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl DurableWorkflowSendDriver for DurableWorkflowSendOperationDriver {
     async fn send(
@@ -177,6 +185,7 @@ impl DurableWorkflowSendDriver for DurableWorkflowSendOperationDriver {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn bind_runtime_durable_workflow_send_driver(
     runtime: &Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     operation: Arc<AgentSendOperationUsecase>,

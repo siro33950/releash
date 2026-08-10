@@ -27,9 +27,7 @@ use crate::usecase::workflow::{
     WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto, WorkspaceWorkflowDto,
     WorkspaceWorkflowHistoryItemDto,
 };
-use crate::usecase::workspace_tree::{
-    WorkspaceNodeApprovalRoute, WorkspaceNodeCloseRoute, WorkspaceQueryService,
-};
+use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) const SQL_SESSION_RECORDS: &str = "SELECT public_summary FROM session_projection
      WHERE workspace_identity = ?1 AND public_list_kind = ?2
@@ -57,14 +55,21 @@ pub(crate) struct SqliteWorkspaceQueryService {
 }
 
 impl SqliteWorkspaceQueryService {
+    pub(crate) fn with_repository(
+        repository: Arc<SqliteWorkspaceTreeRepository>,
+        archives: Arc<dyn WorkflowExecutionArchiveRepository>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            repository,
+            archives,
+        })
+    }
+
     pub(crate) fn new(
         store: Arc<LocalEventStore>,
         archives: Arc<dyn WorkflowExecutionArchiveRepository>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            repository: SqliteWorkspaceTreeRepository::new(store),
-            archives,
-        })
+        Self::with_repository(SqliteWorkspaceTreeRepository::new(store), archives)
     }
 
     pub(crate) fn new_read_only(
@@ -200,30 +205,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .map_err(query_error)
     }
 
-    fn node_approval_command(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        node_id: &str,
-    ) -> Result<WorkspaceNodeApprovalRoute, WorkflowError> {
-        let node = self
-            .repository
-            .load_node(workspace_identity, node_id)
-            .map_err(query_error)?;
-        node_approval_route(node)
-    }
-
-    fn node_close_session_id(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        node_id: &str,
-    ) -> Result<WorkspaceNodeCloseRoute, WorkflowError> {
-        let node = self
-            .repository
-            .load_node(workspace_identity, node_id)
-            .map_err(query_error)?;
-        Ok(node_close_route(node))
-    }
-
     fn session_summaries(
         &self,
         workspace_identity: &WorkspaceIdentity,
@@ -309,42 +290,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
     }
 }
 
-fn node_approval_route(
-    node: Option<WorkspaceTreeNode>,
-) -> Result<WorkspaceNodeApprovalRoute, WorkflowError> {
-    let Some(node) = node else {
-        return Ok(WorkspaceNodeApprovalRoute::Missing);
-    };
-    if !node.can_approve {
-        return Ok(WorkspaceNodeApprovalRoute::NotWaiting);
-    }
-    let (Some(execution_id), Some(node_execution_id), Some(node_name)) =
-        (node.execution_id, node.node_execution_id, node.node_name)
-    else {
-        return Err(record_projection_error(
-            "Workspace approval routing record is corrupt",
-        ));
-    };
-    Ok(WorkspaceNodeApprovalRoute::Command(
-        crate::usecase::workflow::command::ApprovalCommand {
-            execution_id,
-            node_name,
-            node_execution_id: Some(node_execution_id),
-            comment: None,
-        },
-    ))
-}
-
-fn node_close_route(node: Option<WorkspaceTreeNode>) -> WorkspaceNodeCloseRoute {
-    let Some(node) = node else {
-        return WorkspaceNodeCloseRoute::Missing;
-    };
-    match (node.can_close, node.session_id) {
-        (true, Some(session_id)) => WorkspaceNodeCloseRoute::Session(session_id),
-        _ => WorkspaceNodeCloseRoute::NotSupported,
-    }
-}
-
 fn project_tree(tree: &WorkspaceTree, hidden: &HashSet<String>) -> Vec<WorkspaceTreeItemDto> {
     let mut children: HashMap<Option<&str>, Vec<&WorkspaceTreeNode>> = HashMap::new();
     for node in tree.nodes() {
@@ -404,6 +349,7 @@ fn project_tree(tree: &WorkspaceTree, hidden: &HashSet<String>) -> Vec<Workspace
                     },
                     capabilities: WorkspaceNodeCapabilitiesDto {
                         can_approve: node.can_approve,
+                        can_retry: node.can_retry,
                         can_close: node.can_close,
                     },
                     updated_at: node.updated_at(),
@@ -416,6 +362,22 @@ fn project_tree(tree: &WorkspaceTree, hidden: &HashSet<String>) -> Vec<Workspace
 
 fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
+    let submit_received = matches!(
+        node.completion_signals,
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let stop_received = matches!(
+        node.completion_signals,
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let waiting_for = match node.completion_signals {
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
+        crate::domain::workflow::NodeCompletionSignalState::Pending
+        | crate::domain::workflow::NodeCompletionSignalState::Ready => None,
+    };
     let content = match node.kind {
         WorkspaceNodeKind::WorkflowCommand => {
             WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
@@ -441,9 +403,16 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         id: node.id,
         title: node.title,
         status: node.status.as_public_str().to_string(),
+        attempt: node.attempt,
+        submit_received,
+        stop_received,
+        waiting_for,
+        has_artifact: node.has_artifact,
         error_reason: node.error_reason,
+        recovery_reason: node.recovery_owner_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
             can_approve: node.can_approve,
+            can_retry: node.can_retry,
             can_close: node.can_close,
         },
         updated_at,
@@ -547,8 +516,11 @@ mod tests {
             node_execution_id: None,
             node_name: None,
             attempt: Some(1),
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: None,
             can_approve: true,
+            can_retry: false,
             can_close: false,
             can_stop: false,
             can_resume: false,
@@ -560,41 +532,6 @@ mod tests {
             command_result: None,
             dynamic_fanout: false,
         }
-    }
-
-    #[test]
-    fn approval_route_rejects_corrupt_waiting_record() {
-        assert!(matches!(
-            node_approval_route(Some(node())),
-            Err(WorkflowError::CorruptStoredState(_))
-        ));
-    }
-
-    #[test]
-    fn close_route_reports_not_supported_without_closeable_session() {
-        assert!(matches!(
-            node_close_route(Some(node())),
-            WorkspaceNodeCloseRoute::NotSupported
-        ));
-    }
-
-    #[test]
-    fn direct_session_close_target_is_materialized_only_for_its_opaque_node() {
-        let mut direct = node();
-        direct.kind = WorkspaceNodeKind::Session;
-        direct.attempt = None;
-        direct.session_id = Some("direct-session".to_string());
-        direct.can_approve = false;
-        direct.can_close = true;
-
-        assert!(matches!(
-            node_close_route(Some(direct)),
-            WorkspaceNodeCloseRoute::Session(session_id) if session_id == "direct-session"
-        ));
-        assert!(matches!(
-            node_close_route(None),
-            WorkspaceNodeCloseRoute::Missing
-        ));
     }
 
     #[test]
@@ -636,6 +573,28 @@ mod tests {
             detail["content"]["sessionId"],
             serde_json::Value::String("provider-agent-session-1".to_string())
         );
+    }
+
+    #[test]
+    fn workflow_node_detail_exposes_backend_owned_attempt_signal_and_capabilities() {
+        let mut workflow_session = node();
+        workflow_session.node_execution_id = Some("node-execution-1".to_string());
+        workflow_session.execution_id = Some("execution-1".to_string());
+        workflow_session.node_name = Some("Review".to_string());
+        workflow_session.session_id = Some("provider-agent-session-1".to_string());
+        workflow_session.completion_signals =
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived;
+        workflow_session.has_artifact = false;
+        workflow_session.can_retry = true;
+
+        let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
+
+        assert_eq!(detail["attempt"], 1);
+        assert_eq!(detail["submitReceived"], false);
+        assert_eq!(detail["stopReceived"], true);
+        assert_eq!(detail["waitingFor"], "submit");
+        assert_eq!(detail["hasArtifact"], false);
+        assert_eq!(detail["capabilities"]["canRetry"], true);
     }
 
     #[test]

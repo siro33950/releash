@@ -1,27 +1,42 @@
 use std::path::{Path, PathBuf};
 
-use clap::Subcommand;
+use clap::{ArgGroup, Subcommand};
 
 use super::api_client;
 use super::common::{validate_execution_id, validate_node, CliError};
 use super::file_direct;
-use crate::adaptor::controller::api::protocol::SubmitArtifactRequest;
+use crate::adaptor::controller::api::protocol::{SubmitOutputArtifactRequest, SubmitOutputRequest};
 use crate::usecase::workflow::WorkflowGetOutputResult;
 
 #[derive(Subcommand, Debug)]
 pub(super) enum OutputSubcommand {
     /// node の Artifact schema に従う値を提出する。
+    #[command(group(
+        ArgGroup::new("artifact_value")
+            .args(["json", "file"])
+            .multiple(false)
+    ))]
     Submit {
         execution_id: String,
         #[arg(long, value_name = "NODE_NAME")]
         node: String,
         #[arg(long = "node-execution", value_name = "NODE_EXECUTION_ID")]
-        node_execution: Option<String>,
-        #[arg(long = "type", value_name = "CONTRACT")]
-        contract: String,
-        #[arg(long, conflicts_with = "file", value_name = "JSON")]
+        node_execution: String,
+        #[arg(long = "type", value_name = "CONTRACT", requires = "artifact_value")]
+        contract: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "file",
+            requires = "contract",
+            value_name = "JSON"
+        )]
         json: Option<String>,
-        #[arg(long, conflicts_with = "json", value_name = "PATH")]
+        #[arg(
+            long,
+            conflicts_with = "json",
+            requires = "contract",
+            value_name = "PATH"
+        )]
         file: Option<PathBuf>,
     },
     /// 提出済み Artifact を取得する。
@@ -38,27 +53,43 @@ pub(super) fn cmd_output_submit(
     data_dir: &Path,
     execution_id: &str,
     node: &str,
-    node_execution: Option<String>,
-    contract: &str,
+    node_execution: String,
+    contract: Option<&str>,
     json_arg: Option<String>,
     file_arg: Option<PathBuf>,
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
     validate_node(node)?;
-    validate_contract_argument(contract)?;
-    let value = parse_json_input(read_submit_input_json(json_arg, file_arg)?)?;
-    let request = SubmitArtifactRequest {
+    let artifact = match contract {
+        Some(contract) => {
+            validate_contract_argument(contract)?;
+            let value = parse_json_input(read_submit_input_json(json_arg, file_arg)?)?;
+            Some(SubmitOutputArtifactRequest {
+                contract: contract.to_string(),
+                value,
+            })
+        }
+        None if json_arg.is_none() && file_arg.is_none() => None,
+        None => {
+            return Err(CliError::InvalidInput(
+                "--json/--file requires --type".to_string(),
+            ));
+        }
+    };
+    let request = SubmitOutputRequest {
         node: node.to_string(),
-        node_execution_id: api_client::resolve_node_execution_id(node_execution),
-        contract: contract.to_string(),
-        value,
+        node_execution_id: node_execution,
+        artifact,
     };
     api_client::mutation(data_dir, |client| {
         client.submit_output(execution_id, &request)
     })?;
-    Ok(format!(
-        "submitted: execution_id={execution_id} node={node} type={contract}\n"
-    ))
+    Ok(match contract {
+        Some(contract) => {
+            format!("submitted: execution_id={execution_id} node={node} type={contract}\n")
+        }
+        None => format!("submitted: execution_id={execution_id} node={node}\n"),
+    })
 }
 
 pub(super) fn cmd_output_get(

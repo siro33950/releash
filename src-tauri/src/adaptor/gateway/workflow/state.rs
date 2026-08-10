@@ -58,6 +58,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
         attempt: execution.attempt,
         status: match execution.status {
             NodeExecutionStatus::Running => crate::domain::workflow::NodeExecutionStatus::Running,
+            NodeExecutionStatus::Paused => crate::domain::workflow::NodeExecutionStatus::Paused,
             NodeExecutionStatus::WaitingApproval => {
                 crate::domain::workflow::NodeExecutionStatus::WaitingApproval
             }
@@ -93,6 +94,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
                 child_index: parent.child_index,
             }
         }),
+        completion_signals: execution.completion_signals,
         started_at: execution.started_at,
         completed_at: execution.completed_at,
     }

@@ -370,6 +370,31 @@ fn test_provider起動設定_claudeのnewとresumeをstructured_root_processへ�
 }
 
 #[test]
+fn test_provider起動設定_claudeの初回指示を起動時promptとして渡す() {
+    let directory = tempdir().unwrap();
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Claude,
+        context(),
+        "releash",
+        Some(directory.path()),
+    )
+    .unwrap();
+
+    let process = spec
+        .terminal_process(
+            "/opt/bin/claude",
+            ProviderSessionLaunch::new_with_initial_instruction("Implement the workflow node.")
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        process.arguments().last().map(String::as_str),
+        Some("Implement the workflow node.")
+    );
+}
+
+#[test]
 fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ変換する() {
     let spec =
         ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
@@ -401,10 +426,37 @@ fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ�
 }
 
 #[test]
+fn test_provider起動設定_codexの初回指示を起動時promptとして渡す() {
+    let spec =
+        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
+
+    let process = spec
+        .terminal_process(
+            "/opt/bin/codex",
+            ProviderSessionLaunch::new_with_initial_instruction("Implement the workflow node.")
+                .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        process.arguments().last().map(String::as_str),
+        Some("Implement the workflow node.")
+    );
+}
+
+#[test]
 fn test_provider起動設定_resumeの空session_idを拒否する() {
     assert_eq!(
         ProviderSessionLaunch::resume(" ").unwrap_err(),
         ProviderSessionLaunchError::ProviderSessionIdMissing
+    );
+}
+
+#[test]
+fn test_provider起動設定_空の初回指示を拒否する() {
+    assert_eq!(
+        ProviderSessionLaunch::new_with_initial_instruction(" ").unwrap_err(),
+        ProviderSessionLaunchError::InitialInstructionMissing
     );
 }
 

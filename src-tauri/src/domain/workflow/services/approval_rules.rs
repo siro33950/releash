@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::domain::workflow::value_objects::{NodeHistoryEntry, RuntimeExecutionState};
+use crate::domain::workflow::value_objects::NodeHistoryEntry;
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
 use crate::domain::workflow::NODE_STATUS_COMPLETED;
@@ -47,21 +47,22 @@ pub fn validate_required_comment_text(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn should_auto_approve_workflow_approval(
-    state: &RuntimeExecutionState,
+    node_is_waiting_approval: bool,
     approval_auto_approve_enabled: bool,
 ) -> bool {
-    approval_auto_approve_enabled && matches!(state, RuntimeExecutionState::WaitingApproval)
+    approval_auto_approve_enabled && node_is_waiting_approval
 }
 
-pub struct ApprovalChatInstructionContext<'a> {
+pub struct ApprovalChatInstructionContext {
     pub is_current_approval_session: bool,
     pub is_prior_approval_gate_session: bool,
-    pub state: &'a RuntimeExecutionState,
+    pub node_is_waiting_approval: bool,
 }
 
 pub fn validate_approval_chat_instruction(
-    context: ApprovalChatInstructionContext<'_>,
+    context: ApprovalChatInstructionContext,
     content: &str,
 ) -> Result<(), WorkflowError> {
     if !context.is_current_approval_session {
@@ -72,9 +73,9 @@ pub fn validate_approval_chat_instruction(
         }
         return Ok(());
     }
-    if !matches!(context.state, RuntimeExecutionState::WaitingApproval) {
+    if !context.node_is_waiting_approval {
         return Err(WorkflowError::invalid_state(
-            "Workflow is not waiting for approval",
+            "Node is not waiting for approval",
         ));
     }
     validate_required_comment_text(content, "approval chat instruction")
@@ -83,7 +84,7 @@ pub fn validate_approval_chat_instruction(
 
 pub struct ApprovalChatSessionSnapshot<'a> {
     pub is_active: bool,
-    pub state: &'a RuntimeExecutionState,
+    pub node_is_waiting_approval: bool,
     pub is_current_approval_session: bool,
     pub current_session_id: Option<&'a str>,
 }
@@ -96,9 +97,9 @@ pub fn resolve_chat_session_for_approval<'a>(
             "workflow execution is not active",
         ));
     }
-    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
+    if !snapshot.node_is_waiting_approval {
         return Err(WorkflowError::invalid_state(
-            "Workflow is not waiting for approval",
+            "Node is not waiting for approval",
         ));
     }
     if !snapshot.is_current_approval_session {
@@ -111,21 +112,23 @@ pub fn resolve_chat_session_for_approval<'a>(
     })
 }
 
+#[cfg(test)]
 pub struct ApprovalTargetSnapshot<'a> {
     pub execution_id: &'a str,
-    pub state: &'a RuntimeExecutionState,
+    pub node_is_waiting_approval: bool,
     pub current_node_name: &'a str,
     pub is_approval_gate_session: bool,
 }
 
+#[cfg(test)]
 pub fn resolve_approval_target<'a>(
     snapshot: ApprovalTargetSnapshot<'a>,
     expected_execution_id: Option<&str>,
     expected_node_name: Option<&str>,
 ) -> Result<&'a str, WorkflowError> {
-    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
+    if !snapshot.node_is_waiting_approval {
         return Err(WorkflowError::invalid_state(
-            "Workflow is not waiting for approval",
+            "Node is not waiting for approval",
         ));
     }
     if !snapshot.is_approval_gate_session {
@@ -199,18 +202,9 @@ mod approval_rules_tests {
 
     #[test]
     fn auto_approve_requires_waiting_approval_and_enabled_flag() {
-        assert!(should_auto_approve_workflow_approval(
-            &RuntimeExecutionState::WaitingApproval,
-            true,
-        ));
-        assert!(!should_auto_approve_workflow_approval(
-            &RuntimeExecutionState::WaitingApproval,
-            false,
-        ));
-        assert!(!should_auto_approve_workflow_approval(
-            &RuntimeExecutionState::Running,
-            true,
-        ));
+        assert!(should_auto_approve_workflow_approval(true, true,));
+        assert!(!should_auto_approve_workflow_approval(true, false,));
+        assert!(!should_auto_approve_workflow_approval(false, true,));
     }
 
     #[test]
@@ -228,7 +222,7 @@ mod approval_rules_tests {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
             is_prior_approval_gate_session: false,
-            state: &RuntimeExecutionState::Running,
+            node_is_waiting_approval: false,
         };
 
         assert!(validate_approval_chat_instruction(context, "").is_ok());
@@ -239,7 +233,7 @@ mod approval_rules_tests {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
             is_prior_approval_gate_session: true,
-            state: &RuntimeExecutionState::Completed,
+            node_is_waiting_approval: false,
         };
 
         assert!(matches!(
@@ -253,7 +247,7 @@ mod approval_rules_tests {
         let not_waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &RuntimeExecutionState::Running,
+            node_is_waiting_approval: false,
         };
         assert!(matches!(
             validate_approval_chat_instruction(not_waiting, "ok").unwrap_err(),
@@ -263,7 +257,7 @@ mod approval_rules_tests {
         let waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &RuntimeExecutionState::WaitingApproval,
+            node_is_waiting_approval: true,
         };
         assert!(matches!(
             validate_approval_chat_instruction(waiting, "   ").unwrap_err(),
@@ -273,7 +267,7 @@ mod approval_rules_tests {
         let valid = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &RuntimeExecutionState::WaitingApproval,
+            node_is_waiting_approval: true,
         };
         assert!(validate_approval_chat_instruction(valid, "please revise").is_ok());
     }
@@ -282,7 +276,7 @@ mod approval_rules_tests {
     fn resolve_chat_session_requires_active_waiting_approval_gate_session() {
         let snapshot = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &RuntimeExecutionState::WaitingApproval,
+            node_is_waiting_approval: true,
             is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
@@ -294,7 +288,7 @@ mod approval_rules_tests {
 
         let inactive = ApprovalChatSessionSnapshot {
             is_active: false,
-            state: &RuntimeExecutionState::WaitingApproval,
+            node_is_waiting_approval: true,
             is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
@@ -307,7 +301,7 @@ mod approval_rules_tests {
 
         let no_session = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &RuntimeExecutionState::WaitingApproval,
+            node_is_waiting_approval: true,
             is_current_approval_session: true,
             current_session_id: None,
         };
@@ -321,10 +315,9 @@ mod approval_rules_tests {
 
     #[test]
     fn resolve_approval_target_validates_execution_and_node_identity() {
-        let waiting = RuntimeExecutionState::WaitingApproval;
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "execution-1",
-            state: &waiting,
+            node_is_waiting_approval: true,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
@@ -336,7 +329,7 @@ mod approval_rules_tests {
 
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "execution-1",
-            state: &waiting,
+            node_is_waiting_approval: true,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
@@ -349,7 +342,7 @@ mod approval_rules_tests {
 
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "execution-1",
-            state: &waiting,
+            node_is_waiting_approval: true,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
@@ -362,7 +355,7 @@ mod approval_rules_tests {
 
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "execution-1",
-            state: &waiting,
+            node_is_waiting_approval: true,
             current_node_name: "review",
             is_approval_gate_session: false,
         };

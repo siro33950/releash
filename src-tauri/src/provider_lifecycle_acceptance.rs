@@ -24,15 +24,18 @@ use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntime
 use crate::infrastructure::local_api::{LocalApiHttpClient, LocalApiServer, LocalApiServerBinding};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
+    StopExecutionCommand,
+};
+use crate::usecase::workflow::control_plane::{
+    WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStallClearedCommand, WorkflowStallObservedCommand,
-    WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStallClearedCommand, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowTurnCompleteCommand,
+    WorkflowTurnCompleteGateway,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -220,18 +223,79 @@ impl WorkflowResumeExecutionGateway for AcceptanceWorkflowRuntimeGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowApprovalGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn resolve_approval(&self, _command: ApprovalCommand) -> Result<(), WorkflowError> {
+impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
+    fn current_timestamp(&self) -> f64 {
+        100.0
+    }
+
+    fn new_node_execution_id(&self) -> String {
+        "node-execution-test".to_string()
+    }
+
+    async fn load_active_execution(
+        &self,
+        _execution_id: &str,
+    ) -> Result<
+        Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+        WorkflowError,
+    > {
         self.record_command();
         Err(unavailable_workflow_runtime())
     }
-}
 
-#[async_trait::async_trait]
-impl WorkflowSubmitOutputGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn submit_output(&self, _command: SubmitOutputCommand) -> Result<(), WorkflowError> {
+    async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
         self.record_command();
         Err(unavailable_workflow_runtime())
+    }
+
+    async fn load_persisted_events(
+        &self,
+        _execution_id: &str,
+    ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+        self.record_command();
+        Err(unavailable_workflow_runtime())
+    }
+
+    fn configured_secret_values(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn approval_auto_approve_enabled(&self) -> bool {
+        false
+    }
+
+    async fn approval_turn_phase(
+        &self,
+        _session_id: &str,
+    ) -> Option<crate::usecase::workflow::control_plane::ApprovalTurnPhase> {
+        None
+    }
+
+    async fn commit_control_plane(
+        &self,
+        _commit: WorkflowControlPlaneCommit,
+    ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
+    {
+        self.record_command();
+        Err(unavailable_workflow_runtime())
+    }
+
+    async fn finish_control_plane_commit(
+        &self,
+        _worktree_path: &str,
+        _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+        _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    async fn finish_retried_fanout_commit(
+        &self,
+        _worktree_path: &str,
+        _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
     }
 }
 

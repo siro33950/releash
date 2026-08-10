@@ -2989,10 +2989,11 @@ fn decode_workflow_execution(
         .ok_or(StoredRecordCodecError::Malformed { family })?;
     let status = match required_text(object, family, "status")? {
         "running" => ExecutionStatus::Running,
+        #[cfg(test)]
         "waiting_approval" => ExecutionStatus::WaitingApproval,
         "completed" => ExecutionStatus::Completed,
-        "failed" => ExecutionStatus::Failed,
         "aborted" => ExecutionStatus::Aborted,
+        #[cfg(test)]
         "interrupted" => ExecutionStatus::Interrupted,
         other => {
             return Err(StoredRecordCodecError::Incompatible {

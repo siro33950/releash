@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
 	boundSessionChat: vi.fn(),
 	providerAgentSessionRoute: vi.fn(),
 	approveWorkspaceNode: vi.fn().mockResolvedValue(null),
+	retryWorkspaceNode: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
 	useWorkspaceNodeDetail: () => mocks.detailState,
 	approveWorkspaceNode: (...args: unknown[]) =>
 		mocks.approveWorkspaceNode(...args),
+	retryWorkspaceNode: (...args: unknown[]) => mocks.retryWorkspaceNode(...args),
 }));
 vi.mock("@/components/panels/AgentChatPanel", () => ({
 	BoundSessionChat: (props: Record<string, unknown>) => {
@@ -48,7 +50,10 @@ function sessionDetail(
 		id,
 		title: `Session ${id}`,
 		status: "running",
-		capabilities: { canApprove: false, canClose: false },
+		submitReceived: false,
+		stopReceived: false,
+		hasArtifact: false,
+		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
 		content: { kind: "session", sessionId },
 	};
@@ -82,6 +87,7 @@ beforeEach(() => {
 	mocks.boundSessionChat.mockClear();
 	mocks.providerAgentSessionRoute.mockClear();
 	mocks.approveWorkspaceNode.mockClear();
+	mocks.retryWorkspaceNode.mockClear();
 });
 
 describe("NodeContentView", () => {
@@ -225,7 +231,10 @@ describe("NodeContentView", () => {
 			id: "command-node",
 			title: "Run checks",
 			status: "failed",
-			capabilities: { canApprove: false, canClose: false },
+			submitReceived: false,
+			stopReceived: false,
+			hasArtifact: false,
+			capabilities: { canApprove: false, canRetry: false, canClose: false },
 			updatedAt: 2,
 			content: {
 				kind: "command",
@@ -254,7 +263,7 @@ describe("NodeContentView", () => {
 		);
 	});
 
-	it("never renders internal execution metadata in the Node header", () => {
+	it("shows the public attempt without exposing internal execution identities", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("public-title"),
 			title: "Public title",
@@ -273,7 +282,7 @@ describe("NodeContentView", () => {
 		expect(
 			screen.queryByText("node-execution-internal-uuid"),
 		).not.toBeInTheDocument();
-		expect(screen.queryByText(/attempt 3/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/attempt 3/i)).toBeVisible();
 		expect(screen.queryByText(/item 2 child 1/i)).not.toBeInTheDocument();
 		expect(screen.queryByText("checkpoint-internal")).not.toBeInTheDocument();
 	});
@@ -302,11 +311,26 @@ describe("NodeContentView", () => {
 		expect(screen.getByTitle("running")).toBeVisible();
 	});
 
+	it("shows backend-owned error and recovery reasons without deriving them in the TUI", () => {
+		mocks.detailState.detail = {
+			...sessionDetail("paused-session"),
+			status: "paused",
+			errorReason: "Node activation failed",
+			recoveryReason: "Provider session must be recovered",
+		};
+		renderView("paused-session");
+
+		expect(screen.getByText("Node activation failed")).toBeVisible();
+		expect(
+			screen.getByText("Provider session must be recovered"),
+		).toBeVisible();
+	});
+
 	it("shows and executes Approve only from backend capability", async () => {
 		const user = userEvent.setup();
 		mocks.detailState.detail = {
 			...sessionDetail("approval"),
-			capabilities: { canApprove: true, canClose: false },
+			capabilities: { canApprove: true, canRetry: false, canClose: false },
 		};
 		renderView("approval");
 
@@ -314,6 +338,35 @@ describe("NodeContentView", () => {
 		expect(mocks.approveWorkspaceNode).toHaveBeenCalledWith({
 			worktreePath: "/repo",
 			nodeId: "approval",
+		});
+	});
+
+	it("shows the backend-owned signal wait and executes Retry only from backend capability", async () => {
+		const user = userEvent.setup();
+		mocks.detailState.detail = {
+			...sessionDetail("waiting-stop"),
+			attempt: 2,
+			submitReceived: true,
+			stopReceived: false,
+			waitingFor: "stop",
+			hasArtifact: true,
+			capabilities: {
+				canApprove: false,
+				canClose: false,
+				canRetry: true,
+			},
+		};
+		renderView("waiting-stop");
+
+		expect(
+			screen.getByText("Submit received · waiting for Stop"),
+		).toBeVisible();
+		expect(screen.getByText("Attempt 2")).toBeVisible();
+		expect(screen.getByText("Artifact submitted")).toBeVisible();
+		await user.click(screen.getByRole("button", { name: "Retry" }));
+		expect(mocks.retryWorkspaceNode).toHaveBeenCalledWith({
+			worktreePath: "/repo",
+			nodeId: "waiting-stop",
 		});
 	});
 });

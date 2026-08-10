@@ -221,6 +221,7 @@ impl WorkflowEventLog {
             operation_kind,
             first.execution_id(),
             events,
+            Vec::new(),
             state_mutations,
         )
         .await
@@ -238,6 +239,24 @@ impl WorkflowEventLog {
             crate::domain::local_event::CommitOperationKind::Workflow,
             execution_id,
             &[],
+            Vec::new(),
+            state_mutations,
+        )
+        .await
+    }
+
+    pub(crate) async fn append_provider_stop_batch(
+        &self,
+        execution_id: &str,
+        events: &[WorkflowEvent],
+        provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        self.commit_execution_batch(
+            crate::domain::local_event::CommitOperationKind::Workflow,
+            execution_id,
+            events,
+            provider_events,
             state_mutations,
         )
         .await
@@ -248,6 +267,7 @@ impl WorkflowEventLog {
         operation_kind: crate::domain::local_event::CommitOperationKind,
         execution_id: &str,
         events: &[WorkflowEvent],
+        provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
         state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
     ) -> Result<(), String> {
         let Some(authority) = &self.authority else {
@@ -286,7 +306,53 @@ impl WorkflowEventLog {
         }
         exact.extend_from_slice(&(execution_id.len() as u64).to_be_bytes());
         exact.extend_from_slice(execution_id.as_bytes());
-        let mut uncommitted = Vec::with_capacity(events.len());
+        let occurred_at_ms = events
+            .first()
+            .map(WorkflowEvent::timestamp)
+            .filter(|timestamp| timestamp.is_finite() && *timestamp >= 0.0)
+            .map(|timestamp| (timestamp * 1000.0).round() as i64)
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as i64)
+                    .unwrap_or(0)
+            });
+        let mut uncommitted = Vec::with_capacity(events.len() + provider_events.len());
+        let mut expected_heads = vec![crate::domain::local_event::ExpectedStreamHead {
+            stream_id: stream_id.clone(),
+            expected: page.head,
+        }];
+        for scoped in provider_events {
+            let (scope, event) = scoped.into_parts();
+            let provider_stream =
+                crate::domain::local_event::StreamId::provider_lifecycle(scope.agent_session_id())
+                    .map_err(|_| "provider lifecycle stream identity is invalid".to_string())?;
+            if !expected_heads
+                .iter()
+                .any(|expected| expected.stream_id == provider_stream)
+            {
+                let provider_page = authority
+                    .repository
+                    .load_stream(crate::domain::local_event::LoadStreamRequest {
+                        stream_id: provider_stream.clone(),
+                        after: None,
+                        limit: 1,
+                    })
+                    .await
+                    .map_err(|error| {
+                        format!("provider lifecycle SQLite head read failed: {error}")
+                    })?;
+                expected_heads.push(crate::domain::local_event::ExpectedStreamHead {
+                    stream_id: provider_stream.clone(),
+                    expected: provider_page.head,
+                });
+            }
+            uncommitted.push(crate::domain::local_event::UncommittedDomainEvent {
+                stream_id: provider_stream,
+                event: crate::domain::local_event::LocalDomainEvent::ProviderLifecycle(event),
+                occurred_at_ms,
+            });
+        }
         for event in events {
             let encoded = encode_stored_workflow_event_v1(event)
                 .map_err(|error| format!("failed to encode workflow event: {error}"))?;
@@ -305,6 +371,11 @@ impl WorkflowEventLog {
                 occurred_at_ms,
             });
         }
+        let supplemental_identity = authority
+            .repository
+            .canonical_event_batch_identity_v1(&uncommitted)?;
+        exact.extend_from_slice(&(supplemental_identity.len() as u64).to_be_bytes());
+        exact.extend_from_slice(&supplemental_identity);
         for mutation in &state_mutations {
             let encoded = authority
                 .repository
@@ -323,10 +394,7 @@ impl WorkflowEventLog {
                 idempotency_key: hex::encode(payload_hash),
                 payload_hash,
             },
-            expected_heads: vec![crate::domain::local_event::ExpectedStreamHead {
-                stream_id,
-                expected: page.head,
-            }],
+            expected_heads,
             events: uncommitted,
             state_mutations,
         };
@@ -377,6 +445,34 @@ impl WorkflowEventLog {
                         .block_on(self.append_batch_durable_with_mutations_as(
                             operation_kind,
                             events,
+                            state_mutations,
+                        ))
+                })
+                .join()
+                .map_err(|_| "workflow SQLite event commit worker panicked".to_string())?
+        })
+    }
+
+    pub(crate) fn append_provider_stop_batch_blocking(
+        &self,
+        execution_id: &str,
+        events: &[WorkflowEvent],
+        provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            format!("failed to create workflow commit runtime: {error}")
+                        })?
+                        .block_on(self.append_provider_stop_batch(
+                            execution_id,
+                            events,
+                            provider_events,
                             state_mutations,
                         ))
                 })
