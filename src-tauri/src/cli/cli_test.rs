@@ -85,6 +85,8 @@ fn test_clicommand整理_保持対象workflowとreview_commandを受理する() 
             execution_id,
             "--node",
             "review",
+            "--node-execution",
+            "550e8400-e29b-41d4-a716-446655440001",
             "--type",
             "review-verdict",
             "--json",

@@ -26,6 +26,6 @@ impl WorkflowStopExecutionUsecase {
 
     pub(crate) async fn execute(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
         self.preflight.validate_stop_execution(&command)?;
-        self.runtime.stop_execution(command).await
+        super::retry_control_plane_conflicts(|| self.runtime.stop_execution(command.clone())).await
     }
 }

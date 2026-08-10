@@ -129,48 +129,6 @@ fn collect_array_item_references(schema: &SchemaDef, pending: &mut VecDeque<Stri
     }
 }
 
-pub fn build_missing_artifact_repair_prompt(
-    cli_alias: &str,
-    execution_id: &str,
-    node_name: &str,
-    contract: &str,
-    schemas: &BTreeMap<String, SchemaDef>,
-) -> String {
-    let schema_guidance = render_contract_prompt_guidance(schemas, contract)
-        .map(|guidance| format!("\n\n{guidance}"))
-        .unwrap_or_default();
-    format!(
-        "The required Artifact for this workflow node has not been submitted.\n\n\
-Submit it by running this command with a JSON value that satisfies the `{contract}` schema:{schema_guidance}\n\n\
-```sh\n\
-{cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
-```\n\n\
-Do not create a temporary JSON file for this. Do not finish the node until the command succeeds."
-    )
-}
-
-pub fn build_schema_violation_repair_prompt(
-    cli_alias: &str,
-    execution_id: &str,
-    node_name: &str,
-    contract: &str,
-    violations: &[SchemaViolation],
-    schemas: &BTreeMap<String, SchemaDef>,
-) -> String {
-    let details = format_schema_violations(violations);
-    let schema_guidance = render_contract_prompt_guidance(schemas, contract)
-        .map(|guidance| format!("\n\n{guidance}"))
-        .unwrap_or_default();
-    format!(
-        "The submitted Artifact did not satisfy the `{contract}` schema.\n\n\
-Schema violations:\n{details}{schema_guidance}\n\n\
-Submit a corrected Artifact with:\n\n\
-```sh\n\
-{cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
-```"
-    )
-}
-
 pub fn format_schema_violations(violations: &[SchemaViolation]) -> String {
     violations
         .iter()
@@ -275,53 +233,6 @@ mod contract_service_tests {
                 ..
             }) if reason == "schema_violation"
         ));
-    }
-
-    #[test]
-    fn test_missing_artifact_repair_prompt_uses_schema_vocabulary_and_node_flag() {
-        let workflow = workflow();
-        let prompt = build_missing_artifact_repair_prompt(
-            "releash-dev",
-            "execution-1",
-            "review",
-            "review",
-            &workflow.schemas,
-        );
-        assert!(prompt.contains("Artifact"));
-        assert!(prompt.contains("schema"));
-        assert!(prompt.contains("\"verdict\""));
-        assert!(prompt.contains("Fields not listed in `properties` are accepted"));
-        assert!(prompt.contains(
-            "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
-        ));
-        assert!(!prompt.contains("\n+  --"));
-        let deprecated_step_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_step_flag));
-    }
-
-    #[test]
-    fn test_schema_violation_repair_prompt_contains_copyable_command() {
-        let workflow = workflow();
-        let prompt = build_schema_violation_repair_prompt(
-            "releash-dev",
-            "execution-1",
-            "review",
-            "review",
-            &[SchemaViolation {
-                path: "$.verdict".to_string(),
-                reason: "expected one of [LGTM, FIX]".to_string(),
-            }],
-            &workflow.schemas,
-        );
-
-        assert!(prompt.contains("- $.verdict: expected one of [LGTM, FIX]"));
-        assert!(prompt.contains("\"enum\": ["));
-        assert!(prompt.contains(
-            "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
-        ));
-        assert!(!prompt.contains("\n+  --"));
-        let deprecated_step_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_step_flag));
     }
 
     #[test]

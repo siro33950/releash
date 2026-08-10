@@ -419,6 +419,7 @@ mod tests {
             "get_agent_session_notice",
             "list_agent_session_feedback",
             "retry_agent_session_feedback",
+            "retry_workspace_node",
             "get_recovery_action",
             "get_stop_operation",
             "get_application_quit_operation",

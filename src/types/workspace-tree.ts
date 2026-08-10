@@ -35,6 +35,7 @@ export interface NewSessionCreationStatus {
 export type WorkspaceNodeStatus =
 	| "queued"
 	| "running"
+	| "paused"
 	| "failed"
 	| "error"
 	| "waiting"
@@ -44,6 +45,7 @@ export type WorkspaceNodeStatus =
 
 export interface WorkspaceNodeCapabilities {
 	canApprove: boolean;
+	canRetry: boolean;
 	canClose: boolean;
 }
 
@@ -135,7 +137,13 @@ export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	attempt?: number;
+	submitReceived: boolean;
+	stopReceived: boolean;
+	waitingFor?: "submit" | "stop";
+	hasArtifact: boolean;
 	errorReason?: string | null;
+	recoveryReason?: string | null;
 	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
 	content: WorkspaceNodeContent;

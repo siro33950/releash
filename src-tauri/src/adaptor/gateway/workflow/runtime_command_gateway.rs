@@ -8,17 +8,19 @@ use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{MessagePart, SessionStore};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
+    StopExecutionCommand,
+};
+use crate::usecase::workflow::control_plane::{
+    ApprovalTurnPhase, WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowShutdownEffectReadback, WorkflowStallObservedCommand,
-    WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
-    WorkflowTurnFailureSignal,
+    WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowShutdownEffectReadback, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowTurnCompleteCommand,
+    WorkflowTurnCompleteGateway, WorkflowTurnCompleteRecoveryCommand,
+    WorkflowTurnCompleteRecoveryOutcome, WorkflowTurnFailureSignal,
 };
 
 use super::runtime_resolver::{
@@ -28,8 +30,8 @@ use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Clone)]
-pub(crate) struct TauriWorkflowRuntimeCommandGateway {
-    app: tauri::AppHandle,
+pub(crate) struct TauriWorkflowRuntimeCommandGateway<R: tauri::Runtime = tauri::Wry> {
+    app: tauri::AppHandle<R>,
     driver: Arc<WorkflowRuntimeHost>,
     session_store: Arc<SessionStore>,
     agent_runtime: Arc<AgentSessionRuntimeUsecase>,
@@ -64,7 +66,7 @@ struct WorkflowShutdownRecord<'a> {
     revision: crate::domain::local_event::Revision,
 }
 
-impl TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
     fn shutdown_obligation_id(effect_identity: &str) -> String {
         use sha2::Digest;
         let digest = sha2::Sha256::digest(effect_identity.as_bytes());
@@ -199,7 +201,7 @@ impl TauriWorkflowRuntimeCommandGateway {
     }
 
     pub(crate) fn new_with_default_driver(
-        app: tauri::AppHandle,
+        app: tauri::AppHandle<R>,
         deps: TauriWorkflowRuntimeCommandGatewayDeps,
     ) -> Result<Self, WorkflowRuntimeError> {
         let TauriWorkflowRuntimeCommandGatewayDeps {
@@ -236,10 +238,30 @@ impl TauriWorkflowRuntimeCommandGateway {
             local_event_installation_id,
         })
     }
+
+    pub(crate) fn new_with_driver(
+        app: tauri::AppHandle<R>,
+        driver: Arc<WorkflowRuntimeHost>,
+        session_store: Arc<SessionStore>,
+        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+        local_event_repository: Arc<
+            dyn crate::domain::local_event::LocalEventTransactionRepository,
+        >,
+        local_event_installation_id: String,
+    ) -> Self {
+        Self {
+            app,
+            driver,
+            session_store,
+            agent_runtime,
+            local_event_repository,
+            local_event_installation_id,
+        }
+    }
 }
 
 #[async_trait::async_trait]
-impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
@@ -297,6 +319,7 @@ fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> Work
             WorkflowError::InvalidState(error.to_string())
         }
         WorkflowRuntimeError::InvalidState(message) => WorkflowError::InvalidState(message),
+        WorkflowRuntimeError::Conflict(message) => WorkflowError::Conflict(message),
         WorkflowRuntimeError::UnauthorizedWorktree(message) => WorkflowError::validation(message),
         WorkflowRuntimeError::UnauthorizedApprovalTarget(message) => {
             WorkflowError::UnauthorizedApprovalTarget(message)
@@ -308,7 +331,7 @@ fn workflow_runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> Work
 }
 
 #[async_trait::async_trait]
-impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn abort_execution(&self, command: AbortExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .abort_workflow_execution(
@@ -324,7 +347,7 @@ impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .stop_workflow_execution(&self.app, &self.agent_runtime, &command.execution_id)
@@ -334,7 +357,7 @@ impl WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError> {
         self.driver
             .resume_workflow_execution(
@@ -349,17 +372,107 @@ impl WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
+impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeCommandGateway<R> {
+    fn current_timestamp(&self) -> f64 {
+        crate::usecase::agent_session::status::current_timestamp()
+    }
+
+    fn new_node_execution_id(&self) -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    async fn load_active_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<
+        Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+        WorkflowError,
+    > {
+        Ok(self.driver.load_control_plane_execution(execution_id).await)
+    }
+
+    async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
         self.driver
-            .resolve_workflow_approval(
+            .recover_orphan_executions_excluding(&self.app, &std::collections::BTreeSet::new())
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn load_persisted_events(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+        super::event_log_writer::read_events_for_app(&self.app, execution_id)
+            .map_err(WorkflowError::external)
+    }
+
+    fn configured_secret_values(&self) -> Vec<String> {
+        super::secret_source::collect_configured_secret_values(&self.app)
+    }
+
+    fn approval_auto_approve_enabled(&self) -> bool {
+        super::workflow_host::approval_runtime::workflow_approval_auto_approve_enabled(&self.app)
+    }
+
+    async fn approval_turn_phase(&self, session_id: &str) -> Option<ApprovalTurnPhase> {
+        self.agent_runtime
+            .turn_phase(session_id)
+            .await
+            .map(|phase| match phase {
+                crate::usecase::agent_session::status::TurnPhase::Idle => ApprovalTurnPhase::Idle,
+                crate::usecase::agent_session::status::TurnPhase::Streaming => {
+                    ApprovalTurnPhase::Streaming
+                }
+                crate::usecase::agent_session::status::TurnPhase::WaitingPermission => {
+                    ApprovalTurnPhase::WaitingPermission
+                }
+            })
+    }
+
+    async fn commit_control_plane(
+        &self,
+        commit: WorkflowControlPlaneCommit,
+    ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
+    {
+        self.driver
+            .commit_workflow_control_plane(&self.app, commit)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn finish_control_plane_commit(
+        &self,
+        worktree_path: &str,
+        snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+        outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
+    ) -> Result<(), WorkflowError> {
+        self.driver
+            .finish_workflow_control_plane_commit(
                 &self.app,
                 &self.session_store,
                 &self.agent_runtime,
-                &command.execution_id,
-                command.comment,
-                &command.node_name,
-                command.node_execution_id.as_deref(),
+                worktree_path,
+                snapshot,
+                outcome,
+            )
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn finish_retried_fanout_commit(
+        &self,
+        worktree_path: &str,
+        snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        self.driver
+            .finish_retried_fanout_control_plane_commit(
+                &self.app,
+                &self.session_store,
+                &self.agent_runtime,
+                worktree_path,
+                snapshot,
+                node_execution_id,
             )
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
@@ -367,26 +480,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
-        self.driver
-            .submit_workflow_output(
-                &self.app,
-                &self.session_store,
-                &self.agent_runtime,
-                &command.execution_id,
-                command.node_name,
-                command.node_execution_id,
-                command.contract,
-                command.artifact,
-            )
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn is_session_running(&self, chat_session_id: &str) -> bool {
         self.driver.is_running(chat_session_id).await
     }
@@ -438,7 +532,7 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn observe_stall(
         &self,
         command: WorkflowStallObservedCommand,
@@ -468,7 +562,7 @@ impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         self.recover_startup_excluding(&std::collections::BTreeSet::new())
             .await
@@ -509,7 +603,7 @@ impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn shutdown_active_commands(&self) {
         self.driver.shutdown_all_active_commands().await;
     }
@@ -631,7 +725,7 @@ impl WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway {
+impl<R: tauri::Runtime> WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn resolve_approval_chat_target(
         &self,
         execution_id: &str,
@@ -668,11 +762,13 @@ mod shutdown_effect_contract_tests {
         use crate::usecase::workflow::ports::WorkflowShutdownEffectReadback;
 
         assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::shutdown_record_for_readback(Err(())),
+            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::shutdown_record_for_readback(Err(())),
             Err(WorkflowShutdownEffectReadback::Ambiguous)
         );
         assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::shutdown_record_for_readback(Ok(None)),
+            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::shutdown_record_for_readback(Ok(
+                None
+            )),
             Err(WorkflowShutdownEffectReadback::ConfirmedNotStarted)
         );
     }
@@ -694,7 +790,7 @@ mod shutdown_effect_contract_tests {
             revision: crate::domain::local_event::Revision::new(1).unwrap(),
         };
         assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
                 &record,
                 "quit-operation",
                 "quit-operation:0:workflow-1",
@@ -704,7 +800,7 @@ mod shutdown_effect_contract_tests {
             Some(crate::domain::local_event::ObligationStateRecord::Completed)
         );
         assert!(
-            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
                 &record,
                 "unrelated-terminal-operation",
                 "quit-operation:0:workflow-1",
@@ -714,7 +810,7 @@ mod shutdown_effect_contract_tests {
             .is_none()
         );
         assert!(
-            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
                 &record,
                 "quit-operation",
                 "quit-operation:0:workflow-1",

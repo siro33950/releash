@@ -24,6 +24,7 @@ pub(crate) use hook_health::{
 pub(crate) use ingress::{
     ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecase,
     ProviderLifecycleIngressUsecaseError, ProviderSessionStartTransaction,
+    ProviderWorkflowStopCommand, ProviderWorkflowStopTransaction,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -152,7 +153,7 @@ impl ProviderLifecycleUsecase {
         result
     }
 
-    pub(crate) async fn receive_session_started_with_commit<E, F, Fut>(
+    pub(crate) async fn receive_with_commit<E, F, Fut>(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,

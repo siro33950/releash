@@ -31,12 +31,24 @@ pub(crate) struct ApproveNodeRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SubmitArtifactRequest {
-    pub(crate) node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) node_execution_id: Option<String>,
+pub(crate) struct SubmitOutputArtifactRequest {
     pub(crate) contract: String,
     pub(crate) value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitOutputRequest {
+    pub(crate) node: String,
+    pub(crate) node_execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifact: Option<SubmitOutputArtifactRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetryNodeRequest {
+    pub(crate) node_execution_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

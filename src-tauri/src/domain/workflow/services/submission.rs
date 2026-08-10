@@ -2,19 +2,6 @@
 
 use crate::domain::workflow::value_objects::WorkflowDefinition;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubmissionViolation {
-    MissingSubmitOutput,
-    InvalidSubmitOutput,
-}
-
-pub fn submission_violation_reason(violation: SubmissionViolation) -> &'static str {
-    match violation {
-        SubmissionViolation::MissingSubmitOutput => "missing_submit_output",
-        SubmissionViolation::InvalidSubmitOutput => "invalid_submit_output",
-    }
-}
-
 pub fn artifact_keys_to_clear_for_new_node_execution(
     workflow: &WorkflowDefinition,
     node_index: usize,
@@ -22,9 +9,6 @@ pub fn artifact_keys_to_clear_for_new_node_execution(
     let Some(node) = workflow.nodes.get(node_index) else {
         return Vec::new();
     };
-    // Fanout child artifacts are retained only in the parent artifact array. They are not
-    // addressable through the workflow-wide node-name output map, so only the parent key can
-    // be stale when a new execution starts.
     vec![node.name.clone()]
 }
 

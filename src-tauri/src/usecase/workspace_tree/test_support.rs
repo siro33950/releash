@@ -9,7 +9,7 @@ use crate::usecase::workflow::{
     WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
-use super::{WorkspaceNodeApprovalRoute, WorkspaceNodeCloseRoute, WorkspaceQueryService};
+use super::WorkspaceQueryService;
 
 /// Explicit unit-test fake. Production composition never branches to this type.
 pub(crate) struct TestWorkspaceQueryService {
@@ -66,22 +66,6 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         _session_id: &str,
     ) -> Result<Option<String>, WorkflowError> {
         Ok(None)
-    }
-
-    fn node_approval_command(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-        _node_id: &str,
-    ) -> Result<WorkspaceNodeApprovalRoute, WorkflowError> {
-        Ok(WorkspaceNodeApprovalRoute::Missing)
-    }
-
-    fn node_close_session_id(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-        _node_id: &str,
-    ) -> Result<WorkspaceNodeCloseRoute, WorkflowError> {
-        Ok(WorkspaceNodeCloseRoute::Missing)
     }
 
     fn session_summaries(

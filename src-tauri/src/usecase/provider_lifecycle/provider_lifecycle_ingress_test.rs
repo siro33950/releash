@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{
     ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase, ProviderLifecycleUsecase,
-    ProviderSessionStartTransaction,
+    ProviderSessionStartTransaction, ProviderWorkflowStopCommand, ProviderWorkflowStopTransaction,
 };
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
 use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionOrigin};
@@ -96,6 +96,31 @@ impl ProviderSessionStartTransaction for MemoryAgentSessions {
 }
 
 #[derive(Default)]
+struct MemoryWorkflowStops {
+    commits: Mutex<
+        Vec<(
+            ProviderWorkflowStopCommand,
+            Vec<ScopedProviderLifecycleEvent>,
+        )>,
+    >,
+}
+
+#[async_trait::async_trait]
+impl ProviderWorkflowStopTransaction for MemoryWorkflowStops {
+    async fn commit_provider_stop(
+        &self,
+        command: ProviderWorkflowStopCommand,
+        lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
+    ) -> Result<(), super::ProviderLifecycleIngressUsecaseError> {
+        self.commits
+            .lock()
+            .unwrap()
+            .push((command, lifecycle_events));
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct MemoryLifecycleEvents;
 
 #[async_trait::async_trait]
@@ -147,6 +172,241 @@ impl ProviderHookHealthRepository for MemoryHookHealth {
 }
 
 #[tokio::test]
+async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary() {
+    let mut session = AgentSession::create(
+        "agent-workflow-stop",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/worktree",
+        ProviderKind::Codex,
+        AgentSessionOrigin::workflow_node("workflow-1", "node-execution-1").unwrap(),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+    let agent_repository = Arc::new(MemoryAgentSessions {
+        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        fail_save: false,
+        save_observed: None,
+    });
+    let transaction = Arc::new(MemoryWorkflowStops::default());
+    let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+        Arc::new(LocalProviderLifecycleCredentialGateway),
+        Arc::new(MemoryLifecycleEvents),
+    ));
+    let ingress = ProviderLifecycleIngressUsecase::new(
+        lifecycle.clone(),
+        Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone())),
+        Arc::new(ProviderHookHealthUsecase::new(Arc::new(
+            MemoryHookHealth::default(),
+        ))),
+        agent_repository,
+        transaction.clone(),
+    );
+    let slot_id = ProviderLifecycleSlotId::new("slot-workflow-stop").unwrap();
+    let scope = ProviderLifecycleScope::new("agent-workflow-stop").unwrap();
+    let armed = lifecycle
+        .arm(slot_id.clone(), ProviderKind::Codex, scope.clone())
+        .await
+        .unwrap();
+    ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::session_started(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                scope.clone(),
+                "codex-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let result = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                scope,
+                "codex-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, ProviderLifecycleIngressResult::Applied);
+    {
+        let commits = transaction.commits.lock().unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].0.agent_session_id, "agent-workflow-stop");
+        assert_eq!(commits[0].0.workflow_execution_id, "workflow-1");
+        assert_eq!(commits[0].0.node_execution_id, "node-execution-1");
+        assert_eq!(commits[0].0.binding_id, armed.binding_id());
+        assert_eq!(commits[0].1.len(), 1);
+    }
+
+    let next_turn = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                ProviderLifecycleScope::new("agent-workflow-stop").unwrap(),
+                "codex-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next_turn, ProviderLifecycleIngressResult::Applied);
+    {
+        let commits = transaction.commits.lock().unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[1].1.len(), 1);
+    }
+
+    let wrong_binding = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                "different-binding",
+                ProviderKind::Codex,
+                ProviderLifecycleScope::new("agent-workflow-stop").unwrap(),
+                "codex-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        wrong_binding,
+        ProviderLifecycleIngressResult::Rejected(
+            crate::domain::provider_lifecycle::ProviderLifecycleRejection::BindingExpired
+        )
+    ));
+    assert_eq!(transaction.commits.lock().unwrap().len(), 2);
+
+    let wrong_session = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                ProviderLifecycleScope::new("different-agent-session").unwrap(),
+                "codex-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        wrong_session.unwrap_err(),
+        super::ProviderLifecycleIngressUsecaseError::InvalidInput
+    );
+    assert_eq!(transaction.commits.lock().unwrap().len(), 2);
+
+    let stop_failure = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_failed(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                ProviderLifecycleScope::new("agent-workflow-stop").unwrap(),
+                "codex-session-1",
+                None,
+                "hook failed",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stop_failure, ProviderLifecycleIngressResult::Applied);
+    assert_eq!(transaction.commits.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn standalone_stop_does_not_enter_the_workflow_transaction() {
+    let mut session = AgentSession::create(
+        "agent-standalone-stop",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/worktree",
+        ProviderKind::Claude,
+        AgentSessionOrigin::Standalone,
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+    let agent_repository = Arc::new(MemoryAgentSessions {
+        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        fail_save: false,
+        save_observed: None,
+    });
+    let transaction = Arc::new(MemoryWorkflowStops::default());
+    let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+        Arc::new(LocalProviderLifecycleCredentialGateway),
+        Arc::new(MemoryLifecycleEvents),
+    ));
+    let ingress = ProviderLifecycleIngressUsecase::new(
+        lifecycle.clone(),
+        Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone())),
+        Arc::new(ProviderHookHealthUsecase::new(Arc::new(
+            MemoryHookHealth::default(),
+        ))),
+        agent_repository,
+        transaction.clone(),
+    );
+    let slot_id = ProviderLifecycleSlotId::new("slot-standalone-stop").unwrap();
+    let scope = ProviderLifecycleScope::new("agent-standalone-stop").unwrap();
+    let armed = lifecycle
+        .arm(slot_id.clone(), ProviderKind::Claude, scope.clone())
+        .await
+        .unwrap();
+    ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::session_started(
+                armed.binding_id(),
+                ProviderKind::Claude,
+                scope.clone(),
+                "claude-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = ingress
+        .receive(
+            &slot_id,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                armed.binding_id(),
+                ProviderKind::Claude,
+                scope,
+                "claude-session-1",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, ProviderLifecycleIngressResult::Applied);
+    assert!(transaction.commits.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsession_idを所有する() {
     let mut session = AgentSession::create(
         "agent-1",
@@ -175,6 +435,7 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
         sessions,
         health.clone(),
         agent_repository.clone(),
+        Arc::new(MemoryWorkflowStops::default()),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-1").unwrap();
     let scope = ProviderLifecycleScope::new("agent-1").unwrap();
@@ -257,6 +518,7 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
         sessions,
         health.clone(),
         agent_repository,
+        Arc::new(MemoryWorkflowStops::default()),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-failed-association").unwrap();
     let scope = ProviderLifecycleScope::new("agent-1").unwrap();
@@ -337,6 +599,7 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
             MemoryHookHealth::default(),
         ))),
         agent_repository,
+        Arc::new(MemoryWorkflowStops::default()),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-consistent").unwrap();
     let scope = ProviderLifecycleScope::new("agent-consistent").unwrap();
@@ -413,6 +676,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
         sessions.clone(),
         health,
         agent_repository,
+        Arc::new(MemoryWorkflowStops::default()),
     ));
     let slot_id = ProviderLifecycleSlotId::new("slot-locked").unwrap();
     let scope = ProviderLifecycleScope::new("agent-locked").unwrap();

@@ -34,14 +34,6 @@ pub(crate) trait WorkflowNodeSessionGateway: Send + Sync {
     fn close_node_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError>;
 }
 
-#[async_trait::async_trait]
-pub(crate) trait NodeExecutionRuntimeGateway: Send + Sync {
-    async fn close_runtime_on_node_done(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError>;
-}
-
 pub(crate) struct NodeExecutionLifecycle<'a> {
     pub(crate) sessions: &'a dyn WorkflowNodeSessionGateway,
 }
@@ -102,19 +94,6 @@ impl<'a> NodeExecutionLifecycle<'a> {
     }
 }
 
-pub(crate) async fn release_node_runtime_on_done_with_gateways(
-    runtime: &dyn NodeExecutionRuntimeGateway,
-    session_id: &str,
-) {
-    // The turn_complete handler holds session_runtime_lock across workflow
-    // completion cleanup. Runtime gateways must not re-acquire it on this path.
-    if let Err(_e) = runtime.close_runtime_on_node_done(session_id).await {
-        log::warn!(
-            "workflow_node_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,9 +106,7 @@ mod tests {
         runtime_active: bool,
         tab_open: bool,
         history_len: usize,
-        runtime_done_close_calls: usize,
         tab_close_calls: usize,
-        fail_done_runtime_close: bool,
     }
 
     impl FakeLifecycleState {
@@ -139,9 +116,7 @@ mod tests {
                 runtime_active: true,
                 tab_open: true,
                 history_len: 1,
-                runtime_done_close_calls: 0,
                 tab_close_calls: 0,
-                fail_done_runtime_close: false,
             }
         }
     }
@@ -178,79 +153,12 @@ mod tests {
         }
     }
 
-    struct FakeNodeExecutionRuntimeGateway {
-        state: Arc<StdMutex<FakeLifecycleState>>,
-    }
-
-    #[async_trait::async_trait]
-    impl NodeExecutionRuntimeGateway for FakeNodeExecutionRuntimeGateway {
-        async fn close_runtime_on_node_done(
-            &self,
-            _session_id: &str,
-        ) -> Result<(), NodeExecutionLifecycleError> {
-            let mut state = self.state.lock().unwrap();
-            state.runtime_done_close_calls += 1;
-            state.runtime_active = false;
-            if state.fail_done_runtime_close {
-                return Err(NodeExecutionLifecycleError::AgentSession(
-                    "runtime close failed".to_string(),
-                ));
-            }
-            Ok(())
-        }
-    }
-
-    fn fake_lifecycle_gateways(
-        state: Arc<StdMutex<FakeLifecycleState>>,
-    ) -> (
-        FakeWorkflowNodeSessionGateway,
-        FakeNodeExecutionRuntimeGateway,
-    ) {
-        (
-            FakeWorkflowNodeSessionGateway {
-                state: Arc::clone(&state),
-            },
-            FakeNodeExecutionRuntimeGateway { state },
-        )
-    }
-
-    #[tokio::test]
-    async fn release_node_runtime_on_done_with_gateways_closes_runtime_only() {
-        let state = Arc::new(StdMutex::new(FakeLifecycleState::open_runtime_and_tab()));
-        let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
-
-        release_node_runtime_on_done_with_gateways(&runtime, "node").await;
-
-        let state = state.lock().unwrap();
-        assert_eq!(state.runtime_done_close_calls, 1);
-        assert_eq!(state.tab_close_calls, 0);
-        assert!(!state.runtime_active);
-        assert!(state.tab_open);
-        assert_eq!(state.history_len, 1);
-    }
-
-    #[tokio::test]
-    async fn release_node_runtime_on_done_with_gateways_keeps_tab_after_runtime_error() {
-        let state = Arc::new(StdMutex::new(FakeLifecycleState {
-            fail_done_runtime_close: true,
-            ..FakeLifecycleState::open_runtime_and_tab()
-        }));
-        let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
-
-        release_node_runtime_on_done_with_gateways(&runtime, "node").await;
-
-        let state = state.lock().unwrap();
-        assert_eq!(state.runtime_done_close_calls, 1);
-        assert_eq!(state.tab_close_calls, 0);
-        assert!(!state.runtime_active);
-        assert!(state.tab_open);
-        assert_eq!(state.history_len, 1);
-    }
-
     #[tokio::test]
     async fn close_quit_workflow_node_tab_close_is_view_only() {
         let state = Arc::new(StdMutex::new(FakeLifecycleState::open_runtime_and_tab()));
-        let (sessions, _) = fake_lifecycle_gateways(Arc::clone(&state));
+        let sessions = FakeWorkflowNodeSessionGateway {
+            state: Arc::clone(&state),
+        };
         let lifecycle = NodeExecutionLifecycle {
             sessions: &sessions,
         };

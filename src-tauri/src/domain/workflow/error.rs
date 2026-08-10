@@ -11,6 +11,7 @@ pub enum WorkflowError {
     CorruptStoredState(String),
     IncompatibleStoredEvent(String),
     Validation(String),
+    Conflict(String),
     InvalidState(String),
     NotFound(String),
     UnauthorizedApprovalTarget(String),
@@ -30,6 +31,7 @@ impl std::fmt::Display for WorkflowError {
                 write!(f, "incompatible_stored_event: {message}")
             }
             Self::Validation(msg) => write!(f, "validation_error: {msg}"),
+            Self::Conflict(msg) => write!(f, "conflict: {msg}"),
             Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
             Self::NotFound(msg) => write!(f, "not_found: {msg}"),
             Self::UnauthorizedApprovalTarget(msg) => {

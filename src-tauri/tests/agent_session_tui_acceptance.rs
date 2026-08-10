@@ -204,6 +204,7 @@ impl AgentSessionTuiAcceptanceHost {
         provider: AcceptanceProvider,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<String, String> {
         self.composition
             .launch_workflow(
@@ -211,6 +212,7 @@ impl AgentSessionTuiAcceptanceHost {
                 provider,
                 workflow_execution_id,
                 node_execution_id,
+                initial_instruction,
             )
             .await
     }
@@ -466,7 +468,17 @@ fn install_fixture_executable(
         }),
         ..FixturePlan::new(name, vec![])
     });
-    std::fs::write(&executable, format!("#!/bin/sh\n{command}\n")).unwrap();
+    let initial_instruction_argument = match provider {
+        AcceptanceProvider::Claude => "if [ \"$#\" -eq 3 ]; then initial_instruction=$3; fi",
+        AcceptanceProvider::Codex => "if [ \"$#\" -eq 5 ]; then initial_instruction=$5; fi",
+    };
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ninitial_instruction=\n{initial_instruction_argument}\nif [ -n \"$initial_instruction\" ]; then\n  {{ printf '\\033[200~%s\\033[201~\\n' \"$initial_instruction\"; cat; }} | {command}\nelse\n  {command}\nfi\n"
+        ),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -717,8 +729,8 @@ async fn wait_for_provider_session_id(
 }
 
 async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &str) {
+    let mut output = String::new();
     tokio::time::timeout(Duration::from_secs(10), async {
-        let mut output = String::new();
         while !output.contains(needle) {
             match attachment.next().await.expect("Terminal Surface stream") {
                 TerminalSurfaceStreamItemV1::Snapshot { surface } => {
@@ -730,7 +742,7 @@ async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}"));
+    .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; terminal={output:?}"));
 }
 
 async fn send_session_start(
@@ -871,6 +883,7 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
             AcceptanceProvider::Claude,
             "workflow-execution-1",
             "node-execution-1",
+            "system policy\n\nimplement once",
         )
         .await
         .unwrap();
@@ -879,15 +892,6 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
         .terminal()
         .attach("workflow-session".to_string(), terminal_owner.clone())
         .unwrap();
-    receive_until(&mut attached, fixture_label(AcceptanceProvider::Claude)).await;
-
-    host.dispatch_initial_instruction(
-        &session_id,
-        "node-execution-1",
-        "system policy\n\nimplement once",
-    )
-    .await
-    .unwrap();
     receive_until(
         &mut attached,
         "received-0:system policy\\n\\nimplement once",

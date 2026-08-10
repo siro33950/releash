@@ -207,11 +207,11 @@ pub fn plan_turn_complete_mutation_with_signal(
 pub fn decide_approve_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &RuntimeExecutionState,
+    node_is_waiting_approval: bool,
 ) -> Result<(), WorkflowError> {
-    if !matches!(state, RuntimeExecutionState::WaitingApproval) {
+    if !node_is_waiting_approval {
         return Err(WorkflowError::invalid_state(
-            "Workflow is not waiting for approval",
+            "Node is not waiting for approval",
         ));
     }
 
@@ -229,10 +229,10 @@ pub fn decide_approve_action(
 pub fn plan_approval_application(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &RuntimeExecutionState,
+    node_is_waiting_approval: bool,
     application: ApprovalApplication,
 ) -> Result<ApprovalApplicationPlan, WorkflowError> {
-    decide_approve_action(workflow, current_index, state)?;
+    decide_approve_action(workflow, current_index, node_is_waiting_approval)?;
     Ok(ApprovalApplicationPlan {
         completion: ApprovalCompletion {
             result: application.effective_result,
@@ -386,7 +386,7 @@ mod tests {
         let plan = plan_approval_application(
             &workflow,
             0,
-            &RuntimeExecutionState::WaitingApproval,
+            true,
             ApprovalApplication {
                 effective_result: "approve".to_string(),
                 artifact: Some(serde_json::json!({ "decision": "approve" })),
@@ -407,7 +407,7 @@ mod tests {
         let workflow = workflow(vec![node("implement", TestKind::Session)]);
 
         assert!(matches!(
-            decide_approve_action(&workflow, 0, &RuntimeExecutionState::WaitingApproval),
+            decide_approve_action(&workflow, 0, true),
             Err(WorkflowError::UnauthorizedApprovalTarget(_))
         ));
     }

@@ -11,9 +11,12 @@ pub(crate) mod usecase;
 
 #[cfg(test)]
 pub(crate) use usecase::SendAgentMessageRequest;
+#[cfg(test)]
 pub(crate) use usecase::{
-    durable_workflow_turn_operation_id, AcceptedQueueDrainOutcome, AcceptedQueueRedriveReadiness,
-    AcceptedSendExecution, AgentSessionRuntimeUsecase, DurableStopDriver,
-    DurableWorkflowSendDriver, DurableWorkflowSendError, DurableWorkflowSendPayloadEncoder,
-    DurableWorkflowTurnRequest,
+    durable_workflow_turn_operation_id, DurableWorkflowSendDriver, DurableWorkflowSendError,
+    DurableWorkflowSendPayloadEncoder, DurableWorkflowTurnRequest,
+};
+pub(crate) use usecase::{
+    AcceptedQueueDrainOutcome, AcceptedQueueRedriveReadiness, AcceptedSendExecution,
+    AgentSessionRuntimeUsecase, DurableStopDriver,
 };

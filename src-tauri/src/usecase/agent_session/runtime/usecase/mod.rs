@@ -148,7 +148,9 @@ async fn acquire_session_runtime_lock(
     session_locks.acquire(session_id).await
 }
 
+#[cfg(test)]
 const CLOSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+#[cfg(test)]
 const CLOSE_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Default)]
@@ -367,6 +369,7 @@ pub(crate) trait DurableStopDriver: Send + Sync {
     ) -> Result<(), String>;
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct DurableWorkflowTurnRequest {
     pub operation_id: String,
@@ -427,6 +430,7 @@ impl std::fmt::Display for DurableWorkflowSendError {
 
 impl std::error::Error for DurableWorkflowSendError {}
 
+#[cfg(test)]
 #[async_trait::async_trait]
 pub(crate) trait DurableWorkflowSendDriver: Send + Sync {
     async fn send(
@@ -435,6 +439,7 @@ pub(crate) trait DurableWorkflowSendDriver: Send + Sync {
     ) -> Result<(), DurableWorkflowSendError>;
 }
 
+#[cfg(test)]
 pub(crate) trait DurableWorkflowSendPayloadEncoder: Send + Sync {
     fn encode(
         &self,
@@ -443,6 +448,7 @@ pub(crate) trait DurableWorkflowSendPayloadEncoder: Send + Sync {
     ) -> Result<String, DurableWorkflowSendError>;
 }
 
+#[cfg(test)]
 pub(crate) fn durable_workflow_turn_operation_id(
     node_execution_id: &str,
     turn_role: &str,
@@ -625,6 +631,7 @@ pub(super) struct RuntimeContext {
     pub(super) workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
     pub(super) accepted_send_obligation_driver:
         Arc<RwLock<Option<Arc<dyn AcceptedSendObligationDriver>>>>,
+    #[cfg(test)]
     pub(super) durable_workflow_send_driver:
         Arc<RwLock<Option<Arc<dyn DurableWorkflowSendDriver>>>>,
     pub(super) durable_stop_driver: Arc<RwLock<Option<Arc<dyn DurableStopDriver>>>>,

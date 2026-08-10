@@ -128,7 +128,7 @@ pub fn run() -> i32 {
                             &execution_id,
                             &node,
                             node_execution,
-                            &contract,
+                            contract.as_deref(),
                             json,
                             file,
                         ),

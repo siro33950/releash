@@ -1,5 +1,6 @@
 use crate::domain::workflow::{
-    ExecutionStatus, FanoutParentRef, NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
+    ExecutionStatus, FanoutParentRef, NodeCompletionSignalState, NodeExecutionFailureKind,
+    NodeKindName, WorkflowDefinition,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -49,6 +50,7 @@ pub enum WorkspaceNodeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
     Running,
+    Paused,
     Failed,
     Error,
     Waiting,
@@ -61,6 +63,7 @@ impl WorkspaceNodeStatus {
     pub fn as_public_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Failed => "failed",
             Self::Error => "error",
             Self::Waiting => "waiting",
@@ -93,8 +96,11 @@ pub struct WorkspaceTreeNode {
     pub node_execution_id: Option<String>,
     pub node_name: Option<String>,
     pub attempt: Option<u32>,
+    pub completion_signals: NodeCompletionSignalState,
+    pub has_artifact: bool,
     pub session_id: Option<String>,
     pub can_approve: bool,
+    pub can_retry: bool,
     pub can_close: bool,
     pub can_stop: bool,
     pub can_resume: bool,
@@ -199,13 +205,33 @@ pub enum WorkspaceStructureFact {
         session_id: String,
         timestamp: f64,
     },
+    NodeSubmitReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeStopReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodePaused {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeResumed {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
     NodeCommandPrepared {
         execution_id: String,
         node_execution_id: String,
         display_command: String,
         timestamp: f64,
     },
-    NodeCommandResult {
+    NodeArtifactProduced {
         execution_id: String,
         node_execution_id: String,
         result: Option<WorkspaceCommandResult>,

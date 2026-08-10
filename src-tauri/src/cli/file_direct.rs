@@ -64,6 +64,7 @@ fn workflow_error_to_cli_error(error: WorkflowError) -> CliError {
         WorkflowError::Validation(message)
         | WorkflowError::InvalidState(message)
         | WorkflowError::UnauthorizedApprovalTarget(message) => CliError::InvalidInput(message),
+        WorkflowError::Conflict(message) => CliError::Other(message),
         WorkflowError::External(message)
         | WorkflowError::StorageUnavailable { message, .. }
         | WorkflowError::CorruptStoredState(message)

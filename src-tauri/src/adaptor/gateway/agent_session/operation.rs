@@ -10,6 +10,7 @@ use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKi
 use crate::usecase::agent_session::operation::{
     CanonicalSendCommandCodec, DecodedSendCommand, DecodedSendTarget,
 };
+#[cfg(test)]
 use crate::usecase::agent_session::runtime::{
     DurableWorkflowSendError, DurableWorkflowSendPayloadEncoder, DurableWorkflowTurnRequest,
 };
@@ -99,9 +100,11 @@ impl CanonicalSendCommandCodec for CanonicalSendCommandCodecV1 {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct CanonicalWorkflowSendPayloadEncoder;
 
+#[cfg(test)]
 impl DurableWorkflowSendPayloadEncoder for CanonicalWorkflowSendPayloadEncoder {
     fn encode(
         &self,

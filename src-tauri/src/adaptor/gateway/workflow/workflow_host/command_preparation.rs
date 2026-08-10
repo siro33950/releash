@@ -87,7 +87,7 @@ impl WorkflowRuntimeHost {
                 display_command.clone(),
                 timestamp,
             );
-            let snapshot = execution.to_commit_snapshot()?;
+            let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
             let event = WorkflowEvent::CommandPrepared {
                 execution_id: input.execution_id.clone(),
                 node_execution_id: input.node_execution_id.clone(),
@@ -105,7 +105,6 @@ impl WorkflowRuntimeHost {
 
         self.sync_state_after_required_event_commit(&snapshot)
             .await?;
-        record_failed_snapshot_telemetry(&snapshot);
         self.finalize_after_commit(app, &snapshot, &worktree_path)
             .await;
         Ok(true)

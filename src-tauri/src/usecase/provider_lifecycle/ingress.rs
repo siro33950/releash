@@ -34,6 +34,23 @@ pub(crate) trait ProviderSessionStartTransaction: Send + Sync {
     ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderWorkflowStopCommand {
+    pub(crate) agent_session_id: String,
+    pub(crate) workflow_execution_id: String,
+    pub(crate) node_execution_id: String,
+    pub(crate) binding_id: String,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait ProviderWorkflowStopTransaction: Send + Sync {
+    async fn commit_provider_stop(
+        &self,
+        command: ProviderWorkflowStopCommand,
+        lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
+    ) -> Result<(), ProviderLifecycleIngressUsecaseError>;
+}
+
 impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseError {
     fn from(error: ProviderLifecycleUsecaseError) -> Self {
         map_lifecycle_error(error)
@@ -45,6 +62,7 @@ pub(crate) struct ProviderLifecycleIngressUsecase {
     sessions: Arc<ProviderAgentSessionUsecase>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
+    workflow_stop_transaction: Arc<dyn ProviderWorkflowStopTransaction>,
 }
 
 #[async_trait::async_trait]
@@ -70,12 +88,14 @@ impl ProviderLifecycleIngressUsecase {
         sessions: Arc<ProviderAgentSessionUsecase>,
         hook_health: Arc<ProviderHookHealthUsecase>,
         session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
+        workflow_stop_transaction: Arc<dyn ProviderWorkflowStopTransaction>,
     ) -> Self {
         Self {
             lifecycle,
             sessions,
             hook_health,
             session_start_transaction,
+            workflow_stop_transaction,
         }
     }
 
@@ -113,7 +133,7 @@ impl ProviderLifecycleIngressUsecase {
             let caller_request_id = format!("provider-session-associated.{binding_id}");
             let result = self
                 .lifecycle
-                .receive_session_started_with_commit(
+                .receive_with_commit(
                     slot_id,
                     capability,
                     signal,
@@ -143,6 +163,44 @@ impl ProviderLifecycleIngressUsecase {
                     .map_err(map_hook_health_error)?;
             }
             return Ok(result);
+        }
+        if matches!(kind, ProviderLifecycleSignalKind::StopObserved { .. }) {
+            let _operation = self
+                .sessions
+                .lock_operation(&agent_session_id)
+                .await
+                .map_err(map_session_error)?;
+            let session = self
+                .sessions
+                .find(&agent_session_id)
+                .await
+                .map_err(map_session_error)?
+                .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
+            let origin = session.session().origin();
+            if let (Some(workflow_execution_id), Some(node_execution_id)) =
+                (origin.workflow_execution_id(), origin.node_execution_id())
+            {
+                let transaction = self.workflow_stop_transaction.clone();
+                let command = ProviderWorkflowStopCommand {
+                    agent_session_id,
+                    workflow_execution_id: workflow_execution_id.to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    binding_id,
+                };
+                return self
+                    .lifecycle
+                    .receive_with_commit(
+                        slot_id,
+                        capability,
+                        signal,
+                        move |lifecycle_events| async move {
+                            transaction
+                                .commit_provider_stop(command, lifecycle_events)
+                                .await
+                        },
+                    )
+                    .await;
+            }
         }
         let result = self
             .lifecycle

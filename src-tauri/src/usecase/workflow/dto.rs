@@ -140,7 +140,6 @@ pub(crate) enum ExecutionStatusDto {
     Running,
     WaitingApproval,
     Completed,
-    Failed,
     Aborted,
     Interrupted,
 }
@@ -353,10 +352,11 @@ fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
 fn execution_status_to_dto(status: domain::ExecutionStatus) -> ExecutionStatusDto {
     match status {
         domain::ExecutionStatus::Running => ExecutionStatusDto::Running,
+        #[cfg(test)]
         domain::ExecutionStatus::WaitingApproval => ExecutionStatusDto::WaitingApproval,
         domain::ExecutionStatus::Completed => ExecutionStatusDto::Completed,
-        domain::ExecutionStatus::Failed => ExecutionStatusDto::Failed,
         domain::ExecutionStatus::Aborted => ExecutionStatusDto::Aborted,
+        #[cfg(test)]
         domain::ExecutionStatus::Interrupted => ExecutionStatusDto::Interrupted,
     }
 }

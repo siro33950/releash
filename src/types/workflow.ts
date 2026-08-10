@@ -26,7 +26,6 @@ export type WorkflowExecutionStatus =
 	| "running"
 	| "waiting_approval"
 	| "completed"
-	| "failed"
 	| "aborted"
 	| "interrupted";
 
@@ -105,6 +104,7 @@ export interface WorkflowDefinition {
 
 export type NodeExecutionStatus =
 	| "running"
+	| "paused"
 	| "waiting_approval"
 	| "succeeded"
 	| "failed"
@@ -129,6 +129,12 @@ export interface NodeExecution {
 	kind: NodeKind;
 	attempt: number;
 	status: NodeExecutionStatus;
+	submitReceived: boolean;
+	stopReceived: boolean;
+	waitingFor?: "submit" | "stop";
+	canApprove: boolean;
+	canRetry: boolean;
+	hasArtifact: boolean;
 	sessionId?: string;
 	artifact?: Artifact;
 	tokenUsage?: TokenUsage;

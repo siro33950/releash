@@ -6,11 +6,13 @@ use super::approval_chat::WorkflowApprovalChatUsecase;
 #[cfg(test)]
 use super::command::ResolvedStartExecutionCommand;
 use super::command::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand, WorkflowAbortExecutionUsecase,
-    WorkflowApprovalUsecase, WorkflowResumeExecutionUsecase, WorkflowRuntimeCommandPreflight,
-    WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase, WorkflowSubmitOutputUsecase,
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, RetryNodeCommand,
+    StartExecutionCommand, StopExecutionCommand, SubmitOutputCommand,
+    WorkflowAbortExecutionUsecase, WorkflowResumeExecutionUsecase, WorkflowRetryNodeUsecase,
+    WorkflowRuntimeCommandPreflight, WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase,
+    WorkflowSubmitOutputUsecase,
 };
+use super::control_plane::{WorkflowControlPlaneGateway, WorkflowControlPlaneUsecase};
 use super::ports::{
     ApprovalChatTarget, WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand,
     WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
@@ -19,10 +21,10 @@ use super::ports::{
 };
 #[cfg(test)]
 use super::ports::{
-    WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowApprovalGateway,
-    WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
-    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
-    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
+    WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowResumeExecutionGateway,
+    WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
+    WorkflowStopExecutionGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
@@ -34,15 +36,17 @@ pub struct WorkflowRuntimeUsecase {
     abort_execution: WorkflowAbortExecutionUsecase,
     stop_execution: WorkflowStopExecutionUsecase,
     resume_execution: WorkflowResumeExecutionUsecase,
-    approval: WorkflowApprovalUsecase,
+    retry_node: WorkflowRetryNodeUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
     approval_chat: WorkflowApprovalChatUsecase,
     turn_complete: WorkflowTurnCompleteUsecase,
+    control_plane: WorkflowControlPlaneUsecase,
     preflight: WorkflowRuntimeCommandPreflight,
 }
 
 impl WorkflowRuntimeUsecase {
     pub fn new(runtime: Arc<dyn WorkflowRuntimeCommandGateway>) -> Self {
+        let control_plane_runtime: Arc<dyn WorkflowControlPlaneGateway> = runtime.clone();
         Self {
             runtime: runtime.clone(),
             stall_observed: runtime.clone(),
@@ -50,10 +54,11 @@ impl WorkflowRuntimeUsecase {
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
             stop_execution: WorkflowStopExecutionUsecase::new(runtime.clone()),
             resume_execution: WorkflowResumeExecutionUsecase::new(runtime.clone()),
-            approval: WorkflowApprovalUsecase::new(runtime.clone()),
-            submit_output: WorkflowSubmitOutputUsecase::new(runtime.clone()),
+            retry_node: WorkflowRetryNodeUsecase::new(control_plane_runtime.clone()),
+            submit_output: WorkflowSubmitOutputUsecase::new(control_plane_runtime.clone()),
             approval_chat: WorkflowApprovalChatUsecase::new(runtime.clone()),
             turn_complete: WorkflowTurnCompleteUsecase::new(runtime),
+            control_plane: WorkflowControlPlaneUsecase::new(control_plane_runtime),
             preflight: WorkflowRuntimeCommandPreflight,
         }
     }
@@ -92,12 +97,26 @@ impl WorkflowRuntimeUsecase {
         self.resume_execution.execute(command).await
     }
 
+    pub async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
+        self.retry_node.execute(command).await
+    }
+
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
-        self.approval.execute(command).await
+        self.control_plane.resolve_approval(command).await
     }
 
     pub async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
         self.submit_output.execute(command).await
+    }
+
+    pub(crate) async fn record_provider_stop(
+        &self,
+        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+    ) -> Result<(), WorkflowError> {
+        self.control_plane
+            .record_provider_stop(command, lifecycle_events)
+            .await
     }
 
     pub async fn complete_turn(
@@ -210,6 +229,49 @@ impl WorkflowRuntimeUsecase {
     }
 }
 
+#[async_trait::async_trait]
+impl super::WorkspaceNodeWorkflowCommandExecutor for WorkflowRuntimeUsecase {
+    async fn approve_node(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
+        self.resolve_approval(command).await
+    }
+
+    async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
+        self.retry_node(command).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::provider_lifecycle::ProviderWorkflowStopTransaction
+    for WorkflowRuntimeUsecase
+{
+    async fn commit_provider_stop(
+        &self,
+        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+    ) -> Result<(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError> {
+        self.record_provider_stop(command, lifecycle_events)
+            .await
+            .map_err(|error| match error {
+                WorkflowError::Validation(_)
+                | WorkflowError::InvalidState(_)
+                | WorkflowError::NotFound(_)
+                | WorkflowError::UnauthorizedApprovalTarget(_) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput
+                }
+                WorkflowError::Conflict(_) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
+                }
+                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::StorageUnavailable
+                }
+                WorkflowError::CorruptStoredState(_)
+                | WorkflowError::IncompatibleStoredEvent(_) => {
+                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Corrupt
+                }
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,17 +345,71 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowApprovalGateway for FakeRuntimeGateway {
-        async fn resolve_approval(&self, _command: ApprovalCommand) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("approval");
+    impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
+        fn current_timestamp(&self) -> f64 {
+            100.0
+        }
+
+        fn new_node_execution_id(&self) -> String {
+            "node-execution-test".to_string()
+        }
+
+        async fn load_active_execution(
+            &self,
+            _execution_id: &str,
+        ) -> Result<
+            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            WorkflowError,
+        > {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn load_persisted_events(
+            &self,
+            _execution_id: &str,
+        ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        fn configured_secret_values(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn commit_control_plane(
+            &self,
+            _commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
+        ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
+        {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn finish_control_plane_commit(
+            &self,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
+        ) -> Result<(), WorkflowError> {
             Ok(())
         }
-    }
 
-    #[async_trait::async_trait]
-    impl WorkflowSubmitOutputGateway for FakeRuntimeGateway {
-        async fn submit_output(&self, _command: SubmitOutputCommand) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("submit_output");
+        async fn finish_retried_fanout_commit(
+            &self,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowError> {
             Ok(())
         }
     }
@@ -429,25 +545,6 @@ mod tests {
             .await
             .unwrap();
         usecase
-            .resolve_approval(ApprovalCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-1".to_string()),
-                comment: None,
-            })
-            .await
-            .unwrap();
-        usecase
-            .submit_output(SubmitOutputCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-1".to_string()),
-                contract: "review-fix-tasks".to_string(),
-                artifact: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
-        usecase
             .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
                 exit_code: 0,
@@ -480,8 +577,6 @@ mod tests {
                 "abort",
                 "stop",
                 "resume",
-                "approval",
-                "submit_output",
                 "is_running",
                 "complete_turn",
                 "state_by_execution",
@@ -660,9 +755,11 @@ mod tests {
             .submit_output(SubmitOutputCommand {
                 execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: "review".to_string(),
-                node_execution_id: None,
-                contract: " ".to_string(),
-                artifact: serde_json::json!({}),
+                node_execution_id: "node-execution-1".to_string(),
+                artifact: Some(crate::usecase::workflow::command::SubmitOutputArtifact {
+                    contract: " ".to_string(),
+                    value: serde_json::json!({}),
+                }),
             })
             .await
             .unwrap_err();

@@ -261,6 +261,7 @@ pub(crate) fn build_workspace_node_command_usecase(
     lifecycle: Arc<SessionLifecycleOperationUsecase>,
     session_store: Arc<SessionStore>,
     data_dir: impl Into<PathBuf>,
+    workflows: Arc<dyn crate::usecase::workflow::WorkspaceNodeWorkflowCommandExecutor>,
 ) -> WorkspaceNodeCommandUsecase {
     WorkspaceNodeCommandUsecase::new(
         resolver,
@@ -269,6 +270,7 @@ pub(crate) fn build_workspace_node_command_usecase(
             session_store,
             data_dir.into(),
         )),
+        workflows,
     )
 }
 
@@ -410,9 +412,11 @@ fn build_workflow_services_with_gateways(
     let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
         data_dir.clone(),
     ));
+    let workspace_nodes =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
     let workspace_query: Arc<dyn WorkspaceQueryService> =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(
-            store,
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+            workspace_nodes.clone(),
             execution_archives.clone(),
         );
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
@@ -455,6 +459,7 @@ fn build_workflow_services_with_gateways(
         config_paths,
         secrets,
         execution_archives.clone(),
+        workspace_nodes,
         workspace_query.clone(),
     );
     (workflow_usecase, workspace_query)
@@ -472,13 +477,11 @@ pub(crate) fn build_workflow_runtime_usecase(
 pub(crate) fn build_node_execution_lifecycle_usecase(
     app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
-    agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     open_tabs: Arc<OpenTabRegistry>,
 ) -> NodeExecutionLifecycleUsecase {
     let gateway = Arc::new(TauriNodeExecutionLifecycleGateway::new(
         app,
         session_store,
-        agent_runtime,
         open_tabs,
     ));
     NodeExecutionLifecycleUsecase::new(gateway)

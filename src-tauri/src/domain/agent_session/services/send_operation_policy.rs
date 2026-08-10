@@ -1,17 +1,22 @@
 use std::time::Duration;
 
 use crate::domain::agent_session::events::{PromptInput, SendDisposition};
-use crate::domain::local_event::{hex_lower, sha256};
+#[cfg(test)]
+use crate::domain::local_event::hex_lower;
+use crate::domain::local_event::sha256;
 
 pub const INTERNAL_WORKFLOW_OPERATION_PRINCIPAL: &str = "workflow-runtime";
+#[cfg(test)]
 pub const WORKFLOW_SEND_RETRY_ATTEMPTS: usize = 3;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowSendTargetRejection {
     NotWorkflowSession,
     AuthorityMismatch,
 }
 
+#[cfg(test)]
 pub fn admit_workflow_send_target(
     workflow_node_session: bool,
     stored_permission_mode: &str,
@@ -26,6 +31,7 @@ pub fn admit_workflow_send_target(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn workflow_send_receipt_matches(
     expected_session_id: &str,
     actual_session_id: &str,
@@ -35,6 +41,7 @@ pub fn workflow_send_receipt_matches(
         && matches!(disposition, SendDisposition::StartedTurn { .. })
 }
 
+#[cfg(test)]
 pub fn workflow_send_should_retry(retryable: bool, attempt: usize) -> bool {
     retryable && attempt.saturating_add(1) < WORKFLOW_SEND_RETRY_ATTEMPTS
 }
@@ -107,6 +114,7 @@ pub fn accepted_send_artifact_digest(
     ))
 }
 
+#[cfg(test)]
 pub fn durable_workflow_turn_identity_material(
     node_execution_id: &str,
     turn_role: &str,
@@ -119,6 +127,7 @@ pub fn durable_workflow_turn_identity_material(
     identity
 }
 
+#[cfg(test)]
 pub fn durable_workflow_turn_operation_id(node_execution_id: &str, turn_role: &str) -> String {
     format!(
         "workflow-send-{}",

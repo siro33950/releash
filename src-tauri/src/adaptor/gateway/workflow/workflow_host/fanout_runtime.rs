@@ -8,10 +8,6 @@ use super::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::workflow_host::execution_state::{
     DomainWorkflowExecution, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
 };
-use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::{
-    artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
-    token_usage_to_domain, workflow_definition_to_domain,
-};
 use crate::domain::workflow::entities::workflow_execution::TransitionOutcome;
 use crate::domain::workflow::services::fanout as workflow_fanout;
 use crate::domain::workflow::FanoutParentRef;
@@ -71,7 +67,6 @@ pub(crate) struct FanoutPromptInputs {
 pub(crate) struct FanoutChildSessionSetup {
     pub(crate) node_execution_id: String,
     pub(crate) session_id: String,
-    pub(crate) initial_instruction: String,
 }
 
 pub(crate) fn prepare_fanout_start_context(
@@ -104,8 +99,8 @@ pub(crate) fn prepare_fanout_start_context(
         .get(&node.name)
         .copied()
         .unwrap_or(1);
-    let domain_workflow = workflow_definition_to_domain(&exec.workflow);
-    let domain_artifacts = artifacts_to_domain(&exec.artifacts);
+    let domain_workflow = exec.workflow.clone();
+    let domain_artifacts = exec.artifacts.clone();
     let domain_node = domain_workflow
         .nodes
         .get(exec.current_node_index)
@@ -201,7 +196,7 @@ pub(crate) fn apply_fanout_runtime_state(
                     item_index: child.item_index,
                     child_index: child.child_index,
                 }),
-                Some(child.node_execution_id.clone()),
+                child.node_execution_id.clone(),
                 timestamp,
             );
             let session_id = session_setups
@@ -228,7 +223,7 @@ pub(crate) fn apply_fanout_runtime_state(
                 );
             }
             if let Some(reused) = child.reused.as_ref() {
-                exec.complete_node_execution(
+                exec.record_reused_node_completion(
                     &child.node_execution_id,
                     reused.artifact.clone(),
                     reused.token_usage.clone(),
@@ -285,7 +280,7 @@ pub(crate) fn apply_fanout_runtime_state(
             "fanout runtime installation was rejected by the aggregate: {outcome:?}"
         )));
     }
-    exec.to_commit_snapshot()
+    RuntimeCommitSnapshot::from_execution(exec)
 }
 
 pub(crate) struct FanoutParentCompletionPlan {
@@ -307,7 +302,7 @@ pub(crate) fn plan_fanout_parent_completion(
             result: child.result.clone(),
             artifact: child.artifact.clone().unwrap_or(serde_json::Value::Null),
             contract: child.contract.clone(),
-            token_usage: token_usage_to_domain(&child.token_usage),
+            token_usage: child.token_usage.clone(),
             attempt: child.attempt,
             completed_at: child.completed_at.unwrap_or(timestamp),
             state: match child.state {
@@ -332,8 +327,8 @@ pub(crate) fn plan_fanout_parent_completion(
         timestamp,
     );
     FanoutParentCompletionPlan {
-        parent_artifact: runtime_artifact_from_domain(plan.parent_artifact),
-        history_entry: node_history_entry_from_domain(plan.history_entry),
+        parent_artifact: plan.parent_artifact,
+        history_entry: plan.history_entry,
     }
 }
 
@@ -423,7 +418,8 @@ mod tests {
         exec: &mut DomainWorkflowExecution,
         context: &FanoutStartContext,
     ) {
-        let parent_node_execution_id = exec.start_current_node_execution(1.5);
+        let parent_node_execution_id =
+            exec.start_current_node_execution("fanout-parent".to_string(), 1.5);
 
         apply_fanout_runtime_state(exec, context, &[], 2.0).unwrap();
 
@@ -541,7 +537,7 @@ mod tests {
             }),
             completed_at: 2.0,
         });
-        exec.start_current_node_execution(1.5);
+        exec.start_current_node_execution("fanout-parent".to_string(), 1.5);
 
         apply_fanout_runtime_state(&mut exec, &context, &[], 3.0).unwrap();
 
@@ -588,9 +584,8 @@ mod tests {
         let pending_setup = FanoutChildSessionSetup {
             node_execution_id: pending_node_execution_id.clone(),
             session_id: "new-pending-session".to_string(),
-            initial_instruction: "pending initial instruction".to_string(),
         };
-        exec.start_current_node_execution(1.5);
+        exec.start_current_node_execution("fanout-parent".to_string(), 1.5);
 
         let snapshot =
             apply_fanout_runtime_state(&mut exec, &context, &[pending_setup], 3.0).unwrap();

@@ -2,6 +2,7 @@ mod abort_execution;
 mod approval;
 mod preflight;
 mod resume_execution;
+mod retry_node;
 mod start_execution;
 mod stop_execution;
 mod submit_output;
@@ -9,25 +10,49 @@ mod submit_output;
 pub use abort_execution::AbortExecutionCommand;
 pub(crate) use abort_execution::WorkflowAbortExecutionUsecase;
 pub use approval::ApprovalCommand;
-pub(crate) use approval::WorkflowApprovalUsecase;
 pub(crate) use preflight::WorkflowRuntimeCommandPreflight;
 pub use resume_execution::ResumeExecutionCommand;
 pub(crate) use resume_execution::WorkflowResumeExecutionUsecase;
+pub use retry_node::RetryNodeCommand;
+pub(crate) use retry_node::WorkflowRetryNodeUsecase;
 pub(crate) use start_execution::WorkflowStartExecutionUsecase;
 pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
 pub use stop_execution::StopExecutionCommand;
 pub(crate) use stop_execution::WorkflowStopExecutionUsecase;
-pub use submit_output::SubmitOutputCommand;
 pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
+pub use submit_output::{SubmitOutputArtifact, SubmitOutputCommand};
+
+pub(crate) const CONTROL_PLANE_MAX_ATTEMPTS: usize = 4;
+
+pub(crate) async fn retry_control_plane_conflicts<T, F, Fut>(
+    mut operation: F,
+) -> Result<T, crate::domain::workflow::WorkflowError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, crate::domain::workflow::WorkflowError>>,
+{
+    for attempt in 1..=CONTROL_PLANE_MAX_ATTEMPTS {
+        match operation().await {
+            Err(crate::domain::workflow::WorkflowError::Conflict(_))
+                if attempt < CONTROL_PLANE_MAX_ATTEMPTS => {}
+            result => return result,
+        }
+    }
+    unreachable!("bounded control-plane retry always returns from the loop")
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition, WorkflowError};
-    use crate::usecase::workflow::ports::{
-        WorkflowAbortExecutionGateway, WorkflowApprovalGateway, WorkflowResumeExecutionGateway,
-        WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
+    use crate::usecase::workflow::control_plane::{
+        WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
+    use crate::usecase::workflow::ports::{
+        WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway,
+        WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -96,23 +121,111 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowApprovalGateway for FakeRuntimeGateway {
-        async fn resolve_approval(&self, _command: ApprovalCommand) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("approval");
+    impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
+        fn current_timestamp(&self) -> f64 {
+            100.0
+        }
+
+        fn new_node_execution_id(&self) -> String {
+            "node-execution-test".to_string()
+        }
+
+        async fn load_active_execution(
+            &self,
+            _execution_id: &str,
+        ) -> Result<
+            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            WorkflowError,
+        > {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn load_persisted_events(
+            &self,
+            _execution_id: &str,
+        ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        fn configured_secret_values(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn commit_control_plane(
+            &self,
+            _commit: WorkflowControlPlaneCommit,
+        ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
+        {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn finish_control_plane_commit(
+            &self,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
+        ) -> Result<(), WorkflowError> {
             Ok(())
         }
-    }
 
-    #[async_trait::async_trait]
-    impl WorkflowSubmitOutputGateway for FakeRuntimeGateway {
-        async fn submit_output(&self, _command: SubmitOutputCommand) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("submit");
+        async fn finish_retried_fanout_commit(
+            &self,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowError> {
             Ok(())
         }
     }
 
     fn valid_execution_id() -> String {
         "00000000-0000-0000-0000-000000000001".to_string()
+    }
+
+    #[tokio::test]
+    async fn control_plane_conflict_is_retried_until_the_operation_converges() {
+        let attempts = AtomicUsize::new(0);
+
+        let result = super::retry_control_plane_conflicts(|| async {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(WorkflowError::Conflict("stale workflow head".to_string()))
+            } else {
+                Ok("committed")
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), "committed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn control_plane_conflict_retry_is_bounded() {
+        let attempts = AtomicUsize::new(0);
+
+        let result = super::retry_control_plane_conflicts(|| async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(WorkflowError::Conflict("stale workflow head".to_string()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(WorkflowError::Conflict(_))));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            super::CONTROL_PLANE_MAX_ATTEMPTS
+        );
     }
 
     #[tokio::test]
@@ -148,25 +261,6 @@ mod tests {
             })
             .await
             .unwrap();
-        WorkflowApprovalUsecase::new(gateway.clone())
-            .execute(ApprovalCommand {
-                execution_id: valid_execution_id(),
-                node_name: "review".to_string(),
-                node_execution_id: None,
-                comment: None,
-            })
-            .await
-            .unwrap();
-        WorkflowSubmitOutputUsecase::new(gateway.clone())
-            .execute(SubmitOutputCommand {
-                execution_id: valid_execution_id(),
-                node_name: "review".to_string(),
-                node_execution_id: None,
-                contract: "review-fix-tasks".to_string(),
-                artifact: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
             [
@@ -175,9 +269,7 @@ mod tests {
                 "start",
                 "abort",
                 "stop",
-                "resume",
-                "approval",
-                "submit"
+                "resume"
             ]
         );
     }
@@ -215,22 +307,15 @@ mod tests {
             })
             .await
             .is_err());
-        assert!(WorkflowApprovalUsecase::new(gateway.clone())
-            .execute(ApprovalCommand {
-                execution_id: valid_execution_id(),
-                node_name: " ".to_string(),
-                node_execution_id: None,
-                comment: None,
-            })
-            .await
-            .is_err());
         assert!(WorkflowSubmitOutputUsecase::new(gateway.clone())
             .execute(SubmitOutputCommand {
                 execution_id: valid_execution_id(),
                 node_name: "review".to_string(),
-                node_execution_id: None,
-                contract: " ".to_string(),
-                artifact: serde_json::json!({}),
+                node_execution_id: "node-execution-1".to_string(),
+                artifact: Some(SubmitOutputArtifact {
+                    contract: " ".to_string(),
+                    value: serde_json::json!({}),
+                }),
             })
             .await
             .is_err());

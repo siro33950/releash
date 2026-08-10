@@ -32,7 +32,7 @@ function makeNode(id: string): WorkspaceTreeItem {
 		title: id,
 		status: "running",
 		contentKind: "session",
-		capabilities: { canApprove: false, canClose: true },
+		capabilities: { canApprove: false, canRetry: false, canClose: true },
 		updatedAt: 1,
 	};
 }

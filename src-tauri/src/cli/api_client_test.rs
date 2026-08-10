@@ -11,7 +11,6 @@ use crate::adaptor::gateway::workflow::schema::{
 use crate::adaptor::gateway::workflow::storage;
 use crate::cli::{output, workflow};
 use crate::infrastructure::local_api::{local_api_discovery_path, process_start_time};
-use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
 
 fn write_live_discovery(data_dir: &Path, token: &str) -> std::thread::JoinHandle<()> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -59,8 +58,6 @@ fn command_workflow(name: &str) -> WorkflowDefinitionYaml {
 
 #[test]
 fn test_保持対象cli_discoveryとlive_httpを通る() {
-    let _lock = TEST_ENV_LOCK.lock();
-    let _node_execution = EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-shared");
     let client_data = TempDir::new().unwrap();
     let query_data = TempDir::new().unwrap();
     let workflows = TempDir::new().unwrap();
@@ -115,8 +112,8 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
         client_data.path(),
         execution_id,
         "review",
-        None,
-        "review-result",
+        "00000000-0000-4000-8000-000000000456".to_string(),
+        Some("review-result"),
         Some(r#"{"status":"approved"}"#.to_string()),
         None,
     )
@@ -132,8 +129,8 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
     assert_eq!(commands.outputs.len(), 1);
     assert_eq!(commands.outputs[0].execution_id, execution_id);
     assert_eq!(
-        commands.outputs[0].node_execution_id.as_deref(),
-        Some("node-execution-shared")
+        commands.outputs[0].node_execution_id,
+        "00000000-0000-4000-8000-000000000456"
     );
     drop(commands);
 
@@ -195,20 +192,5 @@ fn test_local_api読取_不正discoveryでfallbackしない() {
     );
     assert!(
         matches!(result, Err(CliError::Other(message)) if message.contains("discovery file が不正"))
-    );
-}
-
-#[test]
-fn test_node_execution_id_明示値を優先し未指定時に環境変数を使う() {
-    let _lock = TEST_ENV_LOCK.lock();
-    let _guard = EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-env");
-
-    assert_eq!(
-        resolve_node_execution_id(Some("node-execution-explicit".to_string())),
-        Some("node-execution-explicit".to_string())
-    );
-    assert_eq!(
-        resolve_node_execution_id(None),
-        Some("node-execution-env".to_string())
     );
 }

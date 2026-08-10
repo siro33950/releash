@@ -2,15 +2,13 @@ use std::path::Path;
 
 use super::common::CliError;
 use crate::adaptor::controller::api::protocol::{
-    GetArtifactResponse, MutationResponse, SubmitArtifactRequest,
+    GetArtifactResponse, MutationResponse, SubmitOutputRequest,
 };
 use crate::adaptor::protocol::provider_lifecycle::{
     ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
 };
 use crate::infrastructure::local_api::{LocalApiClientError, LocalApiHttpClient};
 use crate::usecase::workflow::WorkflowGetOutputResult;
-
-const NODE_EXECUTION_ID_ENV: &str = "RELEASH_NODE_EXECUTION_ID";
 
 #[derive(Debug)]
 pub(super) enum ApiRequestError {
@@ -60,12 +58,12 @@ impl LocalApiClient {
     pub(super) fn submit_output(
         &self,
         execution_id: &str,
-        request: &SubmitArtifactRequest,
+        request: &SubmitOutputRequest,
     ) -> Result<(), ApiRequestError> {
         let response: MutationResponse = self
             .transport
             .post_json(
-                &["v1", "workflow", "executions", execution_id, "artifacts"],
+                &["v1", "workflow", "executions", execution_id, "submit"],
                 request,
             )
             .map_err(ApiRequestError::from)?;
@@ -139,14 +137,6 @@ pub(super) fn mutation_classified<T>(
         return Err(ApiRequestError::Unavailable);
     };
     api_request(&client)
-}
-
-/// CLI の明示 target を優先し、workflow session に注入された値を既定値にする。
-pub(crate) fn resolve_node_execution_id(explicit: Option<String>) -> Option<String> {
-    explicit
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var(NODE_EXECUTION_ID_ENV).ok())
-        .filter(|value| !value.trim().is_empty())
 }
 
 fn app_must_be_running_error() -> CliError {

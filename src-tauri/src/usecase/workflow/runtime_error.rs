@@ -20,6 +20,8 @@ pub enum WorkflowRuntimeError {
     AlreadyActive(String),
     /// 不正な状態遷移（WaitingApprovalでない時にapproval等）
     InvalidState(String),
+    /// Workflow stream head が候補作成後に進んだため再評価が必要
+    Conflict(String),
     /// 入力検証エラー（表示用の安定 kind: validation_error）
     ValidationError(String),
     /// 承認操作が指定 worktree の実行を対象にしていない
@@ -50,6 +52,7 @@ impl std::fmt::Display for WorkflowRuntimeError {
                 write!(f, "Workflow '{name}' is already running for this session")
             }
             Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
+            Self::Conflict(msg) => write!(f, "conflict: {msg}"),
             Self::ValidationError(msg) => write!(f, "validation_error: {msg}"),
             Self::UnauthorizedWorktree(msg) => write!(f, "unauthorized_worktree: {msg}"),
             Self::UnauthorizedApprovalTarget(msg) => {
@@ -72,12 +75,14 @@ impl WorkflowRuntimeError {
             | Self::InvalidWorkflow(_)
             | Self::AlreadyActive(_)
             | Self::InvalidState(_)
+            | Self::Conflict(_)
             | Self::ValidationError(_)
             | Self::UnauthorizedWorktree(_)
             | Self::UnauthorizedApprovalTarget(_) => NodeExecutionFailureKind::ValidationFailure,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retry_count(&self) -> Option<u32> {
         match self {
             Self::AgentRuntime { retry_count, .. } => *retry_count,
@@ -215,6 +220,9 @@ pub(crate) fn workflow_error_to_runtime_error(
     match err {
         crate::domain::workflow::WorkflowError::InvalidState(message) => {
             WorkflowRuntimeError::InvalidState(message)
+        }
+        crate::domain::workflow::WorkflowError::Conflict(message) => {
+            WorkflowRuntimeError::Conflict(message)
         }
         crate::domain::workflow::WorkflowError::Validation(message) => {
             if let Some(node_name) = message.strip_prefix("node not found: ") {

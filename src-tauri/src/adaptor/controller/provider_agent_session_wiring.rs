@@ -22,7 +22,8 @@ use crate::usecase::agent_session::{
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase,
-    ProviderLifecycleUsecase,
+    ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase, ProviderWorkflowStopCommand,
+    ProviderWorkflowStopTransaction,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
@@ -54,6 +55,40 @@ pub(crate) struct ProviderAgentSessionComposition {
     pub(crate) read: Arc<ProviderAgentSessionReadUsecase>,
     pub(crate) availability: Arc<ProviderAvailabilityReadUsecase>,
     pub(crate) availability_gateway: Arc<dyn ProviderAvailabilityGateway>,
+    pub(crate) workflow_stops: Arc<DeferredProviderWorkflowStopTransaction>,
+}
+
+pub(crate) struct DeferredProviderWorkflowStopTransaction {
+    target: std::sync::RwLock<Option<Arc<dyn ProviderWorkflowStopTransaction>>>,
+}
+
+impl DeferredProviderWorkflowStopTransaction {
+    fn new() -> Self {
+        Self {
+            target: std::sync::RwLock::new(None),
+        }
+    }
+
+    pub(crate) fn bind(&self, target: Arc<dyn ProviderWorkflowStopTransaction>) {
+        *self.target.write().expect("workflow Stop router poisoned") = Some(target);
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderWorkflowStopTransaction for DeferredProviderWorkflowStopTransaction {
+    async fn commit_provider_stop(
+        &self,
+        command: ProviderWorkflowStopCommand,
+        lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
+    ) -> Result<(), ProviderLifecycleIngressUsecaseError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| ProviderLifecycleIngressUsecaseError::Corrupt)?
+            .clone()
+            .ok_or(ProviderLifecycleIngressUsecaseError::StorageUnavailable)?;
+        target.commit_provider_stop(command, lifecycle_events).await
+    }
 }
 
 pub(crate) fn compose_provider_agent_sessions(
@@ -80,11 +115,13 @@ pub(crate) fn compose_provider_agent_sessions(
             input.data_dir.clone(),
         )),
     ));
+    let workflow_stops = Arc::new(DeferredProviderWorkflowStopTransaction::new());
     let lifecycle_ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
         provider_lifecycle.clone(),
         sessions.clone(),
         hook_health.clone(),
         session_repository.clone(),
+        workflow_stops.clone(),
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
@@ -161,5 +198,6 @@ pub(crate) fn compose_provider_agent_sessions(
         read,
         availability,
         availability_gateway,
+        workflow_stops,
     }
 }

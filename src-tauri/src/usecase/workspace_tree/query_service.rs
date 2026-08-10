@@ -4,8 +4,7 @@ use crate::domain::workflow::{
 use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceSessionListKind};
 use crate::usecase::agent_session::session::SessionSummary;
 use crate::usecase::workflow::{
-    command::ApprovalCommand, WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto,
-    WorkspaceWorkflowHistoryItemDto,
+    WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 /// The one backend-owned read contract shared by every client surface.
@@ -26,18 +25,6 @@ pub(crate) trait WorkspaceQueryService: Send + Sync {
         workspace_identity: &WorkspaceIdentity,
         session_id: &str,
     ) -> Result<Option<String>, WorkflowError>;
-
-    fn node_approval_command(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        node_id: &str,
-    ) -> Result<WorkspaceNodeApprovalRoute, WorkflowError>;
-
-    fn node_close_session_id(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        node_id: &str,
-    ) -> Result<WorkspaceNodeCloseRoute, WorkflowError>;
 
     fn session_summaries(
         &self,
@@ -61,16 +48,4 @@ pub(crate) trait WorkspaceQueryService: Send + Sync {
         &self,
         workspace_identity: &WorkspaceIdentity,
     ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError>;
-}
-
-pub(crate) enum WorkspaceNodeApprovalRoute {
-    Missing,
-    NotWaiting,
-    Command(ApprovalCommand),
-}
-
-pub(crate) enum WorkspaceNodeCloseRoute {
-    Missing,
-    NotSupported,
-    Session(String),
 }

@@ -19,10 +19,12 @@ pub struct RuntimeSessionAdmission {
 }
 
 impl RuntimeSessionAdmission {
+    #[cfg(test)]
     pub fn begin_closing(&mut self) {
         self.closing = true;
     }
 
+    #[cfg(test)]
     pub fn cancel_closing(&mut self) {
         self.closing = false;
     }

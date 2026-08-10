@@ -7,7 +7,8 @@ use crate::domain::local_event::{
     SessionProjectionRecord, WorkflowExecutionMetadataRecord,
 };
 use crate::domain::workflow::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowNodeContext,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState,
+    TokenUsage, WorkflowNodeContext,
 };
 use crate::domain::workspace_tree::{
     WorkspaceCommandResult, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceSessionListKind,
@@ -194,8 +195,14 @@ struct StoredWorkflowExecutionNodeTreeV1 {
     node_execution_id: Option<String>,
     node_name: Option<String>,
     attempt: Option<u32>,
+    #[serde(default)]
+    completion_signals: String,
+    #[serde(default)]
+    has_artifact: bool,
     session_id: Option<String>,
     can_approve: bool,
+    #[serde(default)]
+    can_retry: bool,
     can_close: bool,
     can_stop: bool,
     can_resume: bool,
@@ -356,8 +363,11 @@ fn encode_node_tree(node: &WorkspaceTreeNode) -> StoredWorkflowExecutionNodeTree
         node_execution_id: node.node_execution_id.clone(),
         node_name: node.node_name.clone(),
         attempt: node.attempt,
+        completion_signals: completion_signal_state_label(node.completion_signals).to_string(),
+        has_artifact: node.has_artifact,
         session_id: node.session_id.clone(),
         can_approve: node.can_approve,
+        can_retry: node.can_retry,
         can_close: node.can_close,
         can_stop: node.can_stop,
         can_resume: node.can_resume,
@@ -383,8 +393,11 @@ fn decode_node_tree(node: StoredWorkflowExecutionNodeTreeV1) -> Result<Workspace
         node_execution_id: node.node_execution_id,
         node_name: node.node_name,
         attempt: node.attempt,
+        completion_signals: parse_completion_signal_state(&node.completion_signals)?,
+        has_artifact: node.has_artifact,
         session_id: node.session_id,
         can_approve: node.can_approve,
+        can_retry: node.can_retry,
         can_close: node.can_close,
         can_stop: node.can_stop,
         can_resume: node.can_resume,
@@ -531,10 +544,11 @@ pub(crate) fn decode_workflow_execution_record_v1(
 fn parse_execution_status(value: &str) -> Result<ExecutionStatus, String> {
     match value {
         "running" => Ok(ExecutionStatus::Running),
+        #[cfg(test)]
         "waiting_approval" => Ok(ExecutionStatus::WaitingApproval),
         "completed" => Ok(ExecutionStatus::Completed),
-        "failed" => Ok(ExecutionStatus::Failed),
         "aborted" => Ok(ExecutionStatus::Aborted),
+        #[cfg(test)]
         "interrupted" => Ok(ExecutionStatus::Interrupted),
         _ => Err("invalid Workspace execution status".to_string()),
     }
@@ -564,6 +578,7 @@ fn parse_node_kind(value: &str) -> Result<WorkspaceNodeKind, String> {
 fn node_status_label(value: WorkspaceNodeStatus) -> &'static str {
     match value {
         WorkspaceNodeStatus::Running => "running",
+        WorkspaceNodeStatus::Paused => "paused",
         WorkspaceNodeStatus::Failed => "failed",
         WorkspaceNodeStatus::Error => "error",
         WorkspaceNodeStatus::Waiting => "waiting",
@@ -576,6 +591,7 @@ fn node_status_label(value: WorkspaceNodeStatus) -> &'static str {
 fn parse_node_status(value: &str) -> Result<WorkspaceNodeStatus, String> {
     match value {
         "running" => Ok(WorkspaceNodeStatus::Running),
+        "paused" => Ok(WorkspaceNodeStatus::Paused),
         "failed" => Ok(WorkspaceNodeStatus::Failed),
         "error" => Ok(WorkspaceNodeStatus::Error),
         "waiting" => Ok(WorkspaceNodeStatus::Waiting),
@@ -583,6 +599,25 @@ fn parse_node_status(value: &str) -> Result<WorkspaceNodeStatus, String> {
         "aborted" => Ok(WorkspaceNodeStatus::Aborted),
         "completed" => Ok(WorkspaceNodeStatus::Completed),
         _ => Err("invalid Workspace node status".to_string()),
+    }
+}
+
+fn completion_signal_state_label(value: NodeCompletionSignalState) -> &'static str {
+    match value {
+        NodeCompletionSignalState::Pending => "pending",
+        NodeCompletionSignalState::SubmitReceived => "submit_received",
+        NodeCompletionSignalState::StopReceived => "stop_received",
+        NodeCompletionSignalState::Ready => "ready",
+    }
+}
+
+fn parse_completion_signal_state(value: &str) -> Result<NodeCompletionSignalState, String> {
+    match value {
+        "" | "pending" => Ok(NodeCompletionSignalState::Pending),
+        "submit_received" => Ok(NodeCompletionSignalState::SubmitReceived),
+        "stop_received" => Ok(NodeCompletionSignalState::StopReceived),
+        "ready" => Ok(NodeCompletionSignalState::Ready),
+        _ => Err("invalid Workflow node completion signal state".to_string()),
     }
 }
 
@@ -697,8 +732,11 @@ mod tests {
             node_execution_id: Some("node-execution".to_string()),
             node_name: Some("test".to_string()),
             attempt: Some(1),
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: None,
             can_approve: false,
+            can_retry: false,
             can_close: false,
             can_stop: false,
             can_resume: false,

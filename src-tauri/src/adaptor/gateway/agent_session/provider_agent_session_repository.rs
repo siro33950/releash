@@ -60,11 +60,20 @@ impl LocalProviderAgentSessionRepository {
         if !matches!(
             domain_events.as_slice(),
             [AgentSessionLifecycleEvent::Created { .. }]
+                | [
+                    AgentSessionLifecycleEvent::Created { .. },
+                    AgentSessionLifecycleEvent::InitialInstructionAdmitted
+                ]
         ) {
             return Err(ProviderAgentSessionRepositoryError::InvalidRequest);
         }
-        let revision =
-            Revision::new(1).map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?;
+        let revision_value = u64::try_from(domain_events.len())
+            .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?;
+        let revision = Revision::new(
+            i64::try_from(revision_value)
+                .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?,
+        )
+        .map_err(|_| ProviderAgentSessionRepositoryError::Corrupt)?;
         let session_stream = StreamId::agent_session(session.id())
             .map_err(|_| ProviderAgentSessionRepositoryError::InvalidRequest)?;
         let occurred_at_ms = now_ms();
@@ -104,7 +113,10 @@ impl LocalProviderAgentSessionRepository {
         }
         let mutation = LocalStateMutation::SessionProjection(SessionProjectionMutation {
             session_id: storage_key(session.id()),
-            projection: SessionProjectionRecord::ProviderAgentSession(projection(&session, false)),
+            projection: SessionProjectionRecord::ProviderAgentSession(projection(
+                &session,
+                session.initial_instruction_admitted(),
+            )),
             expected: RevisionGuard::Absent,
             revision,
         });
@@ -127,9 +139,9 @@ impl LocalProviderAgentSessionRepository {
             state_mutations: vec![mutation],
         };
         match self.repository.commit_batch(batch).await {
-            Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {
-                Ok(VersionedProviderAgentSession::restored(session, 1))
-            }
+            Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => Ok(
+                VersionedProviderAgentSession::restored(session, revision_value),
+            ),
             Err(
                 CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
             ) => Err(ProviderAgentSessionRepositoryError::AlreadyExists),

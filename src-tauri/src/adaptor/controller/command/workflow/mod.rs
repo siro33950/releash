@@ -483,6 +483,7 @@ mod tests {
         "get_workspace_session_node_id",
         "get_workspace_tree_selection_reconciliation",
         "restore_workspace_workflow_execution",
+        "retry_workspace_node",
     ];
 
     const RETIRED_WORKFLOW_COMMANDS: &[&str] = &[
@@ -804,6 +805,11 @@ mod tests {
                 WorkflowEvent::ExecutionStarted { .. } => "ExecutionStarted",
                 WorkflowEvent::NodeStarted { .. } => "NodeStarted",
                 WorkflowEvent::SessionAttached { .. } => "SessionAttached",
+                WorkflowEvent::NodeSubmitReceived { .. } => "NodeSubmitReceived",
+                WorkflowEvent::NodeStopReceived { .. } => "NodeStopReceived",
+                WorkflowEvent::NodeRetryRequested { .. } => "NodeRetryRequested",
+                WorkflowEvent::NodePaused { .. } => "NodePaused",
+                WorkflowEvent::NodeResumed { .. } => "NodeResumed",
                 WorkflowEvent::CommandPrepared { .. } => "CommandPrepared",
                 WorkflowEvent::StallObserved { .. } => "StallObserved",
                 WorkflowEvent::StallCleared { .. } => "StallCleared",
@@ -812,7 +818,6 @@ mod tests {
                 WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",
                 WorkflowEvent::ApprovalResolved { .. } => "ApprovalResolved",
                 WorkflowEvent::ExecutionCompleted { .. } => "ExecutionCompleted",
-                WorkflowEvent::ExecutionFailed { .. } => "ExecutionFailed",
                 WorkflowEvent::ExecutionAborted { .. } => "ExecutionAborted",
                 WorkflowEvent::ExecutionInterrupted { .. } => "ExecutionInterrupted",
                 WorkflowEvent::ExecutionResumed { .. } => "ExecutionResumed",

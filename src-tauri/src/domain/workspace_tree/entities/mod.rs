@@ -14,8 +14,8 @@ use super::value_objects::{
     INTERNAL_SIBLING_ORDER,
 };
 use crate::domain::workflow::{
-    ExecutionStatus, FanoutParentRef, ItemsSource, NodeExecutionFailureKind, NodeKindName,
-    WorkflowDefinition,
+    ExecutionStatus, FanoutParentRef, ItemsSource, NodeCompletionSignalState,
+    NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
 };
 
 const DEFAULT_SESSION_TITLE: &str = "NewSession";
@@ -300,8 +300,6 @@ impl WorkspaceTree {
                     return Err(WorkspaceTreeError::DuplicateSession(session.id));
                 }
                 node.session_id = Some(session.id);
-                node.status = workflow_session_status(node.status, session.state);
-                node.error_reason = session.error_reason;
                 if session.unresolved_recovery_reason.is_some() {
                     node.recovery_owner_reason = session.unresolved_recovery_reason;
                 }
@@ -347,8 +345,11 @@ impl WorkspaceTree {
             node_execution_id: None,
             node_name: None,
             attempt: None,
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: Some(session.id),
             can_approve: false,
+            can_retry: false,
             can_close,
             can_stop: false,
             can_resume: false,
@@ -402,8 +403,11 @@ impl WorkspaceTree {
             node_execution_id: None,
             node_name: None,
             attempt: None,
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: None,
             can_approve: false,
+            can_retry: false,
             can_close: false,
             can_stop: true,
             can_resume: false,
@@ -432,8 +436,11 @@ impl WorkspaceTree {
                 node_execution_id: None,
                 node_name: None,
                 attempt: None,
+                completion_signals: Default::default(),
+                has_artifact: false,
                 session_id: None,
                 can_approve: false,
+                can_retry: false,
                 can_close: false,
                 can_stop: false,
                 can_resume: false,
@@ -559,8 +566,11 @@ impl WorkspaceTree {
             node_execution_id: Some(node_execution_id),
             node_name: Some(node_name),
             attempt: Some(attempt),
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: None,
             can_approve: false,
+            can_retry: false,
             can_close: false,
             can_stop: false,
             can_resume: false,
@@ -608,9 +618,21 @@ impl WorkspaceTree {
                 .iter()
                 .map(|index| self.nodes[*index].updated_at_bits)
                 .max_by(|left, right| f64::from_bits(*left).total_cmp(&f64::from_bits(*right)));
+            let current_child_status = children
+                .iter()
+                .max_by_key(|index| self.nodes[**index].sibling_order)
+                .map(|index| self.nodes[*index].status);
             if let Some(branch) = self.nodes.iter_mut().find(|node| node.id == branch_id) {
                 if branch.kind == WorkspaceNodeKind::Fanout {
                     branch.status = aggregate_status(&child_status, branch.status);
+                } else if branch.kind == WorkspaceNodeKind::Workflow
+                    && !branch.can_archive
+                    && branch.status != WorkspaceNodeStatus::Interrupted
+                {
+                    branch.status = match current_child_status {
+                        Some(WorkspaceNodeStatus::Completed) | None => WorkspaceNodeStatus::Running,
+                        Some(status) => status,
+                    };
                 }
                 if let Some(updated) = child_updated {
                     branch.updated_at_bits = max_f64_bits(branch.updated_at_bits, updated);
@@ -653,7 +675,12 @@ impl WorkspaceTree {
                 })
                 .collect::<Vec<_>>();
             session_reasons.sort_by(|left, right| left.0.cmp(&right.0));
-            let reason = interrupted
+            let paused = self.nodes.iter().any(|node| {
+                node.execution_id.as_deref() == Some(execution_id.as_str())
+                    && node.is_leaf()
+                    && node.status == WorkspaceNodeStatus::Paused
+            });
+            let reason = (interrupted || paused)
                 .then(|| {
                     session_reasons
                         .into_iter()
@@ -662,9 +689,16 @@ impl WorkspaceTree {
                         .or(execution_reason)
                 })
                 .flatten();
+            let can_stop = self.nodes.iter().any(|node| {
+                node.execution_id.as_deref() == Some(execution_id.as_str())
+                    && node.is_leaf()
+                    && node.status == WorkspaceNodeStatus::Running
+                    && node.completion_signals != NodeCompletionSignalState::StopReceived
+            });
             if let Some(workflow) = self.workflow_node_mut(&execution_id) {
                 workflow.resume_unavailable_reason = reason;
-                workflow.can_resume = interrupted
+                workflow.can_stop = can_stop;
+                workflow.can_resume = (interrupted || paused)
                     && !waiting_approval
                     && workflow.resume_unavailable_reason.is_none();
             }
@@ -763,9 +797,7 @@ impl WorkspaceTreeProjector {
                         workflow.can_abort = status.can_abort();
                         workflow.can_archive = matches!(
                             status,
-                            ExecutionStatus::Completed
-                                | ExecutionStatus::Failed
-                                | ExecutionStatus::Aborted
+                            ExecutionStatus::Completed | ExecutionStatus::Aborted
                         );
                     }
                 }
@@ -819,6 +851,76 @@ impl WorkspaceTreeProjector {
                     node.session_id = Some(session_id);
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
+                WorkspaceStructureFact::NodeSubmitReceived {
+                    execution_id,
+                    node_execution_id,
+                    timestamp,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    node.completion_signals = match node.completion_signals {
+                        NodeCompletionSignalState::Pending => {
+                            NodeCompletionSignalState::SubmitReceived
+                        }
+                        NodeCompletionSignalState::StopReceived => NodeCompletionSignalState::Ready,
+                        state => state,
+                    };
+                    node.can_retry = node.completion_signals.is_partial();
+                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                }
+                WorkspaceStructureFact::NodeStopReceived {
+                    execution_id,
+                    node_execution_id,
+                    timestamp,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    node.completion_signals = match node.completion_signals {
+                        NodeCompletionSignalState::Pending => {
+                            NodeCompletionSignalState::StopReceived
+                        }
+                        NodeCompletionSignalState::SubmitReceived => {
+                            NodeCompletionSignalState::Ready
+                        }
+                        state => state,
+                    };
+                    node.can_retry = node.completion_signals.is_partial();
+                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                }
+                WorkspaceStructureFact::NodePaused {
+                    execution_id,
+                    node_execution_id,
+                    timestamp,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    node.status = WorkspaceNodeStatus::Paused;
+                    node.can_retry = node.completion_signals.is_partial();
+                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                }
+                WorkspaceStructureFact::NodeResumed {
+                    execution_id,
+                    node_execution_id,
+                    timestamp,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    node.status = WorkspaceNodeStatus::Running;
+                    node.can_retry = node.completion_signals.is_partial();
+                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                }
                 WorkspaceStructureFact::NodeCommandPrepared {
                     execution_id,
                     node_execution_id,
@@ -833,7 +935,7 @@ impl WorkspaceTreeProjector {
                     node.display_command = Some(display_command);
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
-                WorkspaceStructureFact::NodeCommandResult {
+                WorkspaceStructureFact::NodeArtifactProduced {
                     execution_id,
                     node_execution_id,
                     result,
@@ -844,6 +946,7 @@ impl WorkspaceTreeProjector {
                         .ok_or_else(|| {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
+                    node.has_artifact = true;
                     node.command_result = result;
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
@@ -879,7 +982,11 @@ impl WorkspaceTreeProjector {
                         status,
                         Some(public_reason.to_string()),
                         timestamp,
-                    )?
+                    )?;
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .expect("failed Node was resolved before state update");
+                    node.can_retry = failure_kind != NodeExecutionFailureKind::UserAbort;
                 }
                 WorkspaceStructureFact::NodeApprovalRequested {
                     execution_id,
@@ -893,6 +1000,7 @@ impl WorkspaceTreeProjector {
                         })?;
                     node.status = WorkspaceNodeStatus::Waiting;
                     node.can_approve = true;
+                    node.can_retry = false;
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeApprovalResolved {
@@ -907,6 +1015,7 @@ impl WorkspaceTreeProjector {
                         })?;
                     node.status = WorkspaceNodeStatus::Running;
                     node.can_approve = false;
+                    node.can_retry = node.completion_signals.is_partial();
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
             }
@@ -935,6 +1044,7 @@ fn update_node_state(
     node.status = status;
     node.error_reason = error_reason;
     node.can_approve = false;
+    node.can_retry = false;
     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
     Ok(())
 }
@@ -1026,39 +1136,14 @@ fn session_status(state: WorkspaceSessionState) -> WorkspaceNodeStatus {
     }
 }
 
-fn workflow_session_status(
-    node: WorkspaceNodeStatus,
-    state: WorkspaceSessionState,
-) -> WorkspaceNodeStatus {
-    match state {
-        WorkspaceSessionState::Active => WorkspaceNodeStatus::Running,
-        WorkspaceSessionState::Idle => {
-            if node == WorkspaceNodeStatus::Failed {
-                WorkspaceNodeStatus::Failed
-            } else {
-                WorkspaceNodeStatus::Waiting
-            }
-        }
-        WorkspaceSessionState::Done
-        | WorkspaceSessionState::Closed
-        | WorkspaceSessionState::Archived => node,
-        WorkspaceSessionState::Error => {
-            if node == WorkspaceNodeStatus::Failed {
-                WorkspaceNodeStatus::Failed
-            } else {
-                WorkspaceNodeStatus::Error
-            }
-        }
-    }
-}
-
 pub(super) fn workflow_status(status: ExecutionStatus) -> WorkspaceNodeStatus {
     match status {
         ExecutionStatus::Running => WorkspaceNodeStatus::Running,
+        #[cfg(test)]
         ExecutionStatus::WaitingApproval => WorkspaceNodeStatus::Waiting,
+        #[cfg(test)]
         ExecutionStatus::Interrupted => WorkspaceNodeStatus::Interrupted,
         ExecutionStatus::Completed => WorkspaceNodeStatus::Completed,
-        ExecutionStatus::Failed => WorkspaceNodeStatus::Failed,
         ExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
     }
 }
@@ -1073,12 +1158,13 @@ fn aggregate_status(
         .chain(std::iter::once(parent))
         .min_by_key(|status| match status {
             WorkspaceNodeStatus::Running => 1,
-            WorkspaceNodeStatus::Failed => 2,
-            WorkspaceNodeStatus::Error => 3,
-            WorkspaceNodeStatus::Waiting => 4,
-            WorkspaceNodeStatus::Interrupted => 5,
-            WorkspaceNodeStatus::Aborted => 6,
-            WorkspaceNodeStatus::Completed => 7,
+            WorkspaceNodeStatus::Paused => 2,
+            WorkspaceNodeStatus::Failed => 3,
+            WorkspaceNodeStatus::Error => 4,
+            WorkspaceNodeStatus::Waiting => 5,
+            WorkspaceNodeStatus::Interrupted => 6,
+            WorkspaceNodeStatus::Aborted => 7,
+            WorkspaceNodeStatus::Completed => 8,
         })
         .unwrap_or(parent)
 }
@@ -1344,8 +1430,11 @@ mod tests {
             node_execution_id: None,
             node_name: None,
             attempt: None,
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: Some("session".to_string()),
             can_approve: false,
+            can_retry: false,
             can_close: true,
             can_stop: false,
             can_resume: false,
@@ -1478,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_session_fact_rebinds_by_existing_session_id_and_updates_state() {
+    fn workflow_session_fact_rebinds_without_overwriting_node_lifecycle_state() {
         let mut tree = two_execution_session_tree();
         WorkspaceTreeProjector::project(
             &mut tree,
@@ -1510,8 +1599,8 @@ mod tests {
             Some("00000000-0000-4000-8000-0000000000a1")
         );
         assert_eq!(node.node_execution_id.as_deref(), Some("node-a"));
-        assert_eq!(node.status, WorkspaceNodeStatus::Error);
-        assert_eq!(node.error_reason.as_deref(), Some("session failed"));
+        assert_eq!(node.status, WorkspaceNodeStatus::Running);
+        assert_eq!(node.error_reason, None);
         assert_eq!(node.updated_at_bits, 6.0f64.to_bits());
     }
 
@@ -2161,14 +2250,14 @@ mod tests {
         .unwrap();
 
         let workflow = tree.workflow_node(execution_id).unwrap();
-        assert_eq!(workflow.status, WorkspaceNodeStatus::Waiting);
-        assert!(workflow.can_stop);
+        assert_eq!(workflow.status, WorkspaceNodeStatus::Failed);
+        assert!(!workflow.can_stop);
         assert!(!workflow.can_resume);
         assert!(workflow.can_abort);
         assert!(!workflow.can_archive);
         assert_eq!(
             tree.session_node("plan-session").unwrap().status,
-            WorkspaceNodeStatus::Running
+            WorkspaceNodeStatus::Completed
         );
         let fanout = tree
             .nodes()
@@ -2183,6 +2272,50 @@ mod tests {
             .unwrap();
         assert_eq!(waiting.status, WorkspaceNodeStatus::Waiting);
         assert!(waiting.can_approve);
+    }
+
+    #[test]
+    fn active_workflow_root_display_is_derived_from_the_current_node() {
+        let execution_id = "00000000-0000-4000-8000-000000000154";
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "review".to_string(),
+                    worktree_path: "/repo".to_string(),
+                    definition: definition(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "plan".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodePaused {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "plan".to_string(),
+                    timestamp: 3.0,
+                },
+                WorkspaceStructureFact::WorkflowSummaryProjected {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "review".to_string(),
+                    status: ExecutionStatus::Running,
+                    updated_at: 3.0,
+                },
+            ],
+        )
+        .unwrap();
+
+        let workflow = tree.workflow_node(execution_id).unwrap();
+        assert_eq!(workflow.status, WorkspaceNodeStatus::Paused);
+        assert!(!workflow.can_stop);
+        assert!(workflow.can_resume);
     }
 
     #[test]

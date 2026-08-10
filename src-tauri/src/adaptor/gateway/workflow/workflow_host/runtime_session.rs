@@ -85,22 +85,6 @@ pub(crate) async fn interrupt_agents(
     }
 }
 
-pub(crate) async fn release_completed_node_session(
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    session_id: &str,
-) {
-    crate::adaptor::gateway::workflow::release_node_runtime_on_done(runtime, session_id).await;
-}
-
-pub(crate) async fn release_completed_node_sessions(
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    session_ids: &[String],
-) {
-    for session_id in session_ids {
-        release_completed_node_session(runtime, session_id).await;
-    }
-}
-
 pub(crate) struct FanoutChildSessionPlan {
     pub(crate) node_execution_id: String,
     pub(crate) provider: crate::domain::provider_lifecycle::ProviderKind,

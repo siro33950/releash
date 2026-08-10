@@ -4,8 +4,8 @@ use crate::domain::workflow::{
 };
 
 use super::command::{
-    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
+    StopExecutionCommand,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,18 +115,8 @@ pub trait WorkflowResumeExecutionGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait WorkflowApprovalGateway: Send + Sync {
-    async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
 pub(crate) trait WorkspaceNodeSessionCloseGateway: Send + Sync {
     async fn close_session(&self, session_id: &str) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
-pub trait WorkflowSubmitOutputGateway: Send + Sync {
-    async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError>;
 }
 
 #[async_trait::async_trait]
@@ -243,8 +233,7 @@ pub trait WorkflowRuntimeCommandGateway:
     + WorkflowAbortExecutionGateway
     + WorkflowStopExecutionGateway
     + WorkflowResumeExecutionGateway
-    + WorkflowApprovalGateway
-    + WorkflowSubmitOutputGateway
+    + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
     + WorkflowTurnCompleteGateway
     + WorkflowStallObservedGateway
     + WorkflowRuntimeStateGateway
@@ -258,8 +247,7 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowAbortExecutionGateway
         + WorkflowStopExecutionGateway
         + WorkflowResumeExecutionGateway
-        + WorkflowApprovalGateway
-        + WorkflowSubmitOutputGateway
+        + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
         + WorkflowTurnCompleteGateway
         + WorkflowStallObservedGateway
         + WorkflowRuntimeStateGateway

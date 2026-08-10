@@ -2,13 +2,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use super::command::ApprovalCommand;
 use super::workspace_node_command::{
-    CloseWorkspaceNodeError, WorkspaceNodeActionResolver, WorkspaceNodeCloseTarget,
+    CloseWorkspaceNodeError, WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget,
+    WorkspaceNodeCloseTarget, WorkspaceNodeRetryTarget,
 };
 use super::WorkflowUsecase;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
-use crate::usecase::workspace_tree::{WorkspaceNodeApprovalRoute, WorkspaceNodeCloseRoute};
 
 fn unix_timestamp_seconds() -> f64 {
     SystemTime::now()
@@ -63,6 +62,7 @@ pub(crate) struct WorkspaceNodeDto {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceNodeCapabilitiesDto {
     pub can_approve: bool,
+    pub can_retry: bool,
     pub can_close: bool,
 }
 
@@ -105,7 +105,16 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub title: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    pub submit_received: bool,
+    pub stop_received: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<&'static str>,
+    pub has_artifact: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_reason: Option<String>,
     pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
     pub content: WorkspaceNodeContentDto,
@@ -213,28 +222,6 @@ impl WorkflowUsecase {
             .map(|snapshot| reconcile_workspace_tree_selection(snapshot, selected_node_id))
     }
 
-    pub(crate) fn resolve_workspace_node_approval(
-        &self,
-        worktree_path: &str,
-        node_id: &str,
-    ) -> Result<ApprovalCommand, WorkflowError> {
-        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
-            self.resolve_worktree_path(worktree_path)?,
-        );
-        match self
-            .workspace_query
-            .node_approval_command(&workspace, node_id)?
-        {
-            WorkspaceNodeApprovalRoute::Missing => Err(WorkflowError::external(format!(
-                "Workspace node not found: {node_id}"
-            ))),
-            WorkspaceNodeApprovalRoute::NotWaiting => Err(WorkflowError::external(
-                "Workspace node is not waiting for approval",
-            )),
-            WorkspaceNodeApprovalRoute::Command(command) => Ok(command),
-        }
-    }
-
     pub(crate) fn archive_workspace_workflow_execution(
         &self,
         worktree_path: &str,
@@ -282,23 +269,78 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
             self.resolve_worktree_path(worktree_path)
                 .map_err(CloseWorkspaceNodeError::Resolution)?,
         );
-        match self
-            .workspace_query
-            .node_close_session_id(&workspace, node_id)
-            .map_err(CloseWorkspaceNodeError::Resolution)?
-        {
-            WorkspaceNodeCloseRoute::Missing => Err(CloseWorkspaceNodeError::NodeNotFound {
+        let node = self
+            .workspace_nodes
+            .load_node(&workspace, node_id)
+            .map_err(|error| {
+                CloseWorkspaceNodeError::Resolution(WorkflowError::external(error.to_string()))
+            })?
+            .ok_or_else(|| CloseWorkspaceNodeError::NodeNotFound {
+                node_id: node_id.to_string(),
+            })?;
+        match (node.can_close, node.session_id) {
+            (true, Some(session_id)) => Ok(WorkspaceNodeCloseTarget { session_id }),
+            _ => Err(CloseWorkspaceNodeError::CloseNotSupported {
                 node_id: node_id.to_string(),
             }),
-            WorkspaceNodeCloseRoute::NotSupported => {
-                Err(CloseWorkspaceNodeError::CloseNotSupported {
-                    node_id: node_id.to_string(),
-                })
-            }
-            WorkspaceNodeCloseRoute::Session(session_id) => {
-                Ok(WorkspaceNodeCloseTarget { session_id })
-            }
         }
+    }
+
+    fn resolve_approval_target(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceNodeApprovalTarget, WorkflowError> {
+        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
+            self.resolve_worktree_path(worktree_path)?,
+        );
+        let node = self
+            .workspace_nodes
+            .load_node(&workspace, node_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
+            })?;
+        let (Some(execution_id), Some(node_execution_id), Some(node_name)) =
+            (node.execution_id, node.node_execution_id, node.node_name)
+        else {
+            return Err(WorkflowError::invalid_state(
+                "Workspace node is not a Workflow Node",
+            ));
+        };
+        Ok(WorkspaceNodeApprovalTarget {
+            execution_id,
+            node_name,
+            node_execution_id,
+        })
+    }
+
+    fn resolve_retry_target(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceNodeRetryTarget, WorkflowError> {
+        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
+            self.resolve_worktree_path(worktree_path)?,
+        );
+        let node = self
+            .workspace_nodes
+            .load_node(&workspace, node_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
+            })?;
+        let (Some(execution_id), Some(node_execution_id)) =
+            (node.execution_id, node.node_execution_id)
+        else {
+            return Err(WorkflowError::invalid_state(
+                "Workspace node is not a Workflow Node",
+            ));
+        };
+        Ok(WorkspaceNodeRetryTarget {
+            execution_id,
+            node_execution_id,
+        })
     }
 }
 
@@ -356,6 +398,7 @@ mod tests {
                         content_kind: "session",
                         capabilities: WorkspaceNodeCapabilitiesDto {
                             can_approve: false,
+                            can_retry: false,
                             can_close: false,
                         },
                         updated_at: 1.0,

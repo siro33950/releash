@@ -277,17 +277,24 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         provider: AcceptanceProvider,
         workflow_execution_id: &str,
         node_execution_id: &str,
+        initial_instruction: &str,
     ) -> Result<String, String> {
-        self.workflow_agent_sessions
-            .launch_workflow_agent_session(
+        let session = self
+            .workflow_agent_sessions
+            .prepare_workflow_agent_session(
                 worktree_path,
                 provider_kind(provider),
                 workflow_execution_id,
                 node_execution_id,
+                initial_instruction,
             )
             .await
-            .map(|session| session.id)
-            .map_err(|error| format!("{error:?}"))
+            .map_err(|error| format!("{error:?}"))?;
+        self.workflow_agent_sessions
+            .activate_workflow_agent_session(&session.id, node_execution_id)
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        Ok(session.id)
     }
 
     pub async fn dispatch_initial_instruction(

@@ -10,15 +10,15 @@ use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatusFilter, WorkflowError, WorkflowPageRequest,
 };
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
-    StopExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, RetryNodeCommand,
+    StartExecutionCommand, StopExecutionCommand, SubmitOutputArtifact, SubmitOutputCommand,
 };
 use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 
 use super::error::ApiError;
 use super::protocol::{
-    ApproveNodeRequest, GetArtifactResponse, MutationResponse, StartExecutionRequest,
-    StartExecutionResponse, SubmitArtifactRequest, ValidateArtifactRequest,
+    ApproveNodeRequest, GetArtifactResponse, MutationResponse, RetryNodeRequest,
+    StartExecutionRequest, StartExecutionResponse, SubmitOutputRequest, ValidateArtifactRequest,
     ValidateArtifactResponse,
 };
 use super::LocalApiState;
@@ -77,8 +77,12 @@ pub(super) fn router() -> Router<LocalApiState> {
             post(resume_execution),
         )
         .route(
-            "/v1/workflow/executions/{execution_id}/artifacts",
-            post(submit_artifact),
+            "/v1/workflow/executions/{execution_id}/retry",
+            post(retry_node),
+        )
+        .route(
+            "/v1/workflow/executions/{execution_id}/submit",
+            post(submit_output),
         )
         .route(
             "/v1/workflow/executions/{execution_id}/artifacts:validate",
@@ -212,10 +216,26 @@ async fn resume_execution(
     Ok(Json(MutationResponse::ok()))
 }
 
-async fn submit_artifact(
+async fn retry_node(
     State(state): State<LocalApiState>,
     Path(execution_id): Path<String>,
-    payload: Result<Json<SubmitArtifactRequest>, JsonRejection>,
+    payload: Result<Json<RetryNodeRequest>, JsonRejection>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
+    state
+        .runtime
+        .retry_node(RetryNodeCommand {
+            execution_id,
+            node_execution_id: payload.node_execution_id,
+        })
+        .await?;
+    Ok(Json(MutationResponse::ok()))
+}
+
+async fn submit_output(
+    State(state): State<LocalApiState>,
+    Path(execution_id): Path<String>,
+    payload: Result<Json<SubmitOutputRequest>, JsonRejection>,
 ) -> Result<Json<MutationResponse>, ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     state
@@ -224,8 +244,10 @@ async fn submit_artifact(
             execution_id,
             node_name: payload.node,
             node_execution_id: payload.node_execution_id,
-            contract: payload.contract,
-            artifact: payload.value,
+            artifact: payload.artifact.map(|artifact| SubmitOutputArtifact {
+                contract: artifact.contract,
+                value: artifact.value,
+            }),
         })
         .await?;
     Ok(Json(MutationResponse::ok()))

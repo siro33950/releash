@@ -19,6 +19,7 @@ pub const NODE_STATUS_COMPLETED: &str = "completed";
 pub const NODE_STATUS_FAILED: &str = "failed";
 pub const NODE_STATUS_INTERRUPTED: &str = "interrupted";
 pub const NODE_STATUS_RUNNING: &str = "running";
+#[cfg(test)]
 pub const NODE_STATUS_WAITING_APPROVAL: &str = "waiting_approval";
 
 pub fn default_node_history_status() -> String {
