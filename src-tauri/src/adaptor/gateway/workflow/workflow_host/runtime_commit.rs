@@ -1,11 +1,6 @@
 //! Workflow runtime transaction preparation and rollback.
 
-#[cfg(test)]
-use std::collections::HashMap;
 use std::sync::Arc;
-
-#[cfg(test)]
-use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionStore, TerminalExecutionStatus, WorkflowExecutionMetadata,
@@ -45,14 +40,6 @@ pub(crate) enum AbortOutcome {
     NotFound,
     /// 対象 execution は既に terminal で、中断対象でない。
     AlreadyTerminal,
-}
-
-#[cfg(test)]
-pub(crate) struct CommandMutationRollback<'a> {
-    pub(crate) execution_id: &'a str,
-    pub(crate) snapshot_before: DomainWorkflowExecution,
-    pub(crate) execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
-    pub(crate) context: &'a str,
 }
 
 pub(crate) struct RequiredEventCommit<'a> {
@@ -155,48 +142,4 @@ pub(crate) async fn restore_execution_store_active_snapshot(
                 "ExecutionStore rollback failed for execution {execution_id}: {e}"
             ))
         })
-}
-
-#[cfg(test)]
-pub(crate) async fn rollback_execution_projection_after_execution_store_sync_failure(
-    executions: &Mutex<HashMap<String, DomainWorkflowExecution>>,
-    execution_store: &Arc<ExecutionStore>,
-    execution_id: &str,
-    failed_snapshot: &RuntimeCommitSnapshot,
-) {
-    let Ok(active) = execution_store.list_active().await else {
-        return;
-    };
-    let active_projection = active
-        .into_iter()
-        .find(|execution| execution.execution_id == execution_id);
-    let Some(active_projection) = active_projection else {
-        return;
-    };
-    let rollback_state = match active_projection.status {
-        ExecutionStatus::Running => RuntimeExecutionState::Running,
-        #[cfg(test)]
-        ExecutionStatus::WaitingApproval => RuntimeExecutionState::WaitingApproval,
-        #[cfg(test)]
-        ExecutionStatus::Interrupted => return,
-        ExecutionStatus::Completed | ExecutionStatus::Aborted => return,
-    };
-    let mut execs = executions.lock().await;
-    let Some(exec) = execs.get_mut(execution_id) else {
-        return;
-    };
-    if exec.state() != &failed_snapshot.state {
-        return;
-    }
-    exec.restore_after_failed_commit(rollback_state, active_projection.interruption_reason);
-    if let Some(current_node) = active_projection.current_node {
-        if let Some(index) = exec
-            .workflow
-            .nodes
-            .iter()
-            .position(|node| node.name == current_node)
-        {
-            let _ = exec.set_current_node(index, active_projection.updated_at);
-        }
-    }
 }

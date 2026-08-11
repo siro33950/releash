@@ -2,16 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::adaptor::controller::agent_session_operation_wiring::{
-    CanonicalSendCommandV1, CanonicalSendTargetV1,
-};
-use crate::adaptor::controller::command::agent_session::session::dispatch_durable_send;
-use crate::adaptor::controller::command::workflow::{
-    parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode,
-    validate_execution_id,
-};
-use crate::adaptor::controller_support::{AgentImageAttachment, AgentSessionRuntimeState};
-use crate::adaptor::protocol::agent_session_v1::{SendCommandErrorDtoV1, SendCommandOutcomeDtoV1};
+use crate::adaptor::controller::command::workflow::validate_execution_id;
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
     StopExecutionCommand,
@@ -53,17 +44,14 @@ pub async fn start_workflow(
     worktree_path: String,
     request: Option<String>,
     created_from: Option<String>,
-    permission_mode: Option<String>,
 ) -> Result<String, String> {
     let created_from = parse_execution_origin(created_from)?;
-    let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
     runtime
         .start_execution(StartExecutionCommand {
             workflow_name,
             worktree_path,
             request,
             created_from,
-            permission_mode: permission_mode.to_string(),
         })
         .await
         .map_err(|e| e.to_string())
@@ -150,63 +138,6 @@ pub(crate) async fn approve_workflow_node_with_runtime(
         })
         .await
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn send_workflow_approval_chat_message(
-    app: tauri::AppHandle,
-    agent_runtime: tauri::State<'_, AgentSessionRuntimeState>,
-    store: tauri::State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
-    send_operation: tauri::State<
-        '_,
-        Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
-    >,
-    journal: tauri::State<'_, Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>>,
-    operation_id: String,
-    execution_id: String,
-    content: String,
-    permission_mode: Option<String>,
-    plan_mode: Option<bool>,
-    images: Option<Vec<AgentImageAttachment>>,
-    mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
-) -> Result<SendCommandOutcomeDtoV1, SendCommandErrorDtoV1> {
-    // Spec issues-1011 line 121: 起動以外の workflow 操作 API は execution_id を主語に取る。
-    // chat_session_id / worktree_path は execution_id から workflow runtime usecase が解決する。
-    validate_execution_id(&execution_id).map_err(|_| SendCommandErrorDtoV1::InvalidRequest)?;
-    let permission_mode = parse_workflow_approval_permission_mode(permission_mode)
-        .map_err(|_| SendCommandErrorDtoV1::InvalidRequest)?;
-    let outcome = dispatch_durable_send(
-        store.inner().as_ref(),
-        send_operation.inner().as_ref(),
-        journal.inner().as_ref(),
-        operation_id,
-        CanonicalSendCommandV1 {
-            target: CanonicalSendTargetV1::WorkflowApproval { execution_id },
-            content,
-            permission_mode: permission_mode.as_str().to_string(),
-            plan_mode: plan_mode.unwrap_or(false),
-            backend_id: None,
-            model_id: None,
-            images: images.unwrap_or_default(),
-            mentions: mentions.unwrap_or_default(),
-            editor_context: None,
-        },
-    )
-    .await?;
-    if let SendCommandOutcomeDtoV1::Accepted { operation } = &outcome {
-        if let Ok(Some(readback)) = agent_runtime
-            .get_session(&operation.receipt.session_id)
-            .await
-        {
-            crate::adaptor::controller_support::emit_after_workflow_node_message(
-                &app,
-                &readback.session,
-            )
-            .await;
-        }
-    }
-    Ok(outcome)
 }
 
 #[cfg(test)]

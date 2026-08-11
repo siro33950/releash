@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::adaptor::protocol::workflow::{
     WorkflowExecutionChangedPayloadView, WorkflowExecutionView,
@@ -10,17 +8,6 @@ use crate::domain::workflow::{
     Artifact, ExecutionStatus, NodeExecution, RuntimeExecutionState, WorkflowExecution,
     WorkflowRuntimeSnapshot,
 };
-
-fn optional_arc_state<R, T>(app: &tauri::AppHandle<R>) -> Option<Arc<T>>
-where
-    R: tauri::Runtime,
-    T: Send + Sync + 'static,
-{
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.state::<Arc<T>>().inner().clone()
-    }))
-    .ok()
-}
 
 fn emit_workflow_execution_view<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -160,62 +147,8 @@ pub(crate) async fn emit_workflow_execution_from_snapshot<R: tauri::Runtime>(
     _worktree_path: &str,
     state: WorkflowRuntimeSnapshot,
 ) {
-    let execution_id = state.execution_id.clone();
-    let execution_state = state.state.as_str().to_string();
-    let node_session_projections =
-        crate::domain::workflow::services::node_session_projection::collect_node_session_projections(
-            &state,
-        );
-    let workflow_agent_state =
-        crate::usecase::agent_session::status::AgentStatusCenter::workflow_execution_status_to_agent_state(
-            &state.state,
-        );
-    let updated_at = state.updated_at;
-    let worktree_path = state.worktree_path.clone();
     let view = build_workflow_execution_view_from_snapshot(state).await;
     emit_workflow_execution_view(app, view);
-    sync_agent_status(
-        app,
-        &worktree_path,
-        &execution_id,
-        &execution_state,
-        node_session_projections,
-        workflow_agent_state,
-        updated_at,
-    );
-}
-
-fn sync_agent_status<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    worktree_path: &str,
-    execution_id: &str,
-    execution_state: &str,
-    node_session_projections: Vec<
-        crate::domain::workflow::services::node_session_projection::NodeSessionProjection,
-    >,
-    workflow_agent_state: Option<crate::usecase::agent_session::status::AgentState>,
-    updated_at: f64,
-) {
-    let Some(center) =
-        optional_arc_state::<_, crate::usecase::agent_session::status::AgentStatusCenter>(app)
-    else {
-        return;
-    };
-    for changes in center.sync_workflow_node_session_statuses(
-        worktree_path,
-        execution_id,
-        execution_state,
-        node_session_projections,
-    ) {
-        crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
-    }
-    let changes = center.update_workflow_snapshot(
-        worktree_path,
-        execution_id,
-        workflow_agent_state,
-        updated_at,
-    );
-    crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
 }
 
 #[cfg(test)]
@@ -249,7 +182,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     nodes: vec![EventNodeDefinition {
@@ -410,7 +342,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     ..Default::default()

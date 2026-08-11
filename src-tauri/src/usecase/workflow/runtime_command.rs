@@ -1,46 +1,38 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::{WorkflowError, WorkflowRuntimeSnapshot};
+use crate::domain::workflow::WorkflowError;
+#[cfg(test)]
+use crate::domain::workflow::WorkflowRuntimeSnapshot;
 
-use super::approval_chat::WorkflowApprovalChatUsecase;
 #[cfg(test)]
 use super::command::ResolvedStartExecutionCommand;
+#[cfg(test)]
+use super::command::WorkflowRuntimeCommandPreflight;
 use super::command::{
     AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, RetryNodeCommand,
     StartExecutionCommand, StopExecutionCommand, SubmitOutputCommand,
     WorkflowAbortExecutionUsecase, WorkflowResumeExecutionUsecase, WorkflowRetryNodeUsecase,
-    WorkflowRuntimeCommandPreflight, WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase,
-    WorkflowSubmitOutputUsecase,
+    WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::control_plane::{WorkflowControlPlaneGateway, WorkflowControlPlaneUsecase};
-use super::ports::{
-    ApprovalChatTarget, WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand,
-    WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
-    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
-};
+use super::ports::WorkflowRuntimeCommandGateway;
 #[cfg(test)]
 use super::ports::{
-    WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowResumeExecutionGateway,
-    WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
-    WorkflowStopExecutionGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnTokenUsage,
+    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
+    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
 };
-use super::turn_complete::WorkflowTurnCompleteUsecase;
 
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
     runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
-    stall_observed: Arc<dyn WorkflowStallObservedGateway>,
     start_execution: WorkflowStartExecutionUsecase,
     abort_execution: WorkflowAbortExecutionUsecase,
     stop_execution: WorkflowStopExecutionUsecase,
     resume_execution: WorkflowResumeExecutionUsecase,
     retry_node: WorkflowRetryNodeUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
-    approval_chat: WorkflowApprovalChatUsecase,
-    turn_complete: WorkflowTurnCompleteUsecase,
     control_plane: WorkflowControlPlaneUsecase,
+    #[cfg(test)]
     preflight: WorkflowRuntimeCommandPreflight,
 }
 
@@ -49,16 +41,14 @@ impl WorkflowRuntimeUsecase {
         let control_plane_runtime: Arc<dyn WorkflowControlPlaneGateway> = runtime.clone();
         Self {
             runtime: runtime.clone(),
-            stall_observed: runtime.clone(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
             stop_execution: WorkflowStopExecutionUsecase::new(runtime.clone()),
             resume_execution: WorkflowResumeExecutionUsecase::new(runtime.clone()),
             retry_node: WorkflowRetryNodeUsecase::new(control_plane_runtime.clone()),
             submit_output: WorkflowSubmitOutputUsecase::new(control_plane_runtime.clone()),
-            approval_chat: WorkflowApprovalChatUsecase::new(runtime.clone()),
-            turn_complete: WorkflowTurnCompleteUsecase::new(runtime),
             control_plane: WorkflowControlPlaneUsecase::new(control_plane_runtime),
+            #[cfg(test)]
             preflight: WorkflowRuntimeCommandPreflight,
         }
     }
@@ -70,13 +60,8 @@ impl WorkflowRuntimeUsecase {
         self.start_execution.execute(command).await
     }
 
-    pub async fn recover_startup_excluding(
-        &self,
-        unresolved_turn_completions: &std::collections::BTreeSet<String>,
-    ) -> Result<(), WorkflowError> {
-        self.runtime
-            .recover_startup_excluding(unresolved_turn_completions)
-            .await
+    pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        self.runtime.recover_startup().await
     }
 
     pub async fn abort_execution(
@@ -119,53 +104,6 @@ impl WorkflowRuntimeUsecase {
             .await
     }
 
-    pub async fn complete_turn(
-        &self,
-        command: WorkflowTurnCompleteNotification,
-    ) -> Result<(), WorkflowError> {
-        self.turn_complete.complete_turn(command).await
-    }
-
-    pub async fn recover_turn_complete(
-        &self,
-        command: WorkflowTurnCompleteRecoveryCommand,
-    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
-        self.turn_complete.recover_turn_complete(command).await
-    }
-
-    pub async fn observe_stall(
-        &self,
-        command: WorkflowStallObservedNotification,
-    ) -> Result<(), WorkflowError> {
-        self.preflight.validate_stall_observed(&command)?;
-        self.stall_observed
-            .observe_stall(WorkflowStallObservedCommand {
-                chat_session_id: command.chat_session_id,
-                turn_phase: command.turn_phase,
-                idle_secs: command.idle_secs,
-                signal_count: command.signal_count,
-                cap_reached: command.cap_reached,
-            })
-            .await
-    }
-
-    pub async fn clear_stall(
-        &self,
-        command: WorkflowStallClearedNotification,
-    ) -> Result<(), WorkflowError> {
-        self.preflight.validate_stall_cleared(&command)?;
-        self.stall_observed
-            .clear_stall(WorkflowStallClearedCommand {
-                chat_session_id: command.chat_session_id,
-            })
-            .await
-    }
-
-    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow node guards around agent turn completion.
-    pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
-        self.turn_complete.is_session_running(chat_session_id).await
-    }
-
     #[cfg(test)]
     pub async fn get_state_by_execution_id(
         &self,
@@ -173,14 +111,6 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
         self.preflight.validate_execution_lookup(execution_id)?;
         self.runtime.get_state_by_execution_id(execution_id).await
-    }
-
-    pub async fn get_state_by_worktree(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-        self.preflight.validate_worktree_lookup(worktree_path)?;
-        self.runtime.get_state_by_worktree(worktree_path).await
     }
 
     #[cfg(test)]
@@ -215,16 +145,6 @@ impl WorkflowRuntimeUsecase {
     pub async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
         self.runtime
             .application_shutdown_target_execution_ids()
-            .await
-    }
-
-    pub async fn prepare_approval_chat(
-        &self,
-        execution_id: &str,
-        content: &str,
-    ) -> Result<ApprovalChatTarget, WorkflowError> {
-        self.approval_chat
-            .prepare_approval_chat(execution_id, content)
             .await
     }
 }
@@ -281,7 +201,6 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
-        session_running: bool,
     }
 
     #[async_trait::async_trait]
@@ -415,41 +334,6 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowTurnCompleteGateway for FakeRuntimeGateway {
-        async fn is_session_running(&self, _chat_session_id: &str) -> bool {
-            self.calls.lock().unwrap().push("is_running");
-            self.session_running
-        }
-
-        async fn complete_turn(
-            &self,
-            _command: WorkflowTurnCompleteCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("complete_turn");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowStallObservedGateway for FakeRuntimeGateway {
-        async fn observe_stall(
-            &self,
-            _command: WorkflowStallObservedCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("observe_stall");
-            Ok(())
-        }
-
-        async fn clear_stall(
-            &self,
-            _command: WorkflowStallClearedCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("clear_stall");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
         async fn recover_startup(&self) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("recover_startup");
@@ -461,14 +345,6 @@ mod tests {
             _execution_id: &str,
         ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             self.calls.lock().unwrap().push("state_by_execution");
-            Ok(None)
-        }
-
-        async fn get_state_by_worktree(
-            &self,
-            _worktree_path: &str,
-        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-            self.calls.lock().unwrap().push("state_by_worktree");
             Ok(None)
         }
     }
@@ -484,35 +360,9 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl WorkflowApprovalChatGateway for FakeRuntimeGateway {
-        async fn resolve_approval_chat_target(
-            &self,
-            _execution_id: &str,
-        ) -> Result<ApprovalChatTarget, WorkflowError> {
-            self.calls.lock().unwrap().push("resolve_approval_chat");
-            Ok(ApprovalChatTarget {
-                chat_session_id: "chat".to_string(),
-                worktree_path: "/tmp/wt".to_string(),
-            })
-        }
-
-        async fn validate_approval_chat_instruction(
-            &self,
-            _chat_session_id: &str,
-            _content: &str,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("validate_approval_chat");
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn runtime_usecase_delegates_runtime_commands() {
-        let gateway = Arc::new(FakeRuntimeGateway {
-            session_running: true,
-            ..Default::default()
-        });
+        let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
         let _ = usecase
@@ -521,7 +371,6 @@ mod tests {
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
-                permission_mode: "ask".to_string(),
             })
             .await
             .unwrap();
@@ -544,30 +393,10 @@ mod tests {
             })
             .await
             .unwrap();
-        usecase
-            .complete_turn(WorkflowTurnCompleteNotification {
-                chat_session_id: "chat".to_string(),
-                exit_code: 0,
-                final_text_parts: vec!["ok".to_string()],
-                failure_signal: None,
-                token_usage: Some(WorkflowTurnTokenUsage {
-                    input_tokens: 1,
-                    output_tokens: 2,
-                }),
-                interrupted: false,
-            })
-            .await
-            .unwrap();
         let _ = usecase
             .get_state_by_execution_id("00000000-0000-0000-0000-000000000001")
             .await
             .unwrap();
-        let _ = usecase.get_state_by_worktree("/tmp/wt").await.unwrap();
-        let _ = usecase
-            .prepare_approval_chat("00000000-0000-0000-0000-000000000001", "ok")
-            .await
-            .unwrap();
-
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
             [
@@ -577,12 +406,7 @@ mod tests {
                 "abort",
                 "stop",
                 "resume",
-                "is_running",
-                "complete_turn",
-                "state_by_execution",
-                "state_by_worktree",
-                "resolve_approval_chat",
-                "validate_approval_chat"
+                "state_by_execution"
             ]
         );
     }
@@ -601,96 +425,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_turn_returns_when_session_is_not_running() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        usecase
-            .complete_turn(WorkflowTurnCompleteNotification {
-                chat_session_id: "chat".to_string(),
-                exit_code: 0,
-                final_text_parts: Vec::new(),
-                failure_signal: None,
-                token_usage: None,
-                interrupted: false,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["is_running"]);
-    }
-
-    #[tokio::test]
-    async fn observe_stall_validates_and_delegates_to_gateway() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        usecase
-            .observe_stall(WorkflowStallObservedNotification {
-                chat_session_id: "chat".to_string(),
-                turn_phase: "streaming".to_string(),
-                idle_secs: 44,
-                signal_count: 1,
-                cap_reached: false,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["observe_stall"]);
-    }
-
-    #[tokio::test]
-    async fn observe_stall_rejects_empty_session_id() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        let err = usecase
-            .observe_stall(WorkflowStallObservedNotification {
-                chat_session_id: " ".to_string(),
-                turn_phase: "streaming".to_string(),
-                idle_secs: 44,
-                signal_count: 1,
-                cap_reached: false,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, WorkflowError::Validation(_)));
-        assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn clear_stall_validates_and_delegates_to_gateway() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        usecase
-            .clear_stall(WorkflowStallClearedNotification {
-                chat_session_id: "chat".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(gateway.calls.lock().unwrap().as_slice(), ["clear_stall"]);
-    }
-
-    #[tokio::test]
-    async fn clear_stall_rejects_empty_session_id() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        let err = usecase
-            .clear_stall(WorkflowStallClearedNotification {
-                chat_session_id: " ".to_string(),
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, WorkflowError::Validation(_)));
-        assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn start_execution_rejects_invalid_workflow_name_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
@@ -701,7 +435,6 @@ mod tests {
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
-                permission_mode: "ask".to_string(),
             })
             .await
             .unwrap_err();
@@ -778,15 +511,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(execution_err, WorkflowError::Validation(_)));
-
-        let worktree_err = usecase.get_state_by_worktree(" ").await.unwrap_err();
-        assert!(matches!(worktree_err, WorkflowError::Validation(_)));
-
-        let chat_err = usecase
-            .prepare_approval_chat("00000000-0000-0000-0000-000000000001", " ")
-            .await
-            .unwrap_err();
-        assert!(matches!(chat_err, WorkflowError::Validation(_)));
 
         assert!(gateway.calls.lock().unwrap().is_empty());
     }

@@ -99,15 +99,6 @@ pub trait GitConfigRepository: Send + Sync {
         &self,
         path_hint: &str,
     ) -> Result<Option<String>, RepositoryError>;
-    /// 現在ブランチの実効ベースブランチ名を返す（agent プロセスへ渡す
-    /// `RELEASH_BASE_BRANCH` 用）。`resolve_current_base_branch` の解決結果に加え、
-    /// base が local/remote ref として実在し、かつ現在 HEAD と merge-base が計算できる
-    /// ことを検証する。解決不可・detached・unborn・ref 不在・merge-base 不成立は `None`。
-    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-    fn resolve_effective_base_branch(
-        &self,
-        repo_path: &str,
-    ) -> Result<Option<String>, RepositoryError>;
     /// `path_hint` 配下のリポジトリで `base_name` の ref（local `refs/heads/<name>` →
     /// remote `refs/remotes/origin/<name>` の順）を解決し、base コミットの OID(hex) を返す。
     /// ref が実在しない場合は `None`。base ref → コミット OID の解決ルールを所有し、

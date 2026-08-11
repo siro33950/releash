@@ -97,7 +97,6 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
         binding.terminal_bearer_token(),
         None,
         None,
-        None,
     );
     let server_runtime = tokio::runtime::Runtime::new().unwrap();
     let server = binding.start(router, server_runtime.handle());

@@ -11,8 +11,7 @@ const mocks = vi.hoisted(() => ({
 		error: null as string | null,
 		missingNodeId: null as string | null,
 	},
-	boundSessionChat: vi.fn(),
-	providerAgentSessionRoute: vi.fn(),
+	agentSessionRoute: vi.fn(),
 	approveWorkspaceNode: vi.fn().mockResolvedValue(null),
 	retryWorkspaceNode: vi.fn().mockResolvedValue(null),
 }));
@@ -23,22 +22,10 @@ vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
 		mocks.approveWorkspaceNode(...args),
 	retryWorkspaceNode: (...args: unknown[]) => mocks.retryWorkspaceNode(...args),
 }));
-vi.mock("@/components/panels/AgentChatPanel", () => ({
-	BoundSessionChat: (props: Record<string, unknown>) => {
-		mocks.boundSessionChat(props);
-		return (
-			<div data-testid="bound-session-chat">
-				<div>Conversation transcript</div>
-				<textarea aria-label="Message input" />
-				<button type="button">Respond permission</button>
-			</div>
-		);
-	},
-}));
-vi.mock("@/components/panels/ProviderAgentSessionPanel", () => ({
-	ProviderAgentSessionRoute: (props: Record<string, unknown>) => {
-		mocks.providerAgentSessionRoute(props);
-		return <div data-testid="provider-agent-session-route" />;
+vi.mock("@/components/panels/AgentSessionPanel", () => ({
+	AgentSessionRoute: (props: Record<string, unknown>) => {
+		mocks.agentSessionRoute(props);
+		return <div data-testid="agent-session-route" />;
 	},
 }));
 
@@ -55,27 +42,13 @@ function sessionDetail(
 		hasArtifact: false,
 		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
-		content: { kind: "session", sessionId },
+		content: { kind: "agentSession", sessionId },
 	};
 }
 
 function renderView(nodeId = "node") {
 	return render(
-		<NodeContentView
-			worktreePath="/repo"
-			nodeId={nodeId}
-			theme="light"
-			activeEditorPath="/repo/src/main.ts"
-			openEditorPaths={["/repo/src/main.ts"]}
-			activeEditorSelection={{
-				filePath: "/repo/src/main.ts",
-				startLine: 2,
-				endLine: 4,
-			}}
-			registerDropZone={vi.fn()}
-			sendMessageRef={{ current: null }}
-			onOpenDiffFile={vi.fn()}
-		/>,
+		<NodeContentView worktreePath="/repo" nodeId={nodeId} theme="light" />,
 	);
 }
 
@@ -84,8 +57,7 @@ beforeEach(() => {
 	mocks.detailState.loading = false;
 	mocks.detailState.error = null;
 	mocks.detailState.missingNodeId = null;
-	mocks.boundSessionChat.mockClear();
-	mocks.providerAgentSessionRoute.mockClear();
+	mocks.agentSessionRoute.mockClear();
 	mocks.approveWorkspaceNode.mockClear();
 	mocks.retryWorkspaceNode.mockClear();
 });
@@ -98,7 +70,6 @@ describe("NodeContentView", () => {
 			<NodeContentView
 				worktreePath="/repo"
 				nodeId="new-node"
-				registerDropZone={vi.fn()}
 				onNodeMissing={onNodeMissing}
 			/>,
 		);
@@ -109,7 +80,6 @@ describe("NodeContentView", () => {
 			<NodeContentView
 				worktreePath="/repo"
 				nodeId="new-node"
-				registerDropZone={vi.fn()}
 				onNodeMissing={onNodeMissing}
 			/>,
 		);
@@ -117,81 +87,33 @@ describe("NodeContentView", () => {
 		expect(onNodeMissing).toHaveBeenCalledWith("/repo", "new-node");
 	});
 
-	it("uses the same complete BoundSessionChat for standalone and Workflow Session Nodes", () => {
-		mocks.detailState.detail = sessionDetail(
-			"standalone",
-			"session-standalone",
-		);
-		const { rerender } = renderView("standalone");
-
-		expect(screen.getByText("Conversation transcript")).toBeInTheDocument();
-		expect(
-			screen.getByRole("textbox", { name: "Message input" }),
-		).toBeVisible();
-		expect(
-			screen.getByRole("button", { name: "Respond permission" }),
-		).toBeVisible();
-		expect(mocks.boundSessionChat).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				sessionId: "session-standalone",
-				worktreePath: "/repo",
-				activeEditorPath: "/repo/src/main.ts",
-				openEditorPaths: ["/repo/src/main.ts"],
-				activeEditorSelection: {
-					filePath: "/repo/src/main.ts",
-					startLine: 2,
-					endLine: 4,
-				},
-				dropZoneName: "agent",
-			}),
-		);
-
-		mocks.detailState.detail = sessionDetail(
-			"workflow-session",
-			"session-workflow",
-		);
-		rerender(
-			<NodeContentView
-				worktreePath="/repo"
-				nodeId="workflow-session"
-				registerDropZone={vi.fn()}
-			/>,
-		);
-		expect(mocks.boundSessionChat).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				sessionId: "session-workflow",
-				worktreePath: "/repo",
-			}),
-		);
-	});
-
-	it("Workflow Session NodeはProvider AgentSession Terminalを表示する", () => {
+	it("Workflow Session NodeはAgentSession Terminalを表示する", () => {
 		mocks.detailState.detail = {
-			...sessionDetail("workflow-session", "provider-agent-session-1"),
+			...sessionDetail("workflow-session", "agent-session-1"),
 			content: {
-				kind: "providerAgentSession",
-				sessionId: "provider-agent-session-1",
+				kind: "agentSession",
+				sessionId: "agent-session-1",
 			},
 		} as unknown as WorkspaceNodeDetail;
 
 		renderView("workflow-session");
 
-		expect(screen.getByTestId("provider-agent-session-route")).toBeVisible();
-		expect(mocks.providerAgentSessionRoute).toHaveBeenCalledWith(
+		expect(screen.getByTestId("agent-session-route")).toBeVisible();
+		expect(mocks.agentSessionRoute).toHaveBeenCalledWith(
 			expect.objectContaining({
-				agentSessionId: "provider-agent-session-1",
+				agentSessionId: "agent-session-1",
 				theme: "light",
 			}),
 		);
-		expect(mocks.boundSessionChat).not.toHaveBeenCalled();
 	});
 
-	it("provides a bounded flex column so the Session transcript can scroll", () => {
+	it("provides a bounded flex column so the AgentSession terminal can scroll", () => {
 		mocks.detailState.detail = sessionDetail("standalone");
 		renderView("standalone");
 
-		const contentBoundary =
-			screen.getByTestId("bound-session-chat").parentElement;
+		const contentBoundary = screen.getByTestId(
+			"agent-session-route",
+		).parentElement;
 		expect(contentBoundary).toHaveClass(
 			"flex",
 			"min-h-0",
@@ -209,7 +131,7 @@ describe("NodeContentView", () => {
 		renderView("queued");
 
 		expect(screen.getByText("This session has not started yet.")).toBeVisible();
-		expect(mocks.boundSessionChat).not.toHaveBeenCalled();
+		expect(mocks.agentSessionRoute).not.toHaveBeenCalled();
 	});
 
 	it("reports a missing non-queued Session as unavailable", () => {
@@ -223,7 +145,7 @@ describe("NodeContentView", () => {
 		expect(
 			screen.queryByText("This session has not started yet."),
 		).not.toBeInTheDocument();
-		expect(mocks.boundSessionChat).not.toHaveBeenCalled();
+		expect(mocks.agentSessionRoute).not.toHaveBeenCalled();
 	});
 
 	it("renders masked Command, status, exit code, duration, stdout, and stderr", () => {

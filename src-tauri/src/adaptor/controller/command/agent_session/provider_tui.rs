@@ -3,44 +3,39 @@ use std::time::Instant;
 
 use tauri::State;
 
-use crate::adaptor::protocol::provider_agent_session::{
-    ProviderAgentSessionArchiveResponse, ProviderAgentSessionOpenResponse,
-    ProviderAvailabilitySnapshotResponse, ProviderHookHealthProviderResponse,
-    ProviderHookHealthWarningResponse,
+use crate::adaptor::protocol::agent_session::{
+    AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
+    ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
 };
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::other::error::AppError;
 use crate::usecase::agent_session::{
-    ProviderAgentSessionHistoryPageDto, ProviderAgentSessionHistoryQueryError,
-    ProviderAgentSessionHistoryReadUsecase, ProviderAgentSessionHistoryRequest,
-    ProviderAgentSessionHistoryResumeRequest, ProviderAgentSessionItemDto,
-    ProviderAgentSessionLaunchRequest, ProviderAgentSessionLaunchUsecase,
-    ProviderAgentSessionLaunchUsecaseError, ProviderAgentSessionLifecycleDto,
-    ProviderAgentSessionLifecycleUsecase, ProviderAgentSessionLifecycleUsecaseError,
-    ProviderAgentSessionListPageDto, ProviderAgentSessionListRequest,
-    ProviderAgentSessionOpenOutcome, ProviderAgentSessionOriginFilter,
-    ProviderAgentSessionProviderDto, ProviderAgentSessionReadUsecase,
-    ProviderAgentSessionReadUsecaseError, ProviderAvailabilityUsecase,
-    ProviderAvailabilityUsecaseError,
+    AgentSessionHistoryPageDto, AgentSessionHistoryQueryError, AgentSessionHistoryReadUsecase,
+    AgentSessionHistoryRequest, AgentSessionHistoryResumeRequest, AgentSessionItemDto,
+    AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError,
+    AgentSessionLifecycleDto, AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError,
+    AgentSessionListPageDto, AgentSessionListRequest, AgentSessionOpenOutcome,
+    AgentSessionOriginFilter, AgentSessionProviderDto, AgentSessionReadUsecase,
+    AgentSessionReadUsecaseError, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
 };
 
 #[tauri::command]
-pub fn list_available_provider_agent_session_providers(
+pub fn list_available_agent_session_providers(
     availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
-) -> Result<Vec<ProviderAgentSessionProviderDto>, AppError> {
+) -> Result<Vec<AgentSessionProviderDto>, AppError> {
     availability
         .available_providers()
         .map(|providers| {
             providers
                 .into_iter()
                 .map(|provider| match provider {
-                    ProviderKind::Claude => ProviderAgentSessionProviderDto::Claude,
-                    ProviderKind::Codex => ProviderAgentSessionProviderDto::Codex,
+                    ProviderKind::Claude => AgentSessionProviderDto::Claude,
+                    ProviderKind::Codex => AgentSessionProviderDto::Codex,
                 })
                 .collect()
         })
@@ -127,8 +122,8 @@ fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppEr
 }
 
 #[tauri::command]
-pub async fn create_provider_agent_session(
-    launch: State<'_, Arc<ProviderAgentSessionLaunchUsecase>>,
+pub async fn create_agent_session(
+    launch: State<'_, Arc<AgentSessionLaunchUsecase>>,
     workspace_identity: String,
     worktree_path: String,
     provider: String,
@@ -143,7 +138,7 @@ pub async fn create_provider_agent_session(
         command_ingress.elapsed(),
     );
     Arc::clone(launch.inner())
-        .launch_standalone_idempotent(ProviderAgentSessionLaunchRequest {
+        .launch_standalone_idempotent(AgentSessionLaunchRequest {
             workspace: WorkspaceIdentity::new(workspace_identity),
             worktree_path,
             provider,
@@ -157,8 +152,8 @@ pub async fn create_provider_agent_session(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_provider_agent_session_history_candidate(
-    launch: State<'_, Arc<ProviderAgentSessionLaunchUsecase>>,
+pub async fn resume_agent_session_history_candidate(
+    launch: State<'_, Arc<AgentSessionLaunchUsecase>>,
     workspace_identity: String,
     worktree_path: String,
     provider: String,
@@ -169,7 +164,7 @@ pub async fn resume_provider_agent_session_history_candidate(
 ) -> Result<String, AppError> {
     let provider = parse_provider(&provider)?;
     let outcome = launch
-        .resume_history(ProviderAgentSessionHistoryResumeRequest {
+        .resume_history(AgentSessionHistoryResumeRequest {
             workspace: WorkspaceIdentity::new(workspace_identity),
             worktree_path,
             provider,
@@ -181,10 +176,10 @@ pub async fn resume_provider_agent_session_history_candidate(
         .await
         .map_err(launch_error)?;
     Ok(match outcome {
-        crate::usecase::agent_session::ProviderAgentSessionHistoryResumeOutcome::Open(session)
-        | crate::usecase::agent_session::ProviderAgentSessionHistoryResumeOutcome::Paused(
-            session,
-        ) => session.session().id().to_string(),
+        crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Open(session)
+        | crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Paused(session) => {
+            session.session().id().to_string()
+        }
     })
 }
 
@@ -193,24 +188,24 @@ fn parse_provider(value: &str) -> Result<ProviderKind, AppError> {
         "claude" => Ok(ProviderKind::Claude),
         "codex" => Ok(ProviderKind::Codex),
         _ => Err(AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_PROVIDER",
+            "AGENT_SESSION_INVALID_PROVIDER",
             "Provider must be selected explicitly",
         )),
     }
 }
 
 #[tauri::command]
-pub async fn list_provider_agent_sessions(
-    read: State<'_, Arc<ProviderAgentSessionReadUsecase>>,
+pub async fn list_agent_sessions(
+    read: State<'_, Arc<AgentSessionReadUsecase>>,
     workspace_identity: String,
     lifecycle: Option<String>,
     origin: Option<String>,
     limit: Option<usize>,
     after_session_id: Option<String>,
-) -> Result<ProviderAgentSessionListPageDto, AppError> {
+) -> Result<AgentSessionListPageDto, AppError> {
     let lifecycle = lifecycle.as_deref().map(parse_lifecycle).transpose()?;
     let origin = origin.as_deref().map(parse_origin).transpose()?;
-    read.list(ProviderAgentSessionListRequest {
+    read.list(AgentSessionListRequest {
         workspace: WorkspaceIdentity::new(workspace_identity),
         lifecycle,
         origin,
@@ -221,33 +216,33 @@ pub async fn list_provider_agent_sessions(
     .map_err(read_error)
 }
 
-fn parse_origin(value: &str) -> Result<ProviderAgentSessionOriginFilter, AppError> {
+fn parse_origin(value: &str) -> Result<AgentSessionOriginFilter, AppError> {
     match value {
-        "standalone" => Ok(ProviderAgentSessionOriginFilter::Standalone),
-        "workflow_node" => Ok(ProviderAgentSessionOriginFilter::WorkflowNode),
+        "standalone" => Ok(AgentSessionOriginFilter::Standalone),
+        "workflow_node" => Ok(AgentSessionOriginFilter::WorkflowNode),
         _ => Err(AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_ORIGIN",
-            "Provider AgentSession origin is invalid",
+            "AGENT_SESSION_INVALID_ORIGIN",
+            "AgentSession origin is invalid",
         )),
     }
 }
 
 #[tauri::command]
-pub async fn get_provider_agent_session(
-    read: State<'_, Arc<ProviderAgentSessionReadUsecase>>,
+pub async fn get_agent_session(
+    read: State<'_, Arc<AgentSessionReadUsecase>>,
     agent_session_id: String,
-) -> Result<Option<ProviderAgentSessionItemDto>, AppError> {
+) -> Result<Option<AgentSessionItemDto>, AppError> {
     read.get(&agent_session_id).await.map_err(read_error)
 }
 
 #[tauri::command]
-pub async fn open_provider_agent_session(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn open_agent_session(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<ProviderAgentSessionOpenResponse, AppError> {
+) -> Result<AgentSessionOpenResponse, AppError> {
     lifecycle
         .open(&agent_session_id, rows, cols, &caller_request_id)
         .await
@@ -256,13 +251,13 @@ pub async fn open_provider_agent_session(
 }
 
 #[tauri::command]
-pub async fn resume_provider_agent_session(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn resume_agent_session(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<ProviderAgentSessionOpenResponse, AppError> {
+) -> Result<AgentSessionOpenResponse, AppError> {
     lifecycle
         .resume(&agent_session_id, rows, cols, &caller_request_id)
         .await
@@ -271,13 +266,13 @@ pub async fn resume_provider_agent_session(
 }
 
 #[tauri::command]
-pub async fn restore_provider_agent_session(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn restore_agent_session(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<ProviderAgentSessionOpenResponse, AppError> {
+) -> Result<AgentSessionOpenResponse, AppError> {
     lifecycle
         .restore(&agent_session_id, rows, cols, &caller_request_id)
         .await
@@ -286,11 +281,11 @@ pub async fn restore_provider_agent_session(
 }
 
 #[tauri::command]
-pub async fn archive_provider_agent_session(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn archive_agent_session(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     caller_request_id: String,
-) -> Result<ProviderAgentSessionArchiveResponse, AppError> {
+) -> Result<AgentSessionArchiveResponse, AppError> {
     lifecycle
         .archive(&agent_session_id, &caller_request_id)
         .await
@@ -299,8 +294,8 @@ pub async fn archive_provider_agent_session(
 }
 
 #[tauri::command]
-pub async fn delete_provider_agent_session(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn delete_agent_session(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     caller_request_id: String,
 ) -> Result<(), AppError> {
@@ -311,8 +306,8 @@ pub async fn delete_provider_agent_session(
 }
 
 #[tauri::command]
-pub async fn confirm_provider_agent_session_archive_delete(
-    lifecycle: State<'_, Arc<ProviderAgentSessionLifecycleUsecase>>,
+pub async fn confirm_agent_session_archive_delete(
+    lifecycle: State<'_, Arc<AgentSessionLifecycleUsecase>>,
     agent_session_id: String,
     caller_request_id: String,
 ) -> Result<(), AppError> {
@@ -323,14 +318,14 @@ pub async fn confirm_provider_agent_session_archive_delete(
 }
 
 #[tauri::command]
-pub async fn list_provider_agent_session_history(
-    query: State<'_, Arc<ProviderAgentSessionHistoryReadUsecase>>,
+pub async fn list_agent_session_history(
+    query: State<'_, Arc<AgentSessionHistoryReadUsecase>>,
     worktree_path: String,
     limit: Option<usize>,
     after: Option<String>,
-) -> Result<ProviderAgentSessionHistoryPageDto, AppError> {
+) -> Result<AgentSessionHistoryPageDto, AppError> {
     query
-        .list(ProviderAgentSessionHistoryRequest {
+        .list(AgentSessionHistoryRequest {
             worktree_path,
             limit: limit.unwrap_or(100),
             after,
@@ -350,32 +345,32 @@ pub async fn list_provider_hook_health_warnings(
         .map_err(hook_health_error)
 }
 
-fn parse_lifecycle(value: &str) -> Result<ProviderAgentSessionLifecycleDto, AppError> {
+fn parse_lifecycle(value: &str) -> Result<AgentSessionLifecycleDto, AppError> {
     match value {
-        "open" => Ok(ProviderAgentSessionLifecycleDto::Open),
-        "paused" => Ok(ProviderAgentSessionLifecycleDto::Paused),
-        "archived" => Ok(ProviderAgentSessionLifecycleDto::Archived),
+        "open" => Ok(AgentSessionLifecycleDto::Open),
+        "paused" => Ok(AgentSessionLifecycleDto::Paused),
+        "archived" => Ok(AgentSessionLifecycleDto::Archived),
         _ => Err(AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_LIFECYCLE",
-            "Provider AgentSession lifecycle is invalid",
+            "AGENT_SESSION_INVALID_LIFECYCLE",
+            "AgentSession lifecycle is invalid",
         )),
     }
 }
 
-impl From<ProviderAgentSessionOpenOutcome> for ProviderAgentSessionOpenResponse {
-    fn from(value: ProviderAgentSessionOpenOutcome) -> Self {
+impl From<AgentSessionOpenOutcome> for AgentSessionOpenResponse {
+    fn from(value: AgentSessionOpenOutcome) -> Self {
         match value {
-            ProviderAgentSessionOpenOutcome::Attached => Self::Attached,
-            ProviderAgentSessionOpenOutcome::Resumed => Self::Resumed,
-            ProviderAgentSessionOpenOutcome::Restored => Self::Restored,
-            ProviderAgentSessionOpenOutcome::Paused => Self::Paused,
-            ProviderAgentSessionOpenOutcome::Indeterminate => Self::Indeterminate,
-            ProviderAgentSessionOpenOutcome::GarbageCollected => Self::GarbageCollected,
+            AgentSessionOpenOutcome::Attached => Self::Attached,
+            AgentSessionOpenOutcome::Resumed => Self::Resumed,
+            AgentSessionOpenOutcome::Restored => Self::Restored,
+            AgentSessionOpenOutcome::Paused => Self::Paused,
+            AgentSessionOpenOutcome::Indeterminate => Self::Indeterminate,
+            AgentSessionOpenOutcome::GarbageCollected => Self::GarbageCollected,
         }
     }
 }
 
-impl From<AgentSessionArchiveOutcome> for ProviderAgentSessionArchiveResponse {
+impl From<AgentSessionArchiveOutcome> for AgentSessionArchiveResponse {
     fn from(value: AgentSessionArchiveOutcome) -> Self {
         match value {
             AgentSessionArchiveOutcome::Archived => Self::Archived,
@@ -410,106 +405,102 @@ impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningResponse {
     }
 }
 
-fn launch_error(error: ProviderAgentSessionLaunchUsecaseError) -> AppError {
+fn launch_error(error: AgentSessionLaunchUsecaseError) -> AppError {
     match error {
-        ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_PROVIDER_UNAVAILABLE",
+        AgentSessionLaunchUsecaseError::ProviderUnavailable => AppError::coded(
+            "AGENT_SESSION_PROVIDER_UNAVAILABLE",
             "Selected Provider is unavailable",
         ),
-        ProviderAgentSessionLaunchUsecaseError::InvalidInput => AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_INPUT",
-            "Provider AgentSession launch input is invalid",
+        AgentSessionLaunchUsecaseError::InvalidInput => AppError::coded(
+            "AGENT_SESSION_INVALID_INPUT",
+            "AgentSession launch input is invalid",
         ),
-        ProviderAgentSessionLaunchUsecaseError::Conflict => AppError::coded(
-            "PROVIDER_AGENT_SESSION_CONFLICT",
-            "Provider AgentSession conflicts with current state",
+        AgentSessionLaunchUsecaseError::Conflict => AppError::coded(
+            "AGENT_SESSION_CONFLICT",
+            "AgentSession conflicts with current state",
         ),
-        ProviderAgentSessionLaunchUsecaseError::StorageUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "Provider AgentSession persistence is unavailable",
+        AgentSessionLaunchUsecaseError::StorageUnavailable => AppError::coded(
+            "AGENT_SESSION_STORAGE_UNAVAILABLE",
+            "AgentSession persistence is unavailable",
         ),
-        ProviderAgentSessionLaunchUsecaseError::LaunchUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_LAUNCH_UNAVAILABLE",
+        AgentSessionLaunchUsecaseError::LaunchUnavailable => AppError::coded(
+            "AGENT_SESSION_LAUNCH_UNAVAILABLE",
             "Provider launch preparation is unavailable",
         ),
-        ProviderAgentSessionLaunchUsecaseError::TerminalUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "Provider AgentSession Terminal Surface is unavailable",
+        AgentSessionLaunchUsecaseError::TerminalUnavailable => AppError::coded(
+            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
+            "AgentSession Terminal Surface is unavailable",
         ),
-        ProviderAgentSessionLaunchUsecaseError::Corrupt => AppError::coded(
-            "PROVIDER_AGENT_SESSION_CORRUPT",
-            "Provider AgentSession state is corrupt",
-        ),
+        AgentSessionLaunchUsecaseError::Corrupt => {
+            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+        }
     }
 }
 
-fn lifecycle_error(error: ProviderAgentSessionLifecycleUsecaseError) -> AppError {
+fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppError {
     match error {
-        ProviderAgentSessionLifecycleUsecaseError::NotFound => AppError::coded(
-            "PROVIDER_AGENT_SESSION_NOT_FOUND",
-            "Provider AgentSession was not found",
+        AgentSessionLifecycleUsecaseError::NotFound => {
+            AppError::coded("AGENT_SESSION_NOT_FOUND", "AgentSession was not found")
+        }
+        AgentSessionLifecycleUsecaseError::InvalidOperation => AppError::coded(
+            "AGENT_SESSION_INVALID_OPERATION",
+            "AgentSession operation is not allowed in the current state",
         ),
-        ProviderAgentSessionLifecycleUsecaseError::InvalidOperation => AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_OPERATION",
-            "Provider AgentSession operation is not allowed in the current state",
+        AgentSessionLifecycleUsecaseError::Conflict => AppError::coded(
+            "AGENT_SESSION_CONFLICT",
+            "AgentSession conflicts with current state",
         ),
-        ProviderAgentSessionLifecycleUsecaseError::Conflict => AppError::coded(
-            "PROVIDER_AGENT_SESSION_CONFLICT",
-            "Provider AgentSession conflicts with current state",
+        AgentSessionLifecycleUsecaseError::StorageUnavailable => AppError::coded(
+            "AGENT_SESSION_STORAGE_UNAVAILABLE",
+            "AgentSession persistence is unavailable",
         ),
-        ProviderAgentSessionLifecycleUsecaseError::StorageUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "Provider AgentSession persistence is unavailable",
-        ),
-        ProviderAgentSessionLifecycleUsecaseError::LaunchUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_LAUNCH_UNAVAILABLE",
+        AgentSessionLifecycleUsecaseError::LaunchUnavailable => AppError::coded(
+            "AGENT_SESSION_LAUNCH_UNAVAILABLE",
             "Provider launch preparation is unavailable",
         ),
-        ProviderAgentSessionLifecycleUsecaseError::TerminalUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "Provider AgentSession Terminal Surface is unavailable",
+        AgentSessionLifecycleUsecaseError::TerminalUnavailable => AppError::coded(
+            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
+            "AgentSession Terminal Surface is unavailable",
         ),
-        ProviderAgentSessionLifecycleUsecaseError::Corrupt => AppError::coded(
-            "PROVIDER_AGENT_SESSION_CORRUPT",
-            "Provider AgentSession state is corrupt",
-        ),
+        AgentSessionLifecycleUsecaseError::Corrupt => {
+            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+        }
     }
 }
 
-fn read_error(error: ProviderAgentSessionReadUsecaseError) -> AppError {
+fn read_error(error: AgentSessionReadUsecaseError) -> AppError {
     match error {
-        ProviderAgentSessionReadUsecaseError::InvalidRequest => AppError::coded(
-            "PROVIDER_AGENT_SESSION_INVALID_REQUEST",
-            "Provider AgentSession read request is invalid",
+        AgentSessionReadUsecaseError::InvalidRequest => AppError::coded(
+            "AGENT_SESSION_INVALID_REQUEST",
+            "AgentSession read request is invalid",
         ),
-        ProviderAgentSessionReadUsecaseError::StorageUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "Provider AgentSession persistence is unavailable",
+        AgentSessionReadUsecaseError::StorageUnavailable => AppError::coded(
+            "AGENT_SESSION_STORAGE_UNAVAILABLE",
+            "AgentSession persistence is unavailable",
         ),
-        ProviderAgentSessionReadUsecaseError::TerminalUnavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "Provider AgentSession Terminal Surface is unavailable",
+        AgentSessionReadUsecaseError::TerminalUnavailable => AppError::coded(
+            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
+            "AgentSession Terminal Surface is unavailable",
         ),
-        ProviderAgentSessionReadUsecaseError::Corrupt => AppError::coded(
-            "PROVIDER_AGENT_SESSION_CORRUPT",
-            "Provider AgentSession state is corrupt",
-        ),
+        AgentSessionReadUsecaseError::Corrupt => {
+            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+        }
     }
 }
 
-fn history_error(error: ProviderAgentSessionHistoryQueryError) -> AppError {
+fn history_error(error: AgentSessionHistoryQueryError) -> AppError {
     match error {
-        ProviderAgentSessionHistoryQueryError::InvalidRequest => AppError::coded(
-            "PROVIDER_AGENT_SESSION_HISTORY_INVALID_REQUEST",
-            "Provider AgentSession history request is invalid",
+        AgentSessionHistoryQueryError::InvalidRequest => AppError::coded(
+            "AGENT_SESSION_HISTORY_INVALID_REQUEST",
+            "AgentSession history request is invalid",
         ),
-        ProviderAgentSessionHistoryQueryError::Unavailable => AppError::coded(
-            "PROVIDER_AGENT_SESSION_HISTORY_UNAVAILABLE",
-            "Provider AgentSession history is unavailable",
+        AgentSessionHistoryQueryError::Unavailable => AppError::coded(
+            "AGENT_SESSION_HISTORY_UNAVAILABLE",
+            "AgentSession history is unavailable",
         ),
-        ProviderAgentSessionHistoryQueryError::Corrupt => AppError::coded(
-            "PROVIDER_AGENT_SESSION_HISTORY_CORRUPT",
-            "Provider AgentSession history is corrupt",
+        AgentSessionHistoryQueryError::Corrupt => AppError::coded(
+            "AGENT_SESSION_HISTORY_CORRUPT",
+            "AgentSession history is corrupt",
         ),
     }
 }

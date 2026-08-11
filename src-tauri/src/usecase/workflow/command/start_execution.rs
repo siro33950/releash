@@ -11,7 +11,6 @@ pub struct StartExecutionCommand {
     pub worktree_path: String,
     pub request: Option<String>,
     pub created_from: ExecutionOrigin,
-    pub permission_mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +20,6 @@ pub struct ResolvedStartExecutionCommand {
     pub worktree_path: String,
     pub request: Option<String>,
     pub created_from: ExecutionOrigin,
-    pub permission_mode: String,
 }
 
 #[derive(Clone)]
@@ -58,7 +56,6 @@ impl WorkflowStartExecutionUsecase {
                 worktree_path,
                 request: command.request,
                 created_from: command.created_from,
-                permission_mode: command.permission_mode,
             })
             .await
     }

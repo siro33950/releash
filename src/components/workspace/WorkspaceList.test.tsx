@@ -1,18 +1,10 @@
-import {
-	act,
-	fireEvent,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
-	WorkspaceSessionHistoryItem,
 	WorkspaceTreeItem,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
@@ -21,7 +13,6 @@ import { WorkspaceList } from "./WorkspaceList";
 type MockWorkspaceTreeState = {
 	nodes: WorkspaceTreeItem[];
 	preferredNodeId?: string | null;
-	closedSessions?: WorkspaceSessionHistoryItem[];
 	workflowHistory?: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent?: WorkspaceTreeReconciliationEvent | null;
 	loading?: boolean;
@@ -33,13 +24,6 @@ const mocks = vi.hoisted(() => ({
 	emit: vi.fn().mockResolvedValue(undefined),
 	listen: vi.fn().mockResolvedValue(() => {}),
 	openUrl: vi.fn().mockResolvedValue(undefined),
-	archiveSession: vi.fn().mockResolvedValue(undefined),
-	restoreSession: vi.fn().mockResolvedValue(undefined),
-	getAgentSessionNotice: vi.fn().mockResolvedValue({
-		sessionId: "closed-session",
-		revision: 1,
-		notice: null,
-	}),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
 	beginArchiveReconciliation: vi.fn().mockResolvedValue(undefined),
 	synchronizeSelectedNodeId: vi.fn(),
@@ -65,11 +49,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: mocks.listen,
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
-vi.mock("@/hooks/useSessionStore", () => ({
-	archiveSession: mocks.archiveSession,
-	getAgentSessionNotice: mocks.getAgentSessionNotice,
-	restoreSession: mocks.restoreSession,
-}));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
 	useWorkflowConfig: () => ({
 		workflows: [{ name: "release", description: "Release workflow" }],
@@ -85,7 +64,6 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 		return {
 			nodes: state.nodes,
 			preferredNodeId: state.preferredNodeId ?? null,
-			closedSessions: state.closedSessions ?? [],
 			workflowHistory: state.workflowHistory ?? [],
 			reconciliationEvent: state.reconciliationEvent ?? null,
 			loading: state.loading ?? false,
@@ -116,17 +94,6 @@ const directNode: WorkspaceTreeItem = {
 	contentKind: "session",
 	capabilities: { canApprove: false, canRetry: false, canClose: true },
 	updatedAt: 1,
-};
-
-const closedSession: WorkspaceSessionHistoryItem = {
-	id: "closed-session",
-	worktreePath: "/repo/wt",
-	state: "closed",
-	createdAt: 1,
-	updatedAt: 2,
-	firstMessage: "Closed session",
-	messageCount: 1,
-	permissionMode: "edit",
 };
 
 const recursiveTree: WorkspaceTreeItem[] = [
@@ -197,14 +164,12 @@ function renderWorkspaceList(
 	overrides: Partial<React.ComponentProps<typeof WorkspaceList>> = {},
 ) {
 	const onSelectWorktree = vi.fn();
-	const onCreateSession = vi.fn();
 	const result = render(
 		<WorkspaceList
 			repoPaths={["/repo"]}
 			selectedRootPath="/repo/wt"
 			centerSelection={null}
 			onSelectWorktree={onSelectWorktree}
-			onCreateSession={onCreateSession}
 			onAddRepo={vi.fn()}
 			onShowSettings={vi.fn()}
 			{...overrides}
@@ -219,7 +184,6 @@ function renderWorkspaceList(
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={onCreateSession}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 				{...overrides}
@@ -230,7 +194,6 @@ function renderWorkspaceList(
 	return {
 		...result,
 		onSelectWorktree,
-		onCreateSession,
 		rerenderWorkspaceList,
 	};
 }
@@ -241,13 +204,13 @@ function mockDeferredProviderCreate() {
 		reject?: (error: Error) => void;
 	} = {};
 	mocks.invoke.mockImplementation((command: string) => {
-		if (command === "list_provider_agent_sessions") {
+		if (command === "list_agent_sessions") {
 			return Promise.resolve({ items: [], nextAfterSessionId: null });
 		}
-		if (command === "list_available_provider_agent_session_providers") {
+		if (command === "list_available_agent_session_providers") {
 			return Promise.resolve(["codex"]);
 		}
-		if (command === "create_provider_agent_session") {
+		if (command === "create_agent_session") {
 			return new Promise<string>((resolve, reject) => {
 				deferred.resolve = resolve;
 				deferred.reject = reject;
@@ -272,7 +235,7 @@ async function launchProviderCreate(
 			"/repo/wt",
 			"feature",
 			"repo",
-			expect.objectContaining({ kind: "provider_agent_session_launching" }),
+			expect.objectContaining({ kind: "agent_session_launching" }),
 		);
 	});
 }
@@ -340,9 +303,9 @@ describe("WorkspaceList", () => {
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
 	});
 
-	it("backendが絞り込んだStandalone Provider AgentSessionを選択できる", async () => {
+	it("backendが絞り込んだStandalone AgentSessionを選択できる", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({
 					items: [
 						{
@@ -374,7 +337,7 @@ describe("WorkspaceList", () => {
 			}),
 		);
 
-		expect(mocks.invoke).toHaveBeenCalledWith("list_provider_agent_sessions", {
+		expect(mocks.invoke).toHaveBeenCalledWith("list_agent_sessions", {
 			workspaceIdentity: "/repo/wt",
 			origin: "standalone",
 			limit: 100,
@@ -384,16 +347,16 @@ describe("WorkspaceList", () => {
 			"feature",
 			"repo",
 			{
-				kind: "provider_agent_session",
+				kind: "agent_session",
 				worktreePath: "/repo/wt",
 				agentSessionId: "provider-agent-1",
 			},
 		);
 	});
 
-	it("Archived Provider AgentSessionをWorkspaceからSessionHistoryへ移して復帰できる", async () => {
+	it("Archived AgentSessionをWorkspaceからSessionHistoryへ移して復帰できる", async () => {
 		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				const lifecycle = (args as { lifecycle?: string })?.lifecycle;
 				return Promise.resolve(
 					lifecycle === "archived"
@@ -419,10 +382,10 @@ describe("WorkspaceList", () => {
 						: { items: [], nextAfterSessionId: null },
 				);
 			}
-			if (command === "list_provider_agent_session_history") {
+			if (command === "list_agent_session_history") {
 				return Promise.resolve({ items: [], nextAfter: null });
 			}
-			if (command === "restore_provider_agent_session") {
+			if (command === "restore_agent_session") {
 				return Promise.resolve("restored");
 			}
 			return Promise.resolve(null);
@@ -450,7 +413,7 @@ describe("WorkspaceList", () => {
 
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith(
-				"restore_provider_agent_session",
+				"restore_agent_session",
 				expect.objectContaining({
 					agentSessionId: "provider-agent-archived",
 					rows: 24,
@@ -463,7 +426,7 @@ describe("WorkspaceList", () => {
 				"feature",
 				"repo",
 				{
-					kind: "provider_agent_session",
+					kind: "agent_session",
 					worktreePath: "/repo/wt",
 					agentSessionId: "provider-agent-archived",
 				},
@@ -471,9 +434,9 @@ describe("WorkspaceList", () => {
 		});
 	});
 
-	it("Standalone Provider AgentSessionの実行状態はテキストでなくアイコン色で表現する", async () => {
+	it("Standalone AgentSessionの実行状態はテキストでなくアイコン色で表現する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({
 					items: [
 						{
@@ -573,9 +536,9 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("Standalone Provider AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
+	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({
 					items: [
 						{
@@ -596,7 +559,7 @@ describe("WorkspaceList", () => {
 					nextAfterSessionId: null,
 				});
 			}
-			if (command === "archive_provider_agent_session") {
+			if (command === "archive_agent_session") {
 				return Promise.resolve("delete_confirmation_required");
 			}
 			return Promise.resolve(undefined);
@@ -616,14 +579,14 @@ describe("WorkspaceList", () => {
 			),
 		).toBeVisible();
 		expect(mocks.invoke).not.toHaveBeenCalledWith(
-			"confirm_provider_agent_session_archive_delete",
+			"confirm_agent_session_archive_delete",
 			expect.anything(),
 		);
 
 		await user.click(screen.getByRole("button", { name: "Delete" }));
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith(
-				"confirm_provider_agent_session_archive_delete",
+				"confirm_agent_session_archive_delete",
 				expect.objectContaining({
 					agentSessionId: "provider-agent-unknown",
 				}),
@@ -631,9 +594,9 @@ describe("WorkspaceList", () => {
 		});
 	});
 
-	it("Standalone Provider AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
+	it("Standalone AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({
 					items: [
 						{
@@ -654,13 +617,13 @@ describe("WorkspaceList", () => {
 					nextAfterSessionId: null,
 				});
 			}
-			if (command === "archive_provider_agent_session") {
+			if (command === "archive_agent_session") {
 				return Promise.resolve("archived");
 			}
 			return Promise.resolve(undefined);
 		});
 		const refresh = vi.fn();
-		window.addEventListener("provider-agent-session-refresh", refresh);
+		window.addEventListener("agent-session-refresh", refresh);
 		const user = userEvent.setup();
 		renderWorkspaceList();
 
@@ -675,12 +638,12 @@ describe("WorkspaceList", () => {
 		expect((event as CustomEvent).detail).toEqual({
 			worktreePath: "/repo/wt",
 		});
-		window.removeEventListener("provider-agent-session-refresh", refresh);
+		window.removeEventListener("agent-session-refresh", refresh);
 	});
 
-	it("Standalone Provider AgentSession一覧の次pageをcursorから表示する", async () => {
+	it("Standalone AgentSession一覧の次pageをcursorから表示する", async () => {
 		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
-			if (command !== "list_provider_agent_sessions") {
+			if (command !== "list_agent_sessions") {
 				return Promise.resolve(null);
 			}
 			const afterSessionId = (args as { afterSessionId?: string })
@@ -739,7 +702,7 @@ describe("WorkspaceList", () => {
 				name: "Codex AgentSession, open",
 			}),
 		).toBeVisible();
-		expect(mocks.invoke).toHaveBeenCalledWith("list_provider_agent_sessions", {
+		expect(mocks.invoke).toHaveBeenCalledWith("list_agent_sessions", {
 			workspaceIdentity: "/repo/wt",
 			origin: "standalone",
 			limit: 100,
@@ -901,7 +864,6 @@ describe("WorkspaceList", () => {
 				centerSelection={null}
 				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={vi.fn()}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -914,11 +876,9 @@ describe("WorkspaceList", () => {
 			nodes: recursiveTree,
 			preferredNodeId: directNode.id,
 		});
-		const { onSelectWorktree, onCreateSession, rerender } = renderWorkspaceList(
-			{
-				autoSelectPreferredNode: true,
-			},
-		);
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
 		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
 
 		mocks.treeStateOverrides.set("/repo/wt", {
@@ -936,7 +896,6 @@ describe("WorkspaceList", () => {
 				}}
 				autoSelectPreferredNode={false}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={onCreateSession}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -950,7 +909,6 @@ describe("WorkspaceList", () => {
 				centerSelection={null}
 				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={onCreateSession}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -990,7 +948,6 @@ describe("WorkspaceList", () => {
 				centerSelection={null}
 				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={vi.fn()}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -1014,9 +971,9 @@ describe("WorkspaceList", () => {
 			nodes: recursiveTree,
 			preferredNodeId: directNode.id,
 		});
-		const { onSelectWorktree, onCreateSession, rerender } = renderWorkspaceList(
-			{ autoSelectPreferredNode: true },
-		);
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
 		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
 
 		mocks.worktreeBranches = [{ ...makeBranch(), worktree_path: null }];
@@ -1027,7 +984,6 @@ describe("WorkspaceList", () => {
 				centerSelection={null}
 				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={onCreateSession}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -1048,7 +1004,6 @@ describe("WorkspaceList", () => {
 				centerSelection={null}
 				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={onCreateSession}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -1101,7 +1056,6 @@ describe("WorkspaceList", () => {
 				selectedRootPath="/repo/wt"
 				centerSelection={selection}
 				onSelectWorktree={vi.fn()}
-				onCreateSession={vi.fn()}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -1187,7 +1141,6 @@ describe("WorkspaceList", () => {
 				selectedRootPath="/repo/wt"
 				centerSelection={selection}
 				onSelectWorktree={onSelectWorktree}
-				onCreateSession={vi.fn()}
 				onAddRepo={vi.fn()}
 				onShowSettings={vi.fn()}
 			/>,
@@ -1227,28 +1180,27 @@ describe("WorkspaceList", () => {
 		let providerSessionListCalls = 0;
 		const refreshAfterCreate = new Promise(() => {});
 		const initialAttachment = {
-			agentSessionId: "provider-agent-session-1",
+			agentSessionId: "agent-session-1",
 			workspaceIdentity: "/repo/wt",
 			worktreePath: "/repo/wt",
 			provider: "codex" as const,
 		};
 		mocks.invoke.mockImplementation((command) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				providerSessionListCalls += 1;
 				return providerSessionListCalls === 1
 					? Promise.resolve({ items: [], nextAfterSessionId: null })
 					: refreshAfterCreate;
 			}
-			if (command === "list_available_provider_agent_session_providers") {
+			if (command === "list_available_agent_session_providers") {
 				return Promise.resolve(["codex"]);
 			}
-			if (command === "create_provider_agent_session") {
-				return Promise.resolve("provider-agent-session-1");
+			if (command === "create_agent_session") {
+				return Promise.resolve("agent-session-1");
 			}
 			return Promise.resolve(null);
 		});
-		const { onCreateSession, onSelectWorktree, rerenderWorkspaceList } =
-			renderWorkspaceList();
+		const { onSelectWorktree, rerenderWorkspaceList } = renderWorkspaceList();
 		wireSelectionRoundTrip({ onSelectWorktree, rerenderWorkspaceList });
 		await waitFor(() => {
 			expect(providerSessionListCalls).toBe(1);
@@ -1260,13 +1212,12 @@ describe("WorkspaceList", () => {
 		act(() => provider.focus());
 		await user.keyboard("{Enter}");
 
-		expect(onCreateSession).not.toHaveBeenCalled();
 		expect(
 			screen.queryByRole("dialog", { name: "New AgentSession" }),
 		).toBeNull();
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith(
-				"create_provider_agent_session",
+				"create_agent_session",
 				expect.objectContaining({
 					workspaceIdentity: "/repo/wt",
 					worktreePath: "/repo/wt",
@@ -1281,9 +1232,9 @@ describe("WorkspaceList", () => {
 				"feature",
 				"repo",
 				{
-					kind: "provider_agent_session",
+					kind: "agent_session",
 					worktreePath: "/repo/wt",
-					agentSessionId: "provider-agent-session-1",
+					agentSessionId: "agent-session-1",
 					initialAttachment,
 				},
 			);
@@ -1307,7 +1258,7 @@ describe("WorkspaceList", () => {
 		});
 
 		await act(async () => {
-			createCall.resolve?.("provider-agent-session-1");
+			createCall.resolve?.("agent-session-1");
 		});
 
 		expect(onSelectWorktree).not.toHaveBeenCalled();
@@ -1346,7 +1297,7 @@ describe("WorkspaceList", () => {
 		await launchProviderCreate(user, onSelectWorktree);
 		const launching = onSelectWorktree.mock.lastCall?.[3] as Extract<
 			CenterSelection,
-			{ kind: "provider_agent_session_launching" }
+			{ kind: "agent_session_launching" }
 		>;
 
 		await act(async () => {
@@ -1358,7 +1309,7 @@ describe("WorkspaceList", () => {
 			"feature",
 			"repo",
 			{
-				kind: "provider_agent_session_launching",
+				kind: "agent_session_launching",
 				worktreePath: "/repo/wt",
 				provider: "codex",
 				launchToken: launching.launchToken,
@@ -1540,50 +1491,13 @@ describe("WorkspaceList", () => {
 		expect(mocks.selectedNodeIds.get("/repo/wt")).toBe(directNode.id);
 	});
 
-	it("routes SessionHistory restore and archive through stored lifecycle commands", async () => {
-		const user = userEvent.setup();
-		mocks.treeStateOverrides.set("/repo/wt", {
-			nodes: recursiveTree,
-			closedSessions: [closedSession],
-		});
-		renderWorkspaceList();
-
-		await user.click(
-			screen.getByRole("button", { name: "Open menu for feature" }),
-		);
-		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
-		const restoreItem = await screen.findByRole("menuitem", {
-			name: /Closed session/,
-		});
-		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalled());
-		mocks.refreshTree.mockClear();
-		act(() => restoreItem.focus());
-		await user.keyboard("{Enter}");
-
-		expect(mocks.restoreSession).toHaveBeenCalledWith("closed-session");
-		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalledOnce());
-
-		await user.click(
-			screen.getByRole("button", { name: "Open menu for feature" }),
-		);
-		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
-		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalled());
-		mocks.refreshTree.mockClear();
-		fireEvent.click(
-			await screen.findByRole("button", { name: "Archive Closed session" }),
-		);
-
-		expect(mocks.archiveSession).toHaveBeenCalledWith("closed-session");
-		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalledOnce());
-	});
-
 	it("resumes a Provider history candidate as a new AgentSession", async () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({ items: [], nextAfterSessionId: null });
 			}
-			if (command === "list_provider_agent_session_history") {
+			if (command === "list_agent_session_history") {
 				return Promise.resolve({
 					items: [
 						{
@@ -1594,8 +1508,8 @@ describe("WorkspaceList", () => {
 					nextAfter: null,
 				});
 			}
-			if (command === "resume_provider_agent_session_history_candidate") {
-				return Promise.resolve("provider-agent-session-2");
+			if (command === "resume_agent_session_history_candidate") {
+				return Promise.resolve("agent-session-2");
 			}
 			return Promise.resolve(null);
 		});
@@ -1612,7 +1526,7 @@ describe("WorkspaceList", () => {
 		await user.keyboard("{Enter}");
 
 		expect(mocks.invoke).toHaveBeenCalledWith(
-			"resume_provider_agent_session_history_candidate",
+			"resume_agent_session_history_candidate",
 			expect.objectContaining({
 				workspaceIdentity: "/repo/wt",
 				worktreePath: "/repo/wt",
@@ -1628,9 +1542,9 @@ describe("WorkspaceList", () => {
 			"feature",
 			"repo",
 			{
-				kind: "provider_agent_session",
+				kind: "agent_session",
 				worktreePath: "/repo/wt",
-				agentSessionId: "provider-agent-session-2",
+				agentSessionId: "agent-session-2",
 			},
 		);
 	});
@@ -1638,10 +1552,10 @@ describe("WorkspaceList", () => {
 	it("Provider historyの次pageをcursorから表示する", async () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command, args?: unknown) => {
-			if (command === "list_provider_agent_sessions") {
+			if (command === "list_agent_sessions") {
 				return Promise.resolve({ items: [], nextAfterSessionId: null });
 			}
-			if (command === "list_provider_agent_session_history") {
+			if (command === "list_agent_session_history") {
 				const after = (args as { after?: string })?.after;
 				return Promise.resolve(
 					after
@@ -1679,14 +1593,11 @@ describe("WorkspaceList", () => {
 		act(() => loadMore.focus());
 		await user.keyboard("{Enter}");
 		await waitFor(() =>
-			expect(mocks.invoke).toHaveBeenCalledWith(
-				"list_provider_agent_session_history",
-				{
-					worktreePath: "/repo/wt",
-					limit: 100,
-					after: "history-cursor-1",
-				},
-			),
+			expect(mocks.invoke).toHaveBeenCalledWith("list_agent_session_history", {
+				worktreePath: "/repo/wt",
+				limit: 100,
+				after: "history-cursor-1",
+			}),
 		);
 		expect(
 			await screen.findByRole("menuitem", {
@@ -1694,63 +1605,6 @@ describe("WorkspaceList", () => {
 			}),
 		).toBeVisible();
 	});
-
-	it.each([
-		["restore", "セッション復元に失敗: unavailable"],
-		["archive", "セッションアーカイブに失敗: unavailable"],
-	] as const)(
-		"shows the originating SessionHistory %s notice without viewable-session registration",
-		async (operation, message) => {
-			const user = userEvent.setup();
-			const otherSession = {
-				...closedSession,
-				id: "other-session",
-				firstMessage: "Other closed session",
-			};
-			mocks.treeStateOverrides.set("/repo/wt", {
-				nodes: recursiveTree,
-				closedSessions: [closedSession, otherSession],
-			});
-			mocks.getAgentSessionNotice.mockResolvedValueOnce({
-				sessionId: closedSession.id,
-				revision: 1,
-				notice: { message },
-			});
-			if (operation === "restore") {
-				mocks.restoreSession.mockRejectedValueOnce(new Error("unavailable"));
-			} else {
-				mocks.archiveSession.mockRejectedValueOnce(new Error("unavailable"));
-			}
-			renderWorkspaceList();
-
-			await user.click(
-				screen.getByRole("button", { name: "Open menu for feature" }),
-			);
-			await user.hover(
-				screen.getByRole("menuitem", { name: "SessionHistory" }),
-			);
-			if (operation === "restore") {
-				const items = await screen.findAllByRole("menuitem", {
-					name: /Closed session/,
-				});
-				act(() => items[0]?.focus());
-				await user.keyboard("{Enter}");
-			} else {
-				fireEvent.click(
-					await screen.findByRole("button", { name: "Archive Closed session" }),
-				);
-			}
-
-			const alert = await screen.findByRole("alert", { hidden: true });
-			expect(screen.getAllByRole("alert", { hidden: true })).toHaveLength(1);
-			expect(alert).toHaveAttribute("data-session-id", "closed-session");
-			expect(alert).toHaveTextContent(message);
-			expect(alert).not.toHaveTextContent("Other closed session");
-			expect(mocks.getAgentSessionNotice).toHaveBeenCalledWith(
-				"closed-session",
-			);
-		},
-	);
 
 	it("invalidates Node detail when Close commits but tree refresh fails", async () => {
 		const user = userEvent.setup();

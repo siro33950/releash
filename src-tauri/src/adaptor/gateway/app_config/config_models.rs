@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::app_config::value_objects as domain_vo;
-use crate::domain::notification::DesktopNotifyMode as DomainDesktopNotifyMode;
 
 fn default_true() -> bool {
     true
@@ -110,7 +109,6 @@ where
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentsSection {
-    pub default: Option<String>,
     #[serde(default)]
     pub claude: ClaudeAgentSection,
     #[serde(default)]
@@ -126,17 +124,11 @@ pub struct WorkflowSection {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeAgentSection {
     pub cli_path: Option<String>,
-    /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
-    #[serde(default)]
-    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexAgentSection {
     pub cli_path: Option<String>,
-    /// registry の `fixed_models()` が優先されるため通常未使用（互換用に残す）。
-    #[serde(default)]
-    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,52 +195,6 @@ pub struct ServerSection {
     pub token: String,
     #[serde(default)]
     pub tls: TlsSection,
-    #[serde(default)]
-    pub notify: NotifySection,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DesktopNotifyMode {
-    #[default]
-    Always,
-    WhenInactive,
-}
-
-fn default_inactive_timeout() -> u32 {
-    2
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NotifySection {
-    #[serde(default)]
-    pub webhook_url: String,
-    #[serde(default)]
-    pub on_running: bool,
-    #[serde(default = "default_true")]
-    pub on_done: bool,
-    #[serde(default = "default_true")]
-    pub on_error: bool,
-    #[serde(default = "default_true")]
-    pub on_waiting: bool,
-    #[serde(default)]
-    pub desktop_mode: DesktopNotifyMode,
-    #[serde(default = "default_inactive_timeout")]
-    pub inactive_timeout_minutes: u32,
-}
-
-impl Default for NotifySection {
-    fn default() -> Self {
-        Self {
-            webhook_url: String::new(),
-            on_running: false,
-            on_done: true,
-            on_error: true,
-            on_waiting: true,
-            desktop_mode: DesktopNotifyMode::default(),
-            inactive_timeout_minutes: default_inactive_timeout(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,7 +222,6 @@ impl Default for ServerSection {
             port: default_port(),
             token: String::new(),
             tls: TlsSection::default(),
-            notify: NotifySection::default(),
         }
     }
 }
@@ -307,7 +252,6 @@ pub fn server_to_domain(server: &ServerSection) -> domain_vo::ServerConfig {
             cert: server.tls.cert.clone(),
             key: server.tls.key.clone(),
         },
-        notify: notify_to_domain(&server.notify),
     }
 }
 
@@ -321,37 +265,6 @@ pub fn server_to_model(server: domain_vo::ServerConfig) -> ServerSection {
             cert: server.tls.cert,
             key: server.tls.key,
         },
-        notify: notify_to_model(server.notify),
-    }
-}
-
-pub fn notify_to_domain(notify: &NotifySection) -> domain_vo::NotifyConfig {
-    domain_vo::NotifyConfig {
-        webhook_url: notify.webhook_url.clone(),
-        on_running: notify.on_running,
-        on_done: notify.on_done,
-        on_error: notify.on_error,
-        on_waiting: notify.on_waiting,
-        desktop_mode: match notify.desktop_mode {
-            DesktopNotifyMode::Always => DomainDesktopNotifyMode::Always,
-            DesktopNotifyMode::WhenInactive => DomainDesktopNotifyMode::WhenInactive,
-        },
-        inactive_timeout_minutes: notify.inactive_timeout_minutes,
-    }
-}
-
-pub fn notify_to_model(notify: domain_vo::NotifyConfig) -> NotifySection {
-    NotifySection {
-        webhook_url: notify.webhook_url,
-        on_running: notify.on_running,
-        on_done: notify.on_done,
-        on_error: notify.on_error,
-        on_waiting: notify.on_waiting,
-        desktop_mode: match notify.desktop_mode {
-            DomainDesktopNotifyMode::Always => DesktopNotifyMode::Always,
-            DomainDesktopNotifyMode::WhenInactive => DesktopNotifyMode::WhenInactive,
-        },
-        inactive_timeout_minutes: notify.inactive_timeout_minutes,
     }
 }
 

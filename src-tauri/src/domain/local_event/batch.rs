@@ -1,7 +1,5 @@
 //! Atomic commit batch and its result vocabulary.
 
-#![allow(dead_code)] // Closed commit vocabulary retains compatibility variants and accessors.
-
 use std::fmt;
 
 use crate::domain::local_event::events::UncommittedDomainEvent;
@@ -17,20 +15,12 @@ use crate::domain::local_event::mutation::{LocalStateMutation, OperationKind};
 /// a caller command merely to obtain an idempotency lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommitOperationKind {
-    Send,
-    PermissionResponse,
-    Stop,
-    SessionLifecycle,
     ApplicationQuit,
     Recovery,
     /// A caller-initiated mutation that is not one of the durable operation
     /// families above. Unlike internal projection progress, this lane closes
     /// atomically when an application shutdown becomes current.
     UserMutation,
-    /// A lifecycle transition owned by a target in the already accepted
-    /// application-shutdown plan. This lane remains open only for internal
-    /// quiescing progress; public lifecycle commands use `SessionLifecycle`.
-    ShutdownTarget,
     /// State advancement for work that already owns a durable operation or
     /// obligation. The writer validates its mutation shape before this lane
     /// may drain through an active application shutdown.
@@ -42,14 +32,9 @@ pub enum CommitOperationKind {
 impl CommitOperationKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Send => "send",
-            Self::PermissionResponse => "permission_response",
-            Self::Stop => "stop",
-            Self::SessionLifecycle => "session_lifecycle",
             Self::ApplicationQuit => "application_quit",
             Self::Recovery => "recovery",
             Self::UserMutation => "user_mutation",
-            Self::ShutdownTarget => "shutdown_target",
             Self::OperationProgress => "operation_progress",
             Self::Projection => "projection",
             Self::Workflow => "workflow",
@@ -59,12 +44,7 @@ impl CommitOperationKind {
     pub fn is_critical(self) -> bool {
         matches!(
             self,
-            Self::Stop
-                | Self::ApplicationQuit
-                | Self::Recovery
-                | Self::ShutdownTarget
-                | Self::OperationProgress
-                | Self::Workflow
+            Self::ApplicationQuit | Self::Recovery | Self::OperationProgress | Self::Workflow
         )
     }
 }
@@ -72,10 +52,6 @@ impl CommitOperationKind {
 impl From<OperationKind> for CommitOperationKind {
     fn from(value: OperationKind) -> Self {
         match value {
-            OperationKind::Send => Self::Send,
-            OperationKind::PermissionResponse => Self::PermissionResponse,
-            OperationKind::Stop => Self::Stop,
-            OperationKind::SessionLifecycle => Self::SessionLifecycle,
             OperationKind::ApplicationQuit => Self::ApplicationQuit,
         }
     }
@@ -133,14 +109,6 @@ pub enum CommitBatchResult {
     Replayed(CommittedBatch),
 }
 
-impl CommitBatchResult {
-    pub fn batch(&self) -> &CommittedBatch {
-        match self {
-            Self::Committed(batch) | Self::Replayed(batch) => batch,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommitBatchError {
     /// Same idempotency key or unique record key with a different canonical
@@ -148,10 +116,6 @@ pub enum CommitBatchError {
     PayloadConflict,
     /// An expected stream head or mutation revision guard did not match.
     StreamHeadConflict { current: StreamVersion },
-    /// A durable owner-level recovery fence won before a new external effect
-    /// reservation. The caller may retry the same accepted work after that
-    /// recovery identity is resolved.
-    EffectAdmissionBlocked,
     /// Batch or queue bounds exceeded before writer admission.
     CapacityExceeded,
     /// A sequence / revision would pass `i64::MAX`.
@@ -174,12 +138,6 @@ impl fmt::Display for CommitBatchError {
                     f,
                     "expected head/revision mismatch (current={})",
                     current.value()
-                )
-            }
-            Self::EffectAdmissionBlocked => {
-                write!(
-                    f,
-                    "external effect admission is blocked by pending recovery"
                 )
             }
             Self::CapacityExceeded => write!(f, "batch or queue capacity exceeded"),

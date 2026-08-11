@@ -6,7 +6,7 @@
 //! 各 trait のメソッドは同期シグネチャで定義する。
 
 use super::error::CodeError;
-use super::value_objects::{Hunk, MentionReference};
+use super::value_objects::Hunk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewSideMetadata {
@@ -117,15 +117,6 @@ pub trait BranchBaseResolver: Send + Sync {
     /// 入力に用い、ref の存在検証・error は後段の gateway（`FileContentRepository`）が担う。
     fn resolve_base_branch_name(&self, path_hint: &str) -> Result<Option<String>, CodeError>;
 
-    /// 現在ブランチの実効 base 名を解決する（解決した base が local / remote の ref として
-    /// 実在し、merge-base が計算できる場合のみ `Some`）。外部入口（agent bridge）が
-    /// 「実在する base 名」だけを必要とする用途向け。
-    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-    fn resolve_effective_base_branch_name(
-        &self,
-        path_hint: &str,
-    ) -> Result<Option<String>, CodeError>;
-
     /// 解決済み base 名の ref を解決し、base コミット OID(hex) を返す。ref 実在検証
     /// （local → remote）は repository ドメインが所有し、後段の gateway は本 OID と現在
     /// HEAD から merge-base を計算する。ref 不在は `None`。
@@ -134,25 +125,4 @@ pub trait BranchBaseResolver: Send + Sync {
         path_hint: &str,
         base_name: &str,
     ) -> Result<Option<String>, CodeError>;
-}
-
-/// ファイルメンションの候補列挙（worktree 配下の .gitignore 準拠ファイル一覧）と
-/// 参照解決（メンション先ファイルを `<file_context>` ブロックとして本文先頭へ前置）。
-pub trait MentionRepository: Send + Sync {
-    fn list_mentionable_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-    ) -> Result<Vec<String>, CodeError>;
-
-    /// 構造化メンション参照を解決し、本文先頭へ file_context を前置した文字列を返す。
-    /// メンションが空、または解決対象が 1 件も読めない場合は本文を変更せず返す。
-    /// パストラバーサル等の拒否はエラーとして返し、フォールバック方針は usecase が決める。
-    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
-    fn resolve_mentions(
-        &self,
-        worktree_path: &str,
-        content: &str,
-        mentions: &[MentionReference],
-    ) -> Result<String, CodeError>;
 }

@@ -4,7 +4,7 @@ use crate::adaptor::gateway::local_event_store::canonical_cbor::CborValue;
 use crate::adaptor::gateway::local_event_store::envelope::{
     EventCodecError, LocalEventPayloadCodec,
 };
-use crate::domain::agent_session::events::ProviderSessionOwnershipEvent;
+use crate::domain::agent_session::ProviderSessionOwnershipEvent;
 use crate::domain::local_event::LocalDomainEvent;
 use crate::domain::provider_lifecycle::ProviderKind;
 

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use rusqlite::{params, OptionalExtension};
 
 use crate::adaptor::gateway::local_event_store::indexed_projection_codec::{
-    decode_session_public_summary_v1, decode_workflow_execution_node_detail_v1,
-    decode_workflow_execution_node_tree_v1, decode_workflow_execution_record_v1,
+    decode_workflow_execution_node_detail_v1, decode_workflow_execution_node_tree_v1,
+    decode_workflow_execution_record_v1,
 };
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
@@ -12,8 +12,8 @@ use crate::domain::local_event::{
     LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
 };
 use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceSessionPublicationPolicy, WorkspaceStructureFact, WorkspaceTree,
-    WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
+    WorkspaceIdentity, WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeNode,
+    WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
 
 pub(crate) const SQL_WORKSPACE_TREE_NODES: &str = "SELECT node.tree_record
@@ -23,32 +23,16 @@ pub(crate) const SQL_WORKSPACE_TREE_NODES: &str = "SELECT node.tree_record
      WHERE execution.workspace_identity = ?1";
 pub(crate) const SQL_WORKSPACE_TREE_EXECUTIONS: &str = "SELECT record FROM workflow_executions
      WHERE workspace_identity = ?1";
-pub(crate) const SQL_WORKSPACE_TREE_ACTIVE_SESSIONS: &str =
-    "SELECT public_summary FROM session_projection
-     WHERE workspace_identity = ?1
-       AND public_list_kind = 'active'
-       AND public_summary IS NOT NULL";
 pub(crate) const SQL_WORKFLOW_NODE_DETAIL: &str = "SELECT node.tree_record, node.detail_record
      FROM workflow_execution_nodes AS node
      JOIN workflow_executions AS execution
        ON execution.execution_id = node.execution_id
      WHERE node.node_id = ?1 AND execution.workspace_identity = ?2";
-pub(crate) const SQL_SESSION_NODE_DETAIL_FALLBACK: &str =
-    "SELECT public_summary FROM session_projection
-     WHERE workspace_identity = ?1
-       AND public_summary IS NOT NULL
-       AND json_extract(public_summary, '$.node_id') = ?2";
 pub(crate) const SQL_WORKFLOW_NODE_ID_FOR_SESSION: &str = "SELECT node.node_id
      FROM workflow_execution_nodes AS node
      JOIN workflow_executions AS execution
        ON execution.execution_id = node.execution_id
      WHERE node.session_id = ?1 AND execution.workspace_identity = ?2";
-pub(crate) const SQL_DIRECT_NODE_ID_FOR_SESSION: &str =
-    "SELECT json_extract(public_summary, '$.node_id')
-     FROM session_projection
-     WHERE session_id = ?1
-       AND workspace_identity = ?2
-       AND public_summary IS NOT NULL";
 
 #[derive(Clone)]
 enum WorkspaceSqliteBackend {
@@ -109,7 +93,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
             let mut execution_statement = connection
                 .prepare(SQL_WORKSPACE_TREE_EXECUTIONS)
                 .map_err(sql_query_error)?;
-            let mut facts = execution_statement
+            let facts = execution_statement
                 .query_map(params![workspace], |row| row.get::<_, String>(0))
                 .map_err(sql_query_error)?
                 .map(|row| {
@@ -120,25 +104,6 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
                         .map(execution_summary_fact)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-
-            let mut session_statement = connection
-                .prepare(SQL_WORKSPACE_TREE_ACTIVE_SESSIONS)
-                .map_err(sql_query_error)?;
-            facts.extend(
-                session_statement
-                    .query_map(params![workspace], |row| row.get::<_, String>(0))
-                    .map_err(sql_query_error)?
-                    .map(|row| {
-                        row.map_err(sql_query_error)
-                            .and_then(|raw| {
-                                decode_session_public_summary_v1(&raw).map_err(codec_query_error)
-                            })
-                            .map(|summary| {
-                                WorkspaceSessionPublicationPolicy::structure_fact(&summary, None)
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
 
             if nodes.is_empty() && facts.is_empty() {
                 return Ok(None);
@@ -175,18 +140,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
                 .map_err(codec_query_error);
         }
 
-        self.run_indexed(move |connection| {
-            let raw = connection
-                .query_row(
-                    SQL_SESSION_NODE_DETAIL_FALLBACK,
-                    params![workspace, requested],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(sql_query_error)?;
-            direct_session_tree(raw, workspace)
-                .map(|tree| tree.and_then(|tree| tree.nodes().first().cloned()))
-        })
+        Ok(None)
     }
 
     fn node_id_for_session(
@@ -205,38 +159,9 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
                 )
                 .optional()
                 .map_err(sql_query_error)?;
-            if workflow_node.is_some() {
-                return Ok(workflow_node);
-            }
-            connection
-                .query_row(
-                    SQL_DIRECT_NODE_ID_FOR_SESSION,
-                    params![session, workspace],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(sql_query_error)
+            Ok(workflow_node)
         })
     }
-}
-
-fn direct_session_tree(
-    raw: Option<String>,
-    workspace: String,
-) -> Result<Option<WorkspaceTree>, LocalEventQueryError> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let summary = decode_session_public_summary_v1(&raw).map_err(codec_query_error)?;
-    let mut tree = WorkspaceTree::empty(workspace);
-    WorkspaceTreeProjector::project(
-        &mut tree,
-        [WorkspaceSessionPublicationPolicy::structure_fact(
-            &summary, None,
-        )],
-    )
-    .map_err(invariant_query_error)?;
-    Ok(Some(tree))
 }
 
 fn execution_summary_fact(
@@ -286,6 +211,75 @@ pub(super) fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
     }
 }
 
+#[cfg(test)]
+mod legacy_projection_tests {
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
+    use crate::adaptor::gateway::local_event_store::store::LocalEventStoreConfig;
+    use crate::domain::local_event::{
+        LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository,
+    };
+
+    #[tokio::test]
+    async fn legacy_agent_projection_row_is_ignored_by_canonical_session_and_workspace_queries() {
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+
+        let connection =
+            rusqlite::Connection::open(StoreLayout::new(root.path()).database_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO logical_commits (
+                    commit_id, installation_id, operation_kind, idempotency_key, payload_hash,
+                    state, first_global_sequence, last_global_sequence, event_count,
+                    mutation_count, stream_heads_json, result_hash, committed_at_ms
+                 ) VALUES (?1, 'legacy-install', 'projection', 'legacy-key', ?2,
+                    'sealed', NULL, NULL, 0, 1, '[]', ?2, 0)",
+                rusqlite::params!["legacy-commit", [0_u8; 32].as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_projection (
+                    session_id, projection, revision, commit_id, workspace_identity,
+                    public_list_kind, public_sort_key_bits, public_summary
+                 ) VALUES (?1, ?2, 0, ?3, ?4, 'active', 0, ?5)",
+                rusqlite::params![
+                    "legacy-session-1",
+                    r#"{"schema":"legacy_agent_session_projection_v0"}"#,
+                    "legacy-commit",
+                    "/repo",
+                    r#"{"schema":"legacy_session_public_summary_v0"}"#,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let result = store
+            .query(LocalEventQuery::AgentSessionProjectionPage {
+                workspace_identity: "/repo".to_string(),
+                lifecycle: None,
+                origin: None,
+                limit: 100,
+                after_agent_session_id: None,
+            })
+            .await
+            .unwrap();
+        let LocalEventQueryResult::AgentSessionProjectionPage(page) = result else {
+            panic!("canonical AgentSession page expected");
+        };
+        assert!(page.sessions.is_empty());
+
+        let repository = SqliteWorkspaceTreeRepository::new(store);
+        assert!(repository
+            .load(&WorkspaceIdentity::new("/repo"))
+            .unwrap()
+            .is_none());
+    }
+}
+
 fn store_corruption_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
     let correlation_id = uuid::Uuid::new_v4().to_string();
     log::error!("Workspace indexed store corruption [{correlation_id}]: {error}");
@@ -307,62 +301,9 @@ fn invariant_query_error(error: impl std::fmt::Display) -> LocalEventQueryError 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::local_event_store::indexed_projection_codec::encode_session_public_summary_v1;
-    use crate::domain::local_event::{AgentSessionStateRecord, AgentSessionSummaryRecord};
 
     fn sqlite_failure(code: i32) -> rusqlite::Error {
         rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
-    }
-
-    fn summary(updated_at: f64) -> AgentSessionSummaryRecord {
-        AgentSessionSummaryRecord {
-            id: "direct-session".to_string(),
-            worktree_path: "/repo".to_string(),
-            state: AgentSessionStateRecord::Idle,
-            error_reason: None,
-            created_at_bits: 1.0f64.to_bits(),
-            updated_at_bits: updated_at.to_bits(),
-            first_message: "Review this change".to_string(),
-            message_count: 1,
-            agent_session_id: Some("backend-session".to_string()),
-            context_carry: None,
-            permission_mode: "default".to_string(),
-            plan_mode: false,
-            permission_profile_id: None,
-            backend_id: Some("codex".to_string()),
-            workflow_node_session: false,
-            workflow_node_context: None,
-        }
-    }
-
-    #[test]
-    fn direct_session_tree_distinguishes_empty_and_single_node_records() {
-        assert!(direct_session_tree(None, "/repo".to_string())
-            .unwrap()
-            .is_none());
-
-        let raw = encode_session_public_summary_v1(&summary(2.0)).unwrap();
-        let tree = direct_session_tree(Some(raw), "/repo".to_string())
-            .unwrap()
-            .expect("one public Session record must materialize a tree");
-        assert_eq!(tree.nodes().len(), 1);
-        let node = tree.session_node("direct-session").unwrap();
-        assert_eq!(node.title, "Review this change");
-        assert_eq!(node.session_id.as_deref(), Some("direct-session"));
-    }
-
-    #[test]
-    fn corrupt_record_is_incompatible_while_non_finite_fact_is_corrupt() {
-        assert!(matches!(
-            direct_session_tree(Some("{not-json".to_string()), "/repo".to_string()),
-            Err(LocalEventQueryError::IncompatibleStoredEvent { .. })
-        ));
-
-        let raw = encode_session_public_summary_v1(&summary(f64::NAN)).unwrap();
-        assert!(matches!(
-            direct_session_tree(Some(raw), "/repo".to_string()),
-            Err(LocalEventQueryError::Corrupt { .. })
-        ));
     }
 
     #[test]

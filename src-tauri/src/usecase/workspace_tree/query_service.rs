@@ -1,8 +1,7 @@
 use crate::domain::workflow::{
     ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
 };
-use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceSessionListKind};
-use crate::usecase::agent_session::session::SessionSummary;
+use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::workflow::{
     WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
@@ -25,12 +24,6 @@ pub(crate) trait WorkspaceQueryService: Send + Sync {
         workspace_identity: &WorkspaceIdentity,
         session_id: &str,
     ) -> Result<Option<String>, WorkflowError>;
-
-    fn session_summaries(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        list: WorkspaceSessionListKind,
-    ) -> Result<Vec<SessionSummary>, WorkflowError>;
 
     fn execution_summaries(
         &self,

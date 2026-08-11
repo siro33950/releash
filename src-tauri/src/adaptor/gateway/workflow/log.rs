@@ -406,6 +406,7 @@ impl WorkflowEventLog {
             .map_err(|error| format!("workflow SQLite event commit failed: {error}"))
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_projection_durable_blocking(
         &self,
         execution_id: &str,

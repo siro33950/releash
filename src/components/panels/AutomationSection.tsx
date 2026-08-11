@@ -144,8 +144,8 @@ export function AutomationSection({
 				"nodes:",
 				"  - name: start",
 				"    session:",
+				"      provider: claude",
 				"      gate: auto",
-				"      permission: edit",
 				"      facets: {}",
 				"",
 			].join("\n");

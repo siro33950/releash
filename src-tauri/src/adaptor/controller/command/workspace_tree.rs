@@ -4,9 +4,9 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    ApproveWorkspaceNodeCommand, CloseWorkspaceNodeCommand, RetryWorkspaceNodeCommand,
-    WorkspaceNodeCommandUsecase, WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto,
-    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
+    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
+    WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
+    WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
@@ -15,7 +15,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_workflow_history",
     "get_workspace_node_detail",
     "get_workspace_session_node_id",
-    "close_workspace_node",
     "approve_workspace_node",
     "retry_workspace_node",
     "archive_workspace_workflow_execution",
@@ -34,7 +33,6 @@ pub(crate) fn invoke_handler(
         list_workspace_workflow_history,
         get_workspace_node_detail,
         get_workspace_session_node_id,
-        close_workspace_node,
         approve_workspace_node,
         retry_workspace_node,
         archive_workspace_workflow_execution,
@@ -120,21 +118,6 @@ pub async fn get_workspace_session_node_id(
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
-pub async fn close_workspace_node(
-    usecase: State<'_, Arc<WorkspaceNodeCommandUsecase>>,
-    worktree_path: String,
-    node_id: String,
-) -> Result<(), String> {
-    usecase
-        .close_workspace_node(CloseWorkspaceNodeCommand {
-            worktree_path,
-            node_id,
-        })
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

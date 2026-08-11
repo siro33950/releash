@@ -134,7 +134,7 @@ Workflow panel は次を backend read model から表示する。
 
 - active WorkflowExecution summary と execution 履歴
 - event timeline
-- NodeExecution 詳細、fanout group、conversation transcript
+- NodeExecution 詳細、fanout group、参照先AgentSessionのTerminal Surface
 - approval、abort、stop、resume action
 - logs と Artifact
 

@@ -52,18 +52,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_releash_base: null,
 	get_default_branch: "main",
 
-	// Webhook notifications
-	get_notify_config: {
-		webhook_url: "",
-		on_running: false,
-		on_done: true,
-		on_error: true,
-		on_waiting: true,
-		desktop_mode: "always",
-		inactive_timeout_minutes: 2,
-	},
-	update_notify_config: null,
-
 	// Telemetry
 	get_crash_reporting_enabled: true,
 	update_crash_reporting: null,
@@ -157,15 +145,18 @@ const baseIpcHandler: Record<string, unknown> = {
 	remove_worktree: null,
 	delete_branch: null,
 
-	// Agent chat sessions
-	list_sessions: [],
-	init_agent_sessions: {
-		sessions: [],
-		activeSession: null,
-		permissionMode: "edit",
-		planMode: false,
-	},
-	list_agent_backends: { backends: [], defaultId: null },
+	// AgentSession TUI
+	list_available_agent_session_providers: ["claude", "codex"],
+	list_agent_sessions: { items: [], nextAfterSessionId: null },
+	get_agent_session: null,
+	open_agent_session: "attached",
+	resume_agent_session: "resumed",
+	restore_agent_session: "restored",
+	archive_agent_session: "archived",
+	delete_agent_session: null,
+	confirm_agent_session_archive_delete: null,
+	list_agent_session_history: { items: [], nextAfter: null },
+	resume_agent_session_history_candidate: "mock-agent-session-1",
 	get_provider_availability: {
 		providers: [
 			{
@@ -190,33 +181,6 @@ const baseIpcHandler: Record<string, unknown> = {
 			},
 		],
 	},
-	get_session: null,
-	get_agent_session_display_window: null,
-	get_session_page: null,
-	plan_agent_chat_eviction: { evictSessionIds: [] },
-	create_session: {
-		id: "mock-session-1",
-		worktreePath: "/test/repo",
-		messages: [],
-		state: "active",
-		createdAt: 1000,
-		updatedAt: 1000,
-	},
-	create_workspace_session: "mock-session-1",
-	close_session: null,
-	restore_session: null,
-	list_closed_sessions: [],
-	add_message: {
-		id: "mock-msg-1",
-		role: "agent",
-		content: "",
-		timestamp: 1000,
-	},
-	update_session_state: null,
-	stop_agent_session: { __mockAcceptedStop: true },
-	get_stop_operation: null,
-	respond_agent_permission: null,
-
 	// Workspace state
 	save_workspace_state: null,
 

@@ -4,13 +4,10 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(test)]
-use std::{future::Future, pin::Pin};
 
 use base64::Engine as _;
 use serde_json::Value;
 
-use crate::domain::agent_session::events::{RecoveryActionKind, RecoveryResultClassification};
 use crate::domain::local_event::{
     ApplicationDomainEvent, ApplicationShutdownPhase, CallerOperationKey, CommitBatchError,
     CommitBatchResult, CommitIdentity, CommitOperationKind, CommitResolution, ExpectedStreamHead,
@@ -18,9 +15,10 @@ use crate::domain::local_event::{
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
     ObligationStateRecord, OperationBindingMutation, OperationBindingView, OperationKind,
     OperationReceiptRecord, OperationRecordMutation, OperationStatusRecord, OperationStatusValue,
-    PendingPartition, QueryCursor, QuitIntent, RecoveryActionMutation, RecoveryActionView,
-    RecoveryAttemptRecord, RecoveryResourceViewRecord, RecoveryResultOutcomeRecord, Revision,
-    RevisionGuard, SafeEffectObservation, SafeOperationFailure, SessionOperationFailureKind,
+    PendingPartition, QueryCursor, QuitIntent, RecoveryActionKind, RecoveryActionMutation,
+    RecoveryActionView, RecoveryAttemptRecord, RecoveryResourceViewRecord,
+    RecoveryResultClassification, RecoveryResultOutcomeRecord, Revision, RevisionGuard,
+    SafeEffectObservation, SafeOperationFailure, SessionOperationFailureKind,
     ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
     ShutdownOutcomeRecord, ShutdownPlanKey, ShutdownPlanMutation, ShutdownPlanPageView,
     ShutdownPlanRecord, ShutdownPlanView, ShutdownRecoverySnapshotMutation,
@@ -28,7 +26,7 @@ use crate::domain::local_event::{
     ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord, StreamId, StreamVersion,
     UncommittedDomainEvent,
 };
-use crate::usecase::agent_session::operation::{
+use crate::usecase::application_lifecycle::operation::{
     constant_time_eq_32, decode_recovery_completed_result, derive_recovery_action_id,
     validate_operation_identity, OperationBindingAuthority, RecoveryActionError,
     RecoveryActionIdentity, RecoveryActionOutcome, RecoveryActionRejection,
@@ -89,16 +87,6 @@ impl ShutdownDeadlines {
     }
 }
 
-#[cfg(test)]
-type ShutdownRecoveryPreHandoffHook =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
-#[cfg(test)]
-type ShutdownPreAcceptanceHook =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
-#[cfg(test)]
-type ShutdownPreActivationHook =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync>;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationQuitIntent {
     Exit { code: i32 },
@@ -120,15 +108,6 @@ impl From<ApplicationQuitIntent> for ApplicationProcessAction {
         match value {
             ApplicationQuitIntent::Exit { code } => Self::Exit { code },
             ApplicationQuitIntent::Restart { code } => Self::Restart { code },
-        }
-    }
-}
-
-impl ApplicationProcessAction {
-    #[cfg(test)]
-    pub fn code(self) -> i32 {
-        match self {
-            Self::Exit { code } | Self::Restart { code } => code,
         }
     }
 }
@@ -442,7 +421,6 @@ fn shutdown_deadline_failure(label: &str) -> SafeOperationFailure {
 
 fn shutdown_target_kind_label(kind: ShutdownTargetKindRecord) -> &'static str {
     match kind {
-        ShutdownTargetKindRecord::AgentSession => "agent_session",
         ShutdownTargetKindRecord::WorkflowExecution => "workflow_execution",
         ShutdownTargetKindRecord::WorkflowNode => "workflow_node",
     }
@@ -450,7 +428,6 @@ fn shutdown_target_kind_label(kind: ShutdownTargetKindRecord) -> &'static str {
 
 fn shutdown_target_kind_from_label(value: &str) -> Option<ShutdownTargetKindRecord> {
     match value {
-        "agent_session" => Some(ShutdownTargetKindRecord::AgentSession),
         "workflow_execution" => Some(ShutdownTargetKindRecord::WorkflowExecution),
         "workflow_node" => Some(ShutdownTargetKindRecord::WorkflowNode),
         _ => None,
@@ -495,11 +472,7 @@ fn shutdown_recovery_outcome(
 fn decode_shutdown_recovery_action_status(
     saved: &RecoveryActionView,
 ) -> Result<RecoveryActionStatus, RecoveryActionError> {
-    let RecoveryAttemptRecord::ShutdownTarget { state, failure, .. } = &saved.attempt else {
-        return Err(RecoveryActionError::Internal {
-            correlation_id: correlation("shutdown-action-attempt-kind"),
-        });
-    };
+    let RecoveryAttemptRecord::ShutdownTarget { state, failure, .. } = &saved.attempt;
     let Some(completed) = saved.completed.as_ref() else {
         return Ok(match state {
             ObligationStateRecord::OutcomeUnknown => RecoveryActionStatus::OutcomeUnknown {
@@ -601,8 +574,7 @@ fn map_shutdown_action_query_error(
         E::StorageUnavailable { failure } => RecoveryActionError::StorageUnavailable { failure },
         E::Corrupt { correlation_id }
         | E::IncompatibleStoredEvent { correlation_id }
-        | E::Internal { correlation_id }
-        | E::ReplayRequired { correlation_id } => RecoveryActionError::Internal { correlation_id },
+        | E::Internal { correlation_id } => RecoveryActionError::Internal { correlation_id },
     }
 }
 
@@ -632,10 +604,7 @@ fn decode_operation_receipt_record(
         t0_ms,
         deadline_ms,
         binding_hmac,
-    } = record
-    else {
-        return None;
-    };
+    } = record;
     Some((
         ApplicationQuitReceipt {
             operation_id: operation_id.clone(),
@@ -731,18 +700,6 @@ fn decode_operation_status_record(record: &OperationStatusRecord) -> Option<Appl
                 failure: failure.clone(),
             }
         }
-        OperationStatusValue::Accepted
-        | OperationStatusValue::AwaitingProviderStart { .. }
-        | OperationStatusValue::AwaitingProviderResponse { .. }
-        | OperationStatusValue::Queued { .. }
-        | OperationStatusValue::ProviderStartReserved { .. }
-        | OperationStatusValue::Running { .. }
-        | OperationStatusValue::PermissionCompleted { .. }
-        | OperationStatusValue::StopCompleted { .. }
-        | OperationStatusValue::ExitPending
-        | OperationStatusValue::Exited
-        | OperationStatusValue::Failed { .. }
-        | OperationStatusValue::Terminal { .. } => return None,
     })
 }
 
@@ -785,12 +742,6 @@ pub struct ShutdownCoordinator {
     request_flight: tokio::sync::Mutex<()>,
     ingress_sequence: AtomicU64,
     budget: ShutdownBudget,
-    #[cfg(test)]
-    recovery_pre_handoff_hook: StdMutex<Option<ShutdownRecoveryPreHandoffHook>>,
-    #[cfg(test)]
-    pre_acceptance_hook: StdMutex<Option<ShutdownPreAcceptanceHook>>,
-    #[cfg(test)]
-    pre_activation_hook: StdMutex<Option<ShutdownPreActivationHook>>,
     /// A completed graceful flight clears the durable current pointer. Its
     /// immutable result remains joinable only by ingress tickets registered
     /// before that flight reached its terminal fence; later requests must run
@@ -799,22 +750,6 @@ pub struct ShutdownCoordinator {
 }
 
 impl ShutdownCoordinator {
-    /// Widen only the flight budget for a test whose subject is the fixture
-    /// size. Deadline behaviour itself stays covered by the tests that keep the
-    /// production budget.
-    #[cfg(test)]
-    pub fn with_flight_budget_for_test(
-        mut self,
-        preparation: Duration,
-        decision: Duration,
-    ) -> Self {
-        self.budget = ShutdownBudget {
-            preparation,
-            decision,
-        };
-        self
-    }
-
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
@@ -831,43 +766,8 @@ impl ShutdownCoordinator {
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
             budget: ShutdownBudget::default(),
-            #[cfg(test)]
-            recovery_pre_handoff_hook: StdMutex::new(None),
-            #[cfg(test)]
-            pre_acceptance_hook: StdMutex::new(None),
-            #[cfg(test)]
-            pre_activation_hook: StdMutex::new(None),
             completed_flight: StdMutex::new(None),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_recovery_pre_handoff_hook(&self, hook: ShutdownRecoveryPreHandoffHook) {
-        *self
-            .recovery_pre_handoff_hook
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_pre_acceptance_hook(&self, hook: ShutdownPreAcceptanceHook) {
-        *self
-            .pre_acceptance_hook
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_pre_activation_hook(&self, hook: ShutdownPreActivationHook) {
-        *self
-            .pre_activation_hook
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn registered_ingress_count(&self) -> u64 {
-        self.ingress_sequence.load(Ordering::SeqCst)
     }
 
     fn operation_id(&self, principal: &str, request_id: &str) -> String {
@@ -1015,7 +915,7 @@ impl ShutdownCoordinator {
                     }),
                 }
             }
-            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
+            Err(CommitBatchError::PayloadConflict) => {
                 let stored = self.get_binding(&key).await?;
                 if stored.as_ref().is_some_and(|stored| {
                     stored.operation_id == operation_id
@@ -1122,8 +1022,8 @@ impl ShutdownCoordinator {
 
     fn caller_attempt_journal(
         &self,
-    ) -> crate::usecase::agent_session::operation::CallerAttemptJournal {
-        crate::usecase::agent_session::operation::CallerAttemptJournal::new(
+    ) -> crate::usecase::application_lifecycle::operation::CallerAttemptJournal {
+        crate::usecase::application_lifecycle::operation::CallerAttemptJournal::new(
             self.repository.clone(),
             self.authority.clone(),
             self.installation_id.clone(),
@@ -1367,14 +1267,6 @@ impl ShutdownCoordinator {
                 self.validate_normal_quit_projection_reference(&receipt, &state)
                     .await?;
                 Ok(Some(ApplicationQuitProjection::Shutdown { receipt, state }))
-            }
-            OperationReceiptRecord::Send { .. }
-            | OperationReceiptRecord::PermissionResponse { .. }
-            | OperationReceiptRecord::Stop { .. }
-            | OperationReceiptRecord::SessionLifecycle { .. } => {
-                Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
-                    correlation_id: correlation("quit-projection-receipt-version"),
-                })
             }
         }
     }
@@ -1758,12 +1650,6 @@ impl ShutdownCoordinator {
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
             budget: self.budget,
-            #[cfg(test)]
-            recovery_pre_handoff_hook: StdMutex::new(None),
-            #[cfg(test)]
-            pre_acceptance_hook: StdMutex::new(None),
-            #[cfg(test)]
-            pre_activation_hook: StdMutex::new(None),
             completed_flight: StdMutex::new(None),
         }
     }
@@ -2101,8 +1987,6 @@ impl ShutdownCoordinator {
                 RecoveryAttemptRecord::ShutdownTarget { intent, .. } => {
                     application_process_action_from_domain(*intent)
                 }
-                RecoveryAttemptRecord::Obligation { .. }
-                | RecoveryAttemptRecord::FeedbackRetry { .. } => None,
             };
             return Ok(ShutdownTargetActionExecution {
                 outcome: shutdown_action_outcome(decode_shutdown_recovery_action_status(&saved)?),
@@ -2331,7 +2215,7 @@ impl ShutdownCoordinator {
                     process_action: None,
                 });
             }
-            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
+            Err(CommitBatchError::PayloadConflict) => {
                 if let Some(saved) = self
                     .shutdown_recovery_action_record(&request.action_id)
                     .await?
@@ -2355,18 +2239,6 @@ impl ShutdownCoordinator {
             }
             Err(CommitBatchError::Corrupt { correlation_id }) => {
                 return Err(RecoveryActionError::Internal { correlation_id })
-            }
-        }
-
-        #[cfg(test)]
-        {
-            let hook = self
-                .recovery_pre_handoff_hook
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(hook) = hook {
-                hook().await;
             }
         }
 
@@ -2562,21 +2434,10 @@ impl ShutdownCoordinator {
                 state: ObligationStateRecord::Completed,
                 failure: None,
             },
-            RecoveryAttemptRecord::Obligation { .. }
-            | RecoveryAttemptRecord::FeedbackRetry { .. } => {
-                return Err(RecoveryActionError::Internal {
-                    correlation_id: correlation("shutdown-action-attempt-kind"),
-                })
-            }
         };
         let completed_payload_sha256 = match &completed_payload {
             crate::domain::local_event::RecoveryResultRecord::Action(result) => {
                 result.canonical_result_sha256
-            }
-            crate::domain::local_event::RecoveryResultRecord::FeedbackRetry { .. } => {
-                return Err(RecoveryActionError::Internal {
-                    correlation_id: correlation("shutdown-action-result-kind"),
-                })
             }
         };
         let plan_closure = if classification == RecoveryResultClassification::Succeeded {
@@ -2648,7 +2509,7 @@ impl ShutdownCoordinator {
                     process_action: None,
                 })
             }
-            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
+            Err(CommitBatchError::PayloadConflict) => {
                 let status = self
                     .get_shutdown_target_action_status(&request.action_id)
                     .await?;
@@ -2788,7 +2649,7 @@ impl ShutdownCoordinator {
         };
         match self.repository.commit_batch(batch).await {
             Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {}
-            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
+            Err(CommitBatchError::PayloadConflict) => {
                 if let Ok(page) = self.shutdown_plan_page(plan.clone(), 1, None).await {
                     if page.plan.details_state == ShutdownDetailsState::Compacted {
                         return Ok(page.plan);
@@ -2853,8 +2714,7 @@ impl ShutdownCoordinator {
                     E::StorageUnavailable { failure } => failure.correlation_id,
                     E::Corrupt { correlation_id }
                     | E::IncompatibleStoredEvent { correlation_id }
-                    | E::Internal { correlation_id }
-                    | E::ReplayRequired { correlation_id } => correlation_id,
+                    | E::Internal { correlation_id } => correlation_id,
                     other => correlation(&format!("compact-read-model-{other:?}")),
                 };
                 ApplicationQuitError::Internal { correlation_id }
@@ -3026,7 +2886,7 @@ impl ShutdownCoordinator {
         let caller_key = self.caller_key(&request.principal, &request.request_id);
         if let Some(saved_binding) = self.get_binding(&caller_key).await? {
             let binding_material =
-                crate::usecase::agent_session::operation::binding::application_quit(
+                crate::usecase::application_lifecycle::operation::binding::application_quit(
                     &request.principal,
                     &self.installation_id,
                     &request.request_id,
@@ -3078,14 +2938,15 @@ impl ShutdownCoordinator {
             join_before_ticket: _join_before_ticket,
         }) = completed_flight.filter(|completed| ingress_ticket < completed.join_before_ticket)
         {
-            let join_material = crate::usecase::agent_session::operation::binding::application_quit(
-                &request.principal,
-                &self.installation_id,
-                &request.request_id,
-                &receipt.operation_id,
-                request.intent.mode(),
-                request.intent.code(),
-            );
+            let join_material =
+                crate::usecase::application_lifecycle::operation::binding::application_quit(
+                    &request.principal,
+                    &self.installation_id,
+                    &request.request_id,
+                    &receipt.operation_id,
+                    request.intent.mode(),
+                    request.intent.code(),
+                );
             let join_binding = self.authority.mac(&join_material);
             if !self
                 .save_join_binding(
@@ -3164,7 +3025,7 @@ impl ShutdownCoordinator {
                     return Err(self.previous_shutdown_reconciliation_error(current));
                 }
                 let join_material =
-                    crate::usecase::agent_session::operation::binding::application_quit(
+                    crate::usecase::application_lifecycle::operation::binding::application_quit(
                         &request.principal,
                         &self.installation_id,
                         &request.request_id,
@@ -3221,14 +3082,15 @@ impl ShutdownCoordinator {
             }
         }
 
-        let binding_material = crate::usecase::agent_session::operation::binding::application_quit(
-            &request.principal,
-            &self.installation_id,
-            &request.request_id,
-            &operation_id,
-            request.intent.mode(),
-            request.intent.code(),
-        );
+        let binding_material =
+            crate::usecase::application_lifecycle::operation::binding::application_quit(
+                &request.principal,
+                &self.installation_id,
+                &request.request_id,
+                &operation_id,
+                request.intent.mode(),
+                request.intent.code(),
+            );
         let binding = self.authority.mac(&binding_material);
 
         let targets = match tokio::time::timeout_at(
@@ -3305,7 +3167,7 @@ impl ShutdownCoordinator {
                 &request.request_id,
                 &exact_command,
                 Some("application"),
-                crate::usecase::agent_session::operation::BoundCallerOperation {
+                crate::usecase::application_lifecycle::operation::BoundCallerOperation {
                     operation_id: &operation_id,
                     binding_hmac: binding,
                 },
@@ -3316,7 +3178,7 @@ impl ShutdownCoordinator {
             Ok(Ok(_)) => {}
             Err(_)
             | Ok(Err(
-                crate::usecase::agent_session::operation::CallerJournalError::OutcomeUnknown,
+                crate::usecase::application_lifecycle::operation::CallerJournalError::OutcomeUnknown,
             )) => {
                 return Ok(ApplicationQuitOutcome::OutcomeUnknown {
                     request_id: request.request_id,
@@ -3325,14 +3187,14 @@ impl ShutdownCoordinator {
                 });
             }
             Ok(Err(
-                crate::usecase::agent_session::operation::CallerJournalError::PayloadConflict,
+                crate::usecase::application_lifecycle::operation::CallerJournalError::PayloadConflict,
             )) => return Err(ApplicationQuitError::PayloadConflict),
             Ok(Err(
-                crate::usecase::agent_session::operation::CallerJournalError::InvalidRequest,
+                crate::usecase::application_lifecycle::operation::CallerJournalError::InvalidRequest,
             )) => return Err(ApplicationQuitError::InvalidRequest),
             Ok(Err(
-                crate::usecase::agent_session::operation::CallerJournalError::RejectedBeforeCommit
-                | crate::usecase::agent_session::operation::CallerJournalError::ShutdownInProgress,
+                crate::usecase::application_lifecycle::operation::CallerJournalError::RejectedBeforeCommit
+                | crate::usecase::application_lifecycle::operation::CallerJournalError::ShutdownInProgress,
             )) => {
                 return Ok(ApplicationQuitOutcome::RejectedBeforeCommit {
                     failure: SafeOperationFailure::new(
@@ -3342,17 +3204,6 @@ impl ShutdownCoordinator {
                         correlation("quit-attempt-not-committed"),
                     ),
                 });
-            }
-        }
-        #[cfg(test)]
-        {
-            let hook = self
-                .pre_acceptance_hook
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(hook) = hook {
-                hook().await;
             }
         }
         let t0_ms = ingress_t0_ms;
@@ -3527,9 +3378,9 @@ impl ShutdownCoordinator {
                         })?;
                     return Ok(ApplicationQuitOutcome::Accepted { receipt, state });
                 }
-                Err(
-                    CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked,
-                ) => return Err(ApplicationQuitError::PayloadConflict),
+                Err(CommitBatchError::PayloadConflict) => {
+                    return Err(ApplicationQuitError::PayloadConflict)
+                }
                 Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
                     return Err(ApplicationQuitError::CapacityExceeded)
                 }
@@ -3608,17 +3459,6 @@ impl ShutdownCoordinator {
                         deadlines,
                     )
                     .await;
-            }
-        }
-        #[cfg(test)]
-        {
-            let hook = self
-                .pre_activation_hook
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(hook) = hook {
-                hook().await;
             }
         }
         let activation = tokio::time::timeout_at(
@@ -4216,7 +4056,6 @@ impl ShutdownCoordinator {
         fixed_targets
             .iter()
             .any(|stored| match stored.target.kind.as_str() {
-                "agent_session" => entry.owner == stored.target.target_id,
                 "workflow_execution" => {
                     entry.owner == "workflow-runtime"
                         && entry.obligation_id
@@ -4321,9 +4160,7 @@ impl ShutdownCoordinator {
                 }
             }
             Err(
-                CommitBatchError::PayloadConflict
-                | CommitBatchError::EffectAdmissionBlocked
-                | CommitBatchError::StreamHeadConflict { .. },
+                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
             ) => ActivationCommit::RejectedBeforeCommit {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::PersistFailure,

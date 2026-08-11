@@ -47,7 +47,6 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: String::new(),
-            permission_mode: "ask".to_string(),
             definition,
             timestamp: 1.0,
         },

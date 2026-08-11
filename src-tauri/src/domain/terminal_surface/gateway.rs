@@ -197,7 +197,3 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "gateway_test.rs"]
-mod gateway_tests;

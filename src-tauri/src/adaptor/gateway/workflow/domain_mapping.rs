@@ -1,6 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::schema;
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::state as runtime_state;
 use crate::domain::workflow as domain;
 
@@ -29,12 +32,14 @@ pub(crate) fn workflow_schemas_to_domain(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_execution_state_to_domain(
     state: &runtime_state::RuntimeExecutionState,
 ) -> domain::RuntimeExecutionState {
     state.clone()
 }
 
+#[cfg(test)]
 pub(crate) fn artifacts_to_domain(
     artifacts: &HashMap<String, runtime_state::RuntimeArtifact>,
 ) -> HashMap<String, domain::RuntimeArtifact> {
@@ -44,6 +49,7 @@ pub(crate) fn artifacts_to_domain(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_artifact_to_domain(
     output: &runtime_state::RuntimeArtifact,
 ) -> domain::RuntimeArtifact {
@@ -59,12 +65,14 @@ pub(crate) fn runtime_artifact_to_domain(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn node_history_entries_to_domain(
     entries: &[runtime_state::NodeHistoryEntry],
 ) -> Vec<domain::NodeHistoryEntry> {
     entries.iter().map(node_history_entry_to_domain).collect()
 }
 
+#[cfg(test)]
 fn node_history_entry_to_domain(
     entry: &runtime_state::NodeHistoryEntry,
 ) -> domain::NodeHistoryEntry {
@@ -84,6 +92,7 @@ fn node_history_entry_to_domain(
     }
 }
 
+#[cfg(test)]
 fn child_output_to_domain(
     output: &runtime_state::FanoutChildSnapshot,
 ) -> domain::FanoutChildSnapshot {
@@ -101,6 +110,7 @@ fn child_output_to_domain(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn token_usage_to_domain(usage: &runtime_state::TokenUsage) -> domain::TokenUsage {
     domain::TokenUsage {
         input_tokens: usage.input_tokens,

@@ -1,7 +1,7 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderAgentSessionHistoryMetadata {
+pub(crate) struct AgentSessionHistoryMetadata {
     pub(crate) provider: ProviderKind,
     pub(crate) provider_session_id: String,
     pub(crate) worktree_path: String,
@@ -9,27 +9,27 @@ pub(crate) struct ProviderAgentSessionHistoryMetadata {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderAgentSessionHistoryGatewayError {
+pub(crate) enum AgentSessionHistoryGatewayError {
     InvalidRequest,
     Unavailable,
     Corrupt,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderAgentSessionHistoryGateway: Send + Sync {
+pub(crate) trait AgentSessionHistoryGateway: Send + Sync {
     async fn list_metadata(
         &self,
         provider: ProviderKind,
         worktree_path: &str,
         limit: usize,
-    ) -> Result<Vec<ProviderAgentSessionHistoryMetadata>, ProviderAgentSessionHistoryGatewayError>;
+    ) -> Result<Vec<AgentSessionHistoryMetadata>, AgentSessionHistoryGatewayError>;
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderAgentSessionOwnershipQuery: Send + Sync {
+pub(crate) trait AgentSessionOwnershipQuery: Send + Sync {
     async fn is_owned(
         &self,
         provider: ProviderKind,
         provider_session_id: &str,
-    ) -> Result<bool, ProviderAgentSessionHistoryGatewayError>;
+    ) -> Result<bool, AgentSessionHistoryGatewayError>;
 }

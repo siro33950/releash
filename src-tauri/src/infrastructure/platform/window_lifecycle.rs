@@ -381,7 +381,6 @@ mod tests {
         AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig, TlsConfig, WorkflowConfig,
     };
     use crate::domain::app_config::AppConfigError;
-    use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
 
     struct StubConfigRepository {
         config: AppConfigDocument,
@@ -506,15 +505,6 @@ mod tests {
                     enabled: false,
                     cert: String::new(),
                     key: String::new(),
-                },
-                notify: NotifyConfig {
-                    webhook_url: String::new(),
-                    on_running: false,
-                    on_done: false,
-                    on_error: false,
-                    on_waiting: false,
-                    desktop_mode: DesktopNotifyMode::Always,
-                    inactive_timeout_minutes: 0,
                 },
             },
             telemetry: TelemetryConfig {

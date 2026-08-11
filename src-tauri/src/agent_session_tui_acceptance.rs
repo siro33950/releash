@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use crate::adaptor::controller::provider_agent_session_wiring::{
-    compose_provider_agent_sessions, ProviderAgentSessionCompositionInput,
+use crate::adaptor::controller::agent_session_wiring::{
+    compose_agent_sessions, AgentSessionCompositionInput,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::node_session_boundary::{
@@ -16,9 +16,8 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
 use crate::usecase::agent_session::{
-    ProviderAgentInitialInstructionUsecase, ProviderAgentSessionHistoryReadUsecase,
-    ProviderAgentSessionLaunchUsecase, ProviderAgentSessionLifecycleUsecase,
-    ProviderAgentSessionReadUsecase,
+    AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
+    AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionReadUsecase,
 };
 use crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase;
 
@@ -152,7 +151,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         );
         let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let data_dir = config.data_dir.clone();
-        let composition = compose_provider_agent_sessions(ProviderAgentSessionCompositionInput {
+        let composition = compose_agent_sessions(AgentSessionCompositionInput {
             repository,
             installation_id: store.installation_id().to_string(),
             data_dir: config.data_dir,
@@ -194,7 +193,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             cli_binary: "releash-dev".to_string(),
             terminal: terminal.application(),
             change_notifier: Arc::new(
-                crate::adaptor::presenter::provider_agent_session_changed::TauriProviderAgentSessionChangeNotifier::new(
+                crate::adaptor::presenter::agent_session_changed::TauriAgentSessionChangeNotifier::new(
                     app.handle().clone(),
                 ),
             ),
@@ -218,13 +217,14 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 composition.launch.clone(),
                 composition.initial_instruction.clone(),
+                composition.interrupt.clone(),
                 composition.availability_reader.clone(),
             ));
         terminal.bind_agent_session_activity(composition.activity.clone());
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
         let exit_observer = tauri::async_runtime::spawn(
-            crate::adaptor::controller::provider_agent_session_exit_observer::run_provider_agent_session_exit_observer(
+            crate::adaptor::controller::agent_session_exit_observer::run_agent_session_exit_observer(
                 terminal_events,
                 composition.exit.clone(),
             ),
@@ -397,18 +397,18 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         exit_observer_cancellation.cancel();
         exit_observer
             .await
-            .map_err(|error| format!("join Provider AgentSession exit observer: {error}"))?;
+            .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
         local_api
             .into_inner()
             .map_err(|_| "lock local API server".to_string())?
             .shutdown();
-        _app.unmanage::<Arc<ProviderAgentSessionHistoryReadUsecase>>();
+        _app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
         _app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
-        _app.unmanage::<Arc<ProviderAgentSessionLaunchUsecase>>();
-        _app.unmanage::<Arc<ProviderAgentInitialInstructionUsecase>>();
-        _app.unmanage::<Arc<ProviderAgentSessionLifecycleUsecase>>();
-        _app.unmanage::<Arc<ProviderAgentSessionReadUsecase>>();
+        _app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
+        _app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
+        _app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
+        _app.unmanage::<Arc<AgentSessionReadUsecase>>();
         _app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
         drop((workflow_agent_sessions, window, _app));
         Ok(())
@@ -417,7 +417,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
 
 pub fn product_agent_session_invoke_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    crate::adaptor::controller::command::agent_session::provider_tui_invoke_handler()
+    crate::adaptor::controller::command::agent_session::agent_session_invoke_handler()
 }
 
 fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {

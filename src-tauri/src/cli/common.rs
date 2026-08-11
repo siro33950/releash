@@ -134,51 +134,74 @@ pub(in crate::cli) mod test_support {
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 
     pub(in crate::cli) fn write_review_config(data_dir: &Path) {
-        fs::write(
-            data_dir.join("releash.toml"),
-            r#"
-[agents]
-default = "codex"
-
-[agents.codex]
-models = ["gpt-5"]
-
-[agents.claude]
-models = ["opus"]
-"#,
-        )
-        .unwrap();
+        fs::write(data_dir.join("releash.toml"), "[agents.codex]\n").unwrap();
     }
 
     pub(in crate::cli) fn write_review_session(
         data_dir: &Path,
         session_id: &str,
         backend_id: Option<&str>,
-        model: Option<&str>,
     ) {
-        let store = crate::test_support::build_session_store();
-        let session = crate::usecase::agent_session::session::ChatSession {
-            id: session_id.to_string(),
-            worktree_path: "/repo".to_string(),
-            messages: Vec::new(),
-            state: crate::usecase::agent_session::session::SessionState::Active,
-            error_reason: None,
-            created_at: 1.0,
-            updated_at: 1.0,
-            agent_session_id: None,
-            context_carry: None,
-            permission_mode: "edit".to_string(),
-            plan_mode: false,
-            permission_profile_id: None,
-            selected_model: model.map(str::to_string),
-            backend_id: backend_id.map(str::to_string),
-            workflow_node_session: false,
-            workflow_node_context: None,
-            context_epoch: None,
+        write_review_session_with_lifecycle(
+            data_dir,
+            session_id,
+            backend_id,
+            crate::domain::local_event::AgentSessionLifecycleRecord::Open,
+        );
+    }
+
+    pub(in crate::cli) fn write_review_session_with_lifecycle(
+        data_dir: &Path,
+        session_id: &str,
+        backend_id: Option<&str>,
+        lifecycle: crate::domain::local_event::AgentSessionLifecycleRecord,
+    ) {
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                .unwrap();
+        let provider = match backend_id.unwrap_or("codex") {
+            "claude" => crate::domain::local_event::AgentSessionProviderRecord::Claude,
+            _ => crate::domain::local_event::AgentSessionProviderRecord::Codex,
         };
-        store
-            .save_full_session_for_restore(data_dir, &session)
+        let commit_id = uuid::Uuid::new_v4().to_string();
+        let batch = LocalAtomicBatch {
+            commit_id: CommitIdentity::parse(&commit_id).unwrap(),
+            idempotency: IdempotencyBinding {
+                installation_id: store.installation_id().to_string(),
+                operation_kind: CommitOperationKind::Projection,
+                idempotency_key: commit_id,
+                payload_hash: [7; 32],
+            },
+            expected_heads: Vec::new(),
+            events: Vec::new(),
+            state_mutations: vec![LocalStateMutation::SessionProjection(
+                SessionProjectionMutation {
+                    session_id: format!("agent-session:{session_id}"),
+                    projection: SessionProjectionRecord::AgentSession(
+                        crate::domain::local_event::AgentSessionProjectionRecord {
+                            id: session_id.to_string(),
+                            workspace_identity: "/repo".to_string(),
+                            worktree_path: "/repo".to_string(),
+                            provider,
+                            origin:
+                                crate::domain::local_event::AgentSessionOriginRecord::Standalone,
+                            lifecycle,
+                            provider_session_id: None,
+                            transcript_ref: None,
+                            initial_instruction_admitted: false,
+                            last_exit_abnormal: false,
+                        },
+                    ),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                },
+            )],
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap();
+        runtime.block_on(store.commit_batch(batch)).unwrap();
     }
 
     pub(in crate::cli) fn make_execution(
@@ -301,8 +324,7 @@ models = ["opus"]
 
     pub(in crate::cli) fn review_cli_thread(state: ReviewThreadState) -> ReviewThread {
         let thread_id = test_uuid(42);
-        let author = ReviewActor::agent("codex".to_string(), "gpt-5".to_string(), None)
-            .redacted_for_public();
+        let author = ReviewActor::provider_agent("codex".to_string(), None).redacted_for_public();
         let resolver = ReviewActor::human().redacted_for_public();
         ReviewThread {
             id: thread_id.clone(),
@@ -368,7 +390,6 @@ models = ["opus"]
             worktree_path: worktree.to_string(),
             created_from: ExecutionOrigin::Cli,
             request: String::new(),
-            permission_mode: "ask".to_string(),
             definition: crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
                 name: workflow_name.to_string(),
                 description: "test".to_string(),

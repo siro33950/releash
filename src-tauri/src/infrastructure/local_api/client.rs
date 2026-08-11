@@ -45,8 +45,6 @@ pub(crate) enum LocalApiClientError {
 
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
-    #[allow(dead_code)]
-    code: String,
     message: String,
 }
 

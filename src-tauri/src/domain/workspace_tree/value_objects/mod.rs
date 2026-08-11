@@ -22,25 +22,7 @@ impl WorkspaceIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceSessionListKind {
-    Active,
-    Closed,
-    Archived,
-}
-
-impl WorkspaceSessionListKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Closed => "closed",
-            Self::Archived => "archived",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeKind {
-    Session,
     Workflow,
     Fanout,
     WorkflowSession,
@@ -126,9 +108,7 @@ impl WorkspaceTreeNode {
     pub fn is_leaf(&self) -> bool {
         matches!(
             self.kind,
-            WorkspaceNodeKind::Session
-                | WorkspaceNodeKind::WorkflowSession
-                | WorkspaceNodeKind::WorkflowCommand
+            WorkspaceNodeKind::WorkflowSession | WorkspaceNodeKind::WorkflowCommand
         )
     }
 
@@ -139,37 +119,8 @@ impl WorkspaceTreeNode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceSessionState {
-    Active,
-    Idle,
-    Done,
-    Error,
-    Closed,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceSessionFact {
-    pub id: String,
-    pub worktree_path: String,
-    pub state: WorkspaceSessionState,
-    pub error_reason: Option<String>,
-    pub updated_at_bits: u64,
-    pub title: Option<String>,
-    pub first_message: String,
-    pub workflow_node_session: bool,
-    pub workflow_execution_id: Option<String>,
-    pub workflow_node_execution_id: Option<String>,
-    pub unresolved_recovery_reason: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceStructureFact {
-    SessionProjected(WorkspaceSessionFact),
-    SessionRemoved {
-        session_id: String,
-    },
     WorkflowStarted {
         execution_id: String,
         workflow_name: String,

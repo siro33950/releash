@@ -5,21 +5,16 @@ use rusqlite::{params, OptionalExtension as _};
 
 use super::repository::{codec_query_error, sql_query_error};
 use super::SqliteWorkspaceTreeRepository;
-use crate::adaptor::gateway::local_event_store::indexed_projection_codec::{
-    decode_session_public_summary_v1, decode_workflow_execution_record_v1,
-};
+use crate::adaptor::gateway::local_event_store::indexed_projection_codec::decode_workflow_execution_record_v1;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
-use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
-use crate::domain::local_event::AgentSessionSummaryRecord;
 use crate::domain::workflow::{
     ExecutionStatusFilter, WorkflowError, WorkflowExecutionArchiveRepository,
     WorkflowExecutionSummary, WorkflowPageRequest, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceSessionListKind, WorkspaceTree,
-    WorkspaceTreeNode, WorkspaceTreeRepository, WorkspaceTreeVisibilityPolicy,
+    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTree, WorkspaceTreeNode,
+    WorkspaceTreeRepository, WorkspaceTreeVisibilityPolicy,
 };
-use crate::usecase::agent_session::session::{session_summary_from_record, SessionSummary};
 use crate::usecase::workflow::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
     WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
@@ -29,9 +24,6 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
-pub(crate) const SQL_SESSION_RECORDS: &str = "SELECT public_summary FROM session_projection
-     WHERE workspace_identity = ?1 AND public_list_kind = ?2
-     ORDER BY public_sort_key_bits DESC, session_id";
 pub(crate) const SQL_EXECUTIONS_BY_WORKSPACE_AND_KIND: &str =
     "SELECT record FROM workflow_executions
      WHERE workspace_identity = ?1 AND list_kind = ?2
@@ -65,13 +57,6 @@ impl SqliteWorkspaceQueryService {
         })
     }
 
-    pub(crate) fn new(
-        store: Arc<LocalEventStore>,
-        archives: Arc<dyn WorkflowExecutionArchiveRepository>,
-    ) -> Arc<Self> {
-        Self::with_repository(SqliteWorkspaceTreeRepository::new(store), archives)
-    }
-
     pub(crate) fn new_read_only(
         store: Arc<LocalEventReadStore>,
         archives: Arc<dyn WorkflowExecutionArchiveRepository>,
@@ -80,32 +65,6 @@ impl SqliteWorkspaceQueryService {
             repository: SqliteWorkspaceTreeRepository::new_read_only(store),
             archives,
         })
-    }
-
-    fn session_records(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        list: WorkspaceSessionListKind,
-    ) -> Result<Vec<AgentSessionSummaryRecord>, WorkflowError> {
-        let workspace = workspace_identity.as_str().to_string();
-        let list = list.label().to_string();
-        self.repository
-            .run_indexed(move |connection| {
-                let mut statement = connection
-                    .prepare(SQL_SESSION_RECORDS)
-                    .map_err(sql_query_error)?;
-                let records = statement
-                    .query_map(params![workspace, list], |row| row.get::<_, String>(0))
-                    .map_err(sql_query_error)?
-                    .map(|row| {
-                        row.map_err(sql_query_error).and_then(|raw| {
-                            decode_session_public_summary_v1(&raw).map_err(codec_query_error)
-                        })
-                    })
-                    .collect();
-                records
-            })
-            .map_err(query_error)
     }
 
     fn execution_records(
@@ -203,17 +162,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         self.repository
             .node_id_for_session(workspace_identity, session_id)
             .map_err(query_error)
-    }
-
-    fn session_summaries(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        list: WorkspaceSessionListKind,
-    ) -> Result<Vec<SessionSummary>, WorkflowError> {
-        self.session_records(workspace_identity, list)?
-            .into_iter()
-            .map(session_summary)
-            .collect()
     }
 
     fn execution_summaries(
@@ -391,7 +339,7 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
             })
         }
         WorkspaceNodeKind::WorkflowSession => {
-            WorkspaceNodeContentDto::ProviderAgentSession(WorkspaceSessionNodeContentDto {
+            WorkspaceNodeContentDto::AgentSession(WorkspaceSessionNodeContentDto {
                 session_id: node.session_id,
             })
         }
@@ -418,10 +366,6 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         updated_at,
         content,
     }
-}
-
-fn session_summary(record: AgentSessionSummaryRecord) -> Result<SessionSummary, WorkflowError> {
-    session_summary_from_record(&record).map_err(|error| record_projection_error(&error))
 }
 
 fn sqlite_page_bounds(page: Option<WorkflowPageRequest>) -> (i64, i64) {
@@ -535,43 +479,19 @@ mod tests {
     }
 
     #[test]
-    fn error_reason_is_exposed_on_direct_session_badges_and_detail() {
-        let mut direct = node();
-        direct.kind = WorkspaceNodeKind::Session;
-        direct.status = WorkspaceNodeStatus::Error;
-        direct.error_reason = Some("provider failed".to_string());
-        direct.attempt = None;
-        direct.session_id = Some("direct-session".to_string());
-        direct.can_approve = false;
-        direct.can_close = true;
-        let tree = WorkspaceTree::restore("/repo", vec![direct.clone()]).unwrap();
-
-        let badges = project_tree(&tree, &HashSet::new());
-        let [WorkspaceTreeItemDto::Node(badge)] = badges.as_slice() else {
-            panic!("direct Session must project to one node badge");
-        };
-        assert_eq!(badge.status, "error");
-        assert_eq!(badge.error_reason.as_deref(), Some("provider failed"));
-
-        let detail = node_detail(direct);
-        assert_eq!(detail.status, "error");
-        assert_eq!(detail.error_reason.as_deref(), Some("provider failed"));
-    }
-
-    #[test]
-    fn test_workflow_session_node_detail_provider_agent_session_surfaceを公開する() {
+    fn test_workflow_session_node_detail_agent_session_surfaceを公開する() {
         let mut workflow_session = node();
-        workflow_session.session_id = Some("provider-agent-session-1".to_string());
+        workflow_session.session_id = Some("agent-session-1".to_string());
 
         let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
 
         assert_eq!(
             detail["content"]["kind"],
-            serde_json::Value::String("providerAgentSession".to_string())
+            serde_json::Value::String("agentSession".to_string())
         );
         assert_eq!(
             detail["content"]["sessionId"],
-            serde_json::Value::String("provider-agent-session-1".to_string())
+            serde_json::Value::String("agent-session-1".to_string())
         );
     }
 
@@ -581,7 +501,7 @@ mod tests {
         workflow_session.node_execution_id = Some("node-execution-1".to_string());
         workflow_session.execution_id = Some("execution-1".to_string());
         workflow_session.node_name = Some("Review".to_string());
-        workflow_session.session_id = Some("provider-agent-session-1".to_string());
+        workflow_session.session_id = Some("agent-session-1".to_string());
         workflow_session.completion_signals =
             crate::domain::workflow::NodeCompletionSignalState::StopReceived;
         workflow_session.has_artifact = false;

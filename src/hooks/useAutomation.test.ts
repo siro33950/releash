@@ -16,8 +16,8 @@ const sessionNode = {
 	name: "step-1",
 	kind: "session" as const,
 	session: {
+		provider: "claude" as const,
 		gate: "auto" as const,
-		permission: "edit" as const,
 		facets: { instruction: "implement" },
 	},
 	rules: [],

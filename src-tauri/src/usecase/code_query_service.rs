@@ -12,8 +12,7 @@ use crate::domain::code::services;
 use crate::domain::code::{
     BranchBaseResolver, ChangeGroup, CodeError, DiffComputer, DiffFileEntry, DiffRange,
     DiffRangeKind, DiffSide, DiffTreeNode, FileContentRepository, HiddenRange, Hunk, InlineChunk,
-    InlineChunkKind, MentionReference, MentionRepository, ReviewSideBytes, ReviewSideMetadata,
-    SplitRow, SplitRowKind, VisibleBlock,
+    InlineChunkKind, ReviewSideBytes, ReviewSideMetadata, SplitRow, SplitRowKind, VisibleBlock,
 };
 
 use super::code_dto::{
@@ -45,7 +44,6 @@ pub struct CodeQueryService {
     file_content: Arc<dyn FileContentRepository>,
     diff_computer: Arc<dyn DiffComputer>,
     branch_diff: Arc<dyn BranchDiffQuery>,
-    mention: Arc<dyn MentionRepository>,
     branch_base: Arc<dyn BranchBaseResolver>,
 }
 
@@ -54,14 +52,12 @@ impl CodeQueryService {
         file_content: Arc<dyn FileContentRepository>,
         diff_computer: Arc<dyn DiffComputer>,
         branch_diff: Arc<dyn BranchDiffQuery>,
-        mention: Arc<dyn MentionRepository>,
         branch_base: Arc<dyn BranchBaseResolver>,
     ) -> Self {
         Self {
             file_content,
             diff_computer,
             branch_diff,
-            mention,
             branch_base,
         }
     }
@@ -116,17 +112,6 @@ impl CodeQueryService {
         Ok(self
             .file_content
             .binary_file_at_branch_base(file_path, base_oid.as_deref())?)
-    }
-
-    /// 現在ブランチの実効 base 名（ref 実在検証あり）。agent bridge の env 伝搬向け。
-    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-    pub fn resolve_effective_base_branch_name(
-        &self,
-        path_hint: &str,
-    ) -> Result<Option<String>, CodeUsecaseError> {
-        Ok(self
-            .branch_base
-            .resolve_effective_base_branch_name(path_hint)?)
     }
 
     pub fn get_staged_content(&self, file_path: &str) -> Result<String, CodeUsecaseError> {
@@ -375,30 +360,6 @@ impl CodeQueryService {
     pub fn get_relative_path(&self, root_path: &str, file_path: &str) -> Option<String> {
         crate::other::utils::relative_path(root_path, file_path)
     }
-
-    // ── file mention（候補列挙・参照解決） ──
-
-    pub fn list_mentionable_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-    ) -> Result<Vec<String>, CodeUsecaseError> {
-        Ok(self.mention.list_mentionable_files(worktree_path, query)?)
-    }
-
-    /// 構造化メンション参照を解決し file_context を前置する。失敗時のフォールバック方針は
-    /// 呼び出し元（`CodeUsecase`）が決めるため、ここでは解決結果／エラーをそのまま返す。
-    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
-    pub fn resolve_mentions(
-        &self,
-        worktree_path: &str,
-        content: &str,
-        mentions: &[MentionReference],
-    ) -> Result<String, CodeUsecaseError> {
-        Ok(self
-            .mention
-            .resolve_mentions(worktree_path, content, mentions)?)
-    }
 }
 
 // ── 既存 domain VO → DTO 変換（hunk/range などの共通 read model） ──
@@ -628,42 +589,9 @@ mod code_query_service_tests {
         }
     }
 
-    struct FakeMention;
-    impl MentionRepository for FakeMention {
-        fn list_mentionable_files(
-            &self,
-            _worktree_path: &str,
-            query: &str,
-        ) -> Result<Vec<String>, CodeError> {
-            if query.is_empty() {
-                Ok(vec!["a.rs".to_string(), "b.rs".to_string()])
-            } else {
-                Ok(vec!["a.rs".to_string()])
-            }
-        }
-        fn resolve_mentions(
-            &self,
-            _worktree_path: &str,
-            content: &str,
-            mentions: &[MentionReference],
-        ) -> Result<String, CodeError> {
-            if mentions.is_empty() {
-                Ok(content.to_string())
-            } else {
-                Ok(format!("<file_context/>\n{content}"))
-            }
-        }
-    }
-
     struct FakeBranchBase;
     impl BranchBaseResolver for FakeBranchBase {
         fn resolve_base_branch_name(&self, _path_hint: &str) -> Result<Option<String>, CodeError> {
-            Ok(Some("main".to_string()))
-        }
-        fn resolve_effective_base_branch_name(
-            &self,
-            _path_hint: &str,
-        ) -> Result<Option<String>, CodeError> {
             Ok(Some("main".to_string()))
         }
         fn resolve_base_commit_oid(
@@ -682,7 +610,6 @@ mod code_query_service_tests {
             Arc::new(FakeFileContent),
             Arc::new(FakeDiffComputer),
             Arc::new(FakeBranchDiff),
-            Arc::new(FakeMention),
             Arc::new(FakeBranchBase),
         )
     }
@@ -700,15 +627,6 @@ mod code_query_service_tests {
         // 反映する（base@main）。base 名解決を resolver 経由で行う配線を担保する。
         let s = service();
         assert_eq!(s.get_file_at_branch_base("f.rs").unwrap(), "base@main");
-    }
-
-    #[test]
-    fn test_実効base名を委譲する() {
-        let s = service();
-        assert_eq!(
-            s.resolve_effective_base_branch_name("/repo").unwrap(),
-            Some("main".to_string())
-        );
     }
 
     #[test]
@@ -755,13 +673,6 @@ mod code_query_service_tests {
         let s = service();
         let summary = s.get_branch_diff_summary("/repo", None).unwrap();
         assert_eq!(summary.base_branch, "main");
-    }
-
-    #[test]
-    fn test_mention候補列挙を委譲する() {
-        let s = service();
-        assert_eq!(s.list_mentionable_files("/wt", "").unwrap().len(), 2);
-        assert_eq!(s.list_mentionable_files("/wt", "a").unwrap().len(), 1);
     }
 
     #[test]

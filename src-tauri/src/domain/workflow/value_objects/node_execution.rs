@@ -47,6 +47,7 @@ pub enum NodeExecutionStatus {
 }
 
 impl NodeExecutionStatus {
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",

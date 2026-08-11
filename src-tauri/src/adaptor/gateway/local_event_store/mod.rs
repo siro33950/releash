@@ -1,6 +1,5 @@
 //! Permanent fixed-path SQLite local event store gateway.
 
-pub(crate) mod agent_session_codec;
 pub(crate) mod agent_session_lifecycle_codec;
 pub(crate) mod canonical_cbor;
 pub(crate) mod clock;
@@ -24,8 +23,5 @@ pub(crate) mod store;
 pub(crate) mod workflow_codec;
 pub(crate) mod workspace_query_migration;
 pub(crate) mod writer;
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) use store::{LocalEventStore, LocalEventStoreConfig};

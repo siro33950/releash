@@ -7,8 +7,7 @@ use super::{
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
 use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionOrigin};
 use crate::domain::agent_session::repository::{
-    ProviderAgentSessionRepository, ProviderAgentSessionRepositoryError,
-    VersionedProviderAgentSession,
+    AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
 };
 use crate::domain::provider_lifecycle::{
     ProviderHookHealth, ProviderHookHealthRepository, ProviderHookHealthRepositoryError,
@@ -18,22 +17,22 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason, ScopedProviderLifecycleEvent, VersionedProviderHookHealth,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::agent_session::ProviderAgentSessionUsecase;
+use crate::usecase::agent_session::AgentSessionUsecase;
 
 struct MemoryAgentSessions {
-    stored: Mutex<VersionedProviderAgentSession>,
+    stored: Mutex<VersionedAgentSession>,
     fail_save: bool,
     save_observed: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[async_trait::async_trait]
-impl ProviderAgentSessionRepository for MemoryAgentSessions {
+impl AgentSessionRepository for MemoryAgentSessions {
     async fn create(
         &self,
         _session: AgentSession,
         _caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError> {
-        Err(ProviderAgentSessionRepositoryError::AlreadyExists)
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        Err(AgentSessionRepositoryError::AlreadyExists)
     }
 
     async fn create_with_lifecycle_events(
@@ -41,44 +40,43 @@ impl ProviderAgentSessionRepository for MemoryAgentSessions {
         _session: AgentSession,
         _lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         _caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError> {
-        Err(ProviderAgentSessionRepositoryError::AlreadyExists)
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        Err(AgentSessionRepositoryError::AlreadyExists)
     }
 
     async fn find(
         &self,
         session_id: &str,
-    ) -> Result<Option<VersionedProviderAgentSession>, ProviderAgentSessionRepositoryError> {
+    ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError> {
         let stored = self.stored.lock().unwrap();
         Ok((stored.session().id() == session_id).then(|| stored.clone()))
     }
 
     async fn save(
         &self,
-        session: VersionedProviderAgentSession,
+        session: VersionedAgentSession,
         _caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError> {
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         if let Some(save_observed) = &self.save_observed {
             save_observed.notify_one();
         }
         if self.fail_save {
-            return Err(ProviderAgentSessionRepositoryError::Unavailable);
+            return Err(AgentSessionRepositoryError::Unavailable);
         }
         let previous_revision = session.revision();
         let mut entity = session.into_session();
         let event_count = entity.take_uncommitted_events().len() as u64;
-        let saved =
-            VersionedProviderAgentSession::restored(entity, previous_revision + event_count);
+        let saved = VersionedAgentSession::restored(entity, previous_revision + event_count);
         *self.stored.lock().unwrap() = saved.clone();
         Ok(saved)
     }
 
     async fn remove(
         &self,
-        _session: VersionedProviderAgentSession,
+        _session: VersionedAgentSession,
         _authorization: crate::domain::agent_session::aggregates::AgentSessionRemovalAuthorization,
         _caller_request_id: &str,
-    ) -> Result<(), ProviderAgentSessionRepositoryError> {
+    ) -> Result<(), AgentSessionRepositoryError> {
         unreachable!()
     }
 }
@@ -87,10 +85,10 @@ impl ProviderAgentSessionRepository for MemoryAgentSessions {
 impl ProviderSessionStartTransaction for MemoryAgentSessions {
     async fn commit_session_started(
         &self,
-        session: VersionedProviderAgentSession,
+        session: VersionedAgentSession,
         _lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError> {
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         self.save(session, caller_request_id).await
     }
 }
@@ -183,7 +181,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
     .unwrap();
     session.take_uncommitted_events();
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
         fail_save: false,
         save_observed: None,
     });
@@ -194,7 +192,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
     ));
     let ingress = ProviderLifecycleIngressUsecase::new(
         lifecycle.clone(),
-        Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone())),
+        Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
         ))),
@@ -346,7 +344,7 @@ async fn standalone_stop_does_not_enter_the_workflow_transaction() {
     .unwrap();
     session.take_uncommitted_events();
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
         fail_save: false,
         save_observed: None,
     });
@@ -357,7 +355,7 @@ async fn standalone_stop_does_not_enter_the_workflow_transaction() {
     ));
     let ingress = ProviderLifecycleIngressUsecase::new(
         lifecycle.clone(),
-        Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone())),
+        Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
         ))),
@@ -418,11 +416,11 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
     .unwrap();
     session.take_uncommitted_events();
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
         fail_save: false,
         save_observed: None,
     });
-    let sessions = Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone()));
+    let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(MemoryLifecycleEvents),
@@ -501,11 +499,11 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
     .unwrap();
     session.take_uncommitted_events();
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
         fail_save: true,
         save_observed: None,
     });
-    let sessions = Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone()));
+    let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(MemoryLifecycleEvents),
@@ -583,11 +581,11 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
         .unwrap();
     session.take_uncommitted_events();
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 2)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 2)),
         fail_save: false,
         save_observed: None,
     });
-    let sessions = Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone()));
+    let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(MemoryLifecycleEvents),
@@ -659,11 +657,11 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
     session.take_uncommitted_events();
     let save_observed = Arc::new(tokio::sync::Notify::new());
     let agent_repository = Arc::new(MemoryAgentSessions {
-        stored: Mutex::new(VersionedProviderAgentSession::restored(session, 1)),
+        stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
         fail_save: false,
         save_observed: Some(save_observed.clone()),
     });
-    let sessions = Arc::new(ProviderAgentSessionUsecase::new(agent_repository.clone()));
+    let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(MemoryLifecycleEvents),

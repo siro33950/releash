@@ -4,11 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use crate::domain::local_event::{
-    CommitBatchError, CommitBatchResult, CommitIdentity, CommitOperationKind, ExpectedStreamHead,
-    IdempotencyBinding, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery,
-    LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
-    ProviderAgentSessionProviderRecord, ProviderHookHealthProjectionRecord, Revision,
-    RevisionGuard, SessionProjectionMutation, SessionProjectionRecord, StreamId,
+    AgentSessionProviderRecord, CommitBatchError, CommitBatchResult, CommitIdentity,
+    CommitOperationKind, ExpectedStreamHead, IdempotencyBinding, LoadStreamRequest,
+    LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryResult,
+    LocalEventTransactionRepository, LocalStateMutation, ProviderHookHealthProjectionRecord,
+    Revision, RevisionGuard, SessionProjectionMutation, SessionProjectionRecord, StreamId,
     UncommittedDomainEvent,
 };
 use crate::domain::provider_lifecycle::{
@@ -186,7 +186,7 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
             commit_id,
             idempotency: IdempotencyBinding {
                 installation_id: self.installation_id.clone(),
-                operation_kind: CommitOperationKind::SessionLifecycle,
+                operation_kind: CommitOperationKind::Projection,
                 idempotency_key: format!("provider-hook-health.{caller_request_id}"),
                 payload_hash,
             },
@@ -206,8 +206,7 @@ impl ProviderHookHealthRepository for LocalProviderHookHealthRepository {
             ) => Err(ProviderHookHealthRepositoryError::Conflict),
             Err(
                 CommitBatchError::StorageUnavailable { .. }
-                | CommitBatchError::OutcomeUnknown { .. }
-                | CommitBatchError::EffectAdmissionBlocked,
+                | CommitBatchError::OutcomeUnknown { .. },
             ) => Err(ProviderHookHealthRepositoryError::StorageUnavailable),
             Err(
                 CommitBatchError::CapacityExceeded
@@ -229,10 +228,10 @@ fn provider_label(provider: ProviderKind) -> &'static str {
     }
 }
 
-fn provider_record(provider: ProviderKind) -> ProviderAgentSessionProviderRecord {
+fn provider_record(provider: ProviderKind) -> AgentSessionProviderRecord {
     match provider {
-        ProviderKind::Claude => ProviderAgentSessionProviderRecord::Claude,
-        ProviderKind::Codex => ProviderAgentSessionProviderRecord::Codex,
+        ProviderKind::Claude => AgentSessionProviderRecord::Claude,
+        ProviderKind::Codex => AgentSessionProviderRecord::Codex,
     }
 }
 

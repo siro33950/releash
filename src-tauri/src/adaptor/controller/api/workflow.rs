@@ -130,7 +130,6 @@ async fn start_execution(
             worktree_path: payload.worktree_path,
             request: Some(payload.request),
             created_from,
-            permission_mode: payload.permission_mode.unwrap_or_else(|| "ask".to_string()),
         })
         .await?;
     Ok(Json(StartExecutionResponse { execution_id }))

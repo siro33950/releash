@@ -8,17 +8,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
-vi.mock("@/hooks/useSessionStore", () => ({
-	getAcceptedSendOperation: vi.fn().mockResolvedValue(null),
-	listAcceptedPermissionResponseOperations: vi.fn().mockResolvedValue([]),
-	redispatchPendingLifecycleAttempts: vi.fn().mockResolvedValue(undefined),
-	redispatchPendingPermissionResponseAttempts: vi
-		.fn()
-		.mockResolvedValue(undefined),
-	redispatchPendingSendAttempts: vi.fn().mockResolvedValue(undefined),
-	redispatchPendingStopAttempts: vi.fn().mockResolvedValue(undefined),
-}));
-
 describe("ApplicationShutdownBanner", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -28,7 +17,7 @@ describe("ApplicationShutdownBanner", () => {
 	it("renders the durable quit identity and intent when shutdown outcome is unknown", async () => {
 		mockInvoke.mockImplementation((command: string) => {
 			switch (command) {
-				case "list_pending_agent_attempts":
+				case "list_pending_application_attempts":
 					return Promise.resolve({ entries: [], next_cursor: null });
 				case "get_application_shutdown":
 					return Promise.resolve({
@@ -52,7 +41,7 @@ describe("ApplicationShutdownBanner", () => {
 	it("stays out of the way while no quit flight exists", async () => {
 		mockInvoke.mockImplementation((command: string) => {
 			switch (command) {
-				case "list_pending_agent_attempts":
+				case "list_pending_application_attempts":
 					return Promise.resolve({ entries: [], next_cursor: null });
 				case "get_application_shutdown":
 					return Promise.resolve({ type: "current", plan: null });

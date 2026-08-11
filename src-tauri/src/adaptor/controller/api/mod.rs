@@ -1,4 +1,3 @@
-mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
@@ -16,71 +15,11 @@ use axum::Router;
 
 use crate::usecase::workflow::{WorkflowReadUsecase, WorkflowRuntimeUsecase};
 
-const MAX_AGENT_SESSION_CONNECTIONS: usize = 16;
-
 #[derive(Clone)]
 struct LocalApiState {
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
-    agent_session: Option<AgentSessionApiDeps>,
     terminal: Option<TerminalApiDeps>,
-}
-
-#[derive(Clone)]
-pub(crate) struct AgentSessionApiDeps {
-    pub(crate) send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
-    pub(crate) permission_response:
-        Arc<crate::usecase::agent_session::operation::PermissionResponseOperationUsecase>,
-    pub(crate) stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
-    pub(crate) recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
-    pub(crate) feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
-    pub(crate) feedback_load:
-        Arc<crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase>,
-    pub(crate) shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
-    pub(crate) process_actions:
-        Arc<crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher>,
-    pub(crate) local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    pub(crate) caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
-    pub(crate) app: tauri::AppHandle,
-    pub(crate) connection_limit: Arc<tokio::sync::Semaphore>,
-}
-
-impl AgentSessionApiDeps {
-    #[allow(clippy::too_many_arguments)] // Composition root injects each independent durable service explicitly.
-    pub(crate) fn new(
-        send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
-        permission_response: Arc<
-            crate::usecase::agent_session::operation::PermissionResponseOperationUsecase,
-        >,
-        stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
-        recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
-        feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
-        feedback_load: Arc<
-            crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase,
-        >,
-        shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
-        process_actions: Arc<
-            crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher,
-        >,
-        local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-        caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
-        app: tauri::AppHandle,
-    ) -> Self {
-        Self {
-            send,
-            permission_response,
-            stop,
-            recovery,
-            feedback,
-            feedback_load,
-            shutdown,
-            process_actions,
-            local_store,
-            caller_journal,
-            app,
-            connection_limit: Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_SESSION_CONNECTIONS)),
-        }
-    }
 }
 
 pub(crate) fn build_router(
@@ -88,7 +27,6 @@ pub(crate) fn build_router(
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
     terminal_token: Arc<str>,
-    agent_session: Option<AgentSessionApiDeps>,
     terminal: Option<TerminalApiDeps>,
     provider_lifecycle: Option<
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
@@ -97,11 +35,9 @@ pub(crate) fn build_router(
     let state = LocalApiState {
         workflow,
         runtime,
-        agent_session,
         terminal,
     };
     let application_router = workflow::router()
-        .merge(agent_session::router())
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
@@ -157,11 +93,9 @@ pub(crate) mod test_support {
         WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
     use crate::usecase::workflow::ports::{
-        ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-        WorkflowEventDraft, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-        WorkflowRuntimeStateGateway, WorkflowStallClearedCommand, WorkflowStallObservedCommand,
-        WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
-        WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+        WorkflowAbortExecutionGateway, WorkflowEventDraft, WorkflowResumeExecutionGateway,
+        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
+        WorkflowStopExecutionGateway,
     };
     use crate::usecase::workflow::WorkflowUsecase;
 
@@ -566,48 +500,14 @@ pub(crate) mod test_support {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowTurnCompleteGateway for RecordingRuntimeGateway {
-        async fn is_session_running(&self, _chat_session_id: &str) -> bool {
-            false
-        }
-
-        async fn complete_turn(
-            &self,
-            _command: WorkflowTurnCompleteCommand,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowStallObservedGateway for RecordingRuntimeGateway {
-        async fn observe_stall(
-            &self,
-            _command: WorkflowStallObservedCommand,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        async fn clear_stall(
-            &self,
-            _command: WorkflowStallClearedCommand,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for RecordingRuntimeGateway {
+        async fn recover_startup(&self) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
         async fn get_state_by_execution_id(
             &self,
             _execution_id: &str,
-        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-            Ok(None)
-        }
-
-        async fn get_state_by_worktree(
-            &self,
-            _worktree_path: &str,
         ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             Ok(None)
         }
@@ -619,27 +519,6 @@ pub(crate) mod test_support {
 
         async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
             Ok(Vec::new())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowApprovalChatGateway for RecordingRuntimeGateway {
-        async fn resolve_approval_chat_target(
-            &self,
-            _execution_id: &str,
-        ) -> Result<ApprovalChatTarget, WorkflowError> {
-            Ok(ApprovalChatTarget {
-                chat_session_id: "chat".to_string(),
-                worktree_path: "/tmp/worktree".to_string(),
-            })
-        }
-
-        async fn validate_approval_chat_instruction(
-            &self,
-            _chat_session_id: &str,
-            _content: &str,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
         }
     }
 
@@ -750,7 +629,6 @@ pub(crate) mod test_support {
             runtime.clone(),
             Arc::<str>::from(token),
             Arc::<str>::from(terminal_token),
-            None,
             terminal,
             provider_lifecycle,
         );
@@ -848,7 +726,6 @@ pub(crate) mod test_support {
                 "worktree_path": worktree_path,
                 "created_from": "cli",
                 "request": "review this change",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "review",
                     "description": "Review a change",
@@ -980,6 +857,26 @@ pub(crate) mod test_support {
     }
 
     #[tokio::test]
+    async fn test_agent_tui_cutover_legacy_agent_session_local_api_routeを公開しない() {
+        let directory = tempfile::tempdir().unwrap();
+        let (router, _, _) = test_router(directory.path(), "secret");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/agent-session")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn every_endpoint_and_the_fallback_require_the_bearer_token() {
         let directory = tempfile::tempdir().unwrap();
         let (router, _, _) = test_router(directory.path(), "secret");
@@ -1064,7 +961,6 @@ pub(crate) mod test_support {
                 "workflow_name": "review",
                 "worktree_path": "/repo",
                 "request": "review this change",
-                "permission_mode": "edit",
                 "created_from": "agent"
             }),
         )
@@ -1168,7 +1064,6 @@ pub(crate) mod test_support {
             commands.starts[0].created_from,
             crate::domain::workflow::ExecutionOrigin::Agent
         );
-        assert_eq!(commands.starts[0].permission_mode, "edit");
 
         assert_eq!(commands.approvals.len(), 1);
         assert_eq!(commands.approvals[0].execution_id, execution_id);

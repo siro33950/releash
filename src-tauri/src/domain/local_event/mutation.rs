@@ -8,44 +8,27 @@
 use crate::domain::local_event::events::ApplicationShutdownPhase;
 use crate::domain::local_event::identifiers::{Revision, StreamId, StreamVersion};
 use crate::domain::local_event::record::{
-    MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
-    RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord, TerminalResultRecord, WorkflowExecutionProjectionRecord,
+    ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
+    RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord,
+    WorkflowExecutionProjectionRecord,
 };
 use crate::domain::workspace_tree::WorkspaceTreeNode;
-
-/// A complete message projection may legitimately carry an inline image.
-/// The transaction-wide decoded-byte admission remains the authoritative
-/// 16 MiB ceiling, so one record may use that budget but cannot bypass it.
-pub const RECOVERY_RESULT_MAX_BYTES: usize = 64 * 1024;
 
 /// Operation kinds that carry a caller operation identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperationKind {
-    Send,
-    PermissionResponse,
-    Stop,
-    SessionLifecycle,
     ApplicationQuit,
 }
 
 impl OperationKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Send => "send",
-            Self::PermissionResponse => "permission_response",
-            Self::Stop => "stop",
-            Self::SessionLifecycle => "session_lifecycle",
             Self::ApplicationQuit => "application_quit",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "send" => Some(Self::Send),
-            "permission_response" => Some(Self::PermissionResponse),
-            "stop" => Some(Self::Stop),
-            "session_lifecycle" => Some(Self::SessionLifecycle),
             "application_quit" => Some(Self::ApplicationQuit),
             _ => None,
         }
@@ -144,16 +127,6 @@ pub struct SessionProjectionMutation {
     pub revision: Revision,
 }
 
-/// Complete message / parts read-model row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageProjectionMutation {
-    pub session_id: String,
-    pub message_id: String,
-    pub projection: MessageProjectionRecord,
-    pub expected: RevisionGuard,
-    pub revision: Revision,
-}
-
 /// Remove a newly-created session read model when its owning setup operation
 /// rolls back before admission. Message rows are removed by the same mutation
 /// before the session row, so no derived transcript can survive the rollback.
@@ -163,12 +136,12 @@ pub struct SessionProjectionRemovalMutation {
     pub expected: RevisionGuard,
 }
 
-/// Removes every durable Provider AgentSession payload except the newly
+/// Removes every durable AgentSession payload except the newly
 /// appended tombstone. A released provider ownership aggregate is removed in
 /// the same transaction so the provider session can be claimed again without
 /// retaining its resume identifier in Releash state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderAgentSessionRemovalMutation {
+pub struct AgentSessionRemovalMutation {
     pub agent_session_stream: StreamId,
     pub retained_tombstone_sequence: StreamVersion,
     pub ownership_projection_id: Option<String>,
@@ -194,48 +167,6 @@ pub struct WorkflowExecutionNodeProjectionMutation {
     pub nodes: Vec<WorkspaceTreeNode>,
     pub expected: RevisionGuard,
     pub revision: Revision,
-}
-
-/// Terminal uniqueness on `(session_id, turn_id)`. Guard: absent or same
-/// terminal identity (replay); a different identity is a conflict.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TerminalRecordMutation {
-    pub session_id: String,
-    pub turn_id: String,
-    pub terminal_identity: String,
-    pub result: TerminalResultRecord,
-    pub participant_digest: [u8; 32],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopResolutionKind {
-    Succeeded,
-    Superseded,
-}
-
-impl StopResolutionKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Succeeded => "succeeded",
-            Self::Superseded => "superseded",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "succeeded" => Some(Self::Succeeded),
-            "superseded" => Some(Self::Superseded),
-            _ => None,
-        }
-    }
-}
-
-/// Stop resolution keyed by Stop operation ID. Guard: absent or same result.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StopResolutionMutation {
-    pub stop_operation_id: String,
-    pub resolution: StopResolutionKind,
-    pub detail: TerminalResultRecord,
 }
 
 /// Recovery partition presented for unowned pending work.
@@ -386,18 +317,12 @@ pub enum LocalStateMutation {
     CallerAttempt(CallerAttemptMutation),
     OperationRecord(OperationRecordMutation),
     SessionProjection(SessionProjectionMutation),
-    MessageProjection(MessageProjectionMutation),
     SessionProjectionRemoval(SessionProjectionRemovalMutation),
-    ProviderAgentSessionRemoval(ProviderAgentSessionRemovalMutation),
+    AgentSessionRemoval(AgentSessionRemovalMutation),
     WorkflowExecutionProjection(WorkflowExecutionProjectionMutation),
     WorkflowExecutionNodeProjection(WorkflowExecutionNodeProjectionMutation),
-    TerminalRecord(TerminalRecordMutation),
-    StopResolution(StopResolutionMutation),
     Obligation(ObligationMutation),
     RecoveryAction(RecoveryActionMutation),
-    /// Session lifecycle operations share the direct operation-record shape
-    /// with `kind == OperationKind::SessionLifecycle`.
-    SessionLifecycleOperation(OperationRecordMutation),
     ShutdownPlan(ShutdownPlanMutation),
     ShutdownTarget(ShutdownTargetMutation),
     ShutdownRecoverySnapshot(ShutdownRecoverySnapshotMutation),
@@ -443,7 +368,6 @@ impl LocalStateMutation {
             // existing replay identities, so projection-capable commit paths
             // must use the gateway canonicalizer.
             Self::SessionProjection(_)
-            | Self::MessageProjection(_)
             | Self::WorkflowExecutionProjection(_)
             | Self::WorkflowExecutionNodeProjection(_) => {
                 return Err("projection identity-v1 encoding is gateway-owned")
@@ -453,8 +377,8 @@ impl LocalStateMutation {
                 text(&mut bytes, &m.session_id);
                 revision_guard(&mut bytes, m.expected);
             }
-            Self::ProviderAgentSessionRemoval(m) => {
-                text(&mut bytes, "provider_agent_session_removal");
+            Self::AgentSessionRemoval(m) => {
+                text(&mut bytes, "agent_session_removal");
                 text(&mut bytes, m.agent_session_stream.as_str());
                 bytes.extend_from_slice(&m.retained_tombstone_sequence.value().to_be_bytes());
                 match (
@@ -471,20 +395,6 @@ impl LocalStateMutation {
                     (None, None, None) => bytes.push(0),
                     _ => return Err("incomplete provider ownership removal"),
                 }
-            }
-            Self::TerminalRecord(m) => {
-                text(&mut bytes, "terminal_record");
-                text(&mut bytes, &m.session_id);
-                text(&mut bytes, &m.turn_id);
-                text(&mut bytes, &m.terminal_identity);
-                m.result.write_canonical_identity_v1(&mut bytes)?;
-                field(&mut bytes, &m.participant_digest);
-            }
-            Self::StopResolution(m) => {
-                text(&mut bytes, "stop_resolution");
-                text(&mut bytes, &m.stop_operation_id);
-                text(&mut bytes, m.resolution.label());
-                m.detail.write_canonical_identity_v1(&mut bytes)?;
             }
             Self::Obligation(m) => {
                 text(&mut bytes, "obligation");
@@ -513,7 +423,6 @@ impl LocalStateMutation {
             | Self::CallerAttempt(_)
             | Self::OperationRecord(_)
             | Self::RecoveryAction(_)
-            | Self::SessionLifecycleOperation(_)
             | Self::ShutdownPlan(_)
             | Self::ShutdownTarget(_)
             | Self::ShutdownRecoverySnapshot(_)
@@ -535,13 +444,10 @@ impl LocalStateMutation {
             Self::CallerAttempt(m) => {
                 m.sealed_command.len() + m.scope_id.as_ref().map_or(0, String::len) + 128
             }
-            Self::OperationRecord(m) | Self::SessionLifecycleOperation(m) => {
-                typed(&m.receipt) + typed(&m.latest_status) + 64
-            }
+            Self::OperationRecord(m) => typed(&m.receipt) + typed(&m.latest_status) + 64,
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
-            Self::MessageProjection(m) => m.projection.semantic_bytes().saturating_add(96),
             Self::SessionProjectionRemoval(m) => m.session_id.len() + 64,
-            Self::ProviderAgentSessionRemoval(m) => {
+            Self::AgentSessionRemoval(m) => {
                 m.agent_session_stream.as_str().len()
                     + m.ownership_projection_id.as_ref().map_or(0, String::len)
                     + m.ownership_stream
@@ -567,8 +473,6 @@ impl LocalStateMutation {
                             .saturating_add(256)
                     })
             }
-            Self::TerminalRecord(m) => typed(&m.result) + 128,
-            Self::StopResolution(m) => typed(&m.detail) + 64,
             Self::Obligation(m) => {
                 typed(&m.record)
                     + m.pending
@@ -593,9 +497,7 @@ impl LocalStateMutation {
     pub fn is_critical(&self) -> bool {
         matches!(
             self,
-            Self::TerminalRecord(_)
-                | Self::StopResolution(_)
-                | Self::ShutdownPlan(_)
+            Self::ShutdownPlan(_)
                 | Self::ShutdownTarget(_)
                 | Self::ShutdownRecoverySnapshot(_)
                 | Self::ShutdownDetailsCompaction(_)
@@ -610,15 +512,8 @@ mod tests {
 
     #[test]
     fn closed_labels_round_trip() {
-        for kind in [
-            OperationKind::Send,
-            OperationKind::PermissionResponse,
-            OperationKind::Stop,
-            OperationKind::SessionLifecycle,
-            OperationKind::ApplicationQuit,
-        ] {
-            assert_eq!(OperationKind::parse(kind.label()), Some(kind));
-        }
+        let kind = OperationKind::ApplicationQuit;
+        assert_eq!(OperationKind::parse(kind.label()), Some(kind));
         for partition in [
             PendingPartition::Owner,
             PendingPartition::ClosedSession,
@@ -647,7 +542,7 @@ mod tests {
             key: CallerOperationKey {
                 principal: "principal".to_string(),
                 installation_id: "generation".to_string(),
-                kind: OperationKind::Send,
+                kind: OperationKind::ApplicationQuit,
                 caller_request_id: "request".to_string(),
             },
             operation_id: "operation".to_string(),
@@ -660,50 +555,18 @@ mod tests {
     }
 
     #[test]
-    fn canonical_identity_v1_covers_terminal_and_obligation_semantics() {
-        let terminal = LocalStateMutation::TerminalRecord(TerminalRecordMutation {
-            session_id: "s-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            terminal_identity: "terminal-1".to_string(),
-            result: TerminalResultRecord::StopSuperseded {
-                terminal_identity: "winner-1".to_string(),
-                terminal_result_sha256: [1; 32],
-            },
-            participant_digest: [2; 32],
-        });
-        assert_eq!(
-            terminal.canonical_identity_v1().unwrap(),
-            terminal.clone().canonical_identity_v1().unwrap()
-        );
-        let mut different_terminal = terminal.clone();
-        let LocalStateMutation::TerminalRecord(record) = &mut different_terminal else {
-            unreachable!();
-        };
-        record.participant_digest = [3; 32];
-        assert_ne!(
-            terminal.canonical_identity_v1().unwrap(),
-            different_terminal.canonical_identity_v1().unwrap()
-        );
-
-        let send = |state| ObligationRecord::Send {
-            obligation_id: "ob-1".to_string(),
+    fn canonical_identity_v1_covers_workflow_shutdown_obligation_state() {
+        let workflow_shutdown = |state| ObligationRecord::WorkflowShutdown {
             operation_id: "op-1".to_string(),
-            session_id: "s-1".to_string(),
-            kind: crate::domain::local_event::record::SendObligationKindRecord::TurnExecution,
-            disposition:
-                crate::domain::local_event::record::SendObligationDispositionRecord::StartedTurn,
-            human_message_id: None,
-            assistant_message_id: None,
-            reserved_turn_id: None,
-            turn_id: Some("turn-1".to_string()),
-            dependency_obligation_ids: Vec::new(),
-            canonical_payload: "payload-ref".to_string(),
+            effect_identity: "effect-1".to_string(),
+            owner_revision: 1,
+            execution_id: "workflow-1".to_string(),
             state,
         };
         let obligation = |state| {
             LocalStateMutation::Obligation(ObligationMutation {
                 obligation_id: "ob-1".to_string(),
-                record: send(state),
+                record: workflow_shutdown(state),
                 pending: None,
                 expected: RevisionGuard::Absent,
                 revision: Revision::new(0).unwrap(),

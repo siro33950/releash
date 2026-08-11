@@ -564,7 +564,6 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "ship feature",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",

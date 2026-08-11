@@ -1,6 +1,19 @@
 use std::sync::{Arc, Mutex};
 
-use super::shutdown_provider_observer_terminal_surface_and_local_api;
+use super::{shutdown_provider_observer_terminal_surface_and_local_api, workflow_shutdown_targets};
+
+#[test]
+fn test_通常終了_durable_targetはworkflow_executionだけで構成する() {
+    let targets =
+        workflow_shutdown_targets(vec!["workflow-1".to_string(), "workflow-2".to_string()]);
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets
+        .iter()
+        .all(|target| target.kind == "workflow_execution"));
+    assert_eq!(targets[0].target_id, "workflow-1");
+    assert_eq!(targets[1].target_id, "workflow-2");
+}
 
 #[test]
 fn test_通常終了テスト配置_追加したterminal_surface終了テストを別ファイルに置く() {

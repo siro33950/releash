@@ -48,7 +48,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = ReleashConfig::default();
         config.server.token = "token-12345678".to_string();
-        config.server.notify.webhook_url = "https://hooks.example/secret-abcdef".to_string();
         let app_config: Arc<dyn ConfigSecretRepository> =
             Arc::new(AppConfig::new(config, tmp.path().join("config.toml")));
 
@@ -57,7 +56,6 @@ mod tests {
             .unwrap();
 
         assert!(secrets.contains(&"token-12345678".to_string()));
-        assert!(secrets.contains(&"https://hooks.example/secret-abcdef".to_string()));
         assert_eq!(
             secrets
                 .iter()

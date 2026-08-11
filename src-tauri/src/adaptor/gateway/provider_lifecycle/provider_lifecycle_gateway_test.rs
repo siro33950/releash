@@ -13,9 +13,9 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
-    GlobalSequence, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery,
-    LocalEventQueryError, LocalEventQueryResult, LocalEventSubscription,
-    LocalEventTransactionRepository, LocalStateMutation, StreamId, UncommittedDomainEvent,
+    LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation, StreamId,
+    UncommittedDomainEvent,
 };
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleRejection,
@@ -660,10 +660,6 @@ impl LocalEventTransactionRepository for ResolveFailureRepository {
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
         self.inner.query_blocking(request)
     }
-
-    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {
-        self.inner.subscribe(after)
-    }
 }
 
 impl ResolveFailureOnceRepository {
@@ -729,10 +725,6 @@ impl LocalEventTransactionRepository for ResolveFailureOnceRepository {
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
         self.inner.query_blocking(request)
-    }
-
-    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {
-        self.inner.subscribe(after)
     }
 }
 

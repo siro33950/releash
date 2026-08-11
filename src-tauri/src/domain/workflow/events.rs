@@ -36,7 +36,6 @@ pub enum WorkflowDomainEvent {
         worktree_path: String,
         created_from: ExecutionOrigin,
         request: String,
-        permission_mode: String,
         definition: WorkflowDefinition,
         timestamp: f64,
     },

@@ -34,8 +34,6 @@ export interface WorktreeBranch {
 	behind: number;
 	has_upstream: boolean;
 	base_ahead: number;
-	agent_state?: "running" | "done" | "error" | "waiting";
-	agent_state_timestamp?: number;
 }
 
 interface PrInfo {

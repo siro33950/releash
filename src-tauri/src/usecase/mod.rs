@@ -1,6 +1,7 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
+pub(crate) mod application_lifecycle;
 pub(crate) mod application_startup;
 pub(crate) mod code_dto;
 pub(crate) mod code_error;
@@ -9,7 +10,6 @@ pub(crate) mod code_usecase;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
-pub(crate) mod notification;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle;
 pub(crate) mod repo_paths_usecase;

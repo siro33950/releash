@@ -21,12 +21,10 @@ use crate::adaptor::gateway::local_event_store::schema::{
 };
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
-    GlobalSequence, LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
-    LocalEventQueryResult, LocalEventSignal, LocalEventSubscription,
-    LocalEventTransactionRepository, LocalStateMutation, SafeOperationFailure,
-    SessionOperationFailureKind,
+    LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
+    SafeOperationFailure, SessionOperationFailureKind,
 };
-use futures_util::stream;
 
 const STORE_NOT_READY: &str = "the fixed local event store is not ready";
 
@@ -351,16 +349,6 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        if matches!(&request, LocalEventQuery::CommitByIdentity { .. }) {
-            return Err(LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::OutcomeUnknown,
-                    true,
-                    "Commit resolution requires the canonical writer authority.",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
-            });
-        }
         self.read(move |connection, context| run_query(connection, context, &request))
             .await
     }
@@ -369,26 +357,10 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        if matches!(&request, LocalEventQuery::CommitByIdentity { .. }) {
-            return Err(LocalEventQueryError::StorageUnavailable {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::OutcomeUnknown,
-                    true,
-                    "Commit resolution requires the canonical writer authority.",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
-            });
-        }
         let context = Arc::clone(&self.query_context);
         self.submit_indexed_query_blocking(move |connection| {
             run_query(connection, &context, &request)
         })
-    }
-
-    fn subscribe(&self, _after: GlobalSequence) -> LocalEventSubscription {
-        LocalEventSubscription::new(Box::pin(stream::once(async {
-            LocalEventSignal::ReplayRequired
-        })))
     }
 }
 

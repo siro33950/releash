@@ -142,56 +142,6 @@ fn resolve_base_ref_oid(repo: &git2::Repository, base_name: &str) -> Option<git2
         .or_else(|| peel(&format!("refs/remotes/origin/{base_name}")))
 }
 
-/// 現在ブランチの実効ベースブランチ名を返す（agent の `RELEASH_BASE_BRANCH` 用）。
-/// 解決した base が local / remote の ref として実在し、かつ現在 HEAD と merge-base が
-/// 計算できる場合のみ `Some`。移行前 `git::branch_diff::resolve_base_branch_name`
-/// （厳格 open + `find_base_commit` 成功要件）と等価に保つため、`discover` による親
-/// リポジトリへのフォールバックはせず厳格に open し、merge-base 成立まで検証する。
-#[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-pub(crate) fn resolve_effective_base_branch(
-    repo_path: &str,
-) -> Result<Option<String>, RepositoryError> {
-    // 厳格 open（旧 `Repository::open(cwd)` 等価）。cwd がサブディレクトリ/非存在の
-    // 場合に親 repo へフォールバックしない。
-    let repo = match client::open(repo_path) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
-    };
-    let head = match repo.head() {
-        Ok(h) => h,
-        Err(_) => return Ok(None),
-    };
-    if !head.is_branch() {
-        return Ok(None);
-    }
-    let current_oid = match head.target() {
-        Some(oid) => oid,
-        None => return Ok(None),
-    };
-    let branch_name = match head.shorthand() {
-        Ok(n) => n.to_string(),
-        Err(_) => return Ok(None),
-    };
-    let config = repo.config().ok();
-    let name = match resolve_branch_base(&repo, config.as_ref(), &branch_name) {
-        Some(n) => n,
-        None => return Ok(None),
-    };
-    let base_oid = match resolve_base_ref_oid(&repo, &name) {
-        Some(oid) => oid,
-        None => return Ok(None),
-    };
-    // merge-base が取れない（unrelated history 等）場合は base 未確定として None。
-    if repo.merge_base(current_oid, base_oid).is_err() {
-        return Ok(None);
-    }
-    Ok(Some(name))
-}
-
-/// `path_hint` 配下のリポジトリで `base_name` の ref を解決し、base コミット OID(hex)
-/// を返す。ref 不在は `None`。`code` ドメインの merge-base 計算へ渡す入力で、ref 解決
-/// ルール（local → remote）の単一情報源を repository に保つ。`path_hint` がファイルパス
-/// （削除済み等で非存在）でも親から discover する。
 pub(crate) fn resolve_base_commit_oid(
     path_hint: &str,
     base_name: &str,
@@ -237,12 +187,6 @@ impl GitConfigRepository for GitConfigGateway {
         path_hint: &str,
     ) -> Result<Option<String>, RepositoryError> {
         resolve_current_base_branch(path_hint)
-    }
-    fn resolve_effective_base_branch(
-        &self,
-        repo_path: &str,
-    ) -> Result<Option<String>, RepositoryError> {
-        resolve_effective_base_branch(repo_path)
     }
     fn resolve_base_commit_oid(
         &self,
@@ -362,31 +306,6 @@ mod git_config_gateway_tests {
     }
 
     #[test]
-    fn test_実効base_ref実在_some_不在_none() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-
-        checkout_feature_branch(&repo);
-
-        // 実在する default branch を base に → effective は Some。
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-        assert_eq!(
-            resolve_effective_base_branch(repo_path).unwrap(),
-            Some(default_branch)
-        );
-
-        // 実在しない base ref → current は Some だが effective は None。
-        set_branch_base_override(repo_path, "feature", Some("no-such-branch")).unwrap();
-        assert_eq!(
-            resolve_current_base_branch(repo_path).unwrap(),
-            Some("no-such-branch".to_string())
-        );
-        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
-    }
-
-    #[test]
     fn test_gc_現存しないブランチのbaseを掃除() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
@@ -401,70 +320,5 @@ mod git_config_gateway_tests {
         let config = repo.config().unwrap();
         assert!(config.get_string("branch.alive.releash-base").is_ok());
         assert!(config.get_string("branch.stale.releash-base").is_err());
-    }
-
-    #[test]
-    fn test_実効base_merge_base不成立はnone() {
-        // 移行前 `git::branch_diff::resolve_base_branch_name` は `find_base_commit` を
-        // 通し merge-base 成功まで要求していた。base ref は実在するが履歴が無関係
-        // （merge-base が無い）場合に effective が None になることを担保する。
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-
-        // feature を default と無関係な履歴（parent 無しの orphan commit）へ置く。
-        let sig = repo.signature().unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let orphan = repo
-            .commit(None, &sig, &sig, "orphan root", &tree, &[])
-            .unwrap();
-        repo.reference("refs/heads/feature", orphan, true, "orphan")
-            .unwrap();
-        repo.set_head("refs/heads/feature").unwrap();
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .unwrap();
-
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-        // 名前解決自体は成功（current は Some）。
-        assert_eq!(
-            resolve_current_base_branch(repo_path).unwrap(),
-            Some(default_branch)
-        );
-        // merge-base 不成立のため effective は None（旧実装と等価）。
-        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
-    }
-
-    #[test]
-    fn test_実効base_サブディレクトリ_非存在パスはnone() {
-        // 移行前は `Repository::open(cwd)`（厳格）で開いていた。cwd がサブディレクトリ
-        // や非存在の場合に親リポジトリへ discover フォールバックせず None になることを担保。
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-        checkout_feature_branch(&repo);
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-
-        // ルートパスでは厳格 open + merge-base 成立 → Some。
-        assert_eq!(
-            resolve_effective_base_branch(repo_path).unwrap(),
-            Some(default_branch)
-        );
-
-        // サブディレクトリは厳格 open が失敗する（discover で親へ遡らない）→ None。
-        let subdir = dir.path().join("nested");
-        std::fs::create_dir(&subdir).unwrap();
-        assert_eq!(
-            resolve_effective_base_branch(subdir.to_str().unwrap()).unwrap(),
-            None
-        );
-
-        // 非存在パスも None。
-        assert_eq!(
-            resolve_effective_base_branch("/no/such/repo/path/zzz").unwrap(),
-            None
-        );
     }
 }

@@ -14,44 +14,35 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::clock::StoreClock;
-use crate::adaptor::gateway::local_event_store::commit::resolve_commit_row;
 use crate::adaptor::gateway::local_event_store::cursor::{
     filter_hash, issue_cursor, verify_cursor,
 };
-#[cfg(test)]
-use crate::adaptor::gateway::local_event_store::envelope::StoredEventEnvelopeV1;
 use crate::adaptor::gateway::local_event_store::envelope::{
     label_to_shutdown_phase, DecodedStoredEvent, EventCodecRegistry,
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::{
-    decode_message_projection_record_v1, decode_session_projection_record_v1,
-    PROVIDER_AGENT_SESSION_STORAGE_PREFIX,
+    decode_session_projection_record_v1, AGENT_SESSION_STORAGE_PREFIX,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
-    StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1, StoredTerminalV1,
+    StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1,
 };
 use crate::domain::local_event::{
-    validate_operation_record, validate_stop_resolution, validate_terminal_record,
-    AgentSessionLifecycleSnapshotView, AgentSessionStateRecord, CallerAttemptResolution,
+    validate_operation_record, AgentSessionLifecycleRecord, AgentSessionOriginKind,
+    AgentSessionOriginRecord, AgentSessionProjectionPageView, CallerAttemptResolution,
     CallerAttemptView, CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent,
     DomainEventPage, EventId, LoadStreamRequest, LoadedDomainEvent, LocalEventQuery,
-    LocalEventQueryError, LocalEventQueryResult, MessageProjectionPageEntryView,
-    MessageProjectionPageView, MessageProjectionRecord, MessageProjectionView, ObligationView,
-    OperationBindingView, OperationKind, OperationRecordView, PendingIndexEntryView,
-    PendingObligationView, PendingPartition, PendingRecoveryPageView,
-    PendingRecoverySnapshotPageView, ProviderAgentSessionLifecycleRecord,
-    ProviderAgentSessionOriginKind, ProviderAgentSessionOriginRecord,
-    ProviderAgentSessionProjectionPageView, QueryCursor, RecoveryActionView, SafeOperationFailure,
-    SessionOperationFailureKind, SessionProjectionOwnerState, SessionProjectionRecord,
+    LocalEventQueryError, LocalEventQueryResult, ObligationView, OperationBindingView,
+    OperationKind, OperationRecordView, PendingIndexEntryView, PendingObligationView,
+    PendingPartition, PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor,
+    RecoveryActionView, SafeOperationFailure, SessionOperationFailureKind, SessionProjectionRecord,
     SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey, ShutdownPlanPageView,
-    ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StopResolutionKind,
-    StopResolutionMutation, StopResolutionView, StreamSequence, StreamVersion,
-    TerminalRecordMutation, TerminalRecordView, WorkflowExecutionProjectionRecord,
+    ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StreamSequence, StreamVersion,
+    WorkflowExecutionProjectionRecord,
 };
 use crate::domain::local_event::{
     ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
-    RecoveryResultRecord, ShutdownPlanRecord, ShutdownTargetRecord, TerminalResultRecord,
+    RecoveryResultRecord, ShutdownPlanRecord, ShutdownTargetRecord,
 };
 
 pub const READER_POOL_SIZE: usize = 4;
@@ -89,7 +80,6 @@ pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER: &str = "SELECT po.obligation_id, 
 pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.owner = ?1 AND po.ordered_key > ?2 AND po.ordered_key >= ?3 AND po.ordered_key < ?4 ORDER BY po.ordered_key LIMIT ?5";
 pub(crate) const SQL_PENDING_FIRST_PAGE_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND po.ordered_key >= ?2 AND po.ordered_key < ?3 ORDER BY po.ordered_key LIMIT ?4";
 pub(crate) const SQL_PENDING_FIRST_PAGE_SHUTDOWN_PLAN: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po INDEXED BY idx_pending_obligations_shutdown JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.shutdown_id = ?1 AND po.ordered_key > ?2 ORDER BY po.ordered_key LIMIT ?3";
-pub(crate) const SQL_TERMINAL_LOOKUP: &str = "SELECT terminal_identity, result, participant_digest FROM terminal_records WHERE session_id = ?1 AND turn_id = ?2";
 pub(crate) const SQL_OPERATION_LOOKUP: &str = "SELECT receipt, latest_status, revision FROM operation_records WHERE kind = ?1 AND operation_id = ?2";
 
 type CallerAttemptRow = (
@@ -173,33 +163,6 @@ fn session_projection_record(
     decode_session_projection_record_v1(&raw, session_id).map_err(|_| corrupt(context))
 }
 
-fn message_projection_record(
-    raw: String,
-    session_id: &str,
-    message_id: &str,
-    context: &'static str,
-) -> Result<MessageProjectionRecord, LocalEventQueryError> {
-    decode_message_projection_record_v1(&raw, session_id, message_id).map_err(|_| corrupt(context))
-}
-
-fn owner_projection_state(
-    raw: String,
-    expected_session_id: &str,
-) -> Result<SessionProjectionOwnerState, LocalEventQueryError> {
-    let payload = session_projection_record(raw, expected_session_id, "pending owner projection")?;
-    let SessionProjectionRecord::AgentSession(projection) = payload else {
-        return Err(corrupt("pending owner projection kind"));
-    };
-    Ok(match projection.meta.state {
-        AgentSessionStateRecord::Closed => SessionProjectionOwnerState::Closed,
-        AgentSessionStateRecord::Archived => SessionProjectionOwnerState::Archived,
-        AgentSessionStateRecord::Active
-        | AgentSessionStateRecord::Idle
-        | AgentSessionStateRecord::Done
-        | AgentSessionStateRecord::Error => SessionProjectionOwnerState::Normal,
-    })
-}
-
 fn state_record<T>(
     result: Result<T, impl std::fmt::Debug>,
     context: &'static str,
@@ -225,13 +188,6 @@ fn operation_status_record(
     context: &'static str,
 ) -> Result<OperationStatusRecord, LocalEventQueryError> {
     state_record(StoredOperationStatusV1::decode(raw), context).map(|value| value.into_value())
-}
-
-fn terminal_record(
-    raw: &str,
-    context: &'static str,
-) -> Result<TerminalResultRecord, LocalEventQueryError> {
-    state_record(StoredTerminalV1::decode(raw), context).map(|value| value.into_value())
 }
 
 fn obligation_record(
@@ -295,12 +251,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
     recovery_snapshot_id: Option<&str>,
 ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
     match query {
-        LocalEventQuery::CommitByIdentity { commit_id } => Ok(
-            LocalEventQueryResult::CommitByIdentity(resolve_commit_row(connection, commit_id)?),
-        ),
-        LocalEventQuery::StreamPage(request) => Ok(LocalEventQueryResult::StreamPage(
-            load_stream_page(connection, context, request)?,
-        )),
         LocalEventQuery::OperationByIdentity { kind, operation_id } => {
             Ok(LocalEventQueryResult::OperationByIdentity(
                 operation_by_identity(connection, *kind, operation_id)?,
@@ -369,17 +319,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 after_caller_request_id.as_deref(),
             )?,
         )),
-        LocalEventQuery::TerminalByTurn {
-            session_id,
-            turn_id,
-        } => Ok(LocalEventQueryResult::TerminalByTurn(terminal_by_turn(
-            connection, session_id, turn_id,
-        )?)),
-        LocalEventQuery::StopResolutionByOperation { stop_operation_id } => {
-            Ok(LocalEventQueryResult::StopResolutionByOperation(
-                stop_resolution_by_operation(connection, stop_operation_id)?,
-            ))
-        }
         LocalEventQuery::ObligationByIdentity { obligation_id } => {
             Ok(LocalEventQueryResult::ObligationByIdentity(
                 obligation_by_identity(connection, obligation_id)?,
@@ -390,25 +329,14 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 session_projection_by_identity(connection, session_id)?,
             ))
         }
-        LocalEventQuery::AgentSessionLifecycleSnapshot { session_id } => {
-            Ok(LocalEventQueryResult::AgentSessionLifecycleSnapshot(
-                agent_session_lifecycle_snapshot(connection, session_id)?,
-            ))
-        }
-        LocalEventQuery::SessionProjectionPage {
-            limit,
-            after_session_id,
-        } => Ok(LocalEventQueryResult::SessionProjectionPage(
-            session_projection_page(connection, *limit, after_session_id.as_deref())?,
-        )),
-        LocalEventQuery::ProviderAgentSessionProjectionPage {
+        LocalEventQuery::AgentSessionProjectionPage {
             workspace_identity,
             lifecycle,
             origin,
             limit,
             after_agent_session_id,
-        } => Ok(LocalEventQueryResult::ProviderAgentSessionProjectionPage(
-            provider_agent_session_projection_page(
+        } => Ok(LocalEventQueryResult::AgentSessionProjectionPage(
+            agent_session_projection_page(
                 connection,
                 workspace_identity,
                 *lifecycle,
@@ -422,19 +350,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 canonical_runtime_owner_snapshot(connection, *limit)?,
             ))
         }
-        LocalEventQuery::MessageProjectionByIdentity {
-            session_id,
-            message_id,
-        } => Ok(LocalEventQueryResult::MessageProjectionByIdentity(
-            message_projection_by_identity(connection, session_id, message_id)?,
-        )),
-        LocalEventQuery::MessageProjectionPage {
-            session_id,
-            before_position,
-            limit,
-        } => Ok(LocalEventQueryResult::MessageProjectionPage(
-            message_projection_page(connection, session_id, *before_position, *limit)?,
-        )),
         LocalEventQuery::PendingRecoveryPage {
             limit,
             partition,
@@ -919,66 +834,6 @@ fn operation_binding_summary_by_operation(
     })
 }
 
-fn terminal_by_turn(
-    connection: &Connection,
-    session_id: &str,
-    turn_id: &str,
-) -> Result<Option<TerminalRecordView>, LocalEventQueryError> {
-    let row: Option<(String, String, Vec<u8>)> = connection
-        .query_row(SQL_TERMINAL_LOOKUP, params![session_id, turn_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    row.map(|(terminal_identity, result, digest)| {
-        let terminal = TerminalRecordMutation {
-            session_id: session_id.to_string(),
-            turn_id: turn_id.to_string(),
-            terminal_identity,
-            result: terminal_record(&result, "terminal result")?,
-            participant_digest: blob32(digest, "terminal participant digest")?,
-        };
-        validate_terminal_record(&terminal).map_err(|_| corrupt("terminal aggregate"))?;
-        Ok(TerminalRecordView {
-            session_id: terminal.session_id,
-            turn_id: terminal.turn_id,
-            terminal_identity: terminal.terminal_identity,
-            result: terminal.result,
-            participant_digest: terminal.participant_digest,
-        })
-    })
-    .transpose()
-}
-
-fn stop_resolution_by_operation(
-    connection: &Connection,
-    stop_operation_id: &str,
-) -> Result<Option<StopResolutionView>, LocalEventQueryError> {
-    let row: Option<(String, String)> = connection
-        .query_row(
-            "SELECT resolution, detail FROM stop_resolutions WHERE stop_operation_id = ?1",
-            params![stop_operation_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    row.map(|(resolution, detail)| {
-        let resolution = StopResolutionMutation {
-            stop_operation_id: stop_operation_id.to_string(),
-            resolution: StopResolutionKind::parse(&resolution)
-                .ok_or_else(|| corrupt("stop resolution kind"))?,
-            detail: terminal_record(&detail, "stop resolution detail")?,
-        };
-        validate_stop_resolution(&resolution).map_err(|_| corrupt("stop resolution aggregate"))?;
-        Ok(StopResolutionView {
-            stop_operation_id: resolution.stop_operation_id,
-            resolution: resolution.resolution,
-            detail: resolution.detail,
-        })
-    })
-    .transpose()
-}
-
 fn obligation_by_identity(
     connection: &Connection,
     obligation_id: &str,
@@ -1059,113 +914,14 @@ fn session_projection_by_identity(
     .transpose()
 }
 
-fn agent_session_lifecycle_snapshot(
-    connection: &Connection,
-    session_id: &str,
-) -> Result<Option<AgentSessionLifecycleSnapshotView>, LocalEventQueryError> {
-    const MAX_OWNER_OBLIGATIONS: usize = 200;
-    let mut statement = connection
-        .prepare(
-            "SELECT sp.projection, sp.revision, po.obligation_id, o.record
-             FROM session_projection sp
-             LEFT JOIN pending_obligations po
-               ON po.owner = sp.session_id
-             LEFT JOIN obligations o
-               ON o.obligation_id = po.obligation_id
-             WHERE sp.session_id = ?1
-             ORDER BY po.ordered_key
-             LIMIT 201",
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut rows = statement
-        .query(params![session_id])
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut session = None;
-    let mut pending_obligations = Vec::new();
-    while let Some(row) = rows.next().map_err(|error| storage_unavailable(&error))? {
-        if session.is_none() {
-            let projection: String = row.get(0).map_err(|error| storage_unavailable(&error))?;
-            let revision: i64 = row.get(1).map_err(|error| storage_unavailable(&error))?;
-            session = Some(SessionProjectionView {
-                session_id: session_id.to_string(),
-                projection: session_projection_record(
-                    projection,
-                    session_id,
-                    "agent session lifecycle projection",
-                )?,
-                revision: crate::domain::local_event::Revision::new(revision)
-                    .map_err(|_| corrupt("agent session lifecycle projection revision"))?,
-            });
-        }
-        let obligation_id: Option<String> =
-            row.get(2).map_err(|error| storage_unavailable(&error))?;
-        let record: Option<String> = row.get(3).map_err(|error| storage_unavailable(&error))?;
-        match (obligation_id, record) {
-            (Some(obligation_id), Some(record)) => pending_obligations.push((
-                obligation_id,
-                obligation_record(&record, "agent session lifecycle obligation")?,
-            )),
-            (None, None) => {}
-            _ => return Err(corrupt("agent session lifecycle owner index")),
-        }
-    }
-    if pending_obligations.len() > MAX_OWNER_OBLIGATIONS {
-        return Err(LocalEventQueryError::ResponseTooLarge);
-    }
-    Ok(session.map(|session| AgentSessionLifecycleSnapshotView {
-        session,
-        pending_obligations,
-    }))
-}
-
-fn session_projection_page(
-    connection: &Connection,
-    limit: usize,
-    after_session_id: Option<&str>,
-) -> Result<Vec<SessionProjectionView>, LocalEventQueryError> {
-    if limit == 0 || limit > 200 {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    let limit = i64::try_from(limit).map_err(|_| LocalEventQueryError::InvalidRequest)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT session_id, projection, revision FROM session_projection
-             WHERE (?1 IS NULL OR session_id > ?1)
-             ORDER BY session_id ASC LIMIT ?2",
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let rows = statement
-        .query_map(params![after_session_id, limit], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .map_err(|error| storage_unavailable(&error))?;
-    rows.map(|row| {
-        let (session_id, projection, revision) =
-            row.map_err(|error| storage_unavailable(&error))?;
-        let projection =
-            session_projection_record(projection, &session_id, "session projection page")?;
-        Ok(SessionProjectionView {
-            session_id,
-            projection,
-            revision: crate::domain::local_event::Revision::new(revision)
-                .map_err(|_| corrupt("session projection page revision"))?,
-        })
-    })
-    .collect()
-}
-
-fn provider_agent_session_projection_page(
+fn agent_session_projection_page(
     connection: &Connection,
     workspace_identity: &str,
-    lifecycle: Option<ProviderAgentSessionLifecycleRecord>,
-    origin: Option<&ProviderAgentSessionOriginKind>,
+    lifecycle: Option<AgentSessionLifecycleRecord>,
+    origin: Option<&AgentSessionOriginKind>,
     limit: usize,
     after_agent_session_id: Option<&str>,
-) -> Result<ProviderAgentSessionProjectionPageView, LocalEventQueryError> {
+) -> Result<AgentSessionProjectionPageView, LocalEventQueryError> {
     if limit == 0
         || limit > 200
         || workspace_identity.trim().is_empty()
@@ -1177,23 +933,23 @@ fn provider_agent_session_projection_page(
         return Err(LocalEventQueryError::InvalidRequest);
     }
     let lifecycle = lifecycle.map(|value| match value {
-        ProviderAgentSessionLifecycleRecord::Open => "open",
-        ProviderAgentSessionLifecycleRecord::Paused => "paused",
-        ProviderAgentSessionLifecycleRecord::Archived => "archived",
+        AgentSessionLifecycleRecord::Open => "open",
+        AgentSessionLifecycleRecord::Paused => "paused",
+        AgentSessionLifecycleRecord::Archived => "archived",
     });
     let origin = origin.map(|value| match value {
-        ProviderAgentSessionOriginKind::Standalone => "standalone",
-        ProviderAgentSessionOriginKind::WorkflowNode => "workflow_node",
+        AgentSessionOriginKind::Standalone => "standalone",
+        AgentSessionOriginKind::WorkflowNode => "workflow_node",
     });
     let after_storage_id =
-        after_agent_session_id.map(|id| format!("{PROVIDER_AGENT_SESSION_STORAGE_PREFIX}{id}"));
+        after_agent_session_id.map(|id| format!("{AGENT_SESSION_STORAGE_PREFIX}{id}"));
     let fetch_limit =
         i64::try_from(limit.saturating_add(1)).map_err(|_| LocalEventQueryError::InvalidRequest)?;
     let mut statement = connection
         .prepare(
             "SELECT session_id, projection, revision FROM session_projection
              WHERE workspace_identity = ?1
-               AND session_id LIKE 'provider-agent-session:%'
+               AND session_id LIKE 'agent-session:%'
                AND ((?2 IS NULL AND json_extract(projection, '$.lifecycle') <> 'archived')
                     OR json_extract(projection, '$.lifecycle') = ?2)
                AND (?3 IS NULL OR json_extract(projection, '$.origin.kind') = ?3)
@@ -1228,7 +984,7 @@ fn provider_agent_session_projection_page(
                 &session_id,
                 "provider AgentSession projection page",
             )?;
-            if !matches!(projection, SessionProjectionRecord::ProviderAgentSession(_)) {
+            if !matches!(projection, SessionProjectionRecord::AgentSession(_)) {
                 return Err(corrupt("provider AgentSession projection page owner kind"));
             }
             Ok(SessionProjectionView {
@@ -1248,7 +1004,7 @@ fn provider_agent_session_projection_page(
             sessions.last().and_then(|session| {
                 session
                     .session_id
-                    .strip_prefix(PROVIDER_AGENT_SESSION_STORAGE_PREFIX)
+                    .strip_prefix(AGENT_SESSION_STORAGE_PREFIX)
                     .map(str::to_string)
             })
         })
@@ -1256,7 +1012,7 @@ fn provider_agent_session_projection_page(
         .ok_or_else(|| corrupt("provider AgentSession projection page cursor"))
         .map(Some)
         .or_else(|error| if has_more { Err(error) } else { Ok(None) })?;
-    Ok(ProviderAgentSessionProjectionPageView {
+    Ok(AgentSessionProjectionPageView {
         sessions,
         next_after_agent_session_id,
     })
@@ -1304,30 +1060,15 @@ fn canonical_runtime_owner_snapshot(
             session_projection_record(raw, &projection_id, "canonical runtime owner snapshot")?;
         let owner = match projection {
             SessionProjectionRecord::AgentSession(session) => {
-                let owner = CanonicalRuntimeOwnerView::AgentSession {
-                    projection_id,
-                    session_id: session.meta.id,
-                    worktree_path: session.meta.worktree_path,
-                    active: session.meta.state == AgentSessionStateRecord::Active,
-                    shutdown_target: !matches!(
-                        session.meta.state,
-                        AgentSessionStateRecord::Closed | AgentSessionStateRecord::Archived
-                    ),
-                    workflow_node_session: session.meta.workflow_node_session,
-                };
-                Some(owner)
-            }
-            SessionProjectionRecord::ProviderAgentSession(session) => {
                 Some(CanonicalRuntimeOwnerView::AgentSession {
                     projection_id,
                     session_id: session.id,
                     worktree_path: session.worktree_path,
-                    active: session.lifecycle == ProviderAgentSessionLifecycleRecord::Open,
-                    shutdown_target: session.lifecycle
-                        != ProviderAgentSessionLifecycleRecord::Archived,
+                    active: session.lifecycle == AgentSessionLifecycleRecord::Open,
+                    shutdown_target: false,
                     workflow_node_session: matches!(
                         session.origin,
-                        ProviderAgentSessionOriginRecord::WorkflowNode { .. }
+                        AgentSessionOriginRecord::WorkflowNode { .. }
                     ),
                 })
             }
@@ -1372,112 +1113,6 @@ fn canonical_runtime_owner_snapshot(
         }
     }
     Ok(owners)
-}
-
-fn message_projection_by_identity(
-    connection: &Connection,
-    session_id: &str,
-    message_id: &str,
-) -> Result<Option<MessageProjectionView>, LocalEventQueryError> {
-    let row: Option<(String, i64)> = connection
-        .query_row(
-            "SELECT projection, revision FROM message_projection
-             WHERE session_id = ?1 AND message_id = ?2",
-            params![session_id, message_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    row.map(|(projection, revision)| {
-        Ok(MessageProjectionView {
-            session_id: session_id.to_string(),
-            message_id: message_id.to_string(),
-            projection: message_projection_record(
-                projection,
-                session_id,
-                message_id,
-                "message projection",
-            )?,
-            revision: crate::domain::local_event::Revision::new(revision)
-                .map_err(|_| corrupt("message projection revision"))?,
-        })
-    })
-    .transpose()
-}
-
-fn message_projection_page(
-    connection: &Connection,
-    session_id: &str,
-    before_position: Option<i64>,
-    limit: usize,
-) -> Result<MessageProjectionPageView, LocalEventQueryError> {
-    if limit == 0 || limit > 200 || before_position.is_some_and(|position| position <= 0) {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    let requested = i64::try_from(limit).map_err(|_| LocalEventQueryError::InvalidRequest)?;
-    let fetch_limit = requested
-        .checked_add(1)
-        .ok_or(LocalEventQueryError::InvalidRequest)?;
-    let total_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM message_projection WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut statement = connection
-        .prepare(
-            "SELECT message_ordinal, message_id, projection, revision
-             FROM message_projection
-             WHERE session_id = ?1 AND (?2 IS NULL OR message_ordinal < ?2)
-             ORDER BY message_ordinal DESC LIMIT ?3",
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let rows = statement
-        .query_map(params![session_id, before_position, fetch_limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut entries = rows
-        .map(|row| {
-            let (position, message_id, projection, revision) =
-                row.map_err(|error| storage_unavailable(&error))?;
-            if position <= 0 {
-                return Err(corrupt("message projection position"));
-            }
-            Ok(MessageProjectionPageEntryView {
-                position,
-                message: MessageProjectionView {
-                    session_id: session_id.to_string(),
-                    message_id: message_id.clone(),
-                    projection: message_projection_record(
-                        projection,
-                        session_id,
-                        &message_id,
-                        "message projection page",
-                    )?,
-                    revision: crate::domain::local_event::Revision::new(revision)
-                        .map_err(|_| corrupt("message projection page revision"))?,
-                },
-            })
-        })
-        .collect::<Result<Vec<_>, LocalEventQueryError>>()?;
-    let has_more = entries.len() > limit;
-    if has_more {
-        entries.truncate(limit);
-    }
-    let next_before_position = has_more.then(|| entries.last().expect("nonempty page").position);
-    entries.reverse();
-    Ok(MessageProjectionPageView {
-        entries,
-        next_before_position,
-        total_count: usize::try_from(total_count).map_err(|_| corrupt("message count"))?,
-    })
 }
 
 type PendingRow = (
@@ -1771,9 +1406,7 @@ fn pending_recovery_page(
             cursor_expiry_ms,
         )));
         let record_sha256 = raw_sha256(&record);
-        let owner_projection = owner_projection
-            .map(|projection| owner_projection_state(projection, &owner))
-            .transpose()?;
+        let _ = owner_projection;
         entries.push(PendingObligationView {
             obligation_id,
             ordered_key,
@@ -1783,7 +1416,6 @@ fn pending_recovery_page(
             shutdown_plan: shutdown_id.map(|shutdown_id| ShutdownPlanKey { shutdown_id }),
             record: obligation_record(&record, "pending obligation record")?,
             record_sha256,
-            owner_projection,
             revision: crate::domain::local_event::Revision::new(revision)
                 .map_err(|_| corrupt("pending obligation revision"))?,
         });
@@ -2339,47 +1971,6 @@ fn shutdown_target_by_identity(
         .transpose()
 }
 
-/// Gateway-internal raw envelope read for tests. Bytes are returned exactly
-/// as stored; unknown payloads must never be modified.
-#[cfg(test)]
-pub(crate) fn read_envelope(
-    connection: &Connection,
-    event_id: &str,
-) -> Result<Option<StoredEventEnvelopeV1>, LocalEventQueryError> {
-    connection
-        .query_row(
-            "SELECT event_id, commit_id, stream_id, stream_sequence, global_sequence,
-                    event_type, payload_version, occurred_at, payload, payload_sha256
-             FROM events WHERE event_id = ?1",
-            params![event_id],
-            |row| {
-                Ok(StoredEventEnvelopeV1 {
-                    event_id: row.get(0)?,
-                    commit_id: row.get(1)?,
-                    stream_id: row.get(2)?,
-                    stream_sequence: row.get(3)?,
-                    global_sequence: row.get(4)?,
-                    event_type: row.get(5)?,
-                    payload_version: row.get(6)?,
-                    occurred_at: row.get(7)?,
-                    payload: row.get(8)?,
-                    payload_sha256: {
-                        let raw: Vec<u8> = row.get(9)?;
-                        raw.as_slice().try_into().map_err(|_| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                9,
-                                rusqlite::types::Type::Blob,
-                                "payload_sha256 length".into(),
-                            )
-                        })?
-                    },
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))
-}
-
 // --- Reader pool ---
 
 /// The second argument is `true` when the job's deadline already passed and
@@ -2492,17 +2083,6 @@ impl ReaderPool {
         receiver
             .recv()
             .map_err(|_| reader_pool_unavailable("local event store reader reply lost", true))?
-    }
-
-    #[cfg(test)]
-    pub(crate) fn queued_len_for_test(&self) -> usize {
-        self.state.lock().expect("reader queue poisoned").jobs.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn running_worker_count_for_test(&self) -> usize {
-        self.running_workers
-            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn pop_blocking(&self) -> Option<ReadJob> {
@@ -2783,25 +2363,6 @@ impl RecoverySnapshotPager {
             .expect("recovery snapshot worker list poisoned")
             .push(worker);
         self.dispatch(&snapshot_id, &sender, query).await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn issue_order_len_for_test(&self) -> usize {
-        self.state
-            .lock()
-            .expect("recovery snapshot pager poisoned")
-            .issue_order
-            .len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn running_worker_count_for_test(&self) -> usize {
-        self.workers
-            .lock()
-            .expect("recovery snapshot worker list poisoned")
-            .iter()
-            .filter(|worker| !worker.is_finished())
-            .count()
     }
 
     pub fn close(&self) {

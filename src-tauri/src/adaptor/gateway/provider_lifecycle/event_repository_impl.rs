@@ -72,7 +72,7 @@ impl LocalProviderLifecycleEventRepository {
                 commit_id: prepared.commit_id.clone(),
                 idempotency: IdempotencyBinding {
                     installation_id: self.installation_id.clone(),
-                    operation_kind: CommitOperationKind::SessionLifecycle,
+                    operation_kind: CommitOperationKind::Projection,
                     idempotency_key: format!("provider-lifecycle.{}", prepared.identity),
                     payload_hash: prepared.payload_hash,
                 },
@@ -99,8 +99,7 @@ impl LocalProviderLifecycleEventRepository {
                         }
                     }
                 }
-                Err(CommitBatchError::StorageUnavailable { .. })
-                | Err(CommitBatchError::EffectAdmissionBlocked) => {
+                Err(CommitBatchError::StorageUnavailable { .. }) => {
                     return Err(ProviderLifecycleRepositoryError::StorageUnavailable)
                 }
                 Err(

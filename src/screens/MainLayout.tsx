@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { PanelLeft, PanelRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -12,8 +11,8 @@ import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+import { AgentSessionRoute } from "@/components/panels/AgentSessionPanel";
 import { NodeContentView } from "@/components/panels/NodeContentView";
-import { ProviderAgentSessionRoute } from "@/components/panels/ProviderAgentSessionPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import { SettingsModal } from "@/components/panels/SettingsModal";
@@ -23,10 +22,6 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-	AgentChatProvider,
-	useAgentChatContext,
-} from "@/contexts/AgentChatContext";
 import { ReviewThreadHandoffProvider } from "@/contexts/ReviewThreadHandoffContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
@@ -41,13 +36,9 @@ import {
 	GitErrorDialog,
 } from "@/screens/WorktreeViewDialogs";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
-import type { AgentEditorSelection, MentionReference } from "@/types/session";
 import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
-import type {
-	CenterSelection,
-	NewSessionCreationRequest,
-} from "@/types/workspace-tree";
+import type { CenterSelection } from "@/types/workspace-tree";
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
@@ -56,56 +47,8 @@ interface MainLayoutProps {
 	leftNav: React.ReactNode;
 	topBanner?: React.ReactNode;
 	centerSelectionByWorktree?: Record<string, CenterSelection | null>;
-	newSessionCreationRequest?: NewSessionCreationRequest | null;
-	onNewSessionCreated?: (
-		request: NewSessionCreationRequest,
-		selection: CenterSelection,
-	) => void;
-	onNewSessionCreationFailed?: (
-		request: NewSessionCreationRequest,
-		error: string,
-	) => void;
-	onProviderAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
+	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
-}
-
-type StartNewSessionCreation = (
-	request: NewSessionCreationRequest,
-	create: () => Promise<CenterSelection>,
-) => void;
-
-function NewSessionCreationBridge({
-	worktreePath,
-	request,
-	startCreation,
-}: {
-	worktreePath: string;
-	request: NewSessionCreationRequest | null;
-	startCreation: StartNewSessionCreation;
-}) {
-	const { createNewWorkspaceSession } = useAgentChatContext();
-
-	useEffect(() => {
-		if (!request || request.worktreePath !== worktreePath) return;
-		startCreation(request, async () => {
-			const sessionId = await createNewWorkspaceSession(request.requestId);
-			const nodeId = await invoke<string | null>(
-				"get_workspace_session_node_id",
-				{
-					worktreePath,
-					sessionId,
-				},
-			);
-			if (!nodeId) {
-				throw new Error(
-					"Created Session is missing from the Workspace read model.",
-				);
-			}
-			return { kind: "node", worktreePath, nodeId };
-		});
-	}, [createNewWorkspaceSession, request, startCreation, worktreePath]);
-
-	return null;
 }
 
 function WorktreeContent({
@@ -119,9 +62,7 @@ function WorktreeContent({
 	rightSlot,
 	togglePanels,
 	centerSelection,
-	newSessionCreationRequest,
-	startNewSessionCreation,
-	onProviderAgentSessionLaunchConsumed,
+	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
 	initialWorkspaceState,
 	internalStateMapRef,
@@ -136,9 +77,7 @@ function WorktreeContent({
 	rightSlot?: React.ReactNode;
 	togglePanels: TogglePanel[];
 	centerSelection: CenterSelection | null;
-	newSessionCreationRequest?: NewSessionCreationRequest | null;
-	startNewSessionCreation: StartNewSessionCreation;
-	onProviderAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
+	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
@@ -149,43 +88,12 @@ function WorktreeContent({
 	const reviewRef = useRef<PanelImperativeHandle>(null);
 	const [navigateToThread, setNavigateToThread] =
 		useState<ThreadNavigationTarget | null>(null);
-	const [activeEditorSelection, setActiveEditorSelection] =
-		useState<AgentEditorSelection | null>(null);
 
 	const worktreeName = rootPath;
-
-	const sendAgentMessageRef = useRef<
-		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
-	>(null);
-
-	const handleSendToAgent = useCallback(
-		async (message: string, mentions?: MentionReference[]) => {
-			await sendAgentMessageRef.current?.(message, mentions);
-		},
-		[],
-	);
 
 	const handleThreadClick = useCallback((target: ThreadNavigationTarget) => {
 		setNavigateToThread(target);
 	}, []);
-
-	const handleLineRangeSelected = useCallback(
-		(filePath: string, startLine: number, endLine: number) => {
-			if (!filePath || startLine < 1 || endLine < 1) {
-				setActiveEditorSelection(null);
-				return;
-			}
-			const absolutePath = filePath.startsWith("/")
-				? filePath
-				: `${rootPath}/${filePath}`;
-			setActiveEditorSelection({
-				filePath: absolutePath,
-				startLine: Math.min(startLine, endLine),
-				endLine: Math.max(startLine, endLine),
-			});
-		},
-		[rootPath],
-	);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
@@ -225,193 +133,153 @@ function WorktreeContent({
 		initialWorkspaceState,
 		internalStateMapRef,
 	});
-	const editorState = internalStateMapRef.current.get(rootPath);
-	const openEditorPaths = (
-		editorState?.tabs ??
-		initialWorkspaceState?.tabs.editors ??
-		[]
-	).map((tab) => tab.path);
-	const activeEditorPath =
-		editorState?.activeEditorPath ??
-		initialWorkspaceState?.tabs.activeEditorPath ??
-		null;
 	const scopedCenterSelection =
 		centerSelection?.worktreePath === rootPath ? centerSelection : null;
-	const handleOpenDiffFile = useCallback(
-		(filePath: string) => {
-			s.setSelectedDiffFile(filePath);
-			if (rightPanelRef.current?.isCollapsed()) {
-				rightPanelRef.current.expand();
-			}
-			if (reviewRef.current?.isCollapsed()) {
-				reviewRef.current.expand();
-			}
-		},
-		[rightPanelRef, s.setSelectedDiffFile],
-	);
 
 	return (
-		<AgentChatProvider worktreePath={rootPath}>
-			<NewSessionCreationBridge
-				worktreePath={rootPath}
-				request={newSessionCreationRequest ?? null}
-				startCreation={startNewSessionCreation}
-			/>
-			<ReviewThreadHandoffProvider worktreeName={worktreeName}>
-				{/* Center */}
-				<Panel id="center" defaultSize="50%" minSize="30%">
-					<div className="h-full relative overflow-hidden flex flex-col">
-						{scopedCenterSelection?.kind === "provider_agent_session" ? (
-							<ProviderAgentSessionRoute
-								key={scopedCenterSelection.agentSessionId}
-								agentSessionId={scopedCenterSelection.agentSessionId}
-								theme={settings.theme}
-								initialAttachment={scopedCenterSelection.initialAttachment}
-								onInitialSessionConsumed={onProviderAgentSessionLaunchConsumed}
-								onUnavailable={() =>
-									onCenterNodeMissing?.(
-										rootPath,
-										scopedCenterSelection.agentSessionId,
-									)
-								}
-							/>
-						) : scopedCenterSelection?.kind ===
-							"provider_agent_session_launching" ? (
-							<div
-								className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-sm"
-								data-testid="provider-agent-session-launching"
-							>
-								{scopedCenterSelection.error ? (
-									<div role="alert" className="text-destructive">
-										{scopedCenterSelection.error}
-									</div>
-								) : (
-									<div>Opening AgentSession...</div>
-								)}
-							</div>
-						) : (
-							<NodeContentView
-								worktreePath={rootPath}
-								theme={settings.theme}
-								nodeId={scopedCenterSelection?.nodeId ?? null}
-								leftPanels={leftPanels}
-								rightSlot={rightSlot}
-								activeEditorPath={activeEditorPath}
-								openEditorPaths={openEditorPaths}
-								activeEditorSelection={activeEditorSelection}
-								registerDropZone={s.registerDropZone}
-								sendMessageRef={sendAgentMessageRef}
-								onOpenDiffFile={handleOpenDiffFile}
-								onNodeMissing={onCenterNodeMissing}
-							/>
-						)}
-					</div>
-				</Panel>
-				<Separator />
-				{/* Right Sidebar */}
-				<Panel
-					id="right"
-					panelRef={rightPanelRef}
-					defaultSize="50%"
-					minSize={280}
-					collapsible
-					collapsedSize="0%"
-					onResize={onRightResize}
-				>
-					<div className="flex flex-col h-full border-l border-border">
-						<RightPanelHeader panels={togglePanels} leftSlot={branchSelector} />
-						<div className="flex-1 overflow-hidden">
-							<Group orientation="vertical">
-								<Panel
-									id="review"
-									panelRef={reviewRef}
-									defaultSize="60%"
-									minSize="20%"
-									collapsible
-									collapsedSize="0%"
-									onResize={(size) =>
-										s.setReviewCollapsed(size.asPercentage <= 0)
-									}
-								>
-									<div className="h-full overflow-hidden">
-										<ReviewPanel
-											rootPath={rootPath}
-											defaultDiffBase={settings.defaultDiffBase}
-											defaultDiffMode={settings.defaultDiffMode}
-											diffOnlyMode={s.diffOnlyMode}
-											onDiffOnlyModeChange={s.setDiffOnlyMode}
-											navigateToThread={navigateToThread}
-											onSendToAgent={handleSendToAgent}
-											initialSelectedFile={s.selectedDiffFile}
-											onSelectedFileChange={s.setSelectedDiffFile}
-											onLineRangeSelected={handleLineRangeSelected}
-										/>
-									</div>
-								</Panel>
-								<Separator />
-								<Panel
-									id="right-bottom"
-									panelRef={rightBottomRef}
-									defaultSize={300}
-									minSize="20%"
-									groupResizeBehavior="preserve-pixel-size"
-									collapsible
-									collapsedSize={31}
-									onResize={(size) =>
-										s.setRightBottomCollapsed(size.inPixels <= 31)
-									}
-								>
-									<div
-										data-testid="right-bottom-content"
-										className="h-full overflow-hidden"
-									>
-										<RightSidebarBottom
-											rootPath={rootPath}
-											theme={settings.theme}
-											worktreeName={worktreeName}
-											onThreadClick={handleThreadClick}
-											onToggleCollapse={handleToggleRightBottom}
-											collapsed={s.rightBottomCollapsed}
-										/>
-									</div>
-								</Panel>
-							</Group>
+		<ReviewThreadHandoffProvider worktreeName={worktreeName}>
+			{/* Center */}
+			<Panel id="center" defaultSize="50%" minSize="30%">
+				<div className="h-full relative overflow-hidden flex flex-col">
+					{scopedCenterSelection?.kind === "agent_session" ? (
+						<AgentSessionRoute
+							key={scopedCenterSelection.agentSessionId}
+							agentSessionId={scopedCenterSelection.agentSessionId}
+							theme={settings.theme}
+							initialAttachment={scopedCenterSelection.initialAttachment}
+							onInitialSessionConsumed={onAgentSessionLaunchConsumed}
+							onUnavailable={() =>
+								onCenterNodeMissing?.(
+									rootPath,
+									scopedCenterSelection.agentSessionId,
+								)
+							}
+						/>
+					) : scopedCenterSelection?.kind === "agent_session_launching" ? (
+						<div
+							className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-sm"
+							data-testid="agent-session-launching"
+						>
+							{scopedCenterSelection.error ? (
+								<div role="alert" className="text-destructive">
+									{scopedCenterSelection.error}
+								</div>
+							) : (
+								<div>Opening AgentSession...</div>
+							)}
 						</div>
+					) : (
+						<NodeContentView
+							worktreePath={rootPath}
+							theme={settings.theme}
+							nodeId={scopedCenterSelection?.nodeId ?? null}
+							leftPanels={leftPanels}
+							rightSlot={rightSlot}
+							onNodeMissing={onCenterNodeMissing}
+						/>
+					)}
+				</div>
+			</Panel>
+			<Separator />
+			{/* Right Sidebar */}
+			<Panel
+				id="right"
+				panelRef={rightPanelRef}
+				defaultSize="50%"
+				minSize={280}
+				collapsible
+				collapsedSize="0%"
+				onResize={onRightResize}
+			>
+				<div className="flex flex-col h-full border-l border-border">
+					<RightPanelHeader panels={togglePanels} leftSlot={branchSelector} />
+					<div className="flex-1 overflow-hidden">
+						<Group orientation="vertical">
+							<Panel
+								id="review"
+								panelRef={reviewRef}
+								defaultSize="60%"
+								minSize="20%"
+								collapsible
+								collapsedSize="0%"
+								onResize={(size) =>
+									s.setReviewCollapsed(size.asPercentage <= 0)
+								}
+							>
+								<div className="h-full overflow-hidden">
+									<ReviewPanel
+										rootPath={rootPath}
+										defaultDiffBase={settings.defaultDiffBase}
+										defaultDiffMode={settings.defaultDiffMode}
+										diffOnlyMode={s.diffOnlyMode}
+										onDiffOnlyModeChange={s.setDiffOnlyMode}
+										navigateToThread={navigateToThread}
+										initialSelectedFile={s.selectedDiffFile}
+										onSelectedFileChange={s.setSelectedDiffFile}
+									/>
+								</div>
+							</Panel>
+							<Separator />
+							<Panel
+								id="right-bottom"
+								panelRef={rightBottomRef}
+								defaultSize={300}
+								minSize="20%"
+								groupResizeBehavior="preserve-pixel-size"
+								collapsible
+								collapsedSize={31}
+								onResize={(size) =>
+									s.setRightBottomCollapsed(size.inPixels <= 31)
+								}
+							>
+								<div
+									data-testid="right-bottom-content"
+									className="h-full overflow-hidden"
+								>
+									<RightSidebarBottom
+										rootPath={rootPath}
+										theme={settings.theme}
+										worktreeName={worktreeName}
+										onThreadClick={handleThreadClick}
+										onToggleCollapse={handleToggleRightBottom}
+										collapsed={s.rightBottomCollapsed}
+									/>
+								</div>
+							</Panel>
+						</Group>
 					</div>
-				</Panel>
+				</div>
+			</Panel>
 
-				{/* Dialogs */}
-				<GitErrorDialog
-					error={s.gitError}
-					onOpenChange={(o) => {
-						if (!o) s.dispatchGit({ type: "SET_GIT_ERROR", error: null });
-					}}
-					onDismiss={() =>
-						s.dispatchGit({ type: "SET_GIT_ERROR", error: null })
-					}
-				/>
-				<CreateBranchDialog
-					open={s.showCreateBranch}
-					onOpenChange={(o) => {
-						if (!o) s.dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
-					}}
-					branchName={s.newBranchName}
-					onBranchNameChange={(name) =>
-						s.dispatchUI({ type: "SET_NEW_BRANCH_NAME", name })
-					}
-					onCreate={s.gitActions.executeCreateBranch}
-				/>
-				<SettingsModal
-					open={s.isSettingsOpen}
-					onOpenChange={(open) =>
-						s.dispatchUI({ type: "SET_SETTINGS_OPEN", open })
-					}
-					settings={settings}
-					onSave={onSettingsSave}
-					repoPaths={[rootPath]}
-				/>
-			</ReviewThreadHandoffProvider>
-		</AgentChatProvider>
+			{/* Dialogs */}
+			<GitErrorDialog
+				error={s.gitError}
+				onOpenChange={(o) => {
+					if (!o) s.dispatchGit({ type: "SET_GIT_ERROR", error: null });
+				}}
+				onDismiss={() => s.dispatchGit({ type: "SET_GIT_ERROR", error: null })}
+			/>
+			<CreateBranchDialog
+				open={s.showCreateBranch}
+				onOpenChange={(o) => {
+					if (!o) s.dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
+				}}
+				branchName={s.newBranchName}
+				onBranchNameChange={(name) =>
+					s.dispatchUI({ type: "SET_NEW_BRANCH_NAME", name })
+				}
+				onCreate={s.gitActions.executeCreateBranch}
+			/>
+			<SettingsModal
+				open={s.isSettingsOpen}
+				onOpenChange={(open) =>
+					s.dispatchUI({ type: "SET_SETTINGS_OPEN", open })
+				}
+				settings={settings}
+				onSave={onSettingsSave}
+				repoPaths={[rootPath]}
+			/>
+		</ReviewThreadHandoffProvider>
 	);
 }
 
@@ -442,9 +310,7 @@ interface WorktreePaneProps {
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
 	centerSelection: CenterSelection | null;
-	newSessionCreationRequest?: NewSessionCreationRequest | null;
-	startNewSessionCreation: StartNewSessionCreation;
-	onProviderAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
+	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
@@ -464,9 +330,7 @@ function WorktreePane({
 	leftPanels,
 	rightSlot,
 	centerSelection,
-	newSessionCreationRequest,
-	startNewSessionCreation,
-	onProviderAgentSessionLaunchConsumed,
+	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
 	initialWorkspaceState,
 	internalStateMapRef,
@@ -534,11 +398,7 @@ function WorktreePane({
 					rightSlot={rightSlot}
 					togglePanels={togglePanels}
 					centerSelection={centerSelection}
-					newSessionCreationRequest={newSessionCreationRequest}
-					startNewSessionCreation={startNewSessionCreation}
-					onProviderAgentSessionLaunchConsumed={
-						onProviderAgentSessionLaunchConsumed
-					}
+					onAgentSessionLaunchConsumed={onAgentSessionLaunchConsumed}
 					onCenterNodeMissing={onCenterNodeMissing}
 					initialWorkspaceState={initialWorkspaceState}
 					internalStateMapRef={internalStateMapRef}
@@ -555,16 +415,13 @@ export function MainLayout({
 	leftNav,
 	topBanner,
 	centerSelectionByWorktree,
-	newSessionCreationRequest,
-	onNewSessionCreated,
-	onNewSessionCreationFailed,
-	onProviderAgentSessionLaunchConsumed,
+	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
 }: MainLayoutProps) {
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
 	const rightPanelRef = useRef<PanelImperativeHandle>(null);
 	// keep-mounted panes: 一度開いたworktreeのpaneはmountしたまま表示切替する。
-	// 復帰時のremount（AgentChat初期化・Review再取得・terminal再attach）を排除する。
+	// 復帰時のremount（Review再取得・terminal再attach）を排除する。
 	const MAX_MOUNTED_PANES = 5;
 	const [mountedRootPaths, setMountedRootPaths] = useState<string[]>([]);
 	useEffect(() => {
@@ -605,28 +462,6 @@ export function MainLayout({
 			}
 		}
 	}, [mountedRootPaths]);
-	const startNewSessionCreation = useCallback<StartNewSessionCreation>(
-		(request, create) => {
-			void Promise.resolve()
-				.then(create)
-				.then(
-					(selection) => {
-						window.dispatchEvent(
-							new CustomEvent("workspace-tree-refresh", {
-								detail: { worktreePath: request.worktreePath },
-							}),
-						);
-						onNewSessionCreated?.(request, selection);
-					},
-					(error: unknown) => {
-						const message =
-							error instanceof Error ? error.message : String(error);
-						onNewSessionCreationFailed?.(request, message);
-					},
-				);
-		},
-		[onNewSessionCreated, onNewSessionCreationFailed],
-	);
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
 		useWorkspacePersistence({
@@ -762,11 +597,7 @@ export function MainLayout({
 										centerSelection={
 											centerSelectionByWorktree?.[rootPath] ?? null
 										}
-										newSessionCreationRequest={newSessionCreationRequest}
-										startNewSessionCreation={startNewSessionCreation}
-										onProviderAgentSessionLaunchConsumed={
-											onProviderAgentSessionLaunchConsumed
-										}
+										onAgentSessionLaunchConsumed={onAgentSessionLaunchConsumed}
 										onCenterNodeMissing={onCenterNodeMissing}
 										initialWorkspaceState={getInitialState(rootPath)}
 										internalStateMapRef={internalStateMapRef}

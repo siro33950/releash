@@ -1,11 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
-use crate::usecase::agent_session::operation::{
-    SessionLifecycleCommandResult, SessionLifecycleOperationError, SessionLifecycleOperationState,
-    SessionLifecycleRejection,
-};
 use crate::usecase::shutdown_coordinator::{
     ApplicationProcessAction, ApplicationQuitIntent, ApplicationQuitOutcome,
     ApplicationQuitRequest, ShutdownCoordinator, ShutdownEffectReadback, ShutdownTarget,
@@ -110,21 +105,25 @@ impl ApplicationProcessActionDispatcher {
 }
 
 struct RuntimeShutdownExecutor {
-    runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-    lifecycle_operation:
-        Arc<crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase>,
     terminal_surface:
         Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync>,
     shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
 }
 
+fn workflow_shutdown_targets(execution_ids: Vec<String>) -> Vec<ShutdownTarget> {
+    execution_ids
+        .into_iter()
+        .map(|target_id| ShutdownTarget {
+            target_id,
+            kind: "workflow_execution".to_string(),
+        })
+        .collect()
+}
+
 pub(crate) struct RuntimeShutdownDependencies {
-    runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-    lifecycle_operation:
-        Arc<crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase>,
     terminal_surface:
         Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync>,
@@ -133,11 +132,7 @@ pub(crate) struct RuntimeShutdownDependencies {
 
 impl RuntimeShutdownDependencies {
     pub(crate) fn new(
-        runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
         workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-        lifecycle_operation: Arc<
-            crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase,
-        >,
         terminal_surface: Arc<
             crate::usecase::terminal_surface::application::TerminalSurfaceApplication,
         >,
@@ -145,9 +140,7 @@ impl RuntimeShutdownDependencies {
         shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
-            runtime,
             workflow_runtime,
-            lifecycle_operation,
             terminal_surface,
             shutdown_provider_exit_observer,
             shutdown_local_api,
@@ -166,145 +159,11 @@ fn shutdown_provider_observer_terminal_surface_and_local_api(
     Ok(())
 }
 
-fn shutdown_effect_request_id(effect_identity: &str) -> String {
-    use sha2::{Digest, Sha256};
-    format!(
-        "shutdown-{}",
-        hex::encode(Sha256::digest(effect_identity.as_bytes()))
-    )
-}
-
-fn shutdown_lifecycle_failure(
-    effect_identity: &str,
-    correlation_suffix: &str,
-    kind: SessionOperationFailureKind,
-    retryable: bool,
-    label: &str,
-) -> SafeOperationFailure {
-    SafeOperationFailure::new(
-        kind,
-        retryable,
-        label,
-        format!(
-            "{}-{correlation_suffix}",
-            shutdown_effect_request_id(effect_identity)
-        ),
-    )
-}
-
-fn classify_session_lifecycle_shutdown_result(
-    effect_identity: &str,
-    result: Result<SessionLifecycleCommandResult, SessionLifecycleOperationError>,
-) -> Result<(), SafeOperationFailure> {
-    match result {
-        Ok(SessionLifecycleCommandResult::Accepted {
-            state: SessionLifecycleOperationState::Completed,
-            ..
-        }) => Ok(()),
-        Ok(SessionLifecycleCommandResult::Accepted {
-            state: SessionLifecycleOperationState::ReconciliationRequired { failure },
-            ..
-        })
-        | Ok(SessionLifecycleCommandResult::Rejected(SessionLifecycleRejection::Failed {
-            failure,
-        }))
-        | Err(SessionLifecycleOperationError::StorageUnavailable { failure }) => Err(failure),
-        Ok(SessionLifecycleCommandResult::Accepted {
-            state: SessionLifecycleOperationState::Accepted,
-            ..
-        }) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-pending",
-            SessionOperationFailureKind::OutcomeUnknown,
-            true,
-            "The session shutdown effect has not reached a durable terminal result.",
-        )),
-        Ok(SessionLifecycleCommandResult::OutcomeUnknown { .. }) => {
-            Err(shutdown_lifecycle_failure(
-                effect_identity,
-                "lifecycle-outcome-unknown",
-                SessionOperationFailureKind::OutcomeUnknown,
-                true,
-                "The session shutdown acceptance result is unknown.",
-            ))
-        }
-        Ok(SessionLifecycleCommandResult::Rejected(
-            SessionLifecycleRejection::Busy
-            | SessionLifecycleRejection::PendingOperation
-            | SessionLifecycleRejection::RevisionConflict { .. }
-            | SessionLifecycleRejection::InvalidState,
-        )) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-rejected",
-            SessionOperationFailureKind::TargetRevisionChanged,
-            true,
-            "The session shutdown target changed before the close operation was accepted.",
-        )),
-        Err(
-            SessionLifecycleOperationError::InvalidRequest
-            | SessionLifecycleOperationError::PayloadConflict,
-        ) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-invalid-effect-intent",
-            SessionOperationFailureKind::InvalidEffectIntent,
-            false,
-            "The session shutdown effect intent is invalid or conflicts with its saved identity.",
-        )),
-        Err(SessionLifecycleOperationError::ShutdownInProgress) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-shutdown-authority",
-            SessionOperationFailureKind::ShutdownAuthorityMismatch,
-            true,
-            "The session shutdown target is not bound to the active shutdown authority.",
-        )),
-        Err(SessionLifecycleOperationError::NotFound) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-target-changed",
-            SessionOperationFailureKind::TargetRevisionChanged,
-            true,
-            "The session shutdown target changed before lifecycle execution.",
-        )),
-        Err(SessionLifecycleOperationError::QueryBusy) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-query-busy",
-            SessionOperationFailureKind::StorageUnavailable,
-            true,
-            "The session shutdown state could not be read.",
-        )),
-        Err(SessionLifecycleOperationError::DeadlineExceeded) => Err(shutdown_lifecycle_failure(
-            effect_identity,
-            "lifecycle-deadline",
-            SessionOperationFailureKind::DeadlineExceeded,
-            true,
-            "The session shutdown lifecycle operation reached its fixed deadline.",
-        )),
-        Err(SessionLifecycleOperationError::Internal { correlation_id }) => {
-            Err(SafeOperationFailure::new(
-                SessionOperationFailureKind::Internal,
-                false,
-                "The session shutdown lifecycle operation failed internally.",
-                correlation_id,
-            ))
-        }
-    }
-}
-
 #[async_trait::async_trait]
 impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
     async fn targets(
         &self,
     ) -> Result<Vec<ShutdownTarget>, crate::domain::local_event::SafeOperationFailure> {
-        let session_ids = self
-            .runtime
-            .application_shutdown_target_session_ids()
-            .map_err(|_| {
-                crate::domain::local_event::SafeOperationFailure::new(
-                    crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable,
-                    true,
-                    "The agent-session shutdown inventory could not be fixed.",
-                    uuid::Uuid::new_v4().to_string(),
-                )
-            })?;
         let workflow_ids = self
             .workflow_runtime
             .application_shutdown_target_execution_ids()
@@ -317,18 +176,7 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
                     uuid::Uuid::new_v4().to_string(),
                 )
             })?;
-        let targets = session_ids
-            .into_iter()
-            .map(|target_id| ShutdownTarget {
-                target_id,
-                kind: "agent_session".to_string(),
-            })
-            .chain(workflow_ids.into_iter().map(|target_id| ShutdownTarget {
-                target_id,
-                kind: "workflow_execution".to_string(),
-            }))
-            .collect::<Vec<_>>();
-        Ok(targets)
+        Ok(workflow_shutdown_targets(workflow_ids))
     }
 
     async fn execute_target(
@@ -343,28 +191,8 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
             owner_revision.value()
         );
         let result = match target.kind.as_str() {
-            "agent_session" => match self.runtime.get_session(&target.target_id).await {
-                Err(error) => Err(error.to_string()),
-                Ok(None) => Ok(()),
-                Ok(Some(current)) => {
-                    return classify_session_lifecycle_shutdown_result(
-                            effect_identity,
-                            self.lifecycle_operation
-                                .request_shutdown_target(
-                            crate::usecase::agent_session::operation::SessionLifecycleRequest {
-                                principal: format!("shutdown:{operation_id}"),
-                                request_id: shutdown_effect_request_id(effect_identity),
-                                session_id: target.target_id.clone(),
-                                expected_session_revision: current.session_revision as i64,
-                                action: crate::usecase::agent_session::operation::SessionLifecycleAction::Close,
-                            },
-                        )
-                                .await,
-                        );
-                }
-            },
-            "workflow_execution" => {
-                match self.workflow_runtime
+            "workflow_execution" => match self
+                .workflow_runtime
                     .shutdown_execution_commands_for_effect(
                         operation_id,
                         effect_identity,
@@ -380,8 +208,7 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
                     crate::usecase::workflow::ports::WorkflowShutdownEffectReadback::Ambiguous => {
                         Err("workflow shutdown effect requires reconciliation".to_string())
                     }
-                }
-            }
+                },
             _ => Err("unknown shutdown target kind".to_string()),
         };
         result.map_err(|_| {
@@ -402,25 +229,7 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
         target: &ShutdownTarget,
     ) -> Result<ShutdownEffectReadback, crate::domain::local_event::SafeOperationFailure> {
         match target.kind.as_str() {
-            "agent_session" => {
-                let principal = format!("shutdown:{operation_id}");
-                match self
-                    .lifecycle_operation
-                    .get_operation(&principal, &shutdown_effect_request_id(effect_identity))
-                    .await
-                {
-                    Ok((_, crate::usecase::agent_session::operation::SessionLifecycleOperationState::Completed)) => {
-                        return Ok(ShutdownEffectReadback::Completed)
-                    }
-                    Ok(_) => return Ok(ShutdownEffectReadback::Ambiguous),
-                    Err(crate::usecase::agent_session::operation::SessionLifecycleOperationError::NotFound) => {
-                        return Ok(ShutdownEffectReadback::ConfirmedNotStarted)
-                    }
-                    Err(_) => return Ok(ShutdownEffectReadback::Ambiguous),
-                }
-            }
-            "workflow_execution" => {
-                return Ok(match self
+            "workflow_execution" => Ok(match self
                     .workflow_runtime
                     .read_shutdown_execution_effect(
                         operation_id,
@@ -439,9 +248,8 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
                     crate::usecase::workflow::ports::WorkflowShutdownEffectReadback::Ambiguous => {
                         ShutdownEffectReadback::Ambiguous
                     }
-                })
-            }
-            _ => return Ok(ShutdownEffectReadback::Ambiguous),
+                }),
+            _ => Ok(ShutdownEffectReadback::Ambiguous),
         }
     }
 
@@ -475,12 +283,11 @@ pub(crate) fn build_shutdown_coordinator(
 ) -> Arc<ShutdownCoordinator> {
     let installation_id = store.installation_id().to_string();
     let process_instance_id = store.process_instance_id().to_string();
-    let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
-        store.clone();
+    let authority: Arc<
+        dyn crate::usecase::application_lifecycle::operation::OperationBindingAuthority,
+    > = store.clone();
     let executor: Arc<dyn ShutdownTargetExecutor> = Arc::new(RuntimeShutdownExecutor {
-        runtime: dependencies.runtime,
         workflow_runtime: dependencies.workflow_runtime,
-        lifecycle_operation: dependencies.lifecycle_operation,
         terminal_surface: dependencies.terminal_surface,
         shutdown_provider_exit_observer: dependencies.shutdown_provider_exit_observer,
         shutdown_local_api: dependencies.shutdown_local_api,
@@ -504,7 +311,7 @@ pub(crate) fn request_application_quit(
         let request_id = format!("quit-{}", uuid::Uuid::new_v4());
         match coordinator
             .request(ApplicationQuitRequest {
-                principal: crate::adaptor::controller::agent_session_operation_wiring::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                principal: crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
                 request_id,
                 intent,
             })
@@ -534,40 +341,11 @@ mod application_lifecycle_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_session_lifecycle_shutdown_result, dispatch_startup_failure_process_exit,
-        shutdown_effect_request_id, ApplicationProcessActionDispatcher,
+        dispatch_startup_failure_process_exit, ApplicationProcessActionDispatcher,
         ApplicationProcessActionPort,
-    };
-    use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
-    use crate::usecase::agent_session::operation::{
-        SessionLifecycleAction, SessionLifecycleCommandResult, SessionLifecycleOperationError,
-        SessionLifecycleOperationState, SessionLifecycleReceipt, SessionLifecycleRejection,
     };
     use crate::usecase::shutdown_coordinator::ApplicationProcessAction;
     use std::sync::{Arc, Mutex};
-
-    const TEST_EFFECT_IDENTITY: &str = "shutdown-effect-lifecycle-result";
-
-    fn lifecycle_result(
-        state: SessionLifecycleOperationState,
-    ) -> Result<SessionLifecycleCommandResult, SessionLifecycleOperationError> {
-        Ok(SessionLifecycleCommandResult::Accepted {
-            receipt: SessionLifecycleReceipt {
-                operation_id: "lifecycle-operation".to_string(),
-                session_id: "session-1".to_string(),
-                action: SessionLifecycleAction::Close,
-                first_accepted_revision: 7,
-            },
-            state,
-        })
-    }
-
-    fn expected_shutdown_correlation(suffix: &str) -> String {
-        format!(
-            "{}-{suffix}",
-            shutdown_effect_request_id(TEST_EFFECT_IDENTITY)
-        )
-    }
 
     #[test]
     fn startup_failure_process_exit_grants_the_native_exit_before_dispatch() {
@@ -589,205 +367,6 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         crate::infrastructure::platform::tray::QUIT_REQUESTED
             .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    #[test]
-    fn runtime_shutdown_lifecycle_accepts_only_completed_state() {
-        assert_eq!(
-            classify_session_lifecycle_shutdown_result(
-                TEST_EFFECT_IDENTITY,
-                lifecycle_result(SessionLifecycleOperationState::Completed),
-            ),
-            Ok(())
-        );
-
-        let failure = classify_session_lifecycle_shutdown_result(
-            TEST_EFFECT_IDENTITY,
-            lifecycle_result(SessionLifecycleOperationState::Accepted),
-        )
-        .expect_err("nonterminal Accepted state must not complete the shutdown target");
-        assert_eq!(failure.kind, SessionOperationFailureKind::OutcomeUnknown);
-        assert!(failure.retryable);
-        assert_eq!(
-            failure.correlation_id,
-            expected_shutdown_correlation("lifecycle-pending")
-        );
-    }
-
-    #[test]
-    fn runtime_shutdown_lifecycle_preserves_reconciliation_failure() {
-        let expected = SafeOperationFailure::new(
-            SessionOperationFailureKind::ProviderUnavailable,
-            true,
-            "The provider result requires reconciliation.",
-            "provider-reconciliation",
-        );
-        let failure = classify_session_lifecycle_shutdown_result(
-            TEST_EFFECT_IDENTITY,
-            lifecycle_result(SessionLifecycleOperationState::ReconciliationRequired {
-                failure: expected.clone(),
-            }),
-        )
-        .expect_err("reconciliation-required state must not complete the shutdown target");
-        assert_eq!(failure, expected);
-    }
-
-    #[test]
-    fn runtime_shutdown_lifecycle_maps_outcome_unknown_to_stable_failure() {
-        let result = || {
-            classify_session_lifecycle_shutdown_result(
-                TEST_EFFECT_IDENTITY,
-                Ok(SessionLifecycleCommandResult::OutcomeUnknown {
-                    request_id: "shutdown-request".to_string(),
-                }),
-            )
-            .expect_err("unknown acceptance outcome must not complete the shutdown target")
-        };
-        let failure = result();
-        assert_eq!(failure.kind, SessionOperationFailureKind::OutcomeUnknown);
-        assert!(failure.retryable);
-        assert_eq!(
-            failure.correlation_id,
-            expected_shutdown_correlation("lifecycle-outcome-unknown")
-        );
-        assert_eq!(result(), failure, "same effect identity must replay stably");
-    }
-
-    #[test]
-    fn runtime_shutdown_lifecycle_propagates_every_rejection() {
-        for rejection in [
-            SessionLifecycleRejection::Busy,
-            SessionLifecycleRejection::PendingOperation,
-            SessionLifecycleRejection::RevisionConflict {
-                current_revision: 8,
-            },
-            SessionLifecycleRejection::InvalidState,
-        ] {
-            let classify = || {
-                classify_session_lifecycle_shutdown_result(
-                    TEST_EFFECT_IDENTITY,
-                    Ok(SessionLifecycleCommandResult::Rejected(rejection.clone())),
-                )
-                .expect_err("pre-acceptance rejection must not complete the shutdown target")
-            };
-            let failure = classify();
-            assert_eq!(
-                failure.kind,
-                SessionOperationFailureKind::TargetRevisionChanged
-            );
-            assert!(failure.retryable);
-            assert_eq!(
-                failure.correlation_id,
-                expected_shutdown_correlation("lifecycle-rejected")
-            );
-            assert_eq!(
-                classify(),
-                failure,
-                "same rejected target must replay stably"
-            );
-        }
-
-        let expected = SafeOperationFailure::new(
-            SessionOperationFailureKind::CapacityExceeded,
-            false,
-            "The lifecycle operation was rejected.",
-            "lifecycle-rejected-failure",
-        );
-        let failure = classify_session_lifecycle_shutdown_result(
-            TEST_EFFECT_IDENTITY,
-            Ok(SessionLifecycleCommandResult::Rejected(
-                SessionLifecycleRejection::Failed {
-                    failure: expected.clone(),
-                },
-            )),
-        )
-        .expect_err("typed lifecycle rejection must not complete the shutdown target");
-        assert_eq!(failure, expected);
-    }
-
-    #[test]
-    fn runtime_shutdown_lifecycle_maps_every_operation_error() {
-        for (error, kind, retryable, suffix) in [
-            (
-                SessionLifecycleOperationError::InvalidRequest,
-                SessionOperationFailureKind::InvalidEffectIntent,
-                false,
-                "lifecycle-invalid-effect-intent",
-            ),
-            (
-                SessionLifecycleOperationError::PayloadConflict,
-                SessionOperationFailureKind::InvalidEffectIntent,
-                false,
-                "lifecycle-invalid-effect-intent",
-            ),
-            (
-                SessionLifecycleOperationError::ShutdownInProgress,
-                SessionOperationFailureKind::ShutdownAuthorityMismatch,
-                true,
-                "lifecycle-shutdown-authority",
-            ),
-            (
-                SessionLifecycleOperationError::NotFound,
-                SessionOperationFailureKind::TargetRevisionChanged,
-                true,
-                "lifecycle-target-changed",
-            ),
-            (
-                SessionLifecycleOperationError::QueryBusy,
-                SessionOperationFailureKind::StorageUnavailable,
-                true,
-                "lifecycle-query-busy",
-            ),
-            (
-                SessionLifecycleOperationError::DeadlineExceeded,
-                SessionOperationFailureKind::DeadlineExceeded,
-                true,
-                "lifecycle-deadline",
-            ),
-        ] {
-            let classify = || {
-                classify_session_lifecycle_shutdown_result(TEST_EFFECT_IDENTITY, Err(error.clone()))
-                    .expect_err("lifecycle operation error must not complete the shutdown target")
-            };
-            let failure = classify();
-            assert_eq!(failure.kind, kind);
-            assert_eq!(failure.retryable, retryable);
-            assert_eq!(
-                failure.correlation_id,
-                expected_shutdown_correlation(suffix)
-            );
-            assert_eq!(
-                classify(),
-                failure,
-                "same lifecycle operation error must replay stably"
-            );
-        }
-
-        let expected_storage = SafeOperationFailure::new(
-            SessionOperationFailureKind::StorageUnavailable,
-            true,
-            "The lifecycle store is unavailable.",
-            "lifecycle-storage",
-        );
-        let storage = classify_session_lifecycle_shutdown_result(
-            TEST_EFFECT_IDENTITY,
-            Err(SessionLifecycleOperationError::StorageUnavailable {
-                failure: expected_storage.clone(),
-            }),
-        )
-        .expect_err("storage failure must not complete the shutdown target");
-        assert_eq!(storage, expected_storage);
-
-        let internal = classify_session_lifecycle_shutdown_result(
-            TEST_EFFECT_IDENTITY,
-            Err(SessionLifecycleOperationError::Internal {
-                correlation_id: "lifecycle-internal".to_string(),
-            }),
-        )
-        .expect_err("internal failure must not complete the shutdown target");
-        assert_eq!(internal.kind, SessionOperationFailureKind::Internal);
-        assert!(!internal.retryable);
-        assert_eq!(internal.correlation_id, "lifecycle-internal");
     }
 
     #[derive(Default)]

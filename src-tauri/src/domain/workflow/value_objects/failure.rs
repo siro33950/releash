@@ -40,17 +40,6 @@ impl FailureClassification {
             timeout_kind: kind.timeout_kind(),
         }
     }
-
-    pub fn with_disposition(
-        kind: NodeExecutionFailureKind,
-        disposition: FailureDisposition,
-    ) -> Self {
-        Self {
-            kind,
-            disposition,
-            timeout_kind: kind.timeout_kind(),
-        }
-    }
 }
 
 impl NodeExecutionFailureKind {
@@ -177,21 +166,6 @@ mod tests {
             Some(TimeoutKind::Stale)
         );
         assert_eq!(NodeExecutionFailureKind::ModelRefusal.timeout_kind(), None);
-    }
-
-    #[test]
-    fn failure_classification_can_override_policy_disposition() {
-        let classification = FailureClassification::with_disposition(
-            NodeExecutionFailureKind::StartupTimeout,
-            FailureDisposition::Terminal,
-        );
-
-        assert_eq!(
-            classification.kind,
-            NodeExecutionFailureKind::StartupTimeout
-        );
-        assert_eq!(classification.disposition, FailureDisposition::Terminal);
-        assert_eq!(classification.timeout_kind, Some(TimeoutKind::Startup));
     }
 
     #[test]

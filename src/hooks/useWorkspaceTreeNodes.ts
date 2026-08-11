@@ -1,11 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listClosedSessions } from "@/hooks/useSessionStore";
-import type { SessionStatus } from "@/types/session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
-	WorkspaceSessionHistoryItem,
 	WorkspaceTreeItem,
 	WorkspaceTreeSelectionSnapshot,
 	WorkspaceTreeSnapshot,
@@ -31,7 +28,6 @@ export interface WorkspaceTreeRefreshResult {
 
 interface WorkspaceTreeState {
 	snapshot: WorkspaceTreeSnapshot;
-	closedSessions: WorkspaceSessionHistoryItem[];
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
 }
@@ -39,7 +35,6 @@ interface WorkspaceTreeState {
 interface UseWorkspaceTreeNodesResult {
 	nodes: WorkspaceTreeItem[];
 	preferredNodeId: string | null;
-	closedSessions: WorkspaceSessionHistoryItem[];
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
 	loading: boolean;
@@ -80,7 +75,6 @@ export function useWorkspaceTreeNodes(
 ): UseWorkspaceTreeNodesResult {
 	const [treeState, setTreeState] = useState<WorkspaceTreeState>({
 		snapshot: EMPTY_SNAPSHOT,
-		closedSessions: [],
 		workflowHistory: [],
 		reconciliationEvent: null,
 	});
@@ -111,7 +105,6 @@ export function useWorkspaceTreeNodes(
 			acceptedReconciliationSeqRef.current = null;
 			setTreeState({
 				snapshot: EMPTY_SNAPSHOT,
-				closedSessions: [],
 				workflowHistory: [],
 				reconciliationEvent: null,
 			});
@@ -142,15 +135,13 @@ export function useWorkspaceTreeNodes(
 				: invoke<WorkspaceTreeSnapshot>("list_workspace_worktree_nodes", {
 						worktreePath,
 					});
-			const [treeResult, nextClosedSessions, nextWorkflowHistory] =
-				await Promise.all([
-					snapshotRequest,
-					listClosedSessions(worktreePath),
-					invoke<WorkspaceWorkflowHistoryItem[]>(
-						"list_workspace_workflow_history",
-						{ worktreePath },
-					),
-				]);
+			const [treeResult, nextWorkflowHistory] = await Promise.all([
+				snapshotRequest,
+				invoke<WorkspaceWorkflowHistoryItem[]>(
+					"list_workspace_workflow_history",
+					{ worktreePath },
+				),
+			]);
 			if (seq !== refreshSeqRef.current) return null;
 
 			let snapshot: WorkspaceTreeSnapshot;
@@ -188,7 +179,6 @@ export function useWorkspaceTreeNodes(
 			errorWorktreePathRef.current = null;
 			setTreeState({
 				snapshot,
-				closedSessions: nextClosedSessions,
 				workflowHistory: nextWorkflowHistory,
 				reconciliationEvent,
 			});
@@ -200,7 +190,6 @@ export function useWorkspaceTreeNodes(
 				setTreeState((current) => ({
 					...current,
 					snapshot: EMPTY_SNAPSHOT,
-					closedSessions: [],
 					workflowHistory: [],
 				}));
 			}
@@ -294,7 +283,6 @@ export function useWorkspaceTreeNodes(
 	useEffect(() => {
 		if (!worktreePath) return;
 		let mounted = true;
-		let unlistenStatus: UnlistenFn | null = null;
 		let unlistenWorkflow: UnlistenFn | null = null;
 
 		const handleWorkspaceTreeRefresh = (event: Event) => {
@@ -310,20 +298,6 @@ export function useWorkspaceTreeNodes(
 		);
 
 		const setup = async () => {
-			const nextUnlistenStatus = await listen<SessionStatus>(
-				"session-status-changed",
-				(event) => {
-					if (!mounted) return;
-					if (event.payload.worktree_path !== worktreePath) return;
-					scheduleRefresh();
-				},
-			);
-			if (!mounted) {
-				nextUnlistenStatus();
-				return;
-			}
-			unlistenStatus = nextUnlistenStatus;
-
 			const nextUnlistenWorkflow =
 				await listen<WorkflowExecutionChangedPayload>(
 					"workflow-execution-changed",
@@ -347,7 +321,6 @@ export function useWorkspaceTreeNodes(
 				"workspace-tree-refresh",
 				handleWorkspaceTreeRefresh,
 			);
-			unlistenStatus?.();
 			unlistenWorkflow?.();
 			if (refreshTimerRef.current != null) {
 				window.clearTimeout(refreshTimerRef.current);
@@ -369,7 +342,6 @@ export function useWorkspaceTreeNodes(
 	return {
 		nodes: treeState.snapshot.nodes,
 		preferredNodeId: treeState.snapshot.preferredNodeId ?? null,
-		closedSessions: treeState.closedSessions,
 		workflowHistory: treeState.workflowHistory,
 		reconciliationEvent: treeState.reconciliationEvent,
 		loading: currentLoading,

@@ -9,8 +9,6 @@ pub(crate) struct StartExecutionRequest {
     pub(crate) worktree_path: String,
     pub(crate) request: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) permission_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) created_from: Option<String>,
 }
 

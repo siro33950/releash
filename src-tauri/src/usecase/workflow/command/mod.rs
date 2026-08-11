@@ -238,7 +238,6 @@ mod tests {
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
-                permission_mode: "ask".to_string(),
             })
             .await
             .unwrap();
@@ -284,7 +283,6 @@ mod tests {
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
-                permission_mode: "ask".to_string(),
             })
             .await
             .is_err());
@@ -320,53 +318,5 @@ mod tests {
             .await
             .is_err());
         assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn workflow_start_permission_preflight_accepts_only_current_values() {
-        for permission_mode in ["ask", "edit", "full"] {
-            let gateway = Arc::new(FakeRuntimeGateway::default());
-
-            WorkflowStartExecutionUsecase::new(gateway.clone())
-                .execute(StartExecutionCommand {
-                    workflow_name: "wf".to_string(),
-                    worktree_path: "/tmp/wt".to_string(),
-                    request: None,
-                    created_from: ExecutionOrigin::Api,
-                    permission_mode: permission_mode.to_string(),
-                })
-                .await
-                .unwrap();
-
-            assert_eq!(
-                gateway.calls.lock().unwrap().as_slice(),
-                ["resolve_worktree", "resolve_workflow", "start"]
-            );
-        }
-
-        for permission_mode in ["read", "readonly", "acceptEdits"] {
-            let gateway = Arc::new(FakeRuntimeGateway::default());
-
-            let error = WorkflowStartExecutionUsecase::new(gateway.clone())
-                .execute(StartExecutionCommand {
-                    workflow_name: "wf".to_string(),
-                    worktree_path: "/tmp/wt".to_string(),
-                    request: None,
-                    created_from: ExecutionOrigin::Api,
-                    permission_mode: permission_mode.to_string(),
-                })
-                .await
-                .unwrap_err();
-
-            assert!(matches!(error, WorkflowError::Validation(_)));
-            assert!(
-                error.to_string().contains("allowed: ask, edit, full"),
-                "error must include allowed list, got: {error}"
-            );
-            assert!(
-                gateway.calls.lock().unwrap().is_empty(),
-                "invalid permission mode must be rejected before gateway calls"
-            );
-        }
     }
 }

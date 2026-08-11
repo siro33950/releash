@@ -5,7 +5,6 @@ import {
 	kanbanBranches,
 } from "./helpers/fixtures";
 import {
-	emitTauriEvent,
 	setupTauriMock,
 	workspaceTreeReconciliation,
 } from "./helpers/tauri-mock";
@@ -24,101 +23,20 @@ async function waitForAnimations(locator: Locator) {
 	});
 }
 
-function rawSession(
-	id: string,
-	worktreePath: string,
-	message: string,
-	options: { pendingPermission?: boolean } = {},
-) {
+function agentSession(id: string, worktreePath: string) {
 	return {
 		id,
-		worktree_path: worktreePath,
-		messages: message
-			? [
-					{
-						id: `${id}-message`,
-						role: "agent",
-						content: message,
-						thinking: null,
-						activities: null,
-						parts: null,
-						streaming_final_seq: "0",
-						timestamp_ms: "1000000",
-						mentions: null,
-					},
-				]
-			: [],
-		state: "active",
-		error_reason: null,
-		created_at_ms: "1000000",
-		updated_at_ms: "1000000",
-		agent_session_id: `agent-${id}`,
-		context_carry: null,
-		permission_mode: "ask",
-		plan_mode: false,
-		permission_profile_id: null,
-		backend_id: null,
-		selected_model: null,
-		available_models: [],
-		can_change_backend: false,
-		pending_queue: [],
-		pending_queue_count: "0",
-		queue_paused: false,
-		pending_permission_request: options.pendingPermission
-			? {
-					id: "permission-workflow",
-					tool_use_id: "tool-permission-workflow",
-					tool_name: "Bash",
-					kind: "tool_approval",
-					input: { command: "pnpm test" },
-					plan: null,
-					allowed_prompts: [],
-					questions: [],
-					title: null,
-					display_name: null,
-					description: null,
-					decision_reason: null,
-				}
-			: null,
-		pending_permission_state_revision: "1",
-		latest_token_usage: null,
-		workflow_node_session: false,
-		workflow_node_context: null,
-		session_revision: "1",
-		active_turn_id: options.pendingPermission ? "1" : null,
-		turn_phase: options.pendingPermission ? "waiting_permission" : "idle",
-		last_turn_interruption: null,
-		initial_page: {
-			next_cursor: null,
-			has_more: false,
-			total_count: message ? "1" : "0",
-		},
-	};
-}
-
-// Session の権威 read は表示 window (`get_agent_session_display_window`) と
-// revision read (`get_session`) の 2 コマンドがあり、同じ
-// RawGetSessionResponse を返す。両方へ同じフィクスチャを配る。
-function sessionReads(raw: unknown) {
-	return {
-		get_session: raw,
-		get_agent_session_display_window: raw,
-	};
-}
-
-function createdSession(id: string, worktreePath: string) {
-	return {
-		id,
+		workspaceIdentity: worktreePath,
 		worktreePath,
-		messages: [],
-		state: "active",
-		createdAt: 1000,
-		updatedAt: 1000,
-		agentSessionId: null,
-		permissionMode: "ask",
-		planMode: false,
-		permissionProfileId: null,
-		backendId: null,
+		provider: "codex",
+		lifecycle: "open",
+		activity: "idle",
+		lastExitAbnormal: false,
+		operations: {
+			canArchive: true,
+			canRestore: false,
+			canDelete: false,
+		},
 	};
 }
 
@@ -268,30 +186,19 @@ test.describe("Workspace Manager", () => {
 		page,
 	}) => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
-		const agentSessionId = "provider-agent-session-new";
+		const agentSessionId = "agent-session-new";
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			list_available_provider_agent_session_providers: ["codex"],
-			list_provider_agent_sessions: {
+			list_available_agent_session_providers: ["codex"],
+			list_agent_sessions: {
 				items: [],
 				nextAfterSessionId: null,
 			},
-			create_provider_agent_session: agentSessionId,
-			get_provider_agent_session: {
-				id: agentSessionId,
-				workspaceIdentity: worktreePath,
-				worktreePath,
-				provider: "codex",
-				lifecycle: "open",
-				operations: {
-					canArchive: true,
-					canRestore: false,
-					canDelete: false,
-				},
-			},
-			open_provider_agent_session: "attached",
+			create_agent_session: agentSessionId,
+			get_agent_session: agentSession(agentSessionId, worktreePath),
+			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -304,7 +211,9 @@ test.describe("Workspace Manager", () => {
 			.poll(() =>
 				page.evaluate(() =>
 					window.__TAURI_INTERNALS__?.invocations.find(
-						(entry) => entry.cmd === "attach_terminal_surface",
+						(entry) =>
+							entry.cmd === "attach_terminal_surface" &&
+							entry.args.owner?.kind === "session",
 					),
 				),
 			)
@@ -319,7 +228,7 @@ test.describe("Workspace Manager", () => {
 			});
 		const creation = await page.evaluate(() =>
 			window.__TAURI_INTERNALS__?.invocations.find(
-				(entry) => entry.cmd === "create_provider_agent_session",
+				(entry) => entry.cmd === "create_agent_session",
 			),
 		);
 		expect(creation?.args).toEqual({
@@ -334,91 +243,14 @@ test.describe("Workspace Manager", () => {
 			() => window.__TAURI_INTERNALS__?.invocations ?? [],
 		);
 		expect(invocations).toContainEqual({
-			cmd: "get_provider_agent_session",
+			cmd: "get_agent_session",
 			args: { agentSessionId },
 		});
 		expect(
-			invocations.some(
-				(entry) => entry.cmd === "open_provider_agent_session",
-			),
+			invocations.some((entry) => entry.cmd === "open_agent_session"),
 		).toBe(false);
 		expect(invocations.some((entry) => entry.cmd === "create_workspace_session"))
 			.toBe(false);
-	});
-
-	test("closing the selected standalone Session clears the center", async ({
-		page,
-	}) => {
-		const worktreePath = "/test/repo-worktrees/feat-wip";
-		const node = {
-			kind: "node",
-			id: "node-direct-opaque",
-			title: "Direct session",
-			status: "running",
-			contentKind: "session",
-			capabilities: { canApprove: false, canClose: true },
-			updatedAt: 1000,
-		};
-		const detail = {
-			id: node.id,
-			title: node.title,
-			status: node.status,
-			capabilities: node.capabilities,
-			updatedAt: node.updatedAt,
-			content: { kind: "session", sessionId: "session-direct" },
-		};
-		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
-				(branch) => branch.name === "feat/wip",
-			),
-			list_workspace_worktree_nodes: {
-				nodes: [node],
-				preferredNodeId: node.id,
-			},
-			get_workspace_node_detail: detail,
-			...sessionReads(
-				rawSession("session-direct", worktreePath, "Before close"),
-			),
-			close_workspace_node: null,
-		});
-		await setupTauriMock(page, config);
-		await waitForApp(page);
-		await page
-			.getByRole("button", { name: "Direct session, running" })
-			.click();
-		await expect(page.getByText("Before close", { exact: true })).toBeVisible();
-		await waitForWorkspaceTreeQuiescence(page);
-
-		await page.evaluate(() => {
-			window.__TAURI_INTERNALS__?.setMockResponse(
-				"list_workspace_worktree_nodes",
-				{ nodes: [], preferredNodeId: null },
-			);
-			window.__TAURI_INTERNALS__?.setMockResponse(
-				"get_workspace_node_detail",
-				null,
-			);
-		});
-		await page
-			.getByRole("button", { name: "Close Direct session" })
-			.click();
-
-		await expect(
-			page.getByText("Select a Node from the Workspace tree."),
-		).toBeVisible();
-		await expect(
-			page.getByRole("button", { name: /Direct session/ }),
-		).toHaveCount(0);
-		const invocations = await page.evaluate(
-			() => window.__TAURI_INTERNALS__?.invocations ?? [],
-		);
-		expect(invocations).toContainEqual({
-			cmd: "close_workspace_node",
-			args: { worktreePath, nodeId: node.id },
-		});
-		expect(invocations.some((entry) => entry.cmd === "close_session")).toBe(
-			false,
-		);
 	});
 
 	test("the first Workflow Node is selected after an initially empty snapshot", async ({
@@ -434,10 +266,9 @@ test.describe("Workspace Manager", () => {
 			capabilities: { canApprove: false, canClose: false },
 			updatedAt: 1000,
 		};
-		const firstWorkflowSession = rawSession(
-			"session-first-workflow",
+		const firstWorkflowSession = agentSession(
+			"agent-session-first-workflow",
 			worktreePath,
-			"First workflow transcript",
 		);
 		const config = buildMockConfig({
 			list_worktrees: [{ path: worktreePath, branch: "feat/wip" }],
@@ -486,18 +317,18 @@ test.describe("Workspace Manager", () => {
 						capabilities: workflowNode.capabilities,
 						updatedAt: workflowNode.updatedAt,
 						content: {
-							kind: "session",
-							sessionId: "session-first-workflow",
+							kind: "agentSession",
+							sessionId: "agent-session-first-workflow",
 						},
 					},
 				);
 				window.__TAURI_INTERNALS__?.setMockResponse(
-					"get_session",
+					"get_agent_session",
 					firstWorkflowSession,
 				);
 				window.__TAURI_INTERNALS__?.setMockResponse(
-					"get_agent_session_display_window",
-					firstWorkflowSession,
+					"open_agent_session",
+					"attached",
 				);
 				window.dispatchEvent(
 					new CustomEvent("workspace-tree-refresh", {
@@ -512,16 +343,32 @@ test.describe("Workspace Manager", () => {
 			},
 		);
 
-		await expect(
-			page.getByText("First workflow transcript", { exact: true }),
-		).toBeVisible();
-		await expect(page.getByPlaceholder("Send a message...")).toBeVisible();
+		await expect
+			.poll(() =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.find(
+						(entry) =>
+							entry.cmd === "attach_terminal_surface" &&
+							entry.args.owner?.kind === "session",
+					),
+				),
+			)
+			.toMatchObject({
+				args: {
+					owner: {
+						kind: "session",
+						workspacePath: worktreePath,
+						sessionId: firstWorkflowSession.id,
+					},
+				},
+			});
 	});
 
-	test("Workflow Session uses the complete shared chat and permission surface", async ({
+	test("Workflow Session uses the AgentSession TUI without legacy Message or permission commands", async ({
 		page,
 	}) => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const agentSessionId = "agent-session-workflow";
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
@@ -561,21 +408,10 @@ test.describe("Workspace Manager", () => {
 				status: "waiting",
 				capabilities: { canApprove: false, canClose: false },
 				updatedAt: 1000,
-				content: { kind: "session", sessionId: "workflow-session" },
+				content: { kind: "agentSession", sessionId: agentSessionId },
 			},
-			...sessionReads(
-				rawSession(
-					"workflow-session",
-					worktreePath,
-					"Workflow session conversation body",
-					{ pendingPermission: true },
-				),
-			),
-			present_agent_permission_request: null,
-			report_agent_permission_request_observed: null,
-			respond_agent_permission: {
-				__mockAcceptedPermissionResponse: true,
-			},
+			get_agent_session: agentSession(agentSessionId, worktreePath),
+			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -584,168 +420,36 @@ test.describe("Workspace Manager", () => {
 			.getByRole("button", { name: "Review changes, waiting" })
 			.click();
 
-		await expect(
-			page.getByText("Workflow session conversation body", { exact: true }),
-		).toBeVisible();
-		await expect(page.getByPlaceholder("Send a message...")).toBeVisible();
-		await emitTauriEvent(page, "agent-streaming-delta", {
-			chat_session_id: "workflow-session",
-			message_id: "workflow-session-message",
-			seq: 1,
-			snapshot: true,
-			parts: [{ type: "text", content: "Live workflow update" }],
-		});
-		await expect(page.getByText("Live workflow update", { exact: true })).toBeVisible();
-		await expect
-			.poll(async () =>
-				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.some(
-						(entry) =>
-							entry.cmd === "report_agent_permission_request_observed" &&
-							entry.args.chatSessionId === "workflow-session" &&
-							entry.args.requestId === "permission-workflow" &&
-							entry.args.visible === true,
-					),
-				),
-			)
-			.toBe(true);
-		await page.getByRole("button", { name: "Allow", exact: true }).click();
-		await expect
-			.poll(async () =>
-				page.evaluate(() =>
-					window.__TAURI_INTERNALS__?.invocations.some(
-						(entry) =>
-							entry.cmd === "respond_agent_permission" &&
-							entry.args.chatSessionId === "workflow-session" &&
-							entry.args.requestId === "permission-workflow",
-					),
-				),
-			)
-			.toBe(true);
-	});
-
-	test("Codex send直後のStopは再押下できqueueとdraftを保持してpausedで終端する", async ({
-		page,
-	}) => {
-		const worktreePath = "/test/repo-worktrees/feat-wip";
-		const sessionId = "codex-stop-session";
-		const config = buildMockConfig({
-			list_branches_with_status: kanbanBranches.filter(
-				(branch) => branch.name === "feat/wip",
-			),
-			list_workspace_worktree_nodes: {
-				nodes: [
-					{
-						kind: "node",
-						id: "node-codex-stop",
-						title: "Codex stop",
-						status: "running",
-						contentKind: "session",
-						capabilities: { canApprove: false, canClose: false },
-						updatedAt: 1000,
-					},
-				],
-				preferredNodeId: null,
-			},
-			get_workspace_node_detail: {
-				id: "node-codex-stop",
-				title: "Codex stop",
-				status: "running",
-				capabilities: { canApprove: false, canClose: false },
-				updatedAt: 1000,
-				content: { kind: "session", sessionId },
-			},
-			...sessionReads({
-				...rawSession(sessionId, worktreePath, "Starting Codex turn"),
-				backend_id: "codex",
-				active_turn_id: "1",
-				turn_phase: "streaming",
-				pending_queue: [
-					{
-						id: "queued-follow-up",
-						content_preview: "queued follow-up",
-						created_at_ms: "1001000",
-						permission_mode: "edit",
-						image_count: "1",
-					},
-				],
-				pending_queue_count: "1",
-				queue_paused: false,
-			}),
-			resume_agent_queue: null,
-		});
-		await setupTauriMock(page, config);
-		await waitForApp(page);
-		await page.getByRole("button", { name: "Codex stop, running" }).click();
-		const composer = page.getByPlaceholder("Send a message...");
-		await composer.fill("draft must survive stop");
-
-		await page.getByRole("button", { name: "Interrupt agent" }).click();
-		await page.getByRole("button", { name: "Stopping agent" }).click();
 		await expect
 			.poll(() =>
 				page.evaluate(() =>
-					(window.__TAURI_INTERNALS__?.invocations ?? [])
-						.filter((entry) => entry.cmd === "stop_agent_session")
-						.map((entry) => entry.args.request),
+					window.__TAURI_INTERNALS__?.invocations.find(
+						(entry) =>
+							entry.cmd === "attach_terminal_surface" &&
+							entry.args.owner?.kind === "session",
+					),
 				),
 			)
-			.toHaveLength(2);
-		const durableStopRequests = await page.evaluate(() =>
-			(window.__TAURI_INTERNALS__?.invocations ?? [])
-				.filter((entry) => entry.cmd === "stop_agent_session")
-				.map((entry) => entry.args.request),
+			.toMatchObject({
+				args: {
+					owner: {
+						kind: "session",
+						workspacePath: worktreePath,
+						sessionId: agentSessionId,
+					},
+				},
+			});
+		const legacyCommands = new Set([
+			"get_session",
+			"get_agent_session_display_window",
+			"present_agent_permission_request",
+			"report_agent_permission_request_observed",
+			"respond_agent_permission",
+		]);
+		const invocations = await page.evaluate(
+			() => window.__TAURI_INTERNALS__?.invocations ?? [],
 		);
-		expect(durableStopRequests[0]).toMatchObject({
-			request_id: expect.stringMatching(/^stop-/),
-			session_id: sessionId,
-			turn_id: "1",
-			expected_session_revision: "1",
-		});
-		expect(durableStopRequests[1]).toEqual(durableStopRequests[0]);
-		expect(
-			await page.evaluate(
-				() =>
-					window.__TAURI_INTERNALS__?.invocations.some(
-						(entry) => entry.cmd === "resume_agent_queue",
-					) ?? false,
-			),
-		).toBe(false);
-
-		await emitTauriEvent(page, "agent-session-state-changed", {
-			chat_session_id: sessionId,
-			turn_phase: "idle",
-			exit_code: 1,
-			completed_at: 1010,
-			interrupted: true,
-			session_state: "error",
-			queue_paused: true,
-			pending_permission_request: null,
-			pending_permission_state_revision: 2,
-		});
-
-		await expect(composer).toHaveValue("draft must survive stop");
-		await expect(page.getByText("queued follow-up", { exact: true })).toBeVisible();
-		await expect(page.getByRole("button", { name: "Resume queue" })).toBeVisible();
-		expect(
-			await page.evaluate(
-				() =>
-					window.__TAURI_INTERNALS__?.invocations.some(
-						(entry) => entry.cmd === "resume_agent_queue",
-					) ?? false,
-			),
-		).toBe(false);
-		await page.getByRole("button", { name: "Resume queue" }).click();
-		await expect
-			.poll(() =>
-				page.evaluate(
-					() =>
-						window.__TAURI_INTERNALS__?.invocations.filter(
-							(entry) => entry.cmd === "resume_agent_queue",
-						).length ?? 0,
-				),
-			)
-			.toBe(1);
+		expect(invocations.some(({ cmd }) => legacyCommands.has(cmd))).toBe(false);
 	});
 
 	test("Fanout branch nests child Nodes and only toggles expansion", async ({
@@ -974,15 +678,16 @@ test.describe("Workspace Manager", () => {
 				status: "completed",
 				capabilities: { canApprove: false, canClose: false },
 				updatedAt: 2000,
-				content: { kind: "session", sessionId: "archive-selected-session" },
+				content: {
+					kind: "agentSession",
+					sessionId: "agent-session-archive-selected",
+				},
 			},
-			...sessionReads(
-				rawSession(
-					"archive-selected-session",
-					worktreePath,
-					"Archive selected body",
-				),
+			get_agent_session: agentSession(
+				"agent-session-archive-selected",
+				worktreePath,
 			),
+			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1059,15 +764,16 @@ test.describe("Workspace Manager", () => {
 				status: "running",
 				capabilities: { canApprove: false, canClose: false },
 				updatedAt: 1000,
-				content: { kind: "session", sessionId: "loop-session-a-1" },
+				content: {
+					kind: "agentSession",
+					sessionId: "agent-session-loop-a-1",
+				},
 			},
-			...sessionReads(
-				rawSession(
-					"loop-session-a-1",
-					worktreePath,
-					"First occurrence body",
-				),
+			get_agent_session: agentSession(
+				"agent-session-loop-a-1",
+				worktreePath,
 			),
+			open_agent_session: "attached",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -1076,9 +782,17 @@ test.describe("Workspace Manager", () => {
 			exact: true,
 		});
 		await firstRow.click();
-		await expect(
-			page.getByText("First occurrence body", { exact: true }),
-		).toBeVisible();
+		await expect
+			.poll(() =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.find(
+						(entry) =>
+							entry.cmd === "attach_terminal_surface" &&
+							entry.args.owner?.sessionId === "agent-session-loop-a-1",
+					),
+				),
+			)
+			.toBeTruthy();
 		const refreshInvocations = await page.evaluate(
 			() => window.__TAURI_INTERNALS__?.invocations ?? [],
 		);
@@ -1121,7 +835,10 @@ test.describe("Workspace Manager", () => {
 					status: "completed",
 					capabilities: { canApprove: false, canClose: false },
 					updatedAt: 2000,
-					content: { kind: "session", sessionId: "loop-session-a-1" },
+					content: {
+						kind: "agentSession",
+						sessionId: "agent-session-loop-a-1",
+					},
 				});
 				window.dispatchEvent(
 					new CustomEvent("workspace-tree-refresh", {
@@ -1142,9 +859,6 @@ test.describe("Workspace Manager", () => {
 		});
 		await expect(completedFirstRow).toHaveAttribute("aria-current", "page");
 		await expect(secondRow).not.toHaveAttribute("aria-current");
-		await expect(
-			page.getByText("First occurrence body", { exact: true }),
-		).toBeVisible();
 		const updateInvocations = await page.evaluate(
 			() => window.__TAURI_INTERNALS__?.invocations ?? [],
 		);
@@ -1155,10 +869,9 @@ test.describe("Workspace Manager", () => {
 			),
 		).toHaveLength(0);
 
-		const secondSession = rawSession(
-			"loop-session-a-2",
+		const secondSession = agentSession(
+			"agent-session-loop-a-2",
 			worktreePath,
-			"Second occurrence body",
 		);
 		await page.evaluate(
 			({ worktreePath, secondSession }) => {
@@ -1170,25 +883,29 @@ test.describe("Workspace Manager", () => {
 					status: "running",
 					capabilities: { canApprove: false, canClose: false },
 					updatedAt: 3000,
-					content: { kind: "session", sessionId: "loop-session-a-2" },
+					content: {
+						kind: "agentSession",
+						sessionId: "agent-session-loop-a-2",
+					},
 				});
-				internals.setMockResponse("get_session", secondSession);
-				internals.setMockResponse(
-					"get_agent_session_display_window",
-					secondSession,
-				);
+				internals.setMockResponse("get_agent_session", secondSession);
 			},
 			{ worktreePath, secondSession },
 		);
 		await secondRow.click();
 
-		await expect(
-			page.getByText("Second occurrence body", { exact: true }),
-		).toBeVisible();
+		await expect
+			.poll(() =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.find(
+						(entry) =>
+							entry.cmd === "attach_terminal_surface" &&
+							entry.args.owner?.sessionId === "agent-session-loop-a-2",
+					),
+				),
+			)
+			.toBeTruthy();
 		await expect(secondRow).toHaveAttribute("aria-current", "page");
-		await expect(
-			page.getByText("First occurrence body", { exact: true }),
-		).not.toBeVisible();
 		await expect(page.getByText(/attempt/i)).not.toBeVisible();
 	});
 });

@@ -95,7 +95,7 @@ async fn test_ブランチ作成_既存名でエラー() {
 - **Tauri API**: テストでは呼ばない設計を優先。やむを得ない場合は薄いラッパー化してテスト側で差し替え
 - **git2**: 実 git リポジトリを `tempdir` 上に作って統合テスト寄りに書く
 - **外部 HTTP API**: `wiremock` 等で偽サーバを立てる
-- **長時間プロセス（PTY, Agent SDK）**: 単体テストでは呼ばず、ロジックのみ単体テスト + 別途手動・統合テスト
+- **長時間プロセス（PTY, Provider CLI）**: 単体テストでは呼ばず、Terminal Surfaceのbyte I/O、AgentSession lifecycle、Provider lifecycle signalを個別に単体テストし、実processは別途手動・統合テストで検証する。Provider conversationをReleashのMessage modelへ変換するtestは作らない
 
 ## テストヘルパー
 

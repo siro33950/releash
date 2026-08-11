@@ -45,8 +45,8 @@ function makeWorkflow(overrides?: {
 				name: "implement",
 				kind: "session",
 				session: {
+					provider: "claude",
 					gate: "auto",
-					permission: "edit",
 					facets: {
 						policy: "coding",
 						knowledge: overrides?.knowledge ?? ["architecture"],

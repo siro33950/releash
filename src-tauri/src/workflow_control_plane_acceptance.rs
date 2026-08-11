@@ -4,8 +4,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::adaptor::controller::provider_agent_session_wiring::{
-    compose_provider_agent_sessions, ProviderAgentSessionCompositionInput,
+use crate::adaptor::controller::agent_session_wiring::{
+    compose_agent_sessions, AgentSessionCompositionInput,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
@@ -19,26 +19,12 @@ use crate::domain::workflow::{
 };
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::terminal_surface::TerminalSurfaceRuntime;
-use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
-use crate::usecase::agent_session::context::InstructionSourcePort;
-use crate::usecase::agent_session::runtime::ports::{
-    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
-    AgentStreamingDeltaPayload,
-};
-use crate::usecase::agent_session::session::{
-    ChatMessage, ChatSession, ContextCarryState, GetSessionResponse, ModelInfo, SessionStore,
-    TokenUsage,
-};
-use crate::usecase::agent_session::status::{
-    AgentStatusCenter, AgentStatusChanges, AgentStatusNotifier, SessionNotice,
-};
-use crate::usecase::agent_session::ProviderAgentSessionUsecase;
+use crate::usecase::agent_session::AgentSessionUsecase;
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
-use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub use crate::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
@@ -297,89 +283,6 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     }
 }
 
-struct AcceptanceInstructionSource;
-
-impl InstructionSourcePort for AcceptanceInstructionSource {
-    fn read_instruction_file(
-        &self,
-        _path: &std::path::Path,
-        _worktree_root: &std::path::Path,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-}
-
-struct AcceptanceAgentStatusNotifier;
-
-impl AgentStatusNotifier for AcceptanceAgentStatusNotifier {
-    fn status_changed(&self, _changes: AgentStatusChanges) {}
-}
-
-struct AcceptanceAgentSessionEventNotifier;
-
-impl AgentSessionEventNotifier for AcceptanceAgentSessionEventNotifier {
-    fn persist_notice(&self, _notice: SessionNotice) {}
-
-    fn display_window_updated(&self, _response: &GetSessionResponse) -> bool {
-        true
-    }
-
-    fn session_state_changed(&self, _payload: AgentSessionStateChangedPayload) {}
-
-    fn stall_observed(&self, _payload: AgentStallObservedPayload) {}
-
-    fn stall_cleared(&self, _session_id: &str) {}
-
-    fn streaming_delta(&self, _payload: AgentStreamingDeltaPayload) -> bool {
-        true
-    }
-
-    fn supported_commands_updated(
-        &self,
-        _session_id: &str,
-        _commands: Vec<crate::domain::agent_session::value_objects::SlashCommand>,
-    ) {
-    }
-
-    fn token_usage_updated(&self, _session_id: &str, _token_usage: TokenUsage) {}
-
-    fn permission_mode_changed(&self, _session_id: &str, _permission_mode: &str) {}
-
-    fn models_updated(
-        &self,
-        _session_id: &str,
-        _available_models: Vec<ModelInfo>,
-        _selected_model: String,
-    ) {
-    }
-
-    fn context_carry_updated(
-        &self,
-        _session_id: &str,
-        _agent_session_id: Option<String>,
-        _context_carry: Option<ContextCarryState>,
-        _updated_at: f64,
-    ) {
-    }
-
-    fn pending_message_consumed(
-        &self,
-        _session_id: &str,
-        _queued_turn_id: Option<String>,
-        _human_message: Option<ChatMessage>,
-        _agent_message: ChatMessage,
-    ) {
-    }
-
-    fn turn_prepared(
-        &self,
-        _session: &ChatSession,
-        _human_message: &ChatMessage,
-        _agent_message: &ChatMessage,
-    ) {
-    }
-}
-
 pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
     _app: tauri::App<R>,
     writer_lock_path: std::path::PathBuf,
@@ -387,7 +290,7 @@ pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
     exit_observer: tauri::async_runtime::JoinHandle<()>,
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
-    provider_sessions: Arc<ProviderAgentSessionUsecase>,
+    provider_sessions: Arc<AgentSessionUsecase>,
     _runtime: Arc<WorkflowRuntimeUsecase>,
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
@@ -414,7 +317,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             app.handle().clone(),
             config.data_dir.clone(),
         );
-        let composition = compose_provider_agent_sessions(ProviderAgentSessionCompositionInput {
+        let composition = compose_agent_sessions(AgentSessionCompositionInput {
 			repository: repository.clone(),
 			installation_id: installation_id.clone(),
 			data_dir: config.data_dir.clone(),
@@ -435,7 +338,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			cli_binary: "releash-dev".to_string(),
 			terminal: terminal.application(),
 			change_notifier: Arc::new(
-				crate::adaptor::presenter::provider_agent_session_changed::TauriProviderAgentSessionChangeNotifier::new(
+				crate::adaptor::presenter::agent_session_changed::TauriAgentSessionChangeNotifier::new(
 					app.handle().clone(),
 				),
 			),
@@ -443,37 +346,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
         terminal.bind_agent_session_activity(composition.activity.clone());
 
-        let session_store = Arc::new(SessionStore::new_canonical(
-			repository.clone(),
-			installation_id.clone(),
-			Arc::new(
-				crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
-			),
-		));
-        let archives = Arc::new(
-            crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
-                config.data_dir.clone(),
-            ),
-        );
-        let workspace_query: Arc<dyn WorkspaceQueryService> =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(
-                store.clone(),
-                archives,
-            );
-        let agent_status_center = Arc::new(AgentStatusCenter::new());
-        app.manage(agent_status_center.clone());
-        let agent_runtime = crate::compose_agent_session_runtime(
-            session_store.clone(),
-            Arc::new(AgentBackendRegistry::new()),
-            agent_status_center,
-            Arc::new(AcceptanceAgentStatusNotifier),
-            Arc::new(AcceptanceAgentSessionEventNotifier),
-            Arc::new(crate::adaptor::gateway::agent_session::TokioAgentTaskSpawner),
-            None,
-            Arc::new(AcceptanceInstructionSource),
-            config.data_dir.clone(),
-            workspace_query,
-        );
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
@@ -482,13 +354,12 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             installation_id.clone(),
             composition.launch.clone(),
             composition.initial_instruction.clone(),
+            composition.interrupt.clone(),
             composition.availability_reader.clone(),
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),
             driver,
-            session_store,
-            agent_runtime,
             repository,
             installation_id,
         ));
@@ -514,7 +385,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             token.clone(),
             binding.terminal_bearer_token(),
             None,
-            None,
             Some(composition.lifecycle_ingress.clone()),
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());
@@ -522,7 +392,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
         let exit_observer = tauri::async_runtime::spawn(
-			crate::adaptor::controller::provider_agent_session_exit_observer::run_provider_agent_session_exit_observer(
+			crate::adaptor::controller::agent_session_exit_observer::run_agent_session_exit_observer(
 				terminal_events,
 				composition.exit.clone(),
 			),
@@ -623,7 +493,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                     "workflow_name": workflow_name,
                     "worktree_path": worktree_path,
                     "request": "acceptance initial instruction",
-                    "permission_mode": "ask",
                     "created_from": "api"
                 }),
             )
@@ -647,7 +516,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
     pub async fn recover_startup(&self) -> Result<(), String> {
         self._runtime
-            .recover_startup_excluding(&std::collections::BTreeSet::new())
+            .recover_startup()
             .await
             .map_err(|error| error.to_string())
     }
@@ -812,11 +681,10 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         exit_observer_cancellation.cancel();
         exit_observer
             .await
-            .map_err(|error| format!("join Provider AgentSession exit observer: {error}"))?;
+            .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
         local_api.shutdown();
         _app.unmanage::<Arc<LocalEventStore>>();
-        _app.unmanage::<Arc<AgentStatusCenter>>();
         drop((local_api, _runtime, provider_sessions, terminal, _app));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {

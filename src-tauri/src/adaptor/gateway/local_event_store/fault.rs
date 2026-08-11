@@ -55,31 +55,8 @@ impl FaultInjector {
             .is_ok()
     }
 
-    /// Storage failure before `BEGIN IMMEDIATE` (nothing written).
-    #[cfg(test)]
-    pub fn arm_fail_before_begin(&self) {
-        self.fail_before_begin.fetch_add(1, Ordering::SeqCst);
-    }
-
     pub fn take_fail_before_begin(&self) -> bool {
         Self::take(&self.fail_before_begin)
-    }
-
-    /// Storage failure after participant writes but before COMMIT
-    /// (transaction rolls back).
-    #[cfg(test)]
-    pub fn arm_fail_after_participant_write(&self) {
-        self.arm_fail_after_participant_write_number(1);
-    }
-
-    /// Storage failure immediately after the selected one-based participant
-    /// write. This makes the atomicity oracle cover every partial prefix of a
-    /// heterogeneous batch, rather than only the final pre-COMMIT boundary.
-    #[cfg(test)]
-    pub fn arm_fail_after_participant_write_number(&self, write_number: usize) {
-        assert!(write_number > 0, "participant write number is one-based");
-        self.fail_after_participant_write
-            .store(write_number, Ordering::SeqCst);
     }
 
     pub fn take_fail_after_participant_write(&self) -> bool {
@@ -112,65 +89,24 @@ impl FaultInjector {
         Self::take(&self.crash_after_commit_before_readback)
     }
 
-    /// Drop the reply channel after the commit completed (reply loss).
-    #[cfg(test)]
-    pub fn arm_drop_reply(&self) {
-        self.drop_reply.fetch_add(1, Ordering::SeqCst);
-    }
-
     pub fn take_drop_reply(&self) -> bool {
         Self::take(&self.drop_reply)
-    }
-
-    #[cfg(test)]
-    pub fn arm_schema_fail_before_begin(&self) {
-        self.schema_fail_before_begin.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn take_schema_fail_before_begin(&self) -> bool {
         Self::take(&self.schema_fail_before_begin)
     }
 
-    #[cfg(test)]
-    pub fn arm_schema_fail_before_commit(&self) {
-        self.schema_fail_before_commit
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
     pub fn take_schema_fail_before_commit(&self) -> bool {
         Self::take(&self.schema_fail_before_commit)
-    }
-
-    #[cfg(test)]
-    pub fn arm_schema_commit_reply_loss(&self) {
-        self.schema_commit_reply_loss.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn take_schema_commit_reply_loss(&self) -> bool {
         Self::take(&self.schema_commit_reply_loss)
     }
 
-    #[cfg(test)]
-    pub fn arm_schema_fail_before_readback(&self) {
-        self.schema_fail_before_readback
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
     pub fn take_schema_fail_before_readback(&self) -> bool {
         Self::take(&self.schema_fail_before_readback)
-    }
-
-    #[cfg(test)]
-    pub fn arm_initial_create_fault(&self, point: InitialCreateFaultPoint) {
-        self.initial_create_fault_point
-            .store(point as usize, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub fn arm_initial_create_process_crash(&self, point: InitialCreateFaultPoint) {
-        self.initial_create_process_crash_point
-            .store(point as usize, Ordering::SeqCst);
-        self.arm_initial_create_fault(point);
     }
 
     pub fn take_initial_create_fault(&self, point: InitialCreateFaultPoint) -> bool {

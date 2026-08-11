@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { providerAgentSessionIconPresentation } from "./WorkflowNodeStatusIcon";
+import { agentSessionIconPresentation } from "./WorkflowNodeStatusIcon";
 
-describe("providerAgentSessionIconPresentation", () => {
+describe("agentSessionIconPresentation", () => {
 	it("open＋runningはworkflow node runningと同じblue＋pulseになる", () => {
 		expect(
-			providerAgentSessionIconPresentation({
+			agentSessionIconPresentation({
 				lifecycle: "open",
 				activity: "running",
 				lastExitAbnormal: false,
@@ -18,7 +18,7 @@ describe("providerAgentSessionIconPresentation", () => {
 
 	it("open＋idleはニュートラル色でpulseしない", () => {
 		expect(
-			providerAgentSessionIconPresentation({
+			agentSessionIconPresentation({
 				lifecycle: "open",
 				activity: "idle",
 				lastExitAbnormal: false,
@@ -32,7 +32,7 @@ describe("providerAgentSessionIconPresentation", () => {
 
 	it("paused＋異常終了はdestructiveになる", () => {
 		expect(
-			providerAgentSessionIconPresentation({
+			agentSessionIconPresentation({
 				lifecycle: "paused",
 				activity: "idle",
 				lastExitAbnormal: true,
@@ -46,7 +46,7 @@ describe("providerAgentSessionIconPresentation", () => {
 
 	it("paused（正常）は非活性のdimになる", () => {
 		expect(
-			providerAgentSessionIconPresentation({
+			agentSessionIconPresentation({
 				lifecycle: "paused",
 				activity: "idle",
 				lastExitAbnormal: false,
@@ -60,7 +60,7 @@ describe("providerAgentSessionIconPresentation", () => {
 
 	it("archivedは非活性のdimになる", () => {
 		expect(
-			providerAgentSessionIconPresentation({
+			agentSessionIconPresentation({
 				lifecycle: "archived",
 				activity: "idle",
 				lastExitAbnormal: false,

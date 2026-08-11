@@ -1,10 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::domain::workflow::{
     ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
 };
-use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceSessionListKind};
-use crate::usecase::agent_session::session::SessionSummary;
+use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::workflow::{
     WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
@@ -13,31 +12,12 @@ use super::WorkspaceQueryService;
 
 /// Explicit unit-test fake. Production composition never branches to this type.
 pub(crate) struct TestWorkspaceQueryService {
-    active_sessions: RwLock<Vec<SessionSummary>>,
-    closed_sessions: RwLock<Vec<SessionSummary>>,
     executions: Vec<WorkflowExecutionSummary>,
 }
 
 impl TestWorkspaceQueryService {
-    pub(crate) fn new(
-        active_sessions: Vec<SessionSummary>,
-        closed_sessions: Vec<SessionSummary>,
-        executions: Vec<WorkflowExecutionSummary>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            active_sessions: RwLock::new(active_sessions),
-            closed_sessions: RwLock::new(closed_sessions),
-            executions,
-        })
-    }
-
-    pub(crate) fn replace_session_summaries(
-        &self,
-        active_sessions: Vec<SessionSummary>,
-        closed_sessions: Vec<SessionSummary>,
-    ) {
-        *self.active_sessions.write().unwrap() = active_sessions;
-        *self.closed_sessions.write().unwrap() = closed_sessions;
+    pub(crate) fn new(executions: Vec<WorkflowExecutionSummary>) -> Arc<Self> {
+        Arc::new(Self { executions })
     }
 }
 
@@ -66,18 +46,6 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         _session_id: &str,
     ) -> Result<Option<String>, WorkflowError> {
         Ok(None)
-    }
-
-    fn session_summaries(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-        list: WorkspaceSessionListKind,
-    ) -> Result<Vec<SessionSummary>, WorkflowError> {
-        Ok(match list {
-            WorkspaceSessionListKind::Active => self.active_sessions.read().unwrap().clone(),
-            WorkspaceSessionListKind::Closed => self.closed_sessions.read().unwrap().clone(),
-            WorkspaceSessionListKind::Archived => Vec::new(),
-        })
     }
 
     fn execution_summaries(

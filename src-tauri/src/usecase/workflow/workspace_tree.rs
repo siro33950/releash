@@ -3,8 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use super::workspace_node_command::{
-    CloseWorkspaceNodeError, WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget,
-    WorkspaceNodeCloseTarget, WorkspaceNodeRetryTarget,
+    WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget, WorkspaceNodeRetryTarget,
 };
 use super::WorkflowUsecase;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
@@ -124,7 +123,7 @@ pub(crate) struct WorkspaceNodeDetailDto {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum WorkspaceNodeContentDto {
     Session(WorkspaceSessionNodeContentDto),
-    ProviderAgentSession(WorkspaceSessionNodeContentDto),
+    AgentSession(WorkspaceSessionNodeContentDto),
     Command(WorkspaceCommandNodeContentDto),
 }
 
@@ -260,32 +259,6 @@ impl WorkflowUsecase {
 }
 
 impl WorkspaceNodeActionResolver for WorkflowUsecase {
-    fn resolve_close_target(
-        &self,
-        worktree_path: &str,
-        node_id: &str,
-    ) -> Result<WorkspaceNodeCloseTarget, CloseWorkspaceNodeError> {
-        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
-            self.resolve_worktree_path(worktree_path)
-                .map_err(CloseWorkspaceNodeError::Resolution)?,
-        );
-        let node = self
-            .workspace_nodes
-            .load_node(&workspace, node_id)
-            .map_err(|error| {
-                CloseWorkspaceNodeError::Resolution(WorkflowError::external(error.to_string()))
-            })?
-            .ok_or_else(|| CloseWorkspaceNodeError::NodeNotFound {
-                node_id: node_id.to_string(),
-            })?;
-        match (node.can_close, node.session_id) {
-            (true, Some(session_id)) => Ok(WorkspaceNodeCloseTarget { session_id }),
-            _ => Err(CloseWorkspaceNodeError::CloseNotSupported {
-                node_id: node_id.to_string(),
-            }),
-        }
-    }
-
     fn resolve_approval_target(
         &self,
         worktree_path: &str,
