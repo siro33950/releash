@@ -1,17 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "./TerminalPanel";
 
-const mockWriteToTerminal = vi.fn();
+const mockSendInput = vi.fn();
 const mockTerminalRef = { current: null };
-const mockPtyIdRef: { current: number | null } = { current: 7 };
+const mockIsRunningRef = { current: true };
+const mockTerminalOwner = { kind: "workspace", workspacePath: "" } as const;
 const mockRequestKill = vi.fn();
 const mockUseTerminal = vi.fn().mockReturnValue({
 	terminalRef: mockTerminalRef,
-	ptyIdRef: mockPtyIdRef,
-	writeToTerminal: mockWriteToTerminal,
+	terminalOwner: mockTerminalOwner,
+	isRunningRef: mockIsRunningRef,
+	sendInput: mockSendInput,
 	requestKill: mockRequestKill,
 });
 const mockInvoke = vi.mocked(invoke);
@@ -26,16 +28,19 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 describe("TerminalPanel", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockPtyIdRef.current = 7;
+		mockIsRunningRef.current = true;
 		mockInvoke.mockResolvedValue(undefined);
 		mockListen.mockResolvedValue(vi.fn());
 	});
 
-	it("コンテナdivが正しいclassNameで描画される", () => {
-		const { container } = render(<TerminalPanel />);
+	it("余白をxtermの計測対象外へ置きhostの高さを実表示領域に一致させる", () => {
+		render(<TerminalPanel />);
 
-		const terminalContainer = container.querySelector(".h-full.w-full");
-		expect(terminalContainer).toBeInTheDocument();
+		const surface = screen.getByRole("application");
+		const terminalHost = surface.firstElementChild;
+		expect(surface).toHaveClass("h-full", "w-full", "p-2");
+		expect(terminalHost).toHaveClass("h-full", "w-full");
+		expect(terminalHost).not.toHaveClass("p-2");
 	});
 
 	it("useTerminal が containerRef とともに呼び出される", () => {
@@ -43,31 +48,17 @@ describe("TerminalPanel", () => {
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+			expect.any(Object),
 		);
 	});
 
-	it("onPtyReady を useTerminal に中継する", () => {
-		const onPtyReady = vi.fn();
-		render(<TerminalPanel onPtyReady={onPtyReady} />);
+	it("onTerminalReady を useTerminal に中継する", () => {
+		const onTerminalReady = vi.fn();
+		render(<TerminalPanel onTerminalReady={onTerminalReady} />);
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onPtyReady,
-			undefined,
-			undefined,
+			expect.objectContaining({ onTerminalReady }),
 		);
 	});
 
@@ -83,15 +74,15 @@ describe("TerminalPanel", () => {
 			},
 		});
 
-		expect(mockWriteToTerminal).not.toHaveBeenCalled();
-		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_pty", {
-			ptyId: 7,
+		expect(mockSendInput).not.toHaveBeenCalled();
+		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_terminal_surface", {
+			owner: mockTerminalOwner,
 			paths: ["/tmp/my file.txt"],
 		});
 	});
 
-	it("PTY id 未確定時は drop path を書き込まない", () => {
-		mockPtyIdRef.current = null;
+	it("Terminal process が実行中でない場合は drop path を書き込まない", () => {
+		mockIsRunningRef.current = false;
 		const { container } = render(<TerminalPanel />);
 		const dropTarget = container.querySelector('[role="application"]');
 
@@ -102,7 +93,7 @@ describe("TerminalPanel", () => {
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"write_paths_to_pty",
+			"write_paths_to_terminal_surface",
 			expect.anything(),
 		);
 	});
@@ -130,8 +121,8 @@ describe("TerminalPanel", () => {
 			nativeFileDropCallback?.({ payload: { paths } });
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_pty", {
-			ptyId: 7,
+		expect(mockInvoke).toHaveBeenCalledWith("write_paths_to_terminal_surface", {
+			owner: mockTerminalOwner,
 			paths,
 		});
 	});
@@ -154,7 +145,7 @@ describe("TerminalPanel", () => {
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"write_paths_to_pty",
+			"write_paths_to_terminal_surface",
 			expect.anything(),
 		);
 	});

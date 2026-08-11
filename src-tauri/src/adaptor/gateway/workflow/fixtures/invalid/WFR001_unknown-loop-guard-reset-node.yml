@@ -3,7 +3,7 @@ description: loop_guard.reset_on points to a missing node
 nodes:
   - name: fix
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement
@@ -15,7 +15,7 @@ nodes:
       - next: done
   - name: done
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement

@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
-use crate::adaptor::gateway::workflow::workflow_host::runtime_mapping::workflow_schemas_to_domain;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::prompt_composition;
 use crate::domain::workflow::services::reference::{
@@ -142,38 +141,6 @@ fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<
     result
 }
 
-fn render_workflow_instruction(
-    instruction: &str,
-    artifacts: &HashMap<String, Value>,
-    item: Option<&Value>,
-) -> Option<String> {
-    let rendered = render_prompt_content(instruction, artifacts, item)
-        .trim()
-        .to_string();
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-pub(crate) fn render_node_workflow_instruction(
-    _node: &NodeDefinition,
-    facet_contents: Option<&FacetContents>,
-    request: Option<&str>,
-    artifacts: &HashMap<String, RuntimeArtifact>,
-) -> Option<String> {
-    let artifacts = artifact_values(artifacts, request);
-    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
-}
-
-pub(crate) fn render_fanout_child_workflow_instruction(
-    _node: &NodeDefinition,
-    facet_contents: Option<&FacetContents>,
-    request: Option<&str>,
-    artifacts: &HashMap<String, RuntimeArtifact>,
-    item: Option<&Value>,
-) -> Option<String> {
-    let artifacts = artifact_values(artifacts, request);
-    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, item)
-}
-
 pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,
@@ -185,7 +152,7 @@ pub(crate) fn append_artifact_completion_action(
     let Some(contract) = artifact else {
         return;
     };
-    let domain_schemas = workflow_schemas_to_domain(schemas);
+    let domain_schemas = schemas.clone();
     let schema_guidance =
         workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
     let action = prompt_composition::artifact_completion_action(

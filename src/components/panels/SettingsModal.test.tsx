@@ -46,26 +46,36 @@ describe("SettingsModal", () => {
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: false,
 					});
-				case "generate_hooks_config":
-					return Promise.resolve('{"hooks":{}}');
-				case "get_hooks_status":
-					return Promise.resolve("not_configured");
+				case "get_provider_availability":
+					return Promise.resolve({
+						providers: [
+							{
+								provider: "claude",
+								displayName: "Claude",
+								defaultExecutable: "claude",
+								configuredExecutable: "/opt/custom/claude",
+								effectiveExecutable: "/opt/custom/claude",
+								available: true,
+								resolvedExecutable: "/opt/custom/claude",
+								unavailableReason: null,
+							},
+							{
+								provider: "codex",
+								displayName: "Codex",
+								defaultExecutable: "codex",
+								configuredExecutable: null,
+								effectiveExecutable: "codex",
+								available: false,
+								resolvedExecutable: null,
+								unavailableReason: "not_found",
+							},
+						],
+					});
 				case "update_workflow_config":
-				case "update_notify_config":
 					return Promise.resolve(null);
 				case "get_external_editor":
 					return Promise.resolve("");
@@ -131,6 +141,184 @@ describe("SettingsModal", () => {
 					String(command).includes("agent_shortcut"),
 				),
 		).toBe(false);
+	});
+
+	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		expect(screen.queryByText("Claude Code Hooks")).not.toBeInTheDocument();
+		for (const removed of [
+			"generate_hooks_config",
+			"get_hooks_status",
+			"apply_hooks_config",
+		]) {
+			expect(
+				vi.mocked(invoke).mock.calls.some(([command]) => command === removed),
+			).toBe(false);
+		}
+	});
+
+	it("Provider CLIはbackend一覧から利用可能と利用不可を表示する", async () => {
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		expect(
+			await screen.findByText("Provider CLI availability"),
+		).toBeInTheDocument();
+		expect(await screen.findByText("Claude")).toBeInTheDocument();
+		expect(screen.getAllByText("/opt/custom/claude").length).toBeGreaterThan(0);
+		expect(screen.getByText("not_found")).toBeInTheDocument();
+	});
+
+	it("Provider CLIはprovider IDと既定commandを明示する", async () => {
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		await screen.findByText("Provider CLI availability");
+		expect(await screen.findAllByText("Provider ID")).toHaveLength(2);
+		expect(screen.getAllByText("Default")).toHaveLength(2);
+		expect(screen.getAllByText("claude", { selector: "span" })).toHaveLength(2);
+		expect(screen.getAllByText("codex", { selector: "span" })).toHaveLength(3);
+	});
+
+	it("Provider CLI path変更をglobal Saveからbackendへ保存する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						{
+							provider: "claude",
+							displayName: "Claude",
+							defaultExecutable: "claude",
+							configuredExecutable: null,
+							effectiveExecutable: "claude",
+							available: true,
+							resolvedExecutable: "/usr/bin/claude",
+							unavailableReason: null,
+						},
+					],
+				});
+			}
+			if (cmd === "update_provider_executable") {
+				return Promise.resolve({ providers: [] });
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		const input = await screen.findByLabelText("Claude executable override");
+		await user.clear(input);
+		await user.type(input, "/custom/bin/claude");
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(invoke).toHaveBeenCalledWith("update_provider_executable", {
+			provider: "claude",
+			executable: "/custom/bin/claude",
+		});
+	});
+
+	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		await user.click(
+			await screen.findByRole("button", { name: "Reset Claude executable" }),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Refresh Provider CLI availability" }),
+		);
+
+		expect(invoke).toHaveBeenCalledWith("reset_provider_executable", {
+			provider: "claude",
+		});
+		expect(invoke).toHaveBeenCalledWith("refresh_provider_availability");
+	});
+
+	it("一方のProvider CLIをresetしても他方の未保存draftを維持する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		const provider = (id: string, configuredExecutable: string | null) => ({
+			provider: id,
+			displayName: id === "claude" ? "Claude" : "Codex",
+			defaultExecutable: id,
+			configuredExecutable,
+			effectiveExecutable: configuredExecutable ?? id,
+			available: true,
+			resolvedExecutable: `/usr/bin/${id}`,
+			unavailableReason: null,
+		});
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						provider("claude", "/opt/custom/claude"),
+						provider("codex", null),
+					],
+				});
+			}
+			if (command === "reset_provider_executable") {
+				return Promise.resolve({
+					providers: [provider("claude", null), provider("codex", null)],
+				});
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		const codex = await screen.findByLabelText("Codex executable override");
+		await user.type(codex, "/draft/codex");
+
+		await user.click(
+			screen.getByRole("button", { name: "Reset Claude executable" }),
+		);
+
+		expect(codex).toHaveValue("/draft/codex");
+	});
+
+	it("Provider CLI refresh失敗時は直前snapshotを維持してerrorを表示する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						{
+							provider: "dynamic-provider",
+							displayName: "Dynamic Provider",
+							defaultExecutable: "dynamic",
+							configuredExecutable: null,
+							effectiveExecutable: "dynamic",
+							available: true,
+							resolvedExecutable: "/bin/dynamic",
+							unavailableReason: null,
+						},
+					],
+				});
+			}
+			if (cmd === "refresh_provider_availability") {
+				return Promise.reject(new Error("refresh failed"));
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		expect(await screen.findByText("Dynamic Provider")).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", {
+				name: "Refresh Provider CLI availability",
+			}),
+		);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"refresh failed",
+		);
+		expect(screen.getByText("Dynamic Provider")).toBeInTheDocument();
 	});
 
 	it("Save button is disabled when no changes", () => {
@@ -342,17 +530,10 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should display Notifications in nav", () => {
+	it("does not expose the removed Notifications settings", () => {
 		render(<SettingsModal {...defaultProps} />);
-		expect(screen.getByText("Notifications")).toBeInTheDocument();
-	});
-
-	it("should display Webhook URL input field with url type", async () => {
-		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Notifications"));
-		const input = await screen.findByLabelText("Webhook URL");
-		expect(input).toBeInTheDocument();
-		expect(input).toHaveAttribute("type", "url");
+		expect(screen.queryByText("Notifications")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Webhook URL")).not.toBeInTheDocument();
 	});
 
 	it("should show Appearance section by default", () => {
@@ -398,16 +579,6 @@ describe("SettingsModal", () => {
 					]);
 				case "get_releash_base":
 					return Promise.resolve(null);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -419,117 +590,37 @@ describe("SettingsModal", () => {
 		expect(await screen.findByText("Base branch")).toBeInTheDocument();
 	});
 
-	it("should resolve hooks loading spinner when agent is claude", async () => {
-		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
-		render(<SettingsModal {...defaultProps} settings={claudeSettings} />);
-		const nav = screen.getByRole("navigation");
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
-		});
-	});
-
 	it("should load and save approval gate auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: true,
 					});
-				case "generate_hooks_config":
-					return Promise.resolve('{"hooks":{}}');
-				case "get_hooks_status":
-					return Promise.resolve("not_configured");
 				case "update_workflow_config":
-				case "update_notify_config":
 					return Promise.resolve(null);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
-		render(
-			<SettingsModal
-				{...defaultProps}
-				settings={{
-					...defaultSettings,
-					agent: "codex",
-					agentAutoApprove: false,
-				}}
-			/>,
-		);
+		render(<SettingsModal {...defaultProps} />);
 		const nav = screen.getByRole("navigation");
 		fireEvent.click(within(nav).getByText("Agent"));
 		const workflowCheckbox = await screen.findByRole("checkbox", {
 			name: "Approval gate auto-approve",
 		});
-		const agentCheckbox = screen.getByRole("checkbox", {
-			name: "Auto-approve",
-		});
 		await waitFor(() => {
 			expect(workflowCheckbox).toBeChecked();
 		});
-		expect(agentCheckbox).not.toBeChecked();
 
 		await user.click(workflowCheckbox);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
 		expect(invoke).toHaveBeenCalledWith("update_workflow_config", {
 			workflow: { approval_auto_approve: false },
-		});
-	});
-
-	it("should not show permanent spinner when dialog is re-opened with claude agent", async () => {
-		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
-		const onOpenChange = vi.fn();
-
-		const { rerender } = render(
-			<SettingsModal
-				{...defaultProps}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-		const nav = screen.getByRole("navigation");
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
-		});
-
-		// Close dialog
-		rerender(
-			<SettingsModal
-				{...defaultProps}
-				open={false}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-
-		// Re-open dialog
-		rerender(
-			<SettingsModal
-				{...defaultProps}
-				open={true}
-				settings={claudeSettings}
-				onOpenChange={onOpenChange}
-			/>,
-		);
-		fireEvent.click(within(nav).getByText("Agent"));
-		await waitFor(() => {
-			expect(screen.getByText("Not configured")).toBeInTheDocument();
 		});
 	});
 
@@ -548,16 +639,6 @@ describe("SettingsModal", () => {
 						},
 						{ name: "Cursor", path: "/Applications/Cursor.app" },
 					]);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "update_external_editor":
 					return Promise.resolve(null);
 				default:
@@ -598,16 +679,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve(null);
 				case "set_releash_base":
 					return Promise.resolve(null);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -833,16 +904,6 @@ describe("SettingsModal", () => {
 						return Promise.resolve([{ name: "main", is_remote: false }]);
 					case "get_releash_base":
 						return Promise.resolve(null);
-					case "get_notify_config":
-						return Promise.resolve({
-							webhook_url: "",
-							on_running: false,
-							on_done: true,
-							on_error: true,
-							on_waiting: true,
-							desktop_mode: "always",
-							inactive_timeout_minutes: 2,
-						});
 					default:
 						return Promise.resolve(null);
 				}

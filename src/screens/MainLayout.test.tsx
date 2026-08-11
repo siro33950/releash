@@ -1,9 +1,4 @@
-/**
- * Goal #1454: the center pane is always the generic NodeContentView. A new
- * session is a creation request which is resolved to an opaque Workspace node
- * id by the backend before it becomes a CenterSelection.
- */
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -11,9 +6,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 Element.prototype.scrollIntoView = vi.fn();
 
 const mocks = vi.hoisted(() => ({
-	createNewWorkspaceSession: vi.fn(),
-	invoke: vi.fn(),
 	nodeContentViewProps: vi.fn(),
+	agentSessionRouteProps: vi.fn(),
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -22,21 +16,34 @@ vi.mock("react-resizable-panels", () => ({
 		children,
 		id,
 		minSize,
+		onResize,
 	}: {
 		children: React.ReactNode;
 		id?: string;
 		minSize?: number | string;
+		onResize?: (size: { asPercentage: number; inPixels: number }) => void;
 	}) => (
 		<div data-testid={id ? `panel-${id}` : undefined} data-min-size={minSize}>
+			{id && onResize ? (
+				<>
+					<button
+						type="button"
+						data-testid={`panel-${id}-collapse-trigger`}
+						onClick={() => onResize({ asPercentage: 0, inPixels: 0 })}
+					/>
+					<button
+						type="button"
+						data-testid={`panel-${id}-expand-trigger`}
+						onClick={() => onResize({ asPercentage: 50, inPixels: 400 })}
+					/>
+				</>
+			) : null}
 			{children}
 		</div>
 	),
 	Separator: () => <div />,
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: mocks.invoke,
-}));
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: vi.fn().mockResolvedValue(() => {}),
 }));
@@ -60,12 +67,6 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 		baseBranch: "main",
 		setBaseBranch: vi.fn(),
 		localBranches: ["main", "feature"],
-	}),
-}));
-vi.mock("@/contexts/AgentChatContext", () => ({
-	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
-	useAgentChatContext: () => ({
-		createNewWorkspaceSession: mocks.createNewWorkspaceSession,
 	}),
 }));
 vi.mock("@/contexts/ReviewThreadHandoffContext", () => ({
@@ -104,6 +105,12 @@ vi.mock("@/components/panels/NodeContentView", () => ({
 		);
 	},
 }));
+vi.mock("@/components/panels/AgentSessionPanel", () => ({
+	AgentSessionRoute: (props: unknown) => {
+		mocks.agentSessionRouteProps(props);
+		return <div data-testid="agent-session-route-mock" />;
+	},
+}));
 vi.mock("@/components/panels/ReviewPanel", () => ({
 	ReviewPanel: () => <div data-testid="review-panel-mock" />,
 }));
@@ -121,8 +128,19 @@ vi.mock("@/components/layout/BranchSelector", () => ({
 	BranchSelector: () => <div data-testid="branch-selector-mock" />,
 }));
 vi.mock("@/components/layout/RightPanelHeader", () => ({
-	RightPanelHeader: ({ leftSlot }: { leftSlot?: React.ReactNode }) => (
-		<div data-testid="right-panel-header-mock">{leftSlot}</div>
+	RightPanelHeader: ({
+		leftSlot,
+		panels,
+	}: {
+		leftSlot?: React.ReactNode;
+		panels?: { id: string; visible: boolean }[];
+	}) => (
+		<div
+			data-testid="right-panel-header-mock"
+			data-right-visible={panels?.find((p) => p.id === "right")?.visible}
+		>
+			{leftSlot}
+		</div>
 	),
 }));
 vi.mock("@/components/layout/ViewToolbar", () => ({
@@ -156,21 +174,9 @@ function renderMainLayout(
 	return render(mainLayoutElement(props));
 }
 
-function deferred<T>() {
-	let resolve!: (value: T) => void;
-	let reject!: (reason?: unknown) => void;
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res;
-		reject = rej;
-	});
-	return { promise, resolve, reject };
-}
-
 describe("MainLayout node-centered workspace", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.invoke.mockResolvedValue(null);
-		mocks.createNewWorkspaceSession.mockResolvedValue("session-default");
 	});
 
 	it("always renders the toolbar-backed NodeContentView in the center", () => {
@@ -187,12 +193,31 @@ describe("MainLayout node-centered workspace", () => {
 		);
 	});
 
+	it("app-wide warningをWorkspace外のmain-area内で高さを確保して表示する", () => {
+		renderMainLayout({
+			topBanner: <div role="alert">Provider warning</div>,
+		});
+
+		const warning = screen.getByRole("alert");
+		const leftNav = screen.getByTestId("panel-left-nav");
+		const mainArea = screen.getByTestId("panel-main-area");
+		const bannerRegion = screen.getByTestId("main-layout-banner-region");
+		const contentRegion = screen.getByTestId("main-layout-content-region");
+
+		expect(leftNav).not.toContainElement(warning);
+		expect(mainArea).toContainElement(warning);
+		expect(bannerRegion).toHaveClass("shrink-0");
+		expect(contentRegion).toHaveClass("min-h-0", "flex-1");
+	});
+
 	it("passes an opaque node selection to the generic center view", () => {
 		renderMainLayout({
-			centerSelection: {
-				kind: "node",
-				worktreePath: "/managed/wt",
-				nodeId: "opaque:not-an-execution-coordinate",
+			centerSelectionByWorktree: {
+				"/managed/wt": {
+					kind: "node",
+					worktreePath: "/managed/wt",
+					nodeId: "opaque:not-an-execution-coordinate",
+				},
 			},
 		});
 
@@ -208,12 +233,45 @@ describe("MainLayout node-centered workspace", () => {
 		);
 	});
 
+	it("AgentSession selectionをTerminal routeへ渡す", () => {
+		const initialAttachment = {
+			agentSessionId: "provider-agent-1",
+			workspaceIdentity: "/managed/wt",
+			worktreePath: "/managed/wt",
+			provider: "codex" as const,
+		};
+		const onAgentSessionLaunchConsumed = vi.fn();
+		renderMainLayout({
+			centerSelectionByWorktree: {
+				"/managed/wt": {
+					kind: "agent_session",
+					worktreePath: "/managed/wt",
+					agentSessionId: "provider-agent-1",
+					initialAttachment,
+				},
+			},
+			onAgentSessionLaunchConsumed,
+		});
+
+		expect(screen.getByTestId("agent-session-route-mock")).toBeInTheDocument();
+		expect(mocks.agentSessionRouteProps).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentSessionId: "provider-agent-1",
+				initialAttachment,
+				onInitialSessionConsumed: onAgentSessionLaunchConsumed,
+			}),
+		);
+		expect(screen.queryByTestId("node-content-view-mock")).toBeNull();
+	});
+
 	it("does not leak another worktree's selection into the current view", () => {
 		renderMainLayout({
-			centerSelection: {
-				kind: "node",
-				worktreePath: "/managed/other",
-				nodeId: "node-other",
+			centerSelectionByWorktree: {
+				"/managed/other": {
+					kind: "node",
+					worktreePath: "/managed/other",
+					nodeId: "node-other",
+				},
 			},
 		});
 
@@ -222,172 +280,118 @@ describe("MainLayout node-centered workspace", () => {
 		);
 	});
 
-	it("resolves NewSession through the backend before selecting its Node", async () => {
-		mocks.createNewWorkspaceSession.mockResolvedValue("session-new");
-		mocks.invoke.mockResolvedValue("node-opaque-new");
-		const onNewSessionCreated = vi.fn();
-		const refreshListener = vi.fn();
-		window.addEventListener("workspace-tree-refresh", refreshListener);
-		const request = {
-			worktreePath: "/managed/wt",
-			requestId: "request-7",
-			attempt: 1,
-		};
-
-		renderMainLayout({
-			newSessionCreationRequest: request,
-			onNewSessionCreated,
-		});
-
-		await waitFor(() => {
-			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledWith("request-7");
-			expect(mocks.invoke).toHaveBeenCalledWith(
-				"get_workspace_session_node_id",
-				{
-					worktreePath: "/managed/wt",
-					sessionId: "session-new",
-				},
-			);
-			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
-				kind: "node",
-				worktreePath: "/managed/wt",
-				nodeId: "node-opaque-new",
-			});
-			expect(refreshListener).toHaveBeenCalledTimes(1);
-		});
-
-		window.removeEventListener("workspace-tree-refresh", refreshListener);
-	});
-
-	it("keeps one creation task across Worktree unmount and remount", async () => {
-		const pending = deferred<string>();
-		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
-		mocks.invoke.mockResolvedValue("node-a");
-		const onNewSessionCreated = vi.fn();
-		const request = {
-			worktreePath: "/managed/wt",
-			requestId: "request-a",
-			attempt: 1,
-		};
-		const view = renderMainLayout({
-			selectedRootPath: "/managed/wt",
-			newSessionCreationRequest: request,
-			onNewSessionCreated,
-		});
-		await waitFor(() =>
-			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
-		);
-
-		view.rerender(
-			mainLayoutElement({
-				selectedRootPath: "/managed/other",
-				newSessionCreationRequest: null,
-				onNewSessionCreated,
-			}),
-		);
-		view.rerender(
-			mainLayoutElement({
-				selectedRootPath: "/managed/wt",
-				newSessionCreationRequest: request,
-				onNewSessionCreated,
-			}),
-		);
-		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-
-		pending.resolve("session-a");
-		await waitFor(() => {
-			expect(onNewSessionCreated).toHaveBeenCalledOnce();
-			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
-				kind: "node",
-				worktreePath: "/managed/wt",
-				nodeId: "node-a",
-			});
-		});
-		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-	});
-
-	it("prunes a settled creation task after its request is acknowledged", async () => {
-		mocks.createNewWorkspaceSession.mockResolvedValue("session-pruned");
-		mocks.invoke.mockResolvedValue("node-pruned");
-		const onNewSessionCreated = vi.fn();
-		const request = {
-			worktreePath: "/managed/wt",
-			requestId: "request-pruned",
-			attempt: 1,
-		};
-		const view = renderMainLayout({
-			newSessionCreationRequest: request,
-			onNewSessionCreated,
-		});
-		await waitFor(() => expect(onNewSessionCreated).toHaveBeenCalledOnce());
-		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-
-		view.rerender(
-			mainLayoutElement({
-				newSessionCreationRequest: null,
-				onNewSessionCreated,
-			}),
-		);
-		view.rerender(
-			mainLayoutElement({
-				newSessionCreationRequest: request,
-				onNewSessionCreated,
-			}),
-		);
-
-		await waitFor(() =>
-			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(2),
-		);
-	});
-
-	it("keeps a pending task deduplicated until a failed attempt settles", async () => {
-		const pending = deferred<string>();
-		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
-		const onNewSessionCreationFailed = vi.fn();
-		const request = {
-			worktreePath: "/managed/wt",
-			requestId: "request-failed",
-			attempt: 1,
-		};
-		const view = renderMainLayout({
-			newSessionCreationRequest: request,
-			onNewSessionCreationFailed,
-		});
-		await waitFor(() =>
-			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
-		);
-
-		view.rerender(
-			mainLayoutElement({
-				selectedRootPath: "/managed/other",
-				newSessionCreationRequest: null,
-				onNewSessionCreationFailed,
-			}),
-		);
-		view.rerender(
-			mainLayoutElement({
-				newSessionCreationRequest: request,
-				onNewSessionCreationFailed,
-			}),
-		);
-		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-
-		pending.reject(new Error("offline"));
-		await waitFor(() =>
-			expect(onNewSessionCreationFailed).toHaveBeenCalledWith(
-				request,
-				"offline",
-			),
-		);
-		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
-	});
-
 	it("keeps BranchSelector in the right panel header", () => {
 		renderMainLayout();
 
 		expect(screen.getByTestId("right-panel-header-mock")).toContainElement(
 			screen.getByTestId("branch-selector-mock"),
 		);
+	});
+});
+
+describe("MainLayout keep-mounted panes", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	function rightSlotHasToggleFor(worktreePath: string): boolean {
+		const calls = mocks.nodeContentViewProps.mock.calls
+			.map(
+				(call) =>
+					call[0] as { worktreePath: string; rightSlot?: React.ReactNode },
+			)
+			.filter((p) => p.worktreePath === worktreePath);
+		const props = calls[calls.length - 1];
+		const slotView = render(
+			<TooltipProvider>{props?.rightSlot}</TooltipProvider>,
+		);
+		const hasToggle =
+			within(slotView.container).queryByLabelText("Toggle Right Sidebar") !==
+			null;
+		slotView.unmount();
+		return hasToggle;
+	}
+
+	it("keeps the previous pane mounted and hidden after switching worktrees", () => {
+		const view = renderMainLayout({ selectedRootPath: "/managed/a" });
+		view.rerender(mainLayoutElement({ selectedRootPath: "/managed/b" }));
+
+		const paneA = screen.getByTestId("worktree-pane-/managed/a");
+		const paneB = screen.getByTestId("worktree-pane-/managed/b");
+		expect(
+			within(paneA).getByTestId("node-content-view-mock"),
+		).toBeInTheDocument();
+		expect(paneA).toHaveAttribute("data-active", "false");
+		expect(paneA).toHaveAttribute("aria-hidden", "true");
+		expect(paneA).toHaveClass("invisible", "pointer-events-none");
+		expect(paneB).toHaveAttribute("data-active", "true");
+		expect(paneB).toHaveClass("visible");
+		expect(paneB).not.toHaveClass("invisible", "pointer-events-none");
+	});
+
+	it("moves a re-selected pane back to the LRU head and shows it", () => {
+		const view = renderMainLayout({ selectedRootPath: "/managed/a" });
+		view.rerender(mainLayoutElement({ selectedRootPath: "/managed/b" }));
+		view.rerender(mainLayoutElement({ selectedRootPath: "/managed/a" }));
+
+		const paneA = screen.getByTestId("worktree-pane-/managed/a");
+		expect(paneA).toHaveAttribute("data-active", "true");
+		expect(paneA).toHaveClass("visible");
+		expect(screen.getByTestId("worktree-pane-/managed/b")).toHaveAttribute(
+			"data-active",
+			"false",
+		);
+		const paneIds = screen
+			.getAllByTestId(/^worktree-pane-/)
+			.map((pane) => pane.getAttribute("data-testid"));
+		expect(paneIds).toEqual([
+			"worktree-pane-/managed/a",
+			"worktree-pane-/managed/b",
+		]);
+	});
+
+	it("unmounts only the least recently used pane beyond MAX_MOUNTED_PANES", () => {
+		const paths = [
+			"/managed/p1",
+			"/managed/p2",
+			"/managed/p3",
+			"/managed/p4",
+			"/managed/p5",
+			"/managed/p6",
+		];
+		const view = renderMainLayout({ selectedRootPath: paths[0] });
+		for (const path of paths.slice(1)) {
+			view.rerender(mainLayoutElement({ selectedRootPath: path }));
+		}
+
+		expect(screen.queryByTestId("worktree-pane-/managed/p1")).toBeNull();
+		for (const path of paths.slice(1)) {
+			expect(screen.getByTestId(`worktree-pane-${path}`)).toBeInTheDocument();
+		}
+	});
+
+	it("derives right panel visibility from the selected pane's own state", () => {
+		const view = renderMainLayout({ selectedRootPath: "/managed/a" });
+		const paneA = screen.getByTestId("worktree-pane-/managed/a");
+		fireEvent.click(within(paneA).getByTestId("panel-right-collapse-trigger"));
+		expect(
+			within(paneA).getByTestId("right-panel-header-mock"),
+		).toHaveAttribute("data-right-visible", "false");
+		expect(rightSlotHasToggleFor("/managed/a")).toBe(true);
+
+		view.rerender(mainLayoutElement({ selectedRootPath: "/managed/b" }));
+		const paneB = screen.getByTestId("worktree-pane-/managed/b");
+		expect(
+			within(paneB).getByTestId("right-panel-header-mock"),
+		).toHaveAttribute("data-right-visible", "true");
+		expect(rightSlotHasToggleFor("/managed/b")).toBe(false);
+
+		view.rerender(mainLayoutElement({ selectedRootPath: "/managed/a" }));
+		expect(
+			within(screen.getByTestId("worktree-pane-/managed/a")).getByTestId(
+				"right-panel-header-mock",
+			),
+		).toHaveAttribute("data-right-visible", "false");
+		expect(rightSlotHasToggleFor("/managed/a")).toBe(true);
 	});
 });

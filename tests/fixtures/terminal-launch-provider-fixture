@@ -1,0 +1,7 @@
+#!/bin/sh
+
+printf '\033[38;5;220m◆ deterministic provider fixture\033[0m 日本語🙂\r\n'
+while :; do
+	sleep 3600 &
+	wait "$!"
+done

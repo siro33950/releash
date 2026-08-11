@@ -6,25 +6,28 @@
 
 use std::fmt;
 
-use crate::domain::local_event::batch::CommitResolution;
-use crate::domain::local_event::events::{
-    ApplicationShutdownPhase, DomainEventPage, LoadStreamRequest,
-};
+use crate::domain::local_event::events::ApplicationShutdownPhase;
 use crate::domain::local_event::failure::SafeOperationFailure;
-use crate::domain::local_event::identifiers::{CommitIdentity, Revision};
+use crate::domain::local_event::identifiers::Revision;
 use crate::domain::local_event::mutation::{
     CallerAttemptResolution, CallerOperationKey, OperationKind, PendingPartition,
-    ShutdownDetailsState, ShutdownPlanKey, StopResolutionKind,
+    ShutdownDetailsState, ShutdownPlanKey,
 };
 use crate::domain::local_event::record::{
-    MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
+    AgentSessionLifecycleRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
     RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord, TerminalResultRecord,
+    ShutdownTargetRecord,
 };
 
 /// Opaque MAC-protected pagination cursor issued by the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryCursor(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionOriginKind {
+    Standalone,
+    WorkflowNode,
+}
 
 impl QueryCursor {
     /// Wrap an opaque cursor token received back from a caller. Integrity is
@@ -41,12 +44,7 @@ impl QueryCursor {
 /// Closed query sum. F8 / F10 additions become new variants together with
 /// their schema evolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum LocalEventQuery {
-    CommitByIdentity {
-        commit_id: CommitIdentity,
-    },
-    StreamPage(LoadStreamRequest),
     OperationByIdentity {
         kind: OperationKind,
         operation_id: String,
@@ -82,44 +80,23 @@ pub enum LocalEventQuery {
         after_kind: Option<OperationKind>,
         after_caller_request_id: Option<String>,
     },
-    TerminalByTurn {
-        session_id: String,
-        turn_id: String,
-    },
-    StopResolutionByOperation {
-        stop_operation_id: String,
-    },
     ObligationByIdentity {
         obligation_id: String,
     },
     SessionProjectionByIdentity {
         session_id: String,
     },
-    /// One bounded owner snapshot for agent-session lifecycle decisions.
-    ///
-    /// The projection and its owner-scoped pending obligations are returned
-    /// from one SQLite statement so recovery classification and aggregate
-    /// admission observe the same revision.
-    AgentSessionLifecycleSnapshot {
-        session_id: String,
-    },
-    SessionProjectionPage {
+    AgentSessionProjectionPage {
+        workspace_identity: String,
+        lifecycle: Option<AgentSessionLifecycleRecord>,
+        origin: Option<AgentSessionOriginKind>,
         limit: usize,
-        after_session_id: Option<String>,
+        after_agent_session_id: Option<String>,
     },
     /// One bounded, lightweight owner inventory read by a single SQLite
     /// statement. Startup GC uses this instead of composing independently
     /// snapshotted projection pages.
     CanonicalRuntimeOwnerSnapshot {
-        limit: usize,
-    },
-    MessageProjectionByIdentity {
-        session_id: String,
-        message_id: String,
-    },
-    MessageProjectionPage {
-        session_id: String,
-        before_position: Option<i64>,
         limit: usize,
     },
     PendingRecoveryPage {
@@ -208,15 +185,6 @@ pub struct CallerAttemptView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TerminalRecordView {
-    pub session_id: String,
-    pub turn_id: String,
-    pub terminal_identity: String,
-    pub result: TerminalResultRecord,
-    pub participant_digest: [u8; 32],
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct SessionProjectionView {
     pub session_id: String,
     pub projection: SessionProjectionRecord,
@@ -224,9 +192,9 @@ pub struct SessionProjectionView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgentSessionLifecycleSnapshotView {
-    pub session: SessionProjectionView,
-    pub pending_obligations: Vec<(String, ObligationRecord)>,
+pub struct AgentSessionProjectionPageView {
+    pub sessions: Vec<SessionProjectionView>,
+    pub next_after_agent_session_id: Option<String>,
 }
 
 /// Lightweight runtime-ownership facts extracted from one canonical SQLite
@@ -248,44 +216,6 @@ pub enum CanonicalRuntimeOwnerView {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MessageProjectionView {
-    pub session_id: String,
-    pub message_id: String,
-    pub projection: MessageProjectionRecord,
-    pub revision: Revision,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageProjectionPageEntryView {
-    pub position: i64,
-    pub message: MessageProjectionView,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageProjectionPageView {
-    pub entries: Vec<MessageProjectionPageEntryView>,
-    pub next_before_position: Option<i64>,
-    pub total_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct StopResolutionView {
-    pub stop_operation_id: String,
-    pub resolution: StopResolutionKind,
-    pub detail: TerminalResultRecord,
-}
-
-/// Bounded owner lifecycle extracted by the gateway from a validated agent
-/// session projection in the same SQLite snapshot as a pending obligation.
-/// The persistence JSON never crosses the repository port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionProjectionOwnerState {
-    Normal,
-    Closed,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct PendingObligationView {
     pub obligation_id: String,
     pub ordered_key: String,
@@ -296,10 +226,6 @@ pub struct PendingObligationView {
     /// SHA-256 of the exact validated StoredObligationV1 bytes. This lets a
     /// usecase bind a frozen snapshot without re-encoding persistence JSON.
     pub record_sha256: [u8; 32],
-    /// Closed lifecycle extracted from the session projection captured in the
-    /// same SQLite read snapshot as the pending row. `None` is exact absence,
-    /// never a request to re-read current state outside the page snapshot.
-    pub owner_projection: Option<SessionProjectionOwnerState>,
     pub revision: Revision,
 }
 
@@ -387,8 +313,6 @@ pub struct ShutdownPlanPageView {
 /// One-to-one result sum for [`LocalEventQuery`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalEventQueryResult {
-    CommitByIdentity(CommitResolution),
-    StreamPage(DomainEventPage),
     OperationByIdentity(Option<OperationRecordView>),
     OperationBindingByIdentity(Option<OperationBindingView>),
     OperationBindingSummaryByOperation(OperationBindingSummaryView),
@@ -396,15 +320,10 @@ pub enum LocalEventQueryResult {
     PendingCallerAttemptsByOperation(Vec<CallerAttemptView>),
     PendingCallerAttemptsByKind(Vec<CallerAttemptView>),
     CallerAttemptPage(Vec<CallerAttemptView>),
-    TerminalByTurn(Option<TerminalRecordView>),
-    StopResolutionByOperation(Option<StopResolutionView>),
     ObligationByIdentity(Option<ObligationView>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
-    AgentSessionLifecycleSnapshot(Option<AgentSessionLifecycleSnapshotView>),
-    SessionProjectionPage(Vec<SessionProjectionView>),
+    AgentSessionProjectionPage(AgentSessionProjectionPageView),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
-    MessageProjectionByIdentity(Option<MessageProjectionView>),
-    MessageProjectionPage(MessageProjectionPageView),
     PendingRecoveryPage(PendingRecoveryPageView),
     PendingRecoverySnapshotPage(PendingRecoverySnapshotPageView),
     RecoveryActionByIdentity(Option<RecoveryActionView>),
@@ -416,7 +335,6 @@ pub enum LocalEventQueryResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum LocalEventQueryError {
     InvalidRequest,
     NotFound,
@@ -427,10 +345,6 @@ pub enum LocalEventQueryError {
     QueryBusy,
     DeadlineExceeded,
     ResponseTooLarge,
-    /// The requested replay window is no longer retained.
-    ReplayRequired {
-        correlation_id: String,
-    },
     /// A stored event required for meaning could not be decoded.
     IncompatibleStoredEvent {
         correlation_id: String,
@@ -458,9 +372,6 @@ impl fmt::Display for LocalEventQueryError {
             Self::QueryBusy => write!(f, "query busy"),
             Self::DeadlineExceeded => write!(f, "deadline exceeded"),
             Self::ResponseTooLarge => write!(f, "response too large"),
-            Self::ReplayRequired { correlation_id } => {
-                write!(f, "replay required (correlation_id={correlation_id})")
-            }
             Self::IncompatibleStoredEvent { correlation_id } => {
                 write!(
                     f,

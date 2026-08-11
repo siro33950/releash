@@ -4,24 +4,26 @@
 //! Controllers, CLI adapters, and watchers should converge
 //! here as the legacy `workflow` module is removed.
 
-pub(crate) mod approval_chat;
 pub(crate) mod command;
+pub(crate) mod control_plane;
 mod definition;
 pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;
-pub(crate) mod node_lifecycle;
+pub(crate) mod internal_node_command;
 mod output;
+pub(crate) mod output_submission;
 pub(crate) mod ports;
 pub(crate) mod query_service;
 pub(crate) mod runtime_command;
 pub(crate) mod runtime_driver;
 pub(crate) mod runtime_error;
+pub(crate) mod runtime_events;
 pub(crate) mod runtime_resolver;
 pub(crate) mod runtime_snapshot;
+pub(crate) mod runtime_start_guard;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub(crate) mod turn_complete;
 mod workspace_node_command;
 mod workspace_tree;
 
@@ -40,14 +42,14 @@ use crate::usecase::workflow::ports::{
 
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
-pub(crate) use node_lifecycle::NodeExecutionLifecycleUsecase;
 pub(crate) use output::WorkflowOutputUsecase;
 pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
-    CloseWorkspaceNodeCommand, WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase,
+    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeActionResolver,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
@@ -125,18 +127,6 @@ impl WorkflowReadUsecase {
         self.workspace_query.execution_summary(execution_id)
     }
 
-    pub(crate) fn get_execution_log(
-        &self,
-        execution_id: &str,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id)?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.query.get_execution_log(execution_id)
-    }
-
     pub(crate) fn get_execution_log_page(
         &self,
         execution_id: &str,
@@ -192,6 +182,7 @@ pub struct WorkflowUsecase {
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
     execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
+    workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     read: WorkflowReadUsecase,
 }
@@ -209,6 +200,7 @@ impl WorkflowUsecase {
         config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
         execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
+        workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
@@ -230,6 +222,7 @@ impl WorkflowUsecase {
             diagnostics,
             config_paths,
             execution_archives,
+            workspace_nodes,
             workspace_query,
             read,
         }
@@ -284,6 +277,25 @@ impl WorkflowUsecase {
             Ok(Some(summary))
         } else {
             Ok(None)
+        }
+    }
+
+    pub fn authorize_execution_access_for_worktree(
+        &self,
+        execution_id: &str,
+        worktree_path: &str,
+    ) -> Result<(), WorkflowError> {
+        let execution_id =
+            crate::domain::workflow::WorkflowExecutionId::new(execution_id.to_string())?;
+        if self
+            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)?
+            .is_some()
+        {
+            Ok(())
+        } else {
+            Err(WorkflowError::external(format!(
+                "Workflow execution not found: {execution_id}"
+            )))
         }
     }
 
@@ -974,6 +986,39 @@ mod tests {
         _workspace_root: tempfile::TempDir,
     }
 
+    struct EmptyWorkspaceTreeRepository;
+
+    impl crate::domain::workspace_tree::WorkspaceTreeRepository for EmptyWorkspaceTreeRepository {
+        fn load(
+            &self,
+            _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
+        ) -> Result<
+            Option<crate::domain::workspace_tree::WorkspaceTree>,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            Ok(None)
+        }
+
+        fn load_node(
+            &self,
+            _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
+            _node_id: &str,
+        ) -> Result<
+            Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            Ok(None)
+        }
+
+        fn node_id_for_session(
+            &self,
+            _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
+            _session_id: &str,
+        ) -> Result<Option<String>, crate::domain::local_event::LocalEventQueryError> {
+            Ok(None)
+        }
+    }
+
     impl Fixture {
         fn new() -> Self {
             Self::with_executions(Vec::new())
@@ -999,11 +1044,8 @@ mod tests {
             let events = Arc::new(FakeEventRepository::default());
             let editors = Arc::new(FakeExternalEditorGateway::default());
             let workspace_root = tempfile::tempdir().unwrap();
-            let workspace_query = crate::usecase::workspace_tree::TestWorkspaceQueryService::new(
-                Vec::new(),
-                Vec::new(),
-                executions,
-            );
+            let workspace_query =
+                crate::usecase::workspace_tree::TestWorkspaceQueryService::new(executions);
             let query = WorkflowQueryService::new(
                 definitions.clone(),
                 definition_sources.clone(),
@@ -1022,6 +1064,7 @@ mod tests {
                 Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
                 Arc::new(NoopArchiveRepository),
+                Arc::new(EmptyWorkspaceTreeRepository),
                 workspace_query,
             );
             Self {
@@ -1217,6 +1260,29 @@ mod tests {
             .authorize_execution_summary("00000000-0000-0000-0000-000000000012")
             .unwrap();
         assert!(unmanaged.is_none());
+
+        fixture
+            .usecase
+            .authorize_execution_access_for_worktree("00000000-0000-0000-0000-000000000011", "repo")
+            .unwrap();
+        assert_eq!(
+            fixture
+                .usecase
+                .authorize_execution_access_for_worktree(
+                    "00000000-0000-0000-0000-000000000011",
+                    "other",
+                )
+                .unwrap_err(),
+            WorkflowError::external(
+                "Workflow execution not found: 00000000-0000-0000-0000-000000000011"
+            )
+        );
+        assert!(matches!(
+            fixture
+                .usecase
+                .authorize_execution_access_for_worktree("invalid", "repo"),
+            Err(WorkflowError::Validation(_))
+        ));
     }
 
     #[test]
@@ -1356,7 +1422,7 @@ mod tests {
     #[test]
     fn agent_session_runtime_status_notification_uses_usecase_port() {
         assert_no_forbidden_production_patterns_in_file(
-            "usecase/agent_session/runtime/ports.rs",
+            "usecase/agent_session/agent_session_activity.rs",
             &[
                 concat!("crate", "::", "adaptor", "::", "presenter"),
                 concat!("crate", "::", "adaptor", "::", "gateway"),

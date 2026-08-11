@@ -31,7 +31,6 @@ import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
-import type { MentionReference } from "@/types/session";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
 import { FileCommentPopoverTrigger } from "./DiffFileComment";
@@ -47,10 +46,6 @@ interface ReviewPanelProps {
 	diffOnlyMode: boolean;
 	onDiffOnlyModeChange: (enabled: boolean) => void;
 	navigateToThread?: ThreadNavigationTarget | null;
-	onSendToAgent?: (
-		message: string,
-		mentions?: MentionReference[],
-	) => Promise<void>;
 	initialSelectedFile?: string | null;
 	onSelectedFileChange?: (file: string | null) => void;
 	onLineRangeSelected?: (

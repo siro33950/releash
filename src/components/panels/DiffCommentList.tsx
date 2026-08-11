@@ -18,7 +18,10 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useReviewThreadHandoff } from "@/contexts/ReviewThreadHandoffContext";
+import {
+	ReviewThreadHandoffFeedbackMessage,
+	useReviewThreadHandoff,
+} from "@/contexts/ReviewThreadHandoffContext";
 import {
 	getThreadEndLine,
 	getThreadFilePath,
@@ -50,42 +53,41 @@ function getFileName(filePath: string): string {
 	return parts[parts.length - 1] ?? filePath;
 }
 
-/**
- * spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
- * 現在 active な AgentChat session の入力として共有するためのアイコンボタン。
- * active session 不在時は disabled になり、tooltip で理由を示す。
- */
 function SendThreadToAgentButton({ threadId }: { threadId: string }) {
-	const { canSend, sendThreadToAgent } = useReviewThreadHandoff();
+	const { canCopy, copyThreadForAgent, feedback } = useReviewThreadHandoff();
 	const [busy, setBusy] = useState(false);
-	const title = canSend
-		? "Send Diff Thread to current Agent"
-		: "No active Agent session";
+	const title = canCopy
+		? "Copy Diff Thread for Agent"
+		: "Agent instruction copy unavailable";
 	return (
-		<Button
-			type="button"
-			variant="ghost"
-			size="icon-xs"
-			aria-label={title}
-			title={title}
-			disabled={busy || !canSend}
-			onClick={(e) => {
-				e.stopPropagation();
-				(async () => {
-					setBusy(true);
-					try {
-						await sendThreadToAgent(threadId);
-					} catch (error) {
-						console.error("Failed to send thread to agent:", error);
-					} finally {
-						setBusy(false);
-					}
-				})();
-			}}
-			className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
-		>
-			<Send className="size-3.5" />
-		</Button>
+		<>
+			<Button
+				type="button"
+				variant="ghost"
+				size="icon-xs"
+				aria-label={title}
+				title={title}
+				disabled={busy || !canCopy}
+				onClick={(e) => {
+					e.stopPropagation();
+					(async () => {
+						setBusy(true);
+						try {
+							await copyThreadForAgent(threadId);
+						} finally {
+							setBusy(false);
+						}
+					})();
+				}}
+				className="shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100"
+			>
+				<Send className="size-3.5" />
+			</Button>
+			<ReviewThreadHandoffFeedbackMessage
+				feedback={feedback}
+				threadId={threadId}
+			/>
+		</>
 	);
 }
 

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "launchProvider": "tui-fixture",
+  "meaning": "interactiveReady = READY marker painted; echoRoundtrip = input line to echoed output painted",
+  "interactiveReadyMs": {
+    "count": 30,
+    "medianMs": 238.0000000000009,
+    "p95Ms": 249,
+    "maxMs": 251
+  },
+  "echoRoundtripMs": {
+    "count": 30,
+    "medianMs": 30,
+    "p95Ms": 33,
+    "maxMs": 33
+  },
+  "executionConditions": {
+    "buildKind": "release",
+    "machine": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpuModel": "Apple M4 Pro",
+      "totalMemoryBytes": 68719476736
+    },
+    "power": {
+      "source": "AC",
+      "batteryPercent": null
+    }
+  }
+}

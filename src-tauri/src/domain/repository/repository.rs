@@ -1,7 +1,8 @@
-//! repository ドメインの永続化／外部リソース抽象（trait）。
+//! repository ドメインの永続化抽象（trait）。
 //!
 //! git2・ファイル I/O 等の具体実装は知らない。具体実装は
-//! `adaptor/gateway/repository/` に配置する。
+//! `adaptor/gateway/repository/` に配置する。外部リソース抽象は
+//! `gateway.rs` に置く。
 //!
 //! git2 のブロッキング呼び出しは gateway 内で同期的に行い、非同期境界
 //! （`spawn_blocking`）は controller 層で被せる方針のため、各 trait の
@@ -97,15 +98,6 @@ pub trait GitConfigRepository: Send + Sync {
     fn resolve_current_base_branch(
         &self,
         path_hint: &str,
-    ) -> Result<Option<String>, RepositoryError>;
-    /// 現在ブランチの実効ベースブランチ名を返す（agent プロセスへ渡す
-    /// `RELEASH_BASE_BRANCH` 用）。`resolve_current_base_branch` の解決結果に加え、
-    /// base が local/remote ref として実在し、かつ現在 HEAD と merge-base が計算できる
-    /// ことを検証する。解決不可・detached・unborn・ref 不在・merge-base 不成立は `None`。
-    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-    fn resolve_effective_base_branch(
-        &self,
-        repo_path: &str,
     ) -> Result<Option<String>, RepositoryError>;
     /// `path_hint` 配下のリポジトリで `base_name` の ref（local `refs/heads/<name>` →
     /// remote `refs/remotes/origin/<name>` の順）を解決し、base コミットの OID(hex) を返す。

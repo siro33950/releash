@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    CloseWorkspaceNodeCommand, WorkflowRuntimeUsecase, WorkspaceNodeCommandUsecase,
+    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
     WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
     WorkspaceWorkflowHistoryItemDto,
 };
@@ -15,8 +15,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_workflow_history",
     "get_workspace_node_detail",
     "get_workspace_session_node_id",
-    "close_workspace_node",
     "approve_workspace_node",
+    "retry_workspace_node",
     "archive_workspace_workflow_execution",
     "restore_workspace_workflow_execution",
 ];
@@ -33,8 +33,8 @@ pub(crate) fn invoke_handler(
         list_workspace_workflow_history,
         get_workspace_node_detail,
         get_workspace_session_node_id,
-        close_workspace_node,
         approve_workspace_node,
+        retry_workspace_node,
         archive_workspace_workflow_execution,
         restore_workspace_workflow_execution,
     ]
@@ -121,13 +121,13 @@ pub async fn get_workspace_session_node_id(
 }
 
 #[tauri::command]
-pub async fn close_workspace_node(
+pub async fn approve_workspace_node(
     usecase: State<'_, Arc<WorkspaceNodeCommandUsecase>>,
     worktree_path: String,
     node_id: String,
 ) -> Result<(), String> {
     usecase
-        .close_workspace_node(CloseWorkspaceNodeCommand {
+        .approve_workspace_node(ApproveWorkspaceNodeCommand {
             worktree_path,
             node_id,
         })
@@ -136,24 +136,18 @@ pub async fn close_workspace_node(
 }
 
 #[tauri::command]
-pub async fn approve_workspace_node(
-    app_state: State<'_, AppState>,
-    runtime: State<'_, Arc<WorkflowRuntimeUsecase>>,
+pub async fn retry_workspace_node(
+    usecase: State<'_, Arc<WorkspaceNodeCommandUsecase>>,
     worktree_path: String,
     node_id: String,
 ) -> Result<(), String> {
-    let workflow_usecase = app_state.workflow_usecase.clone();
-    let command = tokio::task::spawn_blocking(move || {
-        workflow_usecase
-            .resolve_workspace_node_approval(&worktree_path, &node_id)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))??;
-    runtime
-        .resolve_approval(command)
+    usecase
+        .retry_workspace_node(RetryWorkspaceNodeCommand {
+            worktree_path,
+            node_id,
+        })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

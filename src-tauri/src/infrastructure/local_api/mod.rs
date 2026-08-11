@@ -3,7 +3,11 @@ mod discovery;
 mod server;
 
 pub(crate) use client::{LocalApiClientError, LocalApiHttpClient};
-pub(crate) use discovery::{local_api_discovery_path, LocalApiDiscovery, LocalApiDiscoveryFile};
+pub(crate) use discovery::{
+    local_api_discovery_path, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
+};
+#[cfg(debug_assertions)]
+pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;
 
 #[derive(Debug, thiserror::Error)]

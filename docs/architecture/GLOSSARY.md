@@ -27,17 +27,15 @@ Releash のドメイン横断ユビキタス言語を定義する。
 | Code | Worktree 内のファイル内容。 | code | FileContent | Releash は所有せず、参照・表示・操作する。 |
 | Diff | Worktree / Repository の状態から計算される差分。 | code | CodeDiff | Releash が生み出すものではない。固定した判断材料は Artifact にできる。 |
 | CodeAnchor | Code 上の位置への参照。 | code | HunkRef, MentionReference | 命名は仮。Code 本体ではない。 |
-| Session | Agent との継続的な対話・実行単位。 | agent_session | ChatSession | Workspace に属する。 |
-| Turn | Session 内の一回の agent interaction / execution。 | agent_session | AgentTurn | PermissionRequest は Turn に属する。 |
-| Message | Session / Turn 内の message。 | agent_session | ChatMessage | MessageRole / MessagePart を持つ。 |
-| MessagePart | Message の部分表現。 | agent_session | ActivityEntry | variant は独立語彙にしない。 |
-| MessageRole | Message の役割。 | agent_session | Role | human / agent / system。 |
-| PermissionRequest | Turn に属する個別の許可要求。 | agent_session | ApprovalDecision | PermissionDecision は解決結果の属性として扱う。 |
-| Attachment | Message に添付される入力・参照。 | agent_session | AttachmentRef, SessionAttachment, ImageAttachment | Artifact とは別。 |
+| AgentSession | Provider CLIを継続利用する実行単位。identity、Provider、origin、lifecycle、Provider session ID、opaque transcript reference、Terminal ownershipを持つ。 | agent_session | Session, ChatSession | conversation本文とProvider UIは所有しない。 |
+| ProviderLifecycle | root AgentSessionのProvider session identity、opaque transcript reference、Stop観測を扱う境界。 | provider_lifecycle | Agent runtime | Providerの利用可否は所有しない。 |
+| ProviderAvailability | Provider executableの検出、設定、利用可否を扱う境界。 | provider_availability | BackendRegistry | AgentSession lifecycleは所有しない。 |
 | Thread | Workspace に属する会話・作業履歴・文脈。 | comment | ReviewThread | WorkflowExecution / NodeExecution には属さない。 |
 | Comment | Thread 配下の comment。 | comment | ReviewComment | review comment / discussion comment を吸収する。 |
 | Command | Session と対比される non-interactive な一回の command 実行単位。 | workflow | CommandExecution, ShellCommand, RunCommand | 命名は暫定。 |
-| Terminal | ユーザーが操作する interactive shell session。 | pty_session | PtySession, Command | Workspace に属する。workflow / node が直接触るものではない。 |
+| Terminal | ユーザーが操作する interactive shell session。 | terminal_surface | PtySession, Command | Workspace に属する。workflow / node が直接触るものではない。 |
+| TerminalSurface | 正規語 Terminal の backend 実装語彙（terminal_surface ドメインの集約）。 | terminal_surface | PtySession | product/domain 語彙は Terminal。 |
+| TerminalSurfaceOwner | TerminalSurface の所有者（Workspace または AgentSession）。 | terminal_surface | - | 正規語 Terminal の backend 実装語彙。 |
 | UI | 人間が画面から操作・観測する面。 | operation_surface | FrontendDomain | Operation Surface。 |
 | CLI | command line から操作・観測する面。 | operation_surface | CliMutationRequestRecord | Operation Surface。 |
 | API | 外部 system、automation、remote client が programmatic に操作・観測する面。 | operation_surface | ProtocolDomain | Operation Surface。 |
@@ -69,11 +67,8 @@ Workspace
   │              ├─ parent NodeExecution
   │              └─ child NodeExecution[]
   │
-  ├─ Session
-  │    ├─ Turn
-  │    │    └─ PermissionRequest
-  │    └─ Message
-  │         └─ Attachment
+  ├─ AgentSession
+  │    └─ owns Terminal Surface
   ├─ Command
   ├─ Thread
   │    └─ Comment
@@ -82,10 +77,11 @@ Workspace
 
 - Workspace は Releash 側の作業コンテキスト。
 - Workspace は Worktree を参照するが、Worktree そのものではない。
-- WorkflowExecution / Session / Command / Terminal / Thread / WorkspaceState は Workspace に属する。
+- WorkflowExecution / AgentSession / Command / Terminal / Thread / WorkspaceState は Workspace に属する。
 - Artifact / NodeExecution は WorkflowExecution に属する。
 - Fanout は親 NodeExecution と子 NodeExecution 群を束ねる。
-- PermissionRequest は Turn に属する。
+- NodeExecution はAgentSessionを参照できるが所有しない。
+- Provider CLI / transcriptがconversationを所有する。
 - Thread は CodeAnchor を参照できるが、CodeAnchor を所有しない。
 - Thread は WorkflowExecution / NodeExecution には属さない。
 - Task は Releash core Entity として持たない。task 的な一覧は Artifact のユーザー定義 field（例: `plan.tasks`）として表現できる。
@@ -129,9 +125,7 @@ Operation Surface
 - WorkflowExecution
 - NodeExecution
 - Fanout
-- Session
-- Turn
-- PermissionRequest
+- AgentSession
 - Command
 - Terminal
 - Thread
@@ -181,15 +175,11 @@ Operation Surface
 | ParallelRun | Fanout | parallel 系語彙は Fanout に吸収する。 |
 | ParallelChildRun | Fanout / NodeExecution | fanout child も NodeExecution。 |
 | ParallelStep | Fanout / NodeExecution | parallel ではなく fanout として扱う。 |
-| ChatSession | Session | session の UI/DTO 名として扱い、正規語は Session。 |
-| ChatMessage | Message | message の UI/DTO 名として扱い、正規語は Message。 |
-| ActivityEntry | MessagePart | MessagePart の内部表現。 |
-| AttachmentRef | Attachment | 参照表現であり、正規語は Attachment。 |
-| SessionAttachment | Attachment | 同上。 |
-| ImageAttachment | Attachment | 同上。 |
+| Session / ChatSession | AgentSession | Agentとの継続実行単位の正規語はAgentSession。 |
+| AgentTurn / ChatMessage / ActivityEntry | なし | conversationはProvider CLI / transcriptが所有する。 |
 | ReviewThread | Thread | review 固有に分けず Thread に吸収する。 |
 | ReviewComment | Comment | review 固有に分けず Comment に吸収する。 |
-| PtySession | Terminal | backend 実装語彙。product/domain 語彙は Terminal。 |
+| PtySession | Terminal / TerminalSurface | 旧 backend 実装語彙（pty_session ドメインは terminal_surface へ改名済み）。product/domain 語彙は Terminal、backend 実装語彙は TerminalSurface。 |
 | WorkflowEvent | なし | 現時点では domain entity として採用しない。 |
 | ActionPlan | なし | 合意済み語彙ではない。 |
 | Notification | なし | 今は Entity にしない。 |

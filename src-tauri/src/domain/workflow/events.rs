@@ -36,7 +36,6 @@ pub enum WorkflowDomainEvent {
         worktree_path: String,
         created_from: ExecutionOrigin,
         request: String,
-        permission_mode: String,
         definition: WorkflowDefinition,
         timestamp: f64,
     },
@@ -53,6 +52,31 @@ pub enum WorkflowDomainEvent {
         execution_id: String,
         node_execution_id: String,
         session_id: String,
+        timestamp: f64,
+    },
+    NodeExecutionSubmitReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeExecutionStopReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeExecutionRetryRequested {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeExecutionPaused {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeExecutionResumed {
+        execution_id: String,
+        node_execution_id: String,
         timestamp: f64,
     },
     NodeExecutionCommandPrepared {
@@ -135,12 +159,6 @@ pub enum WorkflowDomainEvent {
         total_token_usage: TokenUsage,
         timestamp: f64,
     },
-    WorkflowExecutionFailed {
-        execution_id: String,
-        reason: String,
-        failure_kind: NodeExecutionFailureKind,
-        timestamp: f64,
-    },
     WorkflowExecutionAborted {
         execution_id: String,
         aborted_node: Option<String>,
@@ -164,6 +182,11 @@ impl WorkflowDomainEvent {
             Self::WorkflowExecutionStarted { execution_id, .. }
             | Self::NodeExecutionStarted { execution_id, .. }
             | Self::NodeExecutionAgentBound { execution_id, .. }
+            | Self::NodeExecutionSubmitReceived { execution_id, .. }
+            | Self::NodeExecutionStopReceived { execution_id, .. }
+            | Self::NodeExecutionRetryRequested { execution_id, .. }
+            | Self::NodeExecutionPaused { execution_id, .. }
+            | Self::NodeExecutionResumed { execution_id, .. }
             | Self::NodeExecutionCommandPrepared { execution_id, .. }
             | Self::WorkflowArtifactProduced { execution_id, .. }
             | Self::NodeExecutionCompleted { execution_id, .. }
@@ -174,7 +197,6 @@ impl WorkflowDomainEvent {
             | Self::NodeExecutionStallObserved { execution_id, .. }
             | Self::NodeExecutionStallCleared { execution_id, .. }
             | Self::WorkflowExecutionCompleted { execution_id, .. }
-            | Self::WorkflowExecutionFailed { execution_id, .. }
             | Self::WorkflowExecutionAborted { execution_id, .. }
             | Self::WorkflowExecutionInterrupted { execution_id, .. }
             | Self::WorkflowExecutionResumed { execution_id, .. } => execution_id,

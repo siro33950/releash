@@ -12,7 +12,7 @@ nodes:
   - name: judge
     artifact: route
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: judge
@@ -25,19 +25,19 @@ nodes:
         next: fallback
   - name: shipped
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: shipped
   - name: held
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: held
   - name: fallback
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: fallback

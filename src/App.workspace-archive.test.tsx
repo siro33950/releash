@@ -102,11 +102,16 @@ vi.mock("@/components/panels/SettingsModal", () => ({
 vi.mock("@/screens/MainLayout", () => ({
 	MainLayout: ({
 		leftNav,
-		centerSelection,
+		selectedRootPath,
+		centerSelectionByWorktree,
 	}: {
 		leftNav: React.ReactNode;
-		centerSelection?: { nodeId: string } | null;
+		selectedRootPath: string | null;
+		centerSelectionByWorktree?: Record<string, { nodeId: string } | null>;
 	}) => {
+		const centerSelection = selectedRootPath
+			? (centerSelectionByWorktree?.[selectedRootPath] ?? null)
+			: null;
 		mocks.workspaceSelectionInvalidated = (
 			leftNav as React.ReactElement<{
 				onWorkspaceSelectionInvalidated: (
@@ -132,7 +137,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 			title: "Fallback session",
 			status: "running",
 			contentKind: "session",
-			capabilities: { canApprove: false, canClose: true },
+			capabilities: { canApprove: false, canRetry: false, canClose: true },
 			updatedAt: 1,
 		},
 		{
@@ -153,7 +158,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 					title: "Selected workflow Node",
 					status: "completed",
 					contentKind: "session",
-					capabilities: { canApprove: false, canClose: false },
+					capabilities: { canApprove: false, canRetry: false, canClose: false },
 					updatedAt: 2,
 				},
 			],
@@ -171,7 +176,7 @@ const fallbackSnapshot: WorkspaceTreeSnapshot = {
 			title: "Fallback session",
 			status: "running",
 			contentKind: "session",
-			capabilities: { canApprove: false, canClose: true },
+			capabilities: { canApprove: false, canRetry: false, canClose: true },
 			updatedAt: 3,
 		},
 	],

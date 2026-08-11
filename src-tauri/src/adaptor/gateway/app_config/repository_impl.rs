@@ -5,13 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::domain::agent_session::aggregates::ProviderExecutable;
+use crate::domain::agent_session::{
+    ProviderExecutableConfigRepository, ProviderExecutableConfigRepositoryError,
+};
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
-    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, ConfigUpdate,
-    NotionConfigRepository,
+    ConfigRepository, ConfigSecretRepository, ConfigUpdate, NotionConfigRepository,
 };
 use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
+use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::config_models::{
     apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
@@ -82,22 +86,43 @@ impl ConfigRepository for AppConfig {
     }
 }
 
-impl AgentConfigRepository for AppConfig {
-    fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError> {
-        self.get_config()
-            .map(|config| config.agents.default)
-            .map_err(AppConfigError::Repository)
+impl ProviderExecutableConfigRepository for AppConfig {
+    fn configured_executable(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
+        let config = self
+            .get_config()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let value = match provider {
+            ProviderKind::Claude => config.agents.claude.cli_path,
+            ProviderKind::Codex => config.agents.codex.cli_path,
+        };
+        value
+            .map(ProviderExecutable::new)
+            .transpose()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::InvalidInput)
     }
 
-    fn cli_path_for(&self, backend_id: &str) -> Result<Option<String>, AppConfigError> {
-        let config = self.get_config().map_err(AppConfigError::Repository)?;
-        match backend_id {
-            "claude" => Ok(config.agents.claude.cli_path),
-            "codex" => Ok(config.agents.codex.cli_path),
-            _ => Err(AppConfigError::InvalidInput(format!(
-                "config schema にバックエンド '{backend_id}' の CLI path が存在しません"
-            ))),
+    fn save_configured_executable(
+        &self,
+        provider: ProviderKind,
+        executable: Option<&ProviderExecutable>,
+    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
+        let mut config = self
+            .config
+            .lock()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let mut next = config.clone();
+        let value = executable.map(|executable| executable.as_str().to_string());
+        match provider {
+            ProviderKind::Claude => next.agents.claude.cli_path = value,
+            ProviderKind::Codex => next.agents.codex.cli_path = value,
         }
+        write_config(&self.config_path, &next)
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        *config = next;
+        Ok(())
     }
 }
 
@@ -106,10 +131,8 @@ impl ConfigSecretRepository for AppConfig {
         self.get_config()
             .map(|config| {
                 let mut values = Vec::new();
-                for value in [config.server.token, config.server.notify.webhook_url] {
-                    if value.len() >= 8 {
-                        values.push(value);
-                    }
+                if config.server.token.len() >= 8 {
+                    values.push(config.server.token);
                 }
                 for notion in config.notion.into_values() {
                     if notion.api_token.len() >= 8 {
@@ -329,16 +352,88 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::super::config_models::{
-        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, NotionPropertyMappingModel,
-        NotionRepoConfigModel, WorkflowSection,
+        AgentsSection, AppSection, NotionPropertyMappingModel, NotionRepoConfigModel,
+        WorkflowSection,
     };
     use super::*;
     use crate::domain::app_config::services::TOKEN_LENGTH;
-    use crate::domain::hooks::services::build_hooks_json;
     use tempfile::TempDir;
 
     fn config_path(dir: &TempDir) -> PathBuf {
         dir.path().join("releash.toml")
+    }
+
+    #[test]
+    fn provider_executable_config既存tomlのoverrideをupdateしresetする() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let app_config = AppConfig::new(ReleashConfig::default(), path.clone());
+        let executable = ProviderExecutable::new("/opt/custom/claude").unwrap();
+
+        ProviderExecutableConfigRepository::save_configured_executable(
+            &app_config,
+            ProviderKind::Claude,
+            Some(&executable),
+        )
+        .unwrap();
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap()
+            .unwrap(),
+            executable
+        );
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("cli_path = \"/opt/custom/claude\""));
+
+        ProviderExecutableConfigRepository::save_configured_executable(
+            &app_config,
+            ProviderKind::Claude,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_executable_config保存失敗時はmemory上のoverrideも進めない() {
+        let dir = TempDir::new().unwrap();
+        let mut config = ReleashConfig::default();
+        config.agents.claude.cli_path = Some("/before/claude".to_string());
+        let blocked_parent = dir.path().join("blocked-parent");
+        fs::write(&blocked_parent, "not a directory").unwrap();
+        let app_config = AppConfig::new(config, blocked_parent.join("releash.toml"));
+        let next = ProviderExecutable::new("/after/claude").unwrap();
+
+        assert_eq!(
+            ProviderExecutableConfigRepository::save_configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+                Some(&next),
+            )
+            .unwrap_err(),
+            ProviderExecutableConfigRepositoryError::Unavailable
+        );
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap()
+            .unwrap()
+            .as_str(),
+            "/before/claude"
+        );
     }
 
     #[test]
@@ -712,85 +807,6 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn notify_section_defaults() {
-        let notify = NotifySection::default();
-        assert!(notify.webhook_url.is_empty());
-        assert!(!notify.on_running);
-        assert!(notify.on_done);
-        assert!(notify.on_error);
-        assert!(notify.on_waiting);
-        assert_eq!(notify.desktop_mode, DesktopNotifyMode::Always);
-        assert_eq!(notify.inactive_timeout_minutes, 2);
-    }
-
-    #[test]
-    fn notify_section_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.server.notify.webhook_url = "https://hooks.slack.com/test".to_string();
-        config.server.notify.on_running = true;
-        config.server.notify.on_done = false;
-        config.server.notify.desktop_mode = DesktopNotifyMode::WhenInactive;
-        config.server.notify.inactive_timeout_minutes = 5;
-        write_config(&path, &config).unwrap();
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(
-            reloaded.server.notify.webhook_url,
-            "https://hooks.slack.com/test"
-        );
-        assert!(reloaded.server.notify.on_running);
-        assert!(!reloaded.server.notify.on_done);
-        assert_eq!(
-            reloaded.server.notify.desktop_mode,
-            DesktopNotifyMode::WhenInactive
-        );
-        assert_eq!(reloaded.server.notify.inactive_timeout_minutes, 5);
-    }
-
-    #[test]
-    fn existing_config_without_notify_fields_gets_defaults() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let content = r#"
-[server]
-bind = "127.0.0.1"
-port = 9700
-token = "existing_token_value_here_with_enough_length_!!"
-
-[server.notify]
-webhook_url = "https://hooks.slack.com/old"
-"#;
-        fs::write(&path, content).unwrap();
-
-        let config = load_or_create_config(&path).unwrap();
-        assert_eq!(
-            config.server.notify.webhook_url,
-            "https://hooks.slack.com/old"
-        );
-        assert!(!config.server.notify.on_running);
-        assert!(config.server.notify.on_done);
-        assert!(config.server.notify.on_error);
-        assert!(config.server.notify.on_waiting);
-        assert_eq!(config.server.notify.desktop_mode, DesktopNotifyMode::Always);
-        assert_eq!(config.server.notify.inactive_timeout_minutes, 2);
-    }
-
-    #[test]
-    fn desktop_mode_serializes_snake_case() {
-        let always = serde_json::to_string(&DesktopNotifyMode::Always).unwrap();
-        assert_eq!(always, r#""always""#);
-
-        let when_inactive = serde_json::to_string(&DesktopNotifyMode::WhenInactive).unwrap();
-        assert_eq!(when_inactive, r#""when_inactive""#);
-    }
-
-    #[test]
     fn old_remote_section_is_ignored() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
@@ -1098,71 +1114,10 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn build_hooks_json_no_python3_or_session_id() {
-        let json = build_hooks_json(19700, "test-token");
-        let hooks = json.get("hooks").expect("hooks key should exist");
-        let event_keys = [
-            "UserPromptSubmit",
-            "Stop",
-            "Notification",
-            "PostToolUse",
-            "PostToolUseFailure",
-            "SessionStart",
-        ];
-
-        for key in &event_keys {
-            let entries = hooks
-                .get(*key)
-                .unwrap_or_else(|| panic!("{key} should exist"));
-            let arr = entries
-                .as_array()
-                .unwrap_or_else(|| panic!("{key} should be array"));
-            for entry in arr {
-                let cmd = entry["hooks"][0]["command"]
-                    .as_str()
-                    .expect("command should be string");
-                assert!(
-                    !cmd.contains("python3"),
-                    "{key} command should not contain python3"
-                );
-                assert!(
-                    !cmd.contains("session_id"),
-                    "{key} command should not contain session_id"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn build_hooks_json_has_7_event_entries() {
-        let json = build_hooks_json(19700, "test-token");
-        let hooks = json.get("hooks").unwrap().as_object().unwrap();
-        // 6 keys, but Notification has 2 entries
-        let total_entries: usize = hooks.values().map(|v| v.as_array().unwrap().len()).sum();
-        assert_eq!(total_entries, 7);
-    }
-
-    #[test]
     fn agents_section_defaults() {
         let agents = AgentsSection::default();
-        assert!(agents.default.is_none());
         assert!(agents.claude.cli_path.is_none());
         assert!(agents.codex.cli_path.is_none());
-    }
-
-    #[test]
-    fn agents_section_with_default_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.agents.default = Some("claude".to_string());
-        write_config(&path, &config).unwrap();
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(reloaded.agents.default, Some("claude".to_string()));
     }
 
     #[test]
@@ -1215,34 +1170,32 @@ token = "existing_token_value_here_with_enough_length_!!"
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(config.agents.default.is_none());
         assert!(config.agents.codex.cli_path.is_none());
     }
 
     #[test]
-    fn legacy_agent_models_fields_deserialize_but_do_not_affect_repository_model_resolution() {
+    fn legacy_agent_selection_fields_are_ignored_and_not_reserialized() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-        let config: ReleashConfig = toml::from_str(
-            r#"
+        let legacy = r#"
 [agents]
 default = "claude"
 
 [agents.claude]
+cli_path = "/opt/bin/claude"
 models = ["legacy-claude"]
 
 [agents.codex]
+cli_path = "/opt/bin/codex"
 models = ["legacy-codex"]
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agents.claude.models, vec!["legacy-claude"]);
-        assert_eq!(config.agents.codex.models, vec!["legacy-codex"]);
-        let app_config = AppConfig::new(config, path);
+"#;
+        let config: ReleashConfig = toml::from_str(legacy).unwrap();
+        write_config(&path, &config).unwrap();
+        let serialized = fs::read_to_string(&path).unwrap();
 
-        assert_eq!(
-            app_config.default_agent_backend().unwrap(),
-            Some("claude".to_string())
-        );
+        assert!(!serialized.contains("default ="), "{serialized}");
+        assert!(!serialized.contains("models ="), "{serialized}");
+        assert!(serialized.contains("cli_path = \"/opt/bin/claude\""));
+        assert!(serialized.contains("cli_path = \"/opt/bin/codex\""));
     }
 }

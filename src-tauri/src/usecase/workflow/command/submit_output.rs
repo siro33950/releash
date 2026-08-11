@@ -1,35 +1,42 @@
 use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
-use crate::usecase::workflow::ports::WorkflowSubmitOutputGateway;
+use crate::usecase::workflow::control_plane::{
+    WorkflowControlPlaneGateway, WorkflowControlPlaneUsecase,
+};
 
 use super::preflight::WorkflowRuntimeCommandPreflight;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubmitOutputArtifact {
+    pub contract: String,
+    pub value: serde_json::Value,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubmitOutputCommand {
     pub execution_id: String,
     pub node_name: String,
-    pub node_execution_id: Option<String>,
-    pub contract: String,
-    pub artifact: serde_json::Value,
+    pub node_execution_id: String,
+    pub artifact: Option<SubmitOutputArtifact>,
 }
 
 #[derive(Clone)]
 pub(crate) struct WorkflowSubmitOutputUsecase {
-    runtime: Arc<dyn WorkflowSubmitOutputGateway>,
+    control_plane: WorkflowControlPlaneUsecase,
     preflight: WorkflowRuntimeCommandPreflight,
 }
 
 impl WorkflowSubmitOutputUsecase {
-    pub(crate) fn new(runtime: Arc<dyn WorkflowSubmitOutputGateway>) -> Self {
+    pub(crate) fn new(runtime: Arc<dyn WorkflowControlPlaneGateway>) -> Self {
         Self {
-            runtime,
+            control_plane: WorkflowControlPlaneUsecase::new(runtime),
             preflight: WorkflowRuntimeCommandPreflight,
         }
     }
 
     pub(crate) async fn execute(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
         self.preflight.validate_submit_output(&command)?;
-        self.runtime.submit_output(command).await
+        self.control_plane.submit_output(command).await
     }
 }

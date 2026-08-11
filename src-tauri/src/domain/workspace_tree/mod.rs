@@ -12,11 +12,8 @@ mod value_objects;
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, workflow_fact, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;
-pub use services::{
-    recovery_reason, unresolved_recovery_reason, WorkspaceSessionPublicationPolicy,
-    WorkspaceTreeVisibilityPolicy,
-};
+pub use services::{unresolved_recovery_reason, WorkspaceTreeVisibilityPolicy};
 pub use value_objects::{
     WorkspaceCommandResult, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus,
-    WorkspaceSessionListKind, WorkspaceStructureFact, WorkspaceTreeNode,
+    WorkspaceStructureFact, WorkspaceTreeNode,
 };

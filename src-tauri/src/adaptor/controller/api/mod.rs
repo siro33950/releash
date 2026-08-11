@@ -1,8 +1,11 @@
-mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
+pub(crate) mod provider_lifecycle;
+mod terminal;
 mod workflow;
+
+pub(crate) use terminal::TerminalApiDeps;
 
 use std::sync::Arc;
 
@@ -12,89 +15,52 @@ use axum::Router;
 
 use crate::usecase::workflow::{WorkflowReadUsecase, WorkflowRuntimeUsecase};
 
-const MAX_AGENT_SESSION_CONNECTIONS: usize = 16;
-
 #[derive(Clone)]
 struct LocalApiState {
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
-    agent_session: Option<AgentSessionApiDeps>,
-}
-
-#[derive(Clone)]
-pub(crate) struct AgentSessionApiDeps {
-    pub(crate) send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
-    pub(crate) permission_response:
-        Arc<crate::usecase::agent_session::operation::PermissionResponseOperationUsecase>,
-    pub(crate) stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
-    pub(crate) recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
-    pub(crate) feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
-    pub(crate) feedback_load:
-        Arc<crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase>,
-    pub(crate) shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
-    pub(crate) process_actions:
-        Arc<crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher>,
-    pub(crate) local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    pub(crate) caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
-    pub(crate) app: tauri::AppHandle,
-    pub(crate) connection_limit: Arc<tokio::sync::Semaphore>,
-}
-
-impl AgentSessionApiDeps {
-    #[allow(clippy::too_many_arguments)] // Composition root injects each independent durable service explicitly.
-    pub(crate) fn new(
-        send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
-        permission_response: Arc<
-            crate::usecase::agent_session::operation::PermissionResponseOperationUsecase,
-        >,
-        stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
-        recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
-        feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
-        feedback_load: Arc<
-            crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase,
-        >,
-        shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
-        process_actions: Arc<
-            crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher,
-        >,
-        local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-        caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
-        app: tauri::AppHandle,
-    ) -> Self {
-        Self {
-            send,
-            permission_response,
-            stop,
-            recovery,
-            feedback,
-            feedback_load,
-            shutdown,
-            process_actions,
-            local_store,
-            caller_journal,
-            app,
-            connection_limit: Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_SESSION_CONNECTIONS)),
-        }
-    }
+    terminal: Option<TerminalApiDeps>,
 }
 
 pub(crate) fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
-    agent_session: Option<AgentSessionApiDeps>,
+    terminal_token: Arc<str>,
+    terminal: Option<TerminalApiDeps>,
+    provider_lifecycle: Option<
+        Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+    >,
 ) -> Router {
-    workflow::router()
-        .merge(agent_session::router())
+    let state = LocalApiState {
+        workflow,
+        runtime,
+        terminal,
+    };
+    let application_router = workflow::router()
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
-        .layer(middleware::from_fn_with_state(token, auth::require_bearer))
-        .with_state(LocalApiState {
-            workflow,
-            runtime,
-            agent_session,
-        })
+        .with_state(state.clone());
+    // terminal routeだけはrendererへ渡すterminal専用tokenでも認証できる。
+    // masterのdiscovery tokenはrenderer JSに露出させない。
+    let terminal_router = authenticated_with_tokens(
+        terminal::router().with_state(state),
+        auth::AcceptedBearerTokens::new([token.clone(), terminal_token]),
+    );
+    authenticated(
+        application_router.merge(provider_lifecycle::router(provider_lifecycle)),
+        token,
+    )
+    .merge(terminal_router)
+}
+
+pub(crate) fn authenticated(router: Router, token: Arc<str>) -> Router {
+    authenticated_with_tokens(router, auth::AcceptedBearerTokens::new([token]))
+}
+
+fn authenticated_with_tokens(router: Router, tokens: auth::AcceptedBearerTokens) -> Router {
+    router.layer(middleware::from_fn_with_state(tokens, auth::require_bearer))
 }
 
 #[cfg(test)]
@@ -120,15 +86,16 @@ pub(crate) mod test_support {
     };
     use crate::usecase::workflow::command::{
         AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand,
-        ResumeExecutionCommand, StopExecutionCommand, SubmitOutputCommand,
+        ResumeExecutionCommand, RetryNodeCommand, StopExecutionCommand, SubmitOutputArtifact,
+        SubmitOutputCommand,
+    };
+    use crate::usecase::workflow::control_plane::{
+        WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
     use crate::usecase::workflow::ports::{
-        ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-        WorkflowApprovalGateway, WorkflowEventDraft, WorkflowResumeExecutionGateway,
-        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
-        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
-        WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
-        WorkflowTurnCompleteGateway,
+        WorkflowAbortExecutionGateway, WorkflowEventDraft, WorkflowResumeExecutionGateway,
+        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
+        WorkflowStopExecutionGateway,
     };
     use crate::usecase::workflow::WorkflowUsecase;
 
@@ -141,6 +108,7 @@ pub(crate) mod test_support {
         pub(crate) aborts: Vec<AbortExecutionCommand>,
         pub(crate) stops: Vec<StopExecutionCommand>,
         pub(crate) resumes: Vec<ResumeExecutionCommand>,
+        pub(crate) retries: Vec<RetryNodeCommand>,
         pub(crate) outputs: Vec<SubmitOutputCommand>,
     }
 
@@ -260,72 +228,272 @@ pub(crate) mod test_support {
         }
     }
 
+    fn control_plane_execution_fixture(
+        execution_id: &str,
+    ) -> crate::domain::workflow::entities::workflow_execution::WorkflowExecution {
+        use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+        use crate::domain::workflow::entities::workflow_execution::{
+            WorkflowExecution, WorkflowExecutionRestore,
+        };
+        use crate::domain::workflow::{
+            FanoutParentRef, FanoutSpec, NodeCompletionSignal, NodeDefinition as DomainNode,
+            NodeKind as DomainNodeKind, NodeKindName, SchemaDef, SessionSpec,
+        };
+
+        let workflow = WorkflowDefinition {
+            name: "review-workflow".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: BTreeMap::from([(
+                "review-result".to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::from([(
+                        "status".to_string(),
+                        SchemaDef::String { r#enum: None },
+                    )]),
+                    required: BTreeSet::from(["status".to_string()]),
+                },
+            )]),
+            nodes: vec![
+                DomainNode {
+                    name: "fanout".to_string(),
+                    kind: DomainNodeKind::Fanout(FanoutSpec {
+                        child: vec!["review".to_string()],
+                        items: None,
+                    }),
+                    rules: Vec::new(),
+                    ..Default::default()
+                },
+                DomainNode {
+                    name: "review".to_string(),
+                    kind: DomainNodeKind::Session(SessionSpec {
+                        gate: crate::domain::workflow::SessionGate::Approval,
+                        ..Default::default()
+                    }),
+                    artifact: Some("review-result".to_string()),
+                    rules: Vec::new(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            id: execution_id.to_string(),
+            workflow,
+            node_execution_counts: HashMap::from([
+                ("fanout".to_string(), 1),
+                ("review".to_string(), 3),
+            ]),
+            worktree_path: "/repo".to_string(),
+            started_at: 100.0,
+            updated_at: 100.0,
+            ..WorkflowExecutionRestore::default()
+        });
+        execution
+            .begin_node_attempt(
+                "fanout".to_string(),
+                NodeKindName::Fanout,
+                1,
+                None,
+                "fanout-parent".to_string(),
+                100.0,
+            )
+            .unwrap();
+        for (attempt, node_execution_id) in [
+            (1, "ne-review-1"),
+            (2, "ne-review-2"),
+            (3, "00000000-0000-4000-8000-000000000456"),
+        ] {
+            execution
+                .start_fanout_child_execution(
+                    "fanout".to_string(),
+                    "fanout-parent".to_string(),
+                    node_execution_id.to_string(),
+                    "review".to_string(),
+                    NodeKindName::Session,
+                    attempt,
+                    FanoutParentRef {
+                        parent_node: "fanout".to_string(),
+                        parent_attempt: 1,
+                        item_index: Some(attempt as usize - 1),
+                        child_index: 0,
+                    },
+                    100.0 + f64::from(attempt),
+                )
+                .unwrap();
+            execution.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Stop,
+                103.0 + f64::from(attempt),
+            );
+            if node_execution_id == "ne-review-1" {
+                execution.record_node_completion_signal(
+                    node_execution_id,
+                    NodeCompletionSignal::Submit,
+                    106.0,
+                );
+                execution.mark_node_waiting_approval(node_execution_id, 107.0);
+            }
+        }
+        execution
+    }
+
     #[async_trait::async_trait]
-    impl WorkflowApprovalGateway for RecordingRuntimeGateway {
-        async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
+    impl WorkflowControlPlaneGateway for RecordingRuntimeGateway {
+        fn current_timestamp(&self) -> f64 {
+            110.0
+        }
+
+        fn new_node_execution_id(&self) -> String {
+            "node-execution-next".to_string()
+        }
+
+        async fn load_active_execution(
+            &self,
+            execution_id: &str,
+        ) -> Result<
+            Option<crate::domain::workflow::entities::workflow_execution::WorkflowExecution>,
+            WorkflowError,
+        > {
             if let Some(error) = self.errors.lock().unwrap().approval.clone() {
                 return Err(error);
             }
-            self.commands.lock().unwrap().approvals.push(command);
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowSubmitOutputGateway for RecordingRuntimeGateway {
-        async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
             if let Some(error) = self.errors.lock().unwrap().output.clone() {
                 return Err(error);
             }
-            if let Some(data_dir) = self.output_persistence_data_dir.lock().unwrap().clone() {
-                append_canonical_workflow_drafts(
-                    &data_dir,
-                    &[WorkflowEventDraft {
-                        execution_id: command.execution_id.clone(),
-                        event_kind: "artifact_produced".to_string(),
-                        timestamp: 110.0,
-                        payload: serde_json::json!({
-                            "node_execution_id": command.node_execution_id,
-                            "node_name": command.node_name,
-                            "contract": command.contract,
-                            "value": command.artifact,
-                            "submitted_at": 109.0,
-                            "request_id": "request-1"
-                        }),
-                    }],
-                )?;
+            Ok(Some(control_plane_execution_fixture(execution_id)))
+        }
+
+        async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        async fn load_persisted_events(
+            &self,
+            _execution_id: &str,
+        ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+            Ok(Vec::new())
+        }
+
+        fn configured_secret_values(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn commit_control_plane(
+            &self,
+            commit: WorkflowControlPlaneCommit,
+        ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
+        {
+            if let Some(command) = commit.workflow_events.iter().find_map(|event| match event {
+                crate::domain::workflow::WorkflowEvent::ApprovalResolved {
+                    execution_id,
+                    node_execution_id,
+                    node_name,
+                    comment,
+                    ..
+                } => Some(ApprovalCommand {
+                    execution_id: execution_id.clone(),
+                    node_name: node_name.clone(),
+                    node_execution_id: Some(node_execution_id.clone()),
+                    comment: comment.clone(),
+                }),
+                _ => None,
+            }) {
+                self.commands.lock().unwrap().approvals.push(command);
             }
-            self.commands.lock().unwrap().outputs.push(command);
-            Ok(())
+            let retry = commit.workflow_events.iter().find_map(|event| match event {
+                crate::domain::workflow::WorkflowEvent::NodeRetryRequested {
+                    execution_id,
+                    node_execution_id,
+                    ..
+                } => Some(RetryNodeCommand {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                }),
+                _ => None,
+            });
+            if let Some(command) = retry {
+                self.commands.lock().unwrap().retries.push(command);
+            }
+            let submit = commit.workflow_events.iter().find_map(|event| match event {
+                crate::domain::workflow::WorkflowEvent::NodeSubmitReceived {
+                    execution_id,
+                    node_execution_id,
+                    ..
+                } => {
+                    let node_name = commit
+                        .after
+                        .node_executions
+                        .iter()
+                        .find(|node| node.id == *node_execution_id)
+                        .map(|node| node.node_name.clone())?;
+                    let artifact = commit.workflow_events.iter().find_map(|event| match event {
+                        crate::domain::workflow::WorkflowEvent::ArtifactProduced {
+                            node_execution_id: artifact_node_execution_id,
+                            contract: Some(contract),
+                            value,
+                            ..
+                        } if artifact_node_execution_id == node_execution_id => {
+                            Some(SubmitOutputArtifact {
+                                contract: contract.clone(),
+                                value: value.clone(),
+                            })
+                        }
+                        _ => None,
+                    });
+                    Some(SubmitOutputCommand {
+                        execution_id: execution_id.clone(),
+                        node_name,
+                        node_execution_id: node_execution_id.clone(),
+                        artifact,
+                    })
+                }
+                _ => None,
+            });
+            if let Some(command) = submit {
+                if let (Some(data_dir), Some(artifact)) = (
+                    self.output_persistence_data_dir.lock().unwrap().clone(),
+                    command.artifact.as_ref(),
+                ) {
+                    append_canonical_workflow_drafts(
+                        &data_dir,
+                        &[WorkflowEventDraft {
+                            execution_id: command.execution_id.clone(),
+                            event_kind: "artifact_produced".to_string(),
+                            timestamp: 110.0,
+                            payload: serde_json::json!({
+                                "node_execution_id": command.node_execution_id,
+                                "node_name": command.node_name,
+                                "contract": artifact.contract,
+                                "value": artifact.value,
+                                "submitted_at": 109.0,
+                                "request_id": "request-1"
+                            }),
+                        }],
+                    )?;
+                }
+                self.commands.lock().unwrap().outputs.push(command);
+            }
+            crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot::from_execution(
+                &commit.after,
+            )
+            .map_err(|error| WorkflowError::external(error.to_string()))
         }
-    }
 
-    #[async_trait::async_trait]
-    impl WorkflowTurnCompleteGateway for RecordingRuntimeGateway {
-        async fn is_session_running(&self, _chat_session_id: &str) -> bool {
-            false
-        }
-
-        async fn complete_turn(
+        async fn finish_control_plane_commit(
             &self,
-            _command: WorkflowTurnCompleteCommand,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
-    }
 
-    #[async_trait::async_trait]
-    impl WorkflowStallObservedGateway for RecordingRuntimeGateway {
-        async fn observe_stall(
+        async fn finish_retried_fanout_commit(
             &self,
-            _command: WorkflowStallObservedCommand,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        async fn clear_stall(
-            &self,
-            _command: WorkflowStallClearedCommand,
+            _worktree_path: &str,
+            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
+            _node_execution_id: &str,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
@@ -333,16 +501,13 @@ pub(crate) mod test_support {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for RecordingRuntimeGateway {
+        async fn recover_startup(&self) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
         async fn get_state_by_execution_id(
             &self,
             _execution_id: &str,
-        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-            Ok(None)
-        }
-
-        async fn get_state_by_worktree(
-            &self,
-            _worktree_path: &str,
         ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             Ok(None)
         }
@@ -354,27 +519,6 @@ pub(crate) mod test_support {
 
         async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
             Ok(Vec::new())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowApprovalChatGateway for RecordingRuntimeGateway {
-        async fn resolve_approval_chat_target(
-            &self,
-            _execution_id: &str,
-        ) -> Result<ApprovalChatTarget, WorkflowError> {
-            Ok(ApprovalChatTarget {
-                chat_session_id: "chat".to_string(),
-                worktree_path: "/tmp/worktree".to_string(),
-            })
-        }
-
-        async fn validate_approval_chat_instruction(
-            &self,
-            _chat_session_id: &str,
-            _content: &str,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
         }
     }
 
@@ -396,6 +540,62 @@ pub(crate) mod test_support {
     pub(crate) fn test_router(
         data_dir: &Path,
         token: &str,
+    ) -> (
+        Router,
+        Arc<WorkflowRuntimeUsecase>,
+        Arc<RecordingRuntimeGateway>,
+    ) {
+        test_router_with_optional_terminal(data_dir, token, None)
+    }
+
+    pub(crate) fn test_router_with_terminal(
+        data_dir: &Path,
+        token: &str,
+        terminal: TerminalApiDeps,
+    ) -> Router {
+        test_router_with_optional_terminal(data_dir, token, Some(terminal)).0
+    }
+
+    pub(crate) fn test_router_with_terminal_tokens(
+        data_dir: &Path,
+        token: &str,
+        terminal_token: &str,
+        terminal: TerminalApiDeps,
+    ) -> Router {
+        test_router_with_optional_deps(data_dir, token, terminal_token, Some(terminal), None).0
+    }
+
+    pub(crate) fn test_router_with_provider_lifecycle(
+        data_dir: &Path,
+        token: &str,
+        provider_lifecycle: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
+    ) -> Router {
+        let provider_lifecycle: Arc<
+            dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
+        > = provider_lifecycle;
+        test_router_with_optional_deps(data_dir, token, token, None, Some(provider_lifecycle)).0
+    }
+
+    fn test_router_with_optional_terminal(
+        data_dir: &Path,
+        token: &str,
+        terminal: Option<TerminalApiDeps>,
+    ) -> (
+        Router,
+        Arc<WorkflowRuntimeUsecase>,
+        Arc<RecordingRuntimeGateway>,
+    ) {
+        test_router_with_optional_deps(data_dir, token, token, terminal, None)
+    }
+
+    fn test_router_with_optional_deps(
+        data_dir: &Path,
+        token: &str,
+        terminal_token: &str,
+        terminal: Option<TerminalApiDeps>,
+        provider_lifecycle: Option<
+            Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+        >,
     ) -> (
         Router,
         Arc<WorkflowRuntimeUsecase>,
@@ -428,7 +628,9 @@ pub(crate) mod test_support {
             Arc::new(workflow),
             runtime.clone(),
             Arc::<str>::from(token),
-            None,
+            Arc::<str>::from(terminal_token),
+            terminal,
+            provider_lifecycle,
         );
         (router, runtime, gateway)
     }
@@ -524,7 +726,6 @@ pub(crate) mod test_support {
                 "worktree_path": worktree_path,
                 "created_from": "cli",
                 "request": "review this change",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "review",
                     "description": "Review a change",
@@ -540,7 +741,7 @@ pub(crate) mod test_support {
                     },
                     "nodes": [{
                         "name": "review",
-                        "session": {"gate": "auto"},
+                        "session": {"provider": "claude", "gate": "auto"},
                         "artifact": "review-result"
                     }]
                 }
@@ -656,6 +857,26 @@ pub(crate) mod test_support {
     }
 
     #[tokio::test]
+    async fn test_agent_tui_cutover_legacy_agent_session_local_api_routeを公開しない() {
+        let directory = tempfile::tempdir().unwrap();
+        let (router, _, _) = test_router(directory.path(), "secret");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/agent-session")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn every_endpoint_and_the_fallback_require_the_bearer_token() {
         let directory = tempfile::tempdir().unwrap();
         let (router, _, _) = test_router(directory.path(), "secret");
@@ -691,7 +912,11 @@ pub(crate) mod test_support {
             ),
             (
                 Method::POST,
-                format!("/v1/workflow/executions/{execution_id}/artifacts"),
+                format!("/v1/workflow/executions/{execution_id}/retry"),
+            ),
+            (
+                Method::POST,
+                format!("/v1/workflow/executions/{execution_id}/submit"),
             ),
             (
                 Method::POST,
@@ -736,7 +961,6 @@ pub(crate) mod test_support {
                 "workflow_name": "review",
                 "worktree_path": "/repo",
                 "request": "review this change",
-                "permission_mode": "edit",
                 "created_from": "agent"
             }),
         )
@@ -754,7 +978,7 @@ pub(crate) mod test_support {
             &format!("/v1/workflow/executions/{execution_id}/approve"),
             serde_json::json!({
                 "node": "review",
-                "node_execution_id": "ne-review-2",
+                "node_execution_id": "ne-review-1",
                 "comment": "looks good"
             }),
         )
@@ -803,14 +1027,26 @@ pub(crate) mod test_support {
             .unwrap();
         assert_eq!(resume.status(), StatusCode::OK);
 
+        let retry = send_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/retry"),
+            serde_json::json!({
+                "node_execution_id": "ne-review-2"
+            }),
+        )
+        .await;
+        assert_eq!(retry, (StatusCode::OK, serde_json::json!({"ok": true})));
+
         let submit = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/artifacts"),
+            &format!("/v1/workflow/executions/{execution_id}/submit"),
             serde_json::json!({
                 "node": "review",
                 "node_execution_id": "ne-review-2",
-                "contract": "review-result",
-                "value": {"status": "approved"}
+                "artifact": {
+                    "contract": "review-result",
+                    "value": {"status": "approved"}
+                }
             }),
         )
         .await;
@@ -828,14 +1064,13 @@ pub(crate) mod test_support {
             commands.starts[0].created_from,
             crate::domain::workflow::ExecutionOrigin::Agent
         );
-        assert_eq!(commands.starts[0].permission_mode, "edit");
 
         assert_eq!(commands.approvals.len(), 1);
         assert_eq!(commands.approvals[0].execution_id, execution_id);
         assert_eq!(commands.approvals[0].node_name, "review");
         assert_eq!(
             commands.approvals[0].node_execution_id.as_deref(),
-            Some("ne-review-2")
+            Some("ne-review-1")
         );
         assert_eq!(commands.approvals[0].comment.as_deref(), Some("looks good"));
 
@@ -849,18 +1084,17 @@ pub(crate) mod test_support {
         assert_eq!(commands.resumes.len(), 1);
         assert_eq!(commands.resumes[0].execution_id, execution_id);
 
+        assert_eq!(commands.retries.len(), 1);
+        assert_eq!(commands.retries[0].execution_id, execution_id);
+        assert_eq!(commands.retries[0].node_execution_id, "ne-review-2");
+
         assert_eq!(commands.outputs.len(), 1);
         assert_eq!(commands.outputs[0].execution_id, execution_id);
         assert_eq!(commands.outputs[0].node_name, "review");
-        assert_eq!(
-            commands.outputs[0].node_execution_id.as_deref(),
-            Some("ne-review-2")
-        );
-        assert_eq!(commands.outputs[0].contract, "review-result");
-        assert_eq!(
-            commands.outputs[0].artifact,
-            serde_json::json!({"status": "approved"})
-        );
+        assert_eq!(commands.outputs[0].node_execution_id, "ne-review-2");
+        let artifact = commands.outputs[0].artifact.as_ref().unwrap();
+        assert_eq!(artifact.contract, "review-result");
+        assert_eq!(artifact.value, serde_json::json!({"status": "approved"}));
     }
 
     #[tokio::test]
@@ -927,21 +1161,48 @@ pub(crate) mod test_support {
         .await;
         assert_eq!(approval.0, StatusCode::FORBIDDEN);
         assert_eq!(approval.1["code"], "unauthorized_approval_target");
+        gateway.errors.lock().unwrap().approval = None;
 
         gateway.errors.lock().unwrap().output =
             Some(WorkflowError::NotFound("execution not found".to_string()));
         let output = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/artifacts"),
+            &format!("/v1/workflow/executions/{execution_id}/submit"),
             serde_json::json!({
                 "node": "review",
-                "contract": "review-result",
-                "value": {"status": "approved"}
+                "node_execution_id": "ne-review-1",
+                "artifact": {
+                    "contract": "review-result",
+                    "value": {"status": "approved"}
+                }
             }),
         )
         .await;
         assert_eq!(output.0, StatusCode::NOT_FOUND);
         assert_eq!(output.1["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn submit_endpoint_accepts_a_node_submit_without_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let (router, _, gateway) = test_router(directory.path(), "secret");
+        let execution_id = "00000000-0000-4000-8000-000000000123";
+
+        let response = send_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/submit"),
+            serde_json::json!({
+                "node": "review",
+                "node_execution_id": "ne-review-2"
+            }),
+        )
+        .await;
+
+        assert_eq!(response, (StatusCode::OK, serde_json::json!({"ok": true})));
+        let commands = gateway.commands.lock().unwrap();
+        assert_eq!(commands.outputs.len(), 1);
+        assert_eq!(commands.outputs[0].node_execution_id, "ne-review-2");
+        assert!(commands.outputs[0].artifact.is_none());
     }
 
     #[tokio::test]
@@ -1047,10 +1308,10 @@ pub(crate) mod test_support {
                 event_kind: "node_started".to_string(),
                 timestamp: 105.0,
                 payload: serde_json::json!({
-                    "node_execution_id": "ne-review-1",
+                    "node_execution_id": "ne-review-2",
                     "node_name": "review",
                     "kind": "session",
-                    "attempt": 1
+                    "attempt": 2
                 }),
             }],
         )
@@ -1060,12 +1321,14 @@ pub(crate) mod test_support {
 
         let submit = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/artifacts"),
+            &format!("/v1/workflow/executions/{execution_id}/submit"),
             serde_json::json!({
                 "node": "review",
-                "node_execution_id": "ne-review-1",
-                "contract": "review-result",
-                "value": {"status": "approved"}
+                "node_execution_id": "ne-review-2",
+                "artifact": {
+                    "contract": "review-result",
+                    "value": {"status": "approved"}
+                }
             }),
         )
         .await;

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
+use crate::domain::workflow::entities::workflow_execution::WorkflowExecution as WorkflowExecutionAggregate;
+use crate::domain::workflow::services::projection as workflow_projection;
 use crate::domain::workflow::{
     ExecutionOrigin, NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
     WorkflowDefinition,
@@ -31,6 +33,47 @@ pub(crate) struct RuntimeCommitSnapshot {
 }
 
 impl RuntimeCommitSnapshot {
+    pub(crate) fn from_execution(
+        execution: &WorkflowExecutionAggregate,
+    ) -> Result<Self, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
+        let current_node_name = execution
+            .workflow
+            .nodes
+            .get(execution.current_node_index)
+            .ok_or_else(|| {
+                crate::usecase::workflow::runtime_error::WorkflowRuntimeError::InvalidState(
+                    format!(
+                        "current_node_index {} is out of bounds for {} workflow nodes",
+                        execution.current_node_index,
+                        execution.workflow.nodes.len()
+                    ),
+                )
+            })?
+            .name
+            .clone();
+        Ok(Self {
+            execution_id: execution.id.clone(),
+            workflow_name: execution.workflow.name.clone(),
+            worktree_path: execution.worktree_path.clone(),
+            created_from: execution.created_from,
+            request: execution.request.clone().unwrap_or_default(),
+            error_reason: execution.error_reason.clone(),
+            state: execution.state().clone(),
+            current_node_index: execution.current_node_index,
+            current_node_name,
+            current_session_id: execution.current_session_id.clone(),
+            node_history: execution.node_history.clone(),
+            node_execution_counts: execution.node_execution_counts.clone(),
+            workflow_definition: execution.workflow.clone(),
+            total_token_usage: workflow_projection::total_token_usage(&execution.node_history),
+            artifacts: execution.artifacts.clone(),
+            node_executions: execution.node_executions.clone(),
+            started_at: execution.started_at,
+            updated_at: execution.updated_at,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn apply_lifecycle_projection(
         &mut self,
         state: RuntimeExecutionState,
@@ -87,6 +130,9 @@ fn runtime_node_execution_to_domain(
             RuntimeNodeExecutionStatus::Running => {
                 crate::domain::workflow::NodeExecutionStatus::Running
             }
+            RuntimeNodeExecutionStatus::Paused => {
+                crate::domain::workflow::NodeExecutionStatus::Paused
+            }
             RuntimeNodeExecutionStatus::WaitingApproval => {
                 crate::domain::workflow::NodeExecutionStatus::WaitingApproval
             }
@@ -119,6 +165,7 @@ fn runtime_node_execution_to_domain(
                 kind: failure.kind,
             }),
         fanout_parent: execution.fanout_parent,
+        completion_signals: execution.completion_signals,
         started_at: execution.started_at,
         completed_at: execution.completed_at,
     }

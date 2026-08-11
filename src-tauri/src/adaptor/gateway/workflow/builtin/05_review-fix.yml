@@ -101,8 +101,7 @@ nodes:
 
 - name: resolve_request
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: planning
@@ -125,8 +124,7 @@ nodes:
     next: fix_report
 - name: create_fix_plan
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -146,8 +144,7 @@ nodes:
   - next: implement_fix_plan
 - name: implement_fix_plan
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: coding
@@ -163,8 +160,7 @@ nodes:
   - next: verify_fixes
 - name: verify_fixes
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -188,8 +184,7 @@ nodes:
     next: check_open_threads
 - name: fix_report
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: auto
     facets:
       policy: reporting

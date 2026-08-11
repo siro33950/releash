@@ -34,16 +34,7 @@ export interface WorktreeBranch {
 	behind: number;
 	has_upstream: boolean;
 	base_ahead: number;
-	agent_state?: "running" | "done" | "error" | "waiting";
-	agent_state_timestamp?: number;
 }
-
-export type ProviderStatus =
-	| "available"
-	| { cli_not_found: { cli: string } }
-	| "not_authenticated"
-	| "unsupported_platform"
-	| "no_remote";
 
 interface PrInfo {
 	number: number;

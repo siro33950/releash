@@ -1,11 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-	Bell,
 	BookOpen,
 	Bot,
-	Check,
 	Code,
-	Copy,
 	GitBranch,
 	Loader2,
 	Monitor,
@@ -25,8 +22,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
 	Select,
 	SelectContent,
@@ -39,47 +34,15 @@ import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
-import { useWebhookConfig } from "@/hooks/useWebhookConfig";
+import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type { BranchInfo } from "@/types/git";
-import {
-	AGENT_CONFIGS,
-	type AgentType,
-	type AppSettings,
-	type DiffBase,
-	type DiffMode,
-	type Theme,
-} from "@/types/settings";
-import {
-	type DesktopNotifyMode,
-	INACTIVE_TIMEOUT_OPTIONS,
-} from "@/types/webhook";
+import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
 import { AutomationSection } from "./AutomationSection";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { NotionSettingsSection } from "./NotionSettingsSection";
-
-const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
-
-interface HooksState {
-	config: string;
-	loading: boolean;
-	applying: boolean;
-	status: "active" | "token_mismatch" | "not_configured";
-	copied: boolean;
-	error: string | null;
-	success: boolean;
-}
-
-const initialHooksState: HooksState = {
-	config: "",
-	loading: false,
-	applying: false,
-	status: "not_configured",
-	copied: false,
-	error: null,
-	success: false,
-};
+import { ProviderAvailabilitySettings } from "./ProviderAvailabilitySettings";
 
 interface WorkflowConfig {
 	approval_auto_approve: boolean;
@@ -138,53 +101,6 @@ function useWorkflowSettings(open: boolean) {
 	return { draft, setDraft, isDirty, loading, saving, error, save };
 }
 
-type HooksAction =
-	| { type: "LOAD_START" }
-	| {
-			type: "LOAD_SUCCESS";
-			config: string;
-			status: HooksState["status"];
-	  }
-	| { type: "LOAD_ERROR"; error: string }
-	| { type: "APPLY_START" }
-	| { type: "APPLY_SUCCESS" }
-	| { type: "APPLY_ERROR"; error: string }
-	| { type: "SET_COPIED"; copied: boolean }
-	| { type: "COPY_ERROR"; error: string };
-
-function hooksReducer(state: HooksState, action: HooksAction): HooksState {
-	switch (action.type) {
-		case "LOAD_START":
-			return { ...state, loading: true, error: null, success: false };
-		case "LOAD_SUCCESS":
-			return {
-				...state,
-				loading: false,
-				error: null,
-				config: action.config,
-				status: action.status,
-			};
-		case "LOAD_ERROR":
-			return { ...state, loading: false, error: action.error };
-		case "APPLY_START":
-			return { ...state, applying: true, error: null, success: false };
-		case "APPLY_SUCCESS":
-			return {
-				...state,
-				applying: false,
-				status: "active",
-				success: true,
-				error: null,
-			};
-		case "APPLY_ERROR":
-			return { ...state, applying: false, error: action.error };
-		case "SET_COPIED":
-			return { ...state, copied: action.copied };
-		case "COPY_ERROR":
-			return { ...state, error: action.error };
-	}
-}
-
 type SettingsSection =
 	| "appearance"
 	| "editor"
@@ -192,7 +108,6 @@ type SettingsSection =
 	| "notion"
 	| "agent"
 	| "background"
-	| "notifications"
 	| "automation"
 	| "privacy";
 
@@ -207,7 +122,6 @@ const SETTINGS_SECTIONS: {
 	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "background", label: "Background", icon: Monitor },
-	{ id: "notifications", label: "Notifications", icon: Bell },
 	{ id: "automation", label: "Automation", icon: Workflow },
 	{ id: "privacy", label: "Privacy & Updates", icon: Shield },
 ];
@@ -663,82 +577,16 @@ function AgentSection({
 	draft,
 	updateDraft,
 	workflow,
-	hooksConfig,
-	hooksLoading,
-	hooksApplying,
-	hooksStatus,
-	hooksCopied,
-	hooksError,
-	hooksSuccess,
-	onApplyHooks,
-	onCopyHooks,
+	providerAvailability,
 }: {
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
 	workflow: ReturnType<typeof useWorkflowSettings>;
-	hooksConfig: string;
-	hooksLoading: boolean;
-	hooksApplying: boolean;
-	hooksStatus: "active" | "token_mismatch" | "not_configured";
-	hooksCopied: boolean;
-	hooksError: string | null;
-	hooksSuccess: boolean;
-	onApplyHooks: () => void;
-	onCopyHooks: () => void;
+	providerAvailability: ReturnType<typeof useProviderAvailabilitySettings>;
 }) {
-	const showAutoApprove =
-		draft.agent !== "none" &&
-		draft.agent !== "cursor" &&
-		draft.agent !== "custom";
-
 	return (
 		<div className="flex flex-col gap-4">
-			<div className="flex flex-col gap-1.5">
-				<label htmlFor="agent-select" className={labelClass}>
-					Agent
-				</label>
-				<Select
-					value={draft.agent}
-					onValueChange={(value) =>
-						updateDraft((d) => ({
-							...d,
-							agent: value as AgentType,
-						}))
-					}
-				>
-					<SelectTrigger id="agent-select">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						{AGENT_TYPE_KEYS.map((key) => (
-							<SelectItem key={key} value={key}>
-								{AGENT_CONFIGS[key].label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			</div>
-
-			{showAutoApprove && (
-				<div className="flex items-center gap-2">
-					<Checkbox
-						id="agent-auto-approve"
-						checked={draft.agentAutoApprove}
-						onCheckedChange={(checked) =>
-							updateDraft((d) => ({
-								...d,
-								agentAutoApprove: checked === true,
-							}))
-						}
-					/>
-					<label
-						htmlFor="agent-auto-approve"
-						className={`${labelClass} cursor-pointer`}
-					>
-						Auto-approve
-					</label>
-				</div>
-			)}
+			<ProviderAvailabilitySettings settings={providerAvailability} />
 
 			<div className="flex flex-col gap-1.5 rounded border p-3">
 				<div className="flex items-center gap-2">
@@ -761,138 +609,34 @@ function AgentSection({
 					</label>
 				</div>
 				<p className="text-[10px] text-muted-foreground">
-					Automatically approves completed sessions with gate: approval. This is
-					independent from agent auto-approve.
+					Automatically approves completed sessions with gate: approval.
 				</p>
 				{workflow.error && (
 					<p className="text-[10px] text-destructive">{workflow.error}</p>
 				)}
 			</div>
 
-			{draft.agent !== "none" && (
-				<div className="flex flex-col gap-1.5">
-					<label htmlFor="agent-max-concurrent" className={labelClass}>
-						Max concurrent agent PTYs
-					</label>
-					<input
-						id="agent-max-concurrent"
-						type="number"
-						min={0}
-						value={draft.agentMaxConcurrent}
-						onChange={(e) =>
-							updateDraft((d) => ({
-								...d,
-								agentMaxConcurrent: Math.max(0, Number(e.target.value) || 0),
-							}))
-						}
-						className="w-24 bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-					/>
-					<p className="text-[10px] text-muted-foreground">
-						Limits how many agent sessions are pre-spawned at startup. 0 =
-						unlimited.
-					</p>
-				</div>
-			)}
-
-			{draft.agent === "custom" && (
-				<div className="flex flex-col gap-1.5">
-					<label htmlFor="terminal-startup-cmd" className={labelClass}>
-						Startup Command
-					</label>
-					<textarea
-						id="terminal-startup-cmd"
-						value={draft.terminalStartupCommand}
-						onChange={(e) =>
-							updateDraft((d) => ({
-								...d,
-								terminalStartupCommand: e.target.value,
-							}))
-						}
-						placeholder="e.g. nvm use 18 && clear"
-						rows={3}
-						className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-					/>
-					<p className="text-[10px] text-muted-foreground">
-						Optional: pre-launch setup command.
-					</p>
-				</div>
-			)}
-
-			{draft.agent === "claude" && (
-				<div className="flex flex-col gap-2">
-					<h4 className="text-xs font-semibold text-muted-foreground">
-						Claude Code Hooks
-					</h4>
-
-					{hooksLoading ? (
-						<div className="flex items-center justify-center py-4">
-							<Loader2 className="size-4 animate-spin text-muted-foreground" />
-						</div>
-					) : (
-						<>
-							<div className="flex items-center gap-2">
-								<span className="text-xs font-medium">
-									Status:{" "}
-									{hooksStatus === "active" && (
-										<span className="text-success">Enabled</span>
-									)}
-									{hooksStatus === "token_mismatch" && (
-										<span className="text-warning">
-											Token mismatch — Reconfiguration required
-										</span>
-									)}
-									{hooksStatus === "not_configured" && (
-										<span className="text-muted-foreground">
-											Not configured
-										</span>
-									)}
-								</span>
-							</div>
-
-							<div className="relative">
-								<pre className="max-h-40 overflow-auto rounded border border-border bg-muted/50 p-2 text-[10px] font-mono whitespace-pre-wrap break-all">
-									{hooksConfig}
-								</pre>
-								<button
-									type="button"
-									className="absolute top-1.5 right-1.5 p-1 rounded bg-background/80 border border-border hover:bg-muted transition-colors"
-									onClick={onCopyHooks}
-								>
-									{hooksCopied ? (
-										<Check className="size-3 text-success" />
-									) : (
-										<Copy className="size-3 text-muted-foreground" />
-									)}
-								</button>
-							</div>
-
-							{hooksError && (
-								<p className="text-xs text-destructive">{hooksError}</p>
-							)}
-
-							{hooksSuccess && (
-								<p className="text-xs text-success">
-									Settings applied. Restart Claude Code to take effect.
-								</p>
-							)}
-
-							<div className="flex justify-end">
-								<Button
-									size="sm"
-									variant={hooksStatus === "active" ? "ghost" : "default"}
-									onClick={onApplyHooks}
-									disabled={hooksApplying || !hooksConfig}
-								>
-									{hooksApplying ? (
-										<Loader2 className="size-3.5 mr-1 animate-spin" />
-									) : null}
-									{hooksStatus === "active" ? "Reconfigure" : "Apply Settings"}
-								</Button>
-							</div>
-						</>
-					)}
-				</div>
-			)}
+			<div className="flex flex-col gap-1.5">
+				<label htmlFor="terminal-startup-cmd" className={labelClass}>
+					Workspace terminal startup command
+				</label>
+				<textarea
+					id="terminal-startup-cmd"
+					value={draft.terminalStartupCommand}
+					onChange={(e) =>
+						updateDraft((d) => ({
+							...d,
+							terminalStartupCommand: e.target.value,
+						}))
+					}
+					placeholder="e.g. nvm use 18 && clear"
+					rows={3}
+					className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+				/>
+				<p className="text-[10px] text-muted-foreground">
+					Optional setup command for Workspace terminals.
+				</p>
+			</div>
 		</div>
 	);
 }
@@ -977,173 +721,6 @@ function BackgroundSection({
 
 					{background.error && (
 						<p className="text-xs text-destructive">{background.error}</p>
-					)}
-				</>
-			)}
-		</div>
-	);
-}
-
-// URL の hostname を厳密一致で判定する（substring 判定は
-// `https://evil.com/discord.com/api/webhooks/` 等で回避可能なため使わない）。
-function detectWebhookType(
-	raw: string,
-): "Discord" | "Slack" | "Generic (Slack format)" | null {
-	if (!raw) return null;
-	let host: string;
-	let pathname: string;
-	try {
-		const url = new URL(raw);
-		host = url.hostname.toLowerCase();
-		pathname = url.pathname;
-	} catch {
-		return "Generic (Slack format)";
-	}
-	if (
-		(host === "discord.com" || host === "discordapp.com") &&
-		pathname.startsWith("/api/webhooks/")
-	) {
-		return "Discord";
-	}
-	if (host === "hooks.slack.com") {
-		return "Slack";
-	}
-	return "Generic (Slack format)";
-}
-
-function NotificationsSection({
-	webhook,
-}: {
-	webhook: ReturnType<typeof useWebhookConfig>;
-}) {
-	const webhookUrlValue = webhook.draft.webhook_url;
-	const detectedWebhookType = detectWebhookType(webhookUrlValue);
-
-	return (
-		<div className="flex flex-col gap-2">
-			{webhook.loading ? (
-				<div className="flex items-center justify-center py-4">
-					<Loader2 className="size-4 animate-spin text-muted-foreground" />
-				</div>
-			) : (
-				<>
-					<div className="flex flex-col gap-1.5">
-						<label htmlFor="webhook-url" className={labelClass}>
-							Webhook URL
-						</label>
-						<Input
-							id="webhook-url"
-							type="url"
-							variant="panel"
-							size="sm"
-							value={webhook.draft.webhook_url}
-							onChange={(e) =>
-								webhook.setDraft((d) => ({
-									...d,
-									webhook_url: e.target.value,
-								}))
-							}
-							placeholder="https://hooks.slack.com/... or https://discord.com/api/webhooks/..."
-						/>
-						{detectedWebhookType && (
-							<p className="text-[10px] text-muted-foreground">
-								Detected: {detectedWebhookType}
-							</p>
-						)}
-					</div>
-
-					<div className="flex flex-col gap-1.5">
-						<span className={labelClass}>Notify on</span>
-						<div className="flex flex-wrap gap-x-3 gap-y-1">
-							{(
-								[
-									["on_running", "Running"],
-									["on_done", "Done"],
-									["on_error", "Error"],
-									["on_waiting", "Waiting"],
-								] as const
-							).map(([key, label]) => (
-								<div key={key} className="flex items-center gap-1">
-									<Checkbox
-										id={`notify-${key}`}
-										checked={webhook.draft[key]}
-										onCheckedChange={(checked) =>
-											webhook.setDraft((d) => ({
-												...d,
-												[key]: checked === true,
-											}))
-										}
-									/>
-									<label
-										htmlFor={`notify-${key}`}
-										className="text-xs cursor-pointer"
-									>
-										{label}
-									</label>
-								</div>
-							))}
-						</div>
-					</div>
-
-					<div className="flex flex-col gap-1.5">
-						<span className={labelClass}>Send notifications</span>
-						<RadioGroup
-							value={webhook.draft.desktop_mode}
-							onValueChange={(value) =>
-								webhook.setDraft((d) => ({
-									...d,
-									desktop_mode: value as DesktopNotifyMode,
-								}))
-							}
-						>
-							<div className="flex items-center gap-2">
-								<RadioGroupItem value="always" id="desktop-always" />
-								<label
-									htmlFor="desktop-always"
-									className="text-xs cursor-pointer"
-								>
-									Always
-								</label>
-							</div>
-							<div className="flex items-center gap-2">
-								<RadioGroupItem
-									value="when_inactive"
-									id="desktop-when-inactive"
-								/>
-								<label
-									htmlFor="desktop-when-inactive"
-									className="text-xs cursor-pointer"
-								>
-									When inactive for
-								</label>
-								{webhook.draft.desktop_mode === "when_inactive" && (
-									<Select
-										value={String(webhook.draft.inactive_timeout_minutes)}
-										onValueChange={(value) =>
-											webhook.setDraft((d) => ({
-												...d,
-												inactive_timeout_minutes: Number(value),
-											}))
-										}
-									>
-										<SelectTrigger className="w-auto min-w-[80px]">
-											<SelectValue />
-										</SelectTrigger>
-										<SelectContent>
-											{INACTIVE_TIMEOUT_OPTIONS.map((opt) => (
-												<SelectItem key={opt.value} value={String(opt.value)}>
-													{opt.label}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-								)}
-							</div>
-						</RadioGroup>
-					</div>
-
-					{webhook.error && (
-						<p className="text-xs text-destructive">{webhook.error}</p>
 					)}
 				</>
 			)}
@@ -1289,16 +866,13 @@ export function SettingsModal({
 		prevOpen: open,
 	});
 	const { activeSection, draft, appDirty, saving } = state;
-	const webhook = useWebhookConfig();
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
-
-	// Hooks state
-	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
+	const providerAvailability = useProviderAvailabilitySettings(open);
 
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
@@ -1316,64 +890,15 @@ export function SettingsModal({
 		[],
 	);
 
-	// Load hooks config when agent is claude and dialog is open
-	useEffect(() => {
-		if (!open || draft.agent !== "claude") return;
-		let cancelled = false;
-		dispatchHooks({ type: "LOAD_START" });
-
-		Promise.all([
-			invoke<string>("generate_hooks_config"),
-			invoke<string>("get_hooks_status"),
-		])
-			.then(([json, status]) => {
-				if (!cancelled) {
-					dispatchHooks({
-						type: "LOAD_SUCCESS",
-						config: json,
-						status: status as HooksState["status"],
-					});
-				}
-			})
-			.catch((e) => {
-				if (!cancelled) {
-					dispatchHooks({ type: "LOAD_ERROR", error: String(e) });
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [open, draft.agent]);
-
-	const handleApplyHooks = useCallback(async () => {
-		dispatchHooks({ type: "APPLY_START" });
-		try {
-			await invoke("apply_hooks_config", { configJson: hooks.config });
-			dispatchHooks({ type: "APPLY_SUCCESS" });
-		} catch (e) {
-			dispatchHooks({ type: "APPLY_ERROR", error: String(e) });
-		}
-	}, [hooks.config]);
-
-	const handleCopyHooks = useCallback(async () => {
-		try {
-			await navigator.clipboard.writeText(hooks.config);
-			dispatchHooks({ type: "SET_COPIED", copied: true });
-			setTimeout(
-				() => dispatchHooks({ type: "SET_COPIED", copied: false }),
-				2000,
-			);
-		} catch (e) {
-			dispatchHooks({ type: "COPY_ERROR", error: `Copy failed: ${String(e)}` });
-		}
-	}, [hooks.config]);
-
-	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
+	const {
+		isDirty: providerAvailabilityIsDirty,
+		save: providerAvailabilitySave,
+	} = providerAvailability;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1381,9 +906,6 @@ export function SettingsModal({
 			const performanceTelemetryChanged =
 				draft.performanceTelemetry !== settings.performanceTelemetry;
 			onSave(draft);
-			if (webhookIsDirty) {
-				await webhookSave();
-			}
 			if (backgroundIsDirty) {
 				await backgroundSave();
 			}
@@ -1399,12 +921,14 @@ export function SettingsModal({
 			if (workflowIsDirty) {
 				await workflowSave();
 			}
+			if (providerAvailabilityIsDirty) {
+				await providerAvailabilitySave();
+			}
 			if (performanceTelemetryChanged) {
 				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
 			}
 			trackEvent("settings_saved");
 		} catch {
-			// webhook などの保存失敗はフック内部でerror stateに反映されUIに表示される
 			dispatchSettings({ type: "SAVE_ERROR" });
 		} finally {
 			dispatchSettings({ type: "SAVE_END" });
@@ -1413,8 +937,6 @@ export function SettingsModal({
 		draft,
 		onSave,
 		settings.performanceTelemetry,
-		webhookIsDirty,
-		webhookSave,
 		backgroundIsDirty,
 		backgroundSave,
 		reposIsDirty,
@@ -1425,16 +947,18 @@ export function SettingsModal({
 		editorSave,
 		workflowIsDirty,
 		workflowSave,
+		providerAvailabilityIsDirty,
+		providerAvailabilitySave,
 	]);
 
 	const isDirty =
 		appDirty ||
-		webhookIsDirty ||
 		backgroundIsDirty ||
 		reposIsDirty ||
 		notionIsDirty ||
 		editorIsDirty ||
-		workflowIsDirty;
+		workflowIsDirty ||
+		providerAvailabilityIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1474,21 +998,11 @@ export function SettingsModal({
 						draft={draft}
 						updateDraft={updateDraft}
 						workflow={workflow}
-						hooksConfig={hooks.config}
-						hooksLoading={hooks.loading}
-						hooksApplying={hooks.applying}
-						hooksStatus={hooks.status}
-						hooksCopied={hooks.copied}
-						hooksError={hooks.error}
-						hooksSuccess={hooks.success}
-						onApplyHooks={handleApplyHooks}
-						onCopyHooks={handleCopyHooks}
+						providerAvailability={providerAvailability}
 					/>
 				);
 			case "background":
 				return <BackgroundSection background={background} />;
-			case "notifications":
-				return <NotificationsSection webhook={webhook} />;
 			case "automation":
 				return <AutomationSection automation={automation} />;
 			case "privacy":

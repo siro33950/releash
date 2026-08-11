@@ -570,10 +570,11 @@ mod tests {
     }
 
     #[test]
-    fn full_review_uses_current_opus_model() {
+    fn test_builtin_workflow_session_明示したclaude_providerを使う() {
         let source = builtin_workflow_source("03_full-review").unwrap();
 
-        assert!(source.contains("model: claude-opus-5"));
-        assert!(!source.contains("claude-opus-4-8"));
+        assert!(source.contains("provider: claude"));
+        assert!(!source.contains("model:"));
+        assert!(!source.contains("permission:"));
     }
 }

@@ -26,17 +26,19 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-wdio = { version = "1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 portable-pty = "0.9.0"
+avt = "0.18.0"
 parking_lot = "0.12.5"
 notify-debouncer-mini = "0.7"
 base64 = "0.23"
 git2 = "0.21"
 thiserror = "2"
-ignore = "0.4"
 regex = "1"
 tree-sitter = "0.26"
 tree-sitter-tags = "0.26"
@@ -79,9 +81,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", branch = "release" }
-
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry"] }
@@ -89,6 +88,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [features]
 vendored-openssl = ["git2/vendored-openssl"]
+performance-wdio = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
 filetime = "0.2"

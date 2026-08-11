@@ -82,8 +82,7 @@ fn domain_kind_to_schema(
         domain::NodeKind::Session(spec) => {
             crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                 crate::adaptor::gateway::workflow::schema::SessionSpec {
-                    model: spec.model.clone(),
-                    permission: spec.permission.clone(),
+                    provider: spec.provider,
                     gate: domain_gate_to_schema(spec.gate),
                     facets: domain_facets_to_schema(&spec.facets),
                 },
@@ -540,6 +539,7 @@ mod tests {
                 "nodes": [{
                     "name": "implement",
                     "session": {
+                        "provider": "claude",
                         "gate": "auto",
                         "facets": {
                             "instruction": "inst"
@@ -564,13 +564,13 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "ship feature",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
                         "name": "review",
                         "session": {
+                            "provider": "claude",
                             "gate": "auto"
                         }
                     }]

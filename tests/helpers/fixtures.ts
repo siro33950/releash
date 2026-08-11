@@ -35,7 +35,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_cwd: "/test/repo",
 	get_main_repo_path: "/test/repo",
 	list_worktrees: [],
-	check_pr_provider_status: "available",
 	set_menu_items_enabled: null,
 
 	// WorktreeView 初期化
@@ -52,23 +51,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	list_workspace_statuses: [],
 	get_releash_base: null,
 	get_default_branch: "main",
-
-	// SettingsPanel hooks
-	generate_hooks_config: "{}",
-	get_hooks_status: "not_configured",
-	apply_hooks_config: null,
-
-	// Webhook notifications
-	get_notify_config: {
-		webhook_url: "",
-		on_running: false,
-		on_done: true,
-		on_error: true,
-		on_waiting: true,
-		desktop_mode: "always",
-		inactive_timeout_minutes: 2,
-	},
-	update_notify_config: null,
 
 	// Telemetry
 	get_crash_reporting_enabled: true,
@@ -90,62 +72,34 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|enable": null,
 	"plugin:autostart|disable": null,
 
-	// Comments (legacy)
-	load_comments: [],
-	add_comment: null,
-	remove_comment: true,
-	update_comment_content: true,
-	mark_comments_sent: null,
-	toggle_resolve_comment: null,
-
-	// Threads
-	load_threads: [],
-	save_threads: null,
-	cleanup_threads: null,
-	add_thread: null,
-	add_thread_entry: null,
-	remove_thread: null,
-	update_thread_entry_content: null,
-	update_thread: null,
-	toggle_resolve_thread: null,
-	broadcast_threads: null,
-
-	// Thread AI
-	build_thread_ai_prompt: null,
-	build_thread_summarize_prompt: null,
-
-	// OneShot PTY
-	cancel_oneshot_pty: null,
-	spawn_oneshot_pty: null,
-	get_oneshot_pty_output: null,
-
 	// Branch base
 	get_branch_base: null,
 	set_branch_base: null,
 
 	// Terminal (PTY) — モック上は何もしない
-	get_or_spawn_pty: {
-		pty_id: 1,
+	get_or_spawn_terminal_surface: {
 		session_key: "mock-session",
-		buffered_output: "",
+		restored_from_checkpoint: false,
 		is_new: true,
 		is_exited: false,
 		exit_code: null,
-		label: null,
 	},
-	write_pty: null,
-	resize_pty: null,
-	kill_ptys_by_worktree: null,
-
-	// MCP config
-	get_mcp_config: { port: 19801, token: "mock-token" },
-	update_mcp_config: null,
-	regenerate_mcp_token: "new-mock-token",
-	generate_agent_mcp_config: { file_path: "", content: "" },
-	preview_agent_mcp_config: "",
-	get_configured_agents: [],
-	save_and_generate_mcp_configs: [],
-	remove_agent_mcp_config: true,
+	get_terminal_surface: {
+		session_key: "mock-session",
+		terminal_surface: {
+			replay: "",
+			sequence: 0,
+			cols: 80,
+			rows: 24,
+		},
+		is_exited: false,
+		exit_code: null,
+	},
+	attach_terminal_surface: { __mockTerminalAttachment: true },
+	detach_terminal_surface: null,
+	write_terminal_surface: null,
+	resize_terminal_surface: null,
+	kill_terminal_surface: null,
 
 	// External editor
 	get_external_editor: "",
@@ -172,16 +126,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Git log
 	get_git_log: [],
 
-	// Search
-	search_files: { matches: [], total_matches: 0, truncated: false },
-
-	// PullRequestPanel
-	get_pr_detail: null,
-	get_pr_files: [],
-	get_pr_review_comments: [],
-	reply_to_pr_review_comment: null,
-	post_pr_comment: null,
-
 	// IssuePanel
 	list_branches: [],
 
@@ -200,47 +144,43 @@ const baseIpcHandler: Record<string, unknown> = {
 	create_worktree: null,
 	remove_worktree: null,
 	delete_branch: null,
-	kill_lsp_by_worktree: null,
 
-	// Agent chat sessions
-	list_sessions: [],
-	init_agent_sessions: {
-		sessions: [],
-		activeSession: null,
-		permissionMode: "edit",
-		planMode: false,
+	// AgentSession TUI
+	list_available_agent_session_providers: ["claude", "codex"],
+	list_agent_sessions: { items: [], nextAfterSessionId: null },
+	get_agent_session: null,
+	open_agent_session: "attached",
+	resume_agent_session: "resumed",
+	restore_agent_session: "restored",
+	archive_agent_session: "archived",
+	delete_agent_session: null,
+	confirm_agent_session_archive_delete: null,
+	list_agent_session_history: { items: [], nextAfter: null },
+	resume_agent_session_history_candidate: "mock-agent-session-1",
+	get_provider_availability: {
+		providers: [
+			{
+				provider: "claude",
+				displayName: "Claude",
+				defaultExecutable: "claude",
+				configuredExecutable: null,
+				effectiveExecutable: "claude",
+				available: true,
+				resolvedExecutable: "/usr/local/bin/claude",
+				unavailableReason: null,
+			},
+			{
+				provider: "codex",
+				displayName: "Codex",
+				defaultExecutable: "codex",
+				configuredExecutable: null,
+				effectiveExecutable: "codex",
+				available: true,
+				resolvedExecutable: "/usr/local/bin/codex",
+				unavailableReason: null,
+			},
+		],
 	},
-	list_agent_backends: { backends: [], defaultId: null },
-	get_session: null,
-	get_agent_session_display_window: null,
-	get_session_page: null,
-	plan_agent_chat_eviction: { evictSessionIds: [] },
-	create_session: {
-		id: "mock-session-1",
-		worktreePath: "/test/repo",
-		messages: [],
-		state: "active",
-		createdAt: 1000,
-		updatedAt: 1000,
-	},
-	create_workspace_session: "mock-session-1",
-	close_session: null,
-	restore_session: null,
-	list_closed_sessions: [],
-	add_message: {
-		id: "mock-msg-1",
-		role: "agent",
-		content: "",
-		timestamp: 1000,
-	},
-	update_session_state: null,
-	update_message_parts: null,
-	update_session_agent_info: null,
-	stop_agent_session: { __mockAcceptedStop: true },
-	get_stop_operation: null,
-	respond_agent_permission: null,
-	scan_slash_commands: [],
-
 	// Workspace state
 	save_workspace_state: null,
 

@@ -1,4 +1,3 @@
-use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::{
     ContractType, NodeDefinitionName, WorkflowDefinitionName, WorkflowError, WorkflowExecutionId,
@@ -8,10 +7,6 @@ use crate::domain::workflow::{
 use super::{
     AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
     StopExecutionCommand, SubmitOutputCommand,
-};
-use crate::usecase::workflow::ports::{
-    WorkflowStallClearedNotification, WorkflowStallObservedNotification,
-    WorkflowTurnCompleteNotification,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -24,8 +19,6 @@ impl WorkflowRuntimeCommandPreflight {
     ) -> Result<(), WorkflowError> {
         WorkflowDefinitionName::new(command.workflow_name.clone())?;
         WorkspaceWorktreePath::new(command.worktree_path.clone())?;
-        PermissionMode::parse_canonical(&command.permission_mode)
-            .map_err(|error| WorkflowError::validation(error.to_string()))?;
         Ok(())
     }
 
@@ -68,42 +61,13 @@ impl WorkflowRuntimeCommandPreflight {
     ) -> Result<(), WorkflowError> {
         WorkflowExecutionId::new(command.execution_id.clone())?;
         NodeDefinitionName::new(command.node_name.clone())?;
-        ContractType::new(command.contract.clone())?;
-        Ok(())
-    }
-
-    pub(crate) fn validate_turn_complete(
-        &self,
-        command: &WorkflowTurnCompleteNotification,
-    ) -> Result<(), WorkflowError> {
-        if command.chat_session_id.trim().is_empty() {
+        if command.node_execution_id.trim().is_empty() {
             return Err(WorkflowError::validation(
-                "chat_session_id must not be empty",
+                "node_execution_id must not be empty",
             ));
         }
-        Ok(())
-    }
-
-    pub(crate) fn validate_stall_observed(
-        &self,
-        command: &WorkflowStallObservedNotification,
-    ) -> Result<(), WorkflowError> {
-        if command.chat_session_id.trim().is_empty() {
-            return Err(WorkflowError::validation(
-                "chat_session_id must not be empty",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_stall_cleared(
-        &self,
-        command: &WorkflowStallClearedNotification,
-    ) -> Result<(), WorkflowError> {
-        if command.chat_session_id.trim().is_empty() {
-            return Err(WorkflowError::validation(
-                "chat_session_id must not be empty",
-            ));
+        if let Some(artifact) = &command.artifact {
+            ContractType::new(artifact.contract.clone())?;
         }
         Ok(())
     }
@@ -114,27 +78,6 @@ impl WorkflowRuntimeCommandPreflight {
         execution_id: &str,
     ) -> Result<(), WorkflowError> {
         WorkflowExecutionId::new(execution_id.to_string()).map(|_| ())
-    }
-
-    pub(crate) fn validate_worktree_lookup(
-        &self,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowError> {
-        WorkspaceWorktreePath::new(worktree_path.to_string()).map(|_| ())
-    }
-
-    pub(crate) fn validate_approval_chat(
-        &self,
-        execution_id: &str,
-        content: &str,
-    ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(execution_id.to_string())?;
-        if content.trim().is_empty() {
-            return Err(WorkflowError::validation(
-                "approval chat content must not be empty",
-            ));
-        }
-        Ok(())
     }
 }
 

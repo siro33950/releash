@@ -1,9 +1,12 @@
 use crate::adaptor::protocol::workflow as workflow_wire;
 use crate::domain::workflow;
 
+use std::collections::HashSet;
+
 pub fn workflow_execution_to_view(
     execution: workflow::WorkflowExecution,
 ) -> workflow_wire::WorkflowExecutionView {
+    let retryable_node_ids = execution.retryable_node_execution_ids();
     workflow_wire::WorkflowExecutionView {
         id: execution.id,
         workflow_name: execution.workflow_name,
@@ -23,14 +26,21 @@ pub fn workflow_execution_to_view(
         node_executions: execution
             .node_executions
             .into_iter()
-            .map(node_execution_to_view)
+            .map(|node| {
+                let can_retry = retryable_node_ids.contains(&node.id);
+                node_execution_to_view_with_retry(node, can_retry)
+            })
             .collect(),
         artifacts: execution
             .artifacts
             .into_iter()
             .map(artifact_to_view)
             .collect(),
-        fanouts: execution.fanouts.into_iter().map(fanout_to_view).collect(),
+        fanouts: execution
+            .fanouts
+            .into_iter()
+            .map(|fanout| fanout_to_view(fanout, &retryable_node_ids))
+            .collect(),
         approval_target: execution.approval_target.map(approval_target_to_view),
     }
 }
@@ -40,12 +50,13 @@ fn execution_status_to_view(
 ) -> workflow_wire::ExecutionStatusView {
     match status {
         workflow::ExecutionStatus::Running => workflow_wire::ExecutionStatusView::Running,
+        #[cfg(test)]
         workflow::ExecutionStatus::WaitingApproval => {
             workflow_wire::ExecutionStatusView::WaitingApproval
         }
         workflow::ExecutionStatus::Completed => workflow_wire::ExecutionStatusView::Completed,
-        workflow::ExecutionStatus::Failed => workflow_wire::ExecutionStatusView::Failed,
         workflow::ExecutionStatus::Aborted => workflow_wire::ExecutionStatusView::Aborted,
+        #[cfg(test)]
         workflow::ExecutionStatus::Interrupted => workflow_wire::ExecutionStatusView::Interrupted,
     }
 }
@@ -97,6 +108,18 @@ fn artifact_to_view(artifact: workflow::Artifact) -> workflow_wire::ArtifactView
 }
 
 pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::NodeExecutionView {
+    let can_retry = node.can_retry();
+    node_execution_to_view_with_retry(node, can_retry)
+}
+
+fn node_execution_to_view_with_retry(
+    node: workflow::NodeExecution,
+    can_retry: bool,
+) -> workflow_wire::NodeExecutionView {
+    let (submit_received, stop_received, waiting_for) =
+        completion_signal_view(node.completion_signals);
+    let can_approve = node.status == workflow::NodeExecutionStatus::WaitingApproval;
+    let has_artifact = node.artifact.is_some();
     workflow_wire::NodeExecutionView {
         id: node.id,
         execution_id: node.execution_id,
@@ -104,6 +127,12 @@ pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::N
         kind: node_kind_to_view(node.kind),
         attempt: node.attempt,
         status: node_status_to_view(node.status),
+        submit_received,
+        stop_received,
+        waiting_for,
+        can_approve,
+        can_retry,
+        has_artifact,
         session_id: node.session_id,
         display_command: node.display_command,
         result_summary: node.result_summary,
@@ -128,15 +157,43 @@ pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::N
     }
 }
 
-fn fanout_to_view(fanout: workflow::Fanout) -> workflow_wire::FanoutView {
+fn fanout_to_view(
+    fanout: workflow::Fanout,
+    retryable_node_ids: &HashSet<String>,
+) -> workflow_wire::FanoutView {
     workflow_wire::FanoutView {
-        parent: node_execution_to_view(fanout.parent),
+        parent: {
+            let can_retry = retryable_node_ids.contains(&fanout.parent.id);
+            node_execution_to_view_with_retry(fanout.parent, can_retry)
+        },
         children: fanout
             .children
             .into_iter()
-            .map(node_execution_to_view)
+            .map(|child| {
+                let can_retry = retryable_node_ids.contains(&child.id);
+                node_execution_to_view_with_retry(child, can_retry)
+            })
             .collect(),
         artifact: fanout.artifact.map(artifact_to_view),
+    }
+}
+
+fn completion_signal_view(
+    state: workflow::NodeCompletionSignalState,
+) -> (bool, bool, Option<workflow_wire::NodeCompletionSignalView>) {
+    match state {
+        workflow::NodeCompletionSignalState::Pending => (false, false, None),
+        workflow::NodeCompletionSignalState::SubmitReceived => (
+            true,
+            false,
+            Some(workflow_wire::NodeCompletionSignalView::Stop),
+        ),
+        workflow::NodeCompletionSignalState::StopReceived => (
+            false,
+            true,
+            Some(workflow_wire::NodeCompletionSignalView::Submit),
+        ),
+        workflow::NodeCompletionSignalState::Ready => (true, true, None),
     }
 }
 
@@ -161,6 +218,7 @@ fn node_status_to_view(
 ) -> workflow_wire::NodeExecutionStatusView {
     match status {
         workflow::NodeExecutionStatus::Running => workflow_wire::NodeExecutionStatusView::Running,
+        workflow::NodeExecutionStatus::Paused => workflow_wire::NodeExecutionStatusView::Paused,
         workflow::NodeExecutionStatus::WaitingApproval => {
             workflow_wire::NodeExecutionStatusView::WaitingApproval
         }
@@ -231,6 +289,7 @@ mod tests {
             }),
             failure: None,
             fanout_parent: None,
+            completion_signals: workflow::NodeCompletionSignalState::StopReceived,
             started_at: 1.5,
             completed_at: None,
         }
@@ -276,6 +335,12 @@ mod tests {
         assert_eq!(value["nodeExecutions"][0]["artifact"]["nodeName"], "review");
         assert_eq!(value["fanouts"][0]["parent"]["id"], "node-1");
         assert_eq!(value["approvalTarget"]["sessionId"], "session-1");
+        assert_eq!(value["nodeExecutions"][0]["submitReceived"], false);
+        assert_eq!(value["nodeExecutions"][0]["stopReceived"], true);
+        assert_eq!(value["nodeExecutions"][0]["waitingFor"], "submit");
+        assert_eq!(value["nodeExecutions"][0]["canApprove"], true);
+        assert_eq!(value["nodeExecutions"][0]["canRetry"], false);
+        assert_eq!(value["nodeExecutions"][0]["hasArtifact"], true);
         assert_eq!(value["interruptionReason"], "stop");
         assert_eq!(value["resumeFromNode"], "review");
     }

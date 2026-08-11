@@ -15,7 +15,7 @@
 |---|---|---|
 | SQLite | 接続、DDL、トランザクション機構、保存形式の表現 | SQL（DML）、保存表現 ↔ domain record の codec |
 | git | `git2` の呼び出しと `git2` の型 | `Branch` / `Commit` の構築、`git2::Error` → ドメインエラー |
-| Agent CLI | プロセス起動、stdout 読み、wire の形 | wire ↔ ドメインイベントの変換、`AgentBackend` の実装 |
+| Terminal / Provider CLI | PTY、process group、raw byte I/O、checkpoint journal | Terminal Surface ownership、AgentSession lifecycle、Provider lifecycleへの変換 |
 | 通知 | HTTP 送信 | ドメインの通知 → Slack / Discord ペイロードの組み立て |
 
 DDL は「保存形式がどういう形をしているか」の宣言であって、何も変換しない。対して SQL（DML）は、ドメインの値を行へ、行をドメインの値へ写す行為そのものであり、変換である。
@@ -27,16 +27,19 @@ DDL は「保存形式がどういう形をしているか」の宣言であっ�
 ```
 src-tauri/src/infrastructure/
 ├── mod.rs
-├── agent_session/                 # Agent CLI のプロセスと wire
 ├── comment/                       # コメント関連のファイル監視
 ├── file_watcher/                  # ファイル監視
 ├── git/                           # git2 クライアント
 ├── local_api/                     # ローカル HTTP サーバ / クライアント
 ├── platform/                      # OS・Tauri プラットフォーム連携
 ├── process/                       # 子プロセス起動と管理
-├── pty_session/                   # shell integration
-└── telemetry/                     # テレメトリ送出
+├── provider_history/              # Provider transcript探索の外部I/O
+├── provider_lifecycle/            # provider hook の受信・launch file
+├── telemetry/                     # テレメトリ送出
+└── terminal/                      # PTY・raw byte stream・checkpoint journal・shell integration
 ```
+
+Provider CLIのconversation本文と画面は解析しない。AgentSession TUIはProvider CLIをTerminal SurfaceのPTYへ接続し、infrastructureはそのbyte streamをopaqueに扱う。Provider session identityとStop通知は`provider_lifecycle/`、transcript候補の探索は`provider_history/`の外部I/Oであり、Agent固有wireをdomain eventへ変換するruntimeは持たない。
 
 ドメイン名でディレクトリを切ることはあるが、それは「その外部世界を誰が使うか」の目印であって、そのドメインの語彙を持ってよいという意味ではない。
 

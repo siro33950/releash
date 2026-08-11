@@ -8,9 +8,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures_util::stream;
 use sha2::{Digest, Sha256};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::clock::{StoreClock, SystemStoreClock};
 use crate::adaptor::gateway::local_event_store::commit::{execute_commit, resolve_commit_row};
@@ -41,10 +40,9 @@ use crate::adaptor::gateway::local_event_store::writer::{
 };
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
-    GlobalSequence, LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
-    LocalEventQueryResult, LocalEventSignal, LocalEventSubscription,
-    LocalEventTransactionRepository, LocalStateMutation, SafeOperationFailure,
-    SessionOperationFailureKind,
+    LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
+    SafeOperationFailure, SessionOperationFailureKind,
 };
 
 fn correlation_id() -> String {
@@ -393,11 +391,6 @@ impl LocalEventStoreConfig {
     }
 }
 
-struct BroadcastSignal {
-    commit_id: String,
-    max_global_sequence: i64,
-}
-
 /// The permanent SQLite local event store.
 pub struct LocalEventStore {
     registry: Arc<EventCodecRegistry>,
@@ -407,7 +400,6 @@ pub struct LocalEventStore {
     readers: Arc<ReaderPool>,
     recovery_snapshots: Arc<RecoverySnapshotPager>,
     query_context: Arc<QueryContext>,
-    notifications: broadcast::Sender<Arc<BroadcastSignal>>,
     installation_id: String,
     operation_binding_key: [u8; 32],
     writer_worker: Option<std::thread::JoinHandle<()>>,
@@ -650,7 +642,6 @@ impl LocalEventStore {
             .map_err(|_| LocalEventStoreOpenError::StoreValidationFailed)?;
 
         let queue = WriteQueue::new();
-        let (notifications, _) = broadcast::channel(1024);
         let readers = ReaderPool::new(Arc::clone(&config.clock));
         let query_context = Arc::new(QueryContext {
             registry: Arc::clone(&config.registry),
@@ -674,7 +665,6 @@ impl LocalEventStore {
             let queue = Arc::clone(&queue);
             let fault = Arc::clone(&config.fault);
             let clock = Arc::clone(&config.clock);
-            let notifications = notifications.clone();
             std::thread::Builder::new()
                 .name("local-event-store-writer".to_string())
                 .spawn(move || loop {
@@ -686,14 +676,6 @@ impl LocalEventStore {
                                 clock.now_ms().max(0),
                                 &fault,
                             );
-                            if let Ok(CommitBatchResult::Committed(batch)) = &result {
-                                if let Some((_, last)) = batch.sequence_range {
-                                    let _ = notifications.send(Arc::new(BroadcastSignal {
-                                        commit_id: batch.commit_id.as_str().to_string(),
-                                        max_global_sequence: last.value(),
-                                    }));
-                                }
-                            }
                             if fault.take_drop_reply() {
                                 drop(request.reply);
                             } else {
@@ -740,7 +722,6 @@ impl LocalEventStore {
             readers,
             recovery_snapshots,
             query_context,
-            notifications,
             installation_id,
             operation_binding_key,
             writer_worker,
@@ -760,21 +741,6 @@ impl LocalEventStore {
     #[cfg(test)]
     pub fn fault_injector(&self) -> &Arc<FaultInjector> {
         &self.fault
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reader_pool_for_test(&self) -> Arc<ReaderPool> {
-        Arc::clone(&self.readers)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn recovery_snapshot_worker_count_for_test(&self) -> usize {
-        self.recovery_snapshots.running_worker_count_for_test()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn recovery_snapshot_issue_order_len_for_test(&self) -> usize {
-        self.recovery_snapshots.issue_order_len_for_test()
     }
 
     /// Validate and encode a batch before queue admission (design step 1).
@@ -891,11 +857,13 @@ impl LocalEventStore {
     }
 }
 
-impl crate::usecase::agent_session::operation::RecoveryResultCanonicalizer for LocalEventStore {
+impl crate::usecase::application_lifecycle::operation::RecoveryResultCanonicalizer
+    for LocalEventStore
+{
     fn canonicalize_recovery_result(
         &self,
         outcome: crate::domain::local_event::RecoveryResultOutcomeRecord,
-        classification: crate::domain::agent_session::events::RecoveryResultClassification,
+        classification: crate::domain::local_event::RecoveryResultClassification,
         resource_revision: u64,
         resource_view: crate::domain::local_event::RecoveryResourceViewRecord,
     ) -> Result<crate::domain::local_event::RecoveryResultRecord, ()> {
@@ -909,7 +877,9 @@ impl crate::usecase::agent_session::operation::RecoveryResultCanonicalizer for L
     }
 }
 
-impl crate::usecase::agent_session::operation::OperationBindingAuthority for LocalEventStore {
+impl crate::usecase::application_lifecycle::operation::OperationBindingAuthority
+    for LocalEventStore
+{
     fn mac(&self, message: &[u8]) -> [u8; 32] {
         crate::adaptor::gateway::local_event_store::hmac_sha256::hmac_sha256(
             &self.operation_binding_key,
@@ -1066,39 +1036,6 @@ impl LocalEventTransactionRepository for LocalEventStore {
         self.submit_indexed_query_blocking(move |connection| {
             run_query(connection, &context, &request)
         })
-    }
-
-    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {
-        let _ = after; // Subscribers replay from `after` through load_stream.
-        let receiver = self.notifications.subscribe();
-        let stream = stream::unfold(receiver, |mut receiver| async move {
-            loop {
-                match receiver.recv().await {
-                    Ok(signal) => {
-                        let Ok(commit_id) = CommitIdentity::parse(&signal.commit_id) else {
-                            continue;
-                        };
-                        let Ok(max_global_sequence) =
-                            GlobalSequence::new(signal.max_global_sequence)
-                        else {
-                            continue;
-                        };
-                        return Some((
-                            LocalEventSignal::Committed {
-                                commit_id,
-                                max_global_sequence,
-                            },
-                            receiver,
-                        ));
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        return Some((LocalEventSignal::ReplayRequired, receiver));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return None,
-                }
-            }
-        });
-        LocalEventSubscription::new(Box::pin(stream))
     }
 }
 

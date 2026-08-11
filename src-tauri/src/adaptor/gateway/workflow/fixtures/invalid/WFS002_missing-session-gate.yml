@@ -3,6 +3,6 @@ description: session gate is required
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       facets:
         instruction: implement

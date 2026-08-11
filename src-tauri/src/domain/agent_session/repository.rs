@@ -1,81 +1,74 @@
-use crate::domain::agent_session::aggregates::session::Session;
-use crate::domain::agent_session::events::AgentSessionDomainEvent;
-use crate::domain::agent_session::value_objects::SessionState;
-use crate::domain::local_event::LocalStateMutation;
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionRemovalAuthorization};
+use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentSessionLifecycleRepositoryError {
-    NotFound,
-    Corrupt(String),
-    Unavailable(String),
+pub enum AgentSessionRepositoryError {
+    AlreadyExists,
+    Conflict,
+    ProviderSessionAlreadyOwned { agent_session_id: String },
+    InvalidRequest,
+    Corrupt,
+    Unavailable,
 }
 
-/// Domain value selected for a backend-switch lifecycle change.
-///
-/// The gateway resolves provider configuration into this value before the
-/// repository maps the accepted aggregate change to projection participants.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendSelection {
-    pub backend_id: String,
-    pub model_id: String,
+pub struct VersionedAgentSession {
+    session: AgentSession,
+    revision: u64,
 }
 
-/// Opaque atomic-batch participant prepared from one aggregate change.
-///
-/// The repository port exposes this domain concept instead of leaking the
-/// local-event projection/storage vocabulary in its method signatures. Only
-/// the transaction-owning usecase opens it when assembling the existing
-/// `LocalEventTransactionRepository` batch.
-#[derive(Debug, Clone)]
-pub struct PreparedSessionChange {
-    participant: Vec<LocalStateMutation>,
-}
-
-impl PreparedSessionChange {
-    pub(crate) fn from_atomic_participant(participant: Vec<LocalStateMutation>) -> Self {
-        Self { participant }
+impl VersionedAgentSession {
+    pub(crate) fn restored(session: AgentSession, revision: u64) -> Self {
+        Self { session, revision }
     }
 
-    pub(crate) fn into_atomic_participant(self) -> Vec<LocalStateMutation> {
-        self.participant
+    pub(crate) fn session(&self) -> &AgentSession {
+        &self.session
+    }
+
+    pub(crate) fn session_mut(&mut self) -> &mut AgentSession {
+        &mut self.session
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn into_session(self) -> AgentSession {
+        self.session
     }
 }
 
-/// Domain-language boundary for bounded Session restore and CAS preparation.
-///
-/// Implementations consume storage projections and obligation views inside the
-/// adapter. This port never exposes persistence vocabulary and never creates a
-/// second commit authority.
 #[async_trait::async_trait]
-pub trait AgentSessionLifecycleRepository: Send + Sync {
-    async fn restore_session(
+pub trait AgentSessionRepository: Send + Sync {
+    async fn create(
         &self,
-        session_id: &str,
-    ) -> Result<Session, AgentSessionLifecycleRepositoryError>;
+        session: AgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError>;
 
-    /// Maps one aggregate event change to the existing atomic-CAS
-    /// participants. Implementations never commit independently.
-    async fn prepare_session_change(
+    async fn create_with_lifecycle_events(
         &self,
-        session_id: &str,
-        expected_revision: u64,
-        events: &[AgentSessionDomainEvent],
-    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError>;
+        session: AgentSession,
+        lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError>;
 
-    /// Maps an accepted lifecycle aggregate change to the existing session
-    /// projection CAS participant. The default keeps lightweight test
-    /// repositories source-compatible; production repositories must preserve
-    /// the supplied final state and backend selection.
-    async fn prepare_lifecycle_change(
+    async fn find(
         &self,
         session_id: &str,
-        expected_revision: u64,
-        final_state: SessionState,
-        backend_selection: Option<&BackendSelection>,
-        events: &[AgentSessionDomainEvent],
-    ) -> Result<Option<PreparedSessionChange>, AgentSessionLifecycleRepositoryError> {
-        let _ = (final_state, backend_selection);
-        self.prepare_session_change(session_id, expected_revision, events)
-            .await
-    }
+    ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError>;
+
+    async fn save(
+        &self,
+        session: VersionedAgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError>;
+
+    async fn remove(
+        &self,
+        session: VersionedAgentSession,
+        authorization: AgentSessionRemovalAuthorization,
+        caller_request_id: &str,
+    ) -> Result<(), AgentSessionRepositoryError>;
 }

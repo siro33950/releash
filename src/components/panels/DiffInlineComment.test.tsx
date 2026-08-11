@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ReviewThreadHandoffProvider } from "@/contexts/ReviewThreadHandoffContext";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
@@ -341,23 +342,67 @@ describe("DiffInlineComment", () => {
 		);
 	});
 
-	// spec issues-1022 "Thread handoff contract": Diff Thread を active な AgentChat
-	// session に共有するボタンが、active session の有無に応じて活性 / 非活性を切り替え、
-	// 押下時に thread id 付きで sendThreadToAgent が呼ばれる。
-	describe("send-to-agent button", () => {
-		const noActiveLabel = "No active Agent session";
+	describe("copy-for-agent button", () => {
+		const unavailableLabel = "Agent instruction copy unavailable";
 
-		it("is disabled and shows no-active-session tooltip when no active session", () => {
+		it("is disabled outside the handoff provider", () => {
 			render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
-			const button = screen.getByRole("button", { name: noActiveLabel });
+			const button = screen.getByRole("button", { name: unavailableLabel });
 			expect(button).toBeDisabled();
 		});
 
 		it("is disabled (alongside other actions) when thread is busy with another action", () => {
-			// 既存テストと同じく、provider 不在の場合は no-op fallback により canSend=false。
 			render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
-			const button = screen.getByRole("button", { name: noActiveLabel });
+			const button = screen.getByRole("button", { name: unavailableLabel });
 			expect(button).toBeDisabled();
+		});
+
+		it("shows clipboard success visibly in the product component", async () => {
+			const { invoke } = await import("@tauri-apps/api/core");
+			vi.mocked(invoke).mockResolvedValue("review instruction");
+			Object.defineProperty(navigator, "clipboard", {
+				configurable: true,
+				value: { writeText: vi.fn().mockResolvedValue(undefined) },
+			});
+			render(
+				<ReviewThreadHandoffProvider worktreeName="wt">
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffProvider>,
+			);
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Copy Diff Thread for Agent" }),
+			);
+
+			const status = await screen.findByRole("status");
+			expect(status).toHaveTextContent("Agent instruction copied");
+			expect(status).not.toHaveClass("sr-only");
+		});
+
+		it("shows clipboard failure visibly in the product component", async () => {
+			const { invoke } = await import("@tauri-apps/api/core");
+			vi.mocked(invoke).mockResolvedValue("review instruction");
+			Object.defineProperty(navigator, "clipboard", {
+				configurable: true,
+				value: {
+					writeText: vi
+						.fn()
+						.mockRejectedValue(new Error("clipboard unavailable")),
+				},
+			});
+			render(
+				<ReviewThreadHandoffProvider worktreeName="wt">
+					<DiffInlineComment comment={makeComment()} {...defaultProps} />
+				</ReviewThreadHandoffProvider>,
+			);
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Copy Diff Thread for Agent" }),
+			);
+
+			const alert = await screen.findByRole("alert");
+			expect(alert).toHaveTextContent("clipboard unavailable");
+			expect(alert).not.toHaveClass("sr-only");
 		});
 	});
 });

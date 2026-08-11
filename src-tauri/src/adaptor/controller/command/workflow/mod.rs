@@ -11,13 +11,6 @@ use crate::adaptor::gateway::workflow::schema::{
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::storage;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::test_support::TestRuntimeKernel;
-use crate::domain::agent_session::PermissionMode;
-#[cfg(test)]
-use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
-#[cfg(test)]
-use crate::usecase::agent_session::session::SessionStore;
-#[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
@@ -30,6 +23,7 @@ pub(crate) mod execution;
 pub(crate) mod facet;
 pub(crate) mod output;
 pub(crate) mod runtime;
+#[cfg(test)]
 pub(crate) mod session_errors;
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
@@ -44,7 +38,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "stop_workflow",
     "resume_workflow",
     "approve_workflow_node",
-    "send_workflow_approval_chat_message",
     "list_workflow_executions",
     "get_workflow_execution",
     "get_workflow_execution_log",
@@ -91,7 +84,6 @@ pub(crate) fn invoke_handler(
         runtime::stop_workflow,
         runtime::resume_workflow,
         runtime::approve_workflow_node,
-        runtime::send_workflow_approval_chat_message,
         execution::list_workflow_executions,
         execution::get_workflow_execution,
         execution::get_workflow_execution_log,
@@ -127,13 +119,6 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "instruction" => Ok(FacetKind::Instruction),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
-}
-
-fn parse_workflow_approval_permission_mode(
-    permission_mode: Option<String>,
-) -> Result<PermissionMode, String> {
-    let permission_value = permission_mode.unwrap_or_default();
-    PermissionMode::parse_canonical(&permission_value).map_err(|e| e.to_string())
 }
 
 // ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
@@ -265,126 +250,6 @@ fn parse_execution_origin(
         .map_err(|error| error.to_string())
 }
 
-fn parse_workflow_start_permission_mode(
-    permission_mode: Option<String>,
-) -> Result<PermissionMode, String> {
-    let permission_value = permission_mode.unwrap_or_else(|| PermissionMode::Ask.to_string());
-    PermissionMode::parse_canonical(&permission_value).map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-async fn start_workflow_adapter<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<AgentSessionRuntimeUsecase>,
-    session_store: &Arc<SessionStore>,
-    engine: &Arc<TestRuntimeKernel>,
-    workflow_name: String,
-    worktree_path: String,
-    task: Option<String>,
-    created_from: Option<String>,
-    permission_mode: Option<String>,
-) -> Result<String, String> {
-    crate::domain::workflow::validation::validate_name(&workflow_name)
-        .map_err(validation_error_string)?;
-    let trigger = parse_execution_origin(created_from)?;
-    let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
-    let resolved_worktree = engine
-        .resolve_start_execution_worktree(worktree_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    let workflow = engine
-        .resolve_start_execution_workflow(&workflow_name)
-        .await
-        .map_err(|e| e.to_string())?;
-    engine
-        .start_resolved_workflow(
-            app,
-            session_store,
-            handles,
-            workflow,
-            resolved_worktree,
-            task,
-            trigger,
-            permission_mode,
-        )
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-async fn abort_workflow_adapter<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<AgentSessionRuntimeUsecase>,
-    session_store: &Arc<SessionStore>,
-    engine: &Arc<TestRuntimeKernel>,
-    execution_id: String,
-) -> Result<(), String> {
-    validate_execution_id(&execution_id)?;
-    engine
-        .abort_workflow_execution(app, session_store, handles, &execution_id, None)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
-            msg
-        })
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-async fn approve_workflow_node_adapter<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<AgentSessionRuntimeUsecase>,
-    session_store: &Arc<SessionStore>,
-    engine: &Arc<TestRuntimeKernel>,
-    execution_id: String,
-    node_name: String,
-    node_execution_id: Option<String>,
-    comment: Option<String>,
-) -> Result<(), String> {
-    validate_execution_id(&execution_id)?;
-    engine
-        .resolve_workflow_approval(
-            app,
-            session_store,
-            handles,
-            &execution_id,
-            comment,
-            &node_name,
-            node_execution_id.as_deref(),
-        )
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-async fn approve_workflow_node_payload_adapter<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<AgentSessionRuntimeUsecase>,
-    session_store: &Arc<SessionStore>,
-    engine: &Arc<TestRuntimeKernel>,
-    payload: serde_json::Value,
-) -> Result<(), String> {
-    let args = payload
-        .get("args")
-        .ok_or_else(|| "missing required key args".to_string())
-        .and_then(|value| {
-            runtime::parse_approve_workflow_node_args(value).map_err(|e| e.to_string())
-        })?;
-    approve_workflow_node_adapter(
-        app,
-        handles,
-        session_store,
-        engine,
-        args.execution_id,
-        args.node_name,
-        args.node_execution_id,
-        args.comment,
-    )
-    .await
-}
-
 /// `execution_id` の形式検証（path traversal / 不正文字対策）。
 /// UUID（RFC 4122）形式のみ許容する。Execution Store 内部でも canonicalize 後の
 /// `workflow_executions/` 配下チェックを行うが、command 入口でも形式不正を弾く。
@@ -424,46 +289,37 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::execution_store::{ExecutionOrigin, ExecutionStatus};
-    use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate, SessionSpec,
-    };
-    use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
-    use crate::domain::workflow::services::event_replay::project_workflow_execution;
-    use crate::domain::workflow::WorkflowExecution;
-    use crate::usecase::workflow::runtime_resolver::{
-        ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
-        WorkflowDefinitionResolverError,
+        FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionSpec,
     };
     use std::collections::HashSet;
     use std::path::Path;
     use tempfile::TempDir;
 
-    struct StaticWorkflowResolver;
-
-    #[async_trait::async_trait]
-    impl WorkflowDefinitionResolver for StaticWorkflowResolver {
-        async fn resolve(
-            &self,
-            _file_stem: &str,
-        ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
-            Ok(approval_only_workflow())
-        }
-    }
-
-    struct TestWorktreeResolver;
-
-    #[async_trait::async_trait]
-    impl ManagedWorktreeResolver for TestWorktreeResolver {
-        async fn resolve(
-            &self,
-            worktree_path: String,
-        ) -> Result<String, ManagedWorktreeResolverError> {
-            Ok(worktree_path)
-        }
-    }
-
     type AdapterTestApp = tauri::App<tauri::test::MockRuntime>;
+
+    fn make_adapter_app() -> AdapterTestApp {
+        let data_dir =
+            std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            crate::adaptor::gateway::app_config::ReleashConfig::default(),
+            data_dir.join("config.toml"),
+        ));
+        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
+            app_config.clone();
+        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+            app_config.clone();
+        tauri::test::mock_builder()
+            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                data_dir,
+            ))
+            .manage(app_config)
+            .manage(config_repository)
+            .manage(config_secret_repository)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("tauri mock test app must build")
+    }
 
     const REQUIRED_WORKFLOW_EXECUTION_COMMANDS: &[&str] = &[
         "list_workflow_executions",
@@ -478,11 +334,11 @@ mod tests {
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
         "approve_workspace_node",
         "archive_workspace_workflow_execution",
-        "close_workspace_node",
         "get_workspace_node_detail",
         "get_workspace_session_node_id",
         "get_workspace_tree_selection_reconciliation",
         "restore_workspace_workflow_execution",
+        "retry_workspace_node",
     ];
 
     const RETIRED_WORKFLOW_COMMANDS: &[&str] = &[
@@ -644,530 +500,6 @@ mod tests {
         );
     }
 
-    fn approval_only_workflow() -> WorkflowDefinitionYaml {
-        WorkflowDefinitionYaml {
-            name: "adapter-boundary".to_string(),
-            description: "adapter command test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![approval_gated_session("review", "review-acceptance")],
-        }
-    }
-
-    fn session_kind(gate: SessionGate, instruction: &str) -> NodeKind {
-        NodeKind::Session(SessionSpec {
-            gate,
-            facets: FacetRefs {
-                instruction: Some(instruction.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-    }
-
-    fn approval_gated_session(name: &str, instruction: &str) -> NodeDefinition {
-        NodeDefinition {
-            name: name.to_string(),
-            kind: session_kind(SessionGate::Approval, instruction),
-            ..Default::default()
-        }
-    }
-
-    fn make_adapter_app() -> AdapterTestApp {
-        let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
-        config.agents.codex.models = vec!["default".to_string(), "gpt-5.6-sol".to_string()];
-        config.agents.default = Some("codex".to_string());
-        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
-            config,
-            TempDir::new().unwrap().path().join("config.toml"),
-        ));
-        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
-            app_config.clone();
-        let agent_config_repository: Arc<dyn crate::domain::app_config::AgentConfigRepository> =
-            app_config.clone();
-        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
-            app_config.clone();
-        let registry = Arc::new(
-            crate::adaptor::controller::wiring::build_agent_backend_registry(
-                agent_config_repository.clone(),
-            ),
-        );
-        let data_dir =
-            std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&data_dir).unwrap();
-        tauri::test::mock_builder()
-            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
-            ))
-            .manage(app_config)
-            .manage(config_repository)
-            .manage(agent_config_repository)
-            .manage(config_secret_repository)
-            .manage(registry)
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("tauri mock test app must build")
-    }
-
-    fn make_adapter_engine() -> Arc<TestRuntimeKernel> {
-        Arc::new(TestRuntimeKernel::new(
-            Arc::new(StaticWorkflowResolver),
-            Arc::new(TestWorktreeResolver),
-            None,
-            Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default()),
-        ))
-    }
-
-    fn make_adapter_deps(data_dir: &Path) -> (Arc<SessionStore>, Arc<AgentSessionRuntimeUsecase>) {
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let runtime =
-            crate::test_support::build_agent_runtime_usecase(session_store.clone(), data_dir);
-        (session_store, runtime)
-    }
-
-    async fn configure_execution_store(
-        app: &AdapterTestApp,
-        engine: &Arc<TestRuntimeKernel>,
-    ) -> std::path::PathBuf {
-        let data_dir =
-            crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
-        data_dir
-    }
-
-    fn read_adapter_events(data_dir: &Path, execution_id: &str) -> Vec<WorkflowEvent> {
-        WorkflowEventLog::new(data_dir)
-            .read_log(execution_id)
-            .unwrap()
-    }
-
-    fn project_adapter_execution(data_dir: &Path, execution_id: &str) -> WorkflowExecution {
-        let events = read_adapter_events(data_dir, execution_id);
-        project_workflow_execution(execution_id, &events)
-            .unwrap()
-            .expect("adapter events must project an execution")
-    }
-
-    async fn start_adapter_execution(
-        app: &AdapterTestApp,
-        engine: &Arc<TestRuntimeKernel>,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<AgentSessionRuntimeUsecase>,
-        worktree_path: &str,
-    ) -> String {
-        start_workflow_adapter(
-            app.handle(),
-            handles,
-            session_store,
-            engine,
-            "adapter-boundary".to_string(),
-            worktree_path.to_string(),
-            Some("task".to_string()),
-            Some("desktop_ui".to_string()),
-            Some("edit".to_string()),
-        )
-        .await
-        .expect("adapter start_workflow must succeed")
-    }
-
-    async fn start_direct_execution(
-        app: &AdapterTestApp,
-        engine: &Arc<TestRuntimeKernel>,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<AgentSessionRuntimeUsecase>,
-        worktree_path: &str,
-    ) -> String {
-        let resolved_worktree = engine
-            .resolve_start_execution_worktree(worktree_path.to_string())
-            .await
-            .expect("direct primitive worktree resolution must succeed");
-        let workflow = engine
-            .resolve_start_execution_workflow("adapter-boundary")
-            .await
-            .expect("direct primitive workflow resolution must succeed");
-        engine
-            .start_resolved_workflow(
-                app.handle(),
-                session_store,
-                handles,
-                workflow,
-                resolved_worktree,
-                Some("task".to_string()),
-                ExecutionOrigin::DesktopUi,
-                PermissionMode::Edit,
-            )
-            .await
-            .expect("direct StartExecution primitive must succeed")
-    }
-
-    fn event_kinds(events: &[WorkflowEvent]) -> Vec<&'static str> {
-        events
-            .iter()
-            .map(|event| match event {
-                WorkflowEvent::ExecutionStarted { .. } => "ExecutionStarted",
-                WorkflowEvent::NodeStarted { .. } => "NodeStarted",
-                WorkflowEvent::SessionAttached { .. } => "SessionAttached",
-                WorkflowEvent::CommandPrepared { .. } => "CommandPrepared",
-                WorkflowEvent::StallObserved { .. } => "StallObserved",
-                WorkflowEvent::StallCleared { .. } => "StallCleared",
-                WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
-                WorkflowEvent::NodeFailed { .. } => "NodeFailed",
-                WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",
-                WorkflowEvent::ApprovalResolved { .. } => "ApprovalResolved",
-                WorkflowEvent::ExecutionCompleted { .. } => "ExecutionCompleted",
-                WorkflowEvent::ExecutionFailed { .. } => "ExecutionFailed",
-                WorkflowEvent::ExecutionAborted { .. } => "ExecutionAborted",
-                WorkflowEvent::ExecutionInterrupted { .. } => "ExecutionInterrupted",
-                WorkflowEvent::ExecutionResumed { .. } => "ExecutionResumed",
-                WorkflowEvent::ContractViolated { .. } => "ContractViolated",
-                WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",
-            })
-            .collect()
-    }
-
-    async fn adapter_execution_status(
-        engine: &TestRuntimeKernel,
-        execution_id: &str,
-    ) -> ExecutionStatus {
-        if let Some(execution) = engine
-            .list_active_executions()
-            .await
-            .into_iter()
-            .find(|execution| execution.execution_id == execution_id)
-        {
-            return execution.status;
-        }
-        engine
-            .list_completed_executions()
-            .await
-            .into_iter()
-            .find(|execution| execution.execution_id == execution_id)
-            .map(|execution| execution.status)
-            .expect("execution must exist in active or completed store")
-    }
-
-    #[test]
-    fn parse_facet_kind_valid_kinds() {
-        assert_eq!(parse_facet_kind("policy").unwrap(), FacetKind::Policy);
-        assert_eq!(parse_facet_kind("knowledge").unwrap(), FacetKind::Knowledge);
-        assert_eq!(
-            parse_facet_kind("instruction").unwrap(),
-            FacetKind::Instruction
-        );
-        assert!(parse_facet_kind("contract").is_err());
-    }
-
-    /// Spec [04] Rule「同一意図 command は呼び出し経路に依らず等価」:
-    /// Tauri adapter の start_workflow は usecase/engine primitive 経由で、
-    /// direct primitive と同じ state / Execution Store / event vocabulary に到達する。
-    #[tokio::test]
-    async fn start_workflow_adapter_matches_direct_start_execution_primitive() {
-        let adapter_app = make_adapter_app();
-        let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_execution_id = start_adapter_execution(
-            &adapter_app,
-            &adapter_engine,
-            &adapter_store,
-            &adapter_handles,
-            "/wt/adapter-start",
-        )
-        .await;
-
-        let direct_app = make_adapter_app();
-        let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_execution_id = start_direct_execution(
-            &direct_app,
-            &direct_engine,
-            &direct_store,
-            &direct_handles,
-            "/wt/direct-start",
-        )
-        .await;
-
-        let adapter_execution = project_adapter_execution(&adapter_data_dir, &adapter_execution_id);
-        let direct_execution = project_adapter_execution(&direct_data_dir, &direct_execution_id);
-        assert_eq!(adapter_execution.status, direct_execution.status);
-        assert_eq!(
-            adapter_execution.current_node,
-            direct_execution.current_node
-        );
-        assert_eq!(
-            adapter_execution.workflow_name,
-            direct_execution.workflow_name
-        );
-        assert_eq!(
-            event_kinds(&read_adapter_events(
-                &adapter_data_dir,
-                &adapter_execution_id
-            )),
-            event_kinds(&read_adapter_events(&direct_data_dir, &direct_execution_id))
-        );
-    }
-
-    /// Tauri adapter の abort_workflow は execution 全体の abort primitive に射影され、
-    /// direct primitive と同じ terminal state / Execution Store / event log を返す。
-    #[tokio::test]
-    async fn abort_workflow_adapter_matches_direct_abort_execution_primitive() {
-        let adapter_app = make_adapter_app();
-        let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_execution_id = uuid::Uuid::new_v4().to_string();
-        adapter_engine
-            .seed_active_execution_for_test(
-                adapter_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::Running,
-                "/wt/adapter-abort".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let direct_app = make_adapter_app();
-        let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_execution_id = uuid::Uuid::new_v4().to_string();
-        direct_engine
-            .seed_active_execution_for_test(
-                direct_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::Running,
-                "/wt/direct-abort".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        abort_workflow_adapter(
-            adapter_app.handle(),
-            &adapter_handles,
-            &adapter_store,
-            &adapter_engine,
-            adapter_execution_id.clone(),
-        )
-        .await
-        .expect("adapter abort must succeed");
-        direct_engine
-            .abort_workflow_execution(
-                direct_app.handle(),
-                &direct_store,
-                &direct_handles,
-                &direct_execution_id,
-                None,
-            )
-            .await
-            .expect("direct abort primitive must succeed");
-
-        assert_eq!(
-            project_adapter_execution(&adapter_data_dir, &adapter_execution_id).status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            project_adapter_execution(&direct_data_dir, &direct_execution_id).status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            adapter_engine.list_completed_executions().await[0].status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            direct_engine.list_completed_executions().await[0].status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            event_kinds(&read_adapter_events(
-                &adapter_data_dir,
-                &adapter_execution_id
-            )),
-            event_kinds(&read_adapter_events(&direct_data_dir, &direct_execution_id))
-        );
-    }
-
-    /// Tauri adapter の approve_workflow_node は approval DTO を approval primitive に変換し、
-    /// direct primitive と同じ state / Execution Store / typed event を返す。
-    #[tokio::test]
-    async fn approve_workflow_node_adapter_matches_direct_approve_primitive() {
-        let adapter_app = make_adapter_app();
-        let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
-        let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_execution_id = uuid::Uuid::new_v4().to_string();
-        adapter_engine
-            .seed_active_execution_for_test(
-                adapter_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/adapter-approve".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let direct_app = make_adapter_app();
-        let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
-        let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_execution_id = uuid::Uuid::new_v4().to_string();
-        direct_engine
-            .seed_active_execution_for_test(
-                direct_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/direct-approve".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        approve_workflow_node_adapter(
-            adapter_app.handle(),
-            &adapter_handles,
-            &adapter_store,
-            &adapter_engine,
-            adapter_execution_id.clone(),
-            "review".to_string(),
-            None,
-            Some("lgtm".to_string()),
-        )
-        .await
-        .expect("adapter approval must succeed");
-        direct_engine
-            .resolve_workflow_approval(
-                direct_app.handle(),
-                &direct_store,
-                &direct_handles,
-                &direct_execution_id,
-                Some("lgtm".to_string()),
-                "review",
-                None,
-            )
-            .await
-            .expect("direct approval primitive must succeed");
-
-        let adapter_execution = project_adapter_execution(&adapter_data_dir, &adapter_execution_id);
-        let direct_execution = project_adapter_execution(&direct_data_dir, &direct_execution_id);
-        assert_eq!(adapter_execution.status, ExecutionStatus::Completed);
-        assert_eq!(direct_execution.status, ExecutionStatus::Completed);
-        assert_eq!(
-            adapter_execution.node_executions.len(),
-            direct_execution.node_executions.len()
-        );
-        assert_eq!(
-            adapter_engine.list_completed_executions().await[0].status,
-            direct_engine.list_completed_executions().await[0].status
-        );
-        assert_eq!(
-            event_kinds(&read_adapter_events(
-                &adapter_data_dir,
-                &adapter_execution_id
-            )),
-            event_kinds(&read_adapter_events(&direct_data_dir, &direct_execution_id))
-        );
-    }
-
-    /// 旧 reject / rerun payload は command 境界の typed args で拒否され、
-    /// approval primitive に到達しない。
-    #[tokio::test]
-    async fn approve_workflow_node_rejects_legacy_decision_payloads_without_side_effects() {
-        let app = make_adapter_app();
-        let engine = make_adapter_engine();
-        let data_dir = configure_execution_store(&app, &engine).await;
-        let (session_store, handles) = make_adapter_deps(&data_dir);
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        engine
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/legacy-approval-payload".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-        let before_events = event_kinds(&read_adapter_events(&data_dir, &execution_id));
-        let before_execution = project_adapter_execution(&data_dir, &execution_id);
-
-        for payload in [
-            serde_json::json!({
-                "executionId": execution_id.clone(),
-                "nodeName": "review",
-                "decision": { "reject": { "reason": "needs changes" } },
-            }),
-            serde_json::json!({
-                "executionId": execution_id.clone(),
-                "nodeName": "review",
-                "decision": { "rerun": { "reason": "try again" } },
-            }),
-        ] {
-            let err = approve_workflow_node_payload_adapter(
-                app.handle(),
-                &handles,
-                &session_store,
-                &engine,
-                payload,
-            )
-            .await
-            .expect_err("legacy decision payload must be rejected before engine dispatch");
-            assert!(err.contains("missing required key args"));
-        }
-
-        let after_events = read_adapter_events(&data_dir, &execution_id);
-        assert_eq!(event_kinds(&after_events), before_events);
-        assert!(
-            !event_kinds(&after_events).contains(&"ApprovalResolved"),
-            "legacy payload rejection must not append ApprovalResolved"
-        );
-        let after_execution = project_adapter_execution(&data_dir, &execution_id);
-        assert_eq!(after_execution.status, before_execution.status);
-        assert_eq!(
-            after_execution.node_executions.len(),
-            before_execution.node_executions.len()
-        );
-        assert_eq!(
-            adapter_execution_status(&engine, &execution_id).await,
-            ExecutionStatus::WaitingApproval
-        );
-    }
-
-    #[tokio::test]
-    async fn approve_workflow_node_typed_payload_accepts_current_approve_shape() {
-        let app = make_adapter_app();
-        let engine = make_adapter_engine();
-        let data_dir = configure_execution_store(&app, &engine).await;
-        let (session_store, handles) = make_adapter_deps(&data_dir);
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        engine
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/current-approval-payload".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        approve_workflow_node_payload_adapter(
-            app.handle(),
-            &handles,
-            &session_store,
-            &engine,
-            serde_json::json!({
-                "args": {
-                    "executionId": execution_id.clone(),
-                    "nodeName": "review",
-                    "comment": "lgtm",
-                },
-            }),
-        )
-        .await
-        .expect("current typed approve payload must be accepted");
-
-        let execution = project_adapter_execution(&data_dir, &execution_id);
-        assert_eq!(execution.status, ExecutionStatus::Completed);
-        assert!(event_kinds(&read_adapter_events(&data_dir, &execution_id))
-            .contains(&"ApprovalResolved"));
-    }
-
     #[test]
     fn workflow_tab_error_is_redacted() {
         let err = redacted_workflow_tab_error("workflow_node_session_rejected");
@@ -1225,38 +557,6 @@ mod tests {
     }
 
     #[test]
-    fn workflow_approval_chat_permission_mode_rejects_invalid_values_before_dispatch() {
-        for invalid in [
-            None,
-            Some(""),
-            Some("acceptEdits"),
-            Some("default"),
-            Some("read"),
-            Some("readonly"),
-            Some("unknown"),
-        ] {
-            let err = parse_workflow_approval_permission_mode(invalid.map(str::to_string))
-                .expect_err("invalid permission_mode must be rejected");
-            assert!(
-                err.contains("ask, edit, full"),
-                "error must include allowed list, got: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn workflow_approval_chat_permission_mode_accepts_current_values() {
-        for (value, expected) in [
-            ("ask", PermissionMode::Ask),
-            ("edit", PermissionMode::Edit),
-            ("full", PermissionMode::Full),
-        ] {
-            let parsed = parse_workflow_approval_permission_mode(Some(value.to_string())).unwrap();
-            assert_eq!(parsed, expected);
-        }
-    }
-
-    #[test]
     fn parse_execution_origin_rejects_unknown_values() {
         assert!(matches!(
             parse_execution_origin(None).unwrap(),
@@ -1266,32 +566,6 @@ mod tests {
             let err = parse_execution_origin(Some(invalid.to_string()))
                 .expect_err("unknown execution origins must be rejected");
             assert!(err.contains("unknown created_from"));
-        }
-    }
-
-    #[test]
-    fn workflow_start_permission_mode_accepts_only_current_values() {
-        assert_eq!(
-            parse_workflow_start_permission_mode(None).unwrap(),
-            PermissionMode::Ask
-        );
-        for (value, expected) in [
-            ("ask", PermissionMode::Ask),
-            ("edit", PermissionMode::Edit),
-            ("full", PermissionMode::Full),
-        ] {
-            assert_eq!(
-                parse_workflow_start_permission_mode(Some(value.to_string())).unwrap(),
-                expected
-            );
-        }
-        for invalid in ["read", "readonly", "acceptEdits"] {
-            let err = parse_workflow_start_permission_mode(Some(invalid.to_string()))
-                .expect_err("retired and provider-specific modes must be rejected");
-            assert!(
-                err.contains("allowed: ask, edit, full"),
-                "error must include allowed list, got: {err}"
-            );
         }
     }
 
@@ -1655,7 +929,6 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
@@ -2104,10 +1377,8 @@ mod tests {
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) {
         let app = make_adapter_app();
-        let engine = make_adapter_engine();
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
-        app.manage(engine.clone());
         // workflow コマンドは repository usecase を State 注入で受け取る。
         let repository_usecase =
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
@@ -2191,8 +1462,8 @@ mod tests {
             review_usecase,
             notion_usecase,
             workflow_usecase: Arc::new(workflow_usecase),
-            pty_session_read_usecase: Arc::new(
-                crate::adaptor::controller::wiring::build_pty_session_read_usecase_for_tests(),
+            terminal_surface: Arc::new(
+                crate::adaptor::controller::wiring::build_terminal_surface_application_for_tests(),
             ),
             git_host_usecase: Arc::new(
                 crate::adaptor::controller::wiring::build_git_host_usecase(),
@@ -2484,7 +1755,6 @@ mod tests {
                 worktree_path: unauthorized_wt.to_string(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
-                permission_mode: "ask".to_string(),
                 definition: WorkflowDefinitionYaml {
                     name: "wf".to_string(),
                     description: "test".to_string(),
@@ -2554,7 +1824,6 @@ mod tests {
                 worktree_path: worktree_path.clone(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
-                permission_mode: "ask".to_string(),
                 definition: WorkflowDefinitionYaml {
                     name: "wf".to_string(),
                     description: "test".to_string(),
@@ -2617,8 +1886,7 @@ mod tests {
                 worktree_path: worktree_path.clone(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
-                permission_mode: "ask".to_string(),
-                definition: approval_only_workflow(),
+                definition: make_test_workflow("adapter-boundary"),
                 timestamp: 500.0,
             }],
         )
@@ -2693,7 +1961,6 @@ mod tests {
                     worktree_path: worktree_path.clone(),
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
-                    permission_mode: "ask".to_string(),
                     definition: snapshot,
                     timestamp: 100.0,
                 },

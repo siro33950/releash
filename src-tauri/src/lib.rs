@@ -1,8 +1,24 @@
 mod adaptor;
+#[cfg(debug_assertions)]
+pub mod agent_session_tui_acceptance;
 pub mod cli;
 mod domain;
 mod infrastructure;
 mod other;
+#[cfg(debug_assertions)]
+pub mod provider_lifecycle_acceptance;
+#[cfg(debug_assertions)]
+pub mod workflow_control_plane_acceptance;
+pub mod terminal_surface {
+    pub use crate::adaptor::controller::terminal_surface_runtime::{
+        TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
+        TerminalSurfaceWireAttachment,
+    };
+    pub use crate::adaptor::protocol::terminal::{
+        GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
+        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    };
+}
 // Test-only helpers are intentionally kept as a root module.
 #[cfg(test)]
 mod test_support;
@@ -12,47 +28,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
-use domain::app_config::{
-    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, NotionConfigRepository,
-};
+use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigRepository};
 use infrastructure::platform::window_lifecycle::{
     NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL,
 };
 use tauri::Manager;
 
 type LocalApiShutdownTarget = Arc<parking_lot::RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_agent_session_runtime(
-    session_store: Arc<usecase::agent_session::session::SessionStore>,
-    registry: Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>,
-    status_center: Arc<usecase::agent_session::status::AgentStatusCenter>,
-    status_notifier: Arc<dyn usecase::agent_session::status::AgentStatusNotifier>,
-    event_notifier: Arc<dyn usecase::agent_session::runtime::ports::AgentSessionEventNotifier>,
-    spawner: Arc<dyn usecase::agent_session::runtime::ports::AgentTaskSpawner>,
-    branch_diff_context: Option<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>,
-    instruction_source: Arc<dyn usecase::agent_session::context::InstructionSourcePort>,
-    data_dir: std::path::PathBuf,
-    workspace_query: Arc<dyn usecase::workspace_tree::WorkspaceQueryService>,
-) -> Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase> {
-    Arc::new(
-        usecase::agent_session::runtime::AgentSessionRuntimeUsecase::new(
-            session_store,
-            registry,
-            status_center,
-            status_notifier,
-            event_notifier,
-            Arc::new(
-                adaptor::gateway::agent_session::runtime_projection::AgentRuntimeProjectionGatewayV1,
-            ),
-            spawner,
-            branch_diff_context,
-            instruction_source,
-            data_dir,
-            workspace_query,
-        ),
-    )
-}
 
 fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
@@ -62,6 +44,10 @@ fn create_configured_window(
     app: &tauri::App,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "performance-wdio")]
+    if label == NORMAL_WINDOW_LABEL && app.get_webview_window(label).is_some() {
+        return Ok(());
+    }
     let mut config = app
         .config()
         .app
@@ -188,12 +174,52 @@ fn classify_startup_failure(
     }
 }
 
+fn select_provider_agent_executables(
+    claude_executable: String,
+    codex_executable: String,
+    fixture_executable: Option<String>,
+) -> (String, String) {
+    match fixture_executable.filter(|path| !path.trim().is_empty()) {
+        Some(path) => (path.clone(), path),
+        None => (claude_executable, codex_executable),
+    }
+}
+
+#[cfg(feature = "performance-wdio")]
+fn performance_provider_fixture_executable() -> Option<String> {
+    std::env::var("RELEASH_PERFORMANCE_PROVIDER_FIXTURE_EXECUTABLE").ok()
+}
+
+#[cfg(not(feature = "performance-wdio"))]
+fn performance_provider_fixture_executable() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod startup_composition_tests {
     use super::*;
     use adaptor::gateway::local_event_store::store::LocalEventStoreOpenError as E;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use usecase::application_startup::StartupFailureKind as K;
+
+    #[test]
+    fn test_performance_fixture_replaces_both_provider_executables_without_affecting_defaults() {
+        assert_eq!(
+            select_provider_agent_executables(
+                "claude".to_string(),
+                "codex".to_string(),
+                Some("/tmp/provider-fixture".to_string()),
+            ),
+            (
+                "/tmp/provider-fixture".to_string(),
+                "/tmp/provider-fixture".to_string(),
+            )
+        );
+        assert_eq!(
+            select_provider_agent_executables("claude".to_string(), "codex".to_string(), None,),
+            ("claude".to_string(), "codex".to_string())
+        );
+    }
 
     #[derive(Default)]
     struct RecordingProcessLocalExitPort {
@@ -581,209 +607,25 @@ where
     }
 }
 
-/// App-lifetime owner for recovery work that can become runnable after the
-/// initial two-pass scan has quiesced. Store commits and process-local retry
-/// requests only publish wakeups; this single supervisor performs fresh
-/// bounded scans and owns capped retry while storage is unavailable.
-async fn run_wakeable_recovery<Recover, Future, Error, Subscribe>(
-    worker_name: &'static str,
-    mut recover_pass: Recover,
-    mut subscribe: Subscribe,
-    wakeup: Arc<tokio::sync::Notify>,
-    initial_retry_delay: std::time::Duration,
-    maximum_retry_delay: std::time::Duration,
-) where
-    Recover: FnMut() -> Future,
-    Future: std::future::Future<Output = Result<usize, Error>>,
-    Error: std::fmt::Debug,
-    Subscribe: FnMut() -> domain::local_event::LocalEventSubscription,
-{
-    use futures_util::{FutureExt as _, StreamExt as _};
-
-    // Subscribe before the first inventory scan. A commit racing the final
-    // empty pass is then buffered by the subscription, while a process-local
-    // retry racing that same boundary leaves a permit in `Notify`.
-    let mut signals = subscribe().into_stream();
-    loop {
-        run_startup_recovery(
-            worker_name,
-            &mut recover_pass,
-            initial_retry_delay,
-            maximum_retry_delay,
-        )
-        .await;
-        let mut signal_stream_closed = tokio::select! {
-            _ = wakeup.notified() => false,
-            signal = signals.next() => signal.is_none(),
-        };
-        // One send-inventory scan is enough for every commit already visible
-        // at this boundary. Coalesce the buffered global-store burst instead
-        // of rescanning every pending page once per unrelated projection or
-        // streaming commit.
-        while !signal_stream_closed {
-            match signals.next().now_or_never() {
-                Some(Some(_)) => {}
-                Some(None) => signal_stream_closed = true,
-                None => break,
-            }
-        }
-        if signal_stream_closed {
-            // A live writable store keeps its broadcaster open. Avoid a busy
-            // loop if a replacement/read-only source closes, then subscribe
-            // before taking the next fresh inventory.
-            tokio::time::sleep(maximum_retry_delay).await;
-            signals = subscribe().into_stream();
-        }
-    }
-}
-
-#[cfg(test)]
-mod recovery_supervisor_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    #[tokio::test]
-    async fn wakeable_recovery_does_not_lose_commit_or_notify_at_quiescence_boundary() {
-        let (signals_tx, signals_rx) = tokio::sync::mpsc::unbounded_channel();
-        let signals_rx = Arc::new(std::sync::Mutex::new(Some(signals_rx)));
-        let subscribed = Arc::new(AtomicBool::new(false));
-        let passes = Arc::new(AtomicUsize::new(0));
-        let second_pass_entered = Arc::new(tokio::sync::Notify::new());
-        let release_second_pass = Arc::new(tokio::sync::Notify::new());
-        let fourth_pass_entered = Arc::new(tokio::sync::Notify::new());
-        let release_fourth_pass = Arc::new(tokio::sync::Notify::new());
-        let wakeup = Arc::new(tokio::sync::Notify::new());
-
-        let supervisor = tokio::spawn(run_wakeable_recovery(
-            "test recovery",
-            {
-                let subscribed = subscribed.clone();
-                let passes = passes.clone();
-                let second_pass_entered = second_pass_entered.clone();
-                let release_second_pass = release_second_pass.clone();
-                let fourth_pass_entered = fourth_pass_entered.clone();
-                let release_fourth_pass = release_fourth_pass.clone();
-                move || {
-                    let subscribed = subscribed.clone();
-                    let passes = passes.clone();
-                    let second_pass_entered = second_pass_entered.clone();
-                    let release_second_pass = release_second_pass.clone();
-                    let fourth_pass_entered = fourth_pass_entered.clone();
-                    let release_fourth_pass = release_fourth_pass.clone();
-                    async move {
-                        assert!(
-                            subscribed.load(Ordering::SeqCst),
-                            "the signal subscription must exist before the first scan"
-                        );
-                        let pass = passes.fetch_add(1, Ordering::SeqCst) + 1;
-                        match pass {
-                            2 => {
-                                second_pass_entered.notify_one();
-                                release_second_pass.notified().await;
-                            }
-                            4 => {
-                                fourth_pass_entered.notify_one();
-                                release_fourth_pass.notified().await;
-                            }
-                            _ => {}
-                        }
-                        Ok::<usize, ()>(0)
-                    }
-                }
-            },
-            {
-                let subscribed = subscribed.clone();
-                move || {
-                    subscribed.store(true, Ordering::SeqCst);
-                    let receiver = signals_rx
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("the live test subscription is created once");
-                    let stream = futures_util::stream::unfold(receiver, |mut receiver| async {
-                        receiver.recv().await.map(|signal| (signal, receiver))
-                    });
-                    domain::local_event::LocalEventSubscription::new(Box::pin(stream))
-                }
-            },
-            wakeup.clone(),
-            std::time::Duration::from_millis(1),
-            std::time::Duration::from_millis(10),
-        ));
-
-        second_pass_entered.notified().await;
-        for index in 0..128 {
-            signals_tx
-                .send(domain::local_event::LocalEventSignal::Committed {
-                    commit_id: domain::local_event::CommitIdentity::parse(&format!(
-                        "test-commit-{index}"
-                    ))
-                    .unwrap(),
-                    max_global_sequence: domain::local_event::GlobalSequence::new(index + 1)
-                        .unwrap(),
-                })
-                .unwrap();
-        }
-        release_second_pass.notify_one();
-
-        fourth_pass_entered.notified().await;
-        wakeup.notify_one();
-        release_fourth_pass.notify_one();
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while passes.load(Ordering::SeqCst) < 6 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("both boundary wakeups must trigger a fresh two-pass scan");
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(
-            passes.load(Ordering::SeqCst),
-            6,
-            "a buffered global commit burst must coalesce into one fresh scan"
-        );
-
-        supervisor.abort();
-        let _ = supervisor.await;
-    }
-}
-
-fn spawn_startup_maintenance(
-    app_data: adaptor::controller::app_data_composition::ProductionAppDataComposition,
-    _shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths,
-) {
-    tauri::async_runtime::spawn(async move {
-        match tauri::async_runtime::spawn_blocking(move || app_data.cleanup_orphan_processes())
-            .await
-        {
-            Ok(report) if report.scanned > 0 || report.failures > 0 => {
-                log::info!(
-                    "agent orphan cleanup scanned={} processed={} skipped={} failures={}",
-                    report.scanned,
-                    report.processed,
-                    report.skipped,
-                    report.failures
-                );
-            }
-            Ok(_) => {}
-            Err(error) => log::error!("agent orphan cleanup task failed: {error}"),
-        }
-    });
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_started = Instant::now();
     other::telemetry::set_startup_origin(startup_started);
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let provider_initial_search_path =
+        infrastructure::process::search_path::capture_login_shell_path(
+            infrastructure::process::search_path::LOGIN_SHELL_PATH_TIMEOUT,
+        );
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let Ok(search_path) = &provider_initial_search_path {
+        std::env::set_var("PATH", search_path);
+    }
+
     // OTLP exporter and async commands share the Tokio runtime installed for Tauri.
     let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let _runtime_guard = _runtime.enter();
     tauri::async_runtime::set(_runtime.handle().clone());
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let _ = fix_path_env::fix();
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -794,8 +636,12 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
-        ))
-        .setup(|app| {
+        ));
+    #[cfg(feature = "performance-wdio")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    let builder = builder.setup(move |app| {
             let failure_exit: Arc<
                 dyn usecase::application_startup::ProcessLocalExitPort,
             > = Arc::new(
@@ -829,86 +675,16 @@ pub fn run() {
             let projected_local_event_repository: Arc<
                 dyn domain::local_event::LocalEventTransactionRepository,
             > = local_event_store.clone();
-            let pty_gateway = Arc::new(
-                adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway::default(),
-            );
-            let pty_read_gateway: Arc<
-                dyn usecase::pty_session::ports::PtySessionReadGateway + Send + Sync,
-            > = pty_gateway.clone();
-            let pty_session_read_usecase = Arc::new(
-                usecase::pty_session::read_usecase::PtySessionReadUsecase::new(pty_read_gateway),
-            );
-            pty_gateway.start_idle_sweeper(app.handle().clone());
-            app.manage(pty_gateway);
-            let session_event_repository: Arc<
-                dyn domain::local_event::LocalEventTransactionRepository,
-            > = projected_local_event_repository.clone();
-            let session_store = Arc::new(
-                usecase::agent_session::session::SessionStore::new_canonical(
-                    session_event_repository,
-                    local_event_store.installation_id().to_string(),
-                    Arc::new(
-                        adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
-                    ),
-                ),
-            );
-            let workspace_session_creation_usecase = Arc::new(
-                usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationUsecase::new(
-                    session_store.clone(),
-                ),
-            );
+            let terminal_surface_runtime =
+                terminal_surface::TerminalSurfaceRuntime::new(app.handle().clone());
+            let terminal_surface = terminal_surface_runtime.application();
             app.manage(Arc::new(
                 adaptor::controller::wiring::build_review_comment_usecase(),
             ));
-            app.manage(session_store.clone());
-            app.manage(workspace_session_creation_usecase);
-            app.manage(Arc::new(
-                adaptor::controller::wiring::build_agent_prompt_suggestion_usecase(
-                    session_store.clone(),
-                ),
-            ));
             app.manage(infrastructure::file_watcher::FileWatcherManager::default());
-            app.manage(Arc::new(
-                usecase::agent_session::session::OpenTabRegistry::default(),
-            ));
             app.manage::<adaptor::gateway::repository::repo_paths::SharedRepoPaths>(Arc::new(
                 parking_lot::RwLock::new(Vec::new()),
             ));
-            let session_feedback_usecase = Arc::new(
-                usecase::agent_session::feedback::SessionFeedbackUsecase::new(
-                    projected_local_event_repository.clone(),
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            let abandoned_feedback_recovery = session_feedback_usecase.clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    match abandoned_feedback_recovery
-                        .recover_abandoned_reservations()
-                        .await
-                    {
-                        Ok(recovered) => {
-                            if recovered > 0 {
-                                log::warn!(
-                                    "recovered {recovered} abandoned session feedback reservations"
-                                );
-                            }
-                            break;
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                "abandoned session feedback recovery will retry: {error:?}"
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                        }
-                    }
-                }
-            });
-            let agent_session_notice_usecase = Arc::new(
-                adaptor::controller::agent_session_notice_wiring::build_agent_session_notice_usecase(),
-            );
-            app.manage(session_feedback_usecase.clone());
-            app.manage(agent_session_notice_usecase);
             app.manage(Arc::new(
                 adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
             ));
@@ -928,19 +704,101 @@ pub fn run() {
 
             let app_config = Arc::new(AppConfig::new(config, config_path));
             let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
-            let agent_config_repository: Arc<dyn AgentConfigRepository> = app_config.clone();
             let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
             let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
             let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> =
                 Arc::new(adaptor::gateway::notion::NotionApiGatewayImpl::new());
             app.manage(config_repository.clone());
-            app.manage(agent_config_repository.clone());
             app.manage(config_secret_repository.clone());
-            app.manage(Arc::new(
-                adaptor::controller::wiring::build_agent_backend_registry(
-                    agent_config_repository.clone(),
+            let provider_executable_config: Arc<
+                dyn domain::agent_session::ProviderExecutableConfigRepository,
+            > = if let Some(fixture) = performance_provider_fixture_executable() {
+                let (claude, codex) = select_provider_agent_executables(
+                    "claude".to_string(),
+                    "codex".to_string(),
+                    Some(fixture),
+                );
+                Arc::new(
+                    adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
+                        Some(claude),
+                        Some(codex),
+                    )
+                    .map_err(|error| {
+                        format!("Provider performance fixture設定の初期化に失敗: {error:?}")
+                    })?,
+                )
+            } else {
+                app_config.clone()
+            };
+            let provider_history_home = dirs::home_dir()
+                .unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
+            let agent_sessions =
+                adaptor::controller::agent_session_wiring::compose_agent_sessions(
+                    adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        repository: projected_local_event_repository.clone(),
+                        installation_id: local_event_store.installation_id().to_string(),
+                        data_dir: data_dir.clone(),
+                        provider_executable_config,
+                        provider_executable_probe: Arc::new(
+                            #[cfg(any(target_os = "macos", target_os = "linux"))]
+                            adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_initial_search_path(
+                                provider_initial_search_path.clone(),
+                            ),
+                            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                            adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
+                        ),
+                        claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| provider_history_home.join(".claude")),
+                        codex_home: std::env::var_os("CODEX_HOME")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| provider_history_home.join(".codex")),
+                        cli_binary: infrastructure::platform::path_aliases::alias_name_for_profile(
+                            infrastructure::platform::path_aliases::BuildProfile::current(),
+                        )
+                        .to_string(),
+                        terminal: terminal_surface.clone(),
+                        change_notifier: Arc::new(
+                            adaptor::presenter::agent_session_changed::TauriAgentSessionChangeNotifier::new(
+                                app.handle().clone(),
+                            ),
+                        ),
+                    },
+                )
+                .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
+            let agent_session_launch = agent_sessions.launch.clone();
+            let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
+            let agent_session_interrupt = agent_sessions.interrupt.clone();
+            let agent_session_exit = agent_sessions.exit.clone();
+            let provider_availability = agent_sessions.availability_reader.clone();
+            let provider_lifecycle_ingress = agent_sessions.lifecycle_ingress.clone();
+            let provider_workflow_stops = agent_sessions.workflow_stops.clone();
+            terminal_surface_runtime
+                .bind_agent_session_activity(agent_sessions.activity.clone());
+            let provider_agent_terminal_events = terminal_surface.subscribe_events();
+            let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
+                let cancellation = provider_agent_terminal_events.cancellation.clone();
+                move || cancellation.cancel()
+            });
+            tauri::async_runtime::spawn(
+                adaptor::controller::agent_session_exit_observer::run_agent_session_exit_observer(
+                    provider_agent_terminal_events,
+                    agent_session_exit.clone(),
                 ),
-            ));
+            );
+            app.manage(agent_sessions.provider_lifecycle);
+            app.manage(agent_sessions.sessions);
+            app.manage(agent_sessions.history_read);
+            app.manage(agent_sessions.hook_health);
+            app.manage(agent_sessions.hook_health_read);
+            app.manage(agent_sessions.lifecycle_ingress);
+            app.manage(agent_sessions.lifecycle);
+            app.manage(agent_sessions.read);
+            app.manage(agent_session_exit);
+            app.manage(agent_sessions.provider_availability);
+            app.manage(agent_session_launch.clone());
+            app.manage(agent_session_initial_instruction.clone());
+            app.manage(agent_session_interrupt.clone());
 
             // Initialize shared repo_paths from config
             let shared_repo_paths = app
@@ -964,8 +822,11 @@ pub fn run() {
             // SharedRepoPaths + AppConfig を共有する。repository usecase は 1 度だけ
             // 組み立て、AppState・単体 State（workflow コマンド注入用）・watcher・
             // workflow リゾルバへ Arc 共有する（各エントリは注入で受け取る）。
-            let repository_usecase =
-                Arc::new(adaptor::controller::wiring::build_repository_usecase());
+            let repository_usecase = Arc::new(
+                adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
+                    terminal_surface.clone(),
+                ),
+            );
             app.manage(repository_usecase.clone());
             {
                 use adaptor::controller::state::AppState;
@@ -989,14 +850,6 @@ pub fn run() {
                 let code_usecase = Arc::new(
                     adaptor::controller::wiring::build_code_usecase_with_app(app.handle().clone()),
                 );
-                let branch_diff_context: Arc<
-                    dyn usecase::agent_session::context::BranchDiffContextPort,
-                > = Arc::new(
-                    adaptor::gateway::code::branch_diff_context::CodeBranchDiffContextGateway::new(
-                        code_usecase.clone(),
-                    ),
-                );
-                app.manage(branch_diff_context);
                 let git_host_usecase =
                     Arc::new(adaptor::controller::wiring::build_git_host_usecase());
                 let repository_scanner = Arc::new(
@@ -1058,230 +911,47 @@ pub fn run() {
                     review_usecase,
                     notion_usecase,
                     workflow_usecase,
-                    pty_session_read_usecase,
+                    terminal_surface: terminal_surface.clone(),
                     git_host_usecase,
                 });
             }
 
-            let focus_tracker = Arc::new(parking_lot::Mutex::new(
-                infrastructure::platform::focus_tracker::FocusTracker::new(),
-            ));
-            app.manage(focus_tracker.clone());
-            infrastructure::platform::focus_tracker::install(app, focus_tracker.clone());
+			if app.get_webview_window(NORMAL_WINDOW_LABEL).is_some() {
+				other::telemetry::record_startup_from_origin(
+					other::telemetry::Startup::FirstWindowReady,
+				);
+			} else {
+				log::warn!("Main window not found; first-window telemetry is unavailable");
+			}
 
-            {
-                let notice_usecase = app
-                    .state::<Arc<usecase::agent_session::notice::AgentSessionNoticeUsecase>>()
-                    .inner()
-                    .clone();
-                adaptor::controller::agent_session_notice_wiring::register_agent_session_notice_publisher(
-                    notice_usecase,
-                    app.handle().clone(),
-                );
-            }
-
-            {
-                let session_store_state = app
-                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                    .inner()
-                    .clone();
-                let notification_usecase = Arc::new(
-                    usecase::notification::usecase::AgentSessionNotificationUsecase::new(
-                        Arc::new(
-                            adaptor::gateway::notification::NotificationSettingsConfigGateway::new(
-                                config_repository.clone(),
-                            ),
-                        ),
-                        Arc::new(
-                            adaptor::gateway::notification::FocusNotificationInactivityGateway::new(
-                                focus_tracker.clone(),
-                            ),
-                        ),
-                        Arc::new(adaptor::gateway::notification::ReqwestWebhookSenderGateway),
-                    ),
-                );
-                adaptor::controller::notification_wiring::register_agent_notification_listener(
-                    session_store_state,
-                    notification_usecase,
-                );
-            }
-
-            // AgentStatusCenter を構築・登録
-            let agent_status_center =
-                Arc::new(usecase::agent_session::status::AgentStatusCenter::new());
-            let agent_status_notifier: Arc<
-                dyn usecase::agent_session::status::AgentStatusNotifier,
-            > = Arc::new(
-                adaptor::presenter::agent_status::TauriAgentStatusNotifier::new(
-                    app.handle().clone(),
-                ),
-            );
-            // SessionStore の状態変更通知を購読して、保持している SessionStatus を
-            // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
-            // Closed → Idle の復帰では再び集約対象に戻る。
-            {
-                let session_store_state = app
-                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                    .inner()
-                    .clone();
-                adaptor::controller::agent_status_wiring::register_agent_status_listener(
-                    session_store_state,
-                    agent_status_center.clone(),
-                    agent_status_notifier.clone(),
-                );
-            }
-            app.manage(agent_status_notifier.clone());
-            app.manage(agent_status_center.clone());
-            {
-                let runtime_session_store = app
-                    .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                    .inner()
-                    .clone();
-                let runtime_registry = app
-                    .state::<Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>>()
-                    .inner()
-                    .clone();
-                let runtime_notifier: Arc<
-                    dyn usecase::agent_session::runtime::ports::AgentSessionEventNotifier,
-                > = Arc::new(
-                    adaptor::presenter::agent_session::TauriAgentSessionEventNotifier::new(
-                        app.handle().clone(),
-                    ),
-                );
-                let runtime_spawner: Arc<
-                    dyn usecase::agent_session::runtime::ports::AgentTaskSpawner,
-                > = Arc::new(adaptor::gateway::agent_session::TokioAgentTaskSpawner);
-                let runtime_branch_diff_context = app
-                    .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
-                    .inner()
-                    .clone();
-                let runtime_instruction_source: Arc<
-                    dyn usecase::agent_session::context::InstructionSourcePort,
-                > = Arc::new(adaptor::gateway::agent_session::FileSystemInstructionSourceGateway);
-                // The fixed app-data path was resolved and classified once at
-                // the startup boundary above. Reuse that authority instead of
-                // introducing a later unclassified resolution/panic path.
-                let runtime_data_dir = data_dir.clone();
-                let workspace_query = app
-                    .state::<Arc<dyn usecase::workspace_tree::WorkspaceQueryService>>()
-                    .inner()
-                    .clone();
-                let runtime_usecase = compose_agent_session_runtime(
-                    runtime_session_store.clone(),
-                    runtime_registry,
-                    agent_status_center.clone(),
-                    agent_status_notifier.clone(),
-                    runtime_notifier,
-                    runtime_spawner,
-                    Some(runtime_branch_diff_context),
-                    runtime_instruction_source,
-                    runtime_data_dir,
-                    workspace_query,
-                );
-                adaptor::controller::event_log_recovery_wiring::register_event_log_recovery_listener(
-                    runtime_session_store.clone(),
-                    &runtime_usecase,
-                );
-                app.manage(runtime_usecase);
-                let stored_lifecycle_registry = app
-                    .state::<Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>>()
-                    .inner()
-                    .clone();
-                let stored_lifecycle_runtime = app
-                    .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
-                    .inner()
-                    .clone();
-                let stored_lifecycle_notice = app
-                    .state::<Arc<usecase::agent_session::notice::AgentSessionNoticeUsecase>>()
-                    .inner()
-                    .clone();
-                let stored_lifecycle_open_tabs = app
-                    .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
-                    .inner()
-                    .clone();
-                let workflow_node_restorer = Arc::new(
-                    adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
-                        app.handle().clone(),
-                        runtime_session_store.clone(),
-                        stored_lifecycle_runtime.clone(),
-                        stored_lifecycle_open_tabs,
-                    ),
-                );
-                app.manage(workflow_node_restorer.clone());
-                let stored_session_lifecycle = Arc::new(
-                    adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
-                        runtime_session_store,
-                        stored_lifecycle_registry,
-                        stored_lifecycle_runtime,
-                        workflow_node_restorer,
-                        stored_lifecycle_notice,
-                    ),
-                );
-                app.manage(stored_session_lifecycle.clone());
-            }
-            let agent_runtime = app
-                .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
-                .inner()
-                .clone();
-            let session_feedback_load_usecase = Arc::new(
-                usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase::new(
-                    agent_runtime.clone(),
-                    session_feedback_usecase.clone(),
-                ),
-            );
-            app.manage(session_feedback_load_usecase.clone());
-            let operation_gate = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimeAgentSessionOperationAdapter::new(
-                    agent_runtime.clone(),
-                    session_store.clone(),
-                    data_dir.clone(),
-                ),
-            );
-            let operation_repository: Arc<
-                dyn domain::local_event::LocalEventTransactionRepository,
-            > = projected_local_event_repository.clone();
-            let operation_authority: Arc<
-                dyn usecase::agent_session::operation::OperationBindingAuthority,
-            > = local_event_store.clone();
-            let lifecycle_gate: Arc<
-                dyn usecase::agent_session::operation::SessionLifecycleEffectPort,
-            > = operation_gate.clone();
-            let session_lifecycle_repository: Arc<
-                dyn domain::agent_session::repository::AgentSessionLifecycleRepository,
-            > = Arc::new(
-                adaptor::gateway::agent_session::LocalAgentSessionLifecycleRepository::new(
-                    operation_repository.clone(),
-                    session_store.clone(),
-                ),
-            );
-            agent_runtime
-                .set_lifecycle_repository(session_lifecycle_repository.clone());
-            let stop_gate: Arc<dyn usecase::agent_session::operation::StopEffectPort> =
-                operation_gate.clone();
-            let send_operation_gate = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimeSendOperationAdapter::new_with_codec(
-                    agent_runtime.clone(),
-                    session_store.clone(),
-                    data_dir.clone(),
-                    Arc::new(
-                        adaptor::gateway::agent_session::operation::CanonicalSendCommandCodecV1,
-                    ),
-                ),
-            );
-            send_operation_gate
-                .bind_lifecycle_repository(session_lifecycle_repository.clone());
-            let send_gate: Arc<dyn usecase::agent_session::operation::SendAcceptancePort> =
-                send_operation_gate.clone();
-            let lifecycle_operation = Arc::new(
-                usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
-                    operation_repository.clone(),
-                    operation_authority.clone(),
-                    session_lifecycle_repository.clone(),
-                    lifecycle_gate,
+            let caller_journal = Arc::new(
+                usecase::application_lifecycle::operation::CallerAttemptJournal::new(
+                    projected_local_event_repository.clone(),
+                    local_event_store.clone(),
                     local_event_store.installation_id().to_string(),
                 ),
             );
-            app.manage(lifecycle_operation.clone());
+            app.manage(caller_journal.clone());
+            let workflow_runtime_usecase = Arc::new(
+                adaptor::controller::wiring::build_workflow_runtime_usecase(
+                    app.handle().clone(),
+                    adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGatewayDeps {
+                        repository_usecase: repository_usecase.clone(),
+                        app_config: config_repository.clone(),
+                        data_dir: Some(data_dir.clone()),
+                        local_event_repository: projected_local_event_repository.clone(),
+                        local_event_installation_id: local_event_store
+                            .installation_id()
+                            .to_string(),
+                        agent_session_launch: agent_session_launch.clone(),
+                        agent_session_initial_instruction: agent_session_initial_instruction
+                            .clone(),
+                        agent_session_interrupt: agent_session_interrupt.clone(),
+                        provider_availability: provider_availability.clone(),
+                    },
+                )
+                .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
+            );
             let workspace_node_resolver: Arc<
                 dyn usecase::workflow::WorkspaceNodeActionResolver,
             > = app
@@ -1291,209 +961,22 @@ pub fn run() {
             app.manage(Arc::new(
                 adaptor::controller::wiring::build_workspace_node_command_usecase(
                     workspace_node_resolver,
-                    lifecycle_operation.clone(),
-                    session_store.clone(),
-                    data_dir.clone(),
+                    workflow_runtime_usecase.clone(),
                 ),
             ));
-            let stop_operation = Arc::new(
-                usecase::agent_session::operation::StopOperationUsecase::new(
-                    operation_repository.clone(),
-                    operation_authority.clone(),
-                    session_lifecycle_repository.clone(),
-                    stop_gate,
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            operation_gate.bind_stop_operation(Arc::downgrade(&stop_operation));
-            adaptor::controller::agent_session_operation_wiring::bind_runtime_durable_stop_driver(
-                &agent_runtime,
-                stop_operation.clone(),
-            );
-            app.manage(stop_operation.clone());
-            let send_operation = Arc::new(
-                usecase::agent_session::operation::AgentSendOperationUsecase::new(
-                    projected_local_event_repository.clone(),
-                    local_event_store.clone(),
-                    send_gate,
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            operation_gate.bind_send_operation(Arc::downgrade(&send_operation));
-            send_operation_gate.bind_status_sink(Arc::downgrade(&send_operation));
-            adaptor::controller::agent_session_operation_wiring::bind_runtime_durable_workflow_send_driver(
-                &agent_runtime,
-                send_operation.clone(),
-                session_store.clone(),
-                data_dir.clone(),
-            );
-            adaptor::controller::agent_session_operation_wiring::bind_runtime_terminal_operation_participant_provider(
-                &session_store,
-                stop_operation.clone(),
-                send_operation.clone(),
-            );
-            let pending_stop_recovery = stop_operation.clone();
-            tauri::async_runtime::spawn(async move {
-                run_startup_recovery(
-                    "pending accepted Stop",
-                    || {
-                        let recovery = pending_stop_recovery.clone();
-                        async move { recovery.recover_pending_stops_pass().await }
-                    },
-                    std::time::Duration::from_millis(50),
-                    std::time::Duration::from_secs(1),
-                )
-                .await;
-            });
-            let pending_send_recovery = send_operation.clone();
-            let pending_send_wakeup = send_operation.pending_recovery_wakeup();
-            let pending_send_signal_store = local_event_store.clone();
-            tauri::async_runtime::spawn(async move {
-                run_wakeable_recovery(
-                    "pending accepted send",
-                    || {
-                        let recovery = pending_send_recovery.clone();
-                        async move { recovery.recover_pending_provider_effects_pass().await }
-                    },
-                    move || {
-                        domain::local_event::LocalEventTransactionRepository::subscribe(
-                            pending_send_signal_store.as_ref(),
-                            domain::local_event::GlobalSequence::new(
-                                domain::local_event::GlobalSequence::MIN,
-                            )
-                            .expect("minimum global sequence"),
-                        )
-                    },
-                    pending_send_wakeup,
-                    std::time::Duration::from_millis(50),
-                    std::time::Duration::from_secs(1),
-                )
-                .await;
-            });
-            app.manage(send_operation.clone());
-            let permission_response_gate: Arc<
-                dyn usecase::agent_session::operation::PermissionResponseEffectPort,
-            > = Arc::new(
-                adaptor::controller::agent_session_operation_wiring::RuntimePermissionResponseOperationAdapter::new(
-                    agent_runtime.clone(),
-                    session_store.clone(),
-                ),
-            );
-            let permission_response_operation = Arc::new(
-                usecase::agent_session::operation::PermissionResponseOperationUsecase::new(
-                    operation_repository.clone(),
-                    operation_authority.clone(),
-                    session_lifecycle_repository,
-                    permission_response_gate,
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            let pending_permission_recovery = permission_response_operation.clone();
-            tauri::async_runtime::spawn(async move {
-                run_startup_recovery(
-                    "pending permission response",
-                    || {
-                        let recovery = pending_permission_recovery.clone();
-                        async move { recovery.recover_pending_permission_responses_pass().await }
-                    },
-                    std::time::Duration::from_millis(50),
-                    std::time::Duration::from_secs(1),
-                )
-                .await;
-            });
-            app.manage(permission_response_operation.clone());
-            let recovery_operation = Arc::new(
-                usecase::agent_session::operation::RecoveryActionUsecase::new(
-                    projected_local_event_repository.clone(),
-                    local_event_store.clone(),
-                    Arc::new(
-                        adaptor::controller::agent_session_operation_wiring::ConservativeRecoveryExecutor::new(
-                            stop_operation.clone(),
-                            lifecycle_operation.clone(),
-                            operation_gate.clone(),
-                            adaptor::controller::agent_session_operation_wiring::ActiveSendRecoveryContext::new(
-                                send_operation.clone(),
-                                agent_runtime.clone(),
-                                send_operation_gate.current_process_claims(),
-                            ),
-                            permission_response_operation.clone(),
-                            local_event_store.clone(),
-                        ),
-                    ),
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            app.manage(recovery_operation.clone());
-            let caller_journal = Arc::new(
-                usecase::agent_session::operation::CallerAttemptJournal::new(
-                    projected_local_event_repository.clone(),
-                    local_event_store.clone(),
-                    local_event_store.installation_id().to_string(),
-                ),
-            );
-            app.manage(caller_journal.clone());
-            let open_tabs = app
-                .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
-                .inner()
-                .clone();
-            let branch_diff_context = app
-                .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
-                .inner()
-                .clone();
-            let workflow_runtime_usecase = Arc::new(
-                adaptor::controller::wiring::build_workflow_runtime_usecase(
-                    app.handle().clone(),
-                    adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGatewayDeps {
-                        repository_usecase: repository_usecase.clone(),
-                        app_config: config_repository.clone(),
-                        session_store: session_store.clone(),
-                        agent_runtime: agent_runtime.clone(),
-                        open_tabs,
-                        branch_diff_context: branch_diff_context.clone(),
-                        data_dir: Some(data_dir.clone()),
-                        local_event_repository: projected_local_event_repository.clone(),
-                        local_event_installation_id: local_event_store
-                            .installation_id()
-                            .to_string(),
-                    },
-                )
-                .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
-            );
-            send_operation_gate
-                .bind_workflow_runtime(Arc::downgrade(&workflow_runtime_usecase));
-            let workflow_runtime_agent_notifier = Arc::new(
-                adaptor::gateway::agent_session::WorkflowRuntimeAgentSessionNotifier::new(
-                    workflow_runtime_usecase.clone(),
-                    session_store.clone(),
-                ),
-            );
-            agent_runtime
-                .set_workflow_turn_complete_notifier(workflow_runtime_agent_notifier.clone());
-            agent_runtime
-                .set_workflow_stall_notifier(workflow_runtime_agent_notifier.clone());
+            provider_workflow_stops.bind(workflow_runtime_usecase.clone());
             let pending_workflow_recovery = workflow_runtime_usecase.clone();
-            let pending_turn_completion_recovery = workflow_runtime_agent_notifier.clone();
             tauri::async_runtime::spawn(async move {
                 run_startup_recovery(
-                    "pending workflow turn-completion/orphan",
+                    "pending workflow restart reconciliation",
                     || {
                         let workflow = pending_workflow_recovery.clone();
-                        let turn_completion = pending_turn_completion_recovery.clone();
                         async move {
-                            let report = turn_completion
-                                .recover_pending_turn_completions()
-                                .await?;
                             workflow
-                                .recover_startup_excluding(&report.unresolved_execution_ids)
+                                .recover_startup()
                                 .await
                                 .map_err(|error| error.to_string())?;
-                            if report.transient_failures != 0 {
-                                return Err(format!(
-                                    "{} workflow turn-completion item(s) remain transiently unresolved",
-                                    report.transient_failures
-                                ));
-                            }
-                            Ok::<usize, String>(report.terminal_count)
+                            Ok::<usize, String>(0)
                         }
                     },
                     std::time::Duration::from_millis(50),
@@ -1521,10 +1004,12 @@ pub fn run() {
                 adaptor::controller::application_lifecycle::build_shutdown_coordinator(
                     local_event_store.clone(),
                     projected_local_event_repository.clone(),
-                    agent_runtime.clone(),
-                    workflow_runtime_usecase.clone(),
-                    lifecycle_operation,
-                    shutdown_local_api,
+                    adaptor::controller::application_lifecycle::RuntimeShutdownDependencies::new(
+                        workflow_runtime_usecase.clone(),
+                        terminal_surface.clone(),
+                        shutdown_provider_exit_observer,
+                        shutdown_local_api,
+                    ),
                 );
             let process_actions = Arc::new(
                 adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher::default(),
@@ -1564,7 +1049,6 @@ pub fn run() {
                 return Err("application startup authority was already installed".into());
             }
             normal_startup_effect(startup_authority.as_ref(), || {
-                spawn_startup_maintenance(app_data.clone(), shared_repo_paths.clone());
                 adaptor::controller::wiring::spawn_startup_app_data_gc(
                     app_data.clone(),
                     shared_repo_paths.clone(),
@@ -1577,20 +1061,16 @@ pub fn run() {
                     Arc::new(workflow_query_usecase.read_usecase()),
                     workflow_runtime_usecase.clone(),
                     local_api_binding.bearer_token(),
-                    Some(adaptor::controller::api::AgentSessionApiDeps::new(
-                        send_operation,
-                        permission_response_operation,
-                        stop_operation,
-                        recovery_operation,
-                        session_feedback_usecase,
-                        session_feedback_load_usecase,
-                        shutdown_coordinator.clone(),
-                        process_actions.clone(),
-                        local_event_store.clone(),
-                        caller_journal.clone(),
-                        app.handle().clone(),
+                    local_api_binding.terminal_bearer_token(),
+                    Some(adaptor::controller::api::TerminalApiDeps::new(
+                        terminal_surface.clone(),
                     )),
+                    Some(provider_lifecycle_ingress.clone()),
                 );
+                app.manage(adaptor::controller::state::TerminalStreamEndpoint {
+                    port: local_api_binding.port(),
+                    token: local_api_binding.terminal_bearer_token(),
+                });
                 let local_api =
                     local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
                 *local_api_shutdown_target.write() = Some(Arc::new({

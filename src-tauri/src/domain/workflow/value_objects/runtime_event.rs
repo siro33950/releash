@@ -28,7 +28,6 @@ pub enum WorkflowEvent {
         #[serde(with = "execution_origin_serde")]
         created_from: ExecutionOrigin,
         request: String,
-        permission_mode: String,
         definition: WorkflowDefinition,
         timestamp: f64,
     },
@@ -46,6 +45,31 @@ pub enum WorkflowEvent {
         execution_id: String,
         node_execution_id: String,
         session_id: String,
+        timestamp: f64,
+    },
+    NodeSubmitReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeStopReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeRetryRequested {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodePaused {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeResumed {
+        execution_id: String,
+        node_execution_id: String,
         timestamp: f64,
     },
     CommandPrepared {
@@ -134,12 +158,6 @@ pub enum WorkflowEvent {
     ExecutionCompleted {
         execution_id: String,
         total_token_usage: TokenUsage,
-        timestamp: f64,
-    },
-    ExecutionFailed {
-        execution_id: String,
-        reason: String,
-        failure_kind: NodeExecutionFailureKind,
         timestamp: f64,
     },
     ExecutionAborted {

@@ -4,5 +4,5 @@ nodes:
   - name: approve
     type: approval
     session:
-      permission: ask
+      provider: claude
       gate: approval

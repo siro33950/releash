@@ -2,14 +2,8 @@
 
 use std::future::{ready, Future};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
-
 use tokio::sync::{Mutex, Notify};
 
-use crate::adaptor::gateway::workflow::execution_store::{
-    ActiveInterruptionReservation, ExecutionStore, WorkflowExecutionMetadata,
-};
-use crate::adaptor::gateway::workflow::workflow_host::runtime_commit;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 const ACTIVATION_CANCEL_PENDING: u8 = 0;
@@ -24,48 +18,6 @@ pub(super) struct RuntimeActivationGate {
     cancel_ack_notify: Notify,
     cancel_decision: AtomicU8,
     cancel_decision_notify: Notify,
-}
-
-pub(super) enum InterruptionRollback {
-    ProjectionUnchanged,
-    RestoreActiveSnapshot(Option<WorkflowExecutionMetadata>),
-}
-
-pub(super) async fn rollback_active_interruption(
-    execution_store: &Arc<ExecutionStore>,
-    reservation: ActiveInterruptionReservation,
-    activation_gate: &RuntimeActivationGate,
-    activation_was_paused: bool,
-    projection: InterruptionRollback,
-) -> Result<(), WorkflowRuntimeError> {
-    let reservation_error = execution_store
-        .finish_active_interruption(reservation)
-        .await
-        .err()
-        .map(|error| format!("interruption reservation rollback failed: {error}"));
-    let projection_error = match projection {
-        InterruptionRollback::ProjectionUnchanged => None,
-        InterruptionRollback::RestoreActiveSnapshot(snapshot) => {
-            runtime_commit::restore_execution_store_active_snapshot(execution_store, snapshot)
-                .await
-                .err()
-                .map(|error| format!("active metadata rollback failed: {error}"))
-        }
-    };
-    if activation_was_paused {
-        activation_gate.rollback_cancel();
-    } else {
-        activation_gate.reset_cancel();
-    }
-    let errors = [reservation_error, projection_error]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(WorkflowRuntimeError::SessionStore(errors.join("; ")))
-    }
 }
 
 impl RuntimeActivationGate {

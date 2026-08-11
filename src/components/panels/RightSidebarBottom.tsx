@@ -47,7 +47,11 @@ export function RightSidebarBottom({
 				<Group orientation="horizontal">
 					<Panel id="terminal" defaultSize="50%" minSize="20%">
 						<div className="h-full overflow-hidden border-r border-border">
-							<TerminalPanel cwd={rootPath} theme={theme} />
+							<TerminalPanel
+								cwd={rootPath}
+								owner={{ kind: "workspace", workspacePath: rootPath }}
+								theme={theme}
+							/>
 						</div>
 					</Panel>
 					<Separator />

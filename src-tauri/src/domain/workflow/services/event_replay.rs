@@ -6,11 +6,13 @@ use crate::domain::workflow::entities::workflow_execution::{
     CanonicalNodeFact, NodeStallObservation as AggregateStallObservation, ReplayOutcome,
     WorkflowDefaults, WorkflowExecution as WorkflowExecutionAggregate, WorkflowExecutionRestore,
 };
-use crate::domain::workflow::services::routing::{self, LoopGuardResetBaselines, RouteDecision};
+use crate::domain::workflow::services::routing::LoopGuardResetBaselines;
+#[cfg(test)]
+use crate::domain::workflow::services::routing::{self, RouteDecision};
 use crate::domain::workflow::{
-    ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeExecution,
-    NodeExecutionFailure, NodeExecutionStatus, NodeKindName, TokenUsage, WorkflowDefinition,
-    WorkflowExecution,
+    ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeCompletionSignal,
+    NodeCompletionSignalState, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
+    NodeKindName, TokenUsage, WorkflowExecution,
 };
 use crate::domain::workflow::{
     FanoutParentRef as EventFanoutParentRef, NodeKindName as EventNodeKindName,
@@ -84,7 +86,6 @@ fn project_workflow_execution_retained(
                 worktree_path,
                 created_from,
                 request,
-                permission_mode,
                 definition,
                 timestamp,
                 ..
@@ -93,22 +94,14 @@ fn project_workflow_execution_retained(
                 worktree_path,
                 *created_from,
                 request,
-                permission_mode,
                 definition,
                 *timestamp,
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    let Some((
-        workflow_name,
-        worktree_path,
-        created_from,
-        request,
-        permission_mode,
-        definition,
-        started_at,
-    )) = starts.first().copied()
+    let Some((workflow_name, worktree_path, created_from, request, definition, started_at)) =
+        starts.first().copied()
     else {
         return Ok(None);
     };
@@ -148,7 +141,6 @@ fn project_workflow_execution_retained(
         worktree_path,
         created_from,
         request,
-        permission_mode,
         started_at,
     );
     let mut authoritative_total_usage = None;
@@ -191,6 +183,7 @@ fn project_workflow_execution_retained(
                     token_usage: None,
                     failure: None,
                     fanout_parent: fanout_parent.as_ref().map(fanout_parent_to_domain),
+                    completion_signals: NodeCompletionSignalState::Pending,
                     started_at: *timestamp,
                     completed_at: None,
                 });
@@ -202,6 +195,60 @@ fn project_workflow_execution_retained(
             } => {
                 node_mut(&mut execution, node_execution_id, "session_attached")?.session_id =
                     Some(session_id.clone());
+            }
+            WorkflowEvent::NodeSubmitReceived {
+                node_execution_id, ..
+            }
+            | WorkflowEvent::NodeStopReceived {
+                node_execution_id, ..
+            } => {
+                let state = aggregate
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "execution {execution_id} completion signal references unknown node_execution_id {node_execution_id}"
+                        )
+                    })?
+                    .completion_signals;
+                node_mut(&mut execution, node_execution_id, "node_completion_signal")?
+                    .completion_signals = state;
+            }
+            WorkflowEvent::NodeRetryRequested {
+                node_execution_id,
+                timestamp,
+                ..
+            } => {
+                let aggregate_node = aggregate
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "execution {execution_id} node_retry_requested references unknown node_execution_id {node_execution_id}"
+                        )
+                    })?;
+                let node = node_mut(&mut execution, node_execution_id, "node_retry_requested")?;
+                node.status = match aggregate_node.status {
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running => NodeExecutionStatus::Running,
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Paused => NodeExecutionStatus::Paused,
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::WaitingApproval => NodeExecutionStatus::WaitingApproval,
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Succeeded => NodeExecutionStatus::Succeeded,
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed => NodeExecutionStatus::Failed,
+                    crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Aborted => NodeExecutionStatus::Aborted,
+                };
+                node.completed_at = aggregate_node.completed_at.or(Some(*timestamp));
+            }
+            WorkflowEvent::NodePaused {
+                node_execution_id, ..
+            } => {
+                node_mut(&mut execution, node_execution_id, "node_paused")?.replay_paused();
+            }
+            WorkflowEvent::NodeResumed {
+                node_execution_id, ..
+            } => {
+                node_mut(&mut execution, node_execution_id, "node_resumed")?.replay_resumed();
             }
             WorkflowEvent::CommandPrepared {
                 node_execution_id,
@@ -306,26 +353,6 @@ fn project_workflow_execution_retained(
                     None,
                 );
             }
-            WorkflowEvent::ExecutionFailed {
-                reason,
-                failure_kind,
-                timestamp,
-                ..
-            } => {
-                execution.status = ExecutionStatus::Failed;
-                execution.completed_at = Some(*timestamp);
-                execution.error_reason = Some(reason.clone());
-                execution.interruption_reason = None;
-                execution.resume_from_node = None;
-                close_failed_execution_nodes(
-                    &mut execution.node_executions,
-                    *timestamp,
-                    NodeExecutionFailure {
-                        reason: reason.clone(),
-                        kind: *failure_kind,
-                    },
-                );
-            }
             WorkflowEvent::ExecutionAborted { timestamp, .. } => {
                 execution.status = ExecutionStatus::Aborted;
                 execution.completed_at = Some(*timestamp);
@@ -339,45 +366,8 @@ fn project_workflow_execution_retained(
                     None,
                 );
             }
-            WorkflowEvent::ExecutionInterrupted {
-                reason, timestamp, ..
-            } => {
-                let resume_from_node = derive_resume_from_node(
-                    &aggregate.workflow,
-                    &execution.node_executions,
-                    &aggregate.node_execution_counts,
-                    &aggregate.loop_guard_reset_baselines,
-                )?;
-                execution.status = ExecutionStatus::Interrupted;
-                execution.completed_at = None;
-                execution.error_reason = None;
-                execution.interruption_reason = Some(*reason);
-                execution.resume_from_node = resume_from_node;
-                close_active_nodes(
-                    &mut execution.node_executions,
-                    NodeExecutionStatus::Aborted,
-                    *timestamp,
-                    None,
-                );
-            }
-            WorkflowEvent::ExecutionResumed {
-                resume_from_node, ..
-            } => {
-                if execution
-                    .resume_from_node
-                    .as_deref()
-                    .is_some_and(|expected| expected != resume_from_node)
-                {
-                    return Err(format!(
-                        "execution_resumed resume_from_node {resume_from_node} does not match projected checkpoint {}",
-                        execution.resume_from_node.as_deref().unwrap_or_default()
-                    ));
-                }
-                execution.status = ExecutionStatus::Running;
-                execution.completed_at = None;
-                execution.error_reason = None;
-                execution.interruption_reason = None;
-                execution.resume_from_node = None;
+            WorkflowEvent::ExecutionInterrupted { .. } | WorkflowEvent::ExecutionResumed { .. } => {
+                return Err("workflow-level interruption events are unsupported".to_string());
             }
             WorkflowEvent::ContractViolated { .. }
             | WorkflowEvent::StallObserved { .. }
@@ -411,16 +401,12 @@ fn restore_workflow_execution_aggregate(
     worktree_path: &str,
     created_from: crate::domain::workflow::ExecutionOrigin,
     request: &str,
-    permission_mode: &str,
     started_at: f64,
 ) -> WorkflowExecutionAggregate {
     WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
         id: execution_id.to_string(),
         workflow: definition.clone(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: permission_mode.to_string(),
-        },
+        workflow_defaults: WorkflowDefaults,
         worktree_path: worktree_path.to_string(),
         created_from,
         started_at,
@@ -438,7 +424,6 @@ fn replay_workflow_execution_aggregate(
     worktree_path: &str,
     created_from: crate::domain::workflow::ExecutionOrigin,
     request: &str,
-    permission_mode: &str,
     started_at: f64,
     events: &[WorkflowEvent],
 ) -> Result<WorkflowExecutionAggregate, String> {
@@ -448,7 +433,6 @@ fn replay_workflow_execution_aggregate(
         worktree_path,
         created_from,
         request,
-        permission_mode,
         started_at,
     );
     for event in events {
@@ -534,7 +518,7 @@ fn apply_event_to_aggregate(
                             node_kind_to_domain(*kind),
                             *attempt,
                             None,
-                            Some(node_execution_id.clone()),
+                            node_execution_id.clone(),
                             *timestamp,
                         )
                         .map_err(|reason| {
@@ -566,6 +550,59 @@ fn apply_event_to_aggregate(
             };
             require_transition(execution_id, "session_attached", outcome)?;
         }
+        WorkflowEvent::NodeSubmitReceived {
+            node_execution_id,
+            timestamp,
+            ..
+        } => require_transition(
+            execution_id,
+            "node_submit_received",
+            aggregate.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Submit,
+                *timestamp,
+            ),
+        )?,
+        WorkflowEvent::NodeStopReceived {
+            node_execution_id,
+            timestamp,
+            ..
+        } => require_transition(
+            execution_id,
+            "node_stop_received",
+            aggregate.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Stop,
+                *timestamp,
+            ),
+        )?,
+        WorkflowEvent::NodeRetryRequested {
+            node_execution_id,
+            timestamp,
+            ..
+        } => require_transition(
+            execution_id,
+            "node_retry_requested",
+            aggregate.request_node_retry(node_execution_id, *timestamp),
+        )?,
+        WorkflowEvent::NodePaused {
+            node_execution_id,
+            timestamp,
+            ..
+        } => require_transition(
+            execution_id,
+            "node_paused",
+            aggregate.pause_node_execution(node_execution_id, *timestamp),
+        )?,
+        WorkflowEvent::NodeResumed {
+            node_execution_id,
+            timestamp,
+            ..
+        } => require_transition(
+            execution_id,
+            "node_resumed",
+            aggregate.resume_node_execution(node_execution_id, *timestamp),
+        )?,
         WorkflowEvent::CommandPrepared {
             node_execution_id,
             display_command,
@@ -671,21 +708,6 @@ fn apply_event_to_aggregate(
                 "approval_requested_node",
                 aggregate.mark_node_waiting_approval(node_execution_id, *timestamp),
             )?;
-            let fanout_child = aggregate
-                .node_executions
-                .iter()
-                .find(|node| node.id == *node_execution_id)
-                .is_some_and(|node| node.fanout_parent.is_some());
-            require_replay(
-                execution_id,
-                "approval_requested",
-                if fanout_child {
-                    aggregate.replay_fanout_approval()
-                } else {
-                    aggregate.replay_approval_requested()
-                },
-                false,
-            )?;
         }
         WorkflowEvent::ApprovalResolved {
             node_execution_id,
@@ -696,21 +718,6 @@ fn apply_event_to_aggregate(
                 execution_id,
                 "approval_resolved_node",
                 aggregate.mark_node_running(node_execution_id, *timestamp),
-            )?;
-            let fanout_child = aggregate
-                .node_executions
-                .iter()
-                .find(|node| node.id == *node_execution_id)
-                .is_some_and(|node| node.fanout_parent.is_some());
-            require_replay(
-                execution_id,
-                "approval_resolved",
-                if fanout_child {
-                    aggregate.replay_fanout_approval()
-                } else {
-                    aggregate.replay_approval_resolved()
-                },
-                false,
             )?;
         }
         WorkflowEvent::StallObserved {
@@ -750,19 +757,6 @@ fn apply_event_to_aggregate(
                 true,
             )?;
         }
-        WorkflowEvent::ExecutionFailed {
-            reason,
-            failure_kind,
-            timestamp,
-            ..
-        } => {
-            require_replay(
-                execution_id,
-                "execution_failed",
-                aggregate.replay_failed_at(reason.clone(), *failure_kind, *timestamp),
-                true,
-            )?;
-        }
         WorkflowEvent::ExecutionAborted { timestamp, .. } => {
             require_replay(
                 execution_id,
@@ -771,23 +765,8 @@ fn apply_event_to_aggregate(
                 true,
             )?;
         }
-        WorkflowEvent::ExecutionInterrupted {
-            reason, timestamp, ..
-        } => {
-            require_replay(
-                execution_id,
-                "execution_interrupted",
-                aggregate.replay_interrupted_at(*reason, *timestamp),
-                false,
-            )?;
-        }
-        WorkflowEvent::ExecutionResumed { timestamp, .. } => {
-            require_replay(
-                execution_id,
-                "execution_resumed",
-                aggregate.replay_resumed_at(*timestamp),
-                false,
-            )?;
+        WorkflowEvent::ExecutionInterrupted { .. } | WorkflowEvent::ExecutionResumed { .. } => {
+            return Err("workflow-level interruption events are unsupported".to_string());
         }
         WorkflowEvent::ContractViolated { .. } => {}
     }
@@ -827,44 +806,6 @@ fn require_replay(
             "execution {execution_id} rejected {event_name}: {reason:?}"
         )),
     }
-}
-
-fn derive_resume_from_node(
-    workflow: &WorkflowDefinition,
-    nodes: &[NodeExecution],
-    node_execution_counts: &HashMap<String, u32>,
-    loop_guard_reset_baselines: &LoopGuardResetBaselines,
-) -> Result<Option<String>, String> {
-    let Some(latest) = nodes.iter().rev().find(|node| node.fanout_parent.is_none()) else {
-        return Ok(workflow.nodes.first().map(|node| node.name.clone()));
-    };
-    if latest.status != NodeExecutionStatus::Succeeded {
-        return Ok(Some(latest.node_name.clone()));
-    }
-
-    let current_index = workflow
-        .nodes
-        .iter()
-        .position(|node| node.name == latest.node_name)
-        .ok_or_else(|| {
-            format!(
-                "completed node '{}' is absent from execution workflow snapshot",
-                latest.node_name
-            )
-        })?;
-    let artifact = latest.artifact.as_ref().map(|artifact| &artifact.value);
-    routing::route_with_reset_baselines(
-        workflow,
-        current_index,
-        artifact,
-        node_execution_counts,
-        loop_guard_reset_baselines,
-    )
-    .map_err(|error| error.to_string())
-    .map(|decision| match decision {
-        RouteDecision::TransitionTo(node) => Some(node),
-        RouteDecision::Completed => None,
-    })
 }
 
 fn node_mut<'a>(
@@ -965,53 +906,6 @@ fn close_active_nodes(
             node.failure = failure.clone();
         }
     }
-}
-
-fn close_failed_execution_nodes(
-    nodes: &mut [NodeExecution],
-    completed_at: f64,
-    terminal_failure: NodeExecutionFailure,
-) {
-    let failed_fanout_parents = nodes
-        .iter()
-        .filter(|node| node.status == NodeExecutionStatus::Failed)
-        .filter_map(|node| {
-            let parent = node.fanout_parent.as_ref()?;
-            Some((
-                parent.parent_node.clone(),
-                parent.parent_attempt,
-                node.failure
-                    .clone()
-                    .unwrap_or_else(|| terminal_failure.clone()),
-            ))
-        })
-        .collect::<Vec<_>>();
-
-    for (parent_node, parent_attempt, failure) in failed_fanout_parents {
-        if let Some(parent) = nodes.iter_mut().find(|node| {
-            node.fanout_parent.is_none()
-                && node.node_name == parent_node
-                && node.attempt == parent_attempt
-                && node.status.is_active()
-        }) {
-            parent.replay_failed(failure, completed_at);
-        }
-    }
-
-    if !nodes
-        .iter()
-        .any(|node| node.status == NodeExecutionStatus::Failed)
-    {
-        let fallback = nodes
-            .iter()
-            .rposition(|node| node.fanout_parent.is_none() && node.status.is_active())
-            .or_else(|| nodes.iter().rposition(|node| node.status.is_active()));
-        if let Some(index) = fallback {
-            nodes[index].replay_failed(terminal_failure, completed_at);
-        }
-    }
-
-    close_active_nodes(nodes, NodeExecutionStatus::Aborted, completed_at, None);
 }
 
 fn derive_total_token_usage(nodes: &[NodeExecution]) -> TokenUsage {
@@ -1141,7 +1035,7 @@ fn derive_active_fields(
     status: ExecutionStatus,
     nodes: &[NodeExecution],
 ) -> (ExecutionStatus, Option<String>, Option<ApprovalTarget>) {
-    if status.is_finished() || status == ExecutionStatus::Interrupted {
+    if status.is_finished() {
         return (status, None, None);
     }
 
@@ -1160,11 +1054,7 @@ fn derive_active_fields(
             node_name: node.node_name.clone(),
             session_id: node.session_id.clone(),
         });
-        return (
-            ExecutionStatus::WaitingApproval,
-            current_node,
-            approval_target,
-        );
+        return (ExecutionStatus::Running, current_node, approval_target);
     }
 
     let current_node = nodes
@@ -1207,7 +1097,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "please review".to_string(),
-            permission_mode: "ask".to_string(),
             definition: definition(),
             timestamp: 1.0,
         }
@@ -1320,6 +1209,159 @@ mod tests {
     }
 
     #[test]
+    fn replay_restores_node_completion_signal_state_for_the_same_attempt() {
+        let mut events = vec![
+            started(),
+            node_started("session-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                timestamp: 2.5,
+            },
+        ];
+
+        let submit_only = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            submit_only.node_executions[0].completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+
+        events.push(WorkflowEvent::NodeStopReceived {
+            execution_id: EXECUTION_ID.to_string(),
+            node_execution_id: "session-1".to_string(),
+            timestamp: 3.0,
+        });
+        let ready = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ready.node_executions[0].completion_signals,
+            NodeCompletionSignalState::Ready
+        );
+    }
+
+    #[test]
+    fn replay_retry_preserves_old_attempt_but_clears_it_from_current_output() {
+        let events = vec![
+            started(),
+            node_started("session-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::ArtifactProduced {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                node_name: "review".to_string(),
+                contract: Some("review-result".to_string()),
+                value: serde_json::json!({"attempt": 1}),
+                request_id: None,
+                submitted_at: None,
+                timestamp: 2.25,
+            },
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                timestamp: 2.5,
+            },
+            WorkflowEvent::NodeRetryRequested {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                timestamp: 3.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-2".to_string(),
+                node_name: "review".to_string(),
+                kind: EventNodeKindName::Session,
+                attempt: 2,
+                fanout_parent: None,
+                timestamp: 3.0,
+            },
+        ];
+
+        let projected = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected.node_executions.len(), 2);
+        assert_eq!(
+            projected.node_executions[0].status,
+            NodeExecutionStatus::Aborted
+        );
+        assert_eq!(
+            projected.node_executions[0].completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+        assert!(projected.node_executions[0].artifact.is_some());
+        assert_eq!(
+            projected.node_executions[1].completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+
+        let aggregate = replay_workflow_execution_aggregate(
+            EXECUTION_ID,
+            &definition(),
+            "/repo",
+            ExecutionOrigin::Cli,
+            "review",
+            1.0,
+            &events,
+        )
+        .unwrap();
+        assert!(!aggregate.artifacts.contains_key("review"));
+    }
+
+    #[test]
+    fn replay_pause_and_resume_preserve_attempt_and_partial_signal() {
+        let mut events = vec![
+            started(),
+            node_started("session-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                timestamp: 2.5,
+            },
+            WorkflowEvent::NodePaused {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                timestamp: 3.0,
+            },
+        ];
+
+        let paused = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.status, ExecutionStatus::Running);
+        assert_eq!(paused.node_executions.len(), 1);
+        assert_eq!(paused.node_executions[0].attempt, 1);
+        assert_eq!(
+            paused.node_executions[0].status,
+            NodeExecutionStatus::Paused
+        );
+        assert_eq!(
+            paused.node_executions[0].completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+
+        events.push(WorkflowEvent::NodeResumed {
+            execution_id: EXECUTION_ID.to_string(),
+            node_execution_id: "session-1".to_string(),
+            timestamp: 4.0,
+        });
+        let resumed = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.status, ExecutionStatus::Running);
+        assert_eq!(resumed.node_executions[0].attempt, 1);
+        assert_eq!(
+            resumed.node_executions[0].status,
+            NodeExecutionStatus::Running
+        );
+        assert_eq!(
+            resumed.node_executions[0].completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+    }
+
+    #[test]
     fn replay_and_live_execution_use_the_same_aggregate_transitions() {
         let definition = definition();
         let events = vec![
@@ -1340,6 +1382,16 @@ mod tests {
                 request_id: None,
                 submitted_at: None,
                 timestamp: 3.0,
+            },
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                timestamp: 3.25,
+            },
+            WorkflowEvent::NodeStopReceived {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                timestamp: 3.5,
             },
             node_completed(
                 "node-1",
@@ -1365,7 +1417,6 @@ mod tests {
             "/repo",
             ExecutionOrigin::Cli,
             "please review",
-            "ask",
             1.0,
             &events,
         )
@@ -1374,10 +1425,7 @@ mod tests {
         let mut live = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
             id: EXECUTION_ID.to_string(),
             workflow: definition,
-            workflow_defaults: WorkflowDefaults {
-                backend_id: None,
-                permission_mode: "ask".to_string(),
-            },
+            workflow_defaults: WorkflowDefaults,
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             started_at: 1.0,
@@ -1390,7 +1438,7 @@ mod tests {
             NodeKindName::Session,
             1,
             None,
-            Some("node-1".to_string()),
+            "node-1".to_string(),
             2.0,
         )
         .unwrap();
@@ -1398,17 +1446,27 @@ mod tests {
             live.attach_node_session("node-1", "session-1".to_string(), 2.5),
             crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
         );
-        live.apply_submitted_output(
-            "review".to_string(),
-            "node-1",
-            1,
-            Some("session-1".to_string()),
-            "review-result".to_string(),
-            serde_json::json!({"approved": true}),
-            None,
-            3.0,
-        )
-        .unwrap();
+        assert_eq!(
+            live.apply_submitted_output(
+                "review".to_string(),
+                "node-1",
+                1,
+                Some("session-1".to_string()),
+                "review-result".to_string(),
+                serde_json::json!({"approved": true}),
+                None,
+                3.0,
+            ),
+            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+        );
+        assert_eq!(
+            live.record_node_completion_signal("node-1", NodeCompletionSignal::Submit, 3.25,),
+            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+        );
+        assert_eq!(
+            live.record_node_completion_signal("node-1", NodeCompletionSignal::Stop, 3.5),
+            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+        );
         live.apply_observed_turn(
             "node-1",
             CanonicalNodeFact::Completed,
@@ -1522,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_failed_execution_and_node_failure() {
+    fn projects_node_failure_without_workflow_terminal_failure() {
         let events = vec![
             started(),
             node_started("node-1", "review", EventNodeKindName::Session),
@@ -1536,19 +1594,13 @@ mod tests {
                 retry_count: Some(0),
                 timestamp: 3.0,
             },
-            WorkflowEvent::ExecutionFailed {
-                execution_id: EXECUTION_ID.to_string(),
-                reason: "invalid result".to_string(),
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                timestamp: 4.0,
-            },
         ];
 
         let execution = project_workflow_execution(EXECUTION_ID, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Failed);
-        assert_eq!(execution.error_reason.as_deref(), Some("invalid result"));
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert!(execution.error_reason.is_none());
         assert_eq!(
             execution.node_executions[0].status,
             NodeExecutionStatus::Failed
@@ -1605,12 +1657,6 @@ mod tests {
                 retry_count: Some(1),
                 timestamp: 4.0,
             },
-            WorkflowEvent::ExecutionFailed {
-                execution_id: EXECUTION_ID.to_string(),
-                reason: "failed".to_string(),
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                timestamp: 5.0,
-            },
         ];
 
         let execution = project_workflow_execution(EXECUTION_ID, &events)
@@ -1656,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_interrupted_execution_and_active_node_with_reason() {
+    fn rejects_workflow_level_interruption_events() {
         let events = vec![
             started(),
             node_started("node-1", "review", EventNodeKindName::Session),
@@ -1667,26 +1713,14 @@ mod tests {
             },
         ];
 
-        let execution = project_workflow_execution(EXECUTION_ID, &events)
-            .unwrap()
-            .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(execution.completed_at, None);
-        assert_eq!(execution.error_reason, None);
         assert_eq!(
-            execution.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
+            project_workflow_execution(EXECUTION_ID, &events).unwrap_err(),
+            "workflow-level interruption events are unsupported"
         );
-        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
-        assert_eq!(
-            execution.node_executions[0].status,
-            NodeExecutionStatus::Aborted
-        );
-        assert_eq!(execution.node_executions[0].completed_at, Some(3.0));
     }
 
     #[test]
-    fn interrupted_projection_routes_from_last_confirmed_node_when_no_node_is_active() {
+    fn rejects_workflow_level_interruption_after_node_completion() {
         let mut workflow = definition();
         workflow.nodes[0].name = "prepare".to_string();
         workflow.nodes[0].rules = vec![crate::domain::workflow::Rule::Next("review".to_string())];
@@ -1704,7 +1738,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "please review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -1725,20 +1758,14 @@ mod tests {
             },
         ];
 
-        let execution = project_workflow_execution(EXECUTION_ID, &events)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
         assert_eq!(
-            execution.node_executions[0].status,
-            NodeExecutionStatus::Succeeded
+            project_workflow_execution(EXECUTION_ID, &events).unwrap_err(),
+            "workflow-level interruption events are unsupported"
         );
     }
 
     #[test]
-    fn interrupted_projection_routes_with_replayed_loop_guard_reset_baseline() {
+    fn rejects_workflow_level_interruption_after_loop_progress() {
         use crate::domain::workflow::Rule;
 
         let workflow = WorkflowDefinition {
@@ -1780,7 +1807,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -1829,20 +1855,16 @@ mod tests {
             },
         ];
 
-        let retained = project_workflow_execution_retained(EXECUTION_ID, &events)
-            .unwrap()
-            .unwrap();
-        let execution = &retained.execution;
-
-        assert_eq!(execution.resume_from_node.as_deref(), Some("fix"));
         assert_eq!(
-            execution.node_executions[2].status,
-            NodeExecutionStatus::Succeeded
+            project_workflow_execution_retained(EXECUTION_ID, &events)
+                .err()
+                .as_deref(),
+            Some("workflow-level interruption events are unsupported")
         );
     }
 
     #[test]
-    fn repeated_interruptions_route_from_the_aggregate_state_at_each_checkpoint() {
+    fn rejects_repeated_workflow_level_interruption_history() {
         use crate::domain::workflow::Rule;
 
         let workflow = WorkflowDefinition {
@@ -1906,7 +1928,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -1926,26 +1947,9 @@ mod tests {
             interrupt(15.0),
         ];
 
-        let checkpoints = events
-            .iter()
-            .enumerate()
-            .filter_map(|(index, event)| {
-                matches!(event, WorkflowEvent::ExecutionInterrupted { .. }).then_some(index)
-            })
-            .collect::<Vec<_>>();
-        let resume_nodes = checkpoints
-            .into_iter()
-            .map(|index| {
-                project_workflow_execution(EXECUTION_ID, &events[..=index])
-                    .unwrap()
-                    .unwrap()
-                    .resume_from_node
-            })
-            .collect::<Vec<_>>();
-
         assert_eq!(
-            resume_nodes,
-            vec![Some("fix".to_string()), Some("fix".to_string()), None,]
+            project_workflow_execution(EXECUTION_ID, &events).unwrap_err(),
+            "workflow-level interruption events are unsupported"
         );
     }
 
@@ -1991,7 +1995,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: "ask".to_string(),
             definition: workflow,
             timestamp: 1.0,
         };
@@ -2121,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_resumed_opens_a_new_attempt_without_reopening_old_session() {
+    fn rejects_workflow_level_resume_history() {
         let mut second_attempt = node_started("node-2", "review", EventNodeKindName::Session);
         if let WorkflowEvent::NodeStarted {
             attempt, timestamp, ..
@@ -2152,28 +2155,10 @@ mod tests {
             second_attempt,
         ];
 
-        let execution = project_workflow_execution(EXECUTION_ID, &events)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(execution.status, ExecutionStatus::Running);
-        assert_eq!(execution.current_node.as_deref(), Some("review"));
-        assert_eq!(execution.interruption_reason, None);
-        assert_eq!(execution.resume_from_node, None);
         assert_eq!(
-            execution.node_executions[0].status,
-            NodeExecutionStatus::Aborted
+            project_workflow_execution(EXECUTION_ID, &events).unwrap_err(),
+            "workflow-level interruption events are unsupported"
         );
-        assert_eq!(
-            execution.node_executions[0].session_id.as_deref(),
-            Some("old-session")
-        );
-        assert_eq!(
-            execution.node_executions[1].status,
-            NodeExecutionStatus::Running
-        );
-        assert_eq!(execution.node_executions[1].session_id, None);
-        assert_eq!(execution.node_executions[1].attempt, 2);
     }
 
     #[test]
@@ -2277,6 +2262,7 @@ mod tests {
             token_usage,
             failure: None,
             fanout_parent,
+            completion_signals: Default::default(),
             started_at: f64::from(attempt),
             completed_at: Some(f64::from(attempt) + 0.5),
         };
@@ -2426,7 +2412,7 @@ mod tests {
     }
 
     #[test]
-    fn derives_waiting_approval_target_from_node_events() {
+    fn derives_waiting_approval_target_without_changing_workflow_status() {
         let events = vec![
             started(),
             node_started("node-1", "review", EventNodeKindName::Session),
@@ -2447,7 +2433,7 @@ mod tests {
         let execution = project_workflow_execution(EXECUTION_ID, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::WaitingApproval);
+        assert_eq!(execution.status, ExecutionStatus::Running);
         assert_eq!(execution.current_node.as_deref(), Some("review"));
         let target = execution.approval_target.unwrap();
         assert_eq!(target.node_execution_id, "node-1");
@@ -2490,13 +2476,13 @@ mod tests {
         let execution = project_workflow_execution(EXECUTION_ID, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(execution.status, ExecutionStatus::WaitingApproval);
+        assert_eq!(execution.status, ExecutionStatus::Running);
         assert_eq!(execution.current_node.as_deref(), Some("reviews"));
         assert_eq!(execution.approval_target, None);
     }
 
     #[test]
-    fn failed_fanout_marks_parent_and_failed_child_failed_and_aborts_sibling() {
+    fn failed_fanout_child_keeps_parent_and_sibling_running() {
         let mut failed_child = node_started("child-1", "review", EventNodeKindName::Session);
         let mut sibling = node_started("child-2", "review", EventNodeKindName::Session);
         for (event, item_index) in [(&mut failed_child, 0), (&mut sibling, 1)] {
@@ -2524,12 +2510,6 @@ mod tests {
                 retry_count: None,
                 timestamp: 3.0,
             },
-            WorkflowEvent::ExecutionFailed {
-                execution_id: EXECUTION_ID.to_string(),
-                reason: "review failed".to_string(),
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                timestamp: 4.0,
-            },
         ];
 
         let execution = project_workflow_execution(EXECUTION_ID, &events)
@@ -2543,8 +2523,9 @@ mod tests {
                 .map(|node| node.status)
                 .unwrap()
         };
-        assert_eq!(status("parent"), NodeExecutionStatus::Failed);
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(status("parent"), NodeExecutionStatus::Running);
         assert_eq!(status("child-1"), NodeExecutionStatus::Failed);
-        assert_eq!(status("child-2"), NodeExecutionStatus::Aborted);
+        assert_eq!(status("child-2"), NodeExecutionStatus::Running);
     }
 }

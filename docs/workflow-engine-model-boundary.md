@@ -27,8 +27,9 @@ Workspace
   │    ├─ Artifact[]
   │    └─ NodeExecution[]
   │         └─ fanout_parent ──► parent NodeExecution
-  ├─ Session
-  ├─ Terminal
+  ├─ AgentSession
+  │    └─ Terminal Surface
+  ├─ Workspace Terminal
   └─ Thread / Comment
 ```
 
@@ -115,7 +116,7 @@ runtime 内の `RuntimeCommitSnapshot` は、lock 内で確定した変更を ev
 ## 隣接ドメインとの境界
 
 - Workspace は Worktree を参照するが所有しない。Repository / Code / Diff も workflow state ではない。判断材料として固定する場合は Artifact にする。
-- Session は Workspace に属する独立モデル。session NodeExecution は `session_id` を参照するが、Session や Turn を WorkflowExecution の内包物にしない。
+- AgentSessionはWorkspaceに属する独立モデル。session NodeExecutionは`agent_session_id`を参照するが、AgentSessionやTerminal SurfaceをWorkflowExecutionの内包物にしない。
 - Terminal は人間が操作する interactive shell session。workflow の command NodeExecution とは別物である。
 - Thread / Comment は Workspace に属し、WorkflowExecution / NodeExecution には属さない。必要な値は外部 command または Artifact を介して workflow が扱う。
 - UI / CLI / API は operation surface であり、domain state を所有しない。

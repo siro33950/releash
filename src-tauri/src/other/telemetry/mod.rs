@@ -1,18 +1,17 @@
 pub(crate) mod attributes;
 mod resource;
 
-#[cfg(not(test))]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::domain::workflow::FailureClassification;
 #[cfg(test)]
 use crate::domain::workflow::NodeExecutionFailureKind;
 use attributes::{
-    usage_event_allowed, AgentTurnMetric, HotPathMetric, OpStatus, PayloadChannel, StartupMetric,
-    TurnDimensions, KEY_CHANNEL, KEY_OPERATION, KEY_OUTCOME, KEY_STATUS, KEY_USAGE_EVENT,
+    usage_event_allowed, HotPathMetric, OpStatus, StartupMetric, TerminalLaunchMetric,
+    KEY_OPERATION, KEY_STATUS, KEY_USAGE_EVENT,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
@@ -21,10 +20,7 @@ use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
-pub(crate) use attributes::{
-    AgentTurnMetric as AgentTurn, ModelFamily, PayloadChannel as Payload, PermissionModeDim,
-    StartupMetric as Startup, TurnContext, TurnDimensions as AgentTurnDimensions, WarmPath,
-};
+pub(crate) use attributes::{StartupMetric as Startup, TerminalLaunchMetric as TerminalLaunch};
 
 #[cfg(not(test))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
@@ -33,6 +29,12 @@ static PERFORMANCE_ENABLED: AtomicBool = AtomicBool::new(true);
 static MOUNTED_XTERM_COUNT: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PTY_COUNT: AtomicU64 = AtomicU64::new(0);
 static METRICS: OnceLock<Metrics> = OnceLock::new();
+const TERMINAL_LAUNCH_SAMPLE_CAPACITY: usize = 4_096;
+static TERMINAL_LAUNCH_SAMPLES: Mutex<Option<Vec<TerminalLaunchSample>>> = Mutex::new(None);
+static TERMINAL_INPUT_SAMPLES: Mutex<
+    Option<HashMap<TerminalInputTraceKey, PendingTerminalInputSample>>,
+> = Mutex::new(None);
+static TERMINAL_INPUT_COLLECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(not(test))]
 static STARTUP_ORIGIN: Mutex<Option<Instant>> = Mutex::new(None);
 #[cfg(not(test))]
@@ -77,30 +79,230 @@ impl Drop for TestTelemetryGuard {
 }
 
 struct Metrics {
-    agent_turn_duration: Histogram<f64>,
     hot_path_duration: Histogram<f64>,
     startup_duration: Histogram<f64>,
-    #[allow(dead_code)]
-    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-    stream_payload_bytes: Histogram<f64>,
-    #[allow(dead_code)]
-    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-    stream_emit_interval_ms: Histogram<f64>,
-    #[cfg(test)]
-    session_save_bytes: Histogram<f64>,
+    terminal_launch_duration: Histogram<f64>,
     operation_status: Counter<u64>,
-    #[allow(dead_code)]
-    // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-    orphan_cleanup: Counter<u64>,
     usage_events: Counter<u64>,
-    #[cfg(test)]
-    tool_output_truncated: Counter<u64>,
-    #[cfg(test)]
-    tool_output_bytes: Counter<u64>,
     _rss_gauge: ObservableGauge<u64>,
     _cpu_gauge: ObservableGauge<f64>,
     _xterm_gauge: ObservableGauge<u64>,
     _pty_gauge: ObservableGauge<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalLaunchSample {
+    pub(crate) phase: &'static str,
+    pub(crate) duration_ms: f64,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct TerminalInputTraceKey {
+    attachment_id: String,
+    sequence: u64,
+}
+
+impl TerminalInputTraceKey {
+    pub(crate) fn new(attachment_id: &str, sequence: u64) -> Self {
+        Self {
+            attachment_id: attachment_id.to_string(),
+            sequence,
+        }
+    }
+
+    pub(crate) fn attachment_id(&self) -> &str {
+        &self.attachment_id
+    }
+
+    pub(crate) fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+struct PendingTerminalInputSample {
+    sequence: u64,
+    on_data_to_command_ingress_ms: f64,
+    command_ingress: Instant,
+    admission: Option<Instant>,
+    writer_enqueue: Option<Instant>,
+    output_read: Option<Instant>,
+    model_apply: Option<Instant>,
+    event_publish: Option<Instant>,
+    event_published_at_unix_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalInputSample {
+    pub(crate) sequence: u64,
+    pub(crate) on_data_to_command_ingress_ms: f64,
+    pub(crate) command_ingress_to_admission_ms: f64,
+    pub(crate) admission_to_writer_enqueue_ms: f64,
+    pub(crate) writer_enqueue_to_output_read_ms: f64,
+    pub(crate) output_read_to_model_apply_ms: f64,
+    pub(crate) model_apply_to_event_publish_ms: f64,
+    pub(crate) event_published_at_unix_ms: f64,
+}
+
+pub(crate) fn unix_time_ms() -> f64 {
+    duration_to_unix_time_ms(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default(),
+    )
+}
+
+fn duration_to_unix_time_ms(duration: Duration) -> f64 {
+    duration.as_millis() as f64
+}
+
+fn between_ms(start: Instant, end: Instant) -> f64 {
+    end.checked_duration_since(start)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1_000.0
+}
+
+pub(crate) fn start_terminal_input_sample_collection() {
+    *TERMINAL_INPUT_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(HashMap::new());
+    TERMINAL_INPUT_COLLECTION_ACTIVE.store(true, Ordering::Release);
+}
+
+pub(crate) fn terminal_input_trace_key(
+    attachment_id: &str,
+    sequence: u64,
+) -> Option<TerminalInputTraceKey> {
+    TERMINAL_INPUT_COLLECTION_ACTIVE
+        .load(Ordering::Acquire)
+        .then(|| TerminalInputTraceKey::new(attachment_id, sequence))
+}
+
+pub(crate) fn start_terminal_input_trace(
+    attachment_id: &str,
+    sequence: u64,
+    on_data_at_unix_ms: f64,
+) {
+    if !on_data_at_unix_ms.is_finite() {
+        return;
+    }
+    let command_ingress = Instant::now();
+    let mut collection = TERMINAL_INPUT_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(samples) = collection.as_mut() else {
+        return;
+    };
+    if samples.len() >= TERMINAL_LAUNCH_SAMPLE_CAPACITY {
+        return;
+    }
+    samples.insert(
+        TerminalInputTraceKey::new(attachment_id, sequence),
+        PendingTerminalInputSample {
+            sequence,
+            on_data_to_command_ingress_ms: (unix_time_ms() - on_data_at_unix_ms).max(0.0),
+            command_ingress,
+            admission: None,
+            writer_enqueue: None,
+            output_read: None,
+            model_apply: None,
+            event_publish: None,
+            event_published_at_unix_ms: None,
+        },
+    );
+}
+
+fn update_terminal_input_sample(
+    attachment_id: &str,
+    sequence: u64,
+    update: impl FnOnce(&mut PendingTerminalInputSample, Instant),
+) {
+    let mut collection = TERMINAL_INPUT_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(sample) = collection
+        .as_mut()
+        .and_then(|samples| samples.get_mut(&TerminalInputTraceKey::new(attachment_id, sequence)))
+    else {
+        return;
+    };
+    update(sample, Instant::now());
+}
+
+pub(crate) fn record_terminal_input_admission(attachment_id: &str, sequence: u64) {
+    update_terminal_input_sample(attachment_id, sequence, |sample, now| {
+        sample.admission = Some(now);
+    });
+}
+
+pub(crate) fn record_terminal_input_writer_enqueue(attachment_id: &str, sequence: u64) {
+    update_terminal_input_sample(attachment_id, sequence, |sample, now| {
+        sample.writer_enqueue = Some(now);
+    });
+}
+
+pub(crate) fn record_terminal_input_output_read(key: &TerminalInputTraceKey) {
+    update_terminal_input_sample(key.attachment_id(), key.sequence(), |sample, now| {
+        sample.output_read = Some(now);
+    });
+}
+
+pub(crate) fn record_terminal_input_model_apply(key: &TerminalInputTraceKey) {
+    update_terminal_input_sample(key.attachment_id(), key.sequence(), |sample, now| {
+        sample.model_apply = Some(now);
+    });
+}
+
+pub(crate) fn record_terminal_input_event_publish(key: &TerminalInputTraceKey) {
+    update_terminal_input_sample(key.attachment_id(), key.sequence(), |sample, now| {
+        sample.event_publish = Some(now);
+        sample.event_published_at_unix_ms = Some(unix_time_ms());
+    });
+}
+
+pub(crate) fn take_terminal_input_samples() -> Vec<TerminalInputSample> {
+    TERMINAL_INPUT_COLLECTION_ACTIVE.store(false, Ordering::Release);
+    let samples = TERMINAL_INPUT_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+        .unwrap_or_default();
+    let mut completed = samples
+        .into_values()
+        .filter_map(|sample| {
+            let admission = sample.admission?;
+            let writer_enqueue = sample.writer_enqueue?;
+            let output_read = sample.output_read?;
+            let model_apply = sample.model_apply?;
+            let event_publish = sample.event_publish?;
+            Some(TerminalInputSample {
+                sequence: sample.sequence,
+                on_data_to_command_ingress_ms: sample.on_data_to_command_ingress_ms,
+                command_ingress_to_admission_ms: between_ms(sample.command_ingress, admission),
+                admission_to_writer_enqueue_ms: between_ms(admission, writer_enqueue),
+                writer_enqueue_to_output_read_ms: between_ms(writer_enqueue, output_read),
+                output_read_to_model_apply_ms: between_ms(output_read, model_apply),
+                model_apply_to_event_publish_ms: between_ms(model_apply, event_publish),
+                event_published_at_unix_ms: sample.event_published_at_unix_ms?,
+            })
+        })
+        .collect::<Vec<_>>();
+    completed.sort_by_key(|sample| sample.sequence);
+    completed
+}
+
+pub(crate) fn start_terminal_launch_sample_collection() {
+    *TERMINAL_LAUNCH_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(Vec::new());
+}
+
+pub(crate) fn take_terminal_launch_samples() -> Vec<TerminalLaunchSample> {
+    TERMINAL_LAUNCH_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+        .unwrap_or_default()
 }
 
 #[cfg(not(test))]
@@ -227,10 +429,6 @@ pub(crate) fn install_metrics() {
     let cpu_observer = Arc::clone(&process_observer);
 
     let metrics = Metrics {
-        agent_turn_duration: meter
-            .f64_histogram("releash.agent.turn.duration_ms")
-            .with_unit("ms")
-            .build(),
         hot_path_duration: meter
             .f64_histogram("releash.hot_path.duration_ms")
             .with_unit("ms")
@@ -239,31 +437,12 @@ pub(crate) fn install_metrics() {
             .f64_histogram("releash.startup.duration_ms")
             .with_unit("ms")
             .build(),
-        stream_payload_bytes: meter
-            .f64_histogram("releash.agent_stream.payload_bytes")
-            .with_unit("By")
-            .build(),
-        stream_emit_interval_ms: meter
-            .f64_histogram("releash.agent_stream.emit_interval_ms")
+        terminal_launch_duration: meter
+            .f64_histogram("releash.terminal.launch.duration_ms")
             .with_unit("ms")
             .build(),
-        #[cfg(test)]
-        session_save_bytes: meter
-            .f64_histogram("releash.session.save_bytes")
-            .with_unit("By")
-            .build(),
         operation_status: meter.u64_counter("releash.operation.status").build(),
-        orphan_cleanup: meter.u64_counter("releash.startup.orphan_cleanup").build(),
         usage_events: meter.u64_counter("releash.usage.events").build(),
-        #[cfg(test)]
-        tool_output_truncated: meter
-            .u64_counter("releash.tool_output.truncated_count")
-            .build(),
-        #[cfg(test)]
-        tool_output_bytes: meter
-            .u64_counter("releash.tool_output.full_output_bytes")
-            .with_unit("By")
-            .build(),
         _rss_gauge: meter
             .u64_observable_gauge("releash.process.rss_bytes")
             .with_unit("By")
@@ -479,106 +658,6 @@ pub(crate) fn record_workflow_node_failure(
     metrics.operation_status.add(1, &attrs);
 }
 
-pub(crate) fn record_agent_turn_duration(
-    metric: AgentTurnMetric,
-    dims: &TurnDimensions,
-    elapsed: Duration,
-) {
-    if !is_performance_active() {
-        return;
-    }
-    let attrs = dims.to_metric_attrs(metric.operation());
-    #[cfg(test)]
-    record_test_metric(
-        "releash.agent.turn.duration_ms",
-        elapsed.as_secs_f64() * 1000.0,
-        &attrs,
-    );
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics
-        .agent_turn_duration
-        .record(elapsed.as_secs_f64() * 1000.0, &attrs);
-}
-
-#[cfg(test)]
-pub(crate) fn record_session_save_bytes<F>(metric: HotPathMetric, bytes: F)
-where
-    F: FnOnce() -> usize,
-{
-    if !is_performance_active() {
-        return;
-    }
-    let bytes = bytes();
-    let attrs = [KeyValue::new(KEY_OPERATION, metric.operation())];
-    #[cfg(test)]
-    record_test_metric("releash.session.save_bytes", bytes as f64, &attrs);
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.session_save_bytes.record(bytes as f64, &attrs);
-}
-
-#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-pub(crate) fn record_payload_size<F>(channel: PayloadChannel, bytes: F)
-where
-    F: FnOnce() -> usize,
-{
-    if !is_performance_active() {
-        return;
-    }
-    let bytes = bytes();
-    let attrs = [KeyValue::new(KEY_CHANNEL, channel.as_str())];
-    #[cfg(test)]
-    record_test_metric("releash.agent_stream.payload_bytes", bytes as f64, &attrs);
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.stream_payload_bytes.record(bytes as f64, &attrs);
-}
-
-#[cfg(test)]
-pub(crate) fn record_tool_output_externalized(byte_size: u64) {
-    if !is_performance_active() {
-        return;
-    }
-    let attrs = [KeyValue::new(KEY_OPERATION, "tool_output.externalize")];
-    #[cfg(test)]
-    {
-        record_test_metric("releash.tool_output.truncated_count", 1.0, &attrs);
-        record_test_metric(
-            "releash.tool_output.full_output_bytes",
-            byte_size as f64,
-            &attrs,
-        );
-    }
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.tool_output_truncated.add(1, &attrs);
-    metrics.tool_output_bytes.add(byte_size, &attrs);
-}
-
-#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-pub(crate) fn record_emit_interval(elapsed: Duration) {
-    if !is_performance_active() {
-        return;
-    }
-    #[cfg(test)]
-    record_test_metric(
-        "releash.agent_stream.emit_interval_ms",
-        elapsed.as_secs_f64() * 1000.0,
-        &[],
-    );
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics
-        .stream_emit_interval_ms
-        .record(elapsed.as_secs_f64() * 1000.0, &[]);
-}
-
 pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
     if !is_performance_active() {
         return;
@@ -598,54 +677,50 @@ pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
         .record(elapsed.as_secs_f64() * 1000.0, &attrs);
 }
 
-#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-pub(crate) fn orphan_cleanup_status(failures: usize, failed: bool) -> OpStatus {
-    if failed || failures > 0 {
-        OpStatus::Failure
-    } else {
-        OpStatus::Success
+pub(crate) struct TerminalLaunchPhaseTimer {
+    metric: TerminalLaunchMetric,
+    started: Instant,
+}
+
+impl TerminalLaunchPhaseTimer {
+    pub(crate) fn finish(self) {
+        record_terminal_launch(self.metric, self.started.elapsed());
     }
 }
 
-#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-pub(crate) fn record_orphan_cleanup_counts(
-    scanned: usize,
-    processed: usize,
-    skipped: usize,
-    failures: usize,
-    failed: bool,
-) {
+pub(crate) fn start_terminal_launch_phase(
+    metric: TerminalLaunchMetric,
+) -> TerminalLaunchPhaseTimer {
+    TerminalLaunchPhaseTimer {
+        metric,
+        started: Instant::now(),
+    }
+}
+
+pub(crate) fn record_terminal_launch(metric: TerminalLaunchMetric, elapsed: Duration) {
+    let duration_ms = elapsed.as_secs_f64() * 1000.0;
+    if let Some(samples) = TERMINAL_LAUNCH_SAMPLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_mut()
+    {
+        if samples.len() < TERMINAL_LAUNCH_SAMPLE_CAPACITY {
+            samples.push(TerminalLaunchSample {
+                phase: metric.operation(),
+                duration_ms,
+            });
+        }
+    }
     if !is_performance_active() {
         return;
     }
-    let status = orphan_cleanup_status(failures, failed);
-    let status_attrs = [
-        KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
-        KeyValue::new(KEY_STATUS, status.as_str()),
-    ];
+    let attrs = [KeyValue::new(KEY_OPERATION, metric.operation())];
     #[cfg(test)]
-    record_test_metric("releash.operation.status", 1.0, &status_attrs);
-    if let Some(metrics) = METRICS.get() {
-        metrics.operation_status.add(1, &status_attrs);
-    }
-
-    for (outcome, count) in [
-        ("scanned", scanned),
-        ("processed", processed),
-        ("skipped", skipped),
-        ("failures", failures),
-    ] {
-        let attrs = [
-            KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
-            KeyValue::new(KEY_STATUS, status.as_str()),
-            KeyValue::new(KEY_OUTCOME, outcome),
-        ];
-        #[cfg(test)]
-        record_test_metric("releash.startup.orphan_cleanup", count as f64, &attrs);
-        if let Some(metrics) = METRICS.get() {
-            metrics.orphan_cleanup.add(count as u64, &attrs);
-        }
-    }
+    record_test_metric("releash.terminal.launch.duration_ms", duration_ms, &attrs);
+    let Some(metrics) = METRICS.get() else {
+        return;
+    };
+    metrics.terminal_launch_duration.record(duration_ms, &attrs);
 }
 
 pub(crate) fn record_usage_event(name: &str) {
@@ -664,7 +739,7 @@ pub(crate) fn record_usage_event(name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
 
     fn set_active(active: bool) {
         set_performance_configured(active);
@@ -711,82 +786,44 @@ mod tests {
     }
 
     #[test]
-    fn record_size_closures_are_not_evaluated_when_inactive() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(false);
-        let payload_called = AtomicBool::new(false);
-        let save_called = AtomicBool::new(false);
-
-        record_payload_size(PayloadChannel::TauriEvent, || {
-            payload_called.store(true, Ordering::Relaxed);
-            123
-        });
-        record_session_save_bytes(HotPathMetric::SessionAppend, || {
-            save_called.store(true, Ordering::Relaxed);
-            456
-        });
-
-        assert!(!payload_called.load(Ordering::Relaxed));
-        assert!(!save_called.load(Ordering::Relaxed));
-        assert!(test_metric_records().is_empty());
-    }
-
-    #[test]
-    fn record_apis_capture_values_and_attributes_when_active() {
+    fn test_terminal_launch_sample_collection_is_explicit_bounded_and_drainable() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
         set_active(true);
 
-        let turn_dims = TurnDimensions {
-            resume: true,
-            has_session: true,
-            permission_mode: PermissionModeDim::Edit,
-            model: ModelFamily::Sonnet,
-            context: TurnContext::Chat,
-            channel: PayloadChannel::TauriEvent,
-            warm_path: WarmPath::QueryDirect,
-        };
-        record_agent_turn_duration(
-            AgentTurnMetric::FirstAssistantEvent,
-            &turn_dims,
-            Duration::from_millis(42),
-        );
-        record_payload_size(PayloadChannel::TauriEvent, || 128);
-        record_session_save_bytes(HotPathMetric::SessionAppend, || 256);
-        record_emit_interval(Duration::from_millis(33));
-        record_usage_event("settings_saved");
+        record_terminal_launch(TerminalLaunch::CommandIngress, Duration::from_millis(1));
+        assert!(take_terminal_launch_samples().is_empty());
 
-        let records = test_metric_records();
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent.turn.duration_ms"
-                && record.value == 42.0
-                && has_attr(record, KEY_OPERATION, "agent.turn.first_assistant_event")
-                && has_attr(record, attributes::KEY_AGENT_RESUME, "true")
-                && has_attr(record, attributes::KEY_AGENT_HAS_SESSION, "true")
-                && has_attr(record, attributes::KEY_AGENT_PERMISSION_MODE, "edit")
-                && has_attr(record, attributes::KEY_AGENT_MODEL, "sonnet")
-                && has_attr(record, attributes::KEY_AGENT_CONTEXT, "chat")
-                && has_attr(record, KEY_CHANNEL, "tauri_event")
-                && has_attr(record, attributes::KEY_AGENT_WARM_PATH, "query_direct")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent_stream.payload_bytes"
-                && record.value == 128.0
-                && has_attr(record, KEY_CHANNEL, "tauri_event")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.session.save_bytes"
-                && record.value == 256.0
-                && has_attr(record, KEY_OPERATION, "session.append")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent_stream.emit_interval_ms" && record.value == 33.0
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.usage.events"
-                && has_attr(record, KEY_USAGE_EVENT, "settings_saved")
-        }));
+        start_terminal_launch_sample_collection();
+        for _ in 0..4_097 {
+            record_terminal_launch(TerminalLaunch::FirstProviderByte, Duration::from_millis(2));
+        }
+        let samples = take_terminal_launch_samples();
+        assert_eq!(samples.len(), 4_096);
+        assert_eq!(samples[0].phase, "terminal.launch.first_provider_byte");
+        assert_eq!(samples[0].duration_ms, 2.0);
+
+        record_terminal_launch(TerminalLaunch::FirstPaint, Duration::from_millis(3));
+        assert!(take_terminal_launch_samples().is_empty());
+        reset_test_metrics();
+    }
+
+    #[test]
+    fn test_explicit_terminal_launch_collection_does_not_depend_on_telemetry_export_setting() {
+        let _guard = lock_test_telemetry();
+        reset_test_metrics();
+        set_active(false);
+
+        start_terminal_launch_sample_collection();
+        record_terminal_launch(TerminalLaunch::CommandIngress, Duration::from_millis(4));
+
+        assert_eq!(
+            take_terminal_launch_samples(),
+            vec![TerminalLaunchSample {
+                phase: "terminal.launch.command_ingress",
+                duration_ms: 4.0,
+            }]
+        );
         reset_test_metrics();
     }
 
@@ -838,102 +875,11 @@ mod tests {
     }
 
     #[test]
-    fn record_orphan_cleanup_captures_safe_counts_and_status() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(true);
-
-        record_orphan_cleanup_counts(3, 2, 1, 0, false);
-
-        let status_records = records_named("releash.operation.status");
-        assert!(status_records.iter().any(|record| {
-            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-
-        let cleanup_records = records_named("releash.startup.orphan_cleanup");
-        assert_eq!(cleanup_records.len(), 4);
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 3.0
-                && has_attr(record, KEY_OUTCOME, "scanned")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 2.0
-                && has_attr(record, KEY_OUTCOME, "processed")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 1.0
-                && has_attr(record, KEY_OUTCOME, "skipped")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 0.0
-                && has_attr(record, KEY_OUTCOME, "failures")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        for record in cleanup_records {
-            let keys: Vec<_> = record
-                .attributes
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect();
-            assert_eq!(
-                keys,
-                vec![KEY_OPERATION, KEY_STATUS, KEY_OUTCOME],
-                "orphan cleanup telemetry must contain only safe metadata"
-            );
-        }
-        reset_test_metrics();
-    }
-
-    #[test]
-    fn record_orphan_cleanup_marks_failure_on_failures_or_panic_flag() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(true);
-
-        record_orphan_cleanup_counts(1, 0, 0, 1, false);
-        record_orphan_cleanup_counts(0, 0, 0, 0, true);
-
-        let status_records = records_named("releash.operation.status");
-        assert_eq!(status_records.len(), 2);
-        assert!(status_records.iter().all(|record| {
-            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
-                && has_attr(record, KEY_STATUS, "failure")
-        }));
-        reset_test_metrics();
-    }
-
-    #[test]
-    fn orphan_cleanup_status_marks_failures_and_success() {
-        assert_eq!(orphan_cleanup_status(1, false), OpStatus::Failure);
-        assert_eq!(orphan_cleanup_status(0, true), OpStatus::Failure);
-        assert_eq!(orphan_cleanup_status(0, false), OpStatus::Success);
-    }
-
-    #[test]
     fn record_apis_are_noop_when_inactive() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
         set_active(false);
 
-        let turn_dims = TurnDimensions {
-            resume: false,
-            has_session: false,
-            permission_mode: PermissionModeDim::Ask,
-            model: ModelFamily::Other,
-            context: TurnContext::Chat,
-            channel: PayloadChannel::TauriEvent,
-            warm_path: WarmPath::QueryDirect,
-        };
-        record_agent_turn_duration(
-            AgentTurnMetric::UiToStart,
-            &turn_dims,
-            Duration::from_millis(1),
-        );
-        record_emit_interval(Duration::from_millis(33));
         record_usage_event("settings_saved");
 
         assert!(test_metric_records().is_empty());
@@ -1007,5 +953,38 @@ mod tests {
         assert!(test_metric_records().is_empty());
         assert!(!first_repo_snapshot_recorded_for_tests());
         reset_test_metrics();
+    }
+
+    #[test]
+    fn test_terminal_input_sample_requires_the_complete_backend_path() {
+        start_terminal_input_sample_collection();
+        let on_data_at_unix_ms = unix_time_ms() - 1.0;
+        start_terminal_input_trace("attachment-a", 7, on_data_at_unix_ms);
+        record_terminal_input_admission("attachment-a", 7);
+        record_terminal_input_writer_enqueue("attachment-a", 7);
+        let key = TerminalInputTraceKey::new("attachment-a", 7);
+        record_terminal_input_output_read(&key);
+        record_terminal_input_model_apply(&key);
+        record_terminal_input_event_publish(&key);
+
+        let samples = take_terminal_input_samples();
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].sequence, 7);
+        assert!(samples[0].on_data_to_command_ingress_ms >= 0.0);
+        assert!(samples[0].command_ingress_to_admission_ms >= 0.0);
+        assert!(samples[0].admission_to_writer_enqueue_ms >= 0.0);
+        assert!(samples[0].writer_enqueue_to_output_read_ms >= 0.0);
+        assert!(samples[0].output_read_to_model_apply_ms >= 0.0);
+        assert!(samples[0].model_apply_to_event_publish_ms >= 0.0);
+        assert!(samples[0].event_published_at_unix_ms >= on_data_at_unix_ms);
+    }
+
+    #[test]
+    fn test_terminal_input_cross_process_timestamp_uses_integer_unix_milliseconds() {
+        assert_eq!(
+            duration_to_unix_time_ms(Duration::new(1, 999_999_999)),
+            1_999.0
+        );
     }
 }

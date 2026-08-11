@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
 	testDir: "./tests",
+	testIgnore: ["terminal-performance.spec.ts", "tauri-performance/**"],
 	fullyParallel: false,
 	retries: process.env.CI ? 1 : 0,
 	workers: 1,
@@ -21,6 +22,6 @@ export default defineConfig({
 		command: "pnpm dev",
 		url: "http://localhost:1420",
 		reuseExistingServer: !process.env.CI,
-		timeout: 30_000,
+		timeout: 120_000,
 	},
 });

@@ -427,7 +427,6 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "node1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
@@ -726,7 +725,7 @@ description: facet resolution test
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         policy: coding
@@ -760,7 +759,7 @@ description: invalid facet reference
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: {facet_key}
@@ -803,7 +802,7 @@ description: every knowledge body is validated
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         knowledge: [first, second]
@@ -837,7 +836,7 @@ steps:
   - name: x
     mode: auto
     instruction: x
-    permission: edit
+    provider: claude
 "#;
         let file_path = dir.join("legacy-user.yml");
         std::fs::write(&file_path, yaml).unwrap();
@@ -876,7 +875,7 @@ description: all three facets per node
 nodes:
   - name: lead
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         policy: p
@@ -889,7 +888,7 @@ nodes:
       child: [c1, c2]
   - name: c1
     session:
-      permission: ask
+      provider: claude
       gate: auto
       facets:
         policy: pc
@@ -897,7 +896,7 @@ nodes:
         instruction: ic
   - name: c2
     session:
-      permission: ask
+      provider: claude
       gate: auto
       facets:
         policy: pc
@@ -960,7 +959,7 @@ description: missing {facet_kind} test
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         {facet_yaml}
@@ -1001,7 +1000,7 @@ description: builtin facet load test
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         knowledge: [releash-thread-cli]
@@ -1029,7 +1028,7 @@ variables:
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: missing
@@ -1058,7 +1057,7 @@ nodes:
   - name: implement
     {field}: {value}
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: missing
@@ -1088,7 +1087,7 @@ description: request reference test
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: impl

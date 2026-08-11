@@ -1,39 +1,8 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceStatus } from "@/types/session";
+import { act, renderHook } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation";
 
-const mockListen = vi.fn();
-const mockInvoke = vi.fn();
-
-vi.mock("@tauri-apps/api/event", () => ({
-	listen: (...args: unknown[]) => mockListen(...args),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: (...args: unknown[]) => mockInvoke(...args),
-}));
-
-const makeStatus = (
-	overrides: Partial<WorkspaceStatus> = {},
-): WorkspaceStatus => ({
-	worktree_id: "/repo/a",
-	worktree_path: "/repo/a",
-	aggregated_state: "running",
-	running_count: 1,
-	waiting_count: 0,
-	error_count: 0,
-	session_count: 1,
-	last_activity_at: 1_000,
-	...overrides,
-});
-
 describe("useWorkspaceNavigation", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-		mockListen.mockResolvedValue(vi.fn());
-	});
-
 	it("openWorktreeTab は同一 rootPath を再利用し異なる rootPath は追加する", () => {
 		const { result } = renderHook(() => useWorkspaceNavigation());
 
@@ -80,82 +49,5 @@ describe("useWorkspaceNavigation", () => {
 		expect(result.current.worktrees).toEqual([retainedWorkspace]);
 		expect(result.current.worktrees[0]).toBe(retainedWorkspace);
 		expect(result.current.selectedWorktreeId).toBe("/repo/active");
-		expect(mockInvoke).not.toHaveBeenCalled();
-	});
-
-	it("workspace-status-changed は一致するタブだけ agentState を更新する", async () => {
-		type WorkspaceStatusCallback = (event: {
-			payload: WorkspaceStatus;
-		}) => void;
-		let workspaceStatusCallback: WorkspaceStatusCallback | null = null;
-		mockListen.mockImplementation(
-			(event: string, callback: WorkspaceStatusCallback) => {
-				if (event === "workspace-status-changed") {
-					workspaceStatusCallback = callback;
-				}
-				return Promise.resolve(vi.fn());
-			},
-		);
-		const { result } = renderHook(() => useWorkspaceNavigation());
-
-		act(() => {
-			result.current.openWorktreeTab("/repo/a", "main", "repo");
-			result.current.openWorktreeTab("/repo/b", "feat/b", "repo");
-		});
-		await waitFor(() => {
-			expect(workspaceStatusCallback).not.toBeNull();
-		});
-
-		await act(async () => {
-			workspaceStatusCallback?.({
-				payload: makeStatus({
-					worktree_id: "/repo/a",
-					worktree_path: "/repo/a",
-					aggregated_state: "error",
-				}),
-			});
-		});
-
-		expect(
-			result.current.worktrees.find((tab) => tab.rootPath === "/repo/a")
-				?.agentState,
-		).toBe("error");
-		expect(
-			result.current.worktrees.find((tab) => tab.rootPath === "/repo/b")
-				?.agentState,
-		).toBeUndefined();
-
-		await act(async () => {
-			workspaceStatusCallback?.({
-				payload: makeStatus({
-					worktree_id: "/repo/missing",
-					worktree_path: "/repo/missing",
-					aggregated_state: "running",
-				}),
-			});
-		});
-
-		expect(
-			result.current.worktrees.find((tab) => tab.rootPath === "/repo/b")
-				?.agentState,
-		).toBeUndefined();
-	});
-
-	it("unmount 時に workspace-status-changed の unlisten を呼ぶ", async () => {
-		const unlisten = vi.fn();
-		mockListen.mockResolvedValue(unlisten);
-		const { unmount } = renderHook(() => useWorkspaceNavigation());
-
-		await waitFor(() => {
-			expect(mockListen).toHaveBeenCalledWith(
-				"workspace-status-changed",
-				expect.any(Function),
-			);
-		});
-		await act(async () => {});
-
-		unmount();
-
-		expect(unlisten).toHaveBeenCalledTimes(1);
 	});
 });

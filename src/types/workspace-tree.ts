@@ -1,26 +1,30 @@
-import type { SessionSummary } from "./session";
+import type { AgentSessionLaunchAttachment } from "./agent-session";
 import type { WorkflowExecutionSummary } from "./workflow";
 
-export interface CenterSelection {
-	kind: "node";
-	worktreePath: string;
-	nodeId: string;
-}
-
-export interface NewSessionCreationRequest {
-	requestId: string;
-	worktreePath: string;
-	attempt: number;
-}
-
-export interface NewSessionCreationStatus {
-	pending: boolean;
-	error: string | null;
-}
+export type CenterSelection =
+	| {
+			kind: "node";
+			worktreePath: string;
+			nodeId: string;
+	  }
+	| {
+			kind: "agent_session";
+			worktreePath: string;
+			agentSessionId: string;
+			initialAttachment?: AgentSessionLaunchAttachment;
+	  }
+	| {
+			kind: "agent_session_launching";
+			worktreePath: string;
+			provider: string;
+			launchToken: string;
+			error?: string;
+	  };
 
 export type WorkspaceNodeStatus =
 	| "queued"
 	| "running"
+	| "paused"
 	| "failed"
 	| "error"
 	| "waiting"
@@ -30,6 +34,7 @@ export type WorkspaceNodeStatus =
 
 export interface WorkspaceNodeCapabilities {
 	canApprove: boolean;
+	canRetry: boolean;
 	canClose: boolean;
 }
 
@@ -89,8 +94,8 @@ export interface WorkspaceTreeSelectionSnapshot {
 	reconciliation: WorkspaceSelectionReconciliation;
 }
 
-export interface WorkspaceSessionNodeContent {
-	kind: "session";
+export interface WorkspaceAgentSessionNodeContent {
+	kind: "agentSession";
 	sessionId?: string | null;
 }
 
@@ -108,14 +113,20 @@ export interface WorkspaceCommandNodeContent {
 }
 
 export type WorkspaceNodeContent =
-	| WorkspaceSessionNodeContent
+	| WorkspaceAgentSessionNodeContent
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	attempt?: number;
+	submitReceived: boolean;
+	stopReceived: boolean;
+	waitingFor?: "submit" | "stop";
+	hasArtifact: boolean;
 	errorReason?: string | null;
+	recoveryReason?: string | null;
 	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
 	content: WorkspaceNodeContent;
@@ -130,5 +141,3 @@ export interface WorkspaceWorkflowHistoryItem {
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
 }
-
-export type WorkspaceSessionHistoryItem = SessionSummary;

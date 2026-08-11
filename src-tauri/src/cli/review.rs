@@ -9,8 +9,14 @@ use crate::domain::comment::{
     AuthorScope, ReviewActor, ReviewError, ReviewHistoryEntry, ReviewTarget, ReviewThread,
     ReviewThreadFilter, ReviewThreadState,
 };
-use crate::usecase::agent_session::session::SessionState;
+use crate::usecase::agent_session::{
+    AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionProviderDto,
+};
 use crate::usecase::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
+
+enum ReviewSessionContext {
+    Provider(AgentSessionItemDto),
+}
 
 #[derive(Subcommand, Debug)]
 pub(super) enum ReviewSubcommand {
@@ -102,35 +108,35 @@ fn review_actor_and_worktree(
     }
     let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
-    if session.state == SessionState::Closed {
-        return Err(CliError::InvalidInput(format!(
-            "Session is closed and cannot be used as a review actor: {session_id}"
-        )));
+    review_actor_and_worktree_from_context(session_id, session)
+}
+
+fn review_actor_and_worktree_from_context(
+    session_id: &str,
+    session: ReviewSessionContext,
+) -> Result<(ReviewActor, String), CliError> {
+    match session {
+        ReviewSessionContext::Provider(session) => {
+            if session.lifecycle != AgentSessionLifecycleDto::Open {
+                return Err(CliError::InvalidInput(format!(
+                    "Session is not open and cannot be used as a review actor: {session_id}"
+                )));
+            }
+            let provider = match session.provider {
+                AgentSessionProviderDto::Claude => "claude",
+                AgentSessionProviderDto::Codex => "codex",
+            };
+            Ok((
+                ReviewActor::provider_agent(provider.to_string(), Some(session_id.to_string())),
+                session.worktree_path,
+            ))
+        }
     }
-    let backend_id = session.backend_id.clone().ok_or_else(|| {
-        CliError::InvalidInput(format!(
-            "Session has no backend_id and cannot be used as a review actor: {session_id}"
-        ))
-    })?;
-    let model = session.selected_model.clone().ok_or_else(|| {
-        CliError::InvalidInput(format!(
-            "Session has no selected_model and cannot be used as a review actor: {session_id}"
-        ))
-    })?;
-    Ok(ReviewActor::agent(
-        backend_id,
-        model,
-        Some(session_id.to_string()),
-    ))
-    .map(|actor| (actor, session.worktree_path))
 }
 
 /// 読み取り専用 review コマンド (`get` / `history`) 向けの軽量 helper。
 ///
-/// `review_actor_and_worktree` は actor 構築のため `backend_id` / `selected_model` /
-/// `state != Closed` を必須としているが、Get / History は worktree path しか必要としない。
-/// このため過去セッションや actor 用フィールドを持たないセッションでも閲覧できるよう、
-/// session 存在チェックと worktree path 取り出しのみを行う。Closed セッションも許可する。
+/// Get / HistoryはAgentSessionのlifecycleに関係なくworktreeだけを解決する。
 fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<String, CliError> {
     if session_id.trim().is_empty() {
         return Err(CliError::InvalidInput(
@@ -139,27 +145,30 @@ fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<Str
     }
     let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
-    Ok(session.worktree_path)
+    Ok(match session {
+        ReviewSessionContext::Provider(session) => session.worktree_path,
+    })
 }
 
 fn review_session_context(
     data_dir: &Path,
     session_id: &str,
-) -> Result<Option<crate::usecase::agent_session::session::SessionReviewContext>, CliError> {
-    #[cfg(test)]
+) -> Result<Option<ReviewSessionContext>, CliError> {
+    let store_path = crate::adaptor::gateway::local_event_store::layout::StoreLayout::new(data_dir)
+        .database_path();
+    if !store_path
+        .try_exists()
+        .map_err(|error| CliError::Other(format!("AgentSession store lookup failed: {error}")))?
     {
-        crate::adaptor::controller::wiring::build_session_store()
-            .get_session_review_context(data_dir, session_id)
-            .map_err(CliError::Other)
+        return Ok(None);
     }
-    #[cfg(not(test))]
-    {
-        crate::adaptor::controller::wiring::build_canonical_session_read_store(
-            data_dir.to_path_buf(),
-        )?
-        .get_session_review_context(data_dir, session_id)
-        .map_err(CliError::Other)
-    }
+    let provider = crate::adaptor::controller::wiring::build_canonical_agent_session_query(
+        data_dir.to_path_buf(),
+    )?;
+    provider
+        .get_blocking(session_id)
+        .map(|context| context.map(ReviewSessionContext::Provider))
+        .map_err(|error| CliError::Other(format!("AgentSession query failed: {error:?}")))
 }
 
 fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>, CliError> {
@@ -430,7 +439,7 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
 mod tests {
     use super::super::common::test_support::{
         review_cli_thread, review_history_entries, test_uuid, write_review_config,
-        write_review_session,
+        write_review_session, write_review_session_with_lifecycle,
     };
     use super::super::common::{cli_error_exit_code, cli_error_stderr};
     use super::super::{Cli, TopCommand};
@@ -440,6 +449,40 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_agent_session_resolves_review_actor_without_a_model() {
+        let session_id = "agent-session-1";
+        let (actor, worktree_path) = review_actor_and_worktree_from_context(
+            session_id,
+            ReviewSessionContext::Provider(AgentSessionItemDto {
+                id: session_id.to_string(),
+                workspace_identity: "/repo".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                provider: AgentSessionProviderDto::Claude,
+                origin: crate::usecase::agent_session::AgentSessionOriginDto::WorkflowNode {
+                    workflow_execution_id: "workflow-1".to_string(),
+                    node_execution_id: "node-1".to_string(),
+                },
+                lifecycle: AgentSessionLifecycleDto::Open,
+                provider_session_id: None,
+                transcript_ref: None,
+                operations: crate::usecase::agent_session::AgentSessionOperationsDto {
+                    can_archive: false,
+                    can_restore: false,
+                    can_delete: false,
+                },
+                activity: crate::usecase::agent_session::AgentSessionActivityDto::Idle,
+                last_exit_abnormal: false,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(worktree_path, "/repo/worktree");
+        assert_eq!(actor.backend_id.as_deref(), Some("claude"));
+        assert_eq!(actor.model, None);
+        assert_eq!(actor.session_id.as_deref(), Some(session_id));
+    }
 
     #[test]
     fn review_thread_json_formatter_preserves_field_shape() {
@@ -453,7 +496,7 @@ mod tests {
         assert_eq!(value["worktreeName"], "/repo");
         assert_eq!(value["author"]["kind"], "agent");
         assert_eq!(value["author"]["backendId"], "codex");
-        assert_eq!(value["author"]["model"], "gpt-5");
+        assert_eq!(value["author"]["model"], serde_json::Value::Null);
         assert!(value["author"].get("sessionId").is_none());
         assert_eq!(value["target"]["filePath"], "src/main.rs");
         assert_eq!(value["target"]["lineNumber"], 3);
@@ -475,7 +518,7 @@ mod tests {
         assert_eq!(value[0]["kind"], "thread_created");
         assert_eq!(value[0]["threadId"], test_uuid(42));
         assert_eq!(value[0]["commentId"], test_uuid(51));
-        assert_eq!(value[0]["actor"]["displayName"], "codex/gpt-5");
+        assert_eq!(value[0]["actor"]["displayName"], "codex");
         assert_eq!(value[0]["target"]["filePath"], "src/main.rs");
         assert_eq!(value[1]["kind"], "thread_resolved");
         assert_eq!(value[1]["outcome"], "accepted");
@@ -599,7 +642,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440061".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &session_id, Some("codex"));
         let thread_id = seed_review_thread(tmp.path());
         let comment_id = test_uuid(43);
 
@@ -754,7 +797,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440062".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &session_id, Some("codex"));
 
         let human = cmd_review(
             tmp.path(),
@@ -773,7 +816,7 @@ mod tests {
         assert_eq!(
             human,
             format!(
-                "thread_id: {human_thread_id}\nstate:     Open\nauthor:    codex/gpt-5\nlocation:  src/main.rs:L3-L5\nupdated:   {human_updated}\ncomments:  1\n"
+                "thread_id: {human_thread_id}\nstate:     Open\nauthor:    codex\nlocation:  src/main.rs:L3-L5\nupdated:   {human_updated}\ncomments:  1\n"
             )
         );
 
@@ -806,8 +849,8 @@ mod tests {
   "author": {{
     "kind": "agent",
     "backendId": "codex",
-    "model": "gpt-5",
-    "displayName": "codex/gpt-5"
+    "model": null,
+    "displayName": "codex"
   }},
   "target": {{
     "filePath": "src/main.rs",
@@ -822,8 +865,8 @@ mod tests {
       "author": {{
         "kind": "agent",
         "backendId": "codex",
-        "model": "gpt-5",
-        "displayName": "codex/gpt-5"
+        "model": null,
+        "displayName": "codex"
       }},
       "content": "Claim",
       "createdAt": {json_created_at}
@@ -845,7 +888,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = "550e8400-e29b-41d4-a716-446655440063".to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &session_id, Some("codex"));
 
         let invalid_state = cmd_review(
             tmp.path(),
@@ -900,13 +943,17 @@ mod tests {
         );
         assert_eq!(cli_error_exit_code(&invalid_target), 2);
 
-        crate::test_support::build_session_store()
-            .set_session_state(tmp.path(), &session_id, SessionState::Closed)
-            .unwrap();
+        let archived_session_id = uuid::Uuid::new_v4().to_string();
+        write_review_session_with_lifecycle(
+            tmp.path(),
+            &archived_session_id,
+            Some("codex"),
+            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+        );
         let closed_session = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
-                session_id: session_id.clone(),
+                session_id: archived_session_id.clone(),
                 content: "Claim".to_string(),
                 file: None,
                 line: None,
@@ -917,7 +964,9 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             cli_error_stderr(&closed_session),
-            format!("error: Session is closed and cannot be used as a review actor: {session_id}")
+            format!(
+                "error: Session is not open and cannot be used as a review actor: {archived_session_id}"
+            )
         );
         assert_eq!(cli_error_exit_code(&closed_session), 2);
     }
@@ -933,62 +982,34 @@ mod tests {
     }
 
     #[test]
-    fn review_actor_resolves_backend_and_model_from_session_id() {
+    fn review_actor_resolves_provider_from_canonical_agent_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &session_id, Some("codex"));
 
         let actor = review_actor(tmp.path(), &session_id).unwrap();
 
         assert_eq!(actor.backend_id.as_deref(), Some("codex"));
-        assert_eq!(actor.model.as_deref(), Some("gpt-5"));
+        assert_eq!(actor.model, None);
         assert_eq!(actor.session_id.as_deref(), Some(session_id.as_str()));
     }
 
     #[test]
-    fn review_actor_uses_saved_backend_model_without_catalog_validation() {
+    fn review_actor_uses_canonical_provider_without_model_catalog() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
 
         let missing = review_actor(tmp.path(), &uuid::Uuid::new_v4().to_string());
         assert!(matches!(missing, Err(CliError::NotFound(_))));
 
-        let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("fake-model"));
-        let actor = review_actor(tmp.path(), &session_id).unwrap();
-        assert_eq!(actor.backend_id.as_deref(), Some("codex"));
-        assert_eq!(actor.model.as_deref(), Some("fake-model"));
-
-        let missing_backend_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(
-            tmp.path(),
-            &missing_backend_id,
-            Some("codex"),
-            Some("gpt-5"),
-        );
-        let meta_path = tmp
-            .path()
-            .join("sessions")
-            .join(&missing_backend_id)
-            .join("meta.json");
-        let mut meta: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-        meta.as_object_mut().unwrap().remove("backendId");
-        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
-        match review_actor(tmp.path(), &missing_backend_id) {
-            Err(CliError::Other(message)) => {
-                assert!(message.contains("Invalid session data"));
-            }
-            other => panic!("expected invalid isolated session error, got {other:?}"),
+        for provider in ["codex", "claude"] {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            write_review_session(tmp.path(), &session_id, Some(provider));
+            let actor = review_actor(tmp.path(), &session_id).unwrap();
+            assert_eq!(actor.backend_id.as_deref(), Some(provider));
+            assert_eq!(actor.model, None);
         }
-
-        let missing_model_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &missing_model_id, Some("codex"), None);
-        assert!(matches!(
-            review_actor(tmp.path(), &missing_model_id),
-            Err(CliError::InvalidInput(_))
-        ));
     }
 
     #[test]
@@ -1078,14 +1099,16 @@ mod tests {
     }
 
     #[test]
-    fn review_worktree_resolution_allows_closed_session_without_actor_fields() {
+    fn review_worktree_resolution_allows_archived_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), None);
-        crate::test_support::build_session_store()
-            .set_session_state(tmp.path(), &session_id, SessionState::Closed)
-            .unwrap();
+        write_review_session_with_lifecycle(
+            tmp.path(),
+            &session_id,
+            Some("codex"),
+            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+        );
 
         let worktree = review_worktree_from_session(tmp.path(), &session_id).unwrap();
 
@@ -1093,15 +1116,16 @@ mod tests {
     }
 
     #[test]
-    fn review_cli_rejects_mutation_for_closed_session() {
+    fn review_cli_rejects_mutation_for_archived_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
-
-        crate::test_support::build_session_store()
-            .set_session_state(tmp.path(), &session_id, SessionState::Closed)
-            .unwrap();
+        write_review_session_with_lifecycle(
+            tmp.path(),
+            &session_id,
+            Some("codex"),
+            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+        );
         let closed = cmd_review(
             tmp.path(),
             ReviewSubcommand::Create {
@@ -1114,8 +1138,8 @@ mod tests {
             },
         );
         match closed {
-            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Session is closed")),
-            other => panic!("expected closed session rejection, got {other:?}"),
+            Err(CliError::InvalidInput(msg)) => assert!(msg.contains("Session is not open")),
+            other => panic!("expected archived session rejection, got {other:?}"),
         }
     }
 
@@ -1174,7 +1198,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
         let session_id = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &session_id, Some("codex"), Some("gpt-5"));
+        write_review_session(tmp.path(), &session_id, Some("codex"));
 
         cmd_review(
             tmp.path(),
@@ -1228,8 +1252,8 @@ mod tests {
         write_review_config(tmp.path());
         let owner_session = uuid::Uuid::new_v4().to_string();
         let other_session = uuid::Uuid::new_v4().to_string();
-        write_review_session(tmp.path(), &owner_session, Some("codex"), Some("gpt-5"));
-        write_review_session(tmp.path(), &other_session, Some("claude"), Some("opus"));
+        write_review_session(tmp.path(), &owner_session, Some("codex"));
+        write_review_session(tmp.path(), &other_session, Some("claude"));
 
         cmd_review(
             tmp.path(),

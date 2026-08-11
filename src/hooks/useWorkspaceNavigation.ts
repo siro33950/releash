@@ -1,6 +1,4 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
-import type { WorkspaceStatus } from "@/types/session";
+import { useCallback, useState } from "react";
 import type { WorktreeTab } from "@/types/workspace-tab";
 
 function fallbackBranchName(rootPath: string): string {
@@ -63,45 +61,6 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 
 	const setSelectedWorktree = useCallback((id: string | null) => {
 		setSelectedWorktreeId(id);
-	}, []);
-
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let disposed = false;
-
-		const setupListener = async () => {
-			try {
-				// Rust 中央管理 (AgentStatusCenter) から workspace 集約状態を購読する。
-				const off = await listen<WorkspaceStatus>(
-					"workspace-status-changed",
-					(event) => {
-						const worktreePath = event.payload.worktree_id;
-						const aggregated = event.payload.aggregated_state;
-						setWorktrees((prev) =>
-							prev.map((t) =>
-								t.rootPath === worktreePath
-									? { ...t, agentState: aggregated }
-									: t,
-							),
-						);
-					},
-				);
-				if (disposed) {
-					off();
-					return;
-				}
-				unlisten = off;
-			} catch (err) {
-				console.warn("workspace-status-changed listener setup failed:", err);
-			}
-		};
-
-		setupListener();
-
-		return () => {
-			disposed = true;
-			unlisten?.();
-		};
 	}, []);
 
 	return {

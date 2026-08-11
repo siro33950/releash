@@ -7,6 +7,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_workflow_session_providerを必須とし旧modelとpermissionを拒否する() {
+        let with_provider = r#"
+name: provider-session
+description: Provider session
+nodes:
+  - name: implement
+    session:
+      provider: codex
+      gate: auto
+"#;
+        let missing_provider = r#"
+name: missing-provider
+description: Missing Provider
+nodes:
+  - name: implement
+    session:
+      gate: auto
+"#;
+        let legacy_settings = r#"
+name: legacy-settings
+description: Legacy settings
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      model: legacy-model
+      permission: edit
+      gate: auto
+"#;
+
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(with_provider).is_ok());
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(missing_provider).is_err());
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(legacy_settings).is_err());
+    }
+
+    #[test]
     fn parse_session_node() {
         let yaml = r#"
 name: session-only
@@ -14,8 +50,7 @@ description: 単一セッション
 nodes:
   - name: implement
     session:
-      model: test-model
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement
@@ -38,11 +73,13 @@ description: knowledge scalar and sequence
 nodes:
   - name: scalar
     session:
+      provider: claude
       gate: auto
       facets:
         knowledge: releash-thread-cli
   - name: sequence
     session:
+      provider: claude
       gate: auto
       facets:
         knowledge:
@@ -118,6 +155,7 @@ description: invalid knowledge element
 nodes:
   - name: review
     session:
+      provider: claude
       gate: auto
       facets:
         knowledge:
@@ -136,7 +174,7 @@ description: 承認セッション
 nodes:
   - name: approve
     session:
-      permission: ask
+      provider: claude
       gate: approval
       facets:
         instruction: approve
@@ -159,7 +197,7 @@ description: gate is required
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
 "#;
 
         let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
@@ -283,7 +321,7 @@ description: rules test
 nodes:
   - name: judge
     session:
-      permission: edit
+      provider: claude
       gate: auto
     rules:
       - when: { on: ok, then: done }
@@ -291,7 +329,7 @@ nodes:
       - loop_guard: { max_iterations: 3, on_exhausted: give_up, reset_on: judge }
   - name: triage
     session:
-      permission: edit
+      provider: claude
       gate: auto
     rules:
       - switch:
@@ -339,7 +377,7 @@ description: invalid
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
     rules:
       - match: NEEDS_FIX
@@ -359,7 +397,7 @@ description: invalid
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: approval
     rules:
       - match: {removed_action}
@@ -380,7 +418,7 @@ description: invalid
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
     rules:
       - when: { on: ok, then: done }
@@ -404,7 +442,7 @@ description: invalid
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
     rules:
       - when: { on: ok, then: done }
@@ -421,7 +459,7 @@ description: invalid
 nodes:
   - name: fix
     session:
-      permission: edit
+      provider: claude
       gate: auto
     cycle_guard:
       max_iterations: 2
@@ -455,7 +493,7 @@ nodes:
   - name: duplicate
     command: "echo hi"
     session:
-      permission: edit
+      provider: claude
       gate: auto
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
@@ -485,7 +523,7 @@ description: invalid
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
     output_contract: review-verdict
 "#;
@@ -502,7 +540,7 @@ description: invalid
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
     input_contracts:
       - spec-directory
@@ -522,7 +560,7 @@ schemas:
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
     input: request_text
 "#;
@@ -596,7 +634,7 @@ schemas:
 nodes:
   - name: review
     session:
-      permission: edit
+      provider: claude
       gate: auto
 "#;
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).is_err());
@@ -610,7 +648,7 @@ description: invalid
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       gate: auto
     instruction: implement
 "#;
@@ -627,7 +665,7 @@ description: invalid
 nodes:
   - name: quick
     session:
-      permission: edit
+      provider: claude
       gate: auto
     inline_prompt: "Do a quick analysis"
 "#;
@@ -644,7 +682,7 @@ description: invalid
 nodes:
   - name: implement
     session:
-      permission: edit
+      provider: claude
       command: "cargo build"
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();

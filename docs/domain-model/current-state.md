@@ -27,12 +27,9 @@ Workspace
   │    ├─ Artifact[]
   │    └─ NodeExecution[]
   │         └─ Fanout（親と子 NodeExecution の束ね）
-  ├─ Session
-  │    ├─ Turn
-  │    │    └─ PermissionRequest
-  │    └─ Message
-  │         └─ MessagePart / Attachment
-  ├─ Terminal
+  ├─ AgentSession
+  │    └─ Terminal Surface
+  ├─ Workspace Terminal
   ├─ Thread
   │    └─ Comment
   └─ WorkspaceState
@@ -60,8 +57,7 @@ Operation Surface
 | Artifact | WorkflowExecution / NodeExecution 間の Contract 検証済みデータ。独立 lifecycle state は持たない。 |
 | Diagnostic | WorkflowDefinition の validation result。WorkflowExecution / NodeExecution の status ではない。 |
 | Workspace | Releash の作業 context。Worktree を参照するが所有しない。 |
-| Session / Turn / Message | Agent との対話・実行 context。WorkflowExecution とは別に Workspace に属する。 |
-| PermissionRequest | Turn に属する個別の許可要求。workflow approval gate とは別のモデル。 |
+| AgentSession | Agent実行のidentity、Provider、origin、lifecycle、Provider session ID、opaque transcript reference、Terminal ownershipを持つ。conversation本文は持たない。 |
 | Terminal | 人間が操作する interactive shell session。workflow command Node とは別のモデル。 |
 | Thread / Comment | Workspace の会話・判断記録。WorkflowExecution / NodeExecution の子ではない。 |
 | WorkspaceState | Workspace の editor tabs / layout 等の UI state。domain behavior を持たない。 |
@@ -99,7 +95,7 @@ milestone 82 の新モデル移行は完了している。
 | workspace UI state | `src-tauri/src/domain/workspace_state/`、対応 usecase / adaptor |
 | repository / code | `src-tauri/src/domain/repository/`、`src-tauri/src/domain/code/`、対応 usecase / adaptor |
 | comment | `src-tauri/src/domain/comment/`、対応 usecase / adaptor |
-| terminal backend | `src-tauri/src/domain/pty_session/`、対応 usecase / adaptor |
+| terminal backend | `src-tauri/src/domain/terminal_surface/`、対応 usecase / adaptor |
 
 実装 package 名が integration や infrastructure の都合を表す場合でも、product / domain の説明と外部 API では GLOSSARY 正規語を使う。
 
@@ -108,7 +104,7 @@ milestone 82 の新モデル移行は完了している。
 - 定義と実行を分ける。WorkflowDefinition / NodeDefinition は runtime state を持たない。
 - workflow state transition は engine だけが決める。
 - frontend は backend read model の UI mirror に留まり、validation、routing、resume 判断を持たない。
-- Session、Terminal、Thread を WorkflowExecution の所有物にしない。必要な参照だけを保持する。
+- AgentSession、Terminal、Thread を WorkflowExecution の所有物にしない。NodeExecutionは必要なAgentSession参照だけを保持する。
 - Worktree / Repository / Code / Diff を Releash-owned state にしない。固定した判断材料は Artifact にする。
 - Diagnostic を lifecycle state として永続化しない。
 - external integration のモデルを core Entity に昇格させない。

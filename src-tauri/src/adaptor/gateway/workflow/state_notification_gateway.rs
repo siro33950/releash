@@ -1,26 +1,13 @@
-use std::sync::Arc;
-
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::adaptor::protocol::workflow::{
     WorkflowExecutionChangedPayloadView, WorkflowExecutionView,
 };
 use crate::domain::workflow::services::event_replay::derive_workflow_execution_fields;
 use crate::domain::workflow::{
-    Artifact, ExecutionInterruptionReason, ExecutionStatus, NodeExecution, RuntimeExecutionState,
-    WorkflowExecution, WorkflowRuntimeSnapshot,
+    Artifact, ExecutionStatus, NodeExecution, RuntimeExecutionState, WorkflowExecution,
+    WorkflowRuntimeSnapshot,
 };
-
-fn optional_arc_state<R, T>(app: &tauri::AppHandle<R>) -> Option<Arc<T>>
-where
-    R: tauri::Runtime,
-    T: Send + Sync + 'static,
-{
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.state::<Arc<T>>().inner().clone()
-    }))
-    .ok()
-}
 
 fn emit_workflow_execution_view<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -49,25 +36,6 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         status,
         &node_executions,
     );
-    let interruption_reason = if status == ExecutionStatus::Interrupted {
-        Some(
-            state
-                .error_reason
-                .as_deref()
-                .and_then(ExecutionInterruptionReason::from_reason)
-                .unwrap_or(ExecutionInterruptionReason::Crash),
-        )
-    } else {
-        None
-    };
-    let resume_from_node =
-        (status == ExecutionStatus::Interrupted).then(|| state.current_node_name.clone());
-    let error_reason = if status == ExecutionStatus::Interrupted {
-        None
-    } else {
-        state.error_reason.clone()
-    };
-
     WorkflowExecution {
         id: state.execution_id,
         workflow_name: state.workflow_name,
@@ -78,9 +46,9 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         started_at: state.started_at,
         updated_at: state.updated_at,
         completed_at: derived.status.is_terminal().then_some(state.updated_at),
-        error_reason,
-        interruption_reason,
-        resume_from_node,
+        error_reason: state.error_reason.clone(),
+        interruption_reason: None,
+        resume_from_node: None,
         total_token_usage: state.total_token_usage,
         node_executions,
         artifacts: derived.artifacts,
@@ -92,10 +60,11 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
 fn execution_status(state: &RuntimeExecutionState) -> ExecutionStatus {
     match state {
         RuntimeExecutionState::Running => ExecutionStatus::Running,
+        #[cfg(test)]
         RuntimeExecutionState::WaitingApproval => ExecutionStatus::WaitingApproval,
         RuntimeExecutionState::Completed => ExecutionStatus::Completed,
-        RuntimeExecutionState::Failed { .. } => ExecutionStatus::Failed,
         RuntimeExecutionState::Aborted => ExecutionStatus::Aborted,
+        #[cfg(test)]
         RuntimeExecutionState::Interrupted => ExecutionStatus::Interrupted,
     }
 }
@@ -178,62 +147,8 @@ pub(crate) async fn emit_workflow_execution_from_snapshot<R: tauri::Runtime>(
     _worktree_path: &str,
     state: WorkflowRuntimeSnapshot,
 ) {
-    let execution_id = state.execution_id.clone();
-    let execution_state = state.state.as_str().to_string();
-    let node_session_projections =
-        crate::domain::workflow::services::node_session_projection::collect_node_session_projections(
-            &state,
-        );
-    let workflow_agent_state =
-        crate::usecase::agent_session::status::AgentStatusCenter::workflow_execution_status_to_agent_state(
-            &state.state,
-        );
-    let updated_at = state.updated_at;
-    let worktree_path = state.worktree_path.clone();
     let view = build_workflow_execution_view_from_snapshot(state).await;
     emit_workflow_execution_view(app, view);
-    sync_agent_status(
-        app,
-        &worktree_path,
-        &execution_id,
-        &execution_state,
-        node_session_projections,
-        workflow_agent_state,
-        updated_at,
-    );
-}
-
-fn sync_agent_status<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    worktree_path: &str,
-    execution_id: &str,
-    execution_state: &str,
-    node_session_projections: Vec<
-        crate::domain::workflow::services::node_session_projection::NodeSessionProjection,
-    >,
-    workflow_agent_state: Option<crate::usecase::agent_session::status::AgentState>,
-    updated_at: f64,
-) {
-    let Some(center) =
-        optional_arc_state::<_, crate::usecase::agent_session::status::AgentStatusCenter>(app)
-    else {
-        return;
-    };
-    for changes in center.sync_workflow_node_session_statuses(
-        worktree_path,
-        execution_id,
-        execution_state,
-        node_session_projections,
-    ) {
-        crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
-    }
-    let changes = center.update_workflow_snapshot(
-        worktree_path,
-        execution_id,
-        workflow_agent_state,
-        updated_at,
-    );
-    crate::adaptor::presenter::agent_status::emit_agent_status_changes(app, changes);
 }
 
 #[cfg(test)]
@@ -267,7 +182,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     nodes: vec![EventNodeDefinition {
@@ -401,6 +315,7 @@ mod tests {
                     }),
                     failure: None,
                     fanout_parent: None,
+                    completion_signals: Default::default(),
                     started_at: 2.0,
                     completed_at: Some(4.0),
                 }],
@@ -412,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_fanout_runtime_mapper_matches_event_log_projection() {
+    fn node_failure_does_not_create_a_workflow_terminal_projection() {
         let execution_id = "00000000-0000-4000-8000-000000000002";
         let event_parent = |item_index| EventFanoutParentRef {
             parent_node: "reviews".to_string(),
@@ -427,7 +342,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     ..Default::default()
@@ -471,12 +385,6 @@ mod tests {
                 retry_count: None,
                 timestamp: 3.0,
             },
-            WorkflowEvent::ExecutionFailed {
-                execution_id: execution_id.to_string(),
-                reason: "review failed".to_string(),
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                timestamp: 4.0,
-            },
         ];
         let event_projection = project_workflow_execution(execution_id, &events)
             .unwrap()
@@ -498,7 +406,7 @@ mod tests {
                     failure: Option<NodeExecutionFailure>,
                     fanout_parent: Option<FanoutParentRef>,
                     started_at: f64,
-                    completed_at: f64| NodeExecution {
+                    completed_at: Option<f64>| NodeExecution {
             id: id.to_string(),
             execution_id: execution_id.to_string(),
             node_name: node_name.to_string(),
@@ -512,8 +420,9 @@ mod tests {
             token_usage: None,
             failure,
             fanout_parent,
+            completion_signals: Default::default(),
             started_at,
-            completed_at: Some(completed_at),
+            completed_at,
         };
         let runtime_projection =
             workflow_execution_from_runtime_snapshot(WorkflowRuntimeSnapshot {
@@ -522,12 +431,8 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
-                error_reason: Some("review failed".to_string()),
-                state: RuntimeExecutionState::Failed {
-                    reason: "review failed".to_string(),
-                    kind: NodeExecutionFailureKind::ValidationFailure,
-                    retry_count: None,
-                },
+                error_reason: None,
+                state: RuntimeExecutionState::Running,
                 current_node_index: 0,
                 current_node_name: "reviews".to_string(),
                 current_session_id: None,
@@ -547,11 +452,11 @@ mod tests {
                         "parent",
                         "reviews",
                         NodeKindName::Fanout,
-                        NodeExecutionStatus::Failed,
-                        Some(failure()),
+                        NodeExecutionStatus::Running,
+                        None,
                         None,
                         2.0,
-                        4.0,
+                        None,
                     ),
                     node(
                         "child-1",
@@ -561,77 +466,23 @@ mod tests {
                         Some(failure()),
                         Some(domain_parent(0)),
                         2.1,
-                        3.0,
+                        Some(3.0),
                     ),
                     node(
                         "child-2",
                         "review",
                         NodeKindName::Session,
-                        NodeExecutionStatus::Aborted,
+                        NodeExecutionStatus::Running,
                         None,
                         Some(domain_parent(1)),
                         2.2,
-                        4.0,
+                        None,
                     ),
                 ],
                 started_at: 1.0,
-                updated_at: 4.0,
+                updated_at: 3.0,
             });
 
         assert_eq!(runtime_projection, event_projection);
-    }
-
-    #[test]
-    fn interrupted_runtime_snapshot_exposes_checkpoint_without_error_or_current_node() {
-        let execution_id = "00000000-0000-4000-8000-000000000099";
-        let projection = workflow_execution_from_runtime_snapshot(WorkflowRuntimeSnapshot {
-            execution_id: execution_id.to_string(),
-            workflow_name: "review".to_string(),
-            worktree_path: "/repo".to_string(),
-            created_from: crate::domain::workflow::ExecutionOrigin::Cli,
-            request: "ship it".to_string(),
-            error_reason: Some("stop".to_string()),
-            state: RuntimeExecutionState::Interrupted,
-            current_node_index: 0,
-            current_node_name: "review".to_string(),
-            current_session_id: None,
-            node_history: Vec::new(),
-            node_execution_counts: HashMap::from([("review".to_string(), 1)]),
-            workflow_definition: WorkflowDefinition {
-                name: "review".to_string(),
-                ..Default::default()
-            },
-            total_token_usage: TokenUsage::default(),
-            artifacts: HashMap::new(),
-            node_executions: vec![NodeExecution {
-                id: "review-1".to_string(),
-                execution_id: execution_id.to_string(),
-                node_name: "review".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-                status: NodeExecutionStatus::Aborted,
-                session_id: Some("old-session".to_string()),
-                display_command: None,
-                result_summary: None,
-                artifact: None,
-                token_usage: None,
-                failure: None,
-                fanout_parent: None,
-                started_at: 2.0,
-                completed_at: Some(3.0),
-            }],
-            started_at: 1.0,
-            updated_at: 3.0,
-        });
-
-        assert_eq!(projection.status, ExecutionStatus::Interrupted);
-        assert_eq!(projection.current_node, None);
-        assert_eq!(projection.completed_at, None);
-        assert_eq!(projection.error_reason, None);
-        assert_eq!(
-            projection.interruption_reason,
-            Some(ExecutionInterruptionReason::Stop)
-        );
-        assert_eq!(projection.resume_from_node.as_deref(), Some("review"));
     }
 }

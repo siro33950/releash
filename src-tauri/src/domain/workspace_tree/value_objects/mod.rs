@@ -1,5 +1,6 @@
 use crate::domain::workflow::{
-    ExecutionStatus, FanoutParentRef, NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
+    ExecutionStatus, FanoutParentRef, NodeCompletionSignalState, NodeExecutionFailureKind,
+    NodeKindName, WorkflowDefinition,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -21,25 +22,7 @@ impl WorkspaceIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceSessionListKind {
-    Active,
-    Closed,
-    Archived,
-}
-
-impl WorkspaceSessionListKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Closed => "closed",
-            Self::Archived => "archived",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeKind {
-    Session,
     Workflow,
     Fanout,
     WorkflowSession,
@@ -49,6 +32,7 @@ pub enum WorkspaceNodeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
     Running,
+    Paused,
     Failed,
     Error,
     Waiting,
@@ -61,6 +45,7 @@ impl WorkspaceNodeStatus {
     pub fn as_public_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Failed => "failed",
             Self::Error => "error",
             Self::Waiting => "waiting",
@@ -93,8 +78,11 @@ pub struct WorkspaceTreeNode {
     pub node_execution_id: Option<String>,
     pub node_name: Option<String>,
     pub attempt: Option<u32>,
+    pub completion_signals: NodeCompletionSignalState,
+    pub has_artifact: bool,
     pub session_id: Option<String>,
     pub can_approve: bool,
+    pub can_retry: bool,
     pub can_close: bool,
     pub can_stop: bool,
     pub can_resume: bool,
@@ -120,9 +108,7 @@ impl WorkspaceTreeNode {
     pub fn is_leaf(&self) -> bool {
         matches!(
             self.kind,
-            WorkspaceNodeKind::Session
-                | WorkspaceNodeKind::WorkflowSession
-                | WorkspaceNodeKind::WorkflowCommand
+            WorkspaceNodeKind::WorkflowSession | WorkspaceNodeKind::WorkflowCommand
         )
     }
 
@@ -133,37 +119,8 @@ impl WorkspaceTreeNode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceSessionState {
-    Active,
-    Idle,
-    Done,
-    Error,
-    Closed,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceSessionFact {
-    pub id: String,
-    pub worktree_path: String,
-    pub state: WorkspaceSessionState,
-    pub error_reason: Option<String>,
-    pub updated_at_bits: u64,
-    pub title: Option<String>,
-    pub first_message: String,
-    pub workflow_node_session: bool,
-    pub workflow_execution_id: Option<String>,
-    pub workflow_node_execution_id: Option<String>,
-    pub unresolved_recovery_reason: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceStructureFact {
-    SessionProjected(WorkspaceSessionFact),
-    SessionRemoved {
-        session_id: String,
-    },
     WorkflowStarted {
         execution_id: String,
         workflow_name: String,
@@ -199,13 +156,33 @@ pub enum WorkspaceStructureFact {
         session_id: String,
         timestamp: f64,
     },
+    NodeSubmitReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeStopReceived {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodePaused {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
+    NodeResumed {
+        execution_id: String,
+        node_execution_id: String,
+        timestamp: f64,
+    },
     NodeCommandPrepared {
         execution_id: String,
         node_execution_id: String,
         display_command: String,
         timestamp: f64,
     },
-    NodeCommandResult {
+    NodeArtifactProduced {
         execution_id: String,
         node_execution_id: String,
         result: Option<WorkspaceCommandResult>,

@@ -1,46 +1,38 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
-import { type RefObject, useCallback, useEffect, useRef } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 import {
 	reportMountedXtermMounted,
 	reportMountedXtermUnmounted,
 } from "@/lib/telemetry";
+import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
+import {
+	isTerminalPerformanceProbeActive,
+	readTerminalLogicalBuffer,
+	registerTerminalBufferReader,
+	reportTerminalInputPerformancePoint,
+	reportTerminalPerformancePhase,
+	reportTerminalRendererMetrics,
+	shouldReportTerminalSnapshotLaunchPhase,
+	takeTerminalLaunchPerformanceOrigin,
+} from "@/lib/terminalPerformanceProbe";
+import { getTerminalPerformanceSwitches } from "@/lib/terminalPerformanceSwitches";
+import { StartupInputBuffer } from "@/lib/terminalStartupInputBuffer";
+import { getTerminalStreamEndpoint } from "@/lib/terminalStreamEndpoint";
+import { openTerminalStreamSocket } from "@/lib/terminalStreamSocket";
+import {
+	applyTerminalStreamItem,
+	type TerminalStreamApplyContext,
+	type TerminalSurfaceOwner,
+	type TerminalSurfaceStreamItem,
+} from "@/lib/terminalSurfaceStream";
 import type { Theme } from "@/types/settings";
 
-interface PtyOutput {
-	pty_id: number;
-	data: string;
-	sequence: number;
-}
+export type { TerminalSurfaceOwner } from "@/lib/terminalSurfaceStream";
 
-interface PtyExit {
-	pty_id: number;
-	exit_code: number | null;
-}
-
-interface PtyEvicted {
-	pty_id: number;
+interface GetOrSpawnTerminalResult {
 	session_key: string;
-	reason: string;
-}
-
-interface GetOrSpawnPtyResult {
-	pty_id: number;
-	session_key: string;
-	buffered_output: string;
-	buffered_output_sequence: number;
-	is_new: boolean;
-	is_exited: boolean;
-	exit_code: number | null;
-}
-
-interface GetPtyBufferedOutputResult {
-	pty_id: number;
-	session_key: string;
-	buffered_output: string;
-	buffered_output_sequence: number;
 	is_exited: boolean;
 	exit_code: number | null;
 }
@@ -50,30 +42,7 @@ interface TauriCommandError {
 	message?: unknown;
 }
 
-const QUEUED_INITIAL_OUTPUT_MAX_ITEMS = 256;
-const QUEUED_INITIAL_OUTPUT_MAX_BYTES = 64 * 1024;
-const MAX_INITIAL_REFETCH = 5;
-
 const TERMINAL_CAP_REACHED_CODE = "CAP_REACHED";
-const INITIAL_OUTPUT_RESYNC_FAILED_MESSAGE =
-	"\r\n\x1b[33m[Terminal output may be incomplete: unable to resynchronize buffered output]\x1b[0m\r\n";
-const textEncoder = new TextEncoder();
-
-const sessionKeyCache = new Map<string, string>();
-let activeTerminalTokenCounter = 0;
-
-function removeCachedSessionKey(sessionKey: string): void {
-	for (const [cwd, cachedSessionKey] of sessionKeyCache.entries()) {
-		if (cachedSessionKey === sessionKey) {
-			sessionKeyCache.delete(cwd);
-		}
-	}
-}
-
-function createActiveTerminalToken(): string {
-	activeTerminalTokenCounter += 1;
-	return `terminal-${activeTerminalTokenCounter}`;
-}
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
@@ -103,86 +72,6 @@ function getErrorCode(error: unknown): string | null {
 	return null;
 }
 
-function createBoundedPtyOutputQueue(
-	maxItems = QUEUED_INITIAL_OUTPUT_MAX_ITEMS,
-	maxBytes = QUEUED_INITIAL_OUTPUT_MAX_BYTES,
-) {
-	let entries: Array<{ output: PtyOutput; bytes: number }> = [];
-	let totalBytes = 0;
-	let dropped = false;
-
-	return {
-		enqueue(output: PtyOutput) {
-			const bytes = textEncoder.encode(output.data).byteLength;
-			if (bytes > maxBytes) {
-				entries = [];
-				totalBytes = 0;
-				dropped = true;
-				return;
-			}
-
-			entries.push({ output, bytes });
-			totalBytes += bytes;
-
-			while (entries.length > maxItems || totalBytes > maxBytes) {
-				const droppedEntry = entries.shift();
-				if (!droppedEntry) break;
-				totalBytes -= droppedEntry.bytes;
-				dropped = true;
-			}
-		},
-		values(): PtyOutput[] {
-			return entries.map((entry) => entry.output);
-		},
-		clear() {
-			entries = [];
-			totalBytes = 0;
-			dropped = false;
-		},
-		size(): number {
-			return entries.length;
-		},
-		bytes(): number {
-			return totalBytes;
-		},
-		hasDropped(): boolean {
-			return dropped;
-		},
-		resetDropped() {
-			dropped = false;
-		},
-	};
-}
-
-function registerActiveTerminal(
-	worktreePath: string,
-	sessionKey: string,
-	activeToken: string,
-): void {
-	invoke("register_active_terminal", {
-		worktreePath,
-		sessionKey,
-		activeToken,
-	}).catch((error) => {
-		console.error("Failed to register active terminal:", error);
-	});
-}
-
-function unregisterActiveTerminal(
-	worktreePath: string | null,
-	sessionKey: string | null,
-	activeToken: string,
-): void {
-	if (worktreePath === null || sessionKey === null) return;
-	invoke("unregister_active_terminal", {
-		worktreePath,
-		sessionKey,
-		activeToken,
-	}).catch((error) => {
-		console.error("Failed to unregister active terminal:", error);
-	});
-}
-
 function formatTerminalInitError(error: unknown): string {
 	const message = getErrorMessage(error);
 	if (getErrorCode(error) === TERMINAL_CAP_REACHED_CODE) {
@@ -196,23 +85,7 @@ const terminalDarkTheme: ITheme = {
 	selectionBackground: "#264F78",
 	selectionInactiveBackground: "#3A3D41",
 	cursor: "#e0e0e0",
-	cursorAccent: "#1a1a1a",
-	black: "#1a1a1a",
-	red: "#ff5f56",
-	green: "#27c93f",
-	yellow: "#ffbd2e",
-	blue: "#2ea6ff",
-	magenta: "#d75fff",
-	cyan: "#5fd7ff",
-	white: "#e0e0e0",
-	brightBlack: "#7f7f7f",
-	brightRed: "#ff6e67",
-	brightGreen: "#5af78e",
-	brightYellow: "#f9f1a5",
-	brightBlue: "#57c7ff",
-	brightMagenta: "#ff6ac1",
-	brightCyan: "#9aedfe",
-	brightWhite: "#ffffff",
+	cursorAccent: "#000000",
 };
 
 const terminalLightTheme: ITheme = {
@@ -242,7 +115,7 @@ const terminalLightTheme: ITheme = {
 function resolveTerminalBg(container: HTMLElement): string {
 	const bg = getComputedStyle(container).backgroundColor;
 	if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
-		return "#1a1a1a";
+		return "#000000";
 	}
 	return bg;
 }
@@ -255,32 +128,63 @@ function getTerminalTheme(
 	return { ...base, background: resolveTerminalBg(container) };
 }
 
+export type TerminalInitializationMode = "get-or-spawn" | "attach-existing";
+
+export interface UseTerminalOptions {
+	cwd?: string | null;
+	theme?: Theme;
+	terminalStartupCommand?: string;
+	owner?: TerminalSurfaceOwner;
+	label?: string;
+	onTerminalReady?: (sessionKey: string) => void;
+	onTerminalError?: (message: string) => void;
+	shouldKillPendingTerminal?: () => boolean;
+	initialization?: TerminalInitializationMode;
+	autoFocus?: boolean;
+}
+
 export function useTerminal(
 	containerRef: RefObject<HTMLDivElement | null>,
-	cwd?: string | null,
-	theme?: Theme,
-	terminalStartupCommand?: string,
-	sessionKey?: string,
-	label?: string,
-	onPtyReady?: (ptyId: number, sessionKey: string) => void,
-	onPtyError?: (message: string) => void,
-	shouldKillPendingPty?: () => boolean,
+	options: UseTerminalOptions = {},
 ) {
+	const {
+		cwd,
+		theme,
+		terminalStartupCommand,
+		owner,
+		label,
+		onTerminalReady,
+		onTerminalError,
+		shouldKillPendingTerminal,
+		initialization = "get-or-spawn",
+		autoFocus = false,
+	} = options;
+	const ownerKind = owner?.kind ?? "workspace";
+	const ownerWorkspacePath = owner?.workspacePath ?? cwd ?? "";
+	const ownerSessionId = owner?.kind === "session" ? owner.sessionId : null;
+	const terminalOwner = useMemo<TerminalSurfaceOwner>(() => {
+		if (ownerKind === "session") {
+			return {
+				kind: "session",
+				workspacePath: ownerWorkspacePath,
+				sessionId: ownerSessionId ?? "",
+			};
+		}
+		return { kind: "workspace", workspacePath: ownerWorkspacePath };
+	}, [ownerKind, ownerWorkspacePath, ownerSessionId]);
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
-	const ptyIdRef = useRef<number | null>(null);
-	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const isRunningRef = useRef(false);
 	const killOnUnmountRef = useRef(false);
+	const inputDispatchRef = useRef<(data: string) => void>(() => {});
 	const themeRef = useRef(theme);
 	themeRef.current = theme;
-	const startupCommandRef = useRef(terminalStartupCommand);
-	startupCommandRef.current = terminalStartupCommand;
-	const onPtyReadyRef = useRef(onPtyReady);
-	onPtyReadyRef.current = onPtyReady;
-	const onPtyErrorRef = useRef(onPtyError);
-	onPtyErrorRef.current = onPtyError;
-	const shouldKillPendingPtyRef = useRef(shouldKillPendingPty);
-	shouldKillPendingPtyRef.current = shouldKillPendingPty;
+	const onTerminalReadyRef = useRef(onTerminalReady);
+	onTerminalReadyRef.current = onTerminalReady;
+	const onTerminalErrorRef = useRef(onTerminalError);
+	onTerminalErrorRef.current = onTerminalError;
+	const shouldKillPendingTerminalRef = useRef(shouldKillPendingTerminal);
+	shouldKillPendingTerminalRef.current = shouldKillPendingTerminal;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -323,190 +227,388 @@ export function useTerminal(
 		terminalRef.current = terminal;
 		fitAddonRef.current = fitAddon;
 
-		let unlistenOutput: UnlistenFn | null = null;
-		let unlistenExit: UnlistenFn | null = null;
-		let unlistenEvicted: UnlistenFn | null = null;
-		let registeredWorktreePath: string | null = null;
-		let registeredSessionKey: string | null = null;
-		const activeToken = createActiveTerminalToken();
-		let isInitializingPty = true;
-		let initializingPtyId: number | null = null;
-		const queuedInitialOutput = createBoundedPtyOutputQueue();
-
-		const cleanupPtyListeners = () => {
-			unlistenOutput?.();
-			unlistenOutput = null;
-			unlistenExit?.();
-			unlistenExit = null;
-			unlistenEvicted?.();
-			unlistenEvicted = null;
+		let attachmentId: string | null = null;
+		let inputSequence = 0;
+		let pendingPerformanceInputSequences: number[] = [];
+		const startupInput = new StartupInputBuffer((dropped) => {
+			console.warn(
+				`Discarding ${dropped.length} chars of terminal input typed before startup: buffer limit reached`,
+			);
+		});
+		let deliverInput: (data: string) => void = () => {};
+		let activeSocket: WebSocket | null = null;
+		let wsTransportFailed = false;
+		const socketsClosedByUs = new WeakSet<WebSocket>();
+		const releaseCurrentAttachment = () => {
+			if (activeSocket) {
+				socketsClosedByUs.add(activeSocket);
+				activeSocket.close();
+				activeSocket = null;
+			} else if (attachmentId) {
+				const releasedAttachmentId = attachmentId;
+				invoke("detach_terminal_surface", {
+					attachmentId: releasedAttachmentId,
+				}).catch((error) => {
+					console.error(
+						`Failed to detach terminal attachment ${releasedAttachmentId}:`,
+						error,
+					);
+				});
+			}
 		};
-
-		const initPty = async () => {
-			// 1. Register listeners first and queue output until the PTY id is known.
-			unlistenOutput = await listen<PtyOutput>("pty-output", (event) => {
-				if (isInitializingPty) {
-					if (
-						initializingPtyId === null ||
-						event.payload.pty_id === initializingPtyId
-					) {
-						queuedInitialOutput.enqueue(event.payload);
-					}
-					return;
-				}
-				if (event.payload.pty_id === ptyIdRef.current) {
-					terminal.write(event.payload.data);
-				}
+		let resolveUnmount!: () => void;
+		const unmounted = new Promise<void>((resolve) => {
+			resolveUnmount = resolve;
+		});
+		const writeToTerminal = (data: string) =>
+			new Promise<void>((resolve) => {
+				terminal.write(data, resolve);
 			});
-
-			unlistenExit = await listen<PtyExit>("pty-exit", (event) => {
-				if (event.payload.pty_id === ptyIdRef.current) {
-					terminal.write(
-						`\r\n\x1b[90m[Process exited with code ${event.payload.exit_code ?? "unknown"}]\x1b[0m\r\n`,
-					);
-					ptyIdRef.current = null;
-				}
+		const syncPtySize = (rows: number, cols: number) => {
+			if (rows <= 0 || cols <= 0) return;
+			invoke("resize_terminal_surface", {
+				owner: terminalOwner,
+				rows,
+				cols,
+			}).catch((error) => {
+				console.error("Failed to resize PTY:", error);
 			});
-
-			unlistenEvicted = await listen<PtyEvicted>("pty-evicted", (event) => {
-				removeCachedSessionKey(event.payload.session_key);
-				if (event.payload.pty_id === ptyIdRef.current) {
-					unregisterActiveTerminal(
-						registeredWorktreePath,
-						event.payload.session_key,
-						activeToken,
-					);
-					registeredWorktreePath = null;
-					registeredSessionKey = null;
-					terminal.write("\r\n\x1b[90m[Terminal evicted]\x1b[0m\r\n");
-					ptyIdRef.current = null;
-				}
+		};
+		let recoverAttachment: ((failedEpoch?: number) => void) | null = null;
+		let performanceRequestStartedAt: number | null = null;
+		let firstXtermParsed = false;
+		const performanceProbeActive = isTerminalPerformanceProbeActive();
+		const unregisterBufferReader = registerTerminalBufferReader(() =>
+			readTerminalLogicalBuffer(terminal),
+		);
+		const recordRendererLaunchPhase = (
+			phase: "first_xterm_parsed" | "first_paint",
+			durationMs: number,
+		) => {
+			reportTerminalPerformancePhase(phase, durationMs);
+			void invoke("record_terminal_launch_renderer_phase", {
+				phase,
+				durationMs,
 			});
+		};
+		const reportFirstXtermParsed = () => {
+			if (
+				!performanceProbeActive ||
+				firstXtermParsed ||
+				performanceRequestStartedAt === null
+			)
+				return;
+			firstXtermParsed = true;
+			recordRendererLaunchPhase(
+				"first_xterm_parsed",
+				performance.now() - performanceRequestStartedAt,
+			);
+			requestAnimationFrame(() => {
+				if (performanceRequestStartedAt === null) return;
+				recordRendererLaunchPhase(
+					"first_paint",
+					performance.now() - performanceRequestStartedAt,
+				);
+			});
+		};
+		const liveOutputScheduler = new TerminalOutputScheduler({
+			write: (data, parsed) => terminal.write(data, parsed),
+			onOverflow: () => recoverAttachment?.(),
+			onMetrics: performanceProbeActive
+				? reportTerminalRendererMetrics
+				: undefined,
+			onParsed: performanceProbeActive ? reportFirstXtermParsed : undefined,
+		});
+		const drainLiveOutput = () => liveOutputScheduler.drain();
 
+		const initTerminal = async () => {
 			if (!isMounted) {
-				cleanupPtyListeners();
-				isInitializingPty = false;
-				queuedInitialOutput.clear();
 				return;
 			}
 
-			// 2. Get or spawn PTY for this worktree
+			// 1. Get or spawn the PTY owned by the selected product surface.
+			const performanceSwitchesPromise = getTerminalPerformanceSwitches();
+			const streamEndpointPromise = getTerminalStreamEndpoint();
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
-			// sessionKey がない standalone の場合のみ、cwd キャッシュから復元
-			// onPtyReady がある場合はペイン管理側がセッションキーを保持するため
-			// キャッシュを使わず新規PTYをスポーンさせる
-			const effectiveSessionKey =
-				sessionKey ??
-				(!onPtyReadyRef.current && cwd
-					? sessionKeyCache.get(cwd)
-					: undefined) ??
-				null;
-			const result = await invoke<GetOrSpawnPtyResult>("get_or_spawn_pty", {
-				rows,
-				cols,
-				cwd: worktreePath,
-				sessionKey: effectiveSessionKey,
-				worktreePath: worktreePath ?? "",
-				label: label ?? null,
-			});
-
-			// standalone 用: cwd → UUID キャッシュ更新（管理ペインでは不要）
-			if (!sessionKey && !onPtyReadyRef.current && cwd) {
-				sessionKeyCache.set(cwd, result.session_key);
-			}
+			const requestStartedAt = performance.now();
+			const launchOrigin =
+				terminalOwner.kind === "session"
+					? takeTerminalLaunchPerformanceOrigin(terminalOwner.sessionId)
+					: null;
+			performanceRequestStartedAt = launchOrigin ?? requestStartedAt;
+			const result =
+				initialization === "attach-existing"
+					? await invoke<GetOrSpawnTerminalResult>("get_terminal_surface", {
+							owner: terminalOwner,
+						})
+					: await invoke<GetOrSpawnTerminalResult>(
+							"get_or_spawn_terminal_surface",
+							{
+								rows,
+								cols,
+								cwd: worktreePath,
+								owner: terminalOwner,
+								label: label ?? null,
+								startupCommand: terminalStartupCommand?.trim() || null,
+							},
+						);
+			reportTerminalPerformancePhase(
+				"frontend_request_to_command_response",
+				performance.now() - requestStartedAt,
+			);
 
 			if (!isMounted) {
 				const shouldKillDetachedPty =
 					killOnUnmountRef.current ||
-					(shouldKillPendingPtyRef.current?.() ?? false);
+					(shouldKillPendingTerminalRef.current?.() ?? false);
 				if (shouldKillDetachedPty && !result.is_exited) {
-					invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
+					invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
+						(error) => {
+							console.error(
+								"Failed to kill detached pending terminal PTY:",
+								error,
+							);
+						},
+					);
 				} else if (!shouldKillDetachedPty) {
-					onPtyReadyRef.current?.(result.pty_id, result.session_key);
+					onTerminalReadyRef.current?.(result.session_key);
 				}
-				unregisterActiveTerminal(
-					worktreePath ?? "",
-					result.session_key,
-					activeToken,
-				);
-				cleanupPtyListeners();
-				isInitializingPty = false;
-				queuedInitialOutput.clear();
 				return;
 			}
 
-			let ptyId = result.pty_id;
-			initializingPtyId = ptyId;
-			let resolvedSessionKey = result.session_key;
-			let bufferedOutput = result.buffered_output;
-			let bufferedOutputSequence = result.buffered_output_sequence;
-			let isExited = result.is_exited;
-			let exitCode = result.exit_code;
-			let attempts = 0;
-
-			while (
-				!isExited &&
-				queuedInitialOutput.hasDropped() &&
-				attempts < MAX_INITIAL_REFETCH
-			) {
-				queuedInitialOutput.resetDropped();
-				const refreshed = await invoke<GetPtyBufferedOutputResult>(
-					"get_pty_buffered_output",
-					{
-						sessionKey: resolvedSessionKey,
-						worktreePath: worktreePath ?? "",
+			// 2. Attach to one backend-owned snapshot + sequenced stream.
+			const performanceSwitches = await performanceSwitchesPromise;
+			const streamEndpoint = await streamEndpointPromise;
+			const suppressOutputAcks = performanceSwitches.disableOutputFlowControl;
+			liveOutputScheduler.setMaxWritesInFlight(
+				performanceSwitches.disableRendererWriteSerialization ? 8 : 1,
+			);
+			if (!performanceSwitches.disableWebglRenderer) {
+				try {
+					const { WebglAddon } = await import("@xterm/addon-webgl");
+					const webglAddon = new WebglAddon();
+					webglAddon.onContextLoss(() => {
+						webglAddon.dispose();
+					});
+					terminal.loadAddon(webglAddon);
+				} catch (error) {
+					console.error(
+						"Failed to enable WebGL renderer, falling back to DOM:",
+						error,
+					);
+				}
+			}
+			let resolveInitialSnapshot!: () => void;
+			const initialSnapshot = new Promise<void>((resolve) => {
+				resolveInitialSnapshot = resolve;
+			});
+			let hasSnapshot = false;
+			let streamSessionKey = result.session_key;
+			let streamProcessing = Promise.resolve();
+			let attachmentEpoch = 0;
+			let recoveringSinceEpoch: number | null = null;
+			let firstChannelReceived = false;
+			const attachStream = async (recovery: boolean) => {
+				const previousAttachmentId = attachmentId;
+				const previousSocket = activeSocket;
+				const epoch = ++attachmentEpoch;
+				const nextAttachmentId = crypto.randomUUID();
+				const acknowledgeOutput = (sequence: number) => {
+					if (suppressOutputAcks) return;
+					if (
+						activeSocket &&
+						activeSocket.readyState === WebSocket.OPEN &&
+						epoch === attachmentEpoch
+					) {
+						activeSocket.send(
+							JSON.stringify({
+								type: "ack",
+								attachment_id: nextAttachmentId,
+								sequence,
+							}),
+						);
+						return;
+					}
+					void invoke("ack_terminal_surface_output", {
+						attachmentId: nextAttachmentId,
+						sequence,
+					}).catch((error) => {
+						if (!isMounted || epoch !== attachmentEpoch) return;
+						const message = `Failed to acknowledge terminal output: ${getErrorMessage(error)}`;
+						console.error(message);
+						onTerminalErrorRef.current?.(message);
+						recoverAttachment?.();
+					});
+				};
+				const applyContext: TerminalStreamApplyContext = {
+					isCurrent: () => isMounted && epoch === attachmentEpoch,
+					drainLiveOutput,
+					resizeTerminal: (cols, rows) => terminal.resize(cols, rows),
+					writeToTerminal,
+					applySnapshotIdentity: (sessionKey) => {
+						streamSessionKey = sessionKey;
+					},
+					syncPtySizeAfterEmptySnapshot: () => {
+						const { rows, cols } = terminal;
+						syncPtySize(rows, cols);
+					},
+					reportSnapshotReplayParsed: (sequence) => {
+						if (shouldReportTerminalSnapshotLaunchPhase(sequence)) {
+							reportFirstXtermParsed();
+						}
+					},
+					completeRecovery: () => {
+						if (!recovery) return;
+						liveOutputScheduler.resumeAfterSnapshot();
+						if (recoveringSinceEpoch === epoch) {
+							recoveringSinceEpoch = null;
+						}
+					},
+					setRunning: (running) => {
+						isRunningRef.current = running;
+					},
+					completeInitialSnapshot: () => {
+						if (hasSnapshot) return;
+						hasSnapshot = true;
+						resolveInitialSnapshot();
+					},
+					flushStartupInput: () => {
+						if (startupInput.isDone) return;
+						const buffered = startupInput.markDone();
+						if (isRunningRef.current) {
+							for (const chunk of buffered) deliverInput(chunk);
+						}
+					},
+					takeOutputTraceSequence: () =>
+						performanceProbeActive
+							? pendingPerformanceInputSequences.shift()
+							: undefined,
+					reportOutputTracePoint: reportTerminalInputPerformancePoint,
+					enqueueOutput: (data, onParsed) =>
+						liveOutputScheduler.enqueue(data, onParsed),
+					acknowledgeOutput,
+					reportInputUnavailable: (message) => {
+						console.error(message);
+						onTerminalErrorRef.current?.(message);
+						recoverAttachment?.();
+					},
+				};
+				const handleStreamItem = (item: TerminalSurfaceStreamItem) => {
+					if (!firstChannelReceived) {
+						firstChannelReceived = true;
+						reportTerminalPerformancePhase(
+							"channel_receive",
+							performance.now() - requestStartedAt,
+						);
+					}
+					streamProcessing = streamProcessing.then(() =>
+						applyTerminalStreamItem(item, applyContext).catch((error) => {
+							const message = `Failed to apply terminal stream item: ${getErrorMessage(error)}`;
+							console.error(message);
+							onTerminalErrorRef.current?.(message);
+						}),
+					);
+				};
+				// hot path（stream配信・write・ack）はWebSocketを優先する。
+				// Tauri ChannelはメッセージごとにmacOSメインスレッドのevalを経由し、
+				// 高頻度出力時に配送待ち行列が入力遅延・invoke応答遅延の支配要因になる。
+				let nextSocket: WebSocket | null = null;
+				if (streamEndpoint && !wsTransportFailed) {
+					try {
+						nextSocket = await openTerminalStreamSocket(
+							streamEndpoint,
+							{ attachmentId: nextAttachmentId, owner: terminalOwner },
+							{
+								isClosedByUs: (socket) => socketsClosedByUs.has(socket),
+								onUnexpectedClose: (socket) => {
+									if (!isMounted || epoch !== attachmentEpoch) return;
+									// 予期しない切断はChannel transportへ切り替えて単発resyncする
+									wsTransportFailed = true;
+									if (activeSocket === socket) activeSocket = null;
+									recoverAttachment?.(epoch);
+								},
+								onStreamItem: handleStreamItem,
+								onStreamError: (message) => {
+									console.error(message);
+									onTerminalErrorRef.current?.(message);
+								},
+							},
+						);
+					} catch (error) {
+						console.error(
+							"Terminal WebSocket attach failed, falling back to Tauri Channel:",
+							error,
+						);
+						wsTransportFailed = true;
+					}
+				}
+				if (!nextSocket) {
+					const nextChannel = new Channel<TerminalSurfaceStreamItem>();
+					nextChannel.onmessage = handleStreamItem;
+					await invoke("attach_terminal_surface", {
+						owner: terminalOwner,
+						attachmentId: nextAttachmentId,
+						onEvent: nextChannel,
+					});
+				}
+				// 入力の宛先はbackendがattachmentを受理した後にだけ切り替える。
+				// 先に切り替えると、attach完了前の打鍵が新attachment IDと
+				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
+				// 欠番となり全打鍵が無音でバッファされ続ける。
+				activeSocket = nextSocket;
+				attachmentId = nextAttachmentId;
+				inputSequence = 0;
+				pendingPerformanceInputSequences = [];
+				if (previousSocket) {
+					socketsClosedByUs.add(previousSocket);
+					previousSocket.close();
+				} else if (previousAttachmentId) {
+					await invoke("detach_terminal_surface", {
+						attachmentId: previousAttachmentId,
+					});
+				}
+			};
+			recoverAttachment = (failedEpoch) => {
+				if (!isMounted) return;
+				if (
+					recoveringSinceEpoch !== null &&
+					recoveringSinceEpoch === attachmentEpoch &&
+					failedEpoch !== attachmentEpoch
+				) {
+					return;
+				}
+				const attempt = attachStream(true);
+				const attemptEpoch = attachmentEpoch;
+				recoveringSinceEpoch = attemptEpoch;
+				void attempt.then(
+					() => {
+						if (!isMounted) releaseCurrentAttachment();
+					},
+					(error) => {
+						if (recoveringSinceEpoch === attemptEpoch) {
+							recoveringSinceEpoch = null;
+						}
+						if (!isMounted) return;
+						const message = `Failed to resynchronize terminal: ${getErrorMessage(error)}`;
+						console.error(message);
+						onTerminalErrorRef.current?.(message);
 					},
 				);
-				ptyId = refreshed.pty_id;
-				initializingPtyId = ptyId;
-				resolvedSessionKey = refreshed.session_key;
-				bufferedOutput = refreshed.buffered_output;
-				bufferedOutputSequence = refreshed.buffered_output_sequence;
-				isExited = refreshed.is_exited;
-				exitCode = refreshed.exit_code;
-				attempts += 1;
-			}
-
-			if (attempts >= MAX_INITIAL_REFETCH && queuedInitialOutput.hasDropped()) {
-				terminal.write(INITIAL_OUTPUT_RESYNC_FAILED_MESSAGE);
-			}
-
-			// 3. Replay buffered output
-			if (bufferedOutput) {
-				terminal.write(bufferedOutput);
-			}
-
-			// 4. Handle already-exited session
-			if (isExited) {
-				isInitializingPty = false;
-				queuedInitialOutput.clear();
-				terminal.write(
-					`\r\n\x1b[90m[Process exited with code ${exitCode ?? "unknown"}]\x1b[0m\r\n`,
-				);
+			};
+			await attachStream(false);
+			if (!isMounted) {
+				releaseCurrentAttachment();
 				return;
 			}
-
-			// 5. Set ptyId and flush output that arrived after the backend snapshot.
-			ptyIdRef.current = ptyId;
-			for (const output of queuedInitialOutput.values()) {
-				if (
-					output.pty_id === ptyId &&
-					output.sequence > bufferedOutputSequence
-				) {
-					terminal.write(output.data);
-				}
-			}
-			queuedInitialOutput.clear();
-			isInitializingPty = false;
-			registeredWorktreePath = worktreePath ?? "";
-			registeredSessionKey = resolvedSessionKey;
-			registerActiveTerminal(
-				registeredWorktreePath,
-				registeredSessionKey,
-				activeToken,
-			);
-			onPtyReadyRef.current?.(ptyId, resolvedSessionKey);
+			const initialized = await Promise.race([
+				initialSnapshot.then(() => true),
+				unmounted.then(() => false),
+			]);
+			if (!initialized) return;
+			if (autoFocus) terminal.focus();
+			if (!isMounted || !isRunningRef.current) return;
+			onTerminalReadyRef.current?.(streamSessionKey);
 
 			// 初回fit()が不正確だった場合のセーフティネット:
 			// PTYスポーン後に最新のサイズで再同期する
@@ -514,50 +616,68 @@ export function useTerminal(
 				if (!isMounted || !fitAddonRef.current || !terminalRef.current) return;
 				fitAddonRef.current.fit();
 				const { rows, cols } = terminalRef.current;
-				if (rows > 0 && cols > 0) {
-					invoke("resize_pty", {
-						ptyId: ptyId,
-						rows,
-						cols,
-					}).catch((error) => {
-						console.error("Failed to resize PTY:", error);
-					});
-				}
+				syncPtySize(rows, cols);
 			});
-
-			// 6. Send startup command for newly created PTY
-			if (result.is_new && startupCommandRef.current) {
-				const cmd = startupCommandRef.current.trim();
-				if (cmd) {
-					invoke("write_pty", {
-						ptyId: ptyId,
-						data: `${cmd}\n`,
-					}).catch((error) => {
-						console.error("Failed to send startup command:", error);
-					});
-				}
-			}
 		};
 
-		initPty().catch((error) => {
+		initTerminal().catch((error) => {
 			console.error("Failed to initialize PTY:", error);
-			isInitializingPty = false;
-			queuedInitialOutput.clear();
 			if (!isMounted) return;
 			const message = formatTerminalInitError(error);
 			terminal.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
-			onPtyErrorRef.current?.(message);
+			onTerminalErrorRef.current?.(message);
 		});
 
-		terminal.onData((data) => {
-			if (ptyIdRef.current !== null) {
-				invoke("write_pty", { ptyId: ptyIdRef.current, data }).catch(
-					(error) => {
-						console.error("Failed to write to PTY:", error);
-					},
-				);
+		deliverInput = (data: string) => {
+			const activeAttachmentId = attachmentId;
+			if (!activeAttachmentId) return;
+			const sequence = inputSequence;
+			inputSequence += 1;
+			const clientStartedAtUnixMs = performanceProbeActive
+				? Date.now()
+				: undefined;
+			if (performanceProbeActive) {
+				pendingPerformanceInputSequences.push(sequence);
+				reportTerminalInputPerformancePoint(sequence, "on_data");
 			}
-		});
+			if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+				activeSocket.send(
+					JSON.stringify({
+						type: "write",
+						owner: terminalOwner,
+						attachment_id: activeAttachmentId,
+						sequence,
+						data,
+						...(clientStartedAtUnixMs === undefined
+							? {}
+							: { client_started_at_unix_ms: clientStartedAtUnixMs }),
+					}),
+				);
+				return;
+			}
+			void invoke<void>("write_terminal_surface", {
+				owner: terminalOwner,
+				attachmentId: activeAttachmentId,
+				sequence,
+				data,
+				...(clientStartedAtUnixMs === undefined
+					? {}
+					: { clientStartedAtUnixMs }),
+			}).catch((error) => {
+				console.error("Failed to dispatch terminal input:", error);
+			});
+		};
+		const dispatchInput = (data: string) => {
+			if (!isMounted || data.length === 0) return;
+			if (!startupInput.isDone) {
+				startupInput.push(data);
+				return;
+			}
+			if (!isRunningRef.current) return;
+			deliverInput(data);
+		};
+		inputDispatchRef.current = dispatchInput;
+		terminal.onData(dispatchInput);
 
 		const RESIZE_DEBOUNCE_MS = 100;
 		let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -570,17 +690,9 @@ export function useTerminal(
 
 			fitAddonRef.current.fit();
 
-			if (ptyIdRef.current !== null) {
+			if (isRunningRef.current) {
 				const { rows, cols } = terminalRef.current;
-				if (rows > 0 && cols > 0) {
-					invoke("resize_pty", {
-						ptyId: ptyIdRef.current,
-						rows,
-						cols,
-					}).catch((error) => {
-						console.error("Failed to resize PTY:", error);
-					});
-				}
+				syncPtySize(rows, cols);
 			}
 		};
 
@@ -612,28 +724,38 @@ export function useTerminal(
 			}, RESIZE_DEBOUNCE_MS);
 		});
 		resizeObserver.observe(container);
-		resizeObserverRef.current = resizeObserver;
 
 		return () => {
 			isMounted = false;
+			resolveUnmount();
+			unregisterBufferReader();
+			inputDispatchRef.current = () => {};
+			liveOutputScheduler.dispose();
 			if (resizeTimer !== null) {
 				clearTimeout(resizeTimer);
 			}
 			resizeObserver.disconnect();
-			cleanupPtyListeners();
-			if (killOnUnmountRef.current && ptyIdRef.current !== null) {
-				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
+			releaseCurrentAttachment();
+			if (killOnUnmountRef.current && isRunningRef.current) {
+				invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
+					(error) => {
+						console.error("Failed to kill terminal PTY on unmount:", error);
+					},
+				);
 			}
-			unregisterActiveTerminal(
-				registeredWorktreePath,
-				registeredSessionKey,
-				activeToken,
-			);
-			ptyIdRef.current = null;
+			isRunningRef.current = false;
 			terminal.dispose();
 			reportMountedXtermUnmounted();
 		};
-	}, [containerRef, cwd, sessionKey, label]);
+	}, [
+		containerRef,
+		autoFocus,
+		cwd,
+		initialization,
+		label,
+		terminalOwner,
+		terminalStartupCommand,
+	]);
 
 	useEffect(() => {
 		const terminal = terminalRef.current;
@@ -642,17 +764,19 @@ export function useTerminal(
 		terminal.options.theme = getTerminalTheme(theme, container);
 	}, [theme, containerRef]);
 
-	const writeToTerminal = useCallback((data: string) => {
-		if (ptyIdRef.current !== null) {
-			invoke("write_pty", { ptyId: ptyIdRef.current, data }).catch((error) => {
-				console.error("Failed to write to PTY:", error);
-			});
-		}
+	const sendInput = useCallback((data: string) => {
+		inputDispatchRef.current(data);
 	}, []);
 
 	const requestKill = useCallback(() => {
 		killOnUnmountRef.current = true;
 	}, []);
 
-	return { terminalRef, ptyIdRef, writeToTerminal, requestKill };
+	return {
+		terminalRef,
+		terminalOwner,
+		isRunningRef,
+		sendInput,
+		requestKill,
+	};
 }

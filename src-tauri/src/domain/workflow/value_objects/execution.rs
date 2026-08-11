@@ -1,13 +1,15 @@
 use super::{NodeExecution, TokenUsage};
 use crate::domain::workflow::error::WorkflowError;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStatus {
     Running,
+    #[cfg(test)]
     WaitingApproval,
     Completed,
-    Failed,
     Aborted,
+    #[cfg(test)]
     Interrupted,
 }
 
@@ -15,24 +17,28 @@ impl ExecutionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            #[cfg(test)]
             Self::WaitingApproval => "waiting_approval",
             Self::Completed => "completed",
-            Self::Failed => "failed",
             Self::Aborted => "aborted",
+            #[cfg(test)]
             Self::Interrupted => "interrupted",
         }
     }
 
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
+        match self {
+            Self::Running => true,
+            #[cfg(test)]
+            Self::WaitingApproval => true,
+            _ => false,
+        }
     }
 
     /// 実行を再開できない最終状態かどうか。
     ///
-    /// `Interrupted` は process / session が動いていないが、event log から再開できる
-    /// checkpoint なので finished ではない。
     pub fn is_finished(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Aborted)
+        matches!(self, Self::Completed | Self::Aborted)
     }
 
     pub fn is_terminal(self) -> bool {
@@ -40,7 +46,11 @@ impl ExecutionStatus {
     }
 
     pub fn is_resumable(self) -> bool {
-        self == Self::Interrupted
+        #[cfg(test)]
+        if self == Self::Interrupted {
+            return true;
+        }
+        false
     }
 
     pub fn can_stop(self) -> bool {
@@ -48,7 +58,7 @@ impl ExecutionStatus {
     }
 
     pub fn can_resume(self) -> bool {
-        self.is_resumable()
+        self == Self::Running || self.is_resumable()
     }
 
     pub fn can_abort(self) -> bool {
@@ -160,6 +170,27 @@ pub struct WorkflowExecution {
     pub approval_target: Option<ApprovalTarget>,
 }
 
+impl WorkflowExecution {
+    pub fn retryable_node_execution_ids(&self) -> HashSet<String> {
+        self.node_executions
+            .iter()
+            .filter(|node| node.can_retry())
+            .filter(|node| {
+                node.fanout_parent.is_some()
+                    || self.current_node.as_deref() == Some(node.node_name.as_str())
+            })
+            .filter(|node| {
+                self.node_executions.iter().all(|candidate| {
+                    candidate.node_name != node.node_name
+                        || candidate.fanout_parent != node.fanout_parent
+                        || candidate.attempt <= node.attempt
+                })
+            })
+            .map(|node| node.id.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,11 +227,8 @@ mod tests {
     #[test]
     fn execution_command_permission_matrix_matches_the_typed_contract() {
         let cases = [
-            (ExecutionStatus::Running, true, false, true),
-            (ExecutionStatus::WaitingApproval, true, false, true),
-            (ExecutionStatus::Interrupted, false, true, true),
+            (ExecutionStatus::Running, true, true, true),
             (ExecutionStatus::Completed, false, false, false),
-            (ExecutionStatus::Failed, false, false, false),
             (ExecutionStatus::Aborted, false, false, false),
         ];
 
@@ -225,5 +253,55 @@ mod tests {
             );
         }
         assert_eq!(ExecutionInterruptionReason::from_reason("legacy"), None);
+    }
+
+    #[test]
+    fn retryable_node_ids_only_include_the_latest_current_attempt() {
+        let node = |id: &str, node_name: &str, attempt: u32| NodeExecution {
+            id: id.to_string(),
+            execution_id: "execution-1".to_string(),
+            node_name: node_name.to_string(),
+            kind: super::super::NodeKindName::Session,
+            attempt,
+            status: super::super::NodeExecutionStatus::Failed,
+            session_id: None,
+            display_command: None,
+            result_summary: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            completion_signals: super::super::NodeCompletionSignalState::Pending,
+            started_at: 1.0,
+            completed_at: Some(2.0),
+        };
+        let execution = WorkflowExecution {
+            id: "execution-1".to_string(),
+            workflow_name: "review".to_string(),
+            status: ExecutionStatus::Running,
+            current_node: Some("review".to_string()),
+            created_from: ExecutionOrigin::Cli,
+            worktree_path: "/repo".to_string(),
+            started_at: 1.0,
+            updated_at: 2.0,
+            completed_at: None,
+            error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
+            total_token_usage: TokenUsage::default(),
+            node_executions: vec![
+                node("review-1", "review", 1),
+                node("review-2", "review", 2),
+                node("other-1", "other", 1),
+            ],
+            artifacts: Vec::new(),
+            fanouts: Vec::new(),
+            approval_target: None,
+        };
+
+        assert_eq!(
+            execution.retryable_node_execution_ids(),
+            std::collections::HashSet::from(["review-2".to_string()])
+        );
     }
 }

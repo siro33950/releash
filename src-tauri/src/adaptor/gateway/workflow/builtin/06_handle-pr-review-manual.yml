@@ -154,8 +154,7 @@ schemas:
 nodes:
 - name: import_pr_review_comments
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -190,8 +189,7 @@ nodes:
 
 - name: decide_pr_review_fix_policy_manual
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: triage
@@ -201,8 +199,7 @@ nodes:
 
 - name: check_pr_review_fix_policy_consistency
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -236,8 +233,7 @@ nodes:
 
 - name: correct_pr_review_fix_policy_manual
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: triage
@@ -247,8 +243,7 @@ nodes:
 
 - name: create_pr_review_fix_plan
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -263,8 +258,7 @@ nodes:
 
 - name: implement_pr_review_fix_plan
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: coding
@@ -280,8 +274,7 @@ nodes:
 
 - name: verify_pr_review_fixes
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: reviewing
@@ -307,8 +300,7 @@ nodes:
 
 - name: pr_review_confirmation
   session:
-    model: claude-opus-5
-    permission: edit
+    provider: claude
     gate: approval
     facets:
       policy: reporting
@@ -340,8 +332,7 @@ nodes:
 
 - name: finalize_pr_review
   session:
-    model: gpt-5.6-sol
-    permission: full
+    provider: codex
     gate: auto
     facets:
       policy: coding

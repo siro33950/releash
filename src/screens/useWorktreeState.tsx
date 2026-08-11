@@ -3,7 +3,6 @@ import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
-import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import {
 	gitReducer,
 	initialUIState,
@@ -79,10 +78,6 @@ export function useWorktreeState({
 		if (branch != null) setReady(true);
 	}, [branch]);
 
-	// Rust 中央管理 (AgentStatusCenter) から worktree 集約状態を購読する。
-	const workspaceStatus = useWorkspaceStatus(rootPath);
-	const agentState = workspaceStatus?.aggregated_state;
-
 	// --- Refs ---
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
@@ -110,7 +105,7 @@ export function useWorktreeState({
 		isActive,
 	});
 
-	// --- Native file drop (image D&D to AgentChat) ---
+	// --- Native file drop ---
 	const { registerDropZone } = useNativeFileDrop({
 		onDropToEditor: useCallback((_paths: string[]) => {}, []),
 	});
@@ -144,7 +139,6 @@ export function useWorktreeState({
 		showCreateBranch,
 		newBranchName,
 		branch,
-		agentState,
 		dispatchUI,
 		dispatchGit,
 		gitActions,

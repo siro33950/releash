@@ -1,7 +1,6 @@
-use super::{IssueInfo, PrStatus, ProviderStatus};
+use super::{IssueInfo, PrStatus};
 
 pub trait GitHostProvider: Send + Sync {
-    fn provider_status(&self, repo_path: &str) -> ProviderStatus;
     fn fetch_pr_status(&self, repo_path: &str) -> PrStatus;
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo>;
 }

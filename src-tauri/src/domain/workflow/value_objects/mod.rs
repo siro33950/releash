@@ -9,7 +9,6 @@ mod node_execution;
 mod runtime_event;
 mod runtime_projection;
 mod state;
-mod workflow_node_context;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
@@ -36,7 +35,8 @@ pub use ids::{
     NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
 };
 pub use node_execution::{
-    FanoutParentRef, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
+    FanoutParentRef, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
+    NodeExecutionFailure, NodeExecutionStatus,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 pub use runtime_projection::{
@@ -45,4 +45,3 @@ pub use runtime_projection::{
     NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
-pub use workflow_node_context::WorkflowNodeContext;

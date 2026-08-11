@@ -132,13 +132,12 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "ship it",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
                         "name": "node",
-                        "session": { "gate": "auto" }
+                        "session": { "provider": "claude", "gate": "auto" }
                     }]
                 }
             }),
@@ -175,13 +174,12 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "",
-                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
                         "name": "node",
-                        "session": { "gate": "auto" }
+                        "session": { "provider": "claude", "gate": "auto" }
                     }]
                 }
             }),

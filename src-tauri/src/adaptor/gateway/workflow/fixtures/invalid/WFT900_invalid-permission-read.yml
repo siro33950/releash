@@ -1,9 +1,0 @@
-name: invalid-permission-read
-description: read is not a current workflow permission value
-nodes:
-  - name: inspect
-    session:
-      permission: read
-      gate: auto
-      facets:
-        instruction: unused-because-permission-is-invalid

@@ -1,25 +1,3 @@
-import type { ContextCarryState } from "./session";
-
-export type AgentState = "running" | "done" | "error" | "waiting";
-
-interface AgentSupportedCommandMsg {
-	name: string;
-	description: string;
-	argumentHint?: string;
-}
-
-export interface AgentSupportedCommandsUpdated {
-	chat_session_id: string;
-	commands: AgentSupportedCommandMsg[];
-}
-
-export interface AgentSessionContextCarryUpdated {
-	chat_session_id: string;
-	agent_session_id?: string | null;
-	context_carry?: ContextCarryState | null;
-	updated_at: number;
-}
-
 export type ReviewActorKind = "human" | "agent";
 type ReviewThreadState = "open" | "resolved";
 

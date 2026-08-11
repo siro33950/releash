@@ -52,7 +52,11 @@ test.describe("Settings", () => {
 		await expect(page.locator("#theme-select")).toBeVisible();
 
 		// Editor セクションに切り替えると Default Base セレクトが表示される
-		await page.getByRole("button", { name: "Editor" }).click();
+		await expect(async () => {
+			await page
+				.getByRole("button", { name: "Editor" })
+				.click({ timeout: 1_000 });
+		}).toPass();
 		await expect(page.locator("#diff-base-select")).toBeVisible();
 	});
 

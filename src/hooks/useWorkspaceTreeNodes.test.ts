@@ -1,6 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionStatus, SessionSummary } from "@/types/session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
@@ -11,16 +10,12 @@ import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
-const mockListClosedSessions = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
-}));
-vi.mock("@/hooks/useSessionStore", () => ({
-	listClosedSessions: (...args: unknown[]) => mockListClosedSessions(...args),
 }));
 
 type ListenerMap = Record<string, Array<(event: { payload: never }) => void>>;
@@ -32,7 +27,7 @@ function makeNode(id: string): WorkspaceTreeItem {
 		title: id,
 		status: "running",
 		contentKind: "session",
-		capabilities: { canApprove: false, canClose: true },
+		capabilities: { canApprove: false, canRetry: false, canClose: true },
 		updatedAt: 1,
 	};
 }
@@ -51,21 +46,6 @@ function makeSelectionSnapshot(
 	return {
 		snapshot,
 		reconciliation: { selectionInSnapshot },
-	};
-}
-
-function makeStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
-	return {
-		chat_session_id: "session-1",
-		worktree_id: "/repo",
-		worktree_path: "/repo",
-		pty_id: null,
-		agent_state: "running",
-		turn_phase: "streaming",
-		session_state: "active",
-		pending_permission: false,
-		last_activity_at: 1,
-		...overrides,
 	};
 }
 
@@ -101,7 +81,6 @@ describe("useWorkspaceTreeNodes", () => {
 		listeners = {};
 		treeResponses = [];
 		selectionResponses = [];
-		mockListClosedSessions.mockResolvedValue([]);
 		mockListen.mockImplementation(
 			(event: string, listener: (event: { payload: never }) => void) => {
 				listeners[event] = [...(listeners[event] ?? []), listener];
@@ -139,7 +118,16 @@ describe("useWorkspaceTreeNodes", () => {
 		).toBe(0);
 	});
 
-	it("does not refetch tree, closed sessions, or history when only selection changes", async () => {
+	it("Agent TUI cutover後はlegacy closed Sessionを読み込まない", async () => {
+		treeResponses.push(makeSnapshot([makeNode("node-1")], "node-1"));
+		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
+	});
+
+	it("does not refetch tree or history when only selection changes", async () => {
 		treeResponses.push(makeSnapshot([makeNode("node-a")], "node-a"));
 		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
 		await waitFor(() => expect(result.current.loading).toBe(false));
@@ -153,7 +141,6 @@ describe("useWorkspaceTreeNodes", () => {
 			countInvocations("get_workspace_tree_selection_reconciliation"),
 		).toBe(0);
 		expect(countInvocations("list_workspace_workflow_history")).toBe(1);
-		expect(mockListClosedSessions).toHaveBeenCalledOnce();
 	});
 
 	it("starts Archive reconciliation explicitly and commits snapshot and membership together", async () => {
@@ -433,31 +420,7 @@ describe("useWorkspaceTreeNodes", () => {
 		);
 	});
 
-	it("refreshes for every matching Worktree session status without inspecting opaque ids", async () => {
-		treeResponses.push(
-			makeSnapshot([makeNode("opaque-node")]),
-			makeSnapshot([]),
-		);
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-		await waitFor(() =>
-			expect(countInvocations("list_workspace_worktree_nodes")).toBe(1),
-		);
-		await waitFor(() =>
-			expect(listeners["session-status-changed"]?.length).toBe(1),
-		);
-
-		act(() => {
-			listeners["session-status-changed"][0]({
-				payload: makeStatus({
-					chat_session_id: "unrelated-to-node-id",
-				}) as never,
-			});
-		});
-		await waitForScheduledRefresh();
-		expect(countInvocations("list_workspace_worktree_nodes")).toBe(2);
-	});
-
-	it("ignores session and workflow events for another Worktree", async () => {
+	it("ignores workflow events for another Worktree", async () => {
 		treeResponses.push(makeSnapshot([]));
 		renderHook(() => useWorkspaceTreeNodes("/repo"));
 		await waitFor(() =>
@@ -468,9 +431,6 @@ describe("useWorkspaceTreeNodes", () => {
 		);
 
 		act(() => {
-			listeners["session-status-changed"][0]({
-				payload: makeStatus({ worktree_path: "/other" }) as never,
-			});
 			listeners["workflow-execution-changed"][0]({
 				payload: {
 					worktreePath: "/other",
@@ -479,24 +439,5 @@ describe("useWorkspaceTreeNodes", () => {
 		});
 		await waitForScheduledRefresh();
 		expect(countInvocations("list_workspace_worktree_nodes")).toBe(1);
-	});
-
-	it("does not filter closed sessions by workflow metadata in frontend", async () => {
-		const closed = {
-			id: "closed-workflow-session",
-			worktreePath: "/repo",
-			state: "closed",
-			createdAt: 1,
-			updatedAt: 2,
-			firstMessage: "closed",
-			messageCount: 1,
-			workflowNodeSession: true,
-		} as SessionSummary;
-		mockListClosedSessions.mockResolvedValue([closed]);
-		treeResponses.push(makeSnapshot([]));
-
-		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
-		await waitFor(() => expect(result.current.loading).toBe(false));
-		expect(result.current.closedSessions).toEqual([closed]);
 	});
 });

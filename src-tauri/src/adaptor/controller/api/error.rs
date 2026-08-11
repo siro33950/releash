@@ -58,6 +58,9 @@ impl From<WorkflowError> for ApiError {
             WorkflowError::Validation(message) => {
                 Self::new(StatusCode::BAD_REQUEST, "validation_error", message)
             }
+            WorkflowError::Conflict(message) => {
+                Self::new(StatusCode::CONFLICT, "workflow_conflict", message)
+            }
             WorkflowError::InvalidState(message) => {
                 Self::new(StatusCode::CONFLICT, "invalid_state", message)
             }

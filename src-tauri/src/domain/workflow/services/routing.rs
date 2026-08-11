@@ -755,7 +755,6 @@ mod routing_tests {
                     instruction: Some("inst".to_string()),
                     ..Default::default()
                 },
-                permission: Some("ask".to_string()),
                 ..Default::default()
             }),
             artifact: artifact.map(ToOwned::to_owned),

@@ -125,11 +125,6 @@ pub fn inspect_initial_create_evidence(
     Ok(InitialCreateEvidenceState::Valid)
 }
 
-#[cfg(test)]
-pub fn create_initial_create_evidence(layout: &StoreLayout) -> Result<(), std::io::Error> {
-    create_initial_create_evidence_with_fault(layout, None)
-}
-
 pub fn create_initial_create_evidence_with_fault(
     layout: &StoreLayout,
     fault: Option<&FaultInjector>,

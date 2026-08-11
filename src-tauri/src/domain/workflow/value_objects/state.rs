@@ -2,25 +2,23 @@ use std::collections::HashMap;
 
 use super::definition::WorkflowDefinition;
 use super::execution::ExecutionOrigin;
-use super::failure::NodeExecutionFailureKind;
 use super::node_execution::NodeExecution;
 use super::runtime_projection::{
     NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
-    NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
+    NODE_STATUS_RUNNING,
 };
+#[cfg(test)]
+use super::runtime_projection::{NODE_STATUS_INTERRUPTED, NODE_STATUS_WAITING_APPROVAL};
 
 /// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeExecutionState {
     Running,
+    #[cfg(test)]
     WaitingApproval,
     Completed,
-    Failed {
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    },
     Aborted,
+    #[cfg(test)]
     Interrupted,
 }
 
@@ -28,16 +26,23 @@ impl RuntimeExecutionState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Running => NODE_STATUS_RUNNING,
+            #[cfg(test)]
             Self::WaitingApproval => NODE_STATUS_WAITING_APPROVAL,
             Self::Completed => NODE_STATUS_COMPLETED,
-            Self::Failed { .. } => NODE_STATUS_FAILED,
             Self::Aborted => NODE_STATUS_ABORTED,
+            #[cfg(test)]
             Self::Interrupted => NODE_STATUS_INTERRUPTED,
         }
     }
 
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
+        match self {
+            Self::Running => true,
+            #[cfg(test)]
+            Self::WaitingApproval => true,
+            _ => false,
+        }
     }
 }
 
@@ -73,7 +78,7 @@ mod tests {
     #[test]
     fn runtime_execution_state_active_is_derived() {
         assert!(RuntimeExecutionState::Running.is_active());
-        assert!(RuntimeExecutionState::WaitingApproval.is_active());
         assert!(!RuntimeExecutionState::Aborted.is_active());
+        assert!(!RuntimeExecutionState::Completed.is_active());
     }
 }

@@ -75,16 +75,6 @@ impl WorkflowFacetContents {
         self.nodes.insert(node_name, contents);
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_node_for_test(
-        node_name: impl Into<String>,
-        contents: FacetContents,
-    ) -> Self {
-        let mut resolved = Self::default();
-        resolved.insert_node(node_name.into(), contents);
-        resolved
-    }
-
     pub fn iter_node_contents(&self) -> impl Iterator<Item = (&str, &FacetContents)> {
         self.nodes
             .iter()

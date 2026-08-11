@@ -37,10 +37,6 @@ impl FakeStoreClock {
             now_ms: Arc::new(AtomicI64::new(now_ms)),
         }
     }
-
-    pub fn advance_ms(&self, delta_ms: i64) {
-        self.now_ms.fetch_add(delta_ms, Ordering::SeqCst);
-    }
 }
 
 #[cfg(test)]

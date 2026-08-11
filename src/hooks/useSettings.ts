@@ -7,7 +7,6 @@ import {
 	useState,
 } from "react";
 import {
-	type AgentType,
 	type AppSettings,
 	DEFAULT_SETTINGS,
 	type DiffBase,
@@ -33,7 +32,12 @@ function loadSettings(): AppSettings {
 			// Rust app_config is the source of truth for performance telemetry.
 			delete parsed.performanceTelemetry;
 			delete parsed.telemetryEnabled;
-			return { ...DEFAULT_SETTINGS, ...parsed };
+			const merged = { ...DEFAULT_SETTINGS, ...parsed };
+			return Object.fromEntries(
+				(Object.keys(DEFAULT_SETTINGS) as Array<keyof AppSettings>).map(
+					(key) => [key, merged[key]],
+				),
+			) as unknown as AppSettings;
 		}
 	} catch {
 		// ignore
@@ -116,14 +120,6 @@ export function useSettings() {
 		[],
 	);
 
-	const updateAgent = useCallback((agent: AgentType) => {
-		setSettings((prev) => ({ ...prev, agent }));
-	}, []);
-
-	const updateAgentAutoApprove = useCallback((agentAutoApprove: boolean) => {
-		setSettings((prev) => ({ ...prev, agentAutoApprove }));
-	}, []);
-
 	const updatePerformanceTelemetry = useCallback(
 		(performanceTelemetry: boolean) => {
 			setSettings((prev) => ({ ...prev, performanceTelemetry }));
@@ -151,8 +147,6 @@ export function useSettings() {
 		updateDefaultDiffMode,
 		updateDefaultDiffOnlyMode,
 		updateTerminalStartupCommand,
-		updateAgent,
-		updateAgentAutoApprove,
 		updatePerformanceTelemetry,
 		updateSettings,
 	};

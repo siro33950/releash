@@ -1,34 +1,12 @@
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::time::Duration;
 
-use crate::domain::workflow::value_objects::{NodeExecutionFailureKind, NodeKindName};
+#[cfg(test)]
+use crate::domain::workflow::value_objects::NodeKindName;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetryPolicy {
-    max_retries_by_kind: HashMap<NodeExecutionFailureKind, u32>,
-}
-
-impl RetryPolicy {
-    pub fn should_retry(&self, kind: NodeExecutionFailureKind, attempts: u32) -> bool {
-        attempts < self.max_retries(kind)
-    }
-
-    pub fn max_retries(&self, kind: NodeExecutionFailureKind) -> u32 {
-        self.max_retries_by_kind.get(&kind).copied().unwrap_or(0)
-    }
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries_by_kind: HashMap::from([
-                (NodeExecutionFailureKind::StartupTimeout, 2),
-                (NodeExecutionFailureKind::StaleRuntimeTimeout, 0),
-            ]),
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TimeoutContext {
     pub model: Option<String>,
@@ -37,6 +15,7 @@ pub struct TimeoutContext {
     pub workflow_template: Option<String>,
 }
 
+#[cfg(test)]
 impl TimeoutContext {
     pub fn new(
         model: Option<String>,
@@ -57,6 +36,7 @@ impl TimeoutContext {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutPolicy {
     startup_timeout: Duration,
@@ -67,6 +47,7 @@ pub struct TimeoutPolicy {
     stale_timeout_by_template: HashMap<String, Duration>,
 }
 
+#[cfg(test)]
 impl TimeoutPolicy {
     pub fn startup_timeout(&self, _ctx: &TimeoutContext) -> Duration {
         self.startup_timeout
@@ -130,6 +111,7 @@ impl TimeoutPolicy {
     }
 }
 
+#[cfg(test)]
 impl Default for TimeoutPolicy {
     fn default() -> Self {
         Self {
@@ -143,62 +125,9 @@ impl Default for TimeoutPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RepairDecision {
-    Repair { attempt: u32 },
-    GiveUp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StructuredOutputRepairPolicy {
-    max_attempts: u32,
-}
-
-impl StructuredOutputRepairPolicy {
-    pub fn max_attempts(&self) -> u32 {
-        self.max_attempts
-    }
-
-    pub fn decide(&self, prior_attempts: u32, has_session: bool) -> RepairDecision {
-        if !has_session || prior_attempts >= self.max_attempts {
-            RepairDecision::GiveUp
-        } else {
-            RepairDecision::Repair {
-                attempt: prior_attempts + 1,
-            }
-        }
-    }
-}
-
-impl Default for StructuredOutputRepairPolicy {
-    fn default() -> Self {
-        Self { max_attempts: 2 }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn retry_policy_retries_startup_timeout_twice_only() {
-        let policy = RetryPolicy::default();
-
-        assert!(policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 0));
-        assert!(policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 1));
-        assert!(!policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 2));
-    }
-
-    #[test]
-    fn retry_policy_keeps_stale_retry_disabled_by_default() {
-        let policy = RetryPolicy::default();
-
-        assert_eq!(
-            policy.max_retries(NodeExecutionFailureKind::StaleRuntimeTimeout),
-            0
-        );
-        assert!(!policy.should_retry(NodeExecutionFailureKind::StaleRuntimeTimeout, 0));
-    }
 
     #[test]
     fn timeout_policy_uses_defaults_and_template_overrides() {
@@ -318,21 +247,5 @@ mod tests {
             )),
             Duration::from_secs(600)
         );
-    }
-
-    #[test]
-    fn artifact_repair_policy_limits_attempts_and_requires_session() {
-        let policy = StructuredOutputRepairPolicy::default();
-
-        assert_eq!(
-            policy.decide(0, true),
-            RepairDecision::Repair { attempt: 1 }
-        );
-        assert_eq!(
-            policy.decide(1, true),
-            RepairDecision::Repair { attempt: 2 }
-        );
-        assert_eq!(policy.decide(2, true), RepairDecision::GiveUp);
-        assert_eq!(policy.decide(0, false), RepairDecision::GiveUp);
     }
 }

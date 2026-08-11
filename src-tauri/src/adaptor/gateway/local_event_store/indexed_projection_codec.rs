@@ -2,21 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::local_event::{
-    AgentContextCarryStateRecord, AgentSessionStateRecord, AgentSessionSummaryRecord,
-    SessionProjectionRecord, WorkflowExecutionMetadataRecord,
-};
+use crate::domain::local_event::{SessionProjectionRecord, WorkflowExecutionMetadataRecord};
 use crate::domain::workflow::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowNodeContext,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState,
+    TokenUsage,
 };
 use crate::domain::workspace_tree::{
-    WorkspaceCommandResult, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceSessionListKind,
-    WorkspaceSessionPublicationPolicy, WorkspaceTreeNode,
+    WorkspaceCommandResult, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceTreeNode,
 };
 
 pub(crate) const EXECUTION_RECORD_SCHEMA: &str = "workflow_execution_record_v1";
 pub(crate) const EXECUTION_NODE_RECORD_SCHEMA: &str = "workflow_execution_node_record_v1";
-const SESSION_SUMMARY_SCHEMA: &str = "session_public_summary_v1";
 const NODE_TREE_SCHEMA: &str = "workflow_execution_node_tree_v1";
 const NODE_DETAIL_SCHEMA: &str = "workflow_execution_node_detail_v1";
 
@@ -114,28 +110,15 @@ pub(crate) fn indexed_session_public_columns(
     projection: &SessionProjectionRecord,
 ) -> Result<IndexedSessionPublicColumns, String> {
     match projection {
-        SessionProjectionRecord::AgentSession(session) => {
-            let workspace_identity =
-                crate::domain::repository::normalize_repo_path(&session.meta.worktree_path);
-            match WorkspaceSessionPublicationPolicy::public_summary(session) {
-                Some((list, summary)) => {
-                    if summary.worktree_path != workspace_identity {
-                        return Err(
-                            "Workspace Session summary identity does not match its projection"
-                                .to_string(),
-                        );
-                    }
-                    indexed_session_public_summary(&workspace_identity, list, &summary)
-                }
-                None => Ok(IndexedSessionPublicColumns {
-                    workspace_identity: Some(workspace_identity),
-                    list_kind: None,
-                    sort_key_bits: None,
-                    summary: None,
-                }),
-            }
-        }
+        SessionProjectionRecord::AgentSession(session) => Ok(IndexedSessionPublicColumns {
+            workspace_identity: Some(session.workspace_identity.clone()),
+            list_kind: None,
+            sort_key_bits: None,
+            summary: None,
+        }),
         SessionProjectionRecord::WorkflowExecution(_)
+        | SessionProjectionRecord::ProviderSessionOwnership(_)
+        | SessionProjectionRecord::ProviderHookHealth(_)
         | SessionProjectionRecord::WorkflowWorktreeOwner(_) => Ok(IndexedSessionPublicColumns {
             workspace_identity: None,
             list_kind: None,
@@ -143,25 +126,6 @@ pub(crate) fn indexed_session_public_columns(
             summary: None,
         }),
     }
-}
-
-pub(crate) fn indexed_session_public_summary(
-    workspace_identity: &str,
-    list: WorkspaceSessionListKind,
-    summary: &AgentSessionSummaryRecord,
-) -> Result<IndexedSessionPublicColumns, String> {
-    if summary.worktree_path != workspace_identity {
-        return Err("Workspace Session summary identity is inconsistent".to_string());
-    }
-    Ok(IndexedSessionPublicColumns {
-        workspace_identity: Some(workspace_identity.to_string()),
-        list_kind: Some(list.label()),
-        sort_key_bits: Some(
-            i64::try_from(summary.updated_at_bits)
-                .map_err(|error| format!("invalid Workspace Session sort key: {error}"))?,
-        ),
-        summary: Some(encode_session_public_summary_v1(summary)?),
-    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -186,8 +150,14 @@ struct StoredWorkflowExecutionNodeTreeV1 {
     node_execution_id: Option<String>,
     node_name: Option<String>,
     attempt: Option<u32>,
+    #[serde(default)]
+    completion_signals: String,
+    #[serde(default)]
+    has_artifact: bool,
     session_id: Option<String>,
     can_approve: bool,
+    #[serde(default)]
+    can_retry: bool,
     can_close: bool,
     can_stop: bool,
     can_resume: bool,
@@ -213,45 +183,6 @@ struct StoredWorkspaceCommandResultV1 {
     duration: u64,
     stdout: String,
     stderr: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSessionSummaryV1 {
-    schema: String,
-    node_id: String,
-    id: String,
-    worktree_path: String,
-    state: String,
-    error_reason: Option<String>,
-    created_at_bits: u64,
-    updated_at_bits: u64,
-    first_message: String,
-    message_count: u64,
-    agent_session_id: Option<String>,
-    context_carry: Option<String>,
-    permission_mode: String,
-    plan_mode: bool,
-    permission_profile_id: Option<String>,
-    backend_id: Option<String>,
-    workflow_node_session: bool,
-    workflow_node_context: Option<StoredWorkflowNodeContextV1>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredWorkflowNodeContextV1 {
-    execution_id: String,
-    node_execution_id: String,
-    workflow_name: String,
-    node_name: String,
-    attempt: u32,
-    parent_node_name: Option<String>,
-    parent_attempt: Option<u32>,
-    order: u32,
-    startup_timeout_secs: Option<u64>,
-    startup_max_retries: Option<u32>,
-    stale_timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -348,8 +279,11 @@ fn encode_node_tree(node: &WorkspaceTreeNode) -> StoredWorkflowExecutionNodeTree
         node_execution_id: node.node_execution_id.clone(),
         node_name: node.node_name.clone(),
         attempt: node.attempt,
+        completion_signals: completion_signal_state_label(node.completion_signals).to_string(),
+        has_artifact: node.has_artifact,
         session_id: node.session_id.clone(),
         can_approve: node.can_approve,
+        can_retry: node.can_retry,
         can_close: node.can_close,
         can_stop: node.can_stop,
         can_resume: node.can_resume,
@@ -375,8 +309,11 @@ fn decode_node_tree(node: StoredWorkflowExecutionNodeTreeV1) -> Result<Workspace
         node_execution_id: node.node_execution_id,
         node_name: node.node_name,
         attempt: node.attempt,
+        completion_signals: parse_completion_signal_state(&node.completion_signals)?,
+        has_artifact: node.has_artifact,
         session_id: node.session_id,
         can_approve: node.can_approve,
+        can_retry: node.can_retry,
         can_close: node.can_close,
         can_stop: node.can_stop,
         can_resume: node.can_resume,
@@ -387,74 +324,6 @@ fn decode_node_tree(node: StoredWorkflowExecutionNodeTreeV1) -> Result<Workspace
         display_command: None,
         command_result: None,
         dynamic_fanout: node.dynamic_fanout,
-    })
-}
-
-pub(crate) fn encode_session_public_summary_v1(
-    summary: &AgentSessionSummaryRecord,
-) -> Result<String, String> {
-    serde_json::to_string(&StoredSessionSummaryV1 {
-        schema: SESSION_SUMMARY_SCHEMA.to_string(),
-        node_id: crate::domain::workspace_tree::WorkspaceTreeProjector::session_node_id(
-            &summary.id,
-        ),
-        id: summary.id.clone(),
-        worktree_path: summary.worktree_path.clone(),
-        state: session_state_label(summary.state).to_string(),
-        error_reason: summary.error_reason.clone(),
-        created_at_bits: summary.created_at_bits,
-        updated_at_bits: summary.updated_at_bits,
-        first_message: summary.first_message.clone(),
-        message_count: summary.message_count,
-        agent_session_id: summary.agent_session_id.clone(),
-        context_carry: summary
-            .context_carry
-            .map(context_carry_label)
-            .map(str::to_string),
-        permission_mode: summary.permission_mode.clone(),
-        plan_mode: summary.plan_mode,
-        permission_profile_id: summary.permission_profile_id.clone(),
-        backend_id: summary.backend_id.clone(),
-        workflow_node_session: summary.workflow_node_session,
-        workflow_node_context: summary
-            .workflow_node_context
-            .as_ref()
-            .map(encode_workflow_node_context),
-    })
-    .map_err(|error| format!("failed to encode Workspace Session summary: {error}"))
-}
-
-pub(crate) fn decode_session_public_summary_v1(
-    raw: &str,
-) -> Result<AgentSessionSummaryRecord, String> {
-    let stored: StoredSessionSummaryV1 = serde_json::from_str(raw)
-        .map_err(|error| format!("failed to decode Workspace Session summary: {error}"))?;
-    if stored.schema != SESSION_SUMMARY_SCHEMA {
-        return Err("unsupported Workspace Session summary schema".to_string());
-    }
-    Ok(AgentSessionSummaryRecord {
-        id: stored.id,
-        worktree_path: stored.worktree_path,
-        state: parse_session_state(&stored.state)?,
-        error_reason: stored.error_reason,
-        created_at_bits: stored.created_at_bits,
-        updated_at_bits: stored.updated_at_bits,
-        first_message: stored.first_message,
-        message_count: stored.message_count,
-        agent_session_id: stored.agent_session_id,
-        context_carry: stored
-            .context_carry
-            .as_deref()
-            .map(parse_context_carry)
-            .transpose()?,
-        permission_mode: stored.permission_mode,
-        plan_mode: stored.plan_mode,
-        permission_profile_id: stored.permission_profile_id,
-        backend_id: stored.backend_id,
-        workflow_node_session: stored.workflow_node_session,
-        workflow_node_context: stored
-            .workflow_node_context
-            .map(decode_workflow_node_context),
     })
 }
 
@@ -523,10 +392,11 @@ pub(crate) fn decode_workflow_execution_record_v1(
 fn parse_execution_status(value: &str) -> Result<ExecutionStatus, String> {
     match value {
         "running" => Ok(ExecutionStatus::Running),
+        #[cfg(test)]
         "waiting_approval" => Ok(ExecutionStatus::WaitingApproval),
         "completed" => Ok(ExecutionStatus::Completed),
-        "failed" => Ok(ExecutionStatus::Failed),
         "aborted" => Ok(ExecutionStatus::Aborted),
+        #[cfg(test)]
         "interrupted" => Ok(ExecutionStatus::Interrupted),
         _ => Err("invalid Workspace execution status".to_string()),
     }
@@ -534,7 +404,6 @@ fn parse_execution_status(value: &str) -> Result<ExecutionStatus, String> {
 
 fn node_kind_label(value: WorkspaceNodeKind) -> &'static str {
     match value {
-        WorkspaceNodeKind::Session => "session",
         WorkspaceNodeKind::Workflow => "workflow",
         WorkspaceNodeKind::Fanout => "fanout",
         WorkspaceNodeKind::WorkflowSession => "workflow_session",
@@ -544,7 +413,6 @@ fn node_kind_label(value: WorkspaceNodeKind) -> &'static str {
 
 fn parse_node_kind(value: &str) -> Result<WorkspaceNodeKind, String> {
     match value {
-        "session" => Ok(WorkspaceNodeKind::Session),
         "workflow" => Ok(WorkspaceNodeKind::Workflow),
         "fanout" => Ok(WorkspaceNodeKind::Fanout),
         "workflow_session" => Ok(WorkspaceNodeKind::WorkflowSession),
@@ -556,6 +424,7 @@ fn parse_node_kind(value: &str) -> Result<WorkspaceNodeKind, String> {
 fn node_status_label(value: WorkspaceNodeStatus) -> &'static str {
     match value {
         WorkspaceNodeStatus::Running => "running",
+        WorkspaceNodeStatus::Paused => "paused",
         WorkspaceNodeStatus::Failed => "failed",
         WorkspaceNodeStatus::Error => "error",
         WorkspaceNodeStatus::Waiting => "waiting",
@@ -568,6 +437,7 @@ fn node_status_label(value: WorkspaceNodeStatus) -> &'static str {
 fn parse_node_status(value: &str) -> Result<WorkspaceNodeStatus, String> {
     match value {
         "running" => Ok(WorkspaceNodeStatus::Running),
+        "paused" => Ok(WorkspaceNodeStatus::Paused),
         "failed" => Ok(WorkspaceNodeStatus::Failed),
         "error" => Ok(WorkspaceNodeStatus::Error),
         "waiting" => Ok(WorkspaceNodeStatus::Waiting),
@@ -578,75 +448,22 @@ fn parse_node_status(value: &str) -> Result<WorkspaceNodeStatus, String> {
     }
 }
 
-fn session_state_label(value: AgentSessionStateRecord) -> &'static str {
+fn completion_signal_state_label(value: NodeCompletionSignalState) -> &'static str {
     match value {
-        AgentSessionStateRecord::Active => "active",
-        AgentSessionStateRecord::Idle => "idle",
-        AgentSessionStateRecord::Done => "done",
-        AgentSessionStateRecord::Error => "error",
-        AgentSessionStateRecord::Closed => "closed",
-        AgentSessionStateRecord::Archived => "archived",
+        NodeCompletionSignalState::Pending => "pending",
+        NodeCompletionSignalState::SubmitReceived => "submit_received",
+        NodeCompletionSignalState::StopReceived => "stop_received",
+        NodeCompletionSignalState::Ready => "ready",
     }
 }
 
-fn parse_session_state(value: &str) -> Result<AgentSessionStateRecord, String> {
+fn parse_completion_signal_state(value: &str) -> Result<NodeCompletionSignalState, String> {
     match value {
-        "active" => Ok(AgentSessionStateRecord::Active),
-        "idle" => Ok(AgentSessionStateRecord::Idle),
-        "done" => Ok(AgentSessionStateRecord::Done),
-        "error" => Ok(AgentSessionStateRecord::Error),
-        "closed" => Ok(AgentSessionStateRecord::Closed),
-        "archived" => Ok(AgentSessionStateRecord::Archived),
-        _ => Err("invalid Workspace Session state".to_string()),
-    }
-}
-
-fn context_carry_label(value: AgentContextCarryStateRecord) -> &'static str {
-    match value {
-        AgentContextCarryStateRecord::Resumed => "resumed",
-        AgentContextCarryStateRecord::Reinjected => "reinjected",
-        AgentContextCarryStateRecord::Failed => "failed",
-    }
-}
-
-fn parse_context_carry(value: &str) -> Result<AgentContextCarryStateRecord, String> {
-    match value {
-        "resumed" => Ok(AgentContextCarryStateRecord::Resumed),
-        "reinjected" => Ok(AgentContextCarryStateRecord::Reinjected),
-        "failed" => Ok(AgentContextCarryStateRecord::Failed),
-        _ => Err("invalid Workspace context-carry state".to_string()),
-    }
-}
-
-fn encode_workflow_node_context(value: &WorkflowNodeContext) -> StoredWorkflowNodeContextV1 {
-    StoredWorkflowNodeContextV1 {
-        execution_id: value.execution_id.clone(),
-        node_execution_id: value.node_execution_id.clone(),
-        workflow_name: value.workflow_name.clone(),
-        node_name: value.node_name.clone(),
-        attempt: value.attempt,
-        parent_node_name: value.parent_node_name.clone(),
-        parent_attempt: value.parent_attempt,
-        order: value.order,
-        startup_timeout_secs: value.startup_timeout_secs,
-        startup_max_retries: value.startup_max_retries,
-        stale_timeout_secs: value.stale_timeout_secs,
-    }
-}
-
-fn decode_workflow_node_context(value: StoredWorkflowNodeContextV1) -> WorkflowNodeContext {
-    WorkflowNodeContext {
-        execution_id: value.execution_id,
-        node_execution_id: value.node_execution_id,
-        workflow_name: value.workflow_name,
-        node_name: value.node_name,
-        attempt: value.attempt,
-        parent_node_name: value.parent_node_name,
-        parent_attempt: value.parent_attempt,
-        order: value.order,
-        startup_timeout_secs: value.startup_timeout_secs,
-        startup_max_retries: value.startup_max_retries,
-        stale_timeout_secs: value.stale_timeout_secs,
+        "" | "pending" => Ok(NodeCompletionSignalState::Pending),
+        "submit_received" => Ok(NodeCompletionSignalState::SubmitReceived),
+        "stop_received" => Ok(NodeCompletionSignalState::StopReceived),
+        "ready" => Ok(NodeCompletionSignalState::Ready),
+        _ => Err("invalid Workflow node completion signal state".to_string()),
     }
 }
 
@@ -689,8 +506,11 @@ mod tests {
             node_execution_id: Some("node-execution".to_string()),
             node_name: Some("test".to_string()),
             attempt: Some(1),
+            completion_signals: Default::default(),
+            has_artifact: false,
             session_id: None,
             can_approve: false,
+            can_retry: false,
             can_close: false,
             can_stop: false,
             can_resume: false,

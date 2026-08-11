@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
-import type { SessionStatus } from "@/types/session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 
@@ -53,7 +52,6 @@ export function useWorkspaceNodeDetail({
 
 		let cancelled = false;
 		let unlistenWorkflow: UnlistenFn | null = null;
-		let unlistenSessionStatus: UnlistenFn | null = null;
 		detailRef.current = null;
 		setState({
 			detail: null,
@@ -131,19 +129,6 @@ export function useWorkspaceNodeDetail({
 			}
 			unlistenWorkflow = nextUnlistenWorkflow;
 
-			const nextUnlistenSessionStatus = await listen<SessionStatus>(
-				"session-status-changed",
-				(event) => {
-					if (cancelled) return;
-					if (event.payload.worktree_path !== worktreePath) return;
-					load(true);
-				},
-			);
-			if (cancelled) {
-				nextUnlistenSessionStatus();
-				return;
-			}
-			unlistenSessionStatus = nextUnlistenSessionStatus;
 			load(false);
 		};
 
@@ -154,7 +139,6 @@ export function useWorkspaceNodeDetail({
 			cancelled = true;
 			window.removeEventListener("workspace-tree-refresh", handleRefresh);
 			unlistenWorkflow?.();
-			unlistenSessionStatus?.();
 		};
 	}, [nodeId, worktreePath]);
 
@@ -169,6 +153,23 @@ export async function approveWorkspaceNode({
 	nodeId: string;
 }): Promise<WorkspaceNodeDetail | null> {
 	await invoke("approve_workspace_node", { worktreePath, nodeId });
+	window.dispatchEvent(
+		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
+	);
+	return invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
+		worktreePath,
+		nodeId,
+	});
+}
+
+export async function retryWorkspaceNode({
+	worktreePath,
+	nodeId,
+}: {
+	worktreePath: string;
+	nodeId: string;
+}): Promise<WorkspaceNodeDetail | null> {
+	await invoke("retry_workspace_node", { worktreePath, nodeId });
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);

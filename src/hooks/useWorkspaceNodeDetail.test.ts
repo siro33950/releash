@@ -1,9 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionStatus } from "@/types/session";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 import {
 	approveWorkspaceNode,
+	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "./useWorkspaceNodeDetail";
 
@@ -24,9 +24,12 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 		id,
 		title,
 		status: "running",
-		capabilities: { canApprove: false, canClose: false },
+		submitReceived: false,
+		stopReceived: false,
+		hasArtifact: false,
+		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
-		content: { kind: "session", sessionId: `session-${id}` },
+		content: { kind: "agentSession", sessionId: `session-${id}` },
 	};
 }
 
@@ -37,7 +40,7 @@ function detailWithSession(
 ): WorkspaceNodeDetail {
 	return {
 		...detail(id, title),
-		content: { kind: "session", sessionId },
+		content: { kind: "agentSession", sessionId },
 	};
 }
 
@@ -89,7 +92,6 @@ describe("useWorkspaceNodeDetail", () => {
 
 	it("loads the latest detail after subscriptions are established", async () => {
 		const workflowListenerReady = deferred<() => void>();
-		const sessionListenerReady = deferred<() => void>();
 		let currentDetail = detailWithSession(
 			"node",
 			"before session attach",
@@ -100,7 +102,7 @@ describe("useWorkspaceNodeDetail", () => {
 			listeners[event] = [...(listeners[event] ?? []), listener];
 			return event === "workflow-execution-changed"
 				? workflowListenerReady.promise
-				: sessionListenerReady.promise;
+				: Promise.resolve(vi.fn());
 		});
 		mockInvoke.mockImplementation((command: string) => {
 			if (command === "get_workspace_node_detail") {
@@ -126,24 +128,12 @@ describe("useWorkspaceNodeDetail", () => {
 			workflowListenerReady.resolve(vi.fn());
 			await workflowListenerReady.promise;
 		});
-		await waitFor(() => expect(mockListen).toHaveBeenCalledTimes(2));
-		expect(mockInvoke).not.toHaveBeenCalled();
-
-		await act(async () => {
-			sessionListenerReady.resolve(vi.fn());
-			await sessionListenerReady.promise;
-		});
-
 		await waitFor(() => expect(result.current.detail).toEqual(currentDetail));
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 	});
 
-	it("reloads for matching Worktree workflow and session events", async () => {
-		responses.push(
-			detail("node", "first"),
-			detail("node", "workflow refresh"),
-			detail("node", "session refresh"),
-		);
+	it("reloads for a matching Worktree workflow event", async () => {
+		responses.push(detail("node", "first"), detail("node", "workflow refresh"));
 		const { result } = renderHook(() =>
 			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
 		);
@@ -159,15 +149,6 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.title).toBe("workflow refresh"),
-		);
-
-		act(() => {
-			listeners["session-status-changed"][0]({
-				payload: { worktree_path: "/repo" } as SessionStatus as never,
-			});
-		});
-		await waitFor(() =>
-			expect(result.current.detail?.title).toBe("session refresh"),
 		);
 	});
 
@@ -271,7 +252,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "session",
+				kind: "agentSession",
 				sessionId: "session-a-2",
 			}),
 		);
@@ -284,7 +265,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		expect(result.current.detail?.id).toBe("occurrence-a-2");
 		expect(result.current.detail?.content).toEqual({
-			kind: "session",
+			kind: "agentSession",
 			sessionId: "session-a-2",
 		});
 	});
@@ -305,7 +286,7 @@ describe("useWorkspaceNodeDetail", () => {
 		);
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "session",
+				kind: "agentSession",
 				sessionId: "session-a-1",
 			}),
 		);
@@ -331,7 +312,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "session",
+				kind: "agentSession",
 				sessionId: "latest-session-a-1",
 			}),
 		);
@@ -343,7 +324,7 @@ describe("useWorkspaceNodeDetail", () => {
 			await older.promise;
 		});
 		expect(result.current.detail?.content).toEqual({
-			kind: "session",
+			kind: "agentSession",
 			sessionId: "latest-session-a-1",
 		});
 	});
@@ -383,6 +364,31 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 
 		expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workspace_node", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+		expect(mockInvoke).toHaveBeenNthCalledWith(2, "get_workspace_node_detail", {
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+		expect(result).toEqual(detail("node"));
+	});
+
+	it("retries through the opaque workspace node command and reloads detail", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "retry_workspace_node") return Promise.resolve(null);
+			if (command === "get_workspace_node_detail") {
+				return Promise.resolve(detail("node"));
+			}
+			return Promise.resolve(null);
+		});
+
+		const result = await retryWorkspaceNode({
+			worktreePath: "/repo",
+			nodeId: "node",
+		});
+
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "retry_workspace_node", {
 			worktreePath: "/repo",
 			nodeId: "node",
 		});

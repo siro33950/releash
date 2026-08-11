@@ -22,7 +22,7 @@ infrastructure ← adaptor/gateway → domain ← usecase ← adaptor/controller
 | レイヤー | 役割 |
 |---|---|
 | `domain/` | ビジネスロジック。外部依存を持たない |
-| `usecase/` | アプリケーションの業務手順。ドメインのみに依存 |
+| `usecase/` | アプリケーションの業務手順。業務依存はドメインに限定し、非同期排他等の実行制御primitiveだけを直接使用できる |
 | `adaptor/controller/` | Tauri コマンド（`command/`）と WebSocket ハンドラ（`handler/`） |
 | `adaptor/gateway/` | Repository / Gateway trait の具体実装。外部世界の都合と内側の言語を相互に変換する |
 | `adaptor/presenter/` | レスポンス整形 |

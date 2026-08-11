@@ -46,7 +46,6 @@ src-tauri/src/
 │   ├── presenter/                      # レスポンス整形
 │   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
 ├── infrastructure/                     # 外部世界の都合をその形のまま扱う
-│   ├── agent_session/                  # Agent CLI のプロセスと wire
 │   ├── file_watcher/                   # ファイル監視
 │   ├── git/                            # git2 クライアント
 │   ├── local_api/                      # ローカル HTTP サーバ / クライアント
@@ -67,7 +66,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 依存は内向き（外側の層が内側の層に依存する）にのみ許される。adaptor/gateway だけは、変換の材料を得るために外側の infrastructure にも依存する。gateway が外部世界と内側を橋渡しする層だからである。
 
 - ドメインは外側を一切知らない（依存を持たない）
-- usecase は domain にのみ依存する
+- usecase の業務依存は domain に限る。Usecase自身が所有する非同期排他・通知等の実行制御primitiveは使用してよいが、外部世界との接続やその型を持ち込まない
 - adaptor（gateway / controller / presenter）は usecase と domain に依存してよい（依存は内向き）
 - adaptor/gateway は domain が定義する trait（repository 等）を実装し、集約読み取り等では usecase の DTO / query ポートにも依存してよい
 - adaptor/controller は usecase を呼ぶ
@@ -80,6 +79,19 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 
 - **同じ操作の実装は 1 つに集約する。** 同一の操作（例: dirty count 算出、worktree 列挙）が複数箇所に実装されていること自体が問題であり、設定差異・挙動差はその症状にすぎない。単一の関数・イテレータに集約し、結果の一致を構造的に保証する。
 
+### Agent TUIの状態所有
+
+- canonical語は `AgentSession` である。
+- Releashは `Turn`、`Message`、`MessagePart`、`PermissionRequest` を所有しない。
+- Provider CLI / transcriptがconversationの正本である。
+- `AgentSession`はlifecycleとTerminal ownershipを所有する。
+- Terminal Surfaceは`Workspace`または`AgentSession`に所有される。
+- `NodeExecution`は`AgentSession`を参照するが所有しない。
+- Workflow completionとAgentSession lifecycleは独立する。
+- Submit / Stop / Approval / ArtifactはWorkflowが所有する。
+- Provider lifecycleとProvider availabilityは別の境界である。
+- 旧Agent GUI specは現行正本ではない。
+
 ## ドメイン一覧（14個）
 
 | ドメイン | 含まれる責務 |
@@ -88,12 +100,11 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
 | `workflow` | ワークフロー定義、実行、facet、承認 |
 | `comment` | diff_comment_store、diff_comment_sender |
-| `agent_session` | agent_sdk、session、agent_status |
-| `pty_session` | PTY 管理全般 |
+| `agent_session` | AgentSession identity、lifecycle、Provider、Terminal ownership |
+| `terminal_surface` | Terminal の backend 実装（durable terminal surface: PTY runtime lifecycle、attachment、入力 ingress、registry） |
 | `app_config` | 現 config.rs を分解 |
 | `workspace_state` | ワークスペース状態保存 |
-| `hooks` | フック設定・適用 |
-| `notification` | webhook (Slack/Discord)、将来の他チャネル |
+| `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |
 | `remote_access` | vpn_detect、qr_code、tls |
 | `git_host` | GitHub PR/Issue |
 | `notion` | Notion API |

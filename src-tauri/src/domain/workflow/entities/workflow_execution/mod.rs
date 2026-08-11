@@ -8,15 +8,16 @@ use std::collections::HashMap;
 
 use crate::domain::workflow::services::routing::LoopGuardResetBaselines;
 use crate::domain::workflow::services::{
-    history as workflow_history, routing as workflow_routing, submission as workflow_submission,
-    transition as workflow_transition,
+    fanout as workflow_fanout, history as workflow_history, routing as workflow_routing,
+    submission as workflow_submission, transition as workflow_transition,
 };
 use crate::domain::workflow::value_objects::{
-    ExecutionInterruptionReason, ExecutionOrigin, FanoutParentRef, NodeExecutionFailureKind,
-    NodeHistoryEntry, NodeKindName, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
-    WorkflowDefinition,
+    ExecutionInterruptionReason, ExecutionOrigin, FanoutParentRef, NodeCompletionSignal,
+    NodeCompletionSignalState, NodeExecutionFailureKind, NodeHistoryEntry, NodeKindName,
+    RuntimeArtifact, RuntimeExecutionState, SessionGate, TokenUsage, WorkflowDefinition,
 };
 use crate::domain::workflow::FailureDisposition;
+use crate::domain::workflow::WorkflowEvent;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FanoutRuntimeState {
@@ -116,15 +117,8 @@ impl FanoutChildRuntimeState {
     }
 }
 
-/// Workflow-level defaults captured when an execution starts.
-///
-/// These values affect future node activation and therefore belong to the
-/// execution aggregate rather than to an agent-session gateway.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkflowDefaults {
-    pub backend_id: Option<String>,
-    pub permission_mode: String,
-}
+pub struct WorkflowDefaults;
 
 /// A non-terminal stall observation retained by the execution aggregate.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,6 +136,7 @@ pub struct NodeStallObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeNodeExecutionStatus {
     Running,
+    Paused,
     WaitingApproval,
     Succeeded,
     Failed,
@@ -150,7 +145,7 @@ pub enum RuntimeNodeExecutionStatus {
 
 impl RuntimeNodeExecutionStatus {
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
+        matches!(self, Self::Running | Self::Paused | Self::WaitingApproval)
     }
 }
 
@@ -158,6 +153,16 @@ impl RuntimeNodeExecutionStatus {
 pub struct RuntimeNodeExecutionFailure {
     pub reason: String,
     pub kind: NodeExecutionFailureKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalAttemptTarget {
+    pub node_execution_id: String,
+    pub node_name: String,
+    pub session_id: Option<String>,
+    pub attempt: u32,
+    pub fanout_parent: Option<FanoutParentRef>,
+    pub artifact: Option<serde_json::Value>,
 }
 
 /// One node attempt held inside the execution aggregate.
@@ -175,19 +180,22 @@ pub struct RuntimeNodeExecution {
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<RuntimeNodeExecutionFailure>,
     pub fanout_parent: Option<FanoutParentRef>,
+    pub completion_signals: NodeCompletionSignalState,
     pub started_at: f64,
     pub completed_at: Option<f64>,
 }
 
 impl RuntimeNodeExecution {
-    #[cfg(test)]
-    pub fn replay_started(&mut self) -> TransitionOutcome {
-        if self.status == RuntimeNodeExecutionStatus::Running {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        self.status = RuntimeNodeExecutionStatus::Running;
-        self.completed_at = None;
-        TransitionOutcome::Applied
+    pub fn can_retry(&self) -> bool {
+        self.status == RuntimeNodeExecutionStatus::Failed
+            || (matches!(
+                self.status,
+                RuntimeNodeExecutionStatus::Running | RuntimeNodeExecutionStatus::Paused
+            ) && self.completion_signals.is_partial())
+    }
+
+    pub fn can_restart_paused_command(&self) -> bool {
+        self.kind == NodeKindName::Command && self.status == RuntimeNodeExecutionStatus::Paused
     }
 
     pub fn attach_session(&mut self, session_id: String) -> TransitionOutcome {
@@ -216,6 +224,28 @@ impl RuntimeNodeExecution {
         self.transition_status(RuntimeNodeExecutionStatus::WaitingApproval, None)
     }
 
+    pub fn pause(&mut self) -> TransitionOutcome {
+        match self.status {
+            RuntimeNodeExecutionStatus::Paused => TransitionOutcome::AlreadyApplied,
+            RuntimeNodeExecutionStatus::Running
+                if self.completion_signals != NodeCompletionSignalState::StopReceived =>
+            {
+                self.transition_status(RuntimeNodeExecutionStatus::Paused, None)
+            }
+            _ => TransitionOutcome::NotApplicable,
+        }
+    }
+
+    pub fn resume(&mut self) -> TransitionOutcome {
+        if self.status == RuntimeNodeExecutionStatus::Running {
+            return TransitionOutcome::AlreadyApplied;
+        }
+        if self.status != RuntimeNodeExecutionStatus::Paused {
+            return TransitionOutcome::NotApplicable;
+        }
+        self.transition_status(RuntimeNodeExecutionStatus::Running, None)
+    }
+
     pub fn resume_after_approval(&mut self) -> TransitionOutcome {
         if self.status == RuntimeNodeExecutionStatus::Running {
             return TransitionOutcome::AlreadyApplied;
@@ -224,6 +254,31 @@ impl RuntimeNodeExecution {
             return TransitionOutcome::NotApplicable;
         }
         self.status = RuntimeNodeExecutionStatus::Running;
+        TransitionOutcome::Applied
+    }
+
+    pub fn record_completion_signal(&mut self, signal: NodeCompletionSignal) -> TransitionOutcome {
+        if self.kind != NodeKindName::Session || !self.status.is_active() {
+            return TransitionOutcome::NotApplicable;
+        }
+        let next = match (self.completion_signals, signal) {
+            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Submit) => {
+                NodeCompletionSignalState::SubmitReceived
+            }
+            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Stop) => {
+                NodeCompletionSignalState::StopReceived
+            }
+            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Stop)
+            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Submit) => {
+                NodeCompletionSignalState::Ready
+            }
+            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Submit)
+            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Stop)
+            | (NodeCompletionSignalState::Ready, _) => {
+                return TransitionOutcome::AlreadyApplied;
+            }
+        };
+        self.completion_signals = next;
         TransitionOutcome::Applied
     }
 
@@ -237,6 +292,9 @@ impl RuntimeNodeExecution {
             return TransitionOutcome::AlreadyApplied;
         }
         if !self.status.is_active() {
+            return TransitionOutcome::NotApplicable;
+        }
+        if self.kind == NodeKindName::Session && !self.completion_signals.is_ready() {
             return TransitionOutcome::NotApplicable;
         }
         self.status = RuntimeNodeExecutionStatus::Succeeded;
@@ -353,17 +411,6 @@ pub struct WorkflowExecutionRestore {
     pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
-#[derive(Clone, Debug)]
-pub struct OutputSubmissionRollback {
-    node_name: String,
-    node_execution_id: String,
-    prior_artifact_entry: Option<RuntimeArtifact>,
-    prior_node_execution_artifact: Option<serde_json::Value>,
-    prior_fanout_child_output: Option<(Option<String>, Option<serde_json::Value>)>,
-    fanout_child: bool,
-    prior_updated_at: f64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecutionLifecycleRestore {
     state: RuntimeExecutionState,
@@ -383,7 +430,7 @@ impl Default for WorkflowExecutionRestore {
             node_execution_counts: HashMap::new(),
             loop_guard_reset_baselines: LoopGuardResetBaselines::default(),
             node_history: Vec::new(),
-            workflow_defaults: WorkflowDefaults::default(),
+            workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
             created_from: ExecutionOrigin::DesktopUi,
             error_reason: None,
@@ -404,6 +451,7 @@ impl Default for WorkflowExecutionRestore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStateSet {
     Active,
+    #[cfg(test)]
     Resumable,
     Finished,
 }
@@ -417,15 +465,63 @@ pub enum TransitionOutcome {
     Rejected(TransitionRejection),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeCompletionHandshakeDecision {
+    AwaitingSignal,
+    CompleteAuto,
+    RequestApproval,
+    AlreadySettled,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppliedNodeCompletionHandshake {
+    pub advance: Option<ExecutionAdvanceDecision>,
+    pub events: Vec<WorkflowEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeSubmitTarget {
+    pub session_id: Option<String>,
+    pub attempt: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeRestartMode {
+    ExplicitRetry,
+    CommandResume,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestartedNodeAttempt {
+    pub attempt: RuntimeNodeExecution,
+    pub fanout_child: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeSubmitRejection {
+    ExecutionNotActive,
+    NodeNotFound,
+    AttemptNotCurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderStopRejection {
+    NodeExecutionNotFound,
+    SessionDoesNotOwnAttempt,
+}
+
 /// Stable rejection reasons returned by aggregate admission methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionRejection {
+    #[cfg(test)]
     AlreadyStopped,
     NotActive,
+    #[cfg(test)]
     NotResumable,
+    #[cfg(test)]
     NotWaitingApproval,
     ArtifactNotAccepted,
-    WorkflowTurnNotAuthorized,
 }
 
 /// Canonical fact derived from an observed turn result.
@@ -442,6 +538,7 @@ pub enum CanonicalNodeFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnCompletionApplication {
     Live,
+    #[cfg(test)]
     RecordOnly,
     Superseded,
 }
@@ -474,41 +571,6 @@ pub enum ExecutionAdvanceDecision {
     Persist,
     StartFanout,
     TransitionAndStart,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RetryCurrentNodeDecision {
-    pub completed_session_id: Option<String>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum LoopGuardResult {
-    Allowed,
-    Exceeded {
-        max_iterations: u32,
-        count: u32,
-        on_exhausted: Option<String>,
-    },
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum TurnCompleteAction {
-    SessionError {
-        node_name: String,
-        exit_code: i64,
-        kind: NodeExecutionFailureKind,
-    },
-    AutoEvaluate {
-        node_name: String,
-    },
-    WaitApproval,
-    UnexpectedNodeKind {
-        node_name: String,
-        kind: NodeKindName,
-    },
-    NotRunning,
 }
 
 /// Aggregate that owns the workflow execution lifecycle state.
@@ -564,6 +626,7 @@ impl std::ops::DerefMut for WorkflowExecution {
 
 impl WorkflowExecution {
     /// Restores a lifecycle snapshot before replaying subsequent durable facts.
+    #[cfg(test)]
     pub fn restore(
         state: RuntimeExecutionState,
         interruption_reason: Option<ExecutionInterruptionReason>,
@@ -578,8 +641,11 @@ impl WorkflowExecution {
     }
 
     pub fn lifecycle_from_state(state: RuntimeExecutionState) -> WorkflowExecutionLifecycleRestore {
+        #[cfg(test)]
         let interruption_reason = matches!(state, RuntimeExecutionState::Interrupted)
             .then_some(ExecutionInterruptionReason::Crash);
+        #[cfg(not(test))]
+        let interruption_reason = None;
         WorkflowExecutionLifecycleRestore {
             state,
             interruption_reason,
@@ -633,38 +699,16 @@ impl WorkflowExecution {
         self.complete()
     }
 
-    pub fn transition_failed(
-        &mut self,
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    ) -> TransitionOutcome {
-        self.fail(reason, kind, retry_count)
-    }
-
     pub fn transition_running(&mut self) -> TransitionOutcome {
         match self.state {
+            #[cfg(test)]
             RuntimeExecutionState::Interrupted => self.resume(),
+            #[cfg(test)]
             RuntimeExecutionState::WaitingApproval => self.resolve_approval(),
             RuntimeExecutionState::Running => TransitionOutcome::AlreadyApplied,
-            RuntimeExecutionState::Completed
-            | RuntimeExecutionState::Failed { .. }
-            | RuntimeExecutionState::Aborted => TransitionOutcome::NotApplicable,
-        }
-    }
-
-    pub fn transition_waiting_approval(&mut self) -> TransitionOutcome {
-        self.request_approval()
-    }
-
-    pub fn transition_interrupted(
-        &mut self,
-        reason: ExecutionInterruptionReason,
-    ) -> TransitionOutcome {
-        if reason == ExecutionInterruptionReason::Stop {
-            self.stop()
-        } else {
-            self.interrupt(reason)
+            RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted => {
+                TransitionOutcome::NotApplicable
+            }
         }
     }
 
@@ -678,7 +722,7 @@ impl WorkflowExecution {
         kind: NodeKindName,
         attempt: u32,
         fanout_parent: Option<FanoutParentRef>,
-        node_execution_id: Option<String>,
+        node_execution_id: String,
         timestamp: f64,
     ) -> String {
         self.begin_node_attempt(
@@ -692,7 +736,11 @@ impl WorkflowExecution {
         .expect("node execution start must be admitted before applying its decision")
     }
 
-    pub fn start_current_node_execution(&mut self, timestamp: f64) -> String {
+    pub fn start_current_node_execution(
+        &mut self,
+        node_execution_id: String,
+        timestamp: f64,
+    ) -> String {
         let node_name = self.runtime.workflow.nodes[self.runtime.current_node_index]
             .name
             .clone();
@@ -703,7 +751,7 @@ impl WorkflowExecution {
             .get(&node_name)
             .copied()
             .unwrap_or(1);
-        self.start_node_execution(node_name, kind, attempt, None, None, timestamp)
+        self.start_node_execution(node_name, kind, attempt, None, node_execution_id, timestamp)
     }
 
     pub fn active_current_node_execution_id(&self) -> Option<&str> {
@@ -844,7 +892,11 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn apply_advance_at(&mut self, timestamp: f64) -> ExecutionAdvanceDecision {
+    pub fn apply_advance_at(
+        &mut self,
+        next_node_execution_id: String,
+        timestamp: f64,
+    ) -> Result<ExecutionAdvanceDecision, crate::domain::workflow::WorkflowError> {
         let completed_node_name = self.runtime.workflow.nodes[self.runtime.current_node_index]
             .name
             .clone();
@@ -855,21 +907,21 @@ impl WorkflowExecution {
                 &completed_node_name,
                 &self.runtime.node_execution_counts,
             );
-        match self.decide_next_node() {
+        let decision = match self.decide_next_node() {
+            NextNodeDecision::Failed { reason } => {
+                return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                    reason,
+                ));
+            }
+            decision => decision,
+        };
+        Ok(match decision {
             NextNodeDecision::Completed => {
                 let _ = self.transition_completed();
                 self.runtime.updated_at = timestamp;
                 ExecutionAdvanceDecision::Persist
             }
-            NextNodeDecision::Failed { reason } => {
-                let _ = self.transition_failed(
-                    reason,
-                    NodeExecutionFailureKind::ValidationFailure,
-                    None,
-                );
-                self.runtime.updated_at = timestamp;
-                ExecutionAdvanceDecision::Persist
-            }
+            NextNodeDecision::Failed { .. } => unreachable!("routing failure returned above"),
             NextNodeDecision::TransitionTo(name) => {
                 let index = self
                     .runtime
@@ -878,21 +930,124 @@ impl WorkflowExecution {
                     .iter()
                     .position(|node| node.name == name)
                     .expect("routing decision must reference a known node");
-                self.apply_transition_index(index, &name, timestamp);
+                self.apply_transition_index(index, &name, next_node_execution_id, timestamp);
                 if self.runtime.workflow.nodes[index].is_fanout() {
                     ExecutionAdvanceDecision::StartFanout
                 } else {
                     ExecutionAdvanceDecision::TransitionAndStart
                 }
             }
-        }
+        })
     }
 
-    pub fn retry_current_node_at(&mut self, timestamp: f64) -> RetryCurrentNodeDecision {
+    pub fn retry_current_node_at(
+        &mut self,
+        new_node_execution_id: String,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        self.retry_current_node_with(
+            new_node_execution_id,
+            timestamp,
+            RuntimeNodeExecution::can_retry,
+        )
+    }
+
+    pub fn restart_node_attempt_at(
+        &mut self,
+        node_execution_id: &str,
+        new_node_execution_id: String,
+        timestamp: f64,
+        mode: NodeRestartMode,
+    ) -> Option<RestartedNodeAttempt> {
+        let fanout_child = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|attempt| attempt.id == node_execution_id)
+            .is_some_and(|attempt| attempt.fanout_parent.is_some());
+        let attempt = if fanout_child {
+            match mode {
+                NodeRestartMode::ExplicitRetry => {
+                    self.retry_fanout_child_at(node_execution_id, new_node_execution_id, timestamp)
+                }
+                NodeRestartMode::CommandResume => self.restart_paused_fanout_command_at(
+                    node_execution_id,
+                    new_node_execution_id,
+                    timestamp,
+                ),
+            }?
+        } else {
+            let outcome = match mode {
+                NodeRestartMode::ExplicitRetry => {
+                    self.retry_current_node_at(new_node_execution_id.clone(), timestamp)
+                }
+                NodeRestartMode::CommandResume => {
+                    self.restart_paused_current_command_at(new_node_execution_id.clone(), timestamp)
+                }
+            };
+            if outcome != TransitionOutcome::Applied {
+                return None;
+            }
+            self.runtime
+                .node_executions
+                .iter()
+                .find(|attempt| attempt.id == new_node_execution_id)
+                .cloned()?
+        };
+        Some(RestartedNodeAttempt {
+            attempt,
+            fanout_child,
+        })
+    }
+
+    pub fn restart_paused_current_command_at(
+        &mut self,
+        new_node_execution_id: String,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        self.retry_current_node_with(
+            new_node_execution_id,
+            timestamp,
+            RuntimeNodeExecution::can_restart_paused_command,
+        )
+    }
+
+    fn retry_current_node_with(
+        &mut self,
+        new_node_execution_id: String,
+        timestamp: f64,
+        admission: fn(&RuntimeNodeExecution) -> bool,
+    ) -> TransitionOutcome {
         let node_index = self.runtime.current_node_index;
         let node_name = self.runtime.workflow.nodes[node_index].name.clone();
-        let completed_session_id = self.runtime.current_session_id.clone();
-        let _ = self.transition_running();
+        let current_attempt = self
+            .runtime
+            .node_execution_counts
+            .get(&node_name)
+            .copied()
+            .unwrap_or(1);
+        let Some(node_execution_id) = self
+            .runtime
+            .node_executions
+            .iter()
+            .rev()
+            .find(|execution| {
+                execution.node_name == node_name
+                    && execution.attempt == current_attempt
+                    && execution.fanout_parent.is_none()
+            })
+            .filter(|execution| admission(execution))
+            .map(|execution| execution.id.clone())
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        if self.request_node_restart_with(&node_execution_id, timestamp, admission)
+            != TransitionOutcome::Applied
+        {
+            return TransitionOutcome::NotApplicable;
+        }
+        self.state = RuntimeExecutionState::Running;
+        self.interruption_reason = None;
         *self
             .runtime
             .node_execution_counts
@@ -903,116 +1058,99 @@ impl WorkflowExecution {
         self.runtime.current_stall_observations.clear();
         self.clear_artifacts_for_new_execution(node_index);
         self.runtime.updated_at = timestamp;
-        self.start_current_node_execution(timestamp);
-        RetryCurrentNodeDecision {
-            completed_session_id,
-        }
+        self.start_current_node_execution(new_node_execution_id, timestamp);
+        TransitionOutcome::Applied
     }
 
-    #[cfg(test)]
-    pub fn check_loop_guard(
-        &self,
-        target_node_name: &str,
-    ) -> Result<LoopGuardResult, crate::domain::workflow::WorkflowError> {
-        let decision = workflow_routing::guarded_target_with_reset_baselines(
-            &self.runtime.workflow,
-            target_node_name.to_string(),
-            &self.runtime.node_execution_counts,
-            &self.runtime.loop_guard_reset_baselines,
-        )?;
-        if matches!(
-            decision,
-            workflow_routing::RouteDecision::TransitionTo(ref name) if name == target_node_name
-        ) {
-            return Ok(LoopGuardResult::Allowed);
-        }
-        let node = self
+    pub fn retry_fanout_child_at(
+        &mut self,
+        node_execution_id: &str,
+        new_node_execution_id: String,
+        timestamp: f64,
+    ) -> Option<RuntimeNodeExecution> {
+        self.retry_fanout_child_with(
+            node_execution_id,
+            new_node_execution_id,
+            timestamp,
+            RuntimeNodeExecution::can_retry,
+        )
+    }
+
+    pub fn restart_paused_fanout_command_at(
+        &mut self,
+        node_execution_id: &str,
+        new_node_execution_id: String,
+        timestamp: f64,
+    ) -> Option<RuntimeNodeExecution> {
+        self.retry_fanout_child_with(
+            node_execution_id,
+            new_node_execution_id,
+            timestamp,
+            RuntimeNodeExecution::can_restart_paused_command,
+        )
+    }
+
+    fn retry_fanout_child_with(
+        &mut self,
+        node_execution_id: &str,
+        new_node_execution_id: String,
+        timestamp: f64,
+        admission: fn(&RuntimeNodeExecution) -> bool,
+    ) -> Option<RuntimeNodeExecution> {
+        let target = self
             .runtime
-            .workflow
-            .nodes
+            .node_executions
             .iter()
-            .find(|node| node.name == target_node_name)
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::validation(format!(
-                    "Node '{target_node_name}' not found in workflow"
-                ))
-            })?;
-        let Some((max_iterations, on_exhausted, reset_on)) = workflow_routing::loop_guard(node)
-        else {
-            return Ok(LoopGuardResult::Allowed);
-        };
-        let cumulative_count = self
+            .find(|execution| execution.id == node_execution_id)?
+            .clone();
+        let fanout_parent = target.fanout_parent.clone()?;
+        if !admission(&target) {
+            return None;
+        }
+        let fanout = self.runtime.fanout_runtime.as_ref()?;
+        let current_child = fanout
+            .children
+            .iter()
+            .find(|child| child.node_execution_id == node_execution_id)?;
+        if current_child.state == FanoutChildRuntimeState::Completed {
+            return None;
+        }
+        let parent_node_execution_id = fanout.parent_node_execution_id.clone();
+        let new_attempt = self
             .runtime
             .node_execution_counts
-            .get(target_node_name)
+            .get(&target.node_name)
             .copied()
-            .unwrap_or(0);
-        let count = self.runtime.loop_guard_reset_baselines.execution_count(
-            target_node_name,
-            cumulative_count,
-            reset_on,
-        );
-        Ok(LoopGuardResult::Exceeded {
-            max_iterations,
-            count,
-            on_exhausted: Some(on_exhausted.to_string()),
-        })
-    }
-
-    #[cfg(test)]
-    pub fn decide_turn_complete_action(&self, exit_code: i64) -> TurnCompleteAction {
-        let action = workflow_transition::decide_turn_complete_action(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            &self.state,
-            exit_code,
-        )
-        .expect("current node index must reference workflow node");
-        match action {
-            workflow_transition::TurnCompleteDecision::NotRunning => TurnCompleteAction::NotRunning,
-            workflow_transition::TurnCompleteDecision::SessionError {
-                node_name,
-                exit_code,
-                kind,
-            } => TurnCompleteAction::SessionError {
-                node_name,
-                exit_code,
-                kind,
-            },
-            workflow_transition::TurnCompleteDecision::AutoEvaluate { node_name } => {
-                TurnCompleteAction::AutoEvaluate { node_name }
-            }
-            workflow_transition::TurnCompleteDecision::WaitApproval => {
-                TurnCompleteAction::WaitApproval
-            }
-            workflow_transition::TurnCompleteDecision::UnexpectedNodeKind { node_name, kind } => {
-                TurnCompleteAction::UnexpectedNodeKind { node_name, kind }
-            }
+            .unwrap_or(target.attempt)
+            .max(target.attempt)
+            .saturating_add(1);
+        if self.request_node_restart_with(node_execution_id, timestamp, admission)
+            != TransitionOutcome::Applied
+        {
+            return None;
         }
-    }
-
-    #[cfg(test)]
-    pub fn decide_approve_action(&self) -> Result<(), crate::domain::workflow::WorkflowError> {
-        workflow_transition::decide_approve_action(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            &self.state,
-        )
-    }
-
-    pub fn plan_turn_complete_mutation(
-        &self,
-        exit_code: i64,
-        failure_signal: Option<workflow_transition::SessionFailureSignal>,
-    ) -> Result<workflow_transition::TurnCompleteMutationPlan, crate::domain::workflow::WorkflowError>
-    {
-        workflow_transition::plan_turn_complete_mutation_with_signal(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            &self.state,
-            exit_code,
-            failure_signal,
-        )
+        self.increase_node_attempt_count_to(target.node_name.clone(), new_attempt, timestamp);
+        if self
+            .start_fanout_child_execution(
+                fanout_parent.parent_node.clone(),
+                parent_node_execution_id,
+                new_node_execution_id.clone(),
+                target.node_name,
+                target.kind,
+                new_attempt,
+                fanout_parent,
+                timestamp,
+            )
+            .ok()?
+            != TransitionOutcome::Applied
+        {
+            return None;
+        }
+        self.runtime
+            .node_executions
+            .iter()
+            .find(|execution| execution.id == new_node_execution_id)
+            .cloned()
     }
 
     pub fn plan_approval_application(
@@ -1023,9 +1161,112 @@ impl WorkflowExecution {
         workflow_transition::plan_approval_application(
             &self.runtime.workflow,
             self.runtime.current_node_index,
-            &self.state,
+            self.runtime.node_executions.iter().rev().any(|execution| {
+                execution.fanout_parent.is_none()
+                    && execution.node_name
+                        == self.runtime.workflow.nodes[self.runtime.current_node_index].name
+                    && execution.status == RuntimeNodeExecutionStatus::WaitingApproval
+            }),
             application,
         )
+    }
+
+    pub fn resolve_approval_attempt_target(
+        &self,
+        node_name: &str,
+        node_execution_id: Option<&str>,
+    ) -> Result<ApprovalAttemptTarget, crate::domain::workflow::WorkflowError> {
+        if !self.is_active() {
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                "workflow execution is not active",
+            ));
+        }
+        let candidates = self
+            .runtime
+            .node_executions
+            .iter()
+            .filter(|attempt| attempt.node_name == node_name && attempt.status.is_active())
+            .collect::<Vec<_>>();
+        let target = if let Some(node_execution_id) = node_execution_id {
+            candidates
+                .into_iter()
+                .find(|attempt| attempt.id == node_execution_id)
+                .ok_or_else(|| {
+                    crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(format!(
+							"active NodeExecution '{node_execution_id}' for node '{node_name}' was not found"
+						))
+                })?
+        } else {
+            match candidates.as_slice() {
+                [target] => *target,
+                [] => {
+                    return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                        format!("node '{node_name}' has no active execution"),
+                    ));
+                }
+                multiple => {
+                    let ids = multiple
+                        .iter()
+                        .map(|attempt| attempt.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(crate::domain::workflow::WorkflowError::invalid_state(
+						format!(
+							"node '{node_name}' has {} active executions; node_execution_id is required; candidates: [{ids}]",
+							multiple.len()
+						),
+					));
+                }
+            }
+        };
+        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+            return Err(
+                crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(format!(
+                    "NodeExecution '{}' is not waiting for approval",
+                    target.id
+                )),
+            );
+        }
+        let node = self
+            .runtime
+            .workflow
+            .nodes
+            .iter()
+            .find(|node| node.name == node_name)
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::validation(format!(
+                    "Node '{node_name}' not found in workflow"
+                ))
+            })?;
+        if !node.is_approval_session() {
+            return Err(
+                crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
+                    "node is not an approval-gated session".to_string(),
+                ),
+            );
+        }
+        if target.fanout_parent.is_none()
+            && self
+                .runtime
+                .workflow
+                .nodes
+                .get(self.runtime.current_node_index)
+                .is_none_or(|current| current.name != node_name)
+        {
+            return Err(
+                crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
+                    "node is not the current workflow node".to_string(),
+                ),
+            );
+        }
+        Ok(ApprovalAttemptTarget {
+            node_execution_id: target.id.clone(),
+            node_name: target.node_name.clone(),
+            session_id: target.session_id.clone(),
+            attempt: target.attempt,
+            fanout_parent: target.fanout_parent.clone(),
+            artifact: target.artifact.clone(),
+        })
     }
 
     fn current_node_artifact(&self) -> Option<&serde_json::Value> {
@@ -1041,7 +1282,13 @@ impl WorkflowExecution {
             .and_then(|output| output.artifact.as_ref())
     }
 
-    fn apply_transition_index(&mut self, node_index: usize, node_name: &str, timestamp: f64) {
+    fn apply_transition_index(
+        &mut self,
+        node_index: usize,
+        node_name: &str,
+        node_execution_id: String,
+        timestamp: f64,
+    ) {
         self.runtime.current_node_index = node_index;
         let _ = self.transition_running();
         *self
@@ -1053,7 +1300,7 @@ impl WorkflowExecution {
         self.runtime.current_stall_observations.clear();
         self.clear_artifacts_for_new_execution(node_index);
         self.runtime.updated_at = timestamp;
-        self.start_current_node_execution(timestamp);
+        self.start_current_node_execution(node_execution_id, timestamp);
     }
 
     pub fn set_current_node(&mut self, index: usize, timestamp: f64) -> TransitionOutcome {
@@ -1074,13 +1321,13 @@ impl WorkflowExecution {
         kind: NodeKindName,
         attempt: u32,
         fanout_parent: Option<FanoutParentRef>,
-        node_execution_id: Option<String>,
+        node_execution_id: String,
         timestamp: f64,
     ) -> Result<String, TransitionRejection> {
         if !self.is_active() {
             return Err(TransitionRejection::NotActive);
         }
-        let id = node_execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = node_execution_id;
         if self
             .node_executions
             .iter()
@@ -1106,6 +1353,7 @@ impl WorkflowExecution {
             token_usage: None,
             failure: None,
             fanout_parent,
+            completion_signals: NodeCompletionSignalState::Pending,
             started_at: timestamp,
             completed_at: None,
         });
@@ -1173,30 +1421,19 @@ impl WorkflowExecution {
         else {
             return TransitionOutcome::NotApplicable;
         };
-        let outcome = execution.attach_session(session_id);
+        let outcome = execution.attach_session(session_id.clone());
         if outcome == TransitionOutcome::Applied {
+            if let Some(child) = self.runtime.fanout_runtime.as_mut().and_then(|fanout| {
+                fanout
+                    .children
+                    .iter_mut()
+                    .find(|child| child.node_execution_id == node_execution_id)
+            }) {
+                child.session_id = session_id;
+            }
             self.runtime.updated_at = timestamp;
         }
         outcome
-    }
-
-    pub fn record_node_token_usage(
-        &mut self,
-        node_execution_id: &str,
-        token_usage: TokenUsage,
-        timestamp: f64,
-    ) -> TransitionOutcome {
-        let Some(execution) = self
-            .runtime
-            .node_executions
-            .iter_mut()
-            .find(|execution| execution.id == node_execution_id)
-        else {
-            return TransitionOutcome::NotApplicable;
-        };
-        execution.token_usage = Some(token_usage);
-        self.runtime.updated_at = timestamp;
-        TransitionOutcome::Applied
     }
 
     pub fn increase_node_attempt_count_to(
@@ -1277,40 +1514,41 @@ impl WorkflowExecution {
         output: serde_json::Value,
         result: Option<String>,
         timestamp: f64,
-    ) -> Option<OutputSubmissionRollback> {
-        let execution_index = self
+    ) -> TransitionOutcome {
+        let Some(execution_index) = self
             .runtime
             .node_executions
             .iter()
-            .position(|execution| execution.id == node_execution_id)?;
+            .position(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
         let fanout_child = self.runtime.node_executions[execution_index]
             .fanout_parent
             .is_some();
         let fanout_child_index = if fanout_child {
-            Some(
-                self.runtime
-                    .fanout_runtime
-                    .as_ref()?
+            let Some(index) = self.runtime.fanout_runtime.as_ref().and_then(|fanout| {
+                fanout
                     .children
                     .iter()
-                    .position(|child| child.node_execution_id == node_execution_id)?,
-            )
+                    .position(|child| child.node_execution_id == node_execution_id)
+            }) else {
+                return TransitionOutcome::NotApplicable;
+            };
+            Some(index)
         } else {
             None
         };
-        let prior_updated_at = self.runtime.updated_at;
-        let prior_node_execution_artifact = self.runtime.node_executions[execution_index]
-            .artifact
-            .replace(output.clone());
-        let prior_artifact_entry = (!fanout_child)
-            .then(|| self.runtime.artifacts.get(&node_name).cloned())
-            .flatten();
-        let prior_fanout_child_output = if fanout_child {
-            let child = &mut self.runtime.fanout_runtime.as_mut()?.children[fanout_child_index?];
-            let prior = (child.result.clone(), child.artifact.clone());
+        self.runtime.node_executions[execution_index].artifact = Some(output.clone());
+        if fanout_child {
+            let child = &mut self
+                .runtime
+                .fanout_runtime
+                .as_mut()
+                .expect("fanout child index was validated")
+                .children[fanout_child_index.expect("fanout child index was resolved")];
             child.result = result;
             child.artifact = Some(output.clone());
-            Some(prior)
         } else {
             self.runtime.artifacts.insert(
                 node_name.clone(),
@@ -1325,58 +1563,8 @@ impl WorkflowExecution {
                     completed_at: timestamp,
                 },
             );
-            None
-        };
-        self.runtime.updated_at = timestamp;
-        Some(OutputSubmissionRollback {
-            node_name,
-            node_execution_id: node_execution_id.to_string(),
-            prior_artifact_entry,
-            prior_node_execution_artifact,
-            prior_fanout_child_output,
-            fanout_child,
-            prior_updated_at,
-        })
-    }
-
-    pub fn rollback_submitted_output(
-        &mut self,
-        rollback: OutputSubmissionRollback,
-    ) -> TransitionOutcome {
-        let Some(execution) = self
-            .runtime
-            .node_executions
-            .iter_mut()
-            .find(|execution| execution.id == rollback.node_execution_id)
-        else {
-            return TransitionOutcome::NotApplicable;
-        };
-        execution.artifact = rollback.prior_node_execution_artifact;
-        if rollback.fanout_child {
-            let Some((result, artifact)) = rollback.prior_fanout_child_output else {
-                return TransitionOutcome::NotApplicable;
-            };
-            let Some(child) = self.runtime.fanout_runtime.as_mut().and_then(|fanout| {
-                fanout
-                    .children
-                    .iter_mut()
-                    .find(|child| child.node_execution_id == rollback.node_execution_id)
-            }) else {
-                return TransitionOutcome::NotApplicable;
-            };
-            child.result = result;
-            child.artifact = artifact;
-        } else {
-            match rollback.prior_artifact_entry {
-                Some(prior) => {
-                    self.runtime.artifacts.insert(rollback.node_name, prior);
-                }
-                None => {
-                    self.runtime.artifacts.remove(&rollback.node_name);
-                }
-            }
         }
-        self.runtime.updated_at = rollback.prior_updated_at;
+        self.runtime.updated_at = timestamp;
         TransitionOutcome::Applied
     }
 
@@ -1431,6 +1619,46 @@ impl WorkflowExecution {
         outcome
     }
 
+    pub fn pause_node_execution(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        let outcome = execution.pause();
+        if outcome == TransitionOutcome::Applied {
+            self.runtime.updated_at = timestamp;
+        }
+        outcome
+    }
+
+    pub fn resume_node_execution(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        let outcome = execution.resume();
+        if outcome == TransitionOutcome::Applied {
+            self.runtime.updated_at = timestamp;
+        }
+        outcome
+    }
+
     pub fn abort_node_execution(
         &mut self,
         node_execution_id: &str,
@@ -1441,6 +1669,74 @@ impl WorkflowExecution {
             RuntimeNodeExecutionStatus::Aborted,
             timestamp,
         )
+    }
+
+    pub fn request_node_retry(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        self.request_node_restart_with(
+            node_execution_id,
+            timestamp,
+            RuntimeNodeExecution::can_retry,
+        )
+    }
+
+    fn request_node_restart_with(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+        admission: fn(&RuntimeNodeExecution) -> bool,
+    ) -> TransitionOutcome {
+        let Some(target) = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        if !admission(target) {
+            return TransitionOutcome::NotApplicable;
+        }
+        let target_is_active = target.status.is_active();
+        let target_is_fanout_child = target.fanout_parent.is_some();
+        let target_node_name = target.node_name.clone();
+        let target_attempt = target.attempt;
+        if target_is_active {
+            let _ = self.abort_node_execution(node_execution_id, timestamp);
+            if target_is_fanout_child {
+                if let Some(child) = self.runtime.fanout_runtime.as_mut().and_then(|fanout| {
+                    fanout
+                        .children
+                        .iter_mut()
+                        .find(|child| child.node_execution_id == node_execution_id)
+                }) {
+                    let _ = child.interrupt(timestamp);
+                }
+            }
+        }
+        if !target_is_fanout_child {
+            if let Some(node_index) = self
+                .runtime
+                .workflow
+                .nodes
+                .iter()
+                .position(|node| node.name == target_node_name)
+            {
+                self.clear_artifacts_for_new_execution(node_index);
+            }
+            self.runtime.current_session_id = None;
+            self.runtime.current_node_token_usage = TokenUsage::default();
+        }
+        self.runtime
+            .current_stall_observations
+            .retain(|observation| {
+                observation.node_name != target_node_name || observation.attempt != target_attempt
+            });
+        self.runtime.updated_at = timestamp;
+        TransitionOutcome::Applied
     }
 
     pub fn abort_active_node_executions(&mut self, timestamp: f64) -> Vec<String> {
@@ -1477,6 +1773,416 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
         }
         outcome
+    }
+
+    pub fn record_reused_node_completion(
+        &mut self,
+        node_execution_id: &str,
+        artifact: Option<serde_json::Value>,
+        token_usage: Option<TokenUsage>,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        let outcome = execution.record_completed(artifact, token_usage, timestamp);
+        if outcome == TransitionOutcome::Applied {
+            self.runtime.updated_at = timestamp;
+        }
+        outcome
+    }
+
+    pub fn record_node_completion_signal(
+        &mut self,
+        node_execution_id: &str,
+        signal: NodeCompletionSignal,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        let outcome = execution.record_completion_signal(signal);
+        if outcome == TransitionOutcome::Applied {
+            self.runtime.updated_at = timestamp;
+        }
+        outcome
+    }
+
+    pub fn record_provider_stop(
+        &mut self,
+        node_execution_id: &str,
+        agent_session_id: &str,
+        timestamp: f64,
+    ) -> Result<TransitionOutcome, ProviderStopRejection> {
+        let execution = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|execution| execution.id == node_execution_id)
+            .ok_or(ProviderStopRejection::NodeExecutionNotFound)?;
+        if execution.session_id.as_deref() != Some(agent_session_id) {
+            return Err(ProviderStopRejection::SessionDoesNotOwnAttempt);
+        }
+        if !execution.status.is_active() {
+            return Ok(TransitionOutcome::NotApplicable);
+        }
+        Ok(self.record_node_completion_signal(
+            node_execution_id,
+            NodeCompletionSignal::Stop,
+            timestamp,
+        ))
+    }
+
+    pub fn admit_node_submit(
+        &self,
+        node_name: &str,
+        node_execution_id: &str,
+    ) -> Result<NodeSubmitTarget, NodeSubmitRejection> {
+        if !self.is_active() {
+            return Err(NodeSubmitRejection::ExecutionNotActive);
+        }
+        if !self
+            .runtime
+            .node_executions
+            .iter()
+            .any(|execution| execution.node_name == node_name)
+        {
+            return Err(NodeSubmitRejection::NodeNotFound);
+        }
+        let current_node = self
+            .runtime
+            .workflow
+            .nodes
+            .get(self.runtime.current_node_index)
+            .ok_or(NodeSubmitRejection::AttemptNotCurrent)?;
+        let parent_attempt = self
+            .runtime
+            .node_execution_counts
+            .get(&current_node.name)
+            .copied()
+            .unwrap_or(1);
+        let execution = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|execution| {
+                execution.id == node_execution_id
+                    && execution.node_name == node_name
+                    && execution.status.is_active()
+                    && match execution.fanout_parent.as_ref() {
+                        None => {
+                            current_node.name == node_name && execution.attempt == parent_attempt
+                        }
+                        Some(parent) => {
+                            current_node.is_fanout()
+                                && parent.parent_node == current_node.name
+                                && parent.parent_attempt == parent_attempt
+                        }
+                    }
+            })
+            .ok_or(NodeSubmitRejection::AttemptNotCurrent)?;
+        Ok(NodeSubmitTarget {
+            session_id: execution.session_id.clone(),
+            attempt: execution.attempt,
+        })
+    }
+
+    pub fn decide_node_completion_handshake(
+        &self,
+        node_execution_id: &str,
+    ) -> NodeCompletionHandshakeDecision {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return NodeCompletionHandshakeDecision::NotApplicable;
+        };
+        match execution.status {
+            RuntimeNodeExecutionStatus::WaitingApproval | RuntimeNodeExecutionStatus::Succeeded => {
+                return NodeCompletionHandshakeDecision::AlreadySettled;
+            }
+            RuntimeNodeExecutionStatus::Failed | RuntimeNodeExecutionStatus::Aborted => {
+                return NodeCompletionHandshakeDecision::NotApplicable;
+            }
+            RuntimeNodeExecutionStatus::Running | RuntimeNodeExecutionStatus::Paused => {}
+        }
+        if !execution.completion_signals.is_ready() {
+            return NodeCompletionHandshakeDecision::AwaitingSignal;
+        }
+        let Some(session) = self
+            .runtime
+            .workflow
+            .nodes
+            .iter()
+            .find(|node| node.name == execution.node_name)
+            .and_then(|node| node.session())
+        else {
+            return NodeCompletionHandshakeDecision::NotApplicable;
+        };
+        match session.gate {
+            SessionGate::Auto => NodeCompletionHandshakeDecision::CompleteAuto,
+            SessionGate::Approval => NodeCompletionHandshakeDecision::RequestApproval,
+        }
+    }
+
+    pub fn apply_node_completion_handshake(
+        &mut self,
+        node_execution_id: &str,
+        next_node_execution_id: String,
+        timestamp: f64,
+    ) -> Result<AppliedNodeCompletionHandshake, crate::domain::workflow::WorkflowError> {
+        match self.decide_node_completion_handshake(node_execution_id) {
+            NodeCompletionHandshakeDecision::AwaitingSignal
+            | NodeCompletionHandshakeDecision::AlreadySettled => {
+                Ok(AppliedNodeCompletionHandshake {
+                    advance: None,
+                    events: Vec::new(),
+                })
+            }
+            NodeCompletionHandshakeDecision::NotApplicable => Err(
+                crate::domain::workflow::WorkflowError::invalid_state(format!(
+                    "node execution '{node_execution_id}' cannot settle its completion handshake"
+                )),
+            ),
+            NodeCompletionHandshakeDecision::RequestApproval => {
+                let node = self
+                    .runtime
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == node_execution_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        crate::domain::workflow::WorkflowError::invalid_state(format!(
+                            "node execution '{node_execution_id}' disappeared"
+                        ))
+                    })?;
+                if self.mark_node_waiting_approval(node_execution_id, timestamp)
+                    != TransitionOutcome::Applied
+                {
+                    return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                        format!("node execution '{node_execution_id}' cannot wait for Approval"),
+                    ));
+                }
+                Ok(AppliedNodeCompletionHandshake {
+                    advance: None,
+                    events: vec![WorkflowEvent::ApprovalRequested {
+                        execution_id: self.id.clone(),
+                        node_execution_id: node.id,
+                        node_name: node.node_name,
+                        timestamp,
+                    }],
+                })
+            }
+            NodeCompletionHandshakeDecision::CompleteAuto => self.apply_auto_node_completion(
+                node_execution_id,
+                next_node_execution_id,
+                timestamp,
+            ),
+        }
+    }
+
+    fn apply_auto_node_completion(
+        &mut self,
+        node_execution_id: &str,
+        next_node_execution_id: String,
+        timestamp: f64,
+    ) -> Result<AppliedNodeCompletionHandshake, crate::domain::workflow::WorkflowError> {
+        let node = self
+            .runtime
+            .node_executions
+            .iter()
+            .find(|node| node.id == node_execution_id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::invalid_state(format!(
+                    "node execution '{node_execution_id}' disappeared"
+                ))
+            })?;
+        if node.fanout_parent.is_some() {
+            return self.apply_auto_fanout_child_completion(
+                node,
+                next_node_execution_id,
+                timestamp,
+            );
+        }
+
+        let output = self.runtime.artifacts.get(&node.node_name).cloned();
+        let artifact = output
+            .as_ref()
+            .and_then(|output| output.artifact.clone())
+            .or_else(|| node.artifact.clone());
+        let result = output.as_ref().and_then(|output| output.result.clone());
+        let contract = output.as_ref().and_then(|output| output.contract.clone());
+        if self.complete_node_execution(node_execution_id, artifact.clone(), None, timestamp)
+            != TransitionOutcome::Applied
+        {
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                format!("node execution '{node_execution_id}' cannot complete"),
+            ));
+        }
+        let entry = self.make_node_history_entry_at(result, artifact, contract, timestamp);
+        self.record_history_entry(entry, timestamp);
+        let advance = self.apply_advance_at(next_node_execution_id, timestamp)?;
+        Ok(AppliedNodeCompletionHandshake {
+            advance: Some(advance),
+            events: Vec::new(),
+        })
+    }
+
+    fn apply_auto_fanout_child_completion(
+        &mut self,
+        node: RuntimeNodeExecution,
+        next_node_execution_id: String,
+        timestamp: f64,
+    ) -> Result<AppliedNodeCompletionHandshake, crate::domain::workflow::WorkflowError> {
+        let child = self
+            .runtime
+            .fanout_runtime
+            .as_ref()
+            .and_then(|fanout| {
+                fanout
+                    .children
+                    .iter()
+                    .find(|child| child.node_execution_id == node.id)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::invalid_state(format!(
+                    "fanout child '{}' disappeared",
+                    node.id
+                ))
+            })?;
+        if self.complete_fanout_child_execution(
+            &node.id,
+            child.result.clone(),
+            child.artifact.clone(),
+            child.contract.clone(),
+            child.token_usage.clone(),
+            timestamp,
+        ) != TransitionOutcome::Applied
+        {
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                format!("fanout child '{}' cannot complete", node.id),
+            ));
+        }
+        if !child.session_id.is_empty() {
+            self.clear_stalls_for_session(&child.session_id, timestamp);
+        }
+        self.record_successful_node_completion(&child.node_name, timestamp);
+        let mut events = vec![WorkflowEvent::NodeCompleted {
+            execution_id: self.id.clone(),
+            node_execution_id: node.id,
+            node_name: child.node_name,
+            attempt: child.attempt,
+            result_summary: child.result,
+            token_usage: Some(child.token_usage),
+            timestamp,
+        }];
+        let all_done = self.runtime.fanout_runtime.as_ref().is_some_and(|fanout| {
+            fanout.children.iter().all(|child| {
+                matches!(
+                    child.state,
+                    FanoutChildRuntimeState::Completed | FanoutChildRuntimeState::Failed
+                )
+            })
+        });
+        if !all_done {
+            self.touch(timestamp);
+            return Ok(AppliedNodeCompletionHandshake {
+                advance: None,
+                events,
+            });
+        }
+
+        let fanout = self.runtime.fanout_runtime.as_ref().ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::invalid_state(
+                "fanout parent completion requires an active fanout runtime",
+            )
+        })?;
+        let parent_node_name = fanout.parent_node_name.clone();
+        let parent_node_execution_id = fanout.parent_node_execution_id.clone();
+        let parent_attempt = self
+            .runtime
+            .node_execution_counts
+            .get(&parent_node_name)
+            .copied()
+            .unwrap_or(1);
+        let children = fanout
+            .children
+            .iter()
+            .map(|child| workflow_fanout::FanoutChildCompletionInput {
+                node_name: child.node_name.clone(),
+                session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
+                result: child.result.clone(),
+                artifact: child.artifact.clone().unwrap_or(serde_json::Value::Null),
+                contract: child.contract.clone(),
+                token_usage: child.token_usage.clone(),
+                attempt: child.attempt,
+                completed_at: child.completed_at.unwrap_or(timestamp),
+                state: match child.state {
+                    FanoutChildRuntimeState::Running => {
+                        crate::domain::workflow::NODE_STATUS_RUNNING
+                    }
+                    FanoutChildRuntimeState::Completed => {
+                        crate::domain::workflow::NODE_STATUS_COMPLETED
+                    }
+                    FanoutChildRuntimeState::Failed => crate::domain::workflow::NODE_STATUS_FAILED,
+                    FanoutChildRuntimeState::Interrupted => {
+                        crate::domain::workflow::NODE_STATUS_INTERRUPTED
+                    }
+                }
+                .to_string(),
+                failure_kind: child.failure_kind,
+                failure_disposition: child.failure_disposition,
+            })
+            .collect::<Vec<_>>();
+        let completion = workflow_fanout::plan_fanout_parent_completion(
+            &parent_node_name,
+            parent_attempt,
+            &children,
+            timestamp,
+        );
+        let parent_artifact = completion
+            .parent_artifact
+            .artifact
+            .clone()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+        events.insert(
+            0,
+            WorkflowEvent::ArtifactProduced {
+                execution_id: self.id.clone(),
+                node_execution_id: parent_node_execution_id.clone(),
+                node_name: parent_node_name,
+                contract: None,
+                value: parent_artifact,
+                request_id: None,
+                submitted_at: None,
+                timestamp,
+            },
+        );
+        let _ = self.finalize_fanout_parent(
+            &parent_node_execution_id,
+            completion.parent_artifact,
+            completion.history_entry,
+            timestamp,
+        );
+        let advance = self.apply_advance_at(next_node_execution_id, timestamp)?;
+        Ok(AppliedNodeCompletionHandshake {
+            advance: Some(advance),
+            events,
+        })
     }
 
     pub fn fail_node_execution(
@@ -1531,6 +2237,7 @@ impl WorkflowExecution {
                     self.fail_node_execution(node_execution_id, reason, kind, timestamp);
                 }
             },
+            #[cfg(test)]
             TurnCompletionApplication::RecordOnly => {
                 if let Some(execution) = self
                     .runtime
@@ -1610,6 +2317,15 @@ impl WorkflowExecution {
         fanout_parent: FanoutParentRef,
         timestamp: f64,
     ) -> Result<TransitionOutcome, TransitionRejection> {
+        let retry_child_index = self.runtime.fanout_runtime.as_ref().and_then(|fanout| {
+            fanout.children.iter().position(|child| {
+                child.state != FanoutChildRuntimeState::Running
+                    && self.runtime.node_executions.iter().any(|execution| {
+                        execution.id == child.node_execution_id
+                            && execution.fanout_parent.as_ref() == Some(&fanout_parent)
+                    })
+            })
+        });
         let node_outcome = if self
             .runtime
             .node_executions
@@ -1623,7 +2339,7 @@ impl WorkflowExecution {
                 kind,
                 attempt,
                 Some(fanout_parent),
-                Some(node_execution_id.clone()),
+                node_execution_id.clone(),
                 timestamp,
             )?;
             TransitionOutcome::Applied
@@ -1643,7 +2359,7 @@ impl WorkflowExecution {
         {
             return Ok(TransitionOutcome::AlreadyApplied);
         }
-        fanout.children.push(FanoutChildRuntime {
+        let current_child = FanoutChildRuntime {
             node_execution_id,
             node_name,
             session_id: String::new(),
@@ -1656,7 +2372,12 @@ impl WorkflowExecution {
             token_usage: TokenUsage::default(),
             attempt,
             completed_at: None,
-        });
+        };
+        if let Some(index) = retry_child_index {
+            fanout.children[index] = current_child;
+        } else {
+            fanout.children.push(current_child);
+        }
         self.runtime.updated_at = timestamp;
         Ok(node_outcome)
     }
@@ -1743,26 +2464,6 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn record_fanout_child_turn_usage(
-        &mut self,
-        parent_node_name: &str,
-        session_id: &str,
-        token_usage: Option<TokenUsage>,
-    ) -> Option<FanoutChildRuntime> {
-        let fanout = self.runtime.fanout_runtime.as_mut()?;
-        if fanout.parent_node_name != parent_node_name {
-            return None;
-        }
-        let child = fanout
-            .children
-            .iter_mut()
-            .find(|child| child.session_id == session_id)?;
-        if let Some(token_usage) = token_usage {
-            child.token_usage.add(&token_usage);
-        }
-        Some(child.clone())
-    }
-
     pub fn fail_fanout_child_execution(
         &mut self,
         node_execution_id: &str,
@@ -1793,6 +2494,7 @@ impl WorkflowExecution {
         self.fail_node_execution(node_execution_id, reason, kind, timestamp)
     }
 
+    #[cfg(test)]
     pub fn interrupt_running_fanout_children(
         &mut self,
         except_node_execution_id: Option<&str>,
@@ -1827,44 +2529,6 @@ impl WorkflowExecution {
         self.runtime.updated_at = timestamp;
     }
 
-    pub fn record_interruption_metadata(
-        &mut self,
-        reason: ExecutionInterruptionReason,
-        timestamp: f64,
-    ) {
-        self.runtime.error_reason = Some(reason.as_str().to_string());
-        self.runtime.current_session_id = None;
-        self.runtime.current_stall_observations.clear();
-        self.runtime.updated_at = timestamp;
-    }
-
-    pub fn interrupt_runtime(
-        &mut self,
-        reason: ExecutionInterruptionReason,
-        timestamp: f64,
-    ) -> TransitionOutcome {
-        for execution in self
-            .runtime
-            .node_executions
-            .iter_mut()
-            .filter(|execution| execution.status.is_active())
-        {
-            let _ = execution.abort(timestamp);
-        }
-        if let Some(fanout) = self.runtime.fanout_runtime.as_mut() {
-            for child in fanout
-                .children
-                .iter_mut()
-                .filter(|child| child.state == FanoutChildRuntimeState::Running)
-            {
-                let _ = child.interrupt(timestamp);
-            }
-        }
-        let outcome = self.transition_interrupted(reason);
-        self.record_interruption_metadata(reason, timestamp);
-        outcome
-    }
-
     pub fn clear_stalls_for_session(&mut self, session_id: &str, timestamp: f64) -> bool {
         let before = self.runtime.current_stall_observations.len();
         self.runtime
@@ -1882,10 +2546,6 @@ impl WorkflowExecution {
             .artifacts
             .insert(artifact.node_name.clone(), artifact);
         self.runtime.updated_at = timestamp;
-    }
-
-    pub fn add_current_token_usage(&mut self, usage: &TokenUsage) {
-        self.runtime.current_node_token_usage.add(usage);
     }
 
     pub fn observe_node_stall(&mut self, observation: NodeStallObservation) -> TransitionOutcome {
@@ -1942,13 +2602,14 @@ impl WorkflowExecution {
 
     pub fn state_set(&self) -> ExecutionStateSet {
         match self.state {
-            RuntimeExecutionState::Running | RuntimeExecutionState::WaitingApproval => {
-                ExecutionStateSet::Active
-            }
+            RuntimeExecutionState::Running => ExecutionStateSet::Active,
+            #[cfg(test)]
+            RuntimeExecutionState::WaitingApproval => ExecutionStateSet::Active,
+            #[cfg(test)]
             RuntimeExecutionState::Interrupted => ExecutionStateSet::Resumable,
-            RuntimeExecutionState::Completed
-            | RuntimeExecutionState::Failed { .. }
-            | RuntimeExecutionState::Aborted => ExecutionStateSet::Finished,
+            RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted => {
+                ExecutionStateSet::Finished
+            }
         }
     }
 
@@ -1960,6 +2621,7 @@ impl WorkflowExecution {
         self.state_set() == ExecutionStateSet::Finished
     }
 
+    #[cfg(test)]
     pub fn stop(&mut self) -> TransitionOutcome {
         match self.state_set() {
             ExecutionStateSet::Active => {
@@ -1975,6 +2637,7 @@ impl WorkflowExecution {
         }
     }
 
+    #[cfg(test)]
     pub fn interrupt(&mut self, reason: ExecutionInterruptionReason) -> TransitionOutcome {
         match self.state_set() {
             ExecutionStateSet::Active => {
@@ -1992,6 +2655,7 @@ impl WorkflowExecution {
         }
     }
 
+    #[cfg(test)]
     pub fn resume(&mut self) -> TransitionOutcome {
         match self.state_set() {
             ExecutionStateSet::Resumable => {
@@ -2010,7 +2674,13 @@ impl WorkflowExecution {
 
     pub fn abort(&mut self) -> TransitionOutcome {
         match self.state_set() {
-            ExecutionStateSet::Active | ExecutionStateSet::Resumable => {
+            ExecutionStateSet::Active => {
+                self.state = RuntimeExecutionState::Aborted;
+                self.interruption_reason = None;
+                TransitionOutcome::Applied
+            }
+            #[cfg(test)]
+            ExecutionStateSet::Resumable => {
                 self.state = RuntimeExecutionState::Aborted;
                 self.interruption_reason = None;
                 TransitionOutcome::Applied
@@ -2019,6 +2689,7 @@ impl WorkflowExecution {
         }
     }
 
+    #[cfg(test)]
     pub fn request_approval(&mut self) -> TransitionOutcome {
         match &self.state {
             RuntimeExecutionState::Running => {
@@ -2030,6 +2701,7 @@ impl WorkflowExecution {
         }
     }
 
+    #[cfg(test)]
     pub fn approve(&mut self) -> TransitionOutcome {
         match &self.state {
             RuntimeExecutionState::WaitingApproval => {
@@ -2040,113 +2712,49 @@ impl WorkflowExecution {
         }
     }
 
+    #[cfg(test)]
     pub fn reject(&mut self) -> TransitionOutcome {
         self.approve()
     }
 
+    #[cfg(test)]
     pub fn resolve_approval(&mut self) -> TransitionOutcome {
         self.reject()
     }
 
-    /// Admits approval of a fanout child without changing the execution-level
-    /// lifecycle. Fanout child approval is represented by NodeExecution state.
     pub fn admit_fanout_approval(&self) -> TransitionOutcome {
         self.active_only()
-    }
-
-    pub fn admit_artifact_submission(&self, target_accepts: bool) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active if target_accepts => TransitionOutcome::Applied,
-            ExecutionStateSet::Active => {
-                TransitionOutcome::Rejected(TransitionRejection::ArtifactNotAccepted)
-            }
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            }
-        }
     }
 
     pub fn apply_turn_completion(&self, fact: CanonicalNodeFact) -> TurnCompletionDecision {
         let application = match self.state_set() {
             ExecutionStateSet::Active => TurnCompletionApplication::Live,
+            #[cfg(test)]
             ExecutionStateSet::Resumable => TurnCompletionApplication::RecordOnly,
             ExecutionStateSet::Finished => TurnCompletionApplication::Superseded,
         };
         TurnCompletionDecision { application, fact }
     }
 
-    pub fn orphan_interrupt(&mut self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => {
-                self.set_interrupted(ExecutionInterruptionReason::Orphan);
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
-                TransitionOutcome::NotApplicable
-            }
-        }
-    }
-
-    pub fn admit_workflow_turn(&self, context_authorized: bool) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active if context_authorized => TransitionOutcome::Applied,
-            ExecutionStateSet::Active => {
-                TransitionOutcome::Rejected(TransitionRejection::WorkflowTurnNotAuthorized)
-            }
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            }
-        }
-    }
-
-    pub fn observe_stall(&self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => TransitionOutcome::Applied,
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
-                TransitionOutcome::NotApplicable
-            }
-        }
-    }
-
     pub fn start_fanout_child(&self) -> TransitionOutcome {
-        self.active_only()
-    }
-
-    pub fn complete_fanout_child(&self) -> TransitionOutcome {
         self.active_only()
     }
 
     pub fn complete(&mut self) -> TransitionOutcome {
         match &self.state {
-            RuntimeExecutionState::Running | RuntimeExecutionState::WaitingApproval => {
+            RuntimeExecutionState::Running => {
+                self.state = RuntimeExecutionState::Completed;
+                self.interruption_reason = None;
+                TransitionOutcome::Applied
+            }
+            #[cfg(test)]
+            RuntimeExecutionState::WaitingApproval => {
                 self.state = RuntimeExecutionState::Completed;
                 self.interruption_reason = None;
                 TransitionOutcome::Applied
             }
             RuntimeExecutionState::Completed => TransitionOutcome::AlreadyApplied,
             _ => TransitionOutcome::NotApplicable,
-        }
-    }
-
-    pub fn fail(
-        &mut self,
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    ) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => {
-                self.state = RuntimeExecutionState::Failed {
-                    reason,
-                    kind,
-                    retry_count,
-                };
-                self.interruption_reason = None;
-                TransitionOutcome::Applied
-            }
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
-                TransitionOutcome::NotApplicable
-            }
         }
     }
 
@@ -2159,37 +2767,12 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn replay_approval_requested(&mut self) -> ReplayOutcome {
-        transition_to_replay(self.request_approval())
-    }
-
-    pub fn replay_approval_resolved(&mut self) -> ReplayOutcome {
-        transition_to_replay(self.approve())
-    }
-
-    pub fn replay_fanout_approval(&self) -> ReplayOutcome {
-        transition_to_replay(self.admit_fanout_approval())
-    }
-
     pub fn replay_completed(&mut self) -> ReplayOutcome {
         transition_to_replay(self.complete())
     }
 
-    pub fn replay_failed(
-        &mut self,
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    ) -> ReplayOutcome {
-        transition_to_replay(self.fail(reason, kind, retry_count))
-    }
-
     pub fn replay_aborted(&mut self) -> ReplayOutcome {
         transition_to_replay(self.abort())
-    }
-
-    pub fn replay_resumed(&mut self) -> ReplayOutcome {
-        transition_to_replay(self.resume())
     }
 
     pub fn replay_completed_at(&mut self, timestamp: f64) -> ReplayOutcome {
@@ -2225,34 +2808,6 @@ impl WorkflowExecution {
         outcome
     }
 
-    pub fn replay_failed_at(
-        &mut self,
-        reason: String,
-        kind: NodeExecutionFailureKind,
-        timestamp: f64,
-    ) -> ReplayOutcome {
-        let outcome = self.replay_failed(reason.clone(), kind, None);
-        if matches!(
-            outcome,
-            ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
-        ) {
-            let active = self
-                .runtime
-                .node_executions
-                .iter()
-                .filter(|execution| execution.status.is_active())
-                .map(|execution| execution.id.clone())
-                .collect::<Vec<_>>();
-            for node_execution_id in active {
-                let _ =
-                    self.fail_node_execution(&node_execution_id, reason.clone(), kind, timestamp);
-            }
-            self.runtime.error_reason = Some(reason);
-            self.runtime.updated_at = timestamp;
-        }
-        outcome
-    }
-
     pub fn replay_aborted_at(&mut self, timestamp: f64) -> ReplayOutcome {
         let outcome = self.replay_aborted();
         if matches!(
@@ -2266,62 +2821,20 @@ impl WorkflowExecution {
         outcome
     }
 
-    pub fn replay_interrupted_at(
-        &mut self,
-        reason: ExecutionInterruptionReason,
-        timestamp: f64,
-    ) -> ReplayOutcome {
-        let outcome = transition_to_replay(self.interrupt_runtime(reason, timestamp));
-        if matches!(
-            outcome,
-            ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
-        ) {
-            self.runtime.updated_at = timestamp;
-        }
-        outcome
-    }
-
-    pub fn replay_resumed_at(&mut self, timestamp: f64) -> ReplayOutcome {
-        let outcome = self.replay_resumed();
-        if matches!(
-            outcome,
-            ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
-        ) {
-            self.runtime.error_reason = None;
-            self.runtime.updated_at = timestamp;
-        }
-        outcome
-    }
-
-    /// Restores a pre-commit lifecycle snapshot when the enclosing usecase
-    /// transaction did not durably append its decision.
-    #[cfg(test)]
-    pub fn restore_after_failed_commit(
-        &mut self,
-        state: RuntimeExecutionState,
-        interruption_reason: Option<ExecutionInterruptionReason>,
-    ) {
-        self.state = state;
-        self.interruption_reason = interruption_reason;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_state_for_test(&mut self, state: RuntimeExecutionState) {
-        self.state = state;
-        if !matches!(self.state, RuntimeExecutionState::Interrupted) {
-            self.interruption_reason = None;
-        }
-    }
-
     fn active_only(&self) -> TransitionOutcome {
         match self.state_set() {
             ExecutionStateSet::Active => TransitionOutcome::Applied,
-            ExecutionStateSet::Resumable | ExecutionStateSet::Finished => {
+            #[cfg(test)]
+            ExecutionStateSet::Resumable => {
+                TransitionOutcome::Rejected(TransitionRejection::NotActive)
+            }
+            ExecutionStateSet::Finished => {
                 TransitionOutcome::Rejected(TransitionRejection::NotActive)
             }
         }
     }
 
+    #[cfg(test)]
     fn set_interrupted(&mut self, reason: ExecutionInterruptionReason) {
         self.state = RuntimeExecutionState::Interrupted;
         self.interruption_reason = Some(reason);
@@ -2366,14 +2879,9 @@ mod tests {
         ]
     }
 
-    fn finished_states() -> [RuntimeExecutionState; 3] {
+    fn finished_states() -> [RuntimeExecutionState; 2] {
         [
             RuntimeExecutionState::Completed,
-            RuntimeExecutionState::Failed {
-                reason: "failed".to_string(),
-                kind: NodeExecutionFailureKind::ValidationFailure,
-                retry_count: None,
-            },
             RuntimeExecutionState::Aborted,
         ]
     }
@@ -2386,15 +2894,6 @@ mod tests {
         assert_eq!(
             aggregate(RuntimeExecutionState::WaitingApproval).state_set(),
             ExecutionStateSet::Active
-        );
-        assert_eq!(
-            aggregate(RuntimeExecutionState::Failed {
-                reason: "failure".to_string(),
-                kind: NodeExecutionFailureKind::ValidationFailure,
-                retry_count: None,
-            })
-            .state_set(),
-            ExecutionStateSet::Finished
         );
         assert_eq!(
             aggregate(RuntimeExecutionState::Aborted).state_set(),
@@ -2458,7 +2957,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_state_matrix_approval_and_artifact() {
+    fn operation_state_matrix_approval() {
         for operation in [
             WorkflowExecution::approve as fn(&mut WorkflowExecution) -> TransitionOutcome,
             WorkflowExecution::reject,
@@ -2477,26 +2976,6 @@ mod tests {
                     TransitionOutcome::Rejected(TransitionRejection::NotWaitingApproval)
                 );
             }
-        }
-
-        for state in active_states() {
-            assert_eq!(
-                aggregate(state.clone()).admit_artifact_submission(true),
-                TransitionOutcome::Applied
-            );
-            assert_eq!(
-                aggregate(state).admit_artifact_submission(false),
-                TransitionOutcome::Rejected(TransitionRejection::ArtifactNotAccepted)
-            );
-        }
-        for state in [RuntimeExecutionState::Interrupted]
-            .into_iter()
-            .chain(finished_states())
-        {
-            assert_eq!(
-                aggregate(state).admit_artifact_submission(true),
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            );
         }
 
         let mut approval = aggregate(RuntimeExecutionState::Running);
@@ -2534,51 +3013,10 @@ mod tests {
     }
 
     #[test]
-    fn operation_state_matrix_orphan_turn_and_stall() {
-        for state in active_states() {
-            let mut active = aggregate(state);
-            assert_eq!(active.orphan_interrupt(), TransitionOutcome::Applied);
-            assert_eq!(active.orphan_interrupt(), TransitionOutcome::NotApplicable);
-        }
-        for state in [RuntimeExecutionState::Interrupted]
-            .into_iter()
-            .chain(finished_states())
-        {
-            assert_eq!(
-                aggregate(state.clone()).orphan_interrupt(),
-                TransitionOutcome::NotApplicable
-            );
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(true),
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            );
-            assert_eq!(
-                aggregate(state).observe_stall(),
-                TransitionOutcome::NotApplicable
-            );
-        }
-        for state in active_states() {
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(true),
-                TransitionOutcome::Applied
-            );
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(false),
-                TransitionOutcome::Rejected(TransitionRejection::WorkflowTurnNotAuthorized)
-            );
-            assert_eq!(aggregate(state).observe_stall(), TransitionOutcome::Applied);
-        }
-    }
-
-    #[test]
     fn fanout_and_interrupt_cells_are_closed() {
         for state in active_states() {
             let expected = TransitionOutcome::Applied;
             assert_eq!(aggregate(state.clone()).start_fanout_child(), expected);
-            assert_eq!(
-                aggregate(state).complete_fanout_child(),
-                TransitionOutcome::Applied
-            );
         }
         for state in [RuntimeExecutionState::Interrupted]
             .into_iter()
@@ -2589,7 +3027,6 @@ mod tests {
                 aggregate(state.clone()).start_fanout_child(),
                 expected.clone()
             );
-            assert_eq!(aggregate(state).complete_fanout_child(), expected);
         }
 
         let mut running = aggregate(RuntimeExecutionState::Running);
@@ -2633,12 +3070,33 @@ mod tests {
                 NodeKindName::Session,
                 1,
                 None,
-                Some("node-execution-1".to_string()),
+                "node-execution-1".to_string(),
                 10.0,
             )
             .unwrap();
+
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AwaitingSignal
+        );
         assert_eq!(
             execution.attach_node_session(&node_execution_id, "session-1".to_string(), 11.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                11.5,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                11.75,
+            ),
             TransitionOutcome::Applied
         );
         assert_eq!(
@@ -2668,6 +3126,449 @@ mod tests {
     }
 
     #[test]
+    fn provider_stop_admission_belongs_to_the_workflow_aggregate() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.attach_node_session(&node_execution_id, "session-1".to_string(), 11.0);
+
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-2", 12.0),
+            Err(ProviderStopRejection::SessionDoesNotOwnAttempt)
+        );
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-1", 13.0),
+            Ok(TransitionOutcome::Applied)
+        );
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-1", 14.0),
+            Ok(TransitionOutcome::AlreadyApplied)
+        );
+    }
+
+    #[test]
+    fn routing_failure_rejects_the_candidate_without_workflow_terminal_transition() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.nodes[0].rules = vec![crate::domain::workflow::Rule::Next(
+            "missing-node".to_string(),
+        )];
+        execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        let before = execution.clone();
+
+        let result = execution.apply_advance_at("next-node".to_string(), 11.0);
+
+        assert!(result.is_err());
+        assert_eq!(execution, before);
+    }
+
+    #[test]
+    fn agent_node_attempt_cannot_complete_before_submit_and_stop() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 11.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::Running
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.node_executions()[0].completion_signals,
+            NodeCompletionSignalState::StopReceived
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AwaitingSignal
+        );
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 13.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                14.0,
+            ),
+            TransitionOutcome::AlreadyApplied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                15.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.node_executions()[0].completion_signals,
+            NodeCompletionSignalState::Ready
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::CompleteAuto
+        );
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 16.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AlreadySettled
+        );
+    }
+
+    #[test]
+    fn completion_handshake_applies_the_domain_transition_and_uses_the_supplied_next_id() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution
+            .runtime
+            .workflow
+            .nodes
+            .push(crate::domain::workflow::NodeDefinition {
+                name: "verify".to_string(),
+                kind: crate::domain::workflow::NodeKind::Command(
+                    crate::domain::workflow::CommandSpec {
+                        command: "true".to_string(),
+                    },
+                ),
+                ..Default::default()
+            });
+        execution.runtime.workflow.nodes[0].rules =
+            vec![crate::domain::workflow::Rule::Next("verify".to_string())];
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Submit,
+            11.0,
+        );
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Stop,
+            12.0,
+        );
+
+        let result = execution
+            .apply_node_completion_handshake(
+                &node_execution_id,
+                "node-execution-2".to_string(),
+                13.0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.advance,
+            Some(ExecutionAdvanceDecision::TransitionAndStart)
+        );
+        assert_eq!(
+            execution.node_executions().last().unwrap().id,
+            "node-execution-2"
+        );
+    }
+
+    #[test]
+    fn pause_and_resume_preserve_partial_signal_on_the_same_attempt() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Submit,
+            11.0,
+        );
+
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 12.0),
+            TransitionOutcome::Applied
+        );
+        let paused = &execution.node_executions()[0];
+        assert_eq!(paused.status, RuntimeNodeExecutionStatus::Paused);
+        assert_eq!(paused.attempt, 1);
+        assert_eq!(
+            paused.completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+
+        assert_eq!(
+            execution.resume_node_execution(&node_execution_id, 13.0),
+            TransitionOutcome::Applied
+        );
+        let resumed = &execution.node_executions()[0];
+        assert_eq!(resumed.status, RuntimeNodeExecutionStatus::Running);
+        assert_eq!(resumed.attempt, 1);
+        assert_eq!(
+            resumed.completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+    }
+
+    #[test]
+    fn pause_does_not_layer_over_stop_received_or_waiting_approval() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Stop,
+            11.0,
+        );
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 12.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::Running
+        );
+
+        execution.runtime.node_executions[0].status = RuntimeNodeExecutionStatus::WaitingApproval;
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 13.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::WaitingApproval
+        );
+    }
+
+    #[test]
+    fn approval_target_requires_an_exact_attempt_when_fanout_names_are_ambiguous() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.nodes[0].kind =
+            crate::domain::workflow::NodeKind::Session(crate::domain::workflow::SessionSpec {
+                gate: SessionGate::Approval,
+                ..Default::default()
+            });
+        for (id, child_index) in [("child-1", 0), ("child-2", 1)] {
+            execution
+                .begin_node_attempt(
+                    "implement".to_string(),
+                    NodeKindName::Session,
+                    1,
+                    Some(FanoutParentRef {
+                        parent_node: "fanout".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index,
+                    }),
+                    id.to_string(),
+                    10.0,
+                )
+                .unwrap();
+            assert_eq!(
+                execution.mark_node_waiting_approval(id, 11.0),
+                TransitionOutcome::Applied
+            );
+        }
+
+        assert!(matches!(
+            execution.resolve_approval_attempt_target("implement", None),
+            Err(crate::domain::workflow::WorkflowError::InvalidState(_))
+        ));
+        let target = execution
+            .resolve_approval_attempt_target("implement", Some("child-2"))
+            .unwrap();
+        assert_eq!(target.node_execution_id, "child-2");
+        assert_eq!(target.fanout_parent.unwrap().child_index, 1);
+    }
+
+    #[test]
+    fn retry_current_node_isolates_partial_signal_attempt_and_preserves_its_history() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let previous_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.attach_node_session(&previous_id, "session-1".to_string(), 11.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &previous_id,
+                NodeCompletionSignal::Submit,
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.apply_submitted_output(
+                "implement".to_string(),
+                &previous_id,
+                1,
+                Some("session-1".to_string()),
+                "result".to_string(),
+                serde_json::json!({"attempt": 1}),
+                Some("first".to_string()),
+                13.0,
+            ),
+            TransitionOutcome::Applied
+        );
+
+        execution.retry_current_node_at("node-execution-2".to_string(), 20.0);
+
+        assert_eq!(execution.node_executions().len(), 2);
+        let previous = &execution.node_executions()[0];
+        assert_eq!(previous.id, previous_id);
+        assert_eq!(previous.status, RuntimeNodeExecutionStatus::Aborted);
+        assert_eq!(
+            previous.completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+        assert_eq!(previous.session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            previous.artifact.as_ref(),
+            Some(&serde_json::json!({"attempt": 1}))
+        );
+
+        let current = &execution.node_executions()[1];
+        assert_eq!(current.id, "node-execution-2");
+        assert_eq!(current.attempt, 2);
+        assert_eq!(current.status, RuntimeNodeExecutionStatus::Running);
+        assert_eq!(
+            current.completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+        assert!(current.session_id.is_none());
+        assert!(current.artifact.is_none());
+        assert!(!execution.runtime.artifacts.contains_key("implement"));
+
+        assert_eq!(
+            execution
+                .record_node_completion_signal(&previous_id, NodeCompletionSignal::Stop, 21.0,),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[1].completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+    }
+
+    #[test]
+    fn retry_current_node_accepts_only_failed_or_partial_signal_attempts() {
+        let mut pending = restored_execution(RuntimeExecutionState::Running);
+        pending
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "pending-attempt".to_string(),
+                10.0,
+            )
+            .unwrap();
+        pending.retry_current_node_at("pending-retry".to_string(), 11.0);
+        assert_eq!(pending.node_executions().len(), 1);
+
+        let mut waiting = restored_execution(RuntimeExecutionState::Running);
+        let waiting_id = waiting
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "waiting-attempt".to_string(),
+                10.0,
+            )
+            .unwrap();
+        waiting.record_node_completion_signal(&waiting_id, NodeCompletionSignal::Stop, 11.0);
+        waiting.retry_current_node_at("waiting-retry".to_string(), 12.0);
+        assert_eq!(waiting.node_executions().len(), 2);
+
+        let mut failed = restored_execution(RuntimeExecutionState::Running);
+        let failed_id = failed
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "failed-attempt".to_string(),
+                10.0,
+            )
+            .unwrap();
+        failed.fail_node_execution(
+            &failed_id,
+            "provider execution failed".to_string(),
+            NodeExecutionFailureKind::InfrastructureCrash,
+            11.0,
+        );
+        failed.retry_current_node_at("failed-retry".to_string(), 12.0);
+        assert_eq!(failed.node_executions().len(), 2);
+        assert_eq!(
+            failed.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::Failed
+        );
+    }
+
+    #[test]
     fn node_attempt_failure_abort_and_approval_transitions_are_closed() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
         let first_id = execution
@@ -2676,7 +3577,7 @@ mod tests {
                 NodeKindName::Session,
                 1,
                 None,
-                Some("node-execution-1".to_string()),
+                "node-execution-1".to_string(),
                 10.0,
             )
             .unwrap();
@@ -2721,7 +3622,7 @@ mod tests {
                 NodeKindName::Session,
                 2,
                 None,
-                Some("node-execution-2".to_string()),
+                "node-execution-2".to_string(),
                 16.0,
             )
             .unwrap();
@@ -2746,7 +3647,7 @@ mod tests {
                 NodeKindName::Session,
                 1,
                 None,
-                Some("node-execution-1".to_string()),
+                "node-execution-1".to_string(),
                 10.0,
             )
             .unwrap();
@@ -2794,7 +3695,7 @@ mod tests {
                     item_index: None,
                     child_index: 0,
                 }),
-                Some("child-execution-1".to_string()),
+                "child-execution-1".to_string(),
                 10.0,
             )
             .unwrap();
@@ -2819,6 +3720,22 @@ mod tests {
                     }],
                 },
                 11.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                11.25,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                11.5,
             ),
             TransitionOutcome::Applied
         );
@@ -2848,6 +3765,85 @@ mod tests {
     }
 
     #[test]
+    fn fanout_child_retry_replaces_only_the_current_logical_child_attempt() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let parent_ref = FanoutParentRef {
+            parent_node: "fanout".to_string(),
+            parent_attempt: 1,
+            item_index: Some(0),
+            child_index: 0,
+        };
+        let old_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                Some(parent_ref.clone()),
+                "child-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.install_fanout(
+            FanoutRuntimeState {
+                parent_node_name: "fanout".to_string(),
+                parent_node_execution_id: "parent-execution-1".to_string(),
+                children: vec![FanoutChildRuntime {
+                    node_execution_id: old_id.clone(),
+                    node_name: "implement".to_string(),
+                    session_id: "session-1".to_string(),
+                    state: FanoutChildRuntimeState::Running,
+                    result: None,
+                    artifact: None,
+                    contract: None,
+                    failure_kind: None,
+                    failure_disposition: None,
+                    token_usage: TokenUsage::default(),
+                    attempt: 1,
+                    completed_at: None,
+                }],
+            },
+            11.0,
+        );
+        execution.record_node_completion_signal(&old_id, NodeCompletionSignal::Stop, 12.0);
+        assert_eq!(
+            execution.request_node_retry(&old_id, 13.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.start_fanout_child_execution(
+                "fanout".to_string(),
+                "parent-execution-1".to_string(),
+                "child-execution-2".to_string(),
+                "implement".to_string(),
+                NodeKindName::Session,
+                2,
+                parent_ref,
+                14.0,
+            ),
+            Ok(TransitionOutcome::Applied)
+        );
+
+        assert_eq!(execution.node_executions().len(), 2);
+        assert_eq!(
+            execution.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::Aborted
+        );
+        assert_eq!(
+            execution.node_executions()[0].completion_signals,
+            NodeCompletionSignalState::StopReceived
+        );
+        assert_eq!(
+            execution.node_executions()[1].completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+        let fanout = execution.fanout_runtime().unwrap();
+        assert_eq!(fanout.children.len(), 1);
+        assert_eq!(fanout.children[0].node_execution_id, "child-execution-2");
+        assert_eq!(fanout.children[0].attempt, 2);
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Running);
+    }
+
+    #[test]
     fn fanout_child_start_failure_and_sibling_interrupt_are_aggregate_transitions() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
         execution
@@ -2856,7 +3852,7 @@ mod tests {
                 NodeKindName::Fanout,
                 1,
                 None,
-                Some("parent-execution-1".to_string()),
+                "parent-execution-1".to_string(),
                 10.0,
             )
             .unwrap();

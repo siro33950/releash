@@ -52,14 +52,13 @@ impl ReviewActor {
         }
     }
 
-    pub(crate) fn agent(backend_id: String, model: String, session_id: Option<String>) -> Self {
-        let display_name = format!("{backend_id}/{model}");
+    pub(crate) fn provider_agent(backend_id: String, session_id: Option<String>) -> Self {
         Self {
             kind: ReviewActorKind::Agent,
+            display_name: backend_id.clone(),
             backend_id: Some(backend_id),
-            model: Some(model),
+            model: None,
             session_id,
-            display_name,
         }
     }
 
@@ -696,8 +695,21 @@ pub(crate) fn apply_filter(
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_provider_tui_actor_does_not_fabricate_a_model_identity() {
+        let actor =
+            ReviewActor::provider_agent("claude".to_string(), Some("session-1".to_string()));
+
+        assert_eq!(actor.backend_id.as_deref(), Some("claude"));
+        assert_eq!(actor.model, None);
+        assert_eq!(actor.session_id.as_deref(), Some("session-1"));
+        assert_eq!(actor.display_name, "claude");
+        assert_eq!(actor.participant_key(), "agent:claude:");
+    }
+
     fn agent(backend_id: &str, model: &str) -> ReviewActor {
-        ReviewActor::agent(backend_id.to_string(), model.to_string(), None)
+        let _ = model;
+        ReviewActor::provider_agent(backend_id.to_string(), None)
     }
 
     fn target(file_path: Option<&str>) -> ReviewTarget {

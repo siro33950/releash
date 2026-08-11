@@ -34,15 +34,6 @@ impl BranchBaseResolver for BranchBaseResolverGateway {
             .map_err(to_code_error)
     }
 
-    fn resolve_effective_base_branch_name(
-        &self,
-        path_hint: &str,
-    ) -> Result<Option<String>, CodeError> {
-        self.git_config
-            .resolve_effective_base_branch(path_hint)
-            .map_err(to_code_error)
-    }
-
     fn resolve_base_commit_oid(
         &self,
         path_hint: &str,

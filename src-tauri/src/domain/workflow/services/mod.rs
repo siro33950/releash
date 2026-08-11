@@ -5,7 +5,6 @@ pub mod event_replay;
 pub mod failure_policy;
 pub mod fanout;
 pub mod history;
-pub mod node_session_projection;
 pub mod projection;
 pub mod prompt_composition;
 pub mod reference;
@@ -16,5 +15,5 @@ pub mod template_preview;
 pub mod transition;
 pub mod validation;
 
-pub use approval_rules::ApprovalInputError;
-pub use failure_policy::{RetryPolicy, TimeoutContext, TimeoutPolicy};
+#[cfg(test)]
+pub use failure_policy::{TimeoutContext, TimeoutPolicy};

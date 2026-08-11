@@ -4,14 +4,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::{http::StatusCode, routing::get};
 use tokio::sync::oneshot;
 
-use super::{LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
+use super::{process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
 
 pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
     token: Arc<str>,
+    terminal_token: Arc<str>,
+    instance_id: String,
     discovery: LocalApiDiscoveryFile,
 }
 
@@ -36,12 +39,24 @@ impl LocalApiServerBinding {
             .map_err(LocalApiServerError::Nonblocking)?;
 
         let token = Arc::<str>::from(generate_token());
+        // renderer JSへ渡すterminal専用token。discovery fileには書き出さず、
+        // in-processでterminal streamの認証にだけ使う。
+        let terminal_token = Arc::<str>::from(generate_token());
+        let instance_id = uuid::Uuid::new_v4().simple().to_string();
+        let pid = std::process::id();
+        let process_started_at = process_start_time(pid).ok_or_else(|| {
+            LocalApiServerError::Discovery(io::Error::other(
+                "failed to resolve local API process identity",
+            ))
+        })?;
         let discovery = LocalApiDiscoveryFile::create(
             &data_dir,
             LocalApiDiscovery {
                 port: address.port(),
                 token: token.to_string(),
-                pid: std::process::id(),
+                instance_id: instance_id.clone(),
+                pid,
+                process_started_at,
             },
         )
         .map_err(LocalApiServerError::Discovery)?;
@@ -50,12 +65,22 @@ impl LocalApiServerBinding {
             listener,
             port: address.port(),
             token,
+            terminal_token,
+            instance_id,
             discovery,
         })
     }
 
     pub(crate) fn bearer_token(&self) -> Arc<str> {
         self.token.clone()
+    }
+
+    pub(crate) fn terminal_bearer_token(&self) -> Arc<str> {
+        self.terminal_token.clone()
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
     pub(crate) fn start(
@@ -66,6 +91,7 @@ impl LocalApiServerBinding {
         let Self {
             listener,
             port,
+            instance_id,
             discovery,
             ..
         } = self;
@@ -82,6 +108,10 @@ impl LocalApiServerBinding {
                     return;
                 }
             };
+            let identity_path = format!("/.well-known/releash-local-api/{instance_id}");
+            let router = Router::new()
+                .route(&identity_path, get(|| async { StatusCode::NO_CONTENT }))
+                .merge(router);
             let result = axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.await;
@@ -134,63 +164,5 @@ fn generate_token() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::error::Error;
-
-    use super::*;
-
-    #[test]
-    fn generated_tokens_are_nonempty_and_change() {
-        let first = generate_token();
-        let second = generate_token();
-        assert_eq!(first.len(), 64);
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn server_error_variants_preserve_their_sources() {
-        let address: std::net::SocketAddr = "192.0.2.1:43123".parse().unwrap();
-        let errors = [
-            LocalApiServerError::ListenerBind(io::Error::other("bind")),
-            LocalApiServerError::AddressResolution(io::Error::other("address")),
-            LocalApiServerError::NonLoopback {
-                address,
-                source: io::Error::other("non-loopback"),
-            },
-            LocalApiServerError::Nonblocking(io::Error::other("nonblocking")),
-            LocalApiServerError::Discovery(io::Error::other("discovery")),
-        ];
-
-        for error in errors {
-            assert!(error.source().is_some(), "missing source for {error}");
-        }
-    }
-
-    #[test]
-    fn discovery_creation_failure_has_a_distinct_server_error() {
-        let directory = tempfile::tempdir().unwrap();
-        let data_path = directory.path().join("not-a-directory");
-        std::fs::write(&data_path, "occupied").unwrap();
-
-        let error = match LocalApiServerBinding::bind(data_path) {
-            Ok(_) => panic!("discovery creation unexpectedly succeeded"),
-            Err(error) => error,
-        };
-
-        assert!(matches!(error, LocalApiServerError::Discovery(_)));
-        assert!(error.source().is_some());
-    }
-
-    #[tokio::test]
-    async fn server_shutdown_signals_and_removes_owned_discovery() {
-        let directory = tempfile::tempdir().unwrap();
-        let binding = LocalApiServerBinding::bind(directory.path().to_path_buf()).unwrap();
-        let discovery_path = binding.discovery.path().to_path_buf();
-        let server = binding.start(Router::new(), &tokio::runtime::Handle::current());
-
-        assert!(discovery_path.exists());
-        server.shutdown();
-        tokio::task::yield_now().await;
-        assert!(!discovery_path.exists());
-    }
-}
+#[path = "server_test.rs"]
+mod server_tests;

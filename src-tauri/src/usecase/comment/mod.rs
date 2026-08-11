@@ -360,7 +360,8 @@ mod tests {
     }
 
     fn agent(backend_id: &str, model: &str) -> ReviewActor {
-        ReviewActor::agent(backend_id.to_string(), model.to_string(), None)
+        let _ = model;
+        ReviewActor::provider_agent(backend_id.to_string(), None)
     }
 
     #[test]
@@ -814,11 +815,7 @@ mod tests {
                 "Claim".to_string(),
             )
             .unwrap();
-        let agent = ReviewActor::agent(
-            "codex".to_string(),
-            "gpt-5".to_string(),
-            Some("s1".to_string()),
-        );
+        let agent = ReviewActor::provider_agent("codex".to_string(), Some("s1".to_string()));
 
         let denied = usecase.delete_thread(dir.path(), "wt", agent, &thread.id);
         assert!(matches!(denied, Err(ReviewError::PermissionDenied(_))));
@@ -889,11 +886,8 @@ mod tests {
     fn public_actor_projection_does_not_expose_session_id() {
         let dir = TempDir::new().unwrap();
         let usecase = usecase();
-        let actor = ReviewActor::agent(
-            "codex".to_string(),
-            "gpt-5".to_string(),
-            Some("secret-session".to_string()),
-        );
+        let actor =
+            ReviewActor::provider_agent("codex".to_string(), Some("secret-session".to_string()));
 
         let thread = usecase
             .create_thread(dir.path(), "wt", actor, target(), "Claim".to_string())

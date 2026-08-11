@@ -22,7 +22,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { useReviewThreadHandoff } from "@/contexts/ReviewThreadHandoffContext";
+import {
+	ReviewThreadHandoffFeedbackMessage,
+	useReviewThreadHandoff,
+} from "@/contexts/ReviewThreadHandoffContext";
 import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import {
 	getThreadEndLine,
@@ -84,13 +87,14 @@ export function DiffInlineComment({
 	const [deleteOpen, setDeleteOpen] = useState(false);
 	const label = rangeLabel(comment);
 	const disabled = busy || comment.state === "resolved";
-	// spec issues-1022 "Thread handoff contract": Diff Thread を active な
-	// AgentChat session の入力として共有する。active session 不在時は disabled。
-	const { canSend: canSendToAgent, sendThreadToAgent } =
-		useReviewThreadHandoff();
-	const sendToAgentTitle = canSendToAgent
-		? "Send Diff Thread to current Agent"
-		: "No active Agent session";
+	const {
+		canCopy: canCopyForAgent,
+		copyThreadForAgent,
+		feedback,
+	} = useReviewThreadHandoff();
+	const copyForAgentTitle = canCopyForAgent
+		? "Copy Diff Thread for Agent"
+		: "Agent instruction copy unavailable";
 
 	const run = async (action: () => Promise<void>) => {
 		setBusy(true);
@@ -122,17 +126,21 @@ export function DiffInlineComment({
 						type="button"
 						variant="ghost"
 						size="icon-xs"
-						title={sendToAgentTitle}
-						aria-label={sendToAgentTitle}
-						disabled={busy || !canSendToAgent}
+						title={copyForAgentTitle}
+						aria-label={copyForAgentTitle}
+						disabled={busy || !canCopyForAgent}
 						onClick={() =>
 							run(async () => {
-								await sendThreadToAgent(comment.id);
+								await copyThreadForAgent(comment.id);
 							})
 						}
 					>
 						<Send className="size-3.5" />
 					</Button>
+					<ReviewThreadHandoffFeedbackMessage
+						feedback={feedback}
+						threadId={comment.id}
+					/>
 					{onDelete && (
 						<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 							<AlertDialogTrigger asChild>

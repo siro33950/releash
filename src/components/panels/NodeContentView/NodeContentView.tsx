@@ -2,15 +2,15 @@ import { AlertTriangle } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
+import { AgentSessionRoute } from "@/components/panels/AgentSessionPanel";
 import { Button } from "@/components/ui/button";
 import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
-import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import {
 	approveWorkspaceNode,
+	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
-import type { AgentEditorSelection, MentionReference } from "@/types/session";
+import type { Theme } from "@/types/settings";
 import type {
 	WorkspaceCommandNodeContent,
 	WorkspaceNodeDetail,
@@ -19,34 +19,18 @@ import type {
 interface NodeContentViewProps {
 	worktreePath: string;
 	nodeId: string | null;
+	theme?: Theme;
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
-	activeEditorPath?: string | null;
-	openEditorPaths?: string[];
-	activeEditorSelection?: AgentEditorSelection | null;
-	registerDropZone: (
-		zone: DropZoneType,
-		element: HTMLElement | null,
-		onDrop?: (paths: string[]) => void,
-	) => void;
-	sendMessageRef?: React.MutableRefObject<
-		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
-	>;
-	onOpenDiffFile?: (filePath: string) => void;
 	onNodeMissing?: (worktreePath: string, nodeId: string) => void;
 }
 
 export function NodeContentView({
 	worktreePath,
 	nodeId,
+	theme,
 	leftPanels,
 	rightSlot,
-	activeEditorPath,
-	openEditorPaths,
-	activeEditorSelection,
-	registerDropZone,
-	sendMessageRef,
-	onOpenDiffFile,
 	onNodeMissing,
 }: NodeContentViewProps) {
 	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
@@ -70,18 +54,11 @@ export function NodeContentView({
 			/>
 			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				{detail ? (
-					detail.content.kind === "session" ? (
+					detail.content.kind === "agentSession" ? (
 						detail.content.sessionId ? (
-							<BoundSessionChat
-								sessionId={detail.content.sessionId}
-								worktreePath={worktreePath}
-								activeEditorPath={activeEditorPath}
-								openEditorPaths={openEditorPaths}
-								activeEditorSelection={activeEditorSelection}
-								registerDropZone={registerDropZone}
-								dropZoneName="agent"
-								sendMessageRef={sendMessageRef}
-								onOpenDiffFile={onOpenDiffFile}
+							<AgentSessionRoute
+								agentSessionId={detail.content.sessionId}
+								theme={theme}
 							/>
 						) : (
 							<NodeEmptyState
@@ -92,8 +69,10 @@ export function NodeContentView({
 								}
 							/>
 						)
-					) : (
+					) : detail.content.kind === "command" ? (
 						<CommandNodeContent detail={detail} content={detail.content} />
+					) : (
+						<NodeEmptyState message="Session unavailable." />
 					)
 				) : (
 					<NodeEmptyState
@@ -120,6 +99,7 @@ function NodeHeader({
 	worktreePath: string;
 }) {
 	const [approving, setApproving] = useState(false);
+	const [retrying, setRetrying] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 
 	const approve = useCallback(async () => {
@@ -135,6 +115,32 @@ function NodeHeader({
 		}
 	}, [approving, detail.capabilities.canApprove, detail.id, worktreePath]);
 
+	const retry = useCallback(async () => {
+		if (retrying || !detail.capabilities.canRetry) return;
+		setRetrying(true);
+		try {
+			await retryWorkspaceNode({ worktreePath, nodeId: detail.id });
+			setActionError(null);
+		} catch (error) {
+			setActionError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setRetrying(false);
+		}
+	}, [detail.capabilities.canRetry, detail.id, retrying, worktreePath]);
+
+	const waitingMessage =
+		detail.waitingFor === "stop"
+			? "Submit received · waiting for Stop"
+			: detail.waitingFor === "submit"
+				? "Stop received · waiting for Submit"
+				: null;
+	const visibleErrorReason =
+		detail.status === "failed" ||
+		detail.status === "error" ||
+		detail.status === "paused"
+			? detail.errorReason
+			: null;
+
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
 			<span
@@ -149,6 +155,31 @@ function NodeHeader({
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}
 			</span>
+			{detail.attempt != null && (
+				<span className="shrink-0 text-xs text-muted-foreground">
+					Attempt {detail.attempt}
+				</span>
+			)}
+			{waitingMessage && (
+				<span className="min-w-0 truncate text-xs text-yellow-600 dark:text-yellow-300">
+					{waitingMessage}
+				</span>
+			)}
+			{detail.hasArtifact && (
+				<span className="shrink-0 text-xs text-muted-foreground">
+					Artifact submitted
+				</span>
+			)}
+			{visibleErrorReason && (
+				<span className="min-w-0 truncate text-xs text-destructive">
+					{visibleErrorReason}
+				</span>
+			)}
+			{detail.recoveryReason && (
+				<span className="min-w-0 truncate text-xs text-orange-600 dark:text-orange-300">
+					{detail.recoveryReason}
+				</span>
+			)}
 			{actionError && (
 				<span
 					role="alert"
@@ -162,6 +193,11 @@ function NodeHeader({
 			{detail.capabilities.canApprove && (
 				<Button type="button" size="xs" disabled={approving} onClick={approve}>
 					{approving ? "Approving..." : "Approve"}
+				</Button>
+			)}
+			{detail.capabilities.canRetry && (
+				<Button type="button" size="xs" disabled={retrying} onClick={retry}>
+					{retrying ? "Retrying..." : "Retry"}
 				</Button>
 			)}
 		</div>

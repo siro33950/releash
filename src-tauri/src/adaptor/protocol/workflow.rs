@@ -2,13 +2,41 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowSubmitArtifactInput {
+    pub contract: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowValidateOutputResponse {
+    Valid,
+    Invalid { reason: String, details: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowGetOutputResponse {
+    Submitted {
+        contract: Option<String>,
+        structured_output: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        submitted_at: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        timestamp: f64,
+    },
+    NotSubmitted,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStatusView {
     Running,
     WaitingApproval,
     Completed,
-    Failed,
     Aborted,
     Interrupted,
 }
@@ -43,6 +71,7 @@ pub enum NodeKindView {
 #[serde(rename_all = "snake_case")]
 pub enum NodeExecutionStatusView {
     Running,
+    Paused,
     WaitingApproval,
     Succeeded,
     Failed,
@@ -59,6 +88,13 @@ pub enum NodeExecutionFailureKindView {
     ValidationFailure,
     UserAbort,
     InfrastructureCrash,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeCompletionSignalView {
+    Submit,
+    Stop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -104,6 +140,13 @@ pub struct NodeExecutionView {
     pub kind: NodeKindView,
     pub attempt: u32,
     pub status: NodeExecutionStatusView,
+    pub submit_received: bool,
+    pub stop_received: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waiting_for: Option<NodeCompletionSignalView>,
+    pub can_approve: bool,
+    pub can_retry: bool,
+    pub has_artifact: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]

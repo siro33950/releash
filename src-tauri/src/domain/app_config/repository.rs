@@ -10,11 +10,6 @@ pub trait ConfigRepository: Send + Sync {
     fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError>;
 }
 
-pub trait AgentConfigRepository: Send + Sync {
-    fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError>;
-    fn cli_path_for(&self, backend_id: &str) -> Result<Option<String>, AppConfigError>;
-}
-
 pub trait ConfigSecretRepository: Send + Sync {
     fn configured_secret_values(&self) -> Result<Vec<String>, AppConfigError>;
 }

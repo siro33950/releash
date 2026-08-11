@@ -236,7 +236,6 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    permission: Some("edit".to_string()),
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
@@ -262,7 +261,7 @@ description: source workflow
 nodes:
   - name: node
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         instruction: implement
@@ -410,7 +409,7 @@ description: missing knowledge diagnostic
 nodes:
   - name: node
     session:
-      permission: edit
+      provider: claude
       gate: auto
       facets:
         knowledge: [known, missing-name]

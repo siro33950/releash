@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/milestone/87]
   pull_request:
-    branches: [main]
+    branches: [main, feature/milestone/87]
 
 permissions:
   contents: read
@@ -157,6 +157,8 @@ jobs:
         with:
           workspaces: src-tauri
           key: rust-test
+      - name: Agent TUI harness self-test
+        run: cargo test --locked --test agent_tui_harness
       - run: cargo test --locked
 
   # ruleset の required status check が参照する名前を保つための集約ジョブ。
@@ -193,7 +195,7 @@ jobs:
   # カバレッジ計測は instrument 付きの追加ビルドを伴うため PR の待ち時間へ乗せない。
   # main への push でだけ測り、推移を Codecov で追う。
   coverage:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

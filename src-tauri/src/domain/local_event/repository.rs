@@ -1,57 +1,16 @@
 //! `LocalEventTransactionRepository`: the single mutation authority port.
 
-#![allow(dead_code)] // The required replayable subscription port has no always-on subscriber.
-
-use std::pin::Pin;
-
-use futures_util::stream::Stream;
-
 use crate::domain::local_event::batch::{
     CommitBatchError, CommitBatchResult, CommitResolution, LocalAtomicBatch,
 };
 use crate::domain::local_event::events::{
     DomainEventPage, LoadStreamRequest, UncommittedDomainEvent,
 };
-use crate::domain::local_event::identifiers::{CommitIdentity, GlobalSequence};
+use crate::domain::local_event::identifiers::CommitIdentity;
 use crate::domain::local_event::mutation::LocalStateMutation;
 use crate::domain::local_event::query::{
     LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
 };
-
-/// One notification observed through a subscription. Notifications are not a
-/// commit authority; they only prompt bounded replay from the store.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LocalEventSignal {
-    Committed {
-        commit_id: CommitIdentity,
-        max_global_sequence: GlobalSequence,
-    },
-    /// The subscriber lagged past the bounded replay window; it must reload
-    /// through `load_stream` / queries instead of trusting notifications.
-    ReplayRequired,
-}
-
-/// Stream of post-commit signals starting after a global sequence.
-pub struct LocalEventSubscription {
-    stream: Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>>,
-}
-
-impl LocalEventSubscription {
-    pub fn new(stream: Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>>) -> Self {
-        Self { stream }
-    }
-
-    pub fn into_stream(self) -> Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>> {
-        self.stream
-    }
-}
-
-impl std::fmt::Debug for LocalEventSubscription {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalEventSubscription")
-            .finish_non_exhaustive()
-    }
-}
 
 /// The only mutation authority across agent sessions and workflows.
 ///
@@ -118,6 +77,4 @@ pub trait LocalEventTransactionRepository: Send + Sync {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError>;
-
-    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription;
 }
