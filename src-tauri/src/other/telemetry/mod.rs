@@ -10,9 +10,8 @@ use crate::domain::workflow::FailureClassification;
 #[cfg(test)]
 use crate::domain::workflow::NodeExecutionFailureKind;
 use attributes::{
-    usage_event_allowed, AgentTurnMetric, HotPathMetric, OpStatus, PayloadChannel, StartupMetric,
-    TerminalLaunchMetric, TurnDimensions, KEY_CHANNEL, KEY_OPERATION, KEY_OUTCOME, KEY_STATUS,
-    KEY_USAGE_EVENT,
+    usage_event_allowed, HotPathMetric, OpStatus, StartupMetric, TerminalLaunchMetric,
+    KEY_OPERATION, KEY_STATUS, KEY_USAGE_EVENT,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
@@ -21,11 +20,7 @@ use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
-pub(crate) use attributes::{
-    AgentTurnMetric as AgentTurn, ModelFamily, PayloadChannel as Payload, PermissionModeDim,
-    StartupMetric as Startup, TerminalLaunchMetric as TerminalLaunch, TurnContext,
-    TurnDimensions as AgentTurnDimensions, WarmPath,
-};
+pub(crate) use attributes::{StartupMetric as Startup, TerminalLaunchMetric as TerminalLaunch};
 
 #[cfg(not(test))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
@@ -84,27 +79,11 @@ impl Drop for TestTelemetryGuard {
 }
 
 struct Metrics {
-    agent_turn_duration: Histogram<f64>,
     hot_path_duration: Histogram<f64>,
     startup_duration: Histogram<f64>,
     terminal_launch_duration: Histogram<f64>,
-    #[allow(dead_code)]
-    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-    stream_payload_bytes: Histogram<f64>,
-    #[allow(dead_code)]
-    // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-    stream_emit_interval_ms: Histogram<f64>,
-    #[cfg(test)]
-    session_save_bytes: Histogram<f64>,
     operation_status: Counter<u64>,
-    #[allow(dead_code)]
-    // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-    orphan_cleanup: Counter<u64>,
     usage_events: Counter<u64>,
-    #[cfg(test)]
-    tool_output_truncated: Counter<u64>,
-    #[cfg(test)]
-    tool_output_bytes: Counter<u64>,
     _rss_gauge: ObservableGauge<u64>,
     _cpu_gauge: ObservableGauge<f64>,
     _xterm_gauge: ObservableGauge<u64>,
@@ -450,10 +429,6 @@ pub(crate) fn install_metrics() {
     let cpu_observer = Arc::clone(&process_observer);
 
     let metrics = Metrics {
-        agent_turn_duration: meter
-            .f64_histogram("releash.agent.turn.duration_ms")
-            .with_unit("ms")
-            .build(),
         hot_path_duration: meter
             .f64_histogram("releash.hot_path.duration_ms")
             .with_unit("ms")
@@ -466,31 +441,8 @@ pub(crate) fn install_metrics() {
             .f64_histogram("releash.terminal.launch.duration_ms")
             .with_unit("ms")
             .build(),
-        stream_payload_bytes: meter
-            .f64_histogram("releash.agent_stream.payload_bytes")
-            .with_unit("By")
-            .build(),
-        stream_emit_interval_ms: meter
-            .f64_histogram("releash.agent_stream.emit_interval_ms")
-            .with_unit("ms")
-            .build(),
-        #[cfg(test)]
-        session_save_bytes: meter
-            .f64_histogram("releash.session.save_bytes")
-            .with_unit("By")
-            .build(),
         operation_status: meter.u64_counter("releash.operation.status").build(),
-        orphan_cleanup: meter.u64_counter("releash.startup.orphan_cleanup").build(),
         usage_events: meter.u64_counter("releash.usage.events").build(),
-        #[cfg(test)]
-        tool_output_truncated: meter
-            .u64_counter("releash.tool_output.truncated_count")
-            .build(),
-        #[cfg(test)]
-        tool_output_bytes: meter
-            .u64_counter("releash.tool_output.full_output_bytes")
-            .with_unit("By")
-            .build(),
         _rss_gauge: meter
             .u64_observable_gauge("releash.process.rss_bytes")
             .with_unit("By")
@@ -706,106 +658,6 @@ pub(crate) fn record_workflow_node_failure(
     metrics.operation_status.add(1, &attrs);
 }
 
-pub(crate) fn record_agent_turn_duration(
-    metric: AgentTurnMetric,
-    dims: &TurnDimensions,
-    elapsed: Duration,
-) {
-    if !is_performance_active() {
-        return;
-    }
-    let attrs = dims.to_metric_attrs(metric.operation());
-    #[cfg(test)]
-    record_test_metric(
-        "releash.agent.turn.duration_ms",
-        elapsed.as_secs_f64() * 1000.0,
-        &attrs,
-    );
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics
-        .agent_turn_duration
-        .record(elapsed.as_secs_f64() * 1000.0, &attrs);
-}
-
-#[cfg(test)]
-pub(crate) fn record_session_save_bytes<F>(metric: HotPathMetric, bytes: F)
-where
-    F: FnOnce() -> usize,
-{
-    if !is_performance_active() {
-        return;
-    }
-    let bytes = bytes();
-    let attrs = [KeyValue::new(KEY_OPERATION, metric.operation())];
-    #[cfg(test)]
-    record_test_metric("releash.session.save_bytes", bytes as f64, &attrs);
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.session_save_bytes.record(bytes as f64, &attrs);
-}
-
-#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-pub(crate) fn record_payload_size<F>(channel: PayloadChannel, bytes: F)
-where
-    F: FnOnce() -> usize,
-{
-    if !is_performance_active() {
-        return;
-    }
-    let bytes = bytes();
-    let attrs = [KeyValue::new(KEY_CHANNEL, channel.as_str())];
-    #[cfg(test)]
-    record_test_metric("releash.agent_stream.payload_bytes", bytes as f64, &attrs);
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.stream_payload_bytes.record(bytes as f64, &attrs);
-}
-
-#[cfg(test)]
-pub(crate) fn record_tool_output_externalized(byte_size: u64) {
-    if !is_performance_active() {
-        return;
-    }
-    let attrs = [KeyValue::new(KEY_OPERATION, "tool_output.externalize")];
-    #[cfg(test)]
-    {
-        record_test_metric("releash.tool_output.truncated_count", 1.0, &attrs);
-        record_test_metric(
-            "releash.tool_output.full_output_bytes",
-            byte_size as f64,
-            &attrs,
-        );
-    }
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.tool_output_truncated.add(1, &attrs);
-    metrics.tool_output_bytes.add(byte_size, &attrs);
-}
-
-#[allow(dead_code)] // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
-pub(crate) fn record_emit_interval(elapsed: Duration) {
-    if !is_performance_active() {
-        return;
-    }
-    #[cfg(test)]
-    record_test_metric(
-        "releash.agent_stream.emit_interval_ms",
-        elapsed.as_secs_f64() * 1000.0,
-        &[],
-    );
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics
-        .stream_emit_interval_ms
-        .record(elapsed.as_secs_f64() * 1000.0, &[]);
-}
-
 pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
     if !is_performance_active() {
         return;
@@ -871,56 +723,6 @@ pub(crate) fn record_terminal_launch(metric: TerminalLaunchMetric, elapsed: Dura
     metrics.terminal_launch_duration.record(duration_ms, &attrs);
 }
 
-#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-pub(crate) fn orphan_cleanup_status(failures: usize, failed: bool) -> OpStatus {
-    if failed || failures > 0 {
-        OpStatus::Failure
-    } else {
-        OpStatus::Success
-    }
-}
-
-#[allow(dead_code)] // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
-pub(crate) fn record_orphan_cleanup_counts(
-    scanned: usize,
-    processed: usize,
-    skipped: usize,
-    failures: usize,
-    failed: bool,
-) {
-    if !is_performance_active() {
-        return;
-    }
-    let status = orphan_cleanup_status(failures, failed);
-    let status_attrs = [
-        KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
-        KeyValue::new(KEY_STATUS, status.as_str()),
-    ];
-    #[cfg(test)]
-    record_test_metric("releash.operation.status", 1.0, &status_attrs);
-    if let Some(metrics) = METRICS.get() {
-        metrics.operation_status.add(1, &status_attrs);
-    }
-
-    for (outcome, count) in [
-        ("scanned", scanned),
-        ("processed", processed),
-        ("skipped", skipped),
-        ("failures", failures),
-    ] {
-        let attrs = [
-            KeyValue::new(KEY_OPERATION, "startup.orphan_cleanup"),
-            KeyValue::new(KEY_STATUS, status.as_str()),
-            KeyValue::new(KEY_OUTCOME, outcome),
-        ];
-        #[cfg(test)]
-        record_test_metric("releash.startup.orphan_cleanup", count as f64, &attrs);
-        if let Some(metrics) = METRICS.get() {
-            metrics.orphan_cleanup.add(count as u64, &attrs);
-        }
-    }
-}
-
 pub(crate) fn record_usage_event(name: &str) {
     if !is_performance_active() || !usage_event_allowed(name) {
         return;
@@ -937,7 +739,7 @@ pub(crate) fn record_usage_event(name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
 
     fn set_active(active: bool) {
         set_performance_configured(active);
@@ -981,86 +783,6 @@ mod tests {
         reset_test_metrics();
         set_mounted_xterm_count(3);
         assert_eq!(MOUNTED_XTERM_COUNT.load(Ordering::Relaxed), 3);
-    }
-
-    #[test]
-    fn record_size_closures_are_not_evaluated_when_inactive() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(false);
-        let payload_called = AtomicBool::new(false);
-        let save_called = AtomicBool::new(false);
-
-        record_payload_size(PayloadChannel::TauriEvent, || {
-            payload_called.store(true, Ordering::Relaxed);
-            123
-        });
-        record_session_save_bytes(HotPathMetric::SessionAppend, || {
-            save_called.store(true, Ordering::Relaxed);
-            456
-        });
-
-        assert!(!payload_called.load(Ordering::Relaxed));
-        assert!(!save_called.load(Ordering::Relaxed));
-        assert!(test_metric_records().is_empty());
-    }
-
-    #[test]
-    fn record_apis_capture_values_and_attributes_when_active() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(true);
-
-        let turn_dims = TurnDimensions {
-            resume: true,
-            has_session: true,
-            permission_mode: PermissionModeDim::Edit,
-            model: ModelFamily::Sonnet,
-            context: TurnContext::Chat,
-            channel: PayloadChannel::TauriEvent,
-            warm_path: WarmPath::QueryDirect,
-        };
-        record_agent_turn_duration(
-            AgentTurnMetric::FirstAssistantEvent,
-            &turn_dims,
-            Duration::from_millis(42),
-        );
-        record_payload_size(PayloadChannel::TauriEvent, || 128);
-        record_session_save_bytes(HotPathMetric::SessionAppend, || 256);
-        record_emit_interval(Duration::from_millis(33));
-        record_usage_event("settings_saved");
-
-        let records = test_metric_records();
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent.turn.duration_ms"
-                && record.value == 42.0
-                && has_attr(record, KEY_OPERATION, "agent.turn.first_assistant_event")
-                && has_attr(record, attributes::KEY_AGENT_RESUME, "true")
-                && has_attr(record, attributes::KEY_AGENT_HAS_SESSION, "true")
-                && has_attr(record, attributes::KEY_AGENT_PERMISSION_MODE, "edit")
-                && has_attr(record, attributes::KEY_AGENT_MODEL, "sonnet")
-                && has_attr(record, attributes::KEY_AGENT_CONTEXT, "chat")
-                && has_attr(record, KEY_CHANNEL, "tauri_event")
-                && has_attr(record, attributes::KEY_AGENT_WARM_PATH, "query_direct")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent_stream.payload_bytes"
-                && record.value == 128.0
-                && has_attr(record, KEY_CHANNEL, "tauri_event")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.session.save_bytes"
-                && record.value == 256.0
-                && has_attr(record, KEY_OPERATION, "session.append")
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.agent_stream.emit_interval_ms" && record.value == 33.0
-        }));
-        assert!(records.iter().any(|record| {
-            record.name == "releash.usage.events"
-                && has_attr(record, KEY_USAGE_EVENT, "settings_saved")
-        }));
-        reset_test_metrics();
     }
 
     #[test]
@@ -1153,102 +875,11 @@ mod tests {
     }
 
     #[test]
-    fn record_orphan_cleanup_captures_safe_counts_and_status() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(true);
-
-        record_orphan_cleanup_counts(3, 2, 1, 0, false);
-
-        let status_records = records_named("releash.operation.status");
-        assert!(status_records.iter().any(|record| {
-            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-
-        let cleanup_records = records_named("releash.startup.orphan_cleanup");
-        assert_eq!(cleanup_records.len(), 4);
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 3.0
-                && has_attr(record, KEY_OUTCOME, "scanned")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 2.0
-                && has_attr(record, KEY_OUTCOME, "processed")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 1.0
-                && has_attr(record, KEY_OUTCOME, "skipped")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        assert!(cleanup_records.iter().any(|record| {
-            record.value == 0.0
-                && has_attr(record, KEY_OUTCOME, "failures")
-                && has_attr(record, KEY_STATUS, "success")
-        }));
-        for record in cleanup_records {
-            let keys: Vec<_> = record
-                .attributes
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect();
-            assert_eq!(
-                keys,
-                vec![KEY_OPERATION, KEY_STATUS, KEY_OUTCOME],
-                "orphan cleanup telemetry must contain only safe metadata"
-            );
-        }
-        reset_test_metrics();
-    }
-
-    #[test]
-    fn record_orphan_cleanup_marks_failure_on_failures_or_panic_flag() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(true);
-
-        record_orphan_cleanup_counts(1, 0, 0, 1, false);
-        record_orphan_cleanup_counts(0, 0, 0, 0, true);
-
-        let status_records = records_named("releash.operation.status");
-        assert_eq!(status_records.len(), 2);
-        assert!(status_records.iter().all(|record| {
-            has_attr(record, KEY_OPERATION, "startup.orphan_cleanup")
-                && has_attr(record, KEY_STATUS, "failure")
-        }));
-        reset_test_metrics();
-    }
-
-    #[test]
-    fn orphan_cleanup_status_marks_failures_and_success() {
-        assert_eq!(orphan_cleanup_status(1, false), OpStatus::Failure);
-        assert_eq!(orphan_cleanup_status(0, true), OpStatus::Failure);
-        assert_eq!(orphan_cleanup_status(0, false), OpStatus::Success);
-    }
-
-    #[test]
     fn record_apis_are_noop_when_inactive() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
         set_active(false);
 
-        let turn_dims = TurnDimensions {
-            resume: false,
-            has_session: false,
-            permission_mode: PermissionModeDim::Ask,
-            model: ModelFamily::Other,
-            context: TurnContext::Chat,
-            channel: PayloadChannel::TauriEvent,
-            warm_path: WarmPath::QueryDirect,
-        };
-        record_agent_turn_duration(
-            AgentTurnMetric::UiToStart,
-            &turn_dims,
-            Duration::from_millis(1),
-        );
-        record_emit_interval(Duration::from_millis(33));
         record_usage_event("settings_saved");
 
         assert!(test_metric_records().is_empty());

@@ -11,7 +11,6 @@ pub(crate) enum GcCategory {
     DeletedWorkspace,
     RegenerableCache,
     LegacyComments,
-    StaleProcessRecord,
 }
 
 impl GcCategory {
@@ -20,7 +19,6 @@ impl GcCategory {
             Self::DeletedWorkspace => "deleted_workspace",
             Self::RegenerableCache => "regenerable_cache",
             Self::LegacyComments => "legacy_comments",
-            Self::StaleProcessRecord => "stale_process_record",
         }
     }
 }

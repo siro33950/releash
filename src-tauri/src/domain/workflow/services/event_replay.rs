@@ -86,7 +86,6 @@ fn project_workflow_execution_retained(
                 worktree_path,
                 created_from,
                 request,
-                permission_mode,
                 definition,
                 timestamp,
                 ..
@@ -95,22 +94,14 @@ fn project_workflow_execution_retained(
                 worktree_path,
                 *created_from,
                 request,
-                permission_mode,
                 definition,
                 *timestamp,
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    let Some((
-        workflow_name,
-        worktree_path,
-        created_from,
-        request,
-        permission_mode,
-        definition,
-        started_at,
-    )) = starts.first().copied()
+    let Some((workflow_name, worktree_path, created_from, request, definition, started_at)) =
+        starts.first().copied()
     else {
         return Ok(None);
     };
@@ -150,7 +141,6 @@ fn project_workflow_execution_retained(
         worktree_path,
         created_from,
         request,
-        permission_mode,
         started_at,
     );
     let mut authoritative_total_usage = None;
@@ -411,16 +401,12 @@ fn restore_workflow_execution_aggregate(
     worktree_path: &str,
     created_from: crate::domain::workflow::ExecutionOrigin,
     request: &str,
-    permission_mode: &str,
     started_at: f64,
 ) -> WorkflowExecutionAggregate {
     WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
         id: execution_id.to_string(),
         workflow: definition.clone(),
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: permission_mode.to_string(),
-        },
+        workflow_defaults: WorkflowDefaults,
         worktree_path: worktree_path.to_string(),
         created_from,
         started_at,
@@ -438,7 +424,6 @@ fn replay_workflow_execution_aggregate(
     worktree_path: &str,
     created_from: crate::domain::workflow::ExecutionOrigin,
     request: &str,
-    permission_mode: &str,
     started_at: f64,
     events: &[WorkflowEvent],
 ) -> Result<WorkflowExecutionAggregate, String> {
@@ -448,7 +433,6 @@ fn replay_workflow_execution_aggregate(
         worktree_path,
         created_from,
         request,
-        permission_mode,
         started_at,
     );
     for event in events {
@@ -1113,7 +1097,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "please review".to_string(),
-            permission_mode: "ask".to_string(),
             definition: definition(),
             timestamp: 1.0,
         }
@@ -1319,7 +1302,6 @@ mod tests {
             "/repo",
             ExecutionOrigin::Cli,
             "review",
-            "edit",
             1.0,
             &events,
         )
@@ -1435,7 +1417,6 @@ mod tests {
             "/repo",
             ExecutionOrigin::Cli,
             "please review",
-            "ask",
             1.0,
             &events,
         )
@@ -1444,10 +1425,7 @@ mod tests {
         let mut live = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
             id: EXECUTION_ID.to_string(),
             workflow: definition,
-            workflow_defaults: WorkflowDefaults {
-                backend_id: None,
-                permission_mode: "ask".to_string(),
-            },
+            workflow_defaults: WorkflowDefaults,
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             started_at: 1.0,
@@ -1760,7 +1738,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "please review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -1830,7 +1807,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -1952,7 +1928,6 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "review".to_string(),
-                permission_mode: "ask".to_string(),
                 definition: workflow,
                 timestamp: 1.0,
             },
@@ -2020,7 +1995,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: "ask".to_string(),
             definition: workflow,
             timestamp: 1.0,
         };

@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::agent_session_v1::{
+use super::application_operation_v1::{
     RecoveryActionIdentityDtoV1, RecoveryActionKindDtoV1, SafeOperationFailureDtoV1,
 };
 
@@ -197,16 +197,7 @@ pub(crate) struct ShutdownTargetDtoV1 {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum SafeEffectObservationDtoV1 {
-    ProviderObservation {
-        observation_ref: String,
-        proof_sha256: String,
-    },
-    ConfirmedNoEffect {
-        proof_sha256: String,
-    },
-    ExitCoupledOutcomeUnknown {
-        shutdown_id: String,
-    },
+    ExitCoupledOutcomeUnknown { shutdown_id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

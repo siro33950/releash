@@ -12,9 +12,6 @@ use super::event::WorkflowEvent;
 use super::execution_store::WorkflowExecutionMetadata;
 use super::log::WorkflowEventLog;
 
-pub(crate) type TestRuntimeKernel =
-    crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
-
 fn event_log(store: &Arc<LocalEventStore>) -> WorkflowEventLog {
     let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
     WorkflowEventLog::with_authority(repository, store.installation_id().to_string())

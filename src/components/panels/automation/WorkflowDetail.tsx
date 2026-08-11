@@ -368,11 +368,7 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">Session</span>
 							<div className="text-muted-foreground">
-								Gate: {session.gate}
-								{session.model ? ` | Model: ${session.model}` : ""}
-								{session.permission
-									? ` | Permission: ${session.permission}`
-									: ""}
+								Provider: {session.provider} | Gate: {session.gate}
 							</div>
 						</div>
 					)}

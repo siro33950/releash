@@ -9,16 +9,14 @@ use std::collections::{BTreeMap, HashSet};
 use sha2::{Digest, Sha256};
 
 use super::value_objects::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceSessionFact,
-    WorkspaceSessionState, WorkspaceStructureFact, WorkspaceTreeError, WorkspaceTreeNode,
-    INTERNAL_SIBLING_ORDER,
+    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceStructureFact,
+    WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
 };
 use crate::domain::workflow::{
     ExecutionStatus, FanoutParentRef, ItemsSource, NodeCompletionSignalState,
     NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
 };
 
-const DEFAULT_SESSION_TITLE: &str = "NewSession";
 pub(super) const DEFAULT_WORKFLOW_TITLE: &str = "Workflow";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +95,7 @@ impl WorkspaceTree {
             .map(|node| node.id.clone())
     }
 
+    #[cfg(test)]
     pub fn session_node(&self, session_id: &str) -> Option<&WorkspaceTreeNode> {
         self.nodes
             .iter()
@@ -260,108 +259,6 @@ impl WorkspaceTree {
             }
         }
         self.nodes.retain(|node| !removed.contains(&node.id));
-    }
-
-    pub(super) fn apply_session(
-        &mut self,
-        session: WorkspaceSessionFact,
-    ) -> Result<(), WorkspaceTreeError> {
-        if WorkspaceIdentity::new(&session.worktree_path) != self.workspace_identity {
-            return Err(WorkspaceTreeError::IdentityMismatch);
-        }
-        if !session.workflow_node_session
-            && matches!(
-                session.state,
-                WorkspaceSessionState::Closed | WorkspaceSessionState::Archived
-            )
-        {
-            if let Some(node) = self.session_node(&session.id).cloned() {
-                if node.kind == WorkspaceNodeKind::Session {
-                    self.remove_subtree(&node.id);
-                }
-            }
-            return Ok(());
-        }
-        if session.workflow_node_session {
-            if let Some(node) = self.nodes.iter_mut().find(|node| {
-                (node
-                    .node_execution_id
-                    .as_deref()
-                    .zip(session.workflow_node_execution_id.as_deref())
-                    .is_some_and(|(left, right)| left == right)
-                    && node.execution_id.as_deref() == session.workflow_execution_id.as_deref())
-                    || node.session_id.as_deref() == Some(session.id.as_str())
-            }) {
-                if node
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|bound| bound != &session.id)
-                {
-                    return Err(WorkspaceTreeError::DuplicateSession(session.id));
-                }
-                node.session_id = Some(session.id);
-                if session.unresolved_recovery_reason.is_some() {
-                    node.recovery_owner_reason = session.unresolved_recovery_reason;
-                }
-                node.updated_at_bits = max_f64_bits(node.updated_at_bits, session.updated_at_bits);
-            }
-            return Ok(());
-        }
-
-        let id = WorkspaceTreeProjector::session_node_id(&session.id);
-        let title = session
-            .title
-            .filter(|title| !title.trim().is_empty())
-            .or_else(|| {
-                let first_message = session.first_message.trim();
-                (!first_message.is_empty()).then(|| first_message.to_string())
-            })
-            .unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string());
-        let status = session_status(session.state);
-        let can_close = !matches!(
-            session.state,
-            WorkspaceSessionState::Closed | WorkspaceSessionState::Archived
-        );
-        if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
-            node.title = title;
-            node.status = status;
-            node.error_reason = session.error_reason;
-            node.updated_at_bits = session.updated_at_bits;
-            node.session_id = Some(session.id);
-            node.can_close = can_close;
-            return Ok(());
-        }
-        let sibling_order = self.next_sibling_order(None);
-        self.nodes.push(WorkspaceTreeNode {
-            id,
-            parent_id: None,
-            sibling_order,
-            kind: WorkspaceNodeKind::Session,
-            title,
-            status,
-            error_reason: session.error_reason,
-            updated_at_bits: session.updated_at_bits,
-            execution_id: None,
-            node_execution_id: None,
-            node_name: None,
-            attempt: None,
-            completion_signals: Default::default(),
-            has_artifact: false,
-            session_id: Some(session.id),
-            can_approve: false,
-            can_retry: false,
-            can_close,
-            can_stop: false,
-            can_resume: false,
-            recovery_owner_reason: None,
-            resume_unavailable_reason: None,
-            can_abort: false,
-            can_archive: false,
-            display_command: None,
-            command_result: None,
-            dynamic_fanout: false,
-        });
-        Ok(())
     }
 
     pub(super) fn apply_workflow_started(
@@ -706,13 +603,6 @@ impl WorkspaceTree {
     }
 
     pub(super) fn recompute_root_order(&mut self) {
-        let mut direct_sessions = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.parent_id.is_none() && node.kind == WorkspaceNodeKind::Session)
-            .map(|(index, node)| (index, node.title.clone(), node.id.clone()))
-            .collect::<Vec<_>>();
         let mut workflows = self
             .nodes
             .iter()
@@ -729,9 +619,8 @@ impl WorkspaceTree {
                 .then_with(|| left.1.cmp(&right.1))
                 .then_with(|| left.2.cmp(&right.2))
         };
-        direct_sessions.sort_by(by_title);
         workflows.sort_by(by_title);
-        for (order, (index, _, _)) in direct_sessions.into_iter().chain(workflows).enumerate() {
+        for (order, (index, _, _)) in workflows.into_iter().enumerate() {
             self.nodes[index].sibling_order = order as u64;
         }
     }
@@ -740,10 +629,6 @@ impl WorkspaceTree {
 pub struct WorkspaceTreeProjector;
 
 impl WorkspaceTreeProjector {
-    pub fn session_node_id(session_id: &str) -> String {
-        opaque_node_id(&format!("session\0{session_id}"))
-    }
-
     pub fn project(
         tree: &mut WorkspaceTree,
         facts: impl IntoIterator<Item = WorkspaceStructureFact>,
@@ -752,22 +637,6 @@ impl WorkspaceTreeProjector {
         for fact in facts {
             applied_fact = true;
             match fact {
-                WorkspaceStructureFact::SessionProjected(session) => {
-                    tree.apply_session(session)?;
-                }
-                WorkspaceStructureFact::SessionRemoved { session_id } => {
-                    if let Some(node) = tree.session_node(&session_id).cloned() {
-                        if node.kind == WorkspaceNodeKind::Session {
-                            tree.remove_subtree(&node.id);
-                        } else if let Some(bound) = tree
-                            .nodes
-                            .iter_mut()
-                            .find(|candidate| candidate.id == node.id)
-                        {
-                            bound.session_id = None;
-                        }
-                    }
-                }
                 WorkspaceStructureFact::WorkflowStarted {
                     execution_id,
                     workflow_name,
@@ -1063,17 +932,6 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
         .as_deref()
         .is_some_and(|name| !name.is_empty());
     match node.kind {
-        WorkspaceNodeKind::Session => {
-            node.parent_id.is_none()
-                && node.session_id.as_deref().is_some_and(|id| !id.is_empty())
-                && !has_execution
-                && !has_node_execution
-                && !has_node_name
-                && node.attempt.is_none()
-                && node.recovery_owner_reason.is_none()
-                && node.display_command.is_none()
-                && node.command_result.is_none()
-        }
         WorkspaceNodeKind::Workflow => {
             node.parent_id.is_none()
                 && has_execution
@@ -1122,17 +980,6 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.session_id.is_none()
                 && node.recovery_owner_reason.is_none()
         }
-    }
-}
-
-fn session_status(state: WorkspaceSessionState) -> WorkspaceNodeStatus {
-    match state {
-        WorkspaceSessionState::Active => WorkspaceNodeStatus::Running,
-        WorkspaceSessionState::Idle => WorkspaceNodeStatus::Waiting,
-        WorkspaceSessionState::Done
-        | WorkspaceSessionState::Closed
-        | WorkspaceSessionState::Archived => WorkspaceNodeStatus::Completed,
-        WorkspaceSessionState::Error => WorkspaceNodeStatus::Error,
     }
 }
 
@@ -1255,10 +1102,6 @@ fn workflow_occurrence(nodes: &[WorkspaceTreeNode], fanout_id: &str) -> usize {
                 && node.sibling_order < fanout.sibling_order
         })
         .count()
-}
-
-fn opaque_node_id(semantic_key: &str) -> String {
-    opaque_id("node", semantic_key)
 }
 
 fn opaque_workflow_node_id(
@@ -1417,39 +1260,56 @@ mod tests {
 
     #[test]
     fn workspace_tree_rejects_duplicate_session_binding() {
-        let node = WorkspaceTreeNode {
-            id: "a".to_string(),
-            parent_id: None,
-            sibling_order: 0,
-            kind: WorkspaceNodeKind::Session,
-            title: "a".to_string(),
-            status: WorkspaceNodeStatus::Waiting,
-            error_reason: None,
-            updated_at_bits: 0.0f64.to_bits(),
-            execution_id: None,
-            node_execution_id: None,
-            node_name: None,
-            attempt: None,
-            completion_signals: Default::default(),
-            has_artifact: false,
-            session_id: Some("session".to_string()),
-            can_approve: false,
-            can_retry: false,
-            can_close: true,
-            can_stop: false,
-            can_resume: false,
-            recovery_owner_reason: None,
-            resume_unavailable_reason: None,
-            can_abort: false,
-            can_archive: false,
-            display_command: None,
-            command_result: None,
-            dynamic_fanout: false,
-        };
-        let mut duplicate = node.clone();
-        duplicate.id = "b".to_string();
+        let execution_id = "00000000-0000-4000-8000-0000000000c1";
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "review".to_string(),
+                    worktree_path: "/repo".to_string(),
+                    definition: definition(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "node-a".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "node-b".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 2,
+                    fanout_parent: None,
+                    timestamp: 3.0,
+                },
+                WorkspaceStructureFact::NodeAgentBound {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "node-a".to_string(),
+                    session_id: "session".to_string(),
+                    timestamp: 4.0,
+                },
+            ],
+        )
+        .unwrap();
+
         assert!(matches!(
-            WorkspaceTree::restore("/repo", vec![node, duplicate]),
+            WorkspaceTreeProjector::project(
+                &mut tree,
+                [WorkspaceStructureFact::NodeAgentBound {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "node-b".to_string(),
+                    session_id: "session".to_string(),
+                    timestamp: 5.0,
+                }],
+            ),
             Err(WorkspaceTreeError::DuplicateSession(_))
         ));
     }
@@ -1497,45 +1357,36 @@ mod tests {
         tree
     }
 
-    fn workflow_session_fact(
+    fn workflow_session_binding(
         session_id: &str,
         execution_id: &str,
         node_execution_id: &str,
-        state: WorkspaceSessionState,
         updated_at: f64,
     ) -> WorkspaceStructureFact {
-        WorkspaceStructureFact::SessionProjected(WorkspaceSessionFact {
-            id: session_id.to_string(),
-            worktree_path: "/repo".to_string(),
-            state,
-            error_reason: (state == WorkspaceSessionState::Error)
-                .then(|| "session failed".to_string()),
-            updated_at_bits: updated_at.to_bits(),
-            title: Some("Plan".to_string()),
-            first_message: String::new(),
-            workflow_node_session: true,
-            workflow_execution_id: Some(execution_id.to_string()),
-            workflow_node_execution_id: Some(node_execution_id.to_string()),
-            unresolved_recovery_reason: None,
-        })
+        WorkspaceStructureFact::NodeAgentBound {
+            execution_id: execution_id.to_string(),
+            node_execution_id: node_execution_id.to_string(),
+            session_id: session_id.to_string(),
+            timestamp: updated_at,
+        }
     }
 
     #[test]
-    fn workflow_session_fact_does_not_bind_an_execution_and_node_from_different_runs() {
+    fn workflow_session_binding_rejects_an_execution_and_node_from_different_runs() {
         let mut tree = two_execution_session_tree();
 
-        WorkspaceTreeProjector::project(
+        let error = WorkspaceTreeProjector::project(
             &mut tree,
-            [workflow_session_fact(
+            [workflow_session_binding(
                 "crossed-session",
                 "00000000-0000-4000-8000-0000000000a1",
                 "node-b",
-                WorkspaceSessionState::Active,
                 5.0,
             )],
         )
-        .unwrap();
+        .unwrap_err();
 
+        assert!(matches!(error, WorkspaceTreeError::MissingNodeExecution(_)));
         assert!(tree
             .nodes()
             .iter()
@@ -1543,16 +1394,15 @@ mod tests {
     }
 
     #[test]
-    fn workflow_session_fact_binds_a_matching_execution_and_node_pair() {
+    fn workflow_session_binding_binds_a_matching_execution_and_node_pair() {
         let mut tree = two_execution_session_tree();
 
         WorkspaceTreeProjector::project(
             &mut tree,
-            [workflow_session_fact(
+            [workflow_session_binding(
                 "matched-session",
                 "00000000-0000-4000-8000-0000000000b1",
                 "node-b",
-                WorkspaceSessionState::Active,
                 5.0,
             )],
         )
@@ -1567,32 +1417,31 @@ mod tests {
     }
 
     #[test]
-    fn workflow_session_fact_rebinds_without_overwriting_node_lifecycle_state() {
+    fn workflow_session_binding_rejects_duplicate_session_identity() {
         let mut tree = two_execution_session_tree();
         WorkspaceTreeProjector::project(
             &mut tree,
-            [workflow_session_fact(
+            [workflow_session_binding(
                 "rebound-session",
                 "00000000-0000-4000-8000-0000000000a1",
                 "node-a",
-                WorkspaceSessionState::Active,
                 5.0,
             )],
         )
         .unwrap();
 
-        WorkspaceTreeProjector::project(
+        let error = WorkspaceTreeProjector::project(
             &mut tree,
-            [workflow_session_fact(
+            [workflow_session_binding(
                 "rebound-session",
-                "unrelated-execution",
-                "unrelated-node",
-                WorkspaceSessionState::Error,
+                "00000000-0000-4000-8000-0000000000b1",
+                "node-b",
                 6.0,
             )],
         )
-        .unwrap();
+        .unwrap_err();
 
+        assert!(matches!(error, WorkspaceTreeError::DuplicateSession(_)));
         let node = tree.session_node("rebound-session").unwrap();
         assert_eq!(
             node.execution_id.as_deref(),
@@ -1601,43 +1450,11 @@ mod tests {
         assert_eq!(node.node_execution_id.as_deref(), Some("node-a"));
         assert_eq!(node.status, WorkspaceNodeStatus::Running);
         assert_eq!(node.error_reason, None);
-        assert_eq!(node.updated_at_bits, 6.0f64.to_bits());
+        assert_eq!(node.updated_at_bits, 5.0f64.to_bits());
     }
 
     #[test]
-    fn closed_direct_session_leaves_tree_but_closed_workflow_session_keeps_structure() {
-        let direct_fact = |state| WorkspaceSessionFact {
-            id: "direct-session".to_string(),
-            worktree_path: "/repo".to_string(),
-            state,
-            error_reason: None,
-            updated_at_bits: 4.0f64.to_bits(),
-            title: Some("Direct".to_string()),
-            first_message: "Direct".to_string(),
-            workflow_node_session: false,
-            workflow_execution_id: None,
-            workflow_node_execution_id: None,
-            unresolved_recovery_reason: None,
-        };
-        let mut direct_tree = WorkspaceTree::empty("/repo");
-        WorkspaceTreeProjector::project(
-            &mut direct_tree,
-            [WorkspaceStructureFact::SessionProjected(direct_fact(
-                WorkspaceSessionState::Idle,
-            ))],
-        )
-        .unwrap();
-        assert_eq!(direct_tree.nodes().len(), 1);
-
-        WorkspaceTreeProjector::project(
-            &mut direct_tree,
-            [WorkspaceStructureFact::SessionProjected(direct_fact(
-                WorkspaceSessionState::Closed,
-            ))],
-        )
-        .unwrap();
-        assert!(direct_tree.nodes().is_empty());
-
+    fn completed_workflow_session_keeps_agent_session_binding() {
         let execution_id = "00000000-0000-4000-8000-000000000001";
         let mut workflow_tree = WorkspaceTree::empty("/repo");
         WorkspaceTreeProjector::project(
@@ -1665,19 +1482,11 @@ mod tests {
                     session_id: "workflow-session".to_string(),
                     timestamp: 3.0,
                 },
-                WorkspaceStructureFact::SessionProjected(WorkspaceSessionFact {
-                    id: "workflow-session".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    state: WorkspaceSessionState::Closed,
-                    error_reason: None,
-                    updated_at_bits: 4.0f64.to_bits(),
-                    title: Some("Plan".to_string()),
-                    first_message: "Plan".to_string(),
-                    workflow_node_session: true,
-                    workflow_execution_id: Some(execution_id.to_string()),
-                    workflow_node_execution_id: Some("node-execution".to_string()),
-                    unresolved_recovery_reason: None,
-                }),
+                WorkspaceStructureFact::NodeCompleted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "node-execution".to_string(),
+                    timestamp: 4.0,
+                },
             ],
         )
         .unwrap();
@@ -1709,21 +1518,6 @@ mod tests {
     #[test]
     fn workflow_recovery_reason_is_derived_from_stable_owner_order() {
         let execution_id = "00000000-0000-4000-8000-000000000001";
-        let session_fact = |session_id: &str, node_execution_id: &str, reason: Option<&str>| {
-            WorkspaceSessionFact {
-                id: session_id.to_string(),
-                worktree_path: "/repo".to_string(),
-                state: WorkspaceSessionState::Idle,
-                error_reason: None,
-                updated_at_bits: 4.0f64.to_bits(),
-                title: None,
-                first_message: String::new(),
-                workflow_node_session: true,
-                workflow_execution_id: Some(execution_id.to_string()),
-                workflow_node_execution_id: Some(node_execution_id.to_string()),
-                unresolved_recovery_reason: reason.map(str::to_string),
-            }
-        };
         let mut tree = WorkspaceTree::empty("/repo");
         WorkspaceTreeProjector::project(
             &mut tree,
@@ -1765,16 +1559,14 @@ mod tests {
                     session_id: "session-a".to_string(),
                     timestamp: 3.0,
                 },
-                WorkspaceStructureFact::SessionProjected(session_fact(
-                    "session-z",
-                    "n-z",
-                    Some("session-z recovery"),
-                )),
-                WorkspaceStructureFact::SessionProjected(session_fact(
-                    "session-a",
-                    "n-a",
-                    Some("session-a recovery"),
-                )),
+                WorkspaceStructureFact::RecoveryFenceProjected {
+                    owner: "session-z".to_string(),
+                    reason: Some("session-z recovery".to_string()),
+                },
+                WorkspaceStructureFact::RecoveryFenceProjected {
+                    owner: "session-a".to_string(),
+                    reason: Some("session-a recovery".to_string()),
+                },
                 WorkspaceStructureFact::RecoveryFenceProjected {
                     owner: execution_id.to_string(),
                     reason: Some("execution recovery".to_string()),
@@ -2226,19 +2018,6 @@ mod tests {
                     node_execution_id: "test".to_string(),
                     timestamp: 9.0,
                 },
-                WorkspaceStructureFact::SessionProjected(WorkspaceSessionFact {
-                    id: "plan-session".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    state: WorkspaceSessionState::Active,
-                    error_reason: None,
-                    updated_at_bits: 10.0f64.to_bits(),
-                    title: Some("Plan".to_string()),
-                    first_message: String::new(),
-                    workflow_node_session: true,
-                    workflow_execution_id: Some(execution_id.to_string()),
-                    workflow_node_execution_id: Some("plan".to_string()),
-                    unresolved_recovery_reason: None,
-                }),
                 WorkspaceStructureFact::WorkflowSummaryProjected {
                     execution_id: execution_id.to_string(),
                     workflow_name: "review".to_string(),
@@ -2366,22 +2145,7 @@ mod tests {
     }
 
     #[test]
-    fn root_order_and_opaque_ids_match_the_audit_golden() {
-        let direct = |id: &str, title: &str, updated_at: f64| {
-            WorkspaceStructureFact::SessionProjected(WorkspaceSessionFact {
-                id: id.to_string(),
-                worktree_path: "/repo".to_string(),
-                state: WorkspaceSessionState::Idle,
-                error_reason: None,
-                updated_at_bits: updated_at.to_bits(),
-                title: Some(title.to_string()),
-                first_message: title.to_string(),
-                workflow_node_session: false,
-                workflow_execution_id: None,
-                workflow_node_execution_id: None,
-                unresolved_recovery_reason: None,
-            })
-        };
+    fn workflow_root_order_matches_the_audit_golden() {
         let mut tree = WorkspaceTree::empty("/repo");
 
         WorkspaceTreeProjector::project(
@@ -2394,15 +2158,13 @@ mod tests {
                     definition: definition(),
                     timestamp: 1.0,
                 },
-                direct("session-beta", "beta", 2.0),
                 WorkspaceStructureFact::WorkflowStarted {
                     execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
                     workflow_name: "Echo".to_string(),
                     worktree_path: "/repo".to_string(),
                     definition: definition(),
-                    timestamp: 3.0,
+                    timestamp: 2.0,
                 },
-                direct("session-alpha", "Alpha", 4.0),
             ],
         )
         .unwrap();
@@ -2419,8 +2181,6 @@ mod tests {
                 .map(|node| (node.id.as_str(), node.title.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("node-25e8040f94a3a76d0f57303c2ed95343", "Alpha",),
-                ("node-6383f1571670eb90ad7bdde81c9c4126", "beta",),
                 ("00000000-0000-4000-8000-000000000001", "Echo"),
                 ("00000000-0000-4000-8000-000000000002", "zeta"),
             ]
@@ -2528,21 +2288,6 @@ mod tests {
     #[test]
     fn repeated_session_occurrences_keep_distinct_session_detail_and_lookup() {
         let execution_id = "00000000-0000-4000-8000-000000000013";
-        let session_fact = |id: &str, node_execution_id: &str, state| {
-            WorkspaceStructureFact::SessionProjected(WorkspaceSessionFact {
-                id: id.to_string(),
-                worktree_path: "/repo".to_string(),
-                state,
-                error_reason: None,
-                updated_at_bits: 5.0f64.to_bits(),
-                title: Some("Review".to_string()),
-                first_message: String::new(),
-                workflow_node_session: true,
-                workflow_execution_id: Some(execution_id.to_string()),
-                workflow_node_execution_id: Some(node_execution_id.to_string()),
-                unresolved_recovery_reason: None,
-            })
-        };
         let mut tree = WorkspaceTree::empty("/repo");
         WorkspaceTreeProjector::project(
             &mut tree,
@@ -2589,16 +2334,6 @@ mod tests {
                     session_id: "stored-session-2".to_string(),
                     timestamp: 4.0,
                 },
-                session_fact(
-                    "stored-session-1",
-                    "session-occurrence-1",
-                    WorkspaceSessionState::Done,
-                ),
-                session_fact(
-                    "stored-session-2",
-                    "session-occurrence-2",
-                    WorkspaceSessionState::Active,
-                ),
             ],
         )
         .unwrap();
@@ -2645,32 +2380,5 @@ mod tests {
             .unwrap();
         assert_eq!(node.session_id, None);
         assert!(!node.can_close);
-    }
-
-    #[test]
-    fn direct_session_error_reason_is_preserved_for_badge_and_detail_reads() {
-        let mut tree = WorkspaceTree::empty("/repo");
-        WorkspaceTreeProjector::project(
-            &mut tree,
-            [WorkspaceStructureFact::SessionProjected(
-                WorkspaceSessionFact {
-                    id: "errored-session".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    state: WorkspaceSessionState::Error,
-                    error_reason: Some("provider failed".to_string()),
-                    updated_at_bits: 2.0f64.to_bits(),
-                    title: Some("Errored".to_string()),
-                    first_message: "Errored".to_string(),
-                    workflow_node_session: false,
-                    workflow_execution_id: None,
-                    workflow_node_execution_id: None,
-                    unresolved_recovery_reason: None,
-                },
-            )],
-        )
-        .unwrap();
-        let node = tree.session_node("errored-session").unwrap();
-        assert_eq!(node.status, WorkspaceNodeStatus::Error);
-        assert_eq!(node.error_reason.as_deref(), Some("provider failed"));
     }
 }

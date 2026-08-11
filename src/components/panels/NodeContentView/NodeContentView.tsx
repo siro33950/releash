@@ -2,17 +2,14 @@ import { AlertTriangle } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
-import { ProviderAgentSessionRoute } from "@/components/panels/ProviderAgentSessionPanel";
+import { AgentSessionRoute } from "@/components/panels/AgentSessionPanel";
 import { Button } from "@/components/ui/button";
 import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
-import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import {
 	approveWorkspaceNode,
 	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
-import type { AgentEditorSelection, MentionReference } from "@/types/session";
 import type { Theme } from "@/types/settings";
 import type {
 	WorkspaceCommandNodeContent,
@@ -25,18 +22,6 @@ interface NodeContentViewProps {
 	theme?: Theme;
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
-	activeEditorPath?: string | null;
-	openEditorPaths?: string[];
-	activeEditorSelection?: AgentEditorSelection | null;
-	registerDropZone: (
-		zone: DropZoneType,
-		element: HTMLElement | null,
-		onDrop?: (paths: string[]) => void,
-	) => void;
-	sendMessageRef?: React.MutableRefObject<
-		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
-	>;
-	onOpenDiffFile?: (filePath: string) => void;
 	onNodeMissing?: (worktreePath: string, nodeId: string) => void;
 }
 
@@ -46,12 +31,6 @@ export function NodeContentView({
 	theme,
 	leftPanels,
 	rightSlot,
-	activeEditorPath,
-	openEditorPaths,
-	activeEditorSelection,
-	registerDropZone,
-	sendMessageRef,
-	onOpenDiffFile,
 	onNodeMissing,
 }: NodeContentViewProps) {
 	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
@@ -75,9 +54,9 @@ export function NodeContentView({
 			/>
 			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				{detail ? (
-					detail.content.kind === "providerAgentSession" ? (
+					detail.content.kind === "agentSession" ? (
 						detail.content.sessionId ? (
-							<ProviderAgentSessionRoute
+							<AgentSessionRoute
 								agentSessionId={detail.content.sessionId}
 								theme={theme}
 							/>
@@ -90,30 +69,10 @@ export function NodeContentView({
 								}
 							/>
 						)
-					) : detail.content.kind === "session" ? (
-						detail.content.sessionId ? (
-							<BoundSessionChat
-								sessionId={detail.content.sessionId}
-								worktreePath={worktreePath}
-								activeEditorPath={activeEditorPath}
-								openEditorPaths={openEditorPaths}
-								activeEditorSelection={activeEditorSelection}
-								registerDropZone={registerDropZone}
-								dropZoneName="agent"
-								sendMessageRef={sendMessageRef}
-								onOpenDiffFile={onOpenDiffFile}
-							/>
-						) : (
-							<NodeEmptyState
-								message={
-									detail.status === "queued"
-										? "This session has not started yet."
-										: "Session unavailable."
-								}
-							/>
-						)
-					) : (
+					) : detail.content.kind === "command" ? (
 						<CommandNodeContent detail={detail} content={detail.content} />
+					) : (
+						<NodeEmptyState message="Session unavailable." />
 					)
 				) : (
 					<NodeEmptyState

@@ -46,16 +46,6 @@ describe("SettingsModal", () => {
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: false,
@@ -86,7 +76,6 @@ describe("SettingsModal", () => {
 						],
 					});
 				case "update_workflow_config":
-				case "update_notify_config":
 					return Promise.resolve(null);
 				case "get_external_editor":
 					return Promise.resolve("");
@@ -156,9 +145,7 @@ describe("SettingsModal", () => {
 
 	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
-
-		render(<SettingsModal {...defaultProps} settings={claudeSettings} />);
+		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
 		expect(screen.queryByText("Claude Code Hooks")).not.toBeInTheDocument();
@@ -180,7 +167,7 @@ describe("SettingsModal", () => {
 		expect(
 			await screen.findByText("Provider CLI availability"),
 		).toBeInTheDocument();
-		expect(screen.getByText("Claude")).toBeInTheDocument();
+		expect(await screen.findByText("Claude")).toBeInTheDocument();
 		expect(screen.getAllByText("/opt/custom/claude").length).toBeGreaterThan(0);
 		expect(screen.getByText("not_found")).toBeInTheDocument();
 	});
@@ -190,7 +177,7 @@ describe("SettingsModal", () => {
 		fireEvent.click(screen.getByText("Agent"));
 
 		await screen.findByText("Provider CLI availability");
-		expect(screen.getAllByText("Provider ID")).toHaveLength(2);
+		expect(await screen.findAllByText("Provider ID")).toHaveLength(2);
 		expect(screen.getAllByText("Default")).toHaveLength(2);
 		expect(screen.getAllByText("claude", { selector: "span" })).toHaveLength(2);
 		expect(screen.getAllByText("codex", { selector: "span" })).toHaveLength(3);
@@ -543,17 +530,10 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should display Notifications in nav", () => {
+	it("does not expose the removed Notifications settings", () => {
 		render(<SettingsModal {...defaultProps} />);
-		expect(screen.getByText("Notifications")).toBeInTheDocument();
-	});
-
-	it("should display Webhook URL input field with url type", async () => {
-		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Notifications"));
-		const input = await screen.findByLabelText("Webhook URL");
-		expect(input).toBeInTheDocument();
-		expect(input).toHaveAttribute("type", "url");
+		expect(screen.queryByText("Notifications")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Webhook URL")).not.toBeInTheDocument();
 	});
 
 	it("should show Appearance section by default", () => {
@@ -599,16 +579,6 @@ describe("SettingsModal", () => {
 					]);
 				case "get_releash_base":
 					return Promise.resolve(null);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -625,50 +595,26 @@ describe("SettingsModal", () => {
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "get_workflow_config":
 					return Promise.resolve({
 						approval_auto_approve: true,
 					});
 				case "update_workflow_config":
-				case "update_notify_config":
 					return Promise.resolve(null);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
-		render(
-			<SettingsModal
-				{...defaultProps}
-				settings={{
-					...defaultSettings,
-					agent: "codex",
-					agentAutoApprove: false,
-				}}
-			/>,
-		);
+		render(<SettingsModal {...defaultProps} />);
 		const nav = screen.getByRole("navigation");
 		fireEvent.click(within(nav).getByText("Agent"));
 		const workflowCheckbox = await screen.findByRole("checkbox", {
 			name: "Approval gate auto-approve",
 		});
-		const agentCheckbox = screen.getByRole("checkbox", {
-			name: "Auto-approve",
-		});
 		await waitFor(() => {
 			expect(workflowCheckbox).toBeChecked();
 		});
-		expect(agentCheckbox).not.toBeChecked();
 
 		await user.click(workflowCheckbox);
 		await user.click(screen.getByRole("button", { name: "Save" }));
@@ -693,16 +639,6 @@ describe("SettingsModal", () => {
 						},
 						{ name: "Cursor", path: "/Applications/Cursor.app" },
 					]);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				case "update_external_editor":
 					return Promise.resolve(null);
 				default:
@@ -743,16 +679,6 @@ describe("SettingsModal", () => {
 					return Promise.resolve(null);
 				case "set_releash_base":
 					return Promise.resolve(null);
-				case "get_notify_config":
-					return Promise.resolve({
-						webhook_url: "",
-						on_running: false,
-						on_done: true,
-						on_error: true,
-						on_waiting: true,
-						desktop_mode: "always",
-						inactive_timeout_minutes: 2,
-					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -978,16 +904,6 @@ describe("SettingsModal", () => {
 						return Promise.resolve([{ name: "main", is_remote: false }]);
 					case "get_releash_base":
 						return Promise.resolve(null);
-					case "get_notify_config":
-						return Promise.resolve({
-							webhook_url: "",
-							on_running: false,
-							on_done: true,
-							on_error: true,
-							on_waiting: true,
-							desktop_mode: "always",
-							inactive_timeout_minutes: 2,
-						});
 					default:
 						return Promise.resolve(null);
 				}

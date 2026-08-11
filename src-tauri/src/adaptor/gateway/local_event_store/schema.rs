@@ -340,57 +340,6 @@ fn create_store_metadata(
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn downgrade_workspace_query_schema_fixture_to_v2(
-    connection: &Connection,
-) -> Result<(), rusqlite::Error> {
-    connection.execute_batch("BEGIN IMMEDIATE;")?;
-    let downgrade = (|| {
-        connection.execute_batch(
-            "DROP TABLE workflow_execution_nodes;
-             DROP TABLE workflow_executions;
-             DROP INDEX idx_session_projection_public_list;
-             DROP INDEX idx_session_projection_public_node;
-             ALTER TABLE session_projection RENAME TO session_projection_v3;
-             CREATE TABLE session_projection (
-                 session_id TEXT PRIMARY KEY,
-                 projection TEXT NOT NULL,
-                 revision INTEGER NOT NULL CHECK (revision >= 0),
-                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-             );
-             INSERT INTO session_projection
-                 (session_id, projection, revision, commit_id)
-             SELECT session_id, projection, revision, commit_id
-             FROM session_projection_v3;
-             DROP TABLE session_projection_v3;
-             ALTER TABLE store_metadata RENAME TO store_metadata_v3;",
-        )?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 2)?;
-        connection.execute(
-            "INSERT INTO store_metadata (
-                 id, schema_version, installation_id, created_at_ms,
-                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
-                 next_global_sequence, health, current_shutdown_id,
-                 shutdown_pointer_revision
-             )
-             SELECT id, 2, installation_id, created_at_ms,
-                    cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
-                    next_global_sequence, health, current_shutdown_id,
-                    shutdown_pointer_revision
-             FROM store_metadata_v3",
-            [],
-        )?;
-        connection.execute_batch("DROP TABLE store_metadata_v3; PRAGMA user_version = 2;")
-    })();
-    match downgrade {
-        Ok(()) => connection.execute_batch("COMMIT;"),
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK;");
-            Err(error)
-        }
-    }
-}
-
 pub struct InitialStoreMetadata<'a> {
     pub installation_id: &'a str,
     pub cursor_hmac_key: &'a [u8; 32],

@@ -12,7 +12,7 @@ use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSink;
 pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     activity_tap: Arc<
-        crate::adaptor::controller::provider_agent_session_activity_observer::ProviderAgentSessionActivityEventTap,
+        crate::adaptor::controller::agent_session_activity_observer::AgentSessionActivityEventTap,
     >,
 }
 
@@ -92,7 +92,7 @@ impl TerminalSurfaceRuntime {
         let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
             .disable_terminal_journal;
         let activity_tap = Arc::new(
-            crate::adaptor::controller::provider_agent_session_activity_observer::ProviderAgentSessionActivityEventTap::new(
+            crate::adaptor::controller::agent_session_activity_observer::AgentSessionActivityEventTap::new(
                 event_sink,
             ),
         );
@@ -124,7 +124,7 @@ impl TerminalSurfaceRuntime {
     /// 完了するため、bind でサイクルを断つ。
     pub(crate) fn bind_agent_session_activity(
         &self,
-        activity: Arc<crate::usecase::agent_session::ProviderAgentSessionActivityUsecase>,
+        activity: Arc<crate::usecase::agent_session::AgentSessionActivityUsecase>,
     ) {
         self.activity_tap.bind(activity);
     }

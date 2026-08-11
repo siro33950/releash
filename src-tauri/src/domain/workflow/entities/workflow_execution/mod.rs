@@ -117,15 +117,8 @@ impl FanoutChildRuntimeState {
     }
 }
 
-/// Workflow-level defaults captured when an execution starts.
-///
-/// These values affect future node activation and therefore belong to the
-/// execution aggregate rather than to an agent-session gateway.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkflowDefaults {
-    pub backend_id: Option<String>,
-    pub permission_mode: String,
-}
+pub struct WorkflowDefaults;
 
 /// A non-terminal stall observation retained by the execution aggregate.
 #[derive(Debug, Clone, PartialEq)]
@@ -203,16 +196,6 @@ impl RuntimeNodeExecution {
 
     pub fn can_restart_paused_command(&self) -> bool {
         self.kind == NodeKindName::Command && self.status == RuntimeNodeExecutionStatus::Paused
-    }
-
-    #[cfg(test)]
-    pub fn replay_started(&mut self) -> TransitionOutcome {
-        if self.status == RuntimeNodeExecutionStatus::Running {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        self.status = RuntimeNodeExecutionStatus::Running;
-        self.completed_at = None;
-        TransitionOutcome::Applied
     }
 
     pub fn attach_session(&mut self, session_id: String) -> TransitionOutcome {
@@ -447,7 +430,7 @@ impl Default for WorkflowExecutionRestore {
             node_execution_counts: HashMap::new(),
             loop_guard_reset_baselines: LoopGuardResetBaselines::default(),
             node_history: Vec::new(),
-            workflow_defaults: WorkflowDefaults::default(),
+            workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
             created_from: ExecutionOrigin::DesktopUi,
             error_reason: None,
@@ -539,7 +522,6 @@ pub enum TransitionRejection {
     #[cfg(test)]
     NotWaitingApproval,
     ArtifactNotAccepted,
-    WorkflowTurnNotAuthorized,
 }
 
 /// Canonical fact derived from an observed turn result.
@@ -589,36 +571,6 @@ pub enum ExecutionAdvanceDecision {
     Persist,
     StartFanout,
     TransitionAndStart,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum LoopGuardResult {
-    Allowed,
-    Exceeded {
-        max_iterations: u32,
-        count: u32,
-        on_exhausted: Option<String>,
-    },
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum TurnCompleteAction {
-    SessionError {
-        node_name: String,
-        exit_code: i64,
-        kind: NodeExecutionFailureKind,
-    },
-    AutoEvaluate {
-        node_name: String,
-    },
-    WaitApproval,
-    UnexpectedNodeKind {
-        node_name: String,
-        kind: NodeKindName,
-    },
-    NotRunning,
 }
 
 /// Aggregate that owns the workflow execution lifecycle state.
@@ -1201,117 +1153,6 @@ impl WorkflowExecution {
             .cloned()
     }
 
-    #[cfg(test)]
-    pub fn check_loop_guard(
-        &self,
-        target_node_name: &str,
-    ) -> Result<LoopGuardResult, crate::domain::workflow::WorkflowError> {
-        let decision = workflow_routing::guarded_target_with_reset_baselines(
-            &self.runtime.workflow,
-            target_node_name.to_string(),
-            &self.runtime.node_execution_counts,
-            &self.runtime.loop_guard_reset_baselines,
-        )?;
-        if matches!(
-            decision,
-            workflow_routing::RouteDecision::TransitionTo(ref name) if name == target_node_name
-        ) {
-            return Ok(LoopGuardResult::Allowed);
-        }
-        let node = self
-            .runtime
-            .workflow
-            .nodes
-            .iter()
-            .find(|node| node.name == target_node_name)
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::validation(format!(
-                    "Node '{target_node_name}' not found in workflow"
-                ))
-            })?;
-        let Some((max_iterations, on_exhausted, reset_on)) = workflow_routing::loop_guard(node)
-        else {
-            return Ok(LoopGuardResult::Allowed);
-        };
-        let cumulative_count = self
-            .runtime
-            .node_execution_counts
-            .get(target_node_name)
-            .copied()
-            .unwrap_or(0);
-        let count = self.runtime.loop_guard_reset_baselines.execution_count(
-            target_node_name,
-            cumulative_count,
-            reset_on,
-        );
-        Ok(LoopGuardResult::Exceeded {
-            max_iterations,
-            count,
-            on_exhausted: Some(on_exhausted.to_string()),
-        })
-    }
-
-    #[cfg(test)]
-    pub fn decide_turn_complete_action(&self, exit_code: i64) -> TurnCompleteAction {
-        let action = workflow_transition::decide_turn_complete_action(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            &self.state,
-            exit_code,
-        )
-        .expect("current node index must reference workflow node");
-        match action {
-            workflow_transition::TurnCompleteDecision::NotRunning => TurnCompleteAction::NotRunning,
-            workflow_transition::TurnCompleteDecision::SessionError {
-                node_name,
-                exit_code,
-                kind,
-            } => TurnCompleteAction::SessionError {
-                node_name,
-                exit_code,
-                kind,
-            },
-            workflow_transition::TurnCompleteDecision::AutoEvaluate { node_name } => {
-                TurnCompleteAction::AutoEvaluate { node_name }
-            }
-            workflow_transition::TurnCompleteDecision::WaitApproval => {
-                TurnCompleteAction::WaitApproval
-            }
-            workflow_transition::TurnCompleteDecision::UnexpectedNodeKind { node_name, kind } => {
-                TurnCompleteAction::UnexpectedNodeKind { node_name, kind }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub fn decide_approve_action(&self) -> Result<(), crate::domain::workflow::WorkflowError> {
-        workflow_transition::decide_approve_action(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            self.runtime.node_executions.iter().rev().any(|execution| {
-                execution.fanout_parent.is_none()
-                    && execution.node_name
-                        == self.runtime.workflow.nodes[self.runtime.current_node_index].name
-                    && execution.status == RuntimeNodeExecutionStatus::WaitingApproval
-            }),
-        )
-    }
-
-    pub fn plan_turn_complete_mutation(
-        &self,
-        exit_code: i64,
-        failure_signal: Option<workflow_transition::SessionFailureSignal>,
-    ) -> Result<workflow_transition::TurnCompleteMutationPlan, crate::domain::workflow::WorkflowError>
-    {
-        workflow_transition::plan_turn_complete_mutation_with_signal(
-            &self.runtime.workflow,
-            self.runtime.current_node_index,
-            &self.state,
-            exit_code,
-            failure_signal,
-        )
-    }
-
     pub fn plan_approval_application(
         &self,
         application: workflow_transition::ApprovalApplication,
@@ -1593,25 +1434,6 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
         }
         outcome
-    }
-
-    pub fn record_node_token_usage(
-        &mut self,
-        node_execution_id: &str,
-        token_usage: TokenUsage,
-        timestamp: f64,
-    ) -> TransitionOutcome {
-        let Some(execution) = self
-            .runtime
-            .node_executions
-            .iter_mut()
-            .find(|execution| execution.id == node_execution_id)
-        else {
-            return TransitionOutcome::NotApplicable;
-        };
-        execution.token_usage = Some(token_usage);
-        self.runtime.updated_at = timestamp;
-        TransitionOutcome::Applied
     }
 
     pub fn increase_node_attempt_count_to(
@@ -2642,26 +2464,6 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn record_fanout_child_turn_usage(
-        &mut self,
-        parent_node_name: &str,
-        session_id: &str,
-        token_usage: Option<TokenUsage>,
-    ) -> Option<FanoutChildRuntime> {
-        let fanout = self.runtime.fanout_runtime.as_mut()?;
-        if fanout.parent_node_name != parent_node_name {
-            return None;
-        }
-        let child = fanout
-            .children
-            .iter_mut()
-            .find(|child| child.session_id == session_id)?;
-        if let Some(token_usage) = token_usage {
-            child.token_usage.add(&token_usage);
-        }
-        Some(child.clone())
-    }
-
     pub fn fail_fanout_child_execution(
         &mut self,
         node_execution_id: &str,
@@ -2744,10 +2546,6 @@ impl WorkflowExecution {
             .artifacts
             .insert(artifact.node_name.clone(), artifact);
         self.runtime.updated_at = timestamp;
-    }
-
-    pub fn add_current_token_usage(&mut self, usage: &TokenUsage) {
-        self.runtime.current_node_token_usage.add(usage);
     }
 
     pub fn observe_node_stall(&mut self, observation: NodeStallObservation) -> TransitionOutcome {
@@ -2938,49 +2736,7 @@ impl WorkflowExecution {
         TurnCompletionDecision { application, fact }
     }
 
-    #[cfg(test)]
-    pub fn orphan_interrupt(&mut self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => {
-                self.set_interrupted(ExecutionInterruptionReason::Orphan);
-                TransitionOutcome::Applied
-            }
-            #[cfg(test)]
-            ExecutionStateSet::Resumable => TransitionOutcome::NotApplicable,
-            ExecutionStateSet::Finished => TransitionOutcome::NotApplicable,
-        }
-    }
-
-    pub fn admit_workflow_turn(&self, context_authorized: bool) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active if context_authorized => TransitionOutcome::Applied,
-            ExecutionStateSet::Active => {
-                TransitionOutcome::Rejected(TransitionRejection::WorkflowTurnNotAuthorized)
-            }
-            #[cfg(test)]
-            ExecutionStateSet::Resumable => {
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            }
-            ExecutionStateSet::Finished => {
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            }
-        }
-    }
-
-    pub fn observe_stall(&self) -> TransitionOutcome {
-        match self.state_set() {
-            ExecutionStateSet::Active => TransitionOutcome::Applied,
-            #[cfg(test)]
-            ExecutionStateSet::Resumable => TransitionOutcome::NotApplicable,
-            ExecutionStateSet::Finished => TransitionOutcome::NotApplicable,
-        }
-    }
-
     pub fn start_fanout_child(&self) -> TransitionOutcome {
-        self.active_only()
-    }
-
-    pub fn complete_fanout_child(&self) -> TransitionOutcome {
         self.active_only()
     }
 
@@ -3063,26 +2819,6 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
         }
         outcome
-    }
-
-    /// Restores a pre-commit lifecycle snapshot when the enclosing usecase
-    /// transaction did not durably append its decision.
-    #[cfg(test)]
-    pub fn restore_after_failed_commit(
-        &mut self,
-        state: RuntimeExecutionState,
-        interruption_reason: Option<ExecutionInterruptionReason>,
-    ) {
-        self.state = state;
-        self.interruption_reason = interruption_reason;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_state_for_test(&mut self, state: RuntimeExecutionState) {
-        self.state = state;
-        if !matches!(self.state, RuntimeExecutionState::Interrupted) {
-            self.interruption_reason = None;
-        }
     }
 
     fn active_only(&self) -> TransitionOutcome {
@@ -3277,51 +3013,10 @@ mod tests {
     }
 
     #[test]
-    fn operation_state_matrix_orphan_turn_and_stall() {
-        for state in active_states() {
-            let mut active = aggregate(state);
-            assert_eq!(active.orphan_interrupt(), TransitionOutcome::Applied);
-            assert_eq!(active.orphan_interrupt(), TransitionOutcome::NotApplicable);
-        }
-        for state in [RuntimeExecutionState::Interrupted]
-            .into_iter()
-            .chain(finished_states())
-        {
-            assert_eq!(
-                aggregate(state.clone()).orphan_interrupt(),
-                TransitionOutcome::NotApplicable
-            );
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(true),
-                TransitionOutcome::Rejected(TransitionRejection::NotActive)
-            );
-            assert_eq!(
-                aggregate(state).observe_stall(),
-                TransitionOutcome::NotApplicable
-            );
-        }
-        for state in active_states() {
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(true),
-                TransitionOutcome::Applied
-            );
-            assert_eq!(
-                aggregate(state.clone()).admit_workflow_turn(false),
-                TransitionOutcome::Rejected(TransitionRejection::WorkflowTurnNotAuthorized)
-            );
-            assert_eq!(aggregate(state).observe_stall(), TransitionOutcome::Applied);
-        }
-    }
-
-    #[test]
     fn fanout_and_interrupt_cells_are_closed() {
         for state in active_states() {
             let expected = TransitionOutcome::Applied;
             assert_eq!(aggregate(state.clone()).start_fanout_child(), expected);
-            assert_eq!(
-                aggregate(state).complete_fanout_child(),
-                TransitionOutcome::Applied
-            );
         }
         for state in [RuntimeExecutionState::Interrupted]
             .into_iter()
@@ -3332,7 +3027,6 @@ mod tests {
                 aggregate(state.clone()).start_fanout_child(),
                 expected.clone()
             );
-            assert_eq!(aggregate(state).complete_fanout_child(), expected);
         }
 
         let mut running = aggregate(RuntimeExecutionState::Running);

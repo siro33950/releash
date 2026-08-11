@@ -9,7 +9,6 @@ pub(crate) mod file_content;
 pub(crate) mod hunk;
 pub(crate) mod language;
 pub(crate) mod markdown;
-pub(crate) mod mention;
 pub(crate) mod review;
 pub(crate) mod review_blob;
 pub(crate) mod staging;
@@ -43,8 +42,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_relative_path",
     "git_stage",
     "git_unstage",
-    "list_mentionable_files",
-    "sync_mentions_with_text",
 ];
 
 const STALE_REVIEW_GROUP_TARGET_ERROR_CODE: &str = "STALE_REVIEW_GROUP_TARGET";
@@ -80,8 +77,6 @@ pub(crate) fn invoke_handler(
         diff::get_relative_path,
         staging::git_stage,
         staging::git_unstage,
-        mention::list_mentionable_files,
-        mention::sync_mentions_with_text,
     ]
 }
 

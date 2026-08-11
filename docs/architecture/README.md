@@ -46,7 +46,6 @@ src-tauri/src/
 │   ├── presenter/                      # レスポンス整形
 │   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
 ├── infrastructure/                     # 外部世界の都合をその形のまま扱う
-│   ├── agent_session/                  # Agent CLI のプロセスと wire
 │   ├── file_watcher/                   # ファイル監視
 │   ├── git/                            # git2 クライアント
 │   ├── local_api/                      # ローカル HTTP サーバ / クライアント
@@ -80,6 +79,19 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 
 - **同じ操作の実装は 1 つに集約する。** 同一の操作（例: dirty count 算出、worktree 列挙）が複数箇所に実装されていること自体が問題であり、設定差異・挙動差はその症状にすぎない。単一の関数・イテレータに集約し、結果の一致を構造的に保証する。
 
+### Agent TUIの状態所有
+
+- canonical語は `AgentSession` である。
+- Releashは `Turn`、`Message`、`MessagePart`、`PermissionRequest` を所有しない。
+- Provider CLI / transcriptがconversationの正本である。
+- `AgentSession`はlifecycleとTerminal ownershipを所有する。
+- Terminal Surfaceは`Workspace`または`AgentSession`に所有される。
+- `NodeExecution`は`AgentSession`を参照するが所有しない。
+- Workflow completionとAgentSession lifecycleは独立する。
+- Submit / Stop / Approval / ArtifactはWorkflowが所有する。
+- Provider lifecycleとProvider availabilityは別の境界である。
+- 旧Agent GUI specは現行正本ではない。
+
 ## ドメイン一覧（14個）
 
 | ドメイン | 含まれる責務 |
@@ -88,12 +100,11 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
 | `workflow` | ワークフロー定義、実行、facet、承認 |
 | `comment` | diff_comment_store、diff_comment_sender |
-| `agent_session` | agent_sdk、session、agent_status |
+| `agent_session` | AgentSession identity、lifecycle、Provider、Terminal ownership |
 | `terminal_surface` | Terminal の backend 実装（durable terminal surface: PTY runtime lifecycle、attachment、入力 ingress、registry） |
 | `app_config` | 現 config.rs を分解 |
 | `workspace_state` | ワークスペース状態保存 |
 | `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |
-| `notification` | webhook (Slack/Discord)、将来の他チャネル |
 | `remote_access` | vpn_detect、qr_code、tls |
 | `git_host` | GitHub PR/Issue |
 | `notion` | Notion API |

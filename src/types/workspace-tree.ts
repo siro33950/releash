@@ -1,5 +1,4 @@
-import type { ProviderAgentSessionLaunchAttachment } from "./provider-agent-session";
-import type { SessionSummary } from "./session";
+import type { AgentSessionLaunchAttachment } from "./agent-session";
 import type { WorkflowExecutionSummary } from "./workflow";
 
 export type CenterSelection =
@@ -9,28 +8,18 @@ export type CenterSelection =
 			nodeId: string;
 	  }
 	| {
-			kind: "provider_agent_session";
+			kind: "agent_session";
 			worktreePath: string;
 			agentSessionId: string;
-			initialAttachment?: ProviderAgentSessionLaunchAttachment;
+			initialAttachment?: AgentSessionLaunchAttachment;
 	  }
 	| {
-			kind: "provider_agent_session_launching";
+			kind: "agent_session_launching";
 			worktreePath: string;
 			provider: string;
 			launchToken: string;
 			error?: string;
 	  };
-
-export interface NewSessionCreationRequest {
-	requestId: string;
-	worktreePath: string;
-}
-
-export interface NewSessionCreationStatus {
-	pending: boolean;
-	error: string | null;
-}
 
 export type WorkspaceNodeStatus =
 	| "queued"
@@ -105,13 +94,8 @@ export interface WorkspaceTreeSelectionSnapshot {
 	reconciliation: WorkspaceSelectionReconciliation;
 }
 
-export interface WorkspaceSessionNodeContent {
-	kind: "session";
-	sessionId?: string | null;
-}
-
-export interface WorkspaceProviderAgentSessionNodeContent {
-	kind: "providerAgentSession";
+export interface WorkspaceAgentSessionNodeContent {
+	kind: "agentSession";
 	sessionId?: string | null;
 }
 
@@ -129,8 +113,7 @@ export interface WorkspaceCommandNodeContent {
 }
 
 export type WorkspaceNodeContent =
-	| WorkspaceSessionNodeContent
-	| WorkspaceProviderAgentSessionNodeContent
+	| WorkspaceAgentSessionNodeContent
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {
@@ -158,5 +141,3 @@ export interface WorkspaceWorkflowHistoryItem {
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
 }
-
-export type WorkspaceSessionHistoryItem = SessionSummary;

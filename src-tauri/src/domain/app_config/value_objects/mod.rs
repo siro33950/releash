@@ -1,5 +1,3 @@
-pub use crate::domain::notification::NotifyConfig;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfigDocument {
     pub server: ServerConfig,
@@ -14,7 +12,6 @@ pub struct ServerConfig {
     pub port: u16,
     pub token: String,
     pub tls: TlsConfig,
-    pub notify: NotifyConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

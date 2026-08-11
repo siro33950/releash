@@ -194,7 +194,7 @@ mod tests {
                     commit_id: CommitIdentity::parse("c-1").unwrap(),
                     idempotency: IdempotencyBinding {
                         installation_id: "g".to_string(),
-                        operation_kind: OperationKind::Send.into(),
+                        operation_kind: OperationKind::ApplicationQuit.into(),
                         idempotency_key: "k".to_string(),
                         payload_hash: [0; 32],
                     },

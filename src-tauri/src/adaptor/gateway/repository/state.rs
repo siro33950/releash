@@ -6,7 +6,6 @@ use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 use tauri::{Emitter, Runtime};
 
-use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
     RepositoryStateWorkerFuture, RepositoryStateWorkerRuntime, WorktreePathNormalizer,
@@ -179,7 +178,6 @@ fn start_git_watcher(
 fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
     for event in events {
         let event_path = canonicalize_event_path(&event.path);
-        invalidate_instruction_resolution_cache_for_path(Path::new(&event_path));
         state.invalidate(InvalidateReason::file(Some(event_path)));
     }
 }

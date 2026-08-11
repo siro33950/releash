@@ -4,8 +4,6 @@
 //! provider payloads, or unbounded raw errors; adapters must sanitize before
 //! constructing one.
 
-#![allow(dead_code)] // Closed persisted failure vocabulary includes compatibility accessors.
-
 use std::fmt;
 
 pub const NOTICE_LABEL_MAX_BYTES: usize = 160;
@@ -39,16 +37,7 @@ pub enum SessionOperationFailureKind {
 /// the effect failed, succeeded, or never started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SafeEffectObservation {
-    ProviderObservation {
-        observation_ref: String,
-        proof_sha256: [u8; 32],
-    },
-    ConfirmedNoEffect {
-        proof_sha256: [u8; 32],
-    },
-    ExitCoupledOutcomeUnknown {
-        shutdown_id: String,
-    },
+    ExitCoupledOutcomeUnknown { shutdown_id: String },
 }
 
 /// UTF-8 text truncated to a byte bound; keeps a digest of the original when
@@ -56,17 +45,13 @@ pub enum SafeEffectObservation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundedNoticeText {
     value: String,
-    truncated: bool,
-    original_sha256: Option<[u8; 32]>,
 }
 
 impl BoundedNoticeText {
-    fn bounded(raw: &str, max_bytes: usize, original_sha256: Option<[u8; 32]>) -> Self {
+    fn bounded(raw: &str, max_bytes: usize) -> Self {
         if raw.len() <= max_bytes {
             return Self {
                 value: raw.to_string(),
-                truncated: false,
-                original_sha256: None,
             };
         }
         const TRUNCATION_MARKER: &str = "…";
@@ -76,36 +61,21 @@ impl BoundedNoticeText {
         }
         Self {
             value: format!("{}{}", &raw[..cut], TRUNCATION_MARKER),
-            truncated: true,
-            original_sha256,
         }
     }
 
     /// Bounded label text (160 bytes).
     pub fn label(raw: &str) -> Self {
-        Self::bounded(raw, NOTICE_LABEL_MAX_BYTES, None)
+        Self::bounded(raw, NOTICE_LABEL_MAX_BYTES)
     }
 
     /// Bounded detail text (2048 bytes).
     pub fn detail(raw: &str) -> Self {
-        Self::bounded(raw, NOTICE_DETAIL_MAX_BYTES, None)
-    }
-
-    /// Bounded detail with a digest of the untruncated original.
-    pub fn detail_with_digest(raw: &str, original_sha256: [u8; 32]) -> Self {
-        Self::bounded(raw, NOTICE_DETAIL_MAX_BYTES, Some(original_sha256))
+        Self::bounded(raw, NOTICE_DETAIL_MAX_BYTES)
     }
 
     pub fn value(&self) -> &str {
         &self.value
-    }
-
-    pub fn truncated(&self) -> bool {
-        self.truncated
-    }
-
-    pub fn original_sha256(&self) -> Option<&[u8; 32]> {
-        self.original_sha256.as_ref()
     }
 }
 
@@ -170,7 +140,6 @@ mod tests {
     fn label_truncates_on_char_boundary() {
         let raw = "あ".repeat(100); // 300 bytes
         let text = BoundedNoticeText::label(&raw);
-        assert!(text.truncated());
         assert!(text.value().len() <= NOTICE_LABEL_MAX_BYTES);
         assert!(text.value().ends_with('…'));
         assert!(text
@@ -183,16 +152,13 @@ mod tests {
     #[test]
     fn short_text_is_not_truncated() {
         let text = BoundedNoticeText::detail("ok");
-        assert!(!text.truncated());
         assert_eq!(text.value(), "ok");
-        assert!(text.original_sha256().is_none());
     }
 
     #[test]
     fn detail_truncates_to_2048_bytes_on_a_utf8_boundary() {
         let raw = "詳".repeat(1_000); // 3,000 bytes
         let text = BoundedNoticeText::detail(&raw);
-        assert!(text.truncated());
         assert!(text.value().len() <= NOTICE_DETAIL_MAX_BYTES);
         assert!(text.value().ends_with('…'));
         assert!(text

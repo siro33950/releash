@@ -1,5 +1,3 @@
-import type { PermissionMode } from "./session";
-
 export type JsonValue =
 	| string
 	| number
@@ -65,8 +63,7 @@ export interface FacetRefs {
 }
 
 export interface SessionSpec {
-	model?: string;
-	permission?: PermissionMode;
+	provider: "claude" | "codex";
 	gate: SessionGate;
 	facets: FacetRefs;
 }

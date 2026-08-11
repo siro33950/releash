@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use crate::adaptor::protocol::agent_session_v1::{
-    decode_nonnegative_i64_decimal, decode_nonnegative_u64_decimal, ApplicationQuitErrorDtoV1,
-    ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1, OperationApplicationErrorDtoV1,
-    RecoveryActionCommandErrorDtoV1, RecoveryActionOutcomeDtoV1, ShutdownDetailsMutationErrorDtoV1,
-    ShutdownPlanQueryErrorDtoV1,
-};
 use crate::adaptor::protocol::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitLookupDtoV1, ApplicationQuitOutcomeDtoV1,
     ApplicationQuitRequestDtoV1, ApplicationStartupOutcomeDtoV1, CurrentShutdownResultDtoV1,
     ShutdownPlanDtoV1, ShutdownPlanPageDtoV1, ShutdownTargetActionRequestDtoV1,
     StartupFailureQuitOutcomeDtoV1,
+};
+use crate::adaptor::protocol::application_operation_v1::{
+    decode_nonnegative_i64_decimal, decode_nonnegative_u64_decimal, ApplicationQuitErrorDtoV1,
+    ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1, OperationApplicationErrorDtoV1,
+    PendingCallerAttemptPageDtoV1, RecoveryActionCommandErrorDtoV1, RecoveryActionOutcomeDtoV1,
+    ShutdownDetailsMutationErrorDtoV1, ShutdownPlanQueryErrorDtoV1,
 };
 
 use crate::domain::local_event::ShutdownPlanKey;
@@ -44,19 +44,12 @@ pub(crate) fn quit_after_startup_failure(
     Ok(StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id })
 }
 
-pub(crate) fn query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> OperationApplicationErrorDtoV1 {
-    crate::adaptor::presenter::application_lifecycle::query_error(error)
-}
-
 fn shutdown_recovery_action_error(
-    error: crate::usecase::agent_session::operation::RecoveryActionError,
+    error: crate::usecase::application_lifecycle::operation::RecoveryActionError,
 ) -> RecoveryActionCommandErrorDtoV1 {
-    use crate::usecase::agent_session::operation::RecoveryActionError as E;
+    use crate::usecase::application_lifecycle::operation::RecoveryActionError as E;
     match error {
         E::InvalidRequest => RecoveryActionCommandErrorDtoV1::InvalidRequest,
-        E::ShutdownInProgress => RecoveryActionCommandErrorDtoV1::ShutdownInProgress,
         E::NotFound => RecoveryActionCommandErrorDtoV1::NotFound,
         E::StorageUnavailable { failure } => RecoveryActionCommandErrorDtoV1::StorageUnavailable {
             failure: failure.into(),
@@ -78,6 +71,62 @@ fn presentation_correlation(context: &str, detail: &str) -> String {
         OperationApplicationErrorDtoV1::Internal { correlation_id } => correlation_id,
         _ => unreachable!("presentation errors are always Internal"),
     }
+}
+
+fn caller_journal_application_error(
+    error: crate::usecase::application_lifecycle::operation::CallerJournalError,
+) -> OperationApplicationErrorDtoV1 {
+    use crate::usecase::application_lifecycle::operation::CallerJournalError as E;
+    match error {
+        E::InvalidRequest => OperationApplicationErrorDtoV1::InvalidRequest,
+        E::PayloadConflict => OperationApplicationErrorDtoV1::PayloadConflict,
+        E::ShutdownInProgress => OperationApplicationErrorDtoV1::ShutdownInProgress,
+        E::RejectedBeforeCommit | E::OutcomeUnknown => OperationApplicationErrorDtoV1::Internal {
+            correlation_id: presentation_correlation(
+                "application_caller_journal",
+                "caller journal result requires reconciliation",
+            ),
+        },
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn list_pending_application_attempts(
+    journal: tauri::State<
+        '_,
+        Arc<crate::usecase::application_lifecycle::operation::CallerAttemptJournal>,
+    >,
+    limit: Option<usize>,
+    cursor: Option<String>,
+) -> Result<PendingCallerAttemptPageDtoV1, OperationApplicationErrorDtoV1> {
+    journal
+        .pending_page_for_scope(
+            crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
+            "application",
+            limit.unwrap_or(32),
+            cursor.as_deref(),
+        )
+        .await
+        .map(Into::into)
+        .map_err(caller_journal_application_error)
+}
+
+#[tauri::command]
+pub(crate) async fn acknowledge_application_attempt(
+    journal: tauri::State<
+        '_,
+        Arc<crate::usecase::application_lifecycle::operation::CallerAttemptJournal>,
+    >,
+    caller_request_id: String,
+) -> Result<(), OperationApplicationErrorDtoV1> {
+    journal
+        .acknowledge_attempt(
+            crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
+            crate::domain::local_event::OperationKind::ApplicationQuit,
+            &caller_request_id,
+        )
+        .await
+        .map_err(caller_journal_application_error)
 }
 
 #[tauri::command]
@@ -114,7 +163,7 @@ pub(crate) async fn request_application_quit_result(
     };
     let outcome = match coordinator
         .request(ApplicationQuitRequest {
-            principal: crate::adaptor::controller::agent_session_operation_wiring::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+            principal: crate::usecase::application_lifecycle::operation::LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
             request_id: request.request_id,
             intent,
         })
@@ -180,7 +229,7 @@ pub(crate) async fn resolve_shutdown_target_action(
         .await
         .map_err(shutdown_recovery_action_error)?;
     let outcome =
-        if let crate::usecase::agent_session::operation::RecoveryActionOutcome::Completed {
+        if let crate::usecase::application_lifecycle::operation::RecoveryActionOutcome::Completed {
             ref action_id,
             ..
         } = execution.outcome
@@ -263,6 +312,8 @@ pub(crate) async fn compact_application_shutdown_details(
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_application_startup_outcome",
     "quit_after_startup_failure",
+    "list_pending_application_attempts",
+    "acknowledge_application_attempt",
     "request_application_quit",
     "get_application_quit_operation",
     "get_application_shutdown",
@@ -279,6 +330,8 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + 
     tauri::generate_handler![
         get_application_startup_outcome,
         quit_after_startup_failure,
+        list_pending_application_attempts,
+        acknowledge_application_attempt,
         request_application_quit,
         get_application_quit_operation,
         get_application_shutdown,

@@ -12,7 +12,6 @@ pub enum AppDataPathOperation {
     ReadDir,
     Read,
     Write,
-    Rename,
     Remove,
     Sync,
 }

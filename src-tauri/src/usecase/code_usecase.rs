@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use crate::domain::code::{
-    ChangeGroup, DiffFileEntry, DiffSide, DiffTreeNode, Hunk, MentionReference, ReviewBase,
-    ReviewBlobSide, ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes,
-    ReviewSideMetadata, StagingRepository,
+    ChangeGroup, DiffFileEntry, DiffSide, DiffTreeNode, Hunk, ReviewBase, ReviewBlobSide,
+    ReviewBlobUrlParams, ReviewBlobUrlProvider, ReviewSection, ReviewSideBytes, ReviewSideMetadata,
+    StagingRepository,
 };
 
 use super::code_dto::{
@@ -320,56 +320,12 @@ impl CodeUsecase {
     pub fn get_relative_path(&self, root_path: &str, file_path: &str) -> Option<String> {
         self.query.get_relative_path(root_path, file_path)
     }
-
-    // ── branch base 名解決（外部入口向け） ──
-
-    /// 現在ブランチの実効 base 名（ref 実在検証あり、未解決は `None`）。agent bridge が
-    /// gateway 実装へ直接依存せずに base 名を得るための入口。
-    #[allow(dead_code)] // issues-1301 D-5/G-1: retained for agent child-env base branch propagation.
-    pub fn resolve_effective_base_branch_name(
-        &self,
-        path_hint: &str,
-    ) -> Result<Option<String>, CodeUsecaseError> {
-        self.query.resolve_effective_base_branch_name(path_hint)
-    }
-
-    // ── file mention（候補列挙・参照解決） ──
-
-    pub fn list_mentionable_files(
-        &self,
-        worktree_path: &str,
-        query: &str,
-    ) -> Result<Vec<String>, CodeUsecaseError> {
-        self.query.list_mentionable_files(worktree_path, query)
-    }
-
-    /// 構造化メンション参照を解決し file_context を本文先頭へ前置する。メンションが空、
-    /// または解決失敗時は警告ログを出して本文をそのまま返す（移行前のフォールバック挙動を維持）。
-    #[allow(dead_code)] // issues-1301 F-3/G-1: retained for Rust-owned mention expansion from prompt inputs.
-    pub fn resolve_mentions_or_fallback(
-        &self,
-        worktree_path: &str,
-        content: &str,
-        mentions: &[MentionReference],
-    ) -> String {
-        if mentions.is_empty() {
-            return content.to_string();
-        }
-        self.query
-            .resolve_mentions(worktree_path, content, mentions)
-            .unwrap_or_else(|e| {
-                log::warn!("Failed to resolve mentions: {e}");
-                content.to_string()
-            })
-    }
 }
 
 #[cfg(test)]
 mod code_usecase_tests {
     use super::*;
-    use crate::domain::code::{
-        BranchBaseResolver, CodeError, DiffComputer, FileContentRepository, MentionRepository,
-    };
+    use crate::domain::code::{BranchBaseResolver, CodeError, DiffComputer, FileContentRepository};
     use crate::usecase::code_query_service::BranchDiffQuery;
     use std::sync::Mutex;
 
@@ -624,65 +580,9 @@ mod code_usecase_tests {
         }
     }
 
-    struct StubMention;
-    impl MentionRepository for StubMention {
-        fn list_mentionable_files(&self, _w: &str, _q: &str) -> Result<Vec<String>, CodeError> {
-            Ok(vec![])
-        }
-        fn resolve_mentions(
-            &self,
-            _w: &str,
-            content: &str,
-            _m: &[MentionReference],
-        ) -> Result<String, CodeError> {
-            Ok(content.to_string())
-        }
-    }
-
-    /// メンション解決が成功し file_context を前置するケースを表す stub。
-    /// 実際のファイル読み込み・抜粋・不在スキップ等の解決ロジックは mention gateway の
-    /// テスト（`mention_gateway_tests`）が担保するため、usecase 層テストは解決成功時の
-    /// オーケストレーション（結果をそのまま返す）のみを stub で担保する。
-    struct ResolvingMention;
-    impl MentionRepository for ResolvingMention {
-        fn list_mentionable_files(&self, _w: &str, _q: &str) -> Result<Vec<String>, CodeError> {
-            Ok(vec![])
-        }
-        fn resolve_mentions(
-            &self,
-            _w: &str,
-            content: &str,
-            _m: &[MentionReference],
-        ) -> Result<String, CodeError> {
-            Ok(format!("<file_context>\n</file_context>\n\n{content}"))
-        }
-    }
-
-    /// メンション解決が失敗するケースを表す stub（usecase のフォールバック方針を担保）。
-    struct FailingMention;
-    impl MentionRepository for FailingMention {
-        fn list_mentionable_files(&self, _w: &str, _q: &str) -> Result<Vec<String>, CodeError> {
-            Ok(vec![])
-        }
-        fn resolve_mentions(
-            &self,
-            _w: &str,
-            _content: &str,
-            _m: &[MentionReference],
-        ) -> Result<String, CodeError> {
-            Err(CodeError::Rule("mention resolution failed".to_string()))
-        }
-    }
-
     struct StubBranchBase;
     impl BranchBaseResolver for StubBranchBase {
         fn resolve_base_branch_name(&self, _p: &str) -> Result<Option<String>, CodeError> {
-            Ok(None)
-        }
-        fn resolve_effective_base_branch_name(
-            &self,
-            _p: &str,
-        ) -> Result<Option<String>, CodeError> {
             Ok(None)
         }
         fn resolve_base_commit_oid(
@@ -699,7 +599,6 @@ mod code_usecase_tests {
             Arc::new(StubFileContent),
             Arc::new(StubDiffComputer),
             Arc::new(StubBranchDiff),
-            Arc::new(StubMention),
             Arc::new(StubBranchBase),
         );
         CodeUsecase::new(staging, query, Arc::new(StubBlobUrls))
@@ -710,27 +609,6 @@ mod code_usecase_tests {
             file_content,
             Arc::new(StubDiffComputer),
             Arc::new(StubBranchDiff),
-            Arc::new(StubMention),
-            Arc::new(StubBranchBase),
-        );
-        CodeUsecase::new(
-            Arc::new(RecordingStaging {
-                calls: Mutex::new(Vec::new()),
-            }),
-            query,
-            Arc::new(StubBlobUrls),
-        )
-    }
-
-    /// mention 解決のフォールバック挙動テスト用に、指定の `MentionRepository` 実装で
-    /// usecase を組み立てる。adaptor 層（composition root）へ逆依存せず、stub のみで
-    /// usecase を直接構築する（依存方向は usecase → domain trait のみ）。
-    fn usecase_with_mention(mention: Arc<dyn MentionRepository>) -> CodeUsecase {
-        let query = CodeQueryService::new(
-            Arc::new(StubFileContent),
-            Arc::new(StubDiffComputer),
-            Arc::new(StubBranchDiff),
-            mention,
             Arc::new(StubBranchBase),
         );
         CodeUsecase::new(
@@ -837,44 +715,5 @@ mod code_usecase_tests {
         }
 
         assert_eq!(file_content.calls(), expected_calls);
-    }
-
-    // ── mention 参照解決のフォールバック挙動（usecase 層の責務）──
-    // usecase 層テストは adaptor（composition root）へ逆依存せず stub のみで構成する。
-    // 実際のファイル読み込み・抜粋・不在スキップ等の解決ロジックは mention gateway の
-    // テスト（`adaptor/gateway/code/mention.rs` の `mention_gateway_tests`）が担保する。
-
-    #[test]
-    fn test_mention解決_空メンションは内容不変() {
-        let uc = usecase_with_mention(Arc::new(StubMention));
-        assert_eq!(
-            uc.resolve_mentions_or_fallback("/tmp", "Hello world", &[]),
-            "Hello world"
-        );
-    }
-
-    #[test]
-    fn test_mention解決_解決成功時は前置結果をそのまま返す() {
-        let uc = usecase_with_mention(Arc::new(ResolvingMention));
-        let mentions = vec![MentionReference {
-            file_path: "test.txt".to_string(),
-            start_line: None,
-            end_line: None,
-        }];
-        let result = uc.resolve_mentions_or_fallback("/wt", "Check", &mentions);
-        assert!(result.contains("<file_context>"));
-        assert!(result.contains("Check"));
-    }
-
-    #[test]
-    fn test_mention解決_解決失敗時は本文へフォールバックする() {
-        let uc = usecase_with_mention(Arc::new(FailingMention));
-        let mentions = vec![MentionReference {
-            file_path: "nonexistent.txt".to_string(),
-            start_line: None,
-            end_line: None,
-        }];
-        let result = uc.resolve_mentions_or_fallback("/wt", "Check", &mentions);
-        assert_eq!(result, "Check");
     }
 }

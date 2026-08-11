@@ -11,20 +11,14 @@ fn assert_domain_roundtrip(config: ReleashConfig) {
     assert_eq!(roundtripped.app, config.app);
     assert_eq!(roundtripped.workflow, config.workflow);
     assert_eq!(roundtripped.notion.len(), config.notion.len());
-    assert_eq!(roundtripped.agents.default, config.agents.default);
     assert_eq!(
         roundtripped.agents.claude.cli_path,
         config.agents.claude.cli_path
     );
     assert_eq!(
-        roundtripped.agents.claude.models,
-        config.agents.claude.models
-    );
-    assert_eq!(
         roundtripped.agents.codex.cli_path,
         config.agents.codex.cli_path
     );
-    assert_eq!(roundtripped.agents.codex.models, config.agents.codex.models);
 }
 
 #[test]
@@ -44,14 +38,6 @@ fn test_config_model変換_変更済み値がdomain往復で同値になる() {
                 cert: "/tmp/cert.pem".to_string(),
                 key: "/tmp/key.pem".to_string(),
             },
-            notify: NotifySection {
-                webhook_url: "https://example.test/hook".to_string(),
-                on_running: true,
-                on_done: false,
-                desktop_mode: DesktopNotifyMode::WhenInactive,
-                inactive_timeout_minutes: 9,
-                ..NotifySection::default()
-            },
         },
         telemetry: TelemetrySection {
             crash_reporting: false,
@@ -66,14 +52,11 @@ fn test_config_model変換_変更済み値がdomain往復で同値になる() {
             external_editor: "cursor".to_string(),
         },
         agents: AgentsSection {
-            default: Some("codex".to_string()),
             claude: ClaudeAgentSection {
                 cli_path: Some("/opt/bin/claude".to_string()),
-                models: vec!["claude-model".to_string()],
             },
             codex: CodexAgentSection {
                 cli_path: Some("/opt/bin/codex".to_string()),
-                models: vec!["codex-model".to_string()],
             },
         },
         workflow: WorkflowSection {
@@ -176,4 +159,28 @@ fn test_設定serialize_legacy_hook_portを含めない() {
     let serialized = toml::to_string_pretty(&ReleashConfig::default()).unwrap();
 
     assert!(!serialized.contains("hook_port"), "{serialized}");
+}
+
+#[test]
+fn test_agent_tui_atomic_cutover_旧defaultとmodelsを再出力せずcli_pathを保持する() {
+    let legacy = r#"
+[agents]
+default = "codex"
+
+[agents.claude]
+cli_path = "/opt/bin/claude"
+models = ["legacy-claude"]
+
+[agents.codex]
+cli_path = "/opt/bin/codex"
+models = ["legacy-codex"]
+"#;
+    let config: ReleashConfig = toml::from_str(legacy).unwrap();
+
+    let serialized = toml::to_string_pretty(&config).unwrap();
+
+    assert!(!serialized.contains("default ="), "{serialized}");
+    assert!(!serialized.contains("models ="), "{serialized}");
+    assert!(serialized.contains("cli_path = \"/opt/bin/claude\""));
+    assert!(serialized.contains("cli_path = \"/opt/bin/codex\""));
 }

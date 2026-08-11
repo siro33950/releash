@@ -312,12 +312,10 @@ describe("DiffCommentList", () => {
 		expect(onDelete).toHaveBeenCalledWith("thread-xyz");
 	});
 
-	// spec issues-1022 "Thread handoff contract": スレッドパネル各行から、対象 Thread を
-	// 現在 active な AgentChat session に共有できる。
-	describe("send-to-agent button", () => {
-		const noActiveLabel = "No active Agent session";
+	describe("copy-for-agent button", () => {
+		const unavailableLabel = "Agent instruction copy unavailable";
 
-		it("is disabled when no active AgentChat session", () => {
+		it("is disabled outside the handoff provider", () => {
 			renderWithProviders(
 				<DiffCommentList
 					comments={[makeComment({ id: "thread-xyz" })]}
@@ -325,7 +323,7 @@ describe("DiffCommentList", () => {
 				/>,
 			);
 			expect(
-				screen.getByRole("button", { name: noActiveLabel }),
+				screen.getByRole("button", { name: unavailableLabel }),
 			).toBeDisabled();
 		});
 	});

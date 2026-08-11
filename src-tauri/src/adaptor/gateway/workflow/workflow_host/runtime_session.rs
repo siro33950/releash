@@ -1,8 +1,6 @@
 //! Agent-session activation procedure for workflow nodes.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::workflow_host::execution_registry::find_by_worktree;
@@ -13,7 +11,6 @@ use crate::adaptor::gateway::workflow::workflow_host::fanout_runtime::{
 use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering as workflow_prompt;
 use crate::domain::workflow::SchemaDef;
 use crate::domain::workflow::WorkflowFacetContents;
-use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
@@ -50,39 +47,6 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
         ),
     )
     .await;
-}
-
-/// AgentSessionを中断する。
-pub(crate) async fn interrupt_agent(
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    session_id: &str,
-) -> Result<(), WorkflowRuntimeError> {
-    runtime.interrupt(session_id).await.map_err(|error| {
-        WorkflowRuntimeError::with_agent_runtime_context(
-            format!("Failed to durably interrupt agent session '{session_id}'"),
-            error,
-        )
-    })
-}
-
-pub(crate) async fn interrupt_agents(
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    session_ids: &[String],
-) -> Result<(), WorkflowRuntimeError> {
-    let mut failures = Vec::new();
-    for session_id in session_ids {
-        if let Err(error) = interrupt_agent(runtime, session_id).await {
-            failures.push(error.to_string());
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(WorkflowRuntimeError::AgentSession(format!(
-            "One or more durable workflow Stop operations failed: {}",
-            failures.join("; ")
-        )))
-    }
 }
 
 pub(crate) struct FanoutChildSessionPlan {
@@ -168,28 +132,8 @@ fn prepare_fanout_child_prompt_plans(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::workflow_host::node_settings::WorkflowDefaults;
-    use crate::domain::agent_session::PermissionMode;
     use crate::domain::workflow::{FanoutSpec, NodeDefinition, NodeKind, WorkflowDefinition};
     use crate::domain::workflow::{RuntimeArtifact, RuntimeExecutionState, TokenUsage};
-    use crate::usecase::agent_session::session::SessionCreationAttributes;
-    use async_trait::async_trait;
-
-    struct RejectingDurableStopDriver {
-        calls: std::sync::atomic::AtomicUsize,
-    }
-
-    #[async_trait]
-    impl crate::usecase::agent_session::runtime::DurableStopDriver for RejectingDurableStopDriver {
-        async fn stop(
-            &self,
-            _session_id: &str,
-            _turn_id: u64,
-            _expected_session_revision: u64,
-        ) -> Result<(), String> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err("injected durable Stop failure".to_string())
-        }
-    }
 
     fn workflow_execution_fixture(
         execution_id: &str,
@@ -214,10 +158,7 @@ mod tests {
             node_execution_counts: HashMap::from([(node_name, 1)]),
             loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
-            workflow_defaults: WorkflowDefaults {
-                backend_id: None,
-                permission_mode: "edit".to_string(),
-            },
+            workflow_defaults: WorkflowDefaults,
             worktree_path: worktree_path.to_string(),
             created_from: crate::domain::workflow::ExecutionOrigin::Cli,
             error_reason: None,
@@ -351,56 +292,6 @@ mod tests {
         assert_eq!(
             session_plans[0].node_execution_id,
             pending_node_execution_id
-        );
-    }
-
-    #[tokio::test]
-    async fn workflow_interrupt_propagates_durable_stop_failure_instead_of_reporting_success() {
-        let tmp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(crate::test_support::build_session_store());
-        let (runtime, _) = crate::test_support::build_agent_runtime_usecase_with_controller(
-            Arc::clone(&session_store),
-            tmp.path(),
-        );
-        let worktree_path = tmp.path().to_string_lossy().to_string();
-        let session =
-            crate::usecase::agent_session::session::create_session_internal_with_attributes(
-                &session_store,
-                tmp.path(),
-                &worktree_path,
-                Some("codex".to_string()),
-                PermissionMode::Edit,
-                SessionCreationAttributes {
-                    selected_model: Some("gpt-5".to_string()),
-                    workflow_node_session: true,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        runtime
-            .start_turn_locked(
-                &session.id,
-                PermissionMode::Edit,
-                "workflow turn".to_string(),
-                None,
-                Vec::new(),
-            )
-            .await
-            .unwrap();
-        let driver = Arc::new(RejectingDurableStopDriver {
-            calls: std::sync::atomic::AtomicUsize::new(0),
-        });
-        runtime.set_durable_stop_driver(driver.clone());
-
-        let error = interrupt_agents(&runtime, std::slice::from_ref(&session.id))
-            .await
-            .expect_err("a failed durable Stop must remain observable");
-
-        assert!(error.to_string().contains("injected durable Stop failure"));
-        assert_eq!(driver.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_ne!(
-            runtime.turn_phase(&session.id).await,
-            Some(crate::usecase::agent_session::status::TurnPhase::Idle)
         );
     }
 }

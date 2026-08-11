@@ -28,7 +28,6 @@ pub enum WorkflowEvent {
         #[serde(with = "execution_origin_serde")]
         created_from: ExecutionOrigin,
         request: String,
-        permission_mode: String,
         definition: WorkflowDefinition,
         timestamp: f64,
     },

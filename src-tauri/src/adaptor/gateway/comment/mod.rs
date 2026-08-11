@@ -560,11 +560,7 @@ mod tests {
     }
 
     fn agent(session_id: &str) -> ReviewActor {
-        ReviewActor::agent(
-            "codex".to_string(),
-            "gpt-5".to_string(),
-            Some(session_id.to_string()),
-        )
+        ReviewActor::provider_agent("codex".to_string(), Some(session_id.to_string()))
     }
 
     #[test]

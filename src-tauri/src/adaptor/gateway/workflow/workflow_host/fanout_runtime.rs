@@ -366,10 +366,7 @@ mod tests {
             node_execution_counts: HashMap::new(),
             loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
-            workflow_defaults: WorkflowDefaults {
-                backend_id: Some("backend-1".to_string()),
-                permission_mode: "ask".to_string(),
-            },
+            workflow_defaults: WorkflowDefaults,
             worktree_path: "/tmp/repo".to_string(),
             created_from: crate::domain::workflow::ExecutionOrigin::Cli,
             error_reason: None,

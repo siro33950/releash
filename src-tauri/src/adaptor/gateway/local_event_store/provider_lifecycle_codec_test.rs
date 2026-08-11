@@ -176,7 +176,7 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
         commit_id: CommitIdentity::parse("provider-lifecycle-commit-1").unwrap(),
         idempotency: IdempotencyBinding {
             installation_id: installation_id.to_string(),
-            operation_kind: CommitOperationKind::SessionLifecycle,
+            operation_kind: CommitOperationKind::Projection,
             idempotency_key: "provider-lifecycle-binding-1-start-stop".to_string(),
             payload_hash: [15; 32],
         },
@@ -224,7 +224,7 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
         commit_id: CommitIdentity::parse("provider-lifecycle-commit-2").unwrap(),
         idempotency: IdempotencyBinding {
             installation_id: installation_id.to_string(),
-            operation_kind: CommitOperationKind::SessionLifecycle,
+            operation_kind: CommitOperationKind::Projection,
             idempotency_key: "provider-lifecycle-stale".to_string(),
             payload_hash: [16; 32],
         },

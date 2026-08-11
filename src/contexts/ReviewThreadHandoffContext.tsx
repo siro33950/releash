@@ -1,23 +1,45 @@
 import { invoke } from "@tauri-apps/api/core";
-import { createContext, useContext, useMemo } from "react";
-import { useAgentChatContext } from "@/contexts/AgentChatContext";
+import {
+	createContext,
+	useCallback,
+	useContext,
+	useMemo,
+	useState,
+} from "react";
 
-/**
- * spec issues-1022 "Thread handoff contract" / "Human-to-agent thread handoff flow":
- * Diff Thread を現在の Agent との対話に共有する操作を、UI 階層の深さに依存せず
- * 取り出せるようにする context。worktreeName は MainLayout 層で 1 度だけ解決し、
- * 子孫の DiffInlineComment / DiffCommentList は context 経由で worktreeName 無しの
- * シグネチャで sendThreadToAgent を呼べる。
- *
- * - メッセージ本文の整形は Rust 側 (`build_review_thread_handoff` Tauri command) が owner
- * - 送信先 session は AgentChat の active session そのもの。workflow node session を
- *   開いている場合でも、その session 自身に送付できる (ユーザーが「現在開いている Agent」
- *   に対するハンドオフ操作として観測する)。
- * - active session が存在しない場合 `canSend` が `false` となり、UI 側はボタンを disabled にする
- */
+export interface ReviewThreadHandoffFeedback {
+	threadId: string;
+	kind: "copied" | "error";
+	message: string;
+}
+
 export interface ReviewThreadHandoffContextValue {
-	canSend: boolean;
-	sendThreadToAgent: (threadId: string) => Promise<void>;
+	canCopy: boolean;
+	feedback: ReviewThreadHandoffFeedback | null;
+	copyThreadForAgent: (threadId: string) => Promise<void>;
+}
+
+export function ReviewThreadHandoffFeedbackMessage({
+	feedback,
+	threadId,
+}: {
+	feedback: ReviewThreadHandoffFeedback | null;
+	threadId: string;
+}) {
+	if (feedback?.threadId !== threadId) return null;
+	return (
+		<span
+			className={`max-w-64 truncate rounded px-1.5 py-0.5 text-[10px] ${
+				feedback.kind === "error"
+					? "bg-destructive/10 text-destructive"
+					: "bg-muted text-muted-foreground"
+			}`}
+			role={feedback.kind === "error" ? "alert" : "status"}
+			title={feedback.message}
+		>
+			{feedback.message}
+		</span>
+	);
 }
 
 /**
@@ -36,24 +58,40 @@ export function ReviewThreadHandoffProvider({
 	worktreeName,
 	children,
 }: ProviderProps) {
-	const { activeSession, sendMessage } = useAgentChatContext();
-
-	const value = useMemo<ReviewThreadHandoffContextValue>(() => {
-		const activeSessionId = activeSession?.id ?? null;
-		return {
-			canSend: activeSessionId !== null,
-			sendThreadToAgent: async (threadId: string) => {
-				if (activeSessionId === null) {
-					return;
-				}
+	const [feedback, setFeedback] = useState<ReviewThreadHandoffFeedback | null>(
+		null,
+	);
+	const copyThreadForAgent = useCallback(
+		async (threadId: string) => {
+			try {
 				const content = await invoke<string>("build_review_thread_handoff", {
 					worktreeName,
 					threadId,
 				});
-				await sendMessage(activeSessionId, content);
-			},
+				await navigator.clipboard.writeText(content);
+				setFeedback({
+					threadId,
+					kind: "copied",
+					message: "Agent instruction copied",
+				});
+			} catch (error) {
+				setFeedback({
+					threadId,
+					kind: "error",
+					message: `Failed to copy Agent instruction: ${String(error)}`,
+				});
+			}
+		},
+		[worktreeName],
+	);
+
+	const value = useMemo<ReviewThreadHandoffContextValue>(() => {
+		return {
+			canCopy: true,
+			feedback,
+			copyThreadForAgent,
 		};
-	}, [activeSession, sendMessage, worktreeName]);
+	}, [copyThreadForAgent, feedback]);
 
 	return (
 		<ReviewThreadHandoffContext.Provider value={value}>
@@ -62,19 +100,13 @@ export function ReviewThreadHandoffProvider({
 	);
 }
 
-/**
- * Diff Thread を Active な AgentChat session に共有する handler を返す。
- *
- * Provider 配下でない場合は `canSend === false` & 何もしない `sendThreadToAgent` を返す
- * (UI 上は disabled として観測される)。これによりテストや provider 外コンポーネントでも
- * 安全にレンダリングできる。
- */
 export function useReviewThreadHandoff(): ReviewThreadHandoffContextValue {
 	const ctx = useContext(ReviewThreadHandoffContext);
 	if (ctx) return ctx;
 	return {
-		canSend: false,
-		sendThreadToAgent: async () => {
+		canCopy: false,
+		feedback: null,
+		copyThreadForAgent: async () => {
 			/* no-op outside provider */
 		},
 	};

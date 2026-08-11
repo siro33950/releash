@@ -7,25 +7,25 @@ import {
 	Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ProviderAgentSessionItem } from "@/types/provider-agent-session";
+import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
 
 // standalone AgentSession行の実行状態表現。workflow node行と同じ
 // 「アイコン色＝状態」の語彙に合わせる（open＋runningはrunning nodeと同じ
 // blue＋pulse、open＋idleはニュートラル、paused異常終了はdestructive、
 // paused正常とarchivedはqueued/abortedと同じ非活性のdim）。
-export interface ProviderAgentSessionIconPresentation {
+export interface AgentSessionIconPresentation {
 	className: string;
 	pulse: boolean;
 	statusLabel: string;
 }
 
-export function providerAgentSessionIconPresentation(
+export function agentSessionIconPresentation(
 	session: Pick<
-		ProviderAgentSessionItem,
+		AgentSessionItem,
 		"lifecycle" | "activity" | "lastExitAbnormal"
 	>,
-): ProviderAgentSessionIconPresentation {
+): AgentSessionIconPresentation {
 	if (session.lifecycle === "open") {
 		if (session.activity === "running") {
 			return {

@@ -44,7 +44,6 @@ function setupMockInvoke(branches: WorktreeBranch[]) {
 				limited: false,
 				branches,
 			});
-		if (cmd === "list_workspace_statuses") return Promise.resolve([]);
 		if (cmd === "get_cached_pr_status")
 			return Promise.resolve({ open_prs: {}, merged_branches: [] });
 		return Promise.resolve([]);
@@ -111,7 +110,6 @@ describe("useWorktreeList", () => {
 				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
-			if (cmd === "list_workspace_statuses") return Promise.resolve([]);
 			return Promise.resolve();
 		});
 
@@ -144,7 +142,6 @@ describe("useWorktreeList", () => {
 				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
-			if (cmd === "list_workspace_statuses") return Promise.resolve([]);
 			return Promise.resolve();
 		});
 
@@ -222,7 +219,6 @@ describe("useWorktreeList", () => {
 				});
 			if (cmd === "get_cached_pr_status")
 				return Promise.resolve({ open_prs: {}, merged_branches: [] });
-			if (cmd === "list_workspace_statuses") return Promise.resolve([]);
 			return Promise.resolve();
 		});
 
@@ -402,60 +398,6 @@ describe("useWorktreeList", () => {
 		expect(mainWt).toBeDefined();
 		expect(mainWt?.name).toBe("feat/current");
 		expect(mainWt?.is_main_worktree).toBe(true);
-	});
-
-	it("should update agent_state from workspace-status-changed event", async () => {
-		const branch = makeBranch({ worktree_path: "/tmp/wt" });
-		setupMockInvoke([branch]);
-
-		type WorkspaceStatusCallback = (event: {
-			payload: {
-				worktree_id: string;
-				worktree_path: string;
-				aggregated_state: string;
-				running_count: number;
-				waiting_count: number;
-				error_count: number;
-				session_count: number;
-				last_activity_at: number;
-			};
-		}) => void;
-		let workspaceStatusCallback: WorkspaceStatusCallback | null = null;
-		mockListen.mockImplementation(
-			(event: string, cb: WorkspaceStatusCallback) => {
-				if (event === "workspace-status-changed") {
-					workspaceStatusCallback = cb;
-				}
-				return Promise.resolve(vi.fn());
-			},
-		);
-
-		const { result } = renderHook(() => useWorktreeList("/test/repo"));
-
-		await waitFor(() => {
-			expect(result.current.branches).toHaveLength(1);
-		});
-
-		expect(workspaceStatusCallback).not.toBeNull();
-
-		await act(async () => {
-			workspaceStatusCallback?.({
-				payload: {
-					worktree_id: "/tmp/wt",
-					worktree_path: "/tmp/wt",
-					aggregated_state: "running",
-					running_count: 1,
-					waiting_count: 0,
-					error_count: 0,
-					session_count: 1,
-					last_activity_at: Date.now(),
-				},
-			});
-		});
-
-		await waitFor(() => {
-			expect(result.current.branches[0].agent_state).toBe("running");
-		});
 	});
 
 	it("should call refresh with silent: true from branch-list-sync event", async () => {

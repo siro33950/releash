@@ -20,7 +20,7 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableReason,
 };
-use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot};
+use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
 use crate::infrastructure::local_api::{LocalApiHttpClient, LocalApiServer, LocalApiServerBinding};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 use crate::usecase::workflow::command::{
@@ -31,11 +31,8 @@ use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
 };
 use crate::usecase::workflow::ports::{
-    ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
-    WorkflowStallClearedCommand, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowTurnCompleteCommand,
-    WorkflowTurnCompleteGateway,
+    WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
+    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -264,13 +261,6 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         false
     }
 
-    async fn approval_turn_phase(
-        &self,
-        _session_id: &str,
-    ) -> Option<crate::usecase::workflow::control_plane::ApprovalTurnPhase> {
-        None
-    }
-
     async fn commit_control_plane(
         &self,
         _commit: WorkflowControlPlaneCommit,
@@ -300,53 +290,16 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowTurnCompleteGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn is_session_running(&self, _chat_session_id: &str) -> bool {
-        false
-    }
-
-    async fn complete_turn(
-        &self,
-        _command: WorkflowTurnCompleteCommand,
-    ) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowStallObservedGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn observe_stall(
-        &self,
-        _command: WorkflowStallObservedCommand,
-    ) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn clear_stall(
-        &self,
-        _command: WorkflowStallClearedCommand,
-    ) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for AcceptanceWorkflowRuntimeGateway {
+    async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
         _execution_id: &str,
-    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-        Ok(None)
-    }
-
-    async fn get_state_by_worktree(
-        &self,
-        _worktree_path: &str,
-    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
+    ) -> Result<Option<crate::domain::workflow::WorkflowRuntimeSnapshot>, WorkflowError> {
         Ok(None)
     }
 }
@@ -357,24 +310,6 @@ impl WorkflowRuntimeShutdownGateway for AcceptanceWorkflowRuntimeGateway {
 
     async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowApprovalChatGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn resolve_approval_chat_target(
-        &self,
-        _execution_id: &str,
-    ) -> Result<ApprovalChatTarget, WorkflowError> {
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn validate_approval_chat_instruction(
-        &self,
-        _chat_session_id: &str,
-        _content: &str,
-    ) -> Result<(), WorkflowError> {
-        Err(unavailable_workflow_runtime())
     }
 }
 
@@ -408,7 +343,6 @@ impl ProviderLifecycleAcceptanceHost {
             runtime,
             binding.bearer_token(),
             binding.terminal_bearer_token(),
-            None,
             None,
             Some(usecase.clone()),
         );

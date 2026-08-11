@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::repository::{
-    ProviderAgentSessionRepositoryError, VersionedProviderAgentSession,
+    AgentSessionRepositoryError, VersionedAgentSession,
 };
 use crate::domain::provider_lifecycle::{
     ProviderLifecycleIngressResult, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
     ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation, ScopedProviderLifecycleEvent,
 };
-use crate::usecase::agent_session::{
-    ProviderAgentSessionUsecase, ProviderAgentSessionUsecaseError,
-};
+use crate::usecase::agent_session::{AgentSessionUsecase, AgentSessionUsecaseError};
 
 use super::{
     ProviderHookHealthUsecase, ProviderHookHealthUsecaseError, ProviderLifecycleUsecase,
@@ -28,10 +26,10 @@ pub(crate) enum ProviderLifecycleIngressUsecaseError {
 pub(crate) trait ProviderSessionStartTransaction: Send + Sync {
     async fn commit_session_started(
         &self,
-        session: VersionedProviderAgentSession,
+        session: VersionedAgentSession,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         caller_request_id: &str,
-    ) -> Result<VersionedProviderAgentSession, ProviderAgentSessionRepositoryError>;
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +57,7 @@ impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseErro
 
 pub(crate) struct ProviderLifecycleIngressUsecase {
     lifecycle: Arc<ProviderLifecycleUsecase>,
-    sessions: Arc<ProviderAgentSessionUsecase>,
+    sessions: Arc<AgentSessionUsecase>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
     workflow_stop_transaction: Arc<dyn ProviderWorkflowStopTransaction>,
@@ -85,7 +83,7 @@ pub(crate) trait ProviderLifecycleIngressPort: Send + Sync {
 impl ProviderLifecycleIngressUsecase {
     pub(crate) fn new(
         lifecycle: Arc<ProviderLifecycleUsecase>,
-        sessions: Arc<ProviderAgentSessionUsecase>,
+        sessions: Arc<AgentSessionUsecase>,
         hook_health: Arc<ProviderHookHealthUsecase>,
         session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
         workflow_stop_transaction: Arc<dyn ProviderWorkflowStopTransaction>,
@@ -322,44 +320,38 @@ fn map_hook_health_error(
     }
 }
 
-fn map_session_error(
-    error: ProviderAgentSessionUsecaseError,
-) -> ProviderLifecycleIngressUsecaseError {
+fn map_session_error(error: AgentSessionUsecaseError) -> ProviderLifecycleIngressUsecaseError {
     match error {
-        ProviderAgentSessionUsecaseError::NotFound
-        | ProviderAgentSessionUsecaseError::InvalidOperation => {
+        AgentSessionUsecaseError::NotFound | AgentSessionUsecaseError::InvalidOperation => {
             ProviderLifecycleIngressUsecaseError::InvalidInput
         }
-        ProviderAgentSessionUsecaseError::Conflict
-        | ProviderAgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
+        AgentSessionUsecaseError::Conflict
+        | AgentSessionUsecaseError::ProviderSessionAlreadyOwned { .. } => {
             ProviderLifecycleIngressUsecaseError::Conflict
         }
-        ProviderAgentSessionUsecaseError::Unavailable => {
+        AgentSessionUsecaseError::Unavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
-        ProviderAgentSessionUsecaseError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
+        AgentSessionUsecaseError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }
 
 fn map_session_repository_error(
-    error: ProviderAgentSessionRepositoryError,
+    error: AgentSessionRepositoryError,
 ) -> ProviderLifecycleIngressUsecaseError {
     match error {
-        ProviderAgentSessionRepositoryError::AlreadyExists
-        | ProviderAgentSessionRepositoryError::Conflict => {
+        AgentSessionRepositoryError::AlreadyExists | AgentSessionRepositoryError::Conflict => {
             ProviderLifecycleIngressUsecaseError::Conflict
         }
-        ProviderAgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
+        AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
             ProviderLifecycleIngressUsecaseError::Conflict
         }
-        ProviderAgentSessionRepositoryError::InvalidRequest => {
+        AgentSessionRepositoryError::InvalidRequest => {
             ProviderLifecycleIngressUsecaseError::InvalidInput
         }
-        ProviderAgentSessionRepositoryError::Unavailable => {
+        AgentSessionRepositoryError::Unavailable => {
             ProviderLifecycleIngressUsecaseError::StorageUnavailable
         }
-        ProviderAgentSessionRepositoryError::Corrupt => {
-            ProviderLifecycleIngressUsecaseError::Corrupt
-        }
+        AgentSessionRepositoryError::Corrupt => ProviderLifecycleIngressUsecaseError::Corrupt,
     }
 }

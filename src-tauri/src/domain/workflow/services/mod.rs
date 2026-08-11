@@ -5,7 +5,6 @@ pub mod event_replay;
 pub mod failure_policy;
 pub mod fanout;
 pub mod history;
-pub mod node_session_projection;
 pub mod projection;
 pub mod prompt_composition;
 pub mod reference;

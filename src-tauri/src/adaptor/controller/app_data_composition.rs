@@ -3,7 +3,7 @@
 //! Issue #1499 B-070 is a lifecycle-wide constraint, not a property of the
 //! SQLite adapter in isolation.  This composition owns the one app-data root
 //! and the one path observer supplied to every app-data collaborator used by
-//! startup maintenance: the fixed SQLite store, process-record cleanup, and
+//! startup maintenance: the fixed SQLite store and
 //! issue #1372 GC/retention.  Production installs the no-op observer; the
 //! acceptance composition replaces it once here and therefore cannot
 //! accidentally test an independently hand-wired set of adapters.
@@ -13,16 +13,13 @@ use std::sync::Arc;
 
 use crate::adaptor::gateway::app_data_gc::{
     apply_canonical_runtime_owners, build_startup_gc_request, canonical_runtime_protection,
-    live_process_session_ids, StdGcFileSystem,
+    StdGcFileSystem,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
 use crate::domain::app_data_gc::GcReport;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::infrastructure::app_data_path::{AppDataPathObserver, NoopAppDataPathObserver};
-use crate::infrastructure::process::pid_registry::CleanupReport;
-#[cfg(test)]
-use crate::infrastructure::process::pid_registry::PidRegistration;
 
 #[derive(Clone)]
 pub(crate) struct ProductionAppDataComposition {
@@ -60,29 +57,6 @@ impl ProductionAppDataComposition {
         LocalEventStore::open(config)
     }
 
-    pub(crate) fn cleanup_orphan_processes(&self) -> CleanupReport {
-        crate::infrastructure::process::pid_registry::cleanup_orphan_processes_with_observer(
-            &self.app_data_dir,
-            self.observer.clone(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn register_process(
-        &self,
-        session_id: &str,
-        backend_id: &str,
-        pid: u32,
-    ) -> Option<PidRegistration> {
-        crate::infrastructure::process::pid_registry::save_pgid_with_observer(
-            Some(&self.app_data_dir),
-            session_id,
-            backend_id,
-            pid,
-            self.observer.clone(),
-        )
-    }
-
     /// Execute the exact production GC/retention pass.
     ///
     /// Inventory and sweeping remain on blocking workers.  Failure to load
@@ -104,13 +78,7 @@ impl ProductionAppDataComposition {
         .map_err(|error| format!("app data gc inventory task failed: {error}"))?;
         let mut request = inventory;
 
-        let live_process_session_ids = live_process_session_ids(&request);
-        match crate::usecase::app_data_gc::load_canonical_runtime_owners(
-            repository.clone(),
-            live_process_session_ids.clone(),
-        )
-        .await
-        {
+        match crate::usecase::app_data_gc::load_canonical_runtime_owners(repository.clone()).await {
             Ok(owners) => apply_canonical_runtime_owners(&mut request, owners),
             Err(error) => {
                 log::warn!(
@@ -121,20 +89,13 @@ impl ProductionAppDataComposition {
 
         let plan = crate::usecase::app_data_gc::plan_startup_gc(request);
         let revalidated_runtime_protection =
-            match crate::usecase::app_data_gc::load_canonical_runtime_owners(
-                repository,
-                live_process_session_ids.clone(),
-            )
-            .await
-            {
+            match crate::usecase::app_data_gc::load_canonical_runtime_owners(repository).await {
                 Ok(owners) => canonical_runtime_protection(owners),
                 Err(error) => {
                     log::warn!(
                         "app data gc retained workspace-keyed candidates because sweep-boundary canonical revalidation failed: {error}"
                     );
-                    crate::usecase::app_data_gc::RuntimeProtection::incomplete(
-                        live_process_session_ids,
-                    )
+                    crate::usecase::app_data_gc::RuntimeProtection::incomplete()
                 }
             };
 
@@ -162,12 +123,12 @@ mod tests {
 
     use super::*;
     use crate::domain::local_event::{
-        AgentSessionMetadataRecord, AgentSessionProjectionRecord, AgentSessionStateRecord,
-        CanonicalRuntimeOwnerView, CommitBatchError, CommitBatchResult, CommitIdentity,
-        CommitOperationKind, CommitResolution, DomainEventPage, GlobalSequence, IdempotencyBinding,
+        AgentSessionLifecycleRecord, AgentSessionOriginRecord, AgentSessionProjectionRecord,
+        AgentSessionProviderRecord, CanonicalRuntimeOwnerView, CommitBatchError, CommitBatchResult,
+        CommitIdentity, CommitOperationKind, CommitResolution, DomainEventPage, IdempotencyBinding,
         LocalAtomicBatch, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
-        LocalEventSubscription, LocalStateMutation, Revision, RevisionGuard,
-        SessionProjectionMutation, SessionProjectionRecord, WorkflowWorktreeOwnerRecord,
+        LocalStateMutation, Revision, RevisionGuard, SessionProjectionMutation,
+        SessionProjectionRecord, WorkflowWorktreeOwnerRecord,
     };
     use crate::infrastructure::app_data_path::AppDataPathOperation;
 
@@ -230,19 +191,6 @@ mod tests {
             }
         }
 
-        fn without_sweep_action(
-            inner: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-        ) -> Self {
-            Self {
-                inner,
-                action: Mutex::new(None),
-                action_at_owner_query: usize::MAX,
-                owner_query_calls: AtomicUsize::new(0),
-                paged_owner_query_calls: AtomicUsize::new(0),
-                committed_action_count: AtomicUsize::new(0),
-            }
-        }
-
         fn owner_query_calls(&self) -> usize {
             self.owner_query_calls.load(Ordering::SeqCst)
         }
@@ -297,10 +245,6 @@ mod tests {
             &self,
             request: LocalEventQuery,
         ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-            if matches!(request, LocalEventQuery::SessionProjectionPage { .. }) {
-                self.paged_owner_query_calls.fetch_add(1, Ordering::SeqCst);
-                return self.inner.query(request).await;
-            }
             if !matches!(
                 request,
                 LocalEventQuery::CanonicalRuntimeOwnerSnapshot { .. }
@@ -325,7 +269,7 @@ mod tests {
                             });
                         }
                         OwnerQueryAction::ReturnWrongShape => {
-                            return Ok(LocalEventQueryResult::SessionProjectionPage(Vec::new()));
+                            return Ok(LocalEventQueryResult::OperationByIdentity(None));
                         }
                         OwnerQueryAction::ReturnOversizeSnapshot(snapshot) => {
                             return Ok(LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(
@@ -343,10 +287,6 @@ mod tests {
             request: LocalEventQuery,
         ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
             self.inner.query_blocking(request)
-        }
-
-        fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription {
-            self.inner.subscribe(after)
         }
     }
 
@@ -379,44 +319,18 @@ mod tests {
     }
 
     fn active_session_projection(session_id: &str, worktree_path: &str) -> SessionProjectionRecord {
-        SessionProjectionRecord::AgentSession(Box::new(AgentSessionProjectionRecord {
-            meta: AgentSessionMetadataRecord {
-                id: session_id.to_string(),
-                worktree_path: worktree_path.to_string(),
-                state: AgentSessionStateRecord::Active,
-                error_reason: None,
-                state_revision: 0,
-                created_at_bits: 0,
-                updated_at_bits: 0,
-                agent_session_id: None,
-                provider_session_generation: 0,
-                provider_session_observation_id: None,
-                context_reinjection_generation: None,
-                context_carry: None,
-                pending_recovery_message: None,
-                recovery_publication_snapshot: None,
-                permission_mode: "ask".to_string(),
-                plan_mode: false,
-                selected_model: None,
-                permission_profile_id: None,
-                backend_id: "codex".to_string(),
-                workflow_node_session: false,
-                workflow_node_context: None,
-                workflow_instructions: Vec::new(),
-                agent_read_paths: None,
-                context_epoch: None,
-                last_turn_interruption: None,
-                last_turn_id: None,
-                first_message_preview: String::new(),
-                message_count: 0,
-                body_format_version: 1,
-            },
-            title: None,
-            reducer_events: Vec::new(),
-            queue_paused_at_bits: None,
-            latest_token_usage: None,
-            pending_send_queue: Vec::new(),
-        }))
+        SessionProjectionRecord::AgentSession(AgentSessionProjectionRecord {
+            id: session_id.to_string(),
+            workspace_identity: worktree_path.to_string(),
+            worktree_path: worktree_path.to_string(),
+            provider: AgentSessionProviderRecord::Codex,
+            origin: AgentSessionOriginRecord::Standalone,
+            lifecycle: AgentSessionLifecycleRecord::Open,
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+            last_exit_abnormal: false,
+        })
     }
 
     fn running_workflow_projection(worktree_path: &str) -> (String, SessionProjectionRecord) {
@@ -550,7 +464,7 @@ mod tests {
         let worktree = "/deleted-before-gc-but-session-became-active";
         assert_projection_committed_at_sweep_boundary_is_protected(
             "active-session",
-            "gc-race-active-session".to_string(),
+            "agent-session:gc-race-active-session".to_string(),
             active_session_projection("gc-race-active-session", worktree),
             worktree,
         )
@@ -604,21 +518,8 @@ mod tests {
         let process_directory = app_data.path().join("agent-processes");
         std::fs::create_dir(&process_directory).expect("process directory");
         let stale_process_record = process_directory.join("stale.codex.4294967295.json");
-        std::fs::write(
-            &stale_process_record,
-            serde_json::to_vec(&crate::infrastructure::process::pid_registry::PidFileV1 {
-                version: 1,
-                session_id: "stale-process-session".to_string(),
-                backend_id: "codex".to_string(),
-                pid: u32::MAX,
-                pgid: i32::MAX,
-                owner_app_pid: None,
-                owner_start_time: None,
-                created_at_ms: 1,
-            })
-            .expect("stale process JSON"),
-        )
-        .expect("stale process fixture");
+        std::fs::write(&stale_process_record, b"legacy process record")
+            .expect("legacy process fixture");
         let (_live_repo, repo_paths) = live_repo_paths();
 
         let report = composition
@@ -638,8 +539,8 @@ mod tests {
             "owner-independent regenerable-cache cleanup must remain active"
         );
         assert!(
-            !stale_process_record.exists(),
-            "owner-independent stale-process cleanup must remain active"
+            stale_process_record.exists(),
+            "legacy Agent process data must not be deleted by the cutover"
         );
         assert!(repository.owner_query_calls() >= 2);
         assert_eq!(repository.paged_owner_query_calls(), 0);
@@ -653,72 +554,6 @@ mod tests {
                 })
                 .count(),
             0
-        );
-    }
-
-    #[tokio::test]
-    async fn app_data_gc_unresolved_live_pid_owner_retains_all_workspace_keyed_candidates() {
-        let app_data = tempfile::tempdir().expect("app data");
-        let observer = Arc::new(RecordingObserver::default());
-        let composition = ProductionAppDataComposition::with_observer(
-            app_data.path().to_path_buf(),
-            observer.clone(),
-        );
-        let store = composition
-            .open_local_event_store()
-            .expect("open canonical store");
-        let repository = Arc::new(OwnerRaceRepository::without_sweep_action(store));
-        let (workspace_state, review_comments) = create_workspace_keyed_candidates(
-            app_data.path(),
-            "/deleted-worktree-with-unresolved-live-pid-owner",
-        );
-        let process_directory = app_data.path().join("agent-processes");
-        std::fs::create_dir(&process_directory).expect("process directory");
-        let process_record = process_directory.join("unresolved.codex.current.json");
-        std::fs::write(
-            &process_record,
-            serde_json::to_vec(&crate::infrastructure::process::pid_registry::PidFileV1 {
-                version: 1,
-                session_id: "canonical-projection-does-not-exist".to_string(),
-                backend_id: "codex".to_string(),
-                pid: std::process::id(),
-                pgid: std::process::id() as i32,
-                owner_app_pid: None,
-                owner_start_time: None,
-                created_at_ms: 1,
-            })
-            .expect("live process record JSON"),
-        )
-        .expect("live process record");
-        let (_live_repo, repo_paths) = live_repo_paths();
-        observer
-            .operations
-            .lock()
-            .expect("recorded operations")
-            .clear();
-
-        let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone())
-            .await
-            .expect("run startup GC");
-
-        assert_eq!(report.errors, 0);
-        assert!(workspace_state.exists());
-        assert!(review_comments.exists());
-        assert!(process_record.exists(), "live process record remains live");
-        assert!(
-            repository.owner_query_calls() >= 2,
-            "unresolved live PID projection must fail both initial and fresh owner snapshots"
-        );
-        assert_eq!(repository.paged_owner_query_calls(), 0);
-        let operations = observer.operations.lock().expect("recorded operations");
-        assert_eq!(
-            operations
-                .iter()
-                .filter(|(operation, _)| *operation == AppDataPathOperation::Remove)
-                .count(),
-            0,
-            "unresolved live PID projection makes all available candidates non-removable"
         );
     }
 

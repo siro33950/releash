@@ -30,13 +30,6 @@ pub(crate) struct WorkflowControlPlaneCommit {
     pub(crate) provider_events: Vec<ScopedProviderLifecycleEvent>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApprovalTurnPhase {
-    Idle,
-    Streaming,
-    WaitingPermission,
-}
-
 #[async_trait::async_trait]
 pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
     fn current_timestamp(&self) -> f64;
@@ -59,10 +52,6 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 
     fn approval_auto_approve_enabled(&self) -> bool {
         false
-    }
-
-    async fn approval_turn_phase(&self, _session_id: &str) -> Option<ApprovalTurnPhase> {
-        None
     }
 
     async fn commit_control_plane(
@@ -137,15 +126,6 @@ impl WorkflowControlPlaneUsecase {
                 return Err(error);
             }
         };
-        if let Some(session_id) = target.session_id.as_deref() {
-            match self.runtime.approval_turn_phase(session_id).await {
-                Some(ApprovalTurnPhase::Streaming | ApprovalTurnPhase::WaitingPermission) => {
-                    return Err(WorkflowError::validation("approval output is not complete"));
-                }
-                Some(ApprovalTurnPhase::Idle) | None => {}
-            }
-        }
-
         let timestamp = self.runtime.current_timestamp();
         let event_comment = command.comment.map(|comment| {
             workflow_secret_masker::mask_sensitive_text(
@@ -869,7 +849,6 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
             WorkflowError::UnauthorizedApprovalTarget(message)
         }
         WorkflowRuntimeError::SessionStore(message)
-        | WorkflowRuntimeError::AgentSession(message)
-        | WorkflowRuntimeError::AgentRuntime { message, .. } => WorkflowError::external(message),
+        | WorkflowRuntimeError::AgentSession(message) => WorkflowError::external(message),
     }
 }

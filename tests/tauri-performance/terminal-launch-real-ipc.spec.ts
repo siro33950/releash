@@ -133,18 +133,18 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 		await browser.tauri.execute(async ({ core }, sessionId) => {
 			const outcome = await core.invoke<
 				"archived" | "already_archived" | "delete_confirmation_required"
-			>("archive_provider_agent_session", {
+			>("archive_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-archive.${crypto.randomUUID()}`,
 			});
 			if (outcome === "delete_confirmation_required") {
-				await core.invoke("confirm_provider_agent_session_archive_delete", {
+				await core.invoke("confirm_agent_session_archive_delete", {
 					agentSessionId: sessionId,
 					callerRequestId: `performance-confirm-delete.${crypto.randomUUID()}`,
 				});
 				return;
 			}
-			await core.invoke("delete_provider_agent_session", {
+			await core.invoke("delete_agent_session", {
 				agentSessionId: sessionId,
 				callerRequestId: `performance-delete.${crypto.randomUUID()}`,
 			});
@@ -168,7 +168,7 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 		}));
 		const agentSessionId = await browser.tauri.execute(
 			({ core }, request) =>
-				core.invoke<string>("create_provider_agent_session", request),
+				core.invoke<string>("create_agent_session", request),
 			{
 				workspaceIdentity: worktreePath,
 				worktreePath,

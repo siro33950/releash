@@ -141,41 +141,6 @@ fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<
     result
 }
 
-#[cfg(test)]
-fn render_workflow_instruction(
-    instruction: &str,
-    artifacts: &HashMap<String, Value>,
-    item: Option<&Value>,
-) -> Option<String> {
-    let rendered = render_prompt_content(instruction, artifacts, item)
-        .trim()
-        .to_string();
-    (!rendered.is_empty()).then_some(rendered)
-}
-
-#[cfg(test)]
-pub(crate) fn render_node_workflow_instruction(
-    _node: &NodeDefinition,
-    facet_contents: Option<&FacetContents>,
-    request: Option<&str>,
-    artifacts: &HashMap<String, RuntimeArtifact>,
-) -> Option<String> {
-    let artifacts = artifact_values(artifacts, request);
-    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
-}
-
-#[cfg(test)]
-pub(crate) fn render_fanout_child_workflow_instruction(
-    _node: &NodeDefinition,
-    facet_contents: Option<&FacetContents>,
-    request: Option<&str>,
-    artifacts: &HashMap<String, RuntimeArtifact>,
-    item: Option<&Value>,
-) -> Option<String> {
-    let artifacts = artifact_values(artifacts, request);
-    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, item)
-}
-
 pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,

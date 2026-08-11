@@ -6,7 +6,6 @@ pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod menu;
-pub(crate) mod notification;
 pub(crate) mod notion;
 pub(crate) mod repository;
 pub(crate) mod telemetry;
@@ -115,7 +114,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     external_editor::register(&mut router);
     git_host::register(&mut router);
     menu::register(&mut router);
-    notification::register(&mut router);
     notion::register(&mut router);
     terminal_surface::register(&mut router);
     repository::register(&mut router);
@@ -130,7 +128,6 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tauri::Manager;
@@ -140,18 +137,129 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_session_provider_tui_commandを本番routerの独立routeとして登録する() {
+    fn test_agent_session_commandを本番routerの単一routeとして登録する() {
         let mut router = CommandRouter::new(dummy_handler());
 
         agent_session::register(&mut router);
 
-        assert_eq!(router.domains.len(), 2);
+        assert_eq!(router.domains.len(), 1);
         assert!(router.domains.iter().any(|route| {
-            route
-                .command_names
-                .contains(&"create_provider_agent_session")
+            route.command_names.contains(&"create_agent_session")
                 && !route.command_names.contains(&"create_session")
         }));
+    }
+
+    #[test]
+    fn test_agent_tui_atomic_cutover_agent_sessionはcanonicalな単一routeだけを登録する() {
+        let mut router = CommandRouter::new(dummy_handler());
+
+        agent_session::register(&mut router);
+
+        assert_eq!(router.domains.len(), 1);
+        let commands = router.domains[0].command_names;
+        assert_eq!(
+            commands,
+            [
+                "list_available_agent_session_providers",
+                "get_provider_availability",
+                "refresh_provider_availability",
+                "update_provider_executable",
+                "reset_provider_executable",
+                "create_agent_session",
+                "resume_agent_session_history_candidate",
+                "list_agent_sessions",
+                "get_agent_session",
+                "open_agent_session",
+                "resume_agent_session",
+                "archive_agent_session",
+                "restore_agent_session",
+                "delete_agent_session",
+                "confirm_agent_session_archive_delete",
+                "list_agent_session_history",
+                "list_provider_hook_health_warnings",
+            ]
+        );
+        let registered = registered_command_names();
+        for removed in [
+            "create_session",
+            "create_workspace_session",
+            "fork_session",
+            "restore_session",
+            "init_agent_sessions",
+            "list_sessions",
+            "list_closed_sessions",
+            "get_session",
+            "get_session_page",
+            "get_session_status",
+            "get_session_attachment",
+            "get_session_tool_output",
+            "request_session_lifecycle",
+            "get_session_lifecycle_operation",
+            "send_agent_message",
+            "respond_agent_permission",
+            "stop_agent_session",
+            "resume_agent_queue",
+            "cancel_agent_queued_turn",
+            "set_agent_model",
+            "set_agent_permission_mode",
+            "set_agent_plan_mode",
+            "set_session_title",
+            "search_agent_sessions",
+            "search_agent_session_messages",
+            "list_agent_backends",
+            "scan_agent_skills",
+            "prepare_image_attachment",
+            "prepare_image_attachments_from_paths",
+            "prepare_pasted_text_block",
+            "expand_pasted_text_blocks",
+            "present_agent_permission_request",
+            "present_agent_tool_activity",
+            "report_agent_permission_request_observed",
+            "get_agent_permission_response_operation",
+            "get_agent_send_operation",
+            "get_agent_session_display_window",
+            "get_agent_session_notice",
+            "update_agent_session_notice",
+            "list_agent_session_feedback",
+            "retry_agent_session_feedback",
+            "dismiss_agent_session_feedback",
+            "send_workflow_approval_chat_message",
+            "acknowledge_agent_attempt",
+            "list_pending_agent_attempts",
+            "list_pending_agent_recovery",
+            "get_pending_recovery_snapshot",
+            "resolve_pending_recovery_action",
+            "get_recovery_action",
+            "get_stop_operation",
+            "plan_agent_chat_eviction",
+            "build_agent_edit_preview",
+            "build_agent_edited_tool_input",
+            "build_agent_edited_multi_edit_tool_input",
+            "build_agent_edited_multi_edit_tool_input_all",
+            "build_agent_prompt_suggestion",
+            "build_agent_task_list_report",
+        ] {
+            assert!(
+                !registered.contains(&removed),
+                "still registered: {removed}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agent_tui_atomic_cutover_compositionはlegacy_agent_runtimeを要求しない() {
+        let composition = include_str!("../../../lib.rs");
+
+        for removed in [
+            "AgentBackendRegistry",
+            "AgentSessionRuntimeUsecase",
+            "compose_agent_session_runtime",
+        ] {
+            assert!(
+                !composition.contains(removed),
+                "legacy Agent runtime remains in production composition: {removed}"
+            );
+        }
     }
 
     type RegisterFn = fn(&mut CommandRouter);
@@ -159,14 +267,9 @@ mod tests {
     fn command_domains() -> Vec<(&'static str, &'static [&'static str], RegisterFn)> {
         vec![
             (
-                "agent_session_legacy",
-                agent_session::LEGACY_COMMAND_NAMES,
-                agent_session::register_legacy,
-            ),
-            (
-                "agent_session_provider_tui",
-                agent_session::PROVIDER_TUI_COMMAND_NAMES,
-                agent_session::register_provider_tui,
+                "agent_session",
+                agent_session::COMMAND_NAMES,
+                agent_session::register,
             ),
             (
                 "app_config",
@@ -187,11 +290,6 @@ mod tests {
             ),
             ("git_host", git_host::COMMAND_NAMES, git_host::register),
             ("menu", menu::COMMAND_NAMES, menu::register),
-            (
-                "notification",
-                notification::COMMAND_NAMES,
-                notification::register,
-            ),
             ("notion", notion::COMMAND_NAMES, notion::register),
             (
                 "terminal_surface",
@@ -366,252 +464,6 @@ mod tests {
         }
     }
 
-    fn canonical_command_names() -> &'static [&'static str] {
-        &[
-            "abort_workflow",
-            "ack_terminal_surface_output",
-            "acknowledge_agent_attempt",
-            "add_repo_path",
-            "append_review_comment",
-            "approve_workspace_node",
-            "approve_workflow_node",
-            "attach_terminal_surface",
-            "archive_provider_agent_session",
-            "archive_workspace_workflow_execution",
-            "build_agent_edit_preview",
-            "build_agent_edited_multi_edit_tool_input",
-            "build_agent_edited_multi_edit_tool_input_all",
-            "build_agent_edited_tool_input",
-            "build_agent_prompt_suggestion",
-            "build_agent_task_list_report",
-            "build_diff_file_tree",
-            "build_review_thread_handoff",
-            "cancel_agent_queued_turn",
-            "close_workspace_node",
-            "compute_hidden_ranges",
-            "compute_hidden_ranges_from_content",
-            "compute_markdown_diff_ranges",
-            "compute_markdown_inline_chunks",
-            "compute_markdown_split_rows",
-            "compute_visible_markdown_blocks",
-            "compact_application_shutdown_details",
-            "create_provider_agent_session",
-            "create_review_thread",
-            "create_session",
-            "create_workspace_session",
-            "create_worktree",
-            "delete_branch",
-            "delete_facet",
-            "delete_notion_config",
-            "delete_review_thread",
-            "delete_workflow",
-            "detach_terminal_surface",
-            "detect_editors",
-            "diagnose_all_cmd",
-            "duplicate_facet",
-            "duplicate_workflow",
-            "expand_pasted_text_blocks",
-            "fetch_issues",
-            "fetch_notion_label_options",
-            "fetch_pr_status",
-            "fork_session",
-            "get_agent_session_display_window",
-            "get_agent_session_notice",
-            "list_agent_session_feedback",
-            "retry_agent_session_feedback",
-            "retry_workspace_node",
-            "get_recovery_action",
-            "get_stop_operation",
-            "get_application_quit_operation",
-            "get_application_startup_outcome",
-            "get_shutdown_plan",
-            "get_app_settings",
-            "get_automation_config_dir",
-            "get_binary_file_at_branch_base",
-            "get_binary_file_at_ref",
-            "get_binary_staged_content",
-            "get_branch_base",
-            "get_branch_diff_summary",
-            "get_cached_issues",
-            "get_cached_pr_status",
-            "get_crash_reporting_enabled",
-            "get_current_branch",
-            "get_application_shutdown",
-            "get_cwd",
-            "get_default_branch",
-            "get_external_editor",
-            "get_facet",
-            "get_file_at_branch_base",
-            "get_file_at_ref",
-            "get_file_navigation",
-            "get_git_log",
-            "get_git_status",
-            "get_git_status_snapshot",
-            "get_head_diff_file_tree_snapshot",
-            "get_language_from_path",
-            "get_main_repo_path",
-            "get_notion_config",
-            "get_notify_config",
-            "get_or_spawn_terminal_surface",
-            "get_performance_real_app_mode",
-            "get_performance_telemetry_enabled",
-            "get_pending_recovery_snapshot",
-            "get_provider_agent_session",
-            "get_provider_availability",
-            "get_terminal_performance_switches",
-            "get_terminal_stream_endpoint",
-            "get_terminal_surface",
-            "get_relative_path",
-            "get_releash_base",
-            "get_repo_git_dir",
-            "get_repo_paths",
-            "get_review_file_view",
-            "get_review_snapshot",
-            "get_review_thread",
-            "get_review_thread_history",
-            "get_session",
-            "get_session_attachment",
-            "get_session_page",
-            "get_session_lifecycle_operation",
-            "get_session_status",
-            "get_session_tool_output",
-            "get_staged_content",
-            "get_agent_send_operation",
-            "get_status_diff_stats",
-            "get_status_diff_stats_snapshot",
-            "get_workflow",
-            "get_workflow_config",
-            "get_workflow_execution",
-            "get_workflow_execution_log",
-            "get_workflow_execution_state",
-            "get_workflow_source",
-            "get_workflow_node_detail",
-            "get_workspace_status",
-            "get_workspace_node_detail",
-            "get_workspace_session_node_id",
-            "get_workspace_tree_selection_reconciliation",
-            "get_worktree_dirty_count",
-            "git_create_branch",
-            "git_stage",
-            "git_stage_review_group",
-            "git_unstage",
-            "git_unstage_review_group",
-            "init_agent_sessions",
-            "kill_terminal_surface",
-            "list_agent_backends",
-            "list_branches",
-            "list_branches_with_status",
-            "list_branches_with_status_snapshot",
-            "list_closed_sessions",
-            "list_facet_summaries",
-            "list_facets",
-            "list_mentionable_files",
-            "list_pending_agent_attempts",
-            "list_pending_agent_recovery",
-            "list_available_provider_agent_session_providers",
-            "list_provider_agent_session_history",
-            "list_provider_agent_sessions",
-            "list_provider_hook_health_warnings",
-            "list_review_threads",
-            "list_session_statuses",
-            "list_sessions",
-            "list_workflow_executions",
-            "list_workflows",
-            "list_workspace_statuses",
-            "list_workspace_workflow_history",
-            "list_workspace_worktree_nodes",
-            "list_worktrees",
-            "load_workspace_state",
-            "open_facet_in_editor",
-            "open_folder_in_editor",
-            "open_in_editor",
-            "open_workflow_in_editor",
-            "plan_agent_chat_eviction",
-            "prepare_image_attachment",
-            "prepare_image_attachments_from_paths",
-            "prepare_pasted_text_block",
-            "present_agent_permission_request",
-            "present_agent_tool_activity",
-            "query_worktree_node_statuses",
-            "sync_worktree_node_statuses",
-            "query_notion_tasks",
-            "quit_after_startup_failure",
-            "record_terminal_launch_renderer_phase",
-            "refresh_provider_availability",
-            "remove_repo_path",
-            "remove_worktree",
-            "render_facet_preview",
-            "report_agent_permission_request_observed",
-            "get_agent_permission_response_operation",
-            "report_frontend_error",
-            "report_mounted_xterm_count",
-            "report_usage_event",
-            "resolve_pending_recovery_action",
-            "stop_agent_session",
-            "request_application_quit",
-            "request_session_lifecycle",
-            "reset_provider_executable",
-            "resize_terminal_surface",
-            "resolve_active_execution_by_worktree",
-            "resolve_review_thread",
-            "resolve_shutdown_target_action",
-            "resolve_worktree_by_execution",
-            "resume_workflow",
-            "resume_agent_queue",
-            "resume_provider_agent_session",
-            "resume_provider_agent_session_history_candidate",
-            "respond_agent_permission",
-            "restore_session",
-            "restore_provider_agent_session",
-            "restore_workspace_workflow_execution",
-            "save_facet",
-            "save_notion_config",
-            "save_workflow_source",
-            "save_workspace_state",
-            "scan_agent_skills",
-            "search_agent_session_messages",
-            "search_agent_sessions",
-            "send_agent_message",
-            "send_workflow_approval_chat_message",
-            "set_agent_model",
-            "set_agent_permission_mode",
-            "set_agent_plan_mode",
-            "set_branch_base",
-            "set_menu_items_enabled",
-            "set_releash_base",
-            "set_session_title",
-            "start_git_dir_watching",
-            "start_terminal_launch_performance_collection",
-            "start_terminal_input_performance_collection",
-            "start_watching",
-            "start_workflow",
-            "stop_workflow",
-            "stop_watching",
-            "sync_mentions_with_text",
-            "take_terminal_launch_performance_samples",
-            "take_terminal_input_performance_samples",
-            "update_agent_session_notice",
-            "dismiss_agent_session_feedback",
-            "update_app_settings",
-            "update_crash_reporting",
-            "update_external_editor",
-            "update_notify_config",
-            "update_performance_telemetry",
-            "update_provider_executable",
-            "update_webhook_url",
-            "update_workflow_config",
-            "validate_notion_config",
-            "workflow_get_output",
-            "workflow_submit_output",
-            "workflow_validate_output",
-            "write_paths_to_terminal_surface",
-            "write_terminal_surface",
-            "open_provider_agent_session",
-            "delete_provider_agent_session",
-            "confirm_provider_agent_session_archive_delete",
-        ]
-    }
-
     #[test]
     fn every_domain_command_routes_to_its_registered_domain() {
         let domains = command_domains();
@@ -630,28 +482,6 @@ mod tests {
             }
         }
         assert_eq!(router.domain_route_index("unknown_releash_command"), None);
-    }
-
-    #[test]
-    fn domain_command_names_match_canonical_command_set() {
-        let registered = registered_command_names();
-        let registered_set = registered.iter().copied().collect::<BTreeSet<_>>();
-        let expected = canonical_command_names();
-        let expected_set = expected.iter().copied().collect::<BTreeSet<_>>();
-
-        assert_eq!(
-            registered.len(),
-            registered_set.len(),
-            "duplicate command names in registered domain COMMAND_NAMES"
-        );
-        assert_eq!(
-            expected.len(),
-            expected_set.len(),
-            "duplicate command names in canonical command set"
-        );
-        assert!(!expected_set.contains("get_review_text_diff"));
-        assert!(!expected_set.contains("get_review_image_diff"));
-        assert_eq!(registered_set, expected_set);
     }
 
     #[test]

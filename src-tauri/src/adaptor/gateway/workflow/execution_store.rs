@@ -1196,11 +1196,6 @@ impl ExecutionStore {
     }
 
     #[cfg(test)]
-    pub(crate) async fn data_dir_for_test(&self) -> Option<PathBuf> {
-        self.data_dir().await
-    }
-
-    #[cfg(test)]
     async fn persistence_dir(&self) -> Result<Option<PathBuf>, ExecutionStoreError> {
         match self.data_dir().await {
             Some(dir) => Ok(Some(dir)),
@@ -2991,15 +2986,6 @@ mod tests {
         ) -> Result<LocalEventQueryResult, crate::domain::local_event::LocalEventQueryError>
         {
             Err(crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-        }
-
-        fn subscribe(
-            &self,
-            _after: crate::domain::local_event::GlobalSequence,
-        ) -> crate::domain::local_event::LocalEventSubscription {
-            crate::domain::local_event::LocalEventSubscription::new(Box::pin(
-                futures_util::stream::empty(),
-            ))
         }
     }
 

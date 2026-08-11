@@ -17,31 +17,6 @@ use crate::domain::local_event::{
     UncommittedDomainEvent,
 };
 
-/// Gateway-owned stored envelope, schema version 1.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEventEnvelopeV1 {
-    pub event_id: String,
-    pub commit_id: String,
-    pub stream_id: String,
-    pub stream_sequence: i64,
-    pub global_sequence: i64,
-    pub event_type: String,
-    pub payload_version: i64,
-    /// ASCII decimal milliseconds since the Unix epoch, no leading zeros.
-    pub occurred_at: String,
-    /// Canonical CBOR payload bytes.
-    pub payload: Vec<u8>,
-    pub payload_sha256: [u8; 32],
-}
-
-/// Raw-preserved envelope for an unknown stored event type / version.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredUnknownEvent {
-    pub envelope: StoredEventEnvelopeV1,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventCodecError {
     /// No codec is registered for this domain event; the batch is rejected
@@ -127,9 +102,6 @@ impl EventCodecRegistry {
         };
         registry.register(Arc::new(ApplicationEventCodec));
         registry.register(Arc::new(
-            crate::adaptor::gateway::local_event_store::agent_session_codec::AgentSessionEventCodec,
-        ));
-        registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::agent_session_lifecycle_codec::AgentSessionLifecycleEventCodec,
         ));
         registry.register(Arc::new(
@@ -164,7 +136,6 @@ impl EventCodecRegistry {
             .find(|codec| codec.handles(event))
             .ok_or_else(|| EventCodecError::UnregisteredEvent {
                 description: match event {
-                    LocalDomainEvent::AgentSession(_) => "agent-session".to_string(),
                     LocalDomainEvent::AgentSessionLifecycle(_) => {
                         "agent-session-lifecycle".to_string()
                     }

@@ -8,13 +8,10 @@ use crate::adaptor::gateway::local_event_store::layout::{
 };
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
 use crate::domain::app_data_gc::RetentionPolicy;
-use crate::infrastructure::process::pid_registry::{
-    process_group_status, recorded_pid_status, PidFileV1, ProcessStatus,
-};
 use crate::usecase::app_data_gc::{
     CacheGcRecord, CanonicalRuntimeOwners, GcFileSystem, GcFileSystemError, GcFileType, GcMetadata,
-    LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet, ProcessRecord, ProcessRecordStatus,
-    ReviewCommentGcRecord, RuntimeProtection, StartupGcRequest, WorkspaceStateGcRecord,
+    LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet, ReviewCommentGcRecord,
+    RuntimeProtection, StartupGcRequest, WorkspaceStateGcRecord,
 };
 
 #[derive(Clone)]
@@ -75,12 +72,6 @@ impl GcFileSystem for StdGcFileSystem {
             .collect()
     }
 
-    fn read_to_string(&self, path: &Path) -> Result<String, GcFileSystemError> {
-        self.observe(StorePathOperation::Open, path);
-        self.observe(StorePathOperation::Read, path);
-        std::fs::read_to_string(path).map_err(GcFileSystemError::from)
-    }
-
     fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError> {
         let metadata = match self.metadata(path) {
             Ok(metadata) => metadata,
@@ -115,12 +106,6 @@ pub(crate) fn build_startup_gc_request(
     shared_repo_paths: SharedRepoPaths,
     file_system: &dyn GcFileSystem,
 ) -> StartupGcRequest {
-    let process_records = collect_process_records(&app_data_dir, file_system);
-    let live_process_session_ids = process_records
-        .iter()
-        .filter(|record| record.status == ProcessRecordStatus::Live)
-        .filter_map(|record| record.session_id.clone())
-        .collect();
     StartupGcRequest {
         app_data_dir: app_data_dir.clone(),
         live_worktrees: resolve_live_worktrees(shared_repo_paths),
@@ -129,8 +114,7 @@ pub(crate) fn build_startup_gc_request(
         checkpoint_paths: collect_checkpoint_paths(&app_data_dir, file_system),
         cache_records: collect_cache_records(&app_data_dir, file_system),
         legacy_comment_paths: collect_legacy_comment_paths(&app_data_dir, file_system),
-        process_records,
-        runtime_protection: RuntimeProtection::incomplete(live_process_session_ids),
+        runtime_protection: RuntimeProtection::incomplete(),
         now_secs: crate::other::utils::unix_timestamp_seconds(),
         retention: RetentionPolicy::default(),
     }
@@ -153,16 +137,7 @@ pub(crate) fn canonical_runtime_protection(owners: CanonicalRuntimeOwners) -> Ru
                 .to_string();
             live_worktree(name, path)
         }));
-    RuntimeProtection::complete(owners.active_session_ids, protected_worktrees)
-}
-
-pub(crate) fn live_process_session_ids(request: &StartupGcRequest) -> HashSet<String> {
-    request
-        .process_records
-        .iter()
-        .filter(|record| record.status == ProcessRecordStatus::Live)
-        .filter_map(|record| record.session_id.clone())
-        .collect()
+    RuntimeProtection::complete(protected_worktrees)
 }
 
 fn resolve_live_worktrees(shared_repo_paths: SharedRepoPaths) -> Option<LiveWorktreeResolution> {
@@ -314,109 +289,6 @@ fn collect_legacy_comment_paths(
         .map(|name| app_data_dir.join(name))
         .filter(|path| file_system.metadata(path).is_ok())
         .collect()
-}
-
-fn collect_process_records(
-    app_data_dir: &Path,
-    file_system: &dyn GcFileSystem,
-) -> Vec<ProcessRecord> {
-    let mut records = collect_agent_process_records(app_data_dir, file_system);
-    records.extend(collect_pid_registry_records(app_data_dir, file_system));
-    records
-}
-
-fn collect_agent_process_records(
-    app_data_dir: &Path,
-    file_system: &dyn GcFileSystem,
-) -> Vec<ProcessRecord> {
-    let directory = app_data_dir.join("agent-processes");
-    read_directory_or_empty(file_system, &directory)
-        .into_iter()
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
-        .map(|path| {
-            let parsed = file_system
-                .read_to_string(&path)
-                .map_err(|error| error.to_string())
-                .and_then(|content| parse_pid_file(&content));
-            match parsed {
-                Ok(pid_file) => ProcessRecord {
-                    path,
-                    session_id: Some(pid_file.session_id.clone()),
-                    status: process_status_to_gc(recorded_pid_status(&pid_file)),
-                },
-                Err(error) => {
-                    log::warn!(
-                        "app data gc retained unreadable process record {}: {error}",
-                        path.display()
-                    );
-                    ProcessRecord {
-                        path,
-                        session_id: None,
-                        status: ProcessRecordStatus::Unknown,
-                    }
-                }
-            }
-        })
-        .collect()
-}
-
-fn collect_pid_registry_records(
-    app_data_dir: &Path,
-    file_system: &dyn GcFileSystem,
-) -> Vec<ProcessRecord> {
-    let directory = app_data_dir.join("pids");
-    read_directory_or_empty(file_system, &directory)
-        .into_iter()
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("pid"))
-        .map(|path| {
-            let session_id = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(str::to_string);
-            let status = file_system
-                .read_to_string(&path)
-                .map_err(|error| error.to_string())
-                .and_then(|content| {
-                    content
-                        .trim()
-                        .parse::<i32>()
-                        .map_err(|error| error.to_string())
-                })
-                .map(process_group_status)
-                .map(process_status_to_gc)
-                .unwrap_or_else(|error| {
-                    log::warn!(
-                        "app data gc retained unreadable pid record {}: {error}",
-                        path.display()
-                    );
-                    ProcessRecordStatus::Unknown
-                });
-            ProcessRecord {
-                path,
-                session_id,
-                status,
-            }
-        })
-        .collect()
-}
-
-fn parse_pid_file(content: &str) -> Result<PidFileV1, String> {
-    let file = serde_json::from_str::<PidFileV1>(content).map_err(|error| error.to_string())?;
-    if file.version != 1 {
-        return Err(format!("unsupported pid record version {}", file.version));
-    }
-    if file.pgid <= 1 {
-        return Err(format!("unsafe process group {}", file.pgid));
-    }
-    Ok(file)
-}
-
-fn process_status_to_gc(status: ProcessStatus) -> ProcessRecordStatus {
-    match status {
-        ProcessStatus::Live => ProcessRecordStatus::Live,
-        ProcessStatus::Stale => ProcessRecordStatus::Stale,
-        ProcessStatus::Unknown => ProcessRecordStatus::Unknown,
-    }
 }
 
 fn read_directory_or_empty(file_system: &dyn GcFileSystem, path: &Path) -> Vec<PathBuf> {
@@ -578,24 +450,10 @@ mod tests {
         std::fs::create_dir_all(&checkpoints).expect("checkpoint root");
         std::fs::write(checkpoints.join("retained.checkpoint"), b"checkpoint").expect("checkpoint");
 
-        let stale_process_dir = root.join("agent-processes");
-        std::fs::create_dir_all(&stale_process_dir).expect("process root");
-        let stale_process = stale_process_dir.join("stale.codex.999999.json");
-        std::fs::write(
-            &stale_process,
-            serde_json::to_vec(&PidFileV1 {
-                version: 1,
-                session_id: "stale".to_string(),
-                backend_id: "codex".to_string(),
-                pid: 999_999,
-                pgid: 999_999,
-                owner_app_pid: None,
-                owner_start_time: None,
-                created_at_ms: 1,
-            })
-            .expect("pid json"),
-        )
-        .expect("stale process");
+        let legacy_process_dir = root.join("agent-processes");
+        std::fs::create_dir_all(&legacy_process_dir).expect("process root");
+        let legacy_process = legacy_process_dir.join("stale.codex.999999.json");
+        std::fs::write(&legacy_process, b"legacy process record").expect("legacy process record");
 
         let observer = Arc::new(RecordingObserver::default());
         let file_system = StdGcFileSystem::with_observer(observer.clone());
@@ -613,8 +471,8 @@ mod tests {
             "expired regenerable cache must be collected"
         );
         assert!(
-            !stale_process.exists(),
-            "stale process record must be collected"
+            legacy_process.exists(),
+            "legacy Agent process data must not be deleted"
         );
         assert!(
             checkpoints.join("retained.checkpoint").exists(),
@@ -741,503 +599,6 @@ mod tests {
         assert_eq!(report.categories[&GcCategory::LegacyComments].deleted, 3);
     }
 
-    struct CompositionSendGate {
-        session_store: Arc<crate::usecase::agent_session::session::SessionStore>,
-        effects: std::sync::atomic::AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::usecase::agent_session::operation::SendAcceptancePort for CompositionSendGate {
-        async fn plan_send(
-            &self,
-            _principal: &str,
-            _operation_id: &str,
-            _canonical_payload: &str,
-        ) -> Result<
-            crate::usecase::agent_session::operation::SendPlan,
-            crate::domain::local_event::SafeOperationFailure,
-        > {
-            let allocation = self
-                .session_store
-                .send_acceptance_allocation("gc-protected-active-session")
-                .expect("composition send allocation must be readable");
-            Ok(crate::usecase::agent_session::operation::SendPlan {
-                session_id: "gc-protected-active-session".to_string(),
-                initial_session: None,
-                session_projection_guard: allocation.session_projection_guard,
-                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
-                    turn_id: allocation.next_turn_id.to_string(),
-                },
-                input_ref: "b070-production-composition-input".to_string(),
-                human_message_id: "b070-production-composition-human".to_string(),
-                prompt: crate::domain::agent_session::events::PromptInput {
-                    content: "B-070 production composition send".to_string(),
-                    ..Default::default()
-                },
-                reserved_turn_id: None,
-            })
-        }
-
-        async fn acceptance_state_mutations(
-            &self,
-            plan: &crate::usecase::agent_session::operation::SendPlan,
-            events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
-        ) -> Result<
-            Vec<crate::domain::local_event::LocalStateMutation>,
-            crate::domain::local_event::SafeOperationFailure,
-        > {
-            self.session_store
-                .prepare_send_acceptance_mutations(
-                    crate::usecase::agent_session::session::SendAcceptanceProjectionInput {
-                        session_id: &plan.session_id,
-                        initial_session: None,
-                        session_projection_guard: plan.session_projection_guard,
-                        human_message_id: &plan.human_message_id,
-                        prompt: &plan.prompt,
-                        disposition: &plan.disposition,
-                        reserved_turn_id: plan.reserved_turn_id.as_deref(),
-                        input_ref: &plan.input_ref,
-                        events,
-                    },
-                )
-                .map_err(|error| {
-                    crate::domain::local_event::SafeOperationFailure::new(
-                        crate::domain::local_event::SessionOperationFailureKind::PersistFailure,
-                        false,
-                        &error,
-                        "b070-production-composition-send",
-                    )
-                })
-        }
-
-        async fn canonical_immediate_turn_is_current(
-            &self,
-            _session_id: &str,
-            _turn_id: u64,
-        ) -> Result<bool, crate::domain::local_event::SafeOperationFailure> {
-            Ok(true)
-        }
-
-        async fn start_provider_effect(
-            &self,
-            _effect: &crate::usecase::agent_session::operation::AcceptedSendEffect,
-        ) -> Result<
-            crate::usecase::agent_session::operation::SendEffectDispatch,
-            crate::domain::local_event::SafeOperationFailure,
-        > {
-            self.effects
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(crate::usecase::agent_session::operation::SendEffectDispatch::Scheduled)
-        }
-    }
-
-    #[tokio::test]
-    async fn b070_production_composition_observer_covers_store_gc_shutdown_and_restart() {
-        use crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1;
-        use crate::domain::local_event::{
-            ApplicationShutdownPhase, CommitIdentity, CommitOperationKind, IdempotencyBinding,
-            LocalAtomicBatch, LocalEventQuery, LocalEventQueryResult,
-            LocalEventTransactionRepository, LocalStateMutation, QuitIntent, Revision,
-            RevisionGuard, ShutdownDetailsState, ShutdownLatestPointerMutation, ShutdownPlanKey,
-            ShutdownPlanMutation, ShutdownPlanRecord,
-        };
-        use crate::usecase::agent_session::session::{build_new_session_with_id, SessionStore};
-
-        let app_data = tempfile::tempdir().expect("app data");
-        let root = app_data.path();
-        let sentinel = b"\0B-070 production composition sentinel";
-        let legacy_roots = [
-            "sessions",
-            "workflow_runs",
-            "workflow_logs",
-            "workflow_execution_logs",
-            "workflow_executions",
-            "workflow_event_logs",
-        ];
-        for name in legacy_roots {
-            let directory = root.join(name);
-            std::fs::create_dir(&directory).expect("legacy root");
-            std::fs::write(directory.join("sentinel.invalid"), sentinel).expect("sentinel");
-        }
-        std::fs::write(root.join("session_titles.json"), sentinel).expect("title sentinel");
-        let legacy_paths = [
-            root.join("sessions"),
-            root.join("session_titles.json"),
-            root.join("workflow_runs"),
-            root.join("workflow_logs"),
-            root.join("workflow_execution_logs"),
-            root.join("workflow_executions"),
-            root.join("workflow_event_logs"),
-        ];
-        let before = legacy_paths
-            .iter()
-            .map(|path| {
-                let metadata = std::fs::metadata(path).expect("legacy path metadata");
-                let mut entries = if path.is_dir() {
-                    std::fs::read_dir(path)
-                        .expect("legacy entries")
-                        .map(|entry| {
-                            entry
-                                .expect("legacy entry")
-                                .file_name()
-                                .to_string_lossy()
-                                .into_owned()
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                entries.sort();
-                let sentinel_path = if path.is_dir() {
-                    path.join("sentinel.invalid")
-                } else {
-                    path.clone()
-                };
-                let sentinel_metadata =
-                    std::fs::metadata(&sentinel_path).expect("legacy sentinel metadata");
-                (
-                    path.clone(),
-                    metadata.len(),
-                    metadata.modified().expect("legacy path mtime"),
-                    entries,
-                    std::fs::read(&sentinel_path).expect("legacy sentinel bytes"),
-                    sentinel_metadata.len(),
-                    sentinel_metadata.modified().expect("legacy sentinel mtime"),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let observer = Arc::new(RecordingObserver::default());
-        let composition =
-            crate::adaptor::controller::app_data_composition::ProductionAppDataComposition::with_observer(
-                root.to_path_buf(),
-                observer.clone(),
-            );
-        let registration = composition
-            .register_process("observer-session", "observer-backend", 42)
-            .expect("observed process registration");
-        registration.remove();
-        let malformed_process = root.join("agent-processes/malformed.json");
-        std::fs::write(&malformed_process, b"{").expect("malformed process record");
-        let process_cleanup = composition.cleanup_orphan_processes();
-        assert_eq!(process_cleanup.failures, 0);
-        let protected_worktree = "/removed-but-active-worktree";
-        let protected_key = crate::adaptor::gateway::workspace_state::repository_impl::storage_key(
-            protected_worktree,
-        );
-        let workspace_state = root.join("workspace_state");
-        std::fs::create_dir_all(&workspace_state).expect("workspace state");
-        let protected_state = workspace_state.join(format!("{protected_key}.json"));
-        let stale_state = workspace_state.join("definitely-deleted.json");
-        std::fs::write(&protected_state, b"{}").expect("protected state");
-        std::fs::write(&stale_state, b"{}").expect("stale state");
-        let expired_cache = root.join("lsp/typescript");
-        std::fs::create_dir_all(&expired_cache).expect("cache directory");
-        let expired_cache_file = expired_cache.join("cache.bin");
-        std::fs::write(&expired_cache_file, b"regenerable cache").expect("cache fixture");
-        let expired = filetime::FileTime::from_system_time(
-            SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60),
-        );
-        filetime::set_file_mtime(&expired_cache_file, expired).expect("cache file mtime");
-        filetime::set_file_mtime(&expired_cache, expired).expect("cache directory mtime");
-
-        let live_repo = tempfile::tempdir().expect("live repo");
-        git2::Repository::init(live_repo.path()).expect("init live repo");
-        let repos: SharedRepoPaths = Arc::new(RwLock::new(vec![live_repo
-            .path()
-            .to_string_lossy()
-            .into_owned()]));
-
-        let store = composition
-            .open_local_event_store()
-            .expect("production composition cold startup");
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        let session_store = Arc::new(SessionStore::new_canonical(
-            repository.clone(),
-            store.installation_id().to_string(),
-            Arc::new(AgentSessionProjectionCodecV1),
-        ));
-        let session = build_new_session_with_id(
-            "gc-protected-active-session".to_string(),
-            protected_worktree,
-            Some("codex".to_string()),
-            crate::domain::agent_session::PermissionMode::Ask,
-            None,
-            false,
-            false,
-            None,
-        );
-        session_store
-            .save_full_session_from_user(root, &session)
-            .expect("canonical active session");
-        assert_eq!(
-            session_store
-                .get_session_meta(root, "gc-protected-active-session")
-                .expect("production canonical session query")
-                .expect("stored production session")
-                .id,
-            "gc-protected-active-session"
-        );
-
-        let send_gate = Arc::new(CompositionSendGate {
-            session_store: session_store.clone(),
-            effects: std::sync::atomic::AtomicUsize::new(0),
-        });
-        let send_usecase = crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
-            store.clone(),
-            store.clone(),
-            send_gate.clone(),
-            store.installation_id().to_string(),
-        );
-        let send = send_usecase
-            .send(
-                crate::usecase::agent_session::operation::SendOperationRequest {
-                    principal: "desktop".to_string(),
-                    operation_id: "b070-production-composition-send".to_string(),
-                    canonical_payload: "{\"content\":\"B-070 production composition send\"}"
-                        .to_string(),
-                },
-            )
-            .await
-            .expect("production composition normal send");
-        assert!(matches!(
-            send,
-            crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(_)
-        ));
-        assert_eq!(
-            send_usecase
-                .get_operation("desktop", "b070-production-composition-send")
-                .await
-                .expect("production composition normal send query")
-                .receipt
-                .operation_id,
-            "b070-production-composition-send"
-        );
-        assert_eq!(
-            send_gate.effects.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
-
-        let feedback_maintenance =
-            crate::usecase::agent_session::feedback::SessionFeedbackUsecase::new(
-                store.clone(),
-                store.installation_id().to_string(),
-            );
-        assert_eq!(
-            feedback_maintenance
-                .recover_abandoned_reservations()
-                .await
-                .expect("production composition idle maintenance"),
-            0
-        );
-
-        let report = composition
-            .run_startup_gc_pass(repos.clone(), repository.clone())
-            .await
-            .expect("production composition background GC/retention");
-        assert_eq!(report.errors, 0);
-        assert!(
-            protected_state.exists(),
-            "canonical active owner must protect nonlegacy workspace state"
-        );
-        assert!(
-            !stale_state.exists(),
-            "unowned nonlegacy workspace state must still be collected"
-        );
-        assert!(!expired_cache.exists(), "expired cache must be collected");
-        assert!(
-            malformed_process.exists(),
-            "unparseable process record must be retained fail closed"
-        );
-
-        let shutdown_key = ShutdownPlanKey {
-            shutdown_id: "b070-production-composition-shutdown".to_string(),
-        };
-        store
-            .commit_batch(LocalAtomicBatch {
-                commit_id: CommitIdentity::parse("b070-composition-shutdown-commit")
-                    .expect("shutdown commit identity"),
-                idempotency: IdempotencyBinding {
-                    installation_id: store.installation_id().to_string(),
-                    operation_kind: CommitOperationKind::ApplicationQuit,
-                    idempotency_key: "b070-composition-shutdown-key".to_string(),
-                    payload_hash: [70; 32],
-                },
-                expected_heads: Vec::new(),
-                events: Vec::new(),
-                state_mutations: vec![
-                    LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
-                        key: shutdown_key.clone(),
-                        phase: ApplicationShutdownPhase::Prepared,
-                        summary: ShutdownPlanRecord {
-                            operation_id: "b070-production-composition-quit".to_string(),
-                            intent: QuitIntent::Exit { code: 0 },
-                            t0_ms: 0,
-                            preparation_cutoff_ms: None,
-                            deadline_ms: 15_000,
-                            target_count: None,
-                            prepared_count: None,
-                            effect_reserved_count: None,
-                            terminal_count: None,
-                            completed_count: None,
-                            unresolved_count: None,
-                            recovery_snapshot_count: None,
-                            recovery_snapshot_id: None,
-                            process_instance_id: "b070-composition-process".to_string(),
-                            outcome: None,
-                            failure: None,
-                            shutdown_effect_count: None,
-                            admission_open: None,
-                            retry_quit_same_boot: None,
-                        },
-                        details_state: ShutdownDetailsState::Available,
-                        expected: RevisionGuard::Absent,
-                        revision: Revision::new(0).expect("shutdown revision"),
-                    }),
-                    LocalStateMutation::ShutdownLatestPointer(ShutdownLatestPointerMutation {
-                        expected: None,
-                        new: Some(shutdown_key.clone()),
-                    }),
-                ],
-            })
-            .await
-            .expect("production composition graceful shutdown persistence");
-        assert_eq!(
-            composition
-                .run_startup_gc_pass(repos.clone(), repository.clone())
-                .await
-                .expect("cooperative shutdown maintenance")
-                .errors,
-            0
-        );
-        drop(feedback_maintenance);
-        drop(send_usecase);
-        drop(send_gate);
-        drop(session_store);
-        drop(repository);
-        drop(store);
-
-        let reopened = composition
-            .open_local_event_store()
-            .expect("production composition restart");
-        let reopened_repository: Arc<dyn LocalEventTransactionRepository> = reopened.clone();
-        assert!(matches!(
-            reopened.query(LocalEventQuery::CurrentShutdown).await,
-            Ok(LocalEventQueryResult::CurrentShutdown(Some(ref view)))
-                if view.plan == shutdown_key
-        ));
-        let reopened_owners = crate::usecase::app_data_gc::load_canonical_runtime_owners(
-            reopened_repository,
-            HashSet::new(),
-        )
-        .await
-        .expect("restart canonical runtime protection");
-        assert!(reopened_owners
-            .protected_worktree_paths
-            .contains(protected_worktree));
-        drop(reopened);
-
-        let observed = observer.operations.lock().expect("observed operations");
-        for required in [
-            StorePathOperation::Open,
-            StorePathOperation::Metadata,
-            StorePathOperation::ReadDir,
-            StorePathOperation::Read,
-            StorePathOperation::Write,
-            StorePathOperation::Rename,
-            StorePathOperation::Remove,
-        ] {
-            assert!(
-                observed.iter().any(|(operation, _)| *operation == required),
-                "production composition observer did not cover {required:?}: {observed:?}"
-            );
-        }
-        assert!(
-            observed
-                .iter()
-                .any(|(_, path)| path.starts_with(root.join("agent-processes"))),
-            "production composition did not observe the process-registry collaborator"
-        );
-        assert!(
-            observed.iter().any(|(_, path)| {
-                path.starts_with(root.join("workspace_state")) || path.starts_with(root.join("lsp"))
-            }),
-            "production composition did not observe the GC/retention collaborator"
-        );
-        assert!(
-            observed
-                .iter()
-                .any(|(_, path)| path == &root.join("local-event-store.sqlite3")),
-            "production composition did not observe the fixed SQLite collaborator"
-        );
-        assert!(
-            observed.iter().all(|(operation, path)| {
-                !(*operation == StorePathOperation::ReadDir && path == root)
-                    && legacy_paths
-                        .iter()
-                        .all(|legacy| path != legacy && !path.starts_with(legacy))
-            }),
-            "production composition accessed a legacy path: {observed:?}"
-        );
-        drop(observed);
-        for (path, path_len, path_modified, entries, bytes, sentinel_len, sentinel_modified) in
-            before
-        {
-            let metadata = std::fs::metadata(&path).expect("unchanged legacy path metadata");
-            assert_eq!(metadata.len(), path_len);
-            assert_eq!(
-                metadata.modified().expect("unchanged legacy path mtime"),
-                path_modified
-            );
-            let mut after_entries = if path.is_dir() {
-                std::fs::read_dir(&path)
-                    .expect("unchanged legacy entries")
-                    .map(|entry| {
-                        entry
-                            .expect("unchanged legacy entry")
-                            .file_name()
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            after_entries.sort();
-            assert_eq!(after_entries, entries);
-            let sentinel_path = if path.is_dir() {
-                path.join("sentinel.invalid")
-            } else {
-                path
-            };
-            let metadata = std::fs::metadata(&sentinel_path).expect("unchanged sentinel metadata");
-            assert_eq!(metadata.len(), sentinel_len);
-            assert_eq!(
-                metadata.modified().expect("unchanged sentinel mtime"),
-                sentinel_modified
-            );
-            assert_eq!(
-                std::fs::read(sentinel_path).expect("unchanged sentinel"),
-                bytes
-            );
-        }
-    }
-
-    #[test]
-    fn malformed_process_record_is_retained_fail_closed() {
-        let app_data = tempfile::tempdir().expect("app data");
-        let directory = app_data.path().join("agent-processes");
-        std::fs::create_dir_all(&directory).expect("process directory");
-        let malformed = directory.join("malformed.json");
-        std::fs::write(&malformed, b"{").expect("malformed record");
-
-        let records = collect_process_records(app_data.path(), &StdGcFileSystem::default());
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status, ProcessRecordStatus::Unknown);
-        assert!(malformed.exists());
-    }
-
     fn assert_test_only(source: &str, needle: &str, label: &str) {
         let offset = source
             .find(needle)
@@ -1262,15 +623,10 @@ mod tests {
             .expect("production GC source");
         let composition_source = include_str!("../../controller/app_data_composition.rs");
         let production_root_source = include_str!("../../../lib.rs");
-        // This module has small test-only wrappers interleaved with production
-        // helpers, so scan the full source. Its tests also must never name a
-        // forbidden Session/Workflow root.
-        let process_source = include_str!("../../../infrastructure/process/pid_registry.rs");
         let workflow_module_source = include_str!("../workflow/mod.rs");
         let execution_store_source = include_str!("../workflow/execution_store.rs");
         let event_repository_source = include_str!("../workflow/event_repository.rs");
         let workflow_log_source = include_str!("../workflow/log.rs");
-        let session_storage_source = include_str!("../agent_session/session_storage.rs");
         for legacy in [
             "sessions",
             "session_titles.json",
@@ -1285,23 +641,14 @@ mod tests {
                 !gc_source.contains(&join),
                 "production GC reintroduced legacy root {legacy}"
             );
-            assert!(
-                !process_source.contains(&join),
-                "process cleanup reintroduced legacy root {legacy}"
-            );
         }
         assert!(
             !gc_source.contains("read_dir(app_data_dir)"),
             "production GC must not enumerate app-data root"
         );
-        assert!(
-            !process_source.contains("read_dir(data_dir)"),
-            "process cleanup must not enumerate app-data root"
-        );
         for required in [
             "ProductionAppDataComposition::new",
             "open_local_event_store(&app_data)",
-            "spawn_startup_maintenance(app_data.clone()",
             "spawn_startup_app_data_gc(",
         ] {
             assert!(
@@ -1311,7 +658,6 @@ mod tests {
         }
         for required in [
             "config.path_observer = self.observer.clone()",
-            "cleanup_orphan_processes_with_observer",
             "StdGcFileSystem::with_observer(self.observer.clone())",
             "run_startup_gc_pass",
         ] {
@@ -1351,16 +697,6 @@ mod tests {
                 workflow_log_source,
                 "pub fn new(data_dir: &Path)",
                 "workflow legacy event log constructor",
-            ),
-            (
-                session_storage_source,
-                "mod layout;",
-                "agent session legacy layout module",
-            ),
-            (
-                session_storage_source,
-                "pub struct FileSessionStorage",
-                "agent session legacy storage",
             ),
         ] {
             assert_test_only(source, needle, label);

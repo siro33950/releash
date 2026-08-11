@@ -28,7 +28,6 @@ pub(crate) struct GcMetadata {
 pub(crate) trait GcFileSystem: Send + Sync {
     fn metadata(&self, path: &Path) -> Result<GcMetadata, GcFileSystemError>;
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, GcFileSystemError>;
-    fn read_to_string(&self, path: &Path) -> Result<String, GcFileSystemError>;
     fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError>;
     fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError>;
 }
@@ -163,32 +162,25 @@ impl LiveWorktreeResolution {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalRuntimeOwners {
-    pub(crate) active_session_ids: HashSet<String>,
     pub(crate) protected_worktree_paths: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeProtection {
-    pub(crate) active_session_ids: HashSet<String>,
     protected_worktrees: LiveWorktreeSet,
     pub(crate) workspace_keyed_protection_complete: bool,
 }
 
 impl RuntimeProtection {
-    pub(crate) fn complete(
-        active_session_ids: HashSet<String>,
-        protected_worktrees: LiveWorktreeSet,
-    ) -> Self {
+    pub(crate) fn complete(protected_worktrees: LiveWorktreeSet) -> Self {
         Self {
-            active_session_ids,
             protected_worktrees,
             workspace_keyed_protection_complete: true,
         }
     }
 
-    pub(crate) fn incomplete(active_session_ids: HashSet<String>) -> Self {
+    pub(crate) fn incomplete() -> Self {
         Self {
-            active_session_ids,
             protected_worktrees: LiveWorktreeSet::default(),
             workspace_keyed_protection_complete: false,
         }
@@ -213,20 +205,6 @@ pub(crate) struct CacheGcRecord {
     pub(crate) updated_at: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProcessRecordStatus {
-    Live,
-    Stale,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProcessRecord {
-    pub(crate) path: PathBuf,
-    pub(crate) session_id: Option<String>,
-    pub(crate) status: ProcessRecordStatus,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct StartupGcRequest {
     pub(crate) app_data_dir: PathBuf,
@@ -239,7 +217,6 @@ pub(crate) struct StartupGcRequest {
     pub(crate) checkpoint_paths: Vec<PathBuf>,
     pub(crate) cache_records: Vec<CacheGcRecord>,
     pub(crate) legacy_comment_paths: Vec<PathBuf>,
-    pub(crate) process_records: Vec<ProcessRecord>,
     pub(crate) runtime_protection: RuntimeProtection,
     pub(crate) now_secs: f64,
     pub(crate) retention: RetentionPolicy,
@@ -299,15 +276,10 @@ pub(crate) struct StartupGcPlan {
 /// Session/Workflow path participates in runtime-protection construction.
 pub(crate) async fn load_canonical_runtime_owners(
     repository: Arc<dyn LocalEventTransactionRepository>,
-    live_process_session_ids: HashSet<String>,
 ) -> Result<CanonicalRuntimeOwners, String> {
     const SNAPSHOT_LIMIT: usize = 8_192;
 
-    let mut owners = CanonicalRuntimeOwners {
-        active_session_ids: live_process_session_ids.clone(),
-        ..CanonicalRuntimeOwners::default()
-    };
-    let mut unresolved_live_process_session_ids = live_process_session_ids;
+    let mut owners = CanonicalRuntimeOwners::default();
     let response = repository
         .query(LocalEventQuery::CanonicalRuntimeOwnerSnapshot {
             limit: SNAPSHOT_LIMIT,
@@ -323,39 +295,19 @@ pub(crate) async fn load_canonical_runtime_owners(
         );
     }
     for owner in snapshot {
-        apply_runtime_owner(owner, &mut owners, &mut unresolved_live_process_session_ids);
-    }
-    if !unresolved_live_process_session_ids.is_empty() {
-        return Err(format!(
-            "canonical runtime protection could not resolve {} live process session projection(s)",
-            unresolved_live_process_session_ids.len()
-        ));
+        apply_runtime_owner(owner, &mut owners);
     }
     Ok(owners)
 }
 
-fn apply_runtime_owner(
-    owner: CanonicalRuntimeOwnerView,
-    owners: &mut CanonicalRuntimeOwners,
-    unresolved_live_process_session_ids: &mut HashSet<String>,
-) {
+fn apply_runtime_owner(owner: CanonicalRuntimeOwnerView, owners: &mut CanonicalRuntimeOwners) {
     match owner {
         CanonicalRuntimeOwnerView::AgentSession {
-            projection_id,
-            session_id,
             worktree_path,
             active,
             ..
         } => {
-            let projection_id_was_live = unresolved_live_process_session_ids.remove(&projection_id);
-            let metadata_id_was_live = unresolved_live_process_session_ids.remove(&session_id);
-            let live_process_owner = projection_id_was_live || metadata_id_was_live;
-            if active
-                || live_process_owner
-                || owners.active_session_ids.contains(&projection_id)
-                || owners.active_session_ids.contains(&session_id)
-            {
-                owners.active_session_ids.insert(session_id);
+            if active {
                 owners
                     .protected_worktree_paths
                     .insert(worktree_path_key(&worktree_path));
@@ -392,15 +344,6 @@ pub(crate) fn plan_startup_gc(request: StartupGcRequest) -> StartupGcPlan {
             GcCategory::LegacyComments,
             CandidateRevalidation::None,
         );
-    }
-    for record in &request.process_records {
-        if record.status == ProcessRecordStatus::Stale {
-            plan.add(
-                record.path.clone(),
-                GcCategory::StaleProcessRecord,
-                CandidateRevalidation::None,
-            );
-        }
     }
     for path in &request.checkpoint_paths {
         log::info!(
@@ -611,7 +554,6 @@ mod tests {
     #[test]
     fn canonical_projection_owners_protect_active_session_and_running_workflow_paths() {
         let mut owners = CanonicalRuntimeOwners::default();
-        let mut unresolved_live_process_session_ids = HashSet::new();
         apply_runtime_owner(
             CanonicalRuntimeOwnerView::AgentSession {
                 projection_id: "active-session".to_string(),
@@ -622,51 +564,20 @@ mod tests {
                 workflow_node_session: false,
             },
             &mut owners,
-            &mut unresolved_live_process_session_ids,
         );
         apply_runtime_owner(
             CanonicalRuntimeOwnerView::ActiveWorkflow {
                 worktree_path: "/worktrees/running".to_string(),
             },
             &mut owners,
-            &mut unresolved_live_process_session_ids,
         );
 
-        assert!(owners.active_session_ids.contains("active-session"));
         assert!(owners
             .protected_worktree_paths
             .contains("/worktrees/active"));
         assert!(owners
             .protected_worktree_paths
             .contains("/worktrees/running"));
-    }
-
-    #[test]
-    fn app_data_gc_live_pid_resolves_through_an_inactive_canonical_session_owner() {
-        let mut owners = CanonicalRuntimeOwners {
-            active_session_ids: HashSet::from(["live-process-session".to_string()]),
-            ..CanonicalRuntimeOwners::default()
-        };
-        let mut unresolved_live_process_session_ids =
-            HashSet::from(["live-process-session".to_string()]);
-
-        apply_runtime_owner(
-            CanonicalRuntimeOwnerView::AgentSession {
-                projection_id: "live-process-session".to_string(),
-                session_id: "live-process-session".to_string(),
-                worktree_path: "/worktrees/live-process".to_string(),
-                active: false,
-                shutdown_target: true,
-                workflow_node_session: false,
-            },
-            &mut owners,
-            &mut unresolved_live_process_session_ids,
-        );
-
-        assert!(unresolved_live_process_session_ids.is_empty());
-        assert!(owners
-            .protected_worktree_paths
-            .contains("/worktrees/live-process"));
     }
 
     #[test]
@@ -687,8 +598,7 @@ mod tests {
             checkpoint_paths: Vec::new(),
             cache_records: Vec::new(),
             legacy_comment_paths: Vec::new(),
-            process_records: Vec::new(),
-            runtime_protection: RuntimeProtection::incomplete(HashSet::new()),
+            runtime_protection: RuntimeProtection::incomplete(),
             now_secs: 0.0,
             retention: RetentionPolicy::default(),
         };
@@ -696,8 +606,7 @@ mod tests {
         collect_workspace_keyed_deletions(&request, &mut plan);
         assert!(plan.candidates.is_empty());
 
-        request.runtime_protection =
-            RuntimeProtection::complete(HashSet::new(), LiveWorktreeSet::default());
+        request.runtime_protection = RuntimeProtection::complete(LiveWorktreeSet::default());
         collect_workspace_keyed_deletions(&request, &mut plan);
         assert_eq!(plan.candidates.len(), 1);
     }

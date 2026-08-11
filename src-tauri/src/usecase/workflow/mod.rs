@@ -4,7 +4,6 @@
 //! Controllers, CLI adapters, and watchers should converge
 //! here as the legacy `workflow` module is removed.
 
-pub(crate) mod approval_chat;
 pub(crate) mod command;
 pub(crate) mod control_plane;
 mod definition;
@@ -12,7 +11,6 @@ pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;
 pub(crate) mod internal_node_command;
-pub(crate) mod node_lifecycle;
 mod output;
 pub(crate) mod output_submission;
 pub(crate) mod ports;
@@ -26,7 +24,6 @@ pub(crate) mod runtime_snapshot;
 pub(crate) mod runtime_start_guard;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub(crate) mod turn_complete;
 mod workspace_node_command;
 mod workspace_tree;
 
@@ -45,15 +42,14 @@ use crate::usecase::workflow::ports::{
 
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
-pub(crate) use node_lifecycle::NodeExecutionLifecycleUsecase;
 pub(crate) use output::WorkflowOutputUsecase;
 pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
-    ApproveWorkspaceNodeCommand, CloseWorkspaceNodeCommand, RetryWorkspaceNodeCommand,
-    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
+    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeActionResolver,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
@@ -1048,11 +1044,8 @@ mod tests {
             let events = Arc::new(FakeEventRepository::default());
             let editors = Arc::new(FakeExternalEditorGateway::default());
             let workspace_root = tempfile::tempdir().unwrap();
-            let workspace_query = crate::usecase::workspace_tree::TestWorkspaceQueryService::new(
-                Vec::new(),
-                Vec::new(),
-                executions,
-            );
+            let workspace_query =
+                crate::usecase::workspace_tree::TestWorkspaceQueryService::new(executions);
             let query = WorkflowQueryService::new(
                 definitions.clone(),
                 definition_sources.clone(),
@@ -1429,7 +1422,7 @@ mod tests {
     #[test]
     fn agent_session_runtime_status_notification_uses_usecase_port() {
         assert_no_forbidden_production_patterns_in_file(
-            "usecase/agent_session/runtime/ports.rs",
+            "usecase/agent_session/agent_session_activity.rs",
             &[
                 concat!("crate", "::", "adaptor", "::", "presenter"),
                 concat!("crate", "::", "adaptor", "::", "gateway"),

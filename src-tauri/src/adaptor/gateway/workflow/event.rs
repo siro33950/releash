@@ -56,7 +56,6 @@ enum StoredWorkflowEventV1 {
         worktree_path: String,
         created_from: StoredExecutionOriginV1,
         request: String,
-        permission_mode: String,
         definition: WorkflowDefinitionYaml,
         timestamp: f64,
     },
@@ -290,7 +289,6 @@ impl From<&WorkflowEvent> for StoredWorkflowEventV1 {
                 worktree_path,
                 created_from,
                 request,
-                permission_mode,
                 definition,
                 timestamp,
             } => Self::ExecutionStarted {
@@ -299,7 +297,6 @@ impl From<&WorkflowEvent> for StoredWorkflowEventV1 {
                 worktree_path: worktree_path.clone(),
                 created_from: (*created_from).into(),
                 request: request.clone(),
-                permission_mode: permission_mode.clone(),
                 definition: definition.clone(),
                 timestamp: *timestamp,
             },
@@ -566,7 +563,6 @@ impl From<StoredWorkflowEventV1> for WorkflowEvent {
                 worktree_path,
                 created_from,
                 request,
-                permission_mode,
                 definition,
                 timestamp,
             } => Self::ExecutionStarted {
@@ -575,7 +571,6 @@ impl From<StoredWorkflowEventV1> for WorkflowEvent {
                 worktree_path,
                 created_from: created_from.into(),
                 request,
-                permission_mode,
                 definition,
                 timestamp,
             },
@@ -1040,7 +1035,6 @@ pub(crate) fn to_domain_event(
             worktree_path,
             created_from,
             request,
-            permission_mode,
             definition,
             timestamp,
         } => Domain::WorkflowExecutionStarted {
@@ -1049,7 +1043,6 @@ pub(crate) fn to_domain_event(
             worktree_path: worktree_path.clone(),
             created_from: *created_from,
             request: request.clone(),
-            permission_mode: permission_mode.clone(),
             definition: crate::adaptor::gateway::workflow::mapper::schema_workflow_to_domain(
                 definition.clone(),
             )?,
@@ -1346,7 +1339,6 @@ pub(crate) fn from_domain_event(
             worktree_path,
             created_from,
             request,
-            permission_mode,
             definition,
             timestamp,
         } => WorkflowEvent::ExecutionStarted {
@@ -1355,7 +1347,6 @@ pub(crate) fn from_domain_event(
             worktree_path: worktree_path.clone(),
             created_from: *created_from,
             request: request.clone(),
-            permission_mode: permission_mode.clone(),
             definition: crate::adaptor::gateway::workflow::mapper::domain_workflow_to_schema(
                 definition,
             )?,
@@ -1675,7 +1666,6 @@ mod tests {
                 worktree_path: "/repo".into(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: "run".into(),
-                permission_mode: "edit".into(),
                 definition: minimal_workflow(),
                 timestamp: 1.0,
             },
@@ -1701,7 +1691,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             definition: minimal_workflow(),
             timestamp: 1.0,
         };
@@ -1710,7 +1699,7 @@ mod tests {
         assert_eq!(value["event"], "execution_started");
         assert_eq!(value["execution_id"], event.execution_id());
         assert_eq!(value["created_from"], "cli");
-        assert_eq!(value["permission_mode"], "edit");
+        assert!(value.get("permission_mode").is_none());
         assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
         let domain = to_domain_event(&event).unwrap();
         assert!(matches!(
@@ -1737,7 +1726,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             definition,
             timestamp: 1.0,
         };
@@ -1769,7 +1757,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             definition: minimal_workflow(),
             timestamp: 1.0,
         };
@@ -1804,7 +1791,6 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             definition,
             timestamp: 1.0,
         };
@@ -1826,24 +1812,19 @@ mod tests {
     }
 
     #[test]
-    fn execution_started_without_permission_mode_is_rejected() {
+    fn execution_started_does_not_serialize_releash_owned_permission_mode() {
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
             workflow_name: "wf".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
-            permission_mode: crate::domain::agent_session::PermissionMode::FULL.to_string(),
             definition: minimal_workflow(),
             timestamp: 1.0,
         };
-        let mut legacy_value = serde_json::to_value(event).unwrap();
-        legacy_value
-            .as_object_mut()
-            .unwrap()
-            .remove("permission_mode");
-
-        assert!(serde_json::from_value::<WorkflowEvent>(legacy_value).is_err());
+        let value = serde_json::to_value(event).unwrap();
+        assert!(value.get("permission_mode").is_none());
+        assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
     }
 
     #[test]

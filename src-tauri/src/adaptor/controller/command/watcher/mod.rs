@@ -7,7 +7,6 @@ use crate::adaptor::gateway::repository::watch::{
     canonicalize_event_path, generate_watcher_id, FileChangeEvent,
 };
 use crate::infrastructure::file_watcher::FileWatcherManager;
-use crate::usecase::agent_session::context::invalidate_instruction_resolution_cache_for_path;
 
 pub(super) const COMMAND_NAMES: &[&str] =
     &["start_watching", "start_git_dir_watching", "stop_watching"];
@@ -42,7 +41,6 @@ pub fn start_watching(
     let app_clone = app.clone();
     state.start_watching(watcher_id, path, move |event| {
         let event = file_change_event_from_path(watcher_id, &event.path);
-        invalidate_instruction_resolution_cache_for_path(Path::new(&event.path));
         let _ = app_clone.emit("file-change", event);
     })
 }

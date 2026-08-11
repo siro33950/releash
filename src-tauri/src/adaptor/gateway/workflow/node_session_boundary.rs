@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::execution_store::ExecutionStore;
-use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::adaptor::gateway::workflow::workflow_host::runtime_session as workflow_runtime_session;
 use crate::domain::agent_session::ProviderAvailabilityReader;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
-    ProviderAgentInitialInstructionUsecase, ProviderAgentSessionLaunchUsecase,
-    ProviderAgentWorkflowSessionLaunchRequest,
+    AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
+    WorkflowAgentSessionLaunchRequest,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_events as workflow_runtime_events;
+use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 #[async_trait::async_trait]
 pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
@@ -39,6 +39,11 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn interrupt_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn rollback_workflow_agent_session(
         &self,
         node_session_id: &str,
@@ -47,20 +52,23 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
 }
 
 pub(crate) struct ProviderWorkflowAgentSessionPort {
-    launch: Arc<ProviderAgentSessionLaunchUsecase>,
-    initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
+    launch: Arc<AgentSessionLaunchUsecase>,
+    initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
+    interrupt: Arc<AgentSessionInterruptUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
 }
 
 impl ProviderWorkflowAgentSessionPort {
     pub(crate) fn new(
-        launch: Arc<ProviderAgentSessionLaunchUsecase>,
-        initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
+        launch: Arc<AgentSessionLaunchUsecase>,
+        initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
+        interrupt: Arc<AgentSessionInterruptUsecase>,
         availability: Arc<dyn ProviderAvailabilityReader>,
     ) -> Self {
         Self {
             launch,
             initial_instruction,
+            interrupt,
             availability,
         }
     }
@@ -82,7 +90,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         let launched = self
             .launch
-            .prepare_workflow_node(ProviderAgentWorkflowSessionLaunchRequest {
+            .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
                 workspace: WorkspaceIdentity::new(worktree_path),
                 worktree_path: worktree_path.to_string(),
                 provider,
@@ -139,6 +147,20 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 ))
             })?;
         Ok(())
+    }
+
+    async fn interrupt_workflow_agent_session(
+        &self,
+        node_session_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.interrupt
+            .interrupt(node_session_id)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "interrupt Workflow AgentSession '{node_session_id}': {error:?}"
+                ))
+            })
     }
 
     async fn rollback_workflow_agent_session(

@@ -1,4 +1,4 @@
-import { useApplicationShutdownSupervision } from "@/hooks/useOperationSupervision";
+import { useApplicationShutdownSupervision } from "@/hooks/useApplicationShutdownSupervision";
 
 /**
  * S10: the single application quit flight. It is rendered at application scope

@@ -52,17 +52,6 @@ impl ReviewActor {
         }
     }
 
-    pub(crate) fn agent(backend_id: String, model: String, session_id: Option<String>) -> Self {
-        let display_name = format!("{backend_id}/{model}");
-        Self {
-            kind: ReviewActorKind::Agent,
-            backend_id: Some(backend_id),
-            model: Some(model),
-            session_id,
-            display_name,
-        }
-    }
-
     pub(crate) fn provider_agent(backend_id: String, session_id: Option<String>) -> Self {
         Self {
             kind: ReviewActorKind::Agent,
@@ -719,7 +708,8 @@ mod tests {
     }
 
     fn agent(backend_id: &str, model: &str) -> ReviewActor {
-        ReviewActor::agent(backend_id.to_string(), model.to_string(), None)
+        let _ = model;
+        ReviewActor::provider_agent(backend_id.to_string(), None)
     }
 
     fn target(file_path: Option<&str>) -> ReviewTarget {

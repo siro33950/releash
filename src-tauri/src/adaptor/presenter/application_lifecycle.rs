@@ -1,14 +1,14 @@
 //! Lossless application-lifecycle presentation shared by every transport.
 
-use crate::adaptor::protocol::agent_session_v1::{
-    ApplicationQuitErrorDtoV1, ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1,
-    OperationApplicationErrorDtoV1, ShutdownDetailsMutationErrorDtoV1, ShutdownPlanQueryErrorDtoV1,
-};
 use crate::adaptor::protocol::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitLookupDtoV1, ApplicationQuitOutcomeDtoV1,
     ApplicationQuitReceiptDtoV1, ApplicationQuitStateDtoV1, ApplicationStartupOutcomeDtoV1,
     CurrentShutdownResultDtoV1, SafeEffectObservationDtoV1, ShutdownPlanDtoV1,
     ShutdownPlanPageDtoV1, ShutdownTargetDtoV1, StartupFailureActionDtoV1, StartupFailureKindDtoV1,
+};
+use crate::adaptor::protocol::application_operation_v1::{
+    ApplicationQuitErrorDtoV1, ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1,
+    OperationApplicationErrorDtoV1, ShutdownDetailsMutationErrorDtoV1, ShutdownPlanQueryErrorDtoV1,
 };
 use crate::domain::local_event::{ApplicationShutdownPhase, ShutdownDetailsState};
 use crate::usecase::shutdown_coordinator::{
@@ -55,34 +55,6 @@ pub(crate) fn presentation_error(context: &str, detail: &str) -> OperationApplic
     }
 }
 
-pub(crate) fn query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> OperationApplicationErrorDtoV1 {
-    use crate::domain::local_event::LocalEventQueryError as E;
-    match error {
-        E::InvalidRequest | E::SnapshotMismatch => OperationApplicationErrorDtoV1::InvalidRequest,
-        E::NotFound => OperationApplicationErrorDtoV1::NotFound,
-        E::DetailsCompacted => OperationApplicationErrorDtoV1::DetailsCompacted,
-        E::CursorMismatch => OperationApplicationErrorDtoV1::CursorMismatch,
-        E::CursorExpired => OperationApplicationErrorDtoV1::CursorExpired,
-        E::QueryBusy => OperationApplicationErrorDtoV1::QueryBusy,
-        E::DeadlineExceeded => OperationApplicationErrorDtoV1::DeadlineExceeded,
-        E::ResponseTooLarge => OperationApplicationErrorDtoV1::ResponseTooLarge,
-        E::StorageUnavailable { failure } => OperationApplicationErrorDtoV1::StorageUnavailable {
-            failure: failure.into(),
-        },
-        E::Corrupt { correlation_id } | E::IncompatibleStoredEvent { correlation_id } => {
-            OperationApplicationErrorDtoV1::Internal { correlation_id }
-        }
-        E::Internal { correlation_id } => {
-            OperationApplicationErrorDtoV1::Internal { correlation_id }
-        }
-        E::ReplayRequired { correlation_id } => {
-            OperationApplicationErrorDtoV1::Internal { correlation_id }
-        }
-    }
-}
-
 pub(crate) fn application_quit_error(
     error: crate::usecase::shutdown_coordinator::ApplicationQuitError,
 ) -> Option<ApplicationQuitErrorDtoV1> {
@@ -126,8 +98,7 @@ fn query_correlation(error: crate::domain::local_event::LocalEventQueryError) ->
         E::StorageUnavailable { failure } => failure.correlation_id,
         E::Corrupt { correlation_id }
         | E::IncompatibleStoredEvent { correlation_id }
-        | E::Internal { correlation_id }
-        | E::ReplayRequired { correlation_id } => correlation_id,
+        | E::Internal { correlation_id } => correlation_id,
         other => presentation_correlation("application_lifecycle_query", &format!("{other:?}")),
     }
 }
@@ -386,18 +357,6 @@ pub(crate) fn plan_page(value: ApplicationShutdownPlanPageReadModel) -> Shutdown
             kind: target.kind,
             effect_identity: target.effect_identity,
             observation: target.observation.map(|observation| match observation {
-                crate::domain::local_event::SafeEffectObservation::ProviderObservation {
-                    observation_ref,
-                    proof_sha256,
-                } => SafeEffectObservationDtoV1::ProviderObservation {
-                    observation_ref,
-                    proof_sha256: hex::encode(proof_sha256),
-                },
-                crate::domain::local_event::SafeEffectObservation::ConfirmedNoEffect {
-                    proof_sha256,
-                } => SafeEffectObservationDtoV1::ConfirmedNoEffect {
-                    proof_sha256: hex::encode(proof_sha256),
-                },
                 crate::domain::local_event::SafeEffectObservation::ExitCoupledOutcomeUnknown {
                     shutdown_id,
                 } => SafeEffectObservationDtoV1::ExitCoupledOutcomeUnknown { shutdown_id },
@@ -407,7 +366,7 @@ pub(crate) fn plan_page(value: ApplicationShutdownPlanPageReadModel) -> Shutdown
                 .action_identities
                 .into_iter()
                 .map(|identity| {
-                    crate::adaptor::protocol::agent_session_v1::RecoveryActionIdentityDtoV1 {
+                    crate::adaptor::protocol::application_operation_v1::RecoveryActionIdentityDtoV1 {
                         action_id: identity.action_id,
                         action: identity.action.into(),
                         origin_revision: identity.origin_revision.to_string(),
@@ -446,11 +405,10 @@ pub(crate) fn checked_plan_page(
 
 #[cfg(test)]
 mod tests {
-    use super::{application_quit_outcome, application_startup_outcome, plan, query_error};
-    use crate::adaptor::protocol::agent_session_v1::OperationApplicationErrorDtoV1;
+    use super::{application_quit_outcome, application_startup_outcome, plan};
     use crate::domain::local_event::{
-        ApplicationShutdownPhase, LocalEventQueryError, Revision, SafeOperationFailure,
-        SessionOperationFailureKind, ShutdownDetailsState, ShutdownPlanKey,
+        ApplicationShutdownPhase, Revision, SafeOperationFailure, SessionOperationFailureKind,
+        ShutdownDetailsState, ShutdownPlanKey,
     };
     use crate::usecase::shutdown_coordinator::{
         ApplicationQuitIntent, ApplicationQuitOutcome, ApplicationQuitReceipt,
@@ -527,33 +485,6 @@ mod tests {
             exit, restart,
             "the presenter must not collapse Exit and Restart into Option<i32>"
         );
-    }
-
-    #[test]
-    fn incompatible_query_errors_preserve_their_existing_correlation_identity() {
-        for error in [
-            LocalEventQueryError::Corrupt {
-                correlation_id: "corrupt-1".to_string(),
-            },
-            LocalEventQueryError::IncompatibleStoredEvent {
-                correlation_id: "incompatible-1".to_string(),
-            },
-            LocalEventQueryError::ReplayRequired {
-                correlation_id: "replay-1".to_string(),
-            },
-        ] {
-            let expected = match &error {
-                LocalEventQueryError::Corrupt { correlation_id }
-                | LocalEventQueryError::IncompatibleStoredEvent { correlation_id }
-                | LocalEventQueryError::ReplayRequired { correlation_id } => correlation_id.clone(),
-                _ => unreachable!(),
-            };
-            assert!(matches!(
-                query_error(error),
-                OperationApplicationErrorDtoV1::Internal { correlation_id }
-                    if correlation_id == expected
-            ));
-        }
     }
 
     #[test]

@@ -77,8 +77,7 @@ kind block が無い、または複数ある Node は parse / shape Diagnostic �
 ```yaml
 - name: review
   session:
-    model: claude-opus-5
-    permission: ask       # ask | edit | full
+    provider: codex       # claude | codex
     gate: approval        # auto | approval
     facets:
       policy: reviewing
@@ -89,16 +88,16 @@ kind block が無い、または複数ある Node は parse / shape Diagnostic �
   artifact: review_verdict
 ```
 
-- `model`: 任意。指定時は登録済み model を参照する。
-- `permission`: 必須。許可値は `ask` / `edit` / `full` の三つ。
+- `provider`: 必須。`claude` または `codex`。Workflowは暗黙の既定Providerを持たない。
 - `gate`: 必須。`auto` または `approval`。
 - `facets`: `policy` / `knowledge` / `instruction` の名前参照。session は少なくとも一つの facet 参照を持つ。
 - `knowledge` は単一参照なら `knowledge: releash-review` の scalar、複数参照なら上の例のような配列で書ける。配列の宣言順は保持され、同じ参照を複数回書いた場合も重複排除しない。`policy` と `instruction` は単一の scalar 参照だけを受理する。
-- user message の facet 部分は、全 Knowledge 本文を宣言順に並べ、その後に Instruction 本文を置いて、それぞれを `\n\n` で連結する。つまり上の例は `releash-thread` の本文、`releash-review` の本文、`review-diff` の本文の順になる。
-- `artifact` がある session は、同じ Contract に対する検証済み Artifact の提出が完了するまで Node 完了にならない。提出と repair は共通の Contract 機構を使う。
-- `gate: auto` は Artifact 条件を満たした後に自動完了する。
-- `gate: approval` は Artifact 条件を満たした後も人間の承認まで `waiting_approval` に留まる。承認しない場合は同じ session に追加指示できる。別の却下・再実行操作は持たない。
+- Provider TUIへの初期指示は、全 Knowledge 本文を宣言順に並べ、その後に Instruction 本文を置いて、それぞれを `\n\n` で連結する。つまり上の例は `releash-thread` の本文、`releash-review` の本文、`review-diff` の本文の順になる。
+- `artifact` はSubmitにArtifactを添付する場合のContractを宣言する。Artifactを添付しないSubmitも受理する。添付時はpayloadのContract検証に成功した場合だけ、SubmitとArtifactを一体で記録する。
+- `gate: auto` は同一Node AttemptのSubmitとProvider Stopが揃った場合だけ成功する。
+- `gate: approval` は同一Node AttemptのSubmitとProvider Stopが揃った場合だけ`waiting_approval`になり、Approveによって成功する。Reject操作は持たない。
 - `artifact` の無い session は Artifact を産出しないため、他 Node から Artifact として参照できず、判別 rule も持てない。
+- ReleashはProviderのmodel、permission、plan、sandboxを設定せず、Turn、Message、PermissionRequestを所有しない。conversationの正本と対話UIはProvider CLI / transcriptである。
 
 ### fanout
 
@@ -292,16 +291,17 @@ Rust backend が `code` / `stage` / `span` / `message` を返し、UI は表示�
 
 WorkflowDefinition の先頭 Node から実行を開始し、各 Node の確定 Artifact と rules だけで決定論的に遷移する。状態変更は backend の typed command を唯一の入口とし、UI / CLI / local API は同じ usecase を呼ぶ。
 
-- start は workflow 名、Worktree、String request、permission mode を受け取る。
+- start はworkflow名、Worktree、任意のString request、起動元を受け取る。各session NodeのProviderはYAMLで明示する。
 - `gate: approval` の承認、Artifact 提出、abort、stop、resume は WorkflowExecution / NodeExecution を対象にする。
-- stop または crash / stale / orphan で `interrupted` になった WorkflowExecution だけを resume できる。確定済み NodeExecution の次から再開し、session は再アタッチせず新しく開始する。
+- Pause / Resume Workflowは実行中Nodeを対象にする一括操作であり、Workflow自体に独立したPause状態はない。Paused session Nodeは同一Attemptと受信済みsignalを維持し、同じProvider conversationで新しいTurnを開始する。
+- Retryは新しいNode Attemptを作る。session NodeのRetryは新しいAgentSessionとPTYを作成し、Node先頭から実行する。
 - YAML は起動時刻、周期、外部イベント購読を定義しない。
 
 ## 既知の制約
 
 - `{{ ... }}` の shell 補間は quoting や escaping を自動で行わない。String はそのまま、それ以外は JSON 文字列として埋め込まれるため、引用符、改行、shell metacharacter を含む値は command を壊したり意図しない shell 解釈を招きうる。workflow author が利用箇所に合う quoting を行い、信頼できない値を shell syntax に直接連結しないこと。stdin / 一時ファイル等の安全な Artifact ABI は現行文法の対象外。
 - **信頼境界の注意**: command に補間される Artifact 値には、`request`（人間入力）だけでなく session（agent 出力）・前段 command 出力・fanout item が含まれる。agent 出力は Contract の JSON Schema 検証を通るが shell metacharacter はサニタイズされない。外部コンテンツ（PR / review comment 等）を処理した agent が細工した文字列を Artifact として出力し、それを下流 command node が補間すると、開発者マシン上でユーザー権限の shell が実行されうる。command node へ補間する参照が agent 由来 Artifact を含む場合は、この間接的な実行経路を前提に quoting するか、判断材料としてのみ session 内で扱い command に直接補間しないこと。
-- command に YAML で指定する timeout は無い。abort / stop / アプリ終了は process group を停止するが、hang した command は agent session の stall observation 対象外であり、自動 stall 判定では止まらない。
+- command にYAMLで指定するtimeoutは無い。abort / stop / アプリ終了はprocess groupを停止するが、時間経過だけでNodeをFailedにしたり自動Retryしたりしない。
 - fanout の parallelism 上限、fanout 固有 retry / fail-fast、Node ごとの timeout は authoring syntax に持たない。
 
 ## 文法健全性

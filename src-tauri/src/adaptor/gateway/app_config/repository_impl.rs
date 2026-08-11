@@ -11,8 +11,7 @@ use crate::domain::agent_session::{
 };
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
-    AgentConfigRepository, ConfigRepository, ConfigSecretRepository, ConfigUpdate,
-    NotionConfigRepository,
+    ConfigRepository, ConfigSecretRepository, ConfigUpdate, NotionConfigRepository,
 };
 use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
@@ -87,25 +86,6 @@ impl ConfigRepository for AppConfig {
     }
 }
 
-impl AgentConfigRepository for AppConfig {
-    fn default_agent_backend(&self) -> Result<Option<String>, AppConfigError> {
-        self.get_config()
-            .map(|config| config.agents.default)
-            .map_err(AppConfigError::Repository)
-    }
-
-    fn cli_path_for(&self, backend_id: &str) -> Result<Option<String>, AppConfigError> {
-        let config = self.get_config().map_err(AppConfigError::Repository)?;
-        match backend_id {
-            "claude" => Ok(config.agents.claude.cli_path),
-            "codex" => Ok(config.agents.codex.cli_path),
-            _ => Err(AppConfigError::InvalidInput(format!(
-                "config schema にバックエンド '{backend_id}' の CLI path が存在しません"
-            ))),
-        }
-    }
-}
-
 impl ProviderExecutableConfigRepository for AppConfig {
     fn configured_executable(
         &self,
@@ -151,10 +131,8 @@ impl ConfigSecretRepository for AppConfig {
         self.get_config()
             .map(|config| {
                 let mut values = Vec::new();
-                for value in [config.server.token, config.server.notify.webhook_url] {
-                    if value.len() >= 8 {
-                        values.push(value);
-                    }
+                if config.server.token.len() >= 8 {
+                    values.push(config.server.token);
                 }
                 for notion in config.notion.into_values() {
                     if notion.api_token.len() >= 8 {
@@ -374,8 +352,8 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::super::config_models::{
-        AgentsSection, AppSection, DesktopNotifyMode, NotifySection, NotionPropertyMappingModel,
-        NotionRepoConfigModel, WorkflowSection,
+        AgentsSection, AppSection, NotionPropertyMappingModel, NotionRepoConfigModel,
+        WorkflowSection,
     };
     use super::*;
     use crate::domain::app_config::services::TOKEN_LENGTH;
@@ -829,85 +807,6 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn notify_section_defaults() {
-        let notify = NotifySection::default();
-        assert!(notify.webhook_url.is_empty());
-        assert!(!notify.on_running);
-        assert!(notify.on_done);
-        assert!(notify.on_error);
-        assert!(notify.on_waiting);
-        assert_eq!(notify.desktop_mode, DesktopNotifyMode::Always);
-        assert_eq!(notify.inactive_timeout_minutes, 2);
-    }
-
-    #[test]
-    fn notify_section_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.server.notify.webhook_url = "https://hooks.slack.com/test".to_string();
-        config.server.notify.on_running = true;
-        config.server.notify.on_done = false;
-        config.server.notify.desktop_mode = DesktopNotifyMode::WhenInactive;
-        config.server.notify.inactive_timeout_minutes = 5;
-        write_config(&path, &config).unwrap();
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(
-            reloaded.server.notify.webhook_url,
-            "https://hooks.slack.com/test"
-        );
-        assert!(reloaded.server.notify.on_running);
-        assert!(!reloaded.server.notify.on_done);
-        assert_eq!(
-            reloaded.server.notify.desktop_mode,
-            DesktopNotifyMode::WhenInactive
-        );
-        assert_eq!(reloaded.server.notify.inactive_timeout_minutes, 5);
-    }
-
-    #[test]
-    fn existing_config_without_notify_fields_gets_defaults() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let content = r#"
-[server]
-bind = "127.0.0.1"
-port = 9700
-token = "existing_token_value_here_with_enough_length_!!"
-
-[server.notify]
-webhook_url = "https://hooks.slack.com/old"
-"#;
-        fs::write(&path, content).unwrap();
-
-        let config = load_or_create_config(&path).unwrap();
-        assert_eq!(
-            config.server.notify.webhook_url,
-            "https://hooks.slack.com/old"
-        );
-        assert!(!config.server.notify.on_running);
-        assert!(config.server.notify.on_done);
-        assert!(config.server.notify.on_error);
-        assert!(config.server.notify.on_waiting);
-        assert_eq!(config.server.notify.desktop_mode, DesktopNotifyMode::Always);
-        assert_eq!(config.server.notify.inactive_timeout_minutes, 2);
-    }
-
-    #[test]
-    fn desktop_mode_serializes_snake_case() {
-        let always = serde_json::to_string(&DesktopNotifyMode::Always).unwrap();
-        assert_eq!(always, r#""always""#);
-
-        let when_inactive = serde_json::to_string(&DesktopNotifyMode::WhenInactive).unwrap();
-        assert_eq!(when_inactive, r#""when_inactive""#);
-    }
-
-    #[test]
     fn old_remote_section_is_ignored() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
@@ -1217,24 +1116,8 @@ token = "existing_token_value_here_with_enough_length_!!"
     #[test]
     fn agents_section_defaults() {
         let agents = AgentsSection::default();
-        assert!(agents.default.is_none());
         assert!(agents.claude.cli_path.is_none());
         assert!(agents.codex.cli_path.is_none());
-    }
-
-    #[test]
-    fn agents_section_with_default_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let path = config_path(&dir);
-
-        let mut config = ReleashConfig::default();
-        config.server.token = generate_token();
-        config.agents.default = Some("claude".to_string());
-        write_config(&path, &config).unwrap();
-
-        let reloaded = fs::read_to_string(&path).unwrap();
-        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert_eq!(reloaded.agents.default, Some("claude".to_string()));
     }
 
     #[test]
@@ -1287,34 +1170,32 @@ token = "existing_token_value_here_with_enough_length_!!"
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(config.agents.default.is_none());
         assert!(config.agents.codex.cli_path.is_none());
     }
 
     #[test]
-    fn legacy_agent_models_fields_deserialize_but_do_not_affect_repository_model_resolution() {
+    fn legacy_agent_selection_fields_are_ignored_and_not_reserialized() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-        let config: ReleashConfig = toml::from_str(
-            r#"
+        let legacy = r#"
 [agents]
 default = "claude"
 
 [agents.claude]
+cli_path = "/opt/bin/claude"
 models = ["legacy-claude"]
 
 [agents.codex]
+cli_path = "/opt/bin/codex"
 models = ["legacy-codex"]
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agents.claude.models, vec!["legacy-claude"]);
-        assert_eq!(config.agents.codex.models, vec!["legacy-codex"]);
-        let app_config = AppConfig::new(config, path);
+"#;
+        let config: ReleashConfig = toml::from_str(legacy).unwrap();
+        write_config(&path, &config).unwrap();
+        let serialized = fs::read_to_string(&path).unwrap();
 
-        assert_eq!(
-            app_config.default_agent_backend().unwrap(),
-            Some("claude".to_string())
-        );
+        assert!(!serialized.contains("default ="), "{serialized}");
+        assert!(!serialized.contains("models ="), "{serialized}");
+        assert!(serialized.contains("cli_path = \"/opt/bin/claude\""));
+        assert!(serialized.contains("cli_path = \"/opt/bin/codex\""));
     }
 }

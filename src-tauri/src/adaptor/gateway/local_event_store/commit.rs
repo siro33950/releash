@@ -18,27 +18,22 @@ use crate::adaptor::gateway::local_event_store::indexed_projection_codec::{
     IndexedExecutionNodeRow, IndexedExecutionRow, EXECUTION_NODE_RECORD_SCHEMA,
     EXECUTION_RECORD_SCHEMA,
 };
-use crate::adaptor::gateway::local_event_store::projection_record_codec::{
-    decode_session_projection_record_v1, encode_message_projection_update_v1,
-    encode_session_projection_update_v1,
-};
+use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_update_v1;
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
-    StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1, StoredTerminalV1,
+    StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1,
 };
 use crate::adaptor::gateway::local_event_store::writer::{PreparedBatch, PreparedEvent};
 use crate::domain::local_event::{
-    validate_operation_record, validate_stop_resolution, validate_terminal_record,
-    CallerAttemptMutation, CommitBatchError, CommitBatchResult, CommitOperationKind,
-    CommitResolution, CommittedBatch, CommittedStreamHead, IdempotencyBinding,
-    LocalEventQueryError, LocalStateMutation, MessageProjectionMutation, ObligationMutation,
-    ObligationRecord, ObligationStateRecord, OperationBindingMutation, OperationKind,
-    OperationRecordMutation, RecoveryActionMutation, RecoveryAttemptRecord,
-    RecoveryResourceViewRecord, RecoveryResultRecord, Revision, RevisionGuard,
-    SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
-    SessionProjectionRecord, ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation,
-    ShutdownPlanMutation, ShutdownRecoverySnapshotMutation, ShutdownTargetMutation,
-    ShutdownTargetRecord, StopResolutionMutation, StreamId, StreamVersion, TerminalRecordMutation,
+    validate_operation_record, CallerAttemptMutation, CommitBatchError, CommitBatchResult,
+    CommitOperationKind, CommitResolution, CommittedBatch, CommittedStreamHead, IdempotencyBinding,
+    LocalEventQueryError, LocalStateMutation, ObligationMutation, ObligationRecord,
+    ObligationStateRecord, OperationBindingMutation, OperationKind, OperationRecordMutation,
+    RecoveryActionMutation, RecoveryAttemptRecord, RecoveryResourceViewRecord,
+    RecoveryResultRecord, Revision, RevisionGuard, SafeOperationFailure,
+    SessionOperationFailureKind, SessionProjectionMutation, ShutdownDetailsCompactionMutation,
+    ShutdownLatestPointerMutation, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
+    ShutdownTargetMutation, ShutdownTargetRecord, StreamId, StreamVersion,
     WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
 };
 use crate::domain::workspace_tree::WorkspaceTree;
@@ -96,11 +91,9 @@ fn check_guard(existing: Option<i64>, guard: RevisionGuard) -> Result<(), Commit
 
 fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) -> bool {
     let mut advances_existing_owner = false;
-    let mut inserted_recovery_publications = 0_usize;
     for mutation in mutations {
         match mutation {
-            LocalStateMutation::OperationRecord(record)
-            | LocalStateMutation::SessionLifecycleOperation(record) => {
+            LocalStateMutation::OperationRecord(record) => {
                 if matches!(record.expected, RevisionGuard::Absent) {
                     return false;
                 }
@@ -108,13 +101,7 @@ fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) ->
             }
             LocalStateMutation::Obligation(obligation) => {
                 if matches!(obligation.expected, RevisionGuard::Absent) {
-                    inserted_recovery_publications += 1;
-                    if inserted_recovery_publications > 1
-                        || !operation_progress_backend_publication_is_valid(obligation, mutations)
-                    {
-                        return false;
-                    }
-                    continue;
+                    return false;
                 }
                 advances_existing_owner = true;
             }
@@ -135,14 +122,11 @@ fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) ->
                     return false;
                 }
             }
-            LocalStateMutation::MessageProjection(_)
-            | LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_)
-            | LocalStateMutation::TerminalRecord(_)
-            | LocalStateMutation::StopResolution(_) => {}
+            LocalStateMutation::WorkflowExecutionProjection(_)
+            | LocalStateMutation::WorkflowExecutionNodeProjection(_) => {}
             LocalStateMutation::OperationBinding(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
-            | LocalStateMutation::ProviderAgentSessionRemoval(_)
+            | LocalStateMutation::AgentSessionRemoval(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
@@ -151,111 +135,6 @@ fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) ->
         }
     }
     advances_existing_owner
-}
-
-fn operation_progress_backend_publication_is_valid(
-    publication: &ObligationMutation,
-    mutations: &[LocalStateMutation],
-) -> bool {
-    let ObligationRecord::RecoveryPublication {
-        session_id,
-        recovery_id,
-        message_id,
-        source_obligation_id,
-        detail: crate::domain::local_event::RecoveryPublicationObligationRecord::Pending { .. },
-        state: ObligationStateRecord::Pending,
-    } = &publication.record
-    else {
-        return false;
-    };
-    let digest = Sha256::digest(
-        format!("recovery-publication/v1\0{session_id}\0{recovery_id}\0{message_id}").as_bytes(),
-    );
-    if publication.obligation_id != format!("recovery-publication-{}", hex::encode(digest))
-        || publication.revision != Revision::new(0).expect("zero revision")
-        || publication.pending.as_ref().is_none_or(|pending| {
-            pending.owner != *session_id
-                || pending.partition != crate::domain::local_event::PendingPartition::Owner
-                || pending.shutdown_plan.is_some()
-        })
-    {
-        return false;
-    }
-    mutations.iter().any(|mutation| {
-        let LocalStateMutation::Obligation(source) = mutation else {
-            return false;
-        };
-        if source.obligation_id != *source_obligation_id
-            || !matches!(source.expected, RevisionGuard::Expected(_))
-            || source.pending.is_some()
-        {
-            return false;
-        }
-        fn recovery_transition(
-            record: &ObligationRecord,
-        ) -> Option<(&ObligationRecord, &crate::domain::local_event::ObligationRecoveryActionRecord)>
-        {
-            match record {
-                ObligationRecord::RecoveryTransition {
-                    original,
-                    recovery_action,
-                } => Some((original, recovery_action)),
-                ObligationRecord::Observed { original, .. } => recovery_transition(original),
-                _ => None,
-            }
-        }
-        let Some((original, action)) = recovery_transition(&source.record) else {
-            return false;
-        };
-        fn semantic_original(record: &ObligationRecord) -> &ObligationRecord {
-            match record {
-                ObligationRecord::Observed { original, .. }
-                | ObligationRecord::RecoveryTransition { original, .. } => {
-                    semantic_original(original)
-                }
-                record => record,
-            }
-        }
-        let original = semantic_original(original);
-        matches!(
-            original,
-            ObligationRecord::BackendSessionRecovery {
-                session_id: stored_session_id,
-                recovery_id: stored_recovery_id,
-                detail:
-                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
-                        old_provider_session_generation,
-                        provider_session_generation,
-                        backend_session_id,
-                        ..
-                    },
-                state: ObligationStateRecord::Completed,
-            } if stored_session_id == session_id
-                && stored_recovery_id == recovery_id
-                && !backend_session_id.is_empty()
-                && old_provider_session_generation
-                    .checked_add(1)
-                    == Some(*provider_session_generation)
-                && action.effect_identity == *source_obligation_id
-                && action.state == ObligationStateRecord::Completed
-                && action.classification
-                    == Some(
-                        crate::domain::agent_session::events::RecoveryResultClassification::Succeeded,
-                    )
-        )
-    })
-}
-
-fn operation_progress_only_advances_existing_owners(mutations: &[LocalStateMutation]) -> bool {
-    mutations.iter().all(|mutation| {
-        !matches!(
-            mutation,
-            LocalStateMutation::Obligation(ObligationMutation {
-                expected: RevisionGuard::Absent,
-                ..
-            })
-        )
-    })
 }
 
 /// Workflow and projection commits may drain through an active shutdown only
@@ -268,15 +147,14 @@ fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> 
     for mutation in mutations {
         match mutation {
             LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::ProviderAgentSessionRemoval(_)
+            | LocalStateMutation::AgentSessionRemoval(_)
             | LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
             | LocalStateMutation::ShutdownDetailsCompaction(_)
             | LocalStateMutation::ShutdownLatestPointer(_) => return false,
-            LocalStateMutation::OperationRecord(operation)
-            | LocalStateMutation::SessionLifecycleOperation(operation) => {
+            LocalStateMutation::OperationRecord(operation) => {
                 if !guard_advances_existing(operation.expected, operation.revision) {
                     return false;
                 }
@@ -307,13 +185,6 @@ fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> 
                 }
                 advances_existing_owner = true;
             }
-            LocalStateMutation::MessageProjection(message) => {
-                if !guard_advances_existing(message.expected, message.revision)
-                    && !guard_inserts_revision_zero(message.expected, message.revision)
-                {
-                    return false;
-                }
-            }
             LocalStateMutation::WorkflowExecutionProjection(workflow) => {
                 if !guard_advances_existing(workflow.expected, workflow.revision)
                     && !guard_inserts_revision_zero(workflow.expected, workflow.revision)
@@ -328,16 +199,18 @@ fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> 
                     return false;
                 }
             }
-            LocalStateMutation::TerminalRecord(_) | LocalStateMutation::StopResolution(_) => {}
         }
     }
     if !advances_existing_owner {
         return false;
     }
     match prepared.batch.idempotency.operation_kind {
-        CommitOperationKind::Projection => projection_progress_has_one_session_scope(prepared),
+        CommitOperationKind::Projection => false,
         CommitOperationKind::Workflow => workflow_progress_has_one_execution_scope(prepared),
-        _ => false,
+        CommitOperationKind::ApplicationQuit
+        | CommitOperationKind::Recovery
+        | CommitOperationKind::UserMutation
+        | CommitOperationKind::OperationProgress => false,
     }
 }
 
@@ -350,160 +223,6 @@ fn guard_advances_existing(expected: RevisionGuard, revision: Revision) -> bool 
 
 fn guard_inserts_revision_zero(expected: RevisionGuard, revision: Revision) -> bool {
     matches!(expected, RevisionGuard::Absent) && revision.value() == 0
-}
-
-fn receipt_session_id(
-    receipt: &crate::domain::local_event::OperationReceiptRecord,
-) -> Option<&str> {
-    match receipt {
-        crate::domain::local_event::OperationReceiptRecord::Send { session_id, .. }
-        | crate::domain::local_event::OperationReceiptRecord::PermissionResponse {
-            session_id,
-            ..
-        }
-        | crate::domain::local_event::OperationReceiptRecord::Stop { session_id, .. }
-        | crate::domain::local_event::OperationReceiptRecord::SessionLifecycle {
-            session_id, ..
-        } => Some(session_id),
-        crate::domain::local_event::OperationReceiptRecord::ApplicationQuit { .. } => None,
-    }
-}
-
-fn obligation_session_id(record: &ObligationRecord) -> Option<&str> {
-    match record {
-        ObligationRecord::Send { session_id, .. }
-        | ObligationRecord::PermissionResponse { session_id, .. }
-        | ObligationRecord::StopInterrupt { session_id, .. }
-        | ObligationRecord::SessionClose { session_id, .. }
-        | ObligationRecord::BackendSessionRecovery { session_id, .. }
-        | ObligationRecord::WorkflowTurnCompletion { session_id, .. }
-        | ObligationRecord::RecoveryPublication { session_id, .. }
-        | ObligationRecord::ProviderEstablish { session_id, .. }
-        | ObligationRecord::TurnExecution { session_id, .. }
-        | ObligationRecord::TerminalCommit { session_id, .. }
-        | ObligationRecord::FeedbackReservation { session_id, .. }
-        | ObligationRecord::Feedback { session_id, .. } => Some(session_id),
-        ObligationRecord::Observed { original, .. }
-        | ObligationRecord::RecoveryTransition { original, .. } => obligation_session_id(original),
-        ObligationRecord::WorkflowShutdown { .. }
-        | ObligationRecord::RecoveryReserved { .. }
-        | ObligationRecord::RecoveryCompleted { .. }
-        | ObligationRecord::WorkflowExecution { .. } => None,
-    }
-}
-
-fn projection_progress_has_one_session_scope(prepared: &PreparedBatch) -> bool {
-    let mut owner_session = None;
-    for mutation in &prepared.batch.state_mutations {
-        match mutation {
-            LocalStateMutation::SessionProjection(projection)
-                if matches!(
-                    projection.projection,
-                    crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
-                ) && guard_advances_existing(projection.expected, projection.revision) =>
-            {
-                if owner_session
-                    .as_ref()
-                    .is_some_and(|owner| owner != &projection.session_id)
-                {
-                    return false;
-                }
-                owner_session = Some(projection.session_id.clone());
-            }
-            LocalStateMutation::SessionProjectionRemoval(removal) => {
-                if owner_session
-                    .as_ref()
-                    .is_some_and(|owner| owner != &removal.session_id)
-                {
-                    return false;
-                }
-                owner_session = Some(removal.session_id.clone());
-            }
-            _ => {}
-        }
-    }
-    let Some(owner_session) = owner_session else {
-        return false;
-    };
-    let expected_stream = match StreamId::agent_session(&owner_session) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    if prepared
-        .batch
-        .expected_heads
-        .iter()
-        .any(|head| head.stream_id != expected_stream)
-        || prepared.batch.events.iter().any(|event| {
-            event.stream_id != expected_stream
-                || !matches!(
-                    event.event,
-                    crate::domain::local_event::LocalDomainEvent::AgentSession(_)
-                )
-        })
-    {
-        return false;
-    }
-    for mutation in &prepared.batch.state_mutations {
-        let scoped = match mutation {
-            LocalStateMutation::OperationRecord(operation)
-            | LocalStateMutation::SessionLifecycleOperation(operation) => {
-                receipt_session_id(&operation.receipt) == Some(owner_session.as_str())
-            }
-            LocalStateMutation::SessionProjection(projection) => {
-                projection.session_id == owner_session
-                    && matches!(
-                        &projection.projection,
-                        crate::domain::local_event::SessionProjectionRecord::AgentSession(
-                            projected
-                        ) if projected.meta.id == owner_session
-                    )
-            }
-            LocalStateMutation::MessageProjection(message) => {
-                message.session_id == owner_session
-                    && matches!(
-                        &message.projection,
-                        crate::domain::local_event::MessageProjectionRecord::AgentMessage(
-                            projected
-                        ) if projected.id == message.message_id
-                    )
-            }
-            LocalStateMutation::SessionProjectionRemoval(removal) => {
-                removal.session_id == owner_session
-            }
-            LocalStateMutation::TerminalRecord(terminal) => terminal.session_id == owner_session,
-            LocalStateMutation::StopResolution(stop) => {
-                prepared.batch.state_mutations.iter().any(|candidate| {
-                    matches!(
-                        candidate,
-                        LocalStateMutation::OperationRecord(operation)
-                            if operation.kind == OperationKind::Stop
-                                && operation.operation_id == stop.stop_operation_id
-                                && receipt_session_id(&operation.receipt)
-                                    == Some(owner_session.as_str())
-                    )
-                })
-            }
-            LocalStateMutation::Obligation(obligation) => {
-                obligation_session_id(&obligation.record) == Some(owner_session.as_str())
-            }
-            LocalStateMutation::RecoveryAction(_) => false,
-            LocalStateMutation::ProviderAgentSessionRemoval(_) => false,
-            LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_) => false,
-            LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::CallerAttempt(_)
-            | LocalStateMutation::ShutdownPlan(_)
-            | LocalStateMutation::ShutdownTarget(_)
-            | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownDetailsCompaction(_)
-            | LocalStateMutation::ShutdownLatestPointer(_) => false,
-        };
-        if !scoped {
-            return false;
-        }
-    }
-    true
 }
 
 fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
@@ -579,7 +298,6 @@ fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
                     owner,
                 ) => owner.execution_id == execution_id,
                 crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
-                | crate::domain::local_event::SessionProjectionRecord::ProviderAgentSession(_)
                 | crate::domain::local_event::SessionProjectionRecord::ProviderSessionOwnership(
                     _,
                 )
@@ -666,7 +384,6 @@ fn recovery_result_targets_shutdown_target(
                 && value.get("target_key").and_then(serde_json::Value::as_str) == Some(target_key)
                 && value.get("state").and_then(serde_json::Value::as_str) == Some(state)
         }
-        _ => false,
     }
 }
 
@@ -675,7 +392,6 @@ fn shutdown_target_key(
     target_id: &str,
 ) -> String {
     let kind = match kind {
-        crate::domain::local_event::ShutdownTargetKindRecord::AgentSession => "agent_session",
         crate::domain::local_event::ShutdownTargetKindRecord::WorkflowExecution => {
             "workflow_execution"
         }
@@ -690,489 +406,6 @@ fn shutdown_target_key(
     push_lp(&mut material, kind);
     push_lp(&mut material, target_id);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(material))
-}
-
-fn shutdown_effect_request_id(effect_identity: &str) -> String {
-    format!(
-        "shutdown-{}",
-        hex::encode(Sha256::digest(effect_identity.as_bytes()))
-    )
-}
-
-fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
-    connection: &Connection,
-    current_plan_id: &str,
-    current_plan_summary: &str,
-    prepared: &PreparedBatch,
-) -> Result<bool, CommitBatchError> {
-    use crate::domain::agent_session::events::{
-        AgentSessionDomainEvent, InterruptReason, ObligationKind, ObligationState,
-        SessionLifecycleKind,
-    };
-    use crate::domain::local_event::{
-        LocalDomainEvent, OperationReceiptRecord, OperationStatusValue,
-        SessionLifecycleRecordAction, SessionProjectionRecord, TerminalInterruptReasonRecord,
-        TerminalResultRecord,
-    };
-
-    let batch = &prepared.batch;
-    let plan_summary =
-        encoded_record(StoredShutdownPlanV1::decode(current_plan_summary))?.into_value();
-    if plan_summary.operation_id.is_empty() {
-        return Ok(false);
-    }
-
-    let mut lifecycle_operation = None;
-    for mutation in &batch.state_mutations {
-        if let LocalStateMutation::SessionLifecycleOperation(operation) = mutation {
-            if lifecycle_operation.replace(operation).is_some() {
-                return Ok(false);
-            }
-        }
-    }
-    let Some(operation) = lifecycle_operation else {
-        return Ok(false);
-    };
-    let OperationReceiptRecord::SessionLifecycle {
-        operation_id,
-        session_id,
-        action,
-        first_accepted_revision,
-        commit_operation_kind,
-        authentication,
-    } = &operation.receipt
-    else {
-        return Ok(false);
-    };
-    if operation.kind != OperationKind::SessionLifecycle
-        || operation.operation_id != *operation_id
-        || *action != SessionLifecycleRecordAction::Close
-        || *first_accepted_revision < 0
-        || *commit_operation_kind != CommitOperationKind::ShutdownTarget
-        || operation.latest_status.kind != OperationKind::SessionLifecycle
-        || session_id.is_empty()
-        || !match operation.expected {
-            RevisionGuard::Absent => {
-                guard_inserts_revision_zero(operation.expected, operation.revision)
-            }
-            RevisionGuard::Expected(_) => {
-                guard_advances_existing(operation.expected, operation.revision)
-            }
-        }
-    {
-        return Ok(false);
-    }
-    let accepting = matches!(operation.expected, RevisionGuard::Absent);
-
-    let mut matching_target = None;
-    let mut statement = connection
-        .prepare(
-            "SELECT detail FROM shutdown_targets
-             WHERE shutdown_id = ?1
-             ORDER BY ordinal LIMIT 4097",
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let rows = statement
-        .query_map(params![current_plan_id], |row| row.get::<_, String>(0))
-        .map_err(|error| storage_unavailable(&error))?;
-    for row in rows {
-        let raw = row.map_err(|error| storage_unavailable(&error))?;
-        let detail = encoded_record(StoredShutdownTargetV1::decode(&raw))?.into_value();
-        let ShutdownTargetRecord::Target {
-            target_id,
-            kind,
-            state,
-            effect_identity,
-            owner_operation_id,
-            recovery_action,
-            ..
-        } = detail
-        else {
-            return Ok(false);
-        };
-        if target_id != *session_id {
-            continue;
-        }
-        if matching_target.is_some()
-            || kind != crate::domain::local_event::ShutdownTargetKindRecord::AgentSession
-            || effect_identity.is_empty()
-        {
-            return Ok(false);
-        }
-        let normal_reservation = state
-            == crate::domain::local_event::ShutdownTargetStateRecord::EffectReserved
-            && owner_operation_id.as_deref() == Some(plan_summary.operation_id.as_str());
-        let recovery_reservation = recovery_action
-            .as_ref()
-            .is_some_and(|action| action.state == ObligationStateRecord::EffectReserved)
-            && owner_operation_id
-                .as_deref()
-                .is_none_or(|owner| owner == plan_summary.operation_id);
-        if !normal_reservation && !recovery_reservation {
-            return Ok(false);
-        }
-        matching_target = Some(effect_identity);
-    }
-    let Some(effect_identity) = matching_target else {
-        return Ok(false);
-    };
-    let principal = format!("shutdown:{}", plan_summary.operation_id);
-    let caller_request_id = shutdown_effect_request_id(&effect_identity);
-
-    let binding_matches = |binding: &OperationBindingMutation| {
-        binding.key.principal == principal
-            && binding.key.installation_id == batch.idempotency.installation_id
-            && binding.key.kind == OperationKind::SessionLifecycle
-            && binding.key.caller_request_id == caller_request_id
-            && binding.operation_id == *operation_id
-            && binding.binding_hmac == authentication.binding_hmac
-    };
-    if accepting {
-        let mut binding = None;
-        for mutation in &batch.state_mutations {
-            if let LocalStateMutation::OperationBinding(candidate) = mutation {
-                if binding.replace(candidate).is_some() {
-                    return Ok(false);
-                }
-            }
-        }
-        if binding.is_none_or(|binding| !binding_matches(binding))
-            || batch.idempotency.idempotency_key != *operation_id
-            || batch.idempotency.payload_hash != authentication.binding_hmac
-        {
-            return Ok(false);
-        }
-    } else {
-        if batch
-            .state_mutations
-            .iter()
-            .any(|mutation| matches!(mutation, LocalStateMutation::OperationBinding(_)))
-            || batch.idempotency.idempotency_key
-                != format!("{operation_id}.st{}", operation.revision.value())
-        {
-            return Ok(false);
-        }
-        let bindings = connection
-            .prepare(
-                "SELECT principal, installation_id, caller_request_id, binding_hmac
-                 FROM operation_bindings
-                 WHERE kind = ?1 AND operation_id = ?2",
-            )
-            .and_then(|mut statement| {
-                statement
-                    .query_map(
-                        params![OperationKind::SessionLifecycle.label(), operation_id],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, Vec<u8>>(3)?,
-                            ))
-                        },
-                    )?
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|error| storage_unavailable(&error))?;
-        if bindings.len() != 1
-            || bindings[0].0 != principal
-            || bindings[0].1 != batch.idempotency.installation_id
-            || bindings[0].2 != caller_request_id
-            || !bool::from(
-                bindings[0]
-                    .3
-                    .as_slice()
-                    .ct_eq(authentication.binding_hmac.as_slice()),
-            )
-        {
-            return Ok(false);
-        }
-    }
-
-    let expected_stream =
-        StreamId::agent_session(session_id).map_err(|_| CommitBatchError::PayloadConflict)?;
-    if accepting {
-        if batch.expected_heads.len() != 1
-            || batch.expected_heads[0].stream_id != expected_stream
-            || batch.events.is_empty()
-        {
-            return Ok(false);
-        }
-    } else if !batch.expected_heads.is_empty() || !batch.events.is_empty() {
-        return Ok(false);
-    }
-
-    let mut session_projection_count = 0_usize;
-    let mut close_obligation_count = 0_usize;
-    let mut terminal_count = 0_usize;
-    let mut participant_operation_count = 0_usize;
-    let mut participant_obligation_count = 0_usize;
-    let mut stop_resolution_count = 0_usize;
-    for mutation in &batch.state_mutations {
-        match mutation {
-            LocalStateMutation::OperationBinding(_) => {
-                if !accepting {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::SessionLifecycleOperation(candidate) => {
-                if !std::ptr::eq(candidate, operation) {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::SessionProjection(projection) => {
-                let SessionProjectionRecord::AgentSession(projected) = &projection.projection
-                else {
-                    return Ok(false);
-                };
-                session_projection_count += 1;
-                if !accepting
-                    || session_projection_count > 1
-                    || projection.session_id != *session_id
-                    || projected.meta.id != *session_id
-                    || !guard_advances_existing(projection.expected, projection.revision)
-                {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::MessageProjection(message) => {
-                let crate::domain::local_event::MessageProjectionRecord::AgentMessage(projected) =
-                    &message.projection
-                else {
-                    return Ok(false);
-                };
-                if !accepting
-                    || message.session_id != *session_id
-                    || message.message_id != projected.id
-                    || (!guard_advances_existing(message.expected, message.revision)
-                        && !guard_inserts_revision_zero(message.expected, message.revision))
-                {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::TerminalRecord(terminal) => {
-                terminal_count += 1;
-                if !accepting
-                    || terminal_count > 1
-                    || terminal.session_id != *session_id
-                    || terminal.terminal_identity != *operation_id
-                    || !matches!(
-                        &terminal.result,
-                        TerminalResultRecord::SessionClosed {
-                            operation_id: terminal_operation_id,
-                            reason: TerminalInterruptReasonRecord::SessionClosed,
-                            ..
-                        } if terminal_operation_id == operation_id
-                    )
-                {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::OperationRecord(participant) => {
-                participant_operation_count += 1;
-                if !accepting
-                    || !guard_advances_existing(participant.expected, participant.revision)
-                {
-                    return Ok(false);
-                }
-                let scoped = match (&participant.receipt, &participant.latest_status.value) {
-                    (
-                        OperationReceiptRecord::Send {
-                            session_id: stored_session,
-                            ..
-                        },
-                        OperationStatusValue::Terminal { .. },
-                    )
-                    | (
-                        OperationReceiptRecord::Stop {
-                            session_id: stored_session,
-                            ..
-                        },
-                        OperationStatusValue::StopCompleted { .. },
-                    ) => stored_session == session_id,
-                    _ => false,
-                };
-                if !scoped {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::Obligation(obligation) => match &obligation.record {
-                ObligationRecord::SessionClose {
-                    obligation_id,
-                    operation_id: stored_operation_id,
-                    session_id: stored_session_id,
-                    action: stored_action,
-                    state,
-                } => {
-                    close_obligation_count += 1;
-                    let expected_obligation_id = format!(
-                        "session-lifecycle-target-{}",
-                        hex::encode(Sha256::digest(
-                            format!("session-lifecycle-target/v1\0{session_id}").as_bytes()
-                        ))
-                    );
-                    let pending_matches = obligation.pending.as_ref().is_some_and(|pending| {
-                        pending.owner == *session_id
-                            && pending.partition
-                                == crate::domain::local_event::PendingPartition::Owner
-                            && pending.shutdown_plan.is_none()
-                            && pending
-                                .ordered_key
-                                .ends_with(&format!("-{expected_obligation_id}"))
-                    });
-                    let state_matches = match &operation.latest_status.value {
-                        OperationStatusValue::Accepted if accepting => {
-                            *state == ObligationStateRecord::EffectReserved && pending_matches
-                        }
-                        OperationStatusValue::Completed if !accepting => {
-                            *state == ObligationStateRecord::Completed
-                                && obligation.pending.is_none()
-                        }
-                        OperationStatusValue::ReconciliationRequired { .. } if !accepting => {
-                            *state == ObligationStateRecord::ReconciliationRequired
-                                && pending_matches
-                        }
-                        _ => false,
-                    };
-                    if close_obligation_count > 1
-                        || obligation.obligation_id != expected_obligation_id
-                        || obligation_id != &expected_obligation_id
-                        || stored_operation_id != operation_id
-                        || stored_session_id != session_id
-                        || *stored_action != SessionLifecycleRecordAction::Close
-                        || (!guard_advances_existing(obligation.expected, obligation.revision)
-                            && !guard_inserts_revision_zero(
-                                obligation.expected,
-                                obligation.revision,
-                            ))
-                        || !state_matches
-                    {
-                        return Ok(false);
-                    }
-                }
-                ObligationRecord::Send {
-                    session_id: stored_session,
-                    state,
-                    ..
-                }
-                | ObligationRecord::StopInterrupt {
-                    session_id: stored_session,
-                    state,
-                    ..
-                } => {
-                    participant_obligation_count += 1;
-                    if !accepting
-                        || stored_session != session_id
-                        || *state != ObligationStateRecord::Completed
-                        || obligation.pending.is_some()
-                        || !guard_advances_existing(obligation.expected, obligation.revision)
-                    {
-                        return Ok(false);
-                    }
-                }
-                _ => return Ok(false),
-            },
-            LocalStateMutation::StopResolution(_) => {
-                stop_resolution_count += 1;
-                if !accepting || stop_resolution_count > 1 {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::CallerAttempt(_)
-            | LocalStateMutation::RecoveryAction(_)
-            | LocalStateMutation::SessionProjectionRemoval(_)
-            | LocalStateMutation::ProviderAgentSessionRemoval(_)
-            | LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_)
-            | LocalStateMutation::ShutdownPlan(_)
-            | LocalStateMutation::ShutdownTarget(_)
-            | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownDetailsCompaction(_)
-            | LocalStateMutation::ShutdownLatestPointer(_) => return Ok(false),
-        }
-    }
-
-    if accepting {
-        if session_projection_count != 1 {
-            return Ok(false);
-        }
-        match operation.latest_status.value {
-            OperationStatusValue::Accepted if close_obligation_count == 1 => {}
-            OperationStatusValue::Completed if close_obligation_count == 0 => {}
-            _ => return Ok(false),
-        }
-        if terminal_count == 0
-            && (participant_operation_count != 0
-                || participant_obligation_count != 0
-                || stop_resolution_count != 0)
-        {
-            return Ok(false);
-        }
-    } else if close_obligation_count != 1
-        || session_projection_count != 0
-        || terminal_count != 0
-        || participant_operation_count != 0
-        || participant_obligation_count != 0
-        || stop_resolution_count != 0
-    {
-        return Ok(false);
-    }
-
-    let mut lifecycle_accepted_count = 0_usize;
-    let mut session_closed_count = 0_usize;
-    let mut interrupted_count = 0_usize;
-    let mut queue_paused_count = 0_usize;
-    let mut obligation_recorded_count = 0_usize;
-    let mut stop_resolution_event_count = 0_usize;
-    for event in &batch.events {
-        if event.stream_id != expected_stream {
-            return Ok(false);
-        }
-        let LocalDomainEvent::AgentSession(event) = &event.event else {
-            return Ok(false);
-        };
-        match event {
-            AgentSessionDomainEvent::SessionLifecycleOperationAccepted {
-                operation_id: accepted_operation_id,
-                kind: SessionLifecycleKind::Close,
-                ..
-            } if accepted_operation_id == operation_id => lifecycle_accepted_count += 1,
-            AgentSessionDomainEvent::SessionClosed { .. } => session_closed_count += 1,
-            AgentSessionDomainEvent::TurnInterrupted {
-                reason: InterruptReason::SessionClosed,
-                ..
-            } => interrupted_count += 1,
-            AgentSessionDomainEvent::QueuePaused { .. } => queue_paused_count += 1,
-            AgentSessionDomainEvent::ObligationRecorded {
-                obligation_id,
-                kind: ObligationKind::SessionClose,
-                state: ObligationState::EffectReserved,
-                ..
-            } if batch.state_mutations.iter().any(|mutation| {
-                matches!(
-                    mutation,
-                    LocalStateMutation::Obligation(ObligationMutation {
-                        obligation_id: stored,
-                        ..
-                    }) if stored == obligation_id
-                )
-            }) =>
-            {
-                obligation_recorded_count += 1;
-            }
-            AgentSessionDomainEvent::StopResolutionRecorded { .. } => {
-                stop_resolution_event_count += 1
-            }
-            _ => return Ok(false),
-        }
-    }
-    Ok(!accepting
-        || (lifecycle_accepted_count == 1
-            && session_closed_count == 1
-            && interrupted_count == terminal_count
-            && queue_paused_count <= 1
-            && obligation_recorded_count == close_obligation_count
-            && stop_resolution_event_count == stop_resolution_count))
 }
 
 fn application_quit_progress_is_bound_to_current_plan(
@@ -1305,10 +538,7 @@ fn application_quit_progress_is_bound_to_current_plan(
                     operation_id: receipt_operation_id,
                     plan,
                     ..
-                } = &operation.receipt
-                else {
-                    return Ok(false);
-                };
+                } = &operation.receipt;
                 if operation_revision.replace(operation.revision).is_some()
                     || operation.kind != OperationKind::ApplicationQuit
                     || operation.operation_id != operation_id
@@ -1421,14 +651,10 @@ fn application_quit_progress_is_bound_to_current_plan(
             LocalStateMutation::OperationBinding(_)
             | LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::SessionProjection(_)
-            | LocalStateMutation::MessageProjection(_)
             | LocalStateMutation::SessionProjectionRemoval(_)
-            | LocalStateMutation::ProviderAgentSessionRemoval(_)
-            | LocalStateMutation::TerminalRecord(_)
-            | LocalStateMutation::StopResolution(_)
+            | LocalStateMutation::AgentSessionRemoval(_)
             | LocalStateMutation::Obligation(_)
             | LocalStateMutation::RecoveryAction(_)
-            | LocalStateMutation::SessionLifecycleOperation(_)
             | LocalStateMutation::WorkflowExecutionProjection(_)
             | LocalStateMutation::WorkflowExecutionNodeProjection(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
@@ -1648,10 +874,7 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
         intent,
         state: attempt_state,
         failure: attempt_failure,
-    } = &action.attempt
-    else {
-        return Ok(false);
-    };
+    } = &action.attempt;
     let expected_resource_ref = format!(
         "shutdown-target:{current_plan_id}:{}:{target_key}",
         target.ordinal
@@ -1717,10 +940,7 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
                 intent: existing_intent,
                 state: existing_attempt_state,
                 failure: existing_attempt_failure,
-            } = existing_attempt
-            else {
-                return Ok(false);
-            };
+            } = existing_attempt;
             let Some(existing_target_recovery) = existing_target_recovery else {
                 return Ok(false);
             };
@@ -2106,31 +1326,13 @@ fn execute_in_transaction(
     };
     let operation_progress = batch.idempotency.operation_kind
         == CommitOperationKind::OperationProgress
-        && operation_progress_is_structurally_valid(&batch.state_mutations)
-        && (!shutdown_admission_closed
-            || operation_progress_only_advances_existing_owners(&batch.state_mutations));
+        && operation_progress_is_structurally_valid(&batch.state_mutations);
     let internal_progress = shutdown_admission_closed
         && matches!(
             batch.idempotency.operation_kind,
             CommitOperationKind::Workflow | CommitOperationKind::Projection
         )
         && internal_progress_is_anchored_to_existing_owner(prepared);
-    let shutdown_target_lifecycle = if shutdown_admission_closed
-        && batch.idempotency.operation_kind == CommitOperationKind::ShutdownTarget
-    {
-        shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
-            connection,
-            current_shutdown
-                .as_deref()
-                .expect("closed shutdown has a plan id"),
-            current_shutdown_summary
-                .as_deref()
-                .expect("closed shutdown has a summary"),
-            prepared,
-        )?
-    } else {
-        false
-    };
     let application_quit_progress = if shutdown_admission_closed
         && batch.idempotency.operation_kind == CommitOperationKind::ApplicationQuit
     {
@@ -2167,19 +1369,13 @@ fn execute_in_transaction(
     if shutdown_admission_closed
         && (matches!(
             batch.idempotency.operation_kind,
-            CommitOperationKind::Send
-                | CommitOperationKind::PermissionResponse
-                | CommitOperationKind::Stop
-                | CommitOperationKind::SessionLifecycle
-                | CommitOperationKind::UserMutation
+            CommitOperationKind::UserMutation
                 | CommitOperationKind::Recovery
                 | CommitOperationKind::Workflow
                 | CommitOperationKind::Projection
-                | CommitOperationKind::ShutdownTarget
                 | CommitOperationKind::ApplicationQuit
         ) && !shutdown_target_recovery
             && !internal_progress
-            && !shutdown_target_lifecycle
             && !application_quit_progress)
     {
         return Err(CommitBatchError::StorageUnavailable {
@@ -2425,217 +1621,8 @@ fn validate_mutation_guards(
     connection: &Connection,
     mutations: &[LocalStateMutation],
 ) -> Result<(), CommitBatchError> {
-    validate_pending_capacity(connection, mutations, "feedback-", 512)?;
-    validate_pending_capacity(connection, mutations, "stop-target-", 32)?;
-    validate_send_effect_admission(connection, mutations)?;
     for mutation in mutations {
         validate_one_guard(connection, mutation)?;
-    }
-    Ok(())
-}
-
-fn validate_send_effect_admission(
-    connection: &Connection,
-    mutations: &[LocalStateMutation],
-) -> Result<(), CommitBatchError> {
-    let overridden_obligations = mutations
-        .iter()
-        .filter_map(|mutation| match mutation {
-            LocalStateMutation::Obligation(obligation) => Some(obligation.obligation_id.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-
-    for mutation in mutations {
-        let LocalStateMutation::Obligation(effect) = mutation else {
-            continue;
-        };
-        let ObligationRecord::Send {
-            session_id,
-            kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
-            state: ObligationStateRecord::EffectReserved,
-            ..
-        } = &effect.record
-        else {
-            continue;
-        };
-        if effect.pending.as_ref().is_none_or(|pending| {
-            pending.owner != *session_id
-                || pending.partition != crate::domain::local_event::PendingPartition::Owner
-                || pending.shutdown_plan.is_some()
-        }) {
-            return Err(CommitBatchError::PayloadConflict);
-        }
-        validate_send_effect_session_admission(connection, mutations, effect, session_id)?;
-
-        if mutations.iter().any(|candidate| {
-            matches!(
-                candidate,
-                LocalStateMutation::Obligation(candidate)
-                    if candidate.obligation_id != effect.obligation_id
-                        && candidate.pending.as_ref().is_some_and(|pending| {
-                            pending.owner == *session_id
-                                && pending.partition
-                                    == crate::domain::local_event::PendingPartition::Owner
-                                && pending.shutdown_plan.is_none()
-                        })
-                        && candidate.record.blocks_effect_admission()
-            )
-        }) {
-            return Err(CommitBatchError::EffectAdmissionBlocked);
-        }
-
-        let mut statement = connection
-            .prepare(
-                "SELECT po.obligation_id, o.record
-                 FROM pending_obligations po
-                 JOIN obligations o ON o.obligation_id = po.obligation_id
-                 WHERE po.owner = ?1
-                 ORDER BY po.ordered_key",
-            )
-            .map_err(|error| storage_unavailable(&error))?;
-        let rows = statement
-            .query_map(params![session_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|error| storage_unavailable(&error))?;
-        for row in rows {
-            let (obligation_id, raw) = row.map_err(|error| storage_unavailable(&error))?;
-            if obligation_id == effect.obligation_id
-                || overridden_obligations.contains(obligation_id.as_str())
-            {
-                continue;
-            }
-            let record = encoded_record(StoredObligationV1::decode(&raw))?.into_value();
-            if record.blocks_effect_admission() {
-                return Err(CommitBatchError::EffectAdmissionBlocked);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_send_effect_session_admission(
-    connection: &Connection,
-    mutations: &[LocalStateMutation],
-    effect: &ObligationMutation,
-    session_id: &str,
-) -> Result<(), CommitBatchError> {
-    let canonical_immediate_turn_id = match effect.record.original() {
-        ObligationRecord::Send {
-            kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
-            disposition: crate::domain::local_event::SendObligationDispositionRecord::StartedTurn,
-            turn_id,
-            ..
-        } => Some(
-            turn_id
-                .as_deref()
-                .ok_or(CommitBatchError::PayloadConflict)?
-                .parse::<u64>()
-                .map_err(|_| CommitBatchError::PayloadConflict)?,
-        ),
-        ObligationRecord::TurnExecution { turn_id, .. } => Some(
-            turn_id
-                .parse::<u64>()
-                .map_err(|_| CommitBatchError::PayloadConflict)?,
-        ),
-        _ => None,
-    };
-    let raw = connection
-        .query_row(
-            "SELECT projection FROM session_projection WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?
-        .ok_or(CommitBatchError::PayloadConflict)?;
-    let projection = decode_session_projection_record_v1(&raw, session_id)
-        .map_err(|_| CommitBatchError::PayloadConflict)?;
-    let SessionProjectionRecord::AgentSession(projection) = projection else {
-        return Err(CommitBatchError::PayloadConflict);
-    };
-    if projection.queue_paused_at_bits.is_some()
-        || matches!(
-            projection.meta.state,
-            crate::domain::local_event::AgentSessionStateRecord::Closed
-                | crate::domain::local_event::AgentSessionStateRecord::Archived
-        )
-    {
-        return Err(CommitBatchError::EffectAdmissionBlocked);
-    }
-    if canonical_immediate_turn_id.is_some_and(|turn_id| {
-        projection.meta.state != crate::domain::local_event::AgentSessionStateRecord::Active
-            || projection.meta.last_turn_id != Some(turn_id)
-    }) {
-        return Err(CommitBatchError::EffectAdmissionBlocked);
-    }
-
-    for mutation in mutations {
-        let LocalStateMutation::SessionProjection(candidate) = mutation else {
-            continue;
-        };
-        if candidate.session_id != session_id {
-            continue;
-        }
-        let SessionProjectionRecord::AgentSession(candidate) = &candidate.projection else {
-            return Err(CommitBatchError::PayloadConflict);
-        };
-        if candidate.queue_paused_at_bits.is_some()
-            || matches!(
-                candidate.meta.state,
-                crate::domain::local_event::AgentSessionStateRecord::Closed
-                    | crate::domain::local_event::AgentSessionStateRecord::Archived
-            )
-        {
-            return Err(CommitBatchError::EffectAdmissionBlocked);
-        }
-        if canonical_immediate_turn_id.is_some_and(|turn_id| {
-            candidate.meta.state != crate::domain::local_event::AgentSessionStateRecord::Active
-                || candidate.meta.last_turn_id != Some(turn_id)
-        }) {
-            return Err(CommitBatchError::EffectAdmissionBlocked);
-        }
-    }
-    Ok(())
-}
-
-fn validate_pending_capacity(
-    connection: &Connection,
-    mutations: &[LocalStateMutation],
-    obligation_prefix: &str,
-    maximum: i64,
-) -> Result<(), CommitBatchError> {
-    let pattern = format!("{obligation_prefix}%");
-    let current: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pending_obligations WHERE obligation_id LIKE ?1",
-            params![pattern],
-            |row| row.get(0),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut additions = 0i64;
-    for mutation in mutations {
-        let LocalStateMutation::Obligation(obligation) = mutation else {
-            continue;
-        };
-        if obligation.pending.is_none() || !obligation.obligation_id.starts_with(obligation_prefix)
-        {
-            continue;
-        }
-        let exists: i64 = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM obligations WHERE obligation_id = ?1)",
-                params![obligation.obligation_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| storage_unavailable(&error))?;
-        if exists == 0 {
-            additions += 1;
-        }
-    }
-    if current.saturating_add(additions) > maximum {
-        return Err(CommitBatchError::CapacityExceeded);
     }
     Ok(())
 }
@@ -2658,8 +1645,7 @@ fn validate_one_guard(
     match mutation {
         LocalStateMutation::OperationBinding(m) => validate_operation_binding(connection, m),
         LocalStateMutation::CallerAttempt(m) => validate_caller_attempt(connection, m),
-        LocalStateMutation::OperationRecord(m)
-        | LocalStateMutation::SessionLifecycleOperation(m) => {
+        LocalStateMutation::OperationRecord(m) => {
             validate_operation_record(m.kind, &m.operation_id, &m.receipt, &m.latest_status)
                 .map_err(|_| CommitBatchError::PayloadConflict)?;
             let existing = read_revision(
@@ -2679,15 +1665,6 @@ fn validate_one_guard(
             )?;
             check_guard(existing, m.expected)
         }
-        LocalStateMutation::MessageProjection(m) => {
-            let existing = read_revision(
-                connection,
-                "SELECT revision FROM message_projection
-                 WHERE session_id = ?1 AND message_id = ?2",
-                params![m.session_id, m.message_id],
-            )?;
-            check_guard(existing, m.expected)
-        }
         LocalStateMutation::SessionProjectionRemoval(m) => {
             let existing = read_revision(
                 connection,
@@ -2696,7 +1673,7 @@ fn validate_one_guard(
             )?;
             check_guard(existing, m.expected)
         }
-        LocalStateMutation::ProviderAgentSessionRemoval(m) => {
+        LocalStateMutation::AgentSessionRemoval(m) => {
             let current_head = read_revision(
                 connection,
                 "SELECT head FROM stream_heads WHERE stream_id = ?1",
@@ -2727,52 +1704,6 @@ fn validate_one_guard(
                 }
                 (None, None, None) => Ok(()),
                 _ => Err(CommitBatchError::PayloadConflict),
-            }
-        }
-        LocalStateMutation::TerminalRecord(m) => {
-            validate_terminal_record(m).map_err(|_| CommitBatchError::PayloadConflict)?;
-            let existing: Option<(String, String, Vec<u8>)> = connection
-                .query_row(
-                    "SELECT terminal_identity, result, participant_digest FROM terminal_records
-                     WHERE session_id = ?1 AND turn_id = ?2",
-                    params![m.session_id, m.turn_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()
-                .map_err(|error| storage_unavailable(&error))?;
-            match existing {
-                None => Ok(()),
-                Some((identity, result, digest))
-                    if identity == m.terminal_identity
-                        && encoded_record(StoredTerminalV1::decode(&result))?.value()
-                            == &m.result
-                        && digest.as_slice() == m.participant_digest.as_slice() =>
-                {
-                    Ok(())
-                }
-                Some(_) => Err(CommitBatchError::PayloadConflict),
-            }
-        }
-        LocalStateMutation::StopResolution(m) => {
-            validate_stop_resolution(m).map_err(|_| CommitBatchError::PayloadConflict)?;
-            let existing: Option<(String, String)> = connection
-                .query_row(
-                    "SELECT resolution, detail FROM stop_resolutions WHERE stop_operation_id = ?1",
-                    params![m.stop_operation_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(|error| storage_unavailable(&error))?;
-            match existing {
-                None => Ok(()),
-                Some((resolution, detail))
-                    if resolution == m.resolution.label()
-                        && encoded_record(StoredTerminalV1::decode(&detail))?.value()
-                            == &m.detail =>
-                {
-                    Ok(())
-                }
-                Some(_) => Err(CommitBatchError::PayloadConflict),
             }
         }
         LocalStateMutation::Obligation(m) => {
@@ -3098,27 +2029,15 @@ fn apply_mutation(
             apply_operation_binding(connection, commit_id, m)
         }
         LocalStateMutation::CallerAttempt(m) => apply_caller_attempt(connection, commit_id, m),
-        LocalStateMutation::OperationRecord(m)
-        | LocalStateMutation::SessionLifecycleOperation(m) => {
-            apply_operation_record(connection, commit_id, m)
-        }
+        LocalStateMutation::OperationRecord(m) => apply_operation_record(connection, commit_id, m),
         LocalStateMutation::SessionProjection(m) => {
             apply_session_projection(connection, commit_id, m)
         }
-        LocalStateMutation::MessageProjection(m) => {
-            apply_message_projection(connection, commit_id, m)
-        }
-        LocalStateMutation::SessionProjectionRemoval(m) => {
-            run(connection.execute(
-                "DELETE FROM message_projection WHERE session_id = ?1",
-                params![m.session_id],
-            ))?;
-            run(connection.execute(
-                "DELETE FROM session_projection WHERE session_id = ?1",
-                params![m.session_id],
-            ))
-        }
-        LocalStateMutation::ProviderAgentSessionRemoval(m) => {
+        LocalStateMutation::SessionProjectionRemoval(m) => run(connection.execute(
+            "DELETE FROM session_projection WHERE session_id = ?1",
+            params![m.session_id],
+        )),
+        LocalStateMutation::AgentSessionRemoval(m) => {
             run(connection.execute(
                 "DELETE FROM events WHERE stream_id = ?1 AND stream_sequence < ?2",
                 params![
@@ -3146,8 +2065,6 @@ fn apply_mutation(
             }
             Ok(())
         }
-        LocalStateMutation::TerminalRecord(m) => apply_terminal_record(connection, commit_id, m),
-        LocalStateMutation::StopResolution(m) => apply_stop_resolution(connection, commit_id, m),
         LocalStateMutation::Obligation(m) => apply_obligation(connection, commit_id, m),
         LocalStateMutation::RecoveryAction(m) => {
             let existing: Option<(String, Option<String>)> = connection
@@ -3469,94 +2386,6 @@ fn apply_session_projection(
             public.sort_key_bits,
             public.summary
         ],
-    ))
-}
-
-fn apply_message_projection(
-    connection: &Connection,
-    commit_id: &str,
-    m: &MessageProjectionMutation,
-) -> Result<(), CommitBatchError> {
-    let existing = connection
-        .query_row(
-            "SELECT message_ordinal, projection FROM message_projection
-             WHERE session_id = ?1 AND message_id = ?2",
-            params![m.session_id, m.message_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    let message_ordinal = match existing.as_ref() {
-        Some((ordinal, _)) if *ordinal > 0 => *ordinal,
-        Some(_) => return Err(corrupt("message projection ordinal")),
-        None => connection
-            .query_row(
-                "SELECT COALESCE(MAX(message_ordinal), 0) + 1
-                 FROM message_projection WHERE session_id = ?1",
-                params![m.session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| storage_unavailable(&error))?,
-    };
-    let encoded = encode_message_projection_update_v1(
-        existing.as_ref().map(|(_, raw)| raw.as_str()),
-        &m.projection,
-        &m.session_id,
-        &m.message_id,
-    )
-    .map_err(|_| CommitBatchError::PayloadConflict)?;
-    run(connection.execute(
-        "INSERT INTO message_projection
-            (session_id, message_id, message_ordinal, projection, revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (session_id, message_id) DO UPDATE SET
-            projection = excluded.projection,
-            revision = excluded.revision,
-            commit_id = excluded.commit_id",
-        params![
-            m.session_id,
-            m.message_id,
-            message_ordinal,
-            encoded,
-            m.revision.value(),
-            commit_id
-        ],
-    ))
-}
-
-fn apply_terminal_record(
-    connection: &Connection,
-    commit_id: &str,
-    m: &TerminalRecordMutation,
-) -> Result<(), CommitBatchError> {
-    let result = encoded_record(StoredTerminalV1::encode_new(&m.result))?;
-    run(connection.execute(
-        "INSERT INTO terminal_records
-            (session_id, turn_id, terminal_identity, result, participant_digest, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (session_id, turn_id) DO NOTHING",
-        params![
-            m.session_id,
-            m.turn_id,
-            m.terminal_identity,
-            result,
-            m.participant_digest.as_slice(),
-            commit_id
-        ],
-    ))
-}
-
-fn apply_stop_resolution(
-    connection: &Connection,
-    commit_id: &str,
-    m: &StopResolutionMutation,
-) -> Result<(), CommitBatchError> {
-    let detail = encoded_record(StoredTerminalV1::encode_new(&m.detail))?;
-    run(connection.execute(
-        "INSERT INTO stop_resolutions (stop_operation_id, resolution, detail, commit_id)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (stop_operation_id) DO NOTHING",
-        params![m.stop_operation_id, m.resolution.label(), detail, commit_id],
     ))
 }
 

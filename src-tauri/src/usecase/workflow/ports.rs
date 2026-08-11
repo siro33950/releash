@@ -1,6 +1,7 @@
+#[cfg(test)]
+use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{
     WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowPageRequest,
-    WorkflowRuntimeSnapshot,
 };
 
 use super::command::{
@@ -115,62 +116,16 @@ pub trait WorkflowResumeExecutionGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait WorkspaceNodeSessionCloseGateway: Send + Sync {
-    async fn close_session(&self, session_id: &str) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
-pub trait WorkflowTurnCompleteGateway: Send + Sync {
-    async fn is_session_running(&self, chat_session_id: &str) -> bool;
-    async fn complete_turn(
-        &self,
-        command: WorkflowTurnCompleteCommand,
-    ) -> Result<(), WorkflowError>;
-
-    async fn recover_turn_complete(
-        &self,
-        _command: WorkflowTurnCompleteRecoveryCommand,
-    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
-        Err(WorkflowError::external(
-            "durable workflow turn-completion recovery is unsupported",
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-pub trait WorkflowStallObservedGateway: Send + Sync {
-    async fn observe_stall(
-        &self,
-        command: WorkflowStallObservedCommand,
-    ) -> Result<(), WorkflowError>;
-
-    async fn clear_stall(&self, command: WorkflowStallClearedCommand) -> Result<(), WorkflowError>;
-}
-
-#[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
     /// Explicit startup recovery hook. Construction must never invoke this:
     /// composition calls it once only after the fixed local store is verified and
     /// normal mutation admission.
-    async fn recover_startup(&self) -> Result<(), WorkflowError> {
-        Ok(())
-    }
-
-    async fn recover_startup_excluding(
-        &self,
-        _unresolved_turn_completions: &std::collections::BTreeSet<String>,
-    ) -> Result<(), WorkflowError> {
-        self.recover_startup().await
-    }
+    async fn recover_startup(&self) -> Result<(), WorkflowError>;
 
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
         execution_id: &str,
-    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError>;
-    async fn get_state_by_worktree(
-        &self,
-        worktree_path: &str,
     ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError>;
 }
 
@@ -215,30 +170,14 @@ pub enum WorkflowShutdownEffectReadback {
     Ambiguous,
 }
 
-#[async_trait::async_trait]
-pub trait WorkflowApprovalChatGateway: Send + Sync {
-    async fn resolve_approval_chat_target(
-        &self,
-        execution_id: &str,
-    ) -> Result<ApprovalChatTarget, WorkflowError>;
-    async fn validate_approval_chat_instruction(
-        &self,
-        chat_session_id: &str,
-        content: &str,
-    ) -> Result<(), WorkflowError>;
-}
-
 pub trait WorkflowRuntimeCommandGateway:
     WorkflowStartExecutionGateway
     + WorkflowAbortExecutionGateway
     + WorkflowStopExecutionGateway
     + WorkflowResumeExecutionGateway
     + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
-    + WorkflowTurnCompleteGateway
-    + WorkflowStallObservedGateway
     + WorkflowRuntimeStateGateway
     + WorkflowRuntimeShutdownGateway
-    + WorkflowApprovalChatGateway
 {
 }
 
@@ -248,99 +187,7 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowStopExecutionGateway
         + WorkflowResumeExecutionGateway
         + crate::usecase::workflow::control_plane::WorkflowControlPlaneGateway
-        + WorkflowTurnCompleteGateway
-        + WorkflowStallObservedGateway
         + WorkflowRuntimeStateGateway
         + WorkflowRuntimeShutdownGateway
-        + WorkflowApprovalChatGateway
 {
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApprovalChatTarget {
-    pub chat_session_id: String,
-    pub worktree_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowTurnTokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowTurnFailureSignal {
-    ModelRefusal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowTurnCompleteCommand {
-    pub chat_session_id: String,
-    pub exit_code: i64,
-    pub final_text_parts: Vec<String>,
-    pub failure_signal: Option<WorkflowTurnFailureSignal>,
-    pub token_usage: Option<WorkflowTurnTokenUsage>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowTurnCompleteNotification {
-    pub chat_session_id: String,
-    pub exit_code: i64,
-    pub final_text_parts: Vec<String>,
-    pub failure_signal: Option<WorkflowTurnFailureSignal>,
-    pub token_usage: Option<WorkflowTurnTokenUsage>,
-    pub interrupted: bool,
-}
-
-/// Canonical ownership coordinates captured in the workflow-owned chat
-/// session before its terminal turn is committed. Startup replay uses these
-/// coordinates to reject a notification aimed at a different execution,
-/// node attempt, or fanout child.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowTurnCompleteRecoveryCommand {
-    pub notification: WorkflowTurnCompleteNotification,
-    pub turn_id: u64,
-    pub execution_id: String,
-    pub node_execution_id: String,
-    pub workflow_name: String,
-    pub node_name: String,
-    pub attempt: u32,
-    pub parent_node_name: Option<String>,
-    pub parent_attempt: Option<u32>,
-    pub order: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowTurnCompleteRecoveryOutcome {
-    Applied,
-    AlreadyApplied,
-    Retired(crate::domain::local_event::WorkflowObligationRetirementReason),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowStallObservedNotification {
-    pub chat_session_id: String,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowStallClearedNotification {
-    pub chat_session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowStallObservedCommand {
-    pub chat_session_id: String,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowStallClearedCommand {
-    pub chat_session_id: String,
 }

@@ -28,8 +28,6 @@ impl WorkflowRuntimeHost {
     pub(crate) async fn abort_workflow_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -77,12 +75,7 @@ impl WorkflowRuntimeHost {
         // execution 全体の Abort: NotFound / AlreadyTerminal は非受理として typed error
         // に射影する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
         let abort_result = self
-            .commit_abort_workflow_by_execution_id(
-                app,
-                session_store,
-                execution_id,
-                expected_node_name,
-            )
+            .commit_abort_workflow_by_execution_id(app, execution_id, expected_node_name)
             .await;
         match abort_result {
             Ok(AbortCommit::Aborted { session_ids }) => {
@@ -92,7 +85,7 @@ impl WorkflowRuntimeHost {
                 }
                 let _activation_guard = activation_guard;
                 let terminal_cleanup_result = self
-                    .finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
+                    .finish_committed_abort(app, execution_id, &session_ids)
                     .await;
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
@@ -162,7 +155,6 @@ impl WorkflowRuntimeHost {
     pub(crate) async fn stop_workflow_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
@@ -240,8 +232,10 @@ impl WorkflowRuntimeHost {
         let mut unstopped_node_execution_ids = HashSet::new();
         let mut stop_failures = Vec::new();
         for (node_execution_id, session_id) in session_targets {
-            if let Err(error) =
-                workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .interrupt_workflow_agent_session(&session_id)
+                .await
             {
                 unstopped_node_execution_ids.insert(node_execution_id);
                 stop_failures.push(error.to_string());
@@ -378,8 +372,6 @@ impl WorkflowRuntimeHost {
     pub(crate) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
@@ -488,14 +480,8 @@ impl WorkflowRuntimeHost {
             unactivated.remove(&node_execution_id);
         }
         for node_execution_id in paused_commands {
-            self.restart_paused_command_node(
-                app,
-                session_store,
-                agent_runtime,
-                execution_id,
-                &node_execution_id,
-            )
-            .await?;
+            self.restart_paused_command_node(app, execution_id, &node_execution_id)
+                .await?;
         }
         if let Some(snapshot) = snapshot {
             workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
@@ -565,38 +551,9 @@ impl WorkflowRuntimeHost {
     ///
     /// 外部から直接呼ばれることはなく、`abort_workflow_execution*` runtime primitive 経路のみが
     /// 利用する（Spec [04]: 内部呼び出し元も driver の private method を直接叩かない）。
-    #[cfg(test)]
-    pub(super) async fn abort_workflow_by_execution_id<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        execution_id: &str,
-        expected_node_name: Option<&str>,
-    ) -> Result<AbortOutcome, WorkflowRuntimeError> {
-        let commit = self
-            .commit_abort_workflow_by_execution_id(
-                app,
-                session_store,
-                execution_id,
-                expected_node_name,
-            )
-            .await?;
-        match commit {
-            AbortCommit::Aborted { session_ids } => {
-                self.finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
-                    .await?;
-                Ok(AbortOutcome::Aborted)
-            }
-            AbortCommit::NotFound => Ok(AbortOutcome::NotFound),
-            AbortCommit::AlreadyTerminal => Ok(AbortOutcome::AlreadyTerminal),
-        }
-    }
-
     async fn commit_abort_workflow_by_execution_id<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<AbortCommit, WorkflowRuntimeError> {
@@ -619,9 +576,6 @@ impl WorkflowRuntimeHost {
         session_ids.extend(fanout_session_ids.into_iter().flatten());
         session_ids.sort();
         session_ids.dedup();
-        #[cfg(test)]
-        self.wait_abort_after_lookup_for_test().await;
-
         // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
         //    state を Aborted に遷移させる。競合で terminal 化していた場合は
         //    AlreadyTerminal で返す。
@@ -716,7 +670,6 @@ impl WorkflowRuntimeHost {
         let commit_result = self
             .commit_required_events(
                 app,
-                session_store,
                 RequiredEventCommit {
                     operation_kind: CommitOperationKind::UserMutation,
                     execution_id,
@@ -758,7 +711,6 @@ impl WorkflowRuntimeHost {
     async fn finish_committed_abort<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         session_ids: &[String],
     ) -> Result<(), WorkflowRuntimeError> {
@@ -766,11 +718,25 @@ impl WorkflowRuntimeHost {
         // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
             .await;
-        let interrupt_result =
-            workflow_runtime_session::interrupt_agents(agent_runtime, session_ids).await;
+        let mut interrupt_failures = Vec::new();
+        for session_id in session_ids {
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .interrupt_workflow_agent_session(session_id)
+                .await
+            {
+                interrupt_failures.push(error.to_string());
+            }
+        }
         self.finalize_terminal_transition_after_required_append(app, execution_id)
             .await;
-        interrupt_result
+        if interrupt_failures.is_empty() {
+            Ok(())
+        } else {
+            Err(WorkflowRuntimeError::AgentSession(
+                interrupt_failures.join("; "),
+            ))
+        }
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に

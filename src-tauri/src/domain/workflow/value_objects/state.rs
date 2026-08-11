@@ -35,6 +35,7 @@ impl RuntimeExecutionState {
         }
     }
 
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         match self {
             Self::Running => true,

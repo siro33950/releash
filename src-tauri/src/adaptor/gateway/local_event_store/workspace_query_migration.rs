@@ -20,8 +20,7 @@ use crate::domain::local_event::{
     WorkflowExecutionProjectionRecord, WorkflowWorktreeOwnerRecord,
 };
 use crate::domain::workspace_tree::{
-    recovery_reason, workflow_fact, WorkspaceSessionPublicationPolicy, WorkspaceStructureFact,
-    WorkspaceTree, WorkspaceTreeProjector,
+    workflow_fact, WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeProjector,
 };
 
 struct CanonicalProjection {
@@ -46,7 +45,6 @@ fn invalid(context: &str, error: impl std::fmt::Debug) -> rusqlite::Error {
 pub(crate) fn rebuild_workspace_query_records(
     connection: &Connection,
 ) -> Result<(), rusqlite::Error> {
-    let recovery_by_owner = recovery_reasons(connection)?;
     let projections = canonical_projections(connection)?;
     normalize_canonical_workspace_projections(connection, &projections)?;
     let mut execution_paths = execution_paths(&projections);
@@ -56,39 +54,7 @@ pub(crate) fn rebuild_workspace_query_records(
 
     for projection in &projections {
         match &projection.record {
-            SessionProjectionRecord::AgentSession(session) => {
-                let source_summary = WorkspaceSessionPublicationPolicy::summary(session);
-                let session_reason = recovery_by_owner.get(&source_summary.id).cloned();
-                let execution_recovery =
-                    session.meta.workflow_node_context.as_ref().map(|context| {
-                        (
-                            context.execution_id.clone(),
-                            recovery_by_owner.get(&context.execution_id).cloned(),
-                        )
-                    });
-                let entry = changes
-                    .entry(source_summary.worktree_path.clone())
-                    .or_default();
-                if let Some((_list, summary)) =
-                    WorkspaceSessionPublicationPolicy::public_summary(session)
-                {
-                    entry
-                        .facts
-                        .push(WorkspaceSessionPublicationPolicy::structure_fact(
-                            &summary,
-                            session_reason,
-                        ));
-                    if let Some((owner, reason)) = execution_recovery {
-                        entry
-                            .facts
-                            .push(WorkspaceStructureFact::RecoveryFenceProjected { owner, reason });
-                    }
-                } else {
-                    entry.facts.push(WorkspaceStructureFact::SessionRemoved {
-                        session_id: source_summary.id,
-                    });
-                }
-            }
+            SessionProjectionRecord::AgentSession(_) => {}
             SessionProjectionRecord::WorkflowExecution(
                 WorkflowExecutionProjectionRecord::Present(execution),
             ) => {
@@ -120,8 +86,7 @@ pub(crate) fn rebuild_workspace_query_records(
                         });
                 }
             }
-            SessionProjectionRecord::ProviderAgentSession(_)
-            | SessionProjectionRecord::ProviderSessionOwnership(_)
+            SessionProjectionRecord::ProviderSessionOwnership(_)
             | SessionProjectionRecord::ProviderHookHealth(_)
             | SessionProjectionRecord::WorkflowWorktreeOwner(_) => {}
         }
@@ -195,33 +160,6 @@ pub(crate) fn rebuild_workspace_query_records(
         verify_workspace_records(connection, &workspace, &tree)?;
     }
     Ok(())
-}
-
-fn recovery_reasons(connection: &Connection) -> Result<HashMap<String, String>, rusqlite::Error> {
-    let mut reasons = HashMap::new();
-    let mut statement = connection.prepare(
-        "SELECT pending.owner, pending.obligation_id, obligation.record
-         FROM pending_obligations AS pending
-         JOIN obligations AS obligation ON obligation.obligation_id = pending.obligation_id
-         ORDER BY pending.owner, pending.ordered_key",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (owner, obligation_id, raw) = row?;
-        let record = super::state_record_codec::StoredObligationV1::decode(&raw)
-            .map_err(|error| invalid("obligation decode", error))?
-            .into_value();
-        if let Some(reason) = recovery_reason(&obligation_id, &record) {
-            reasons.entry(owner).or_insert(reason);
-        }
-    }
-    Ok(reasons)
 }
 
 fn canonical_projections(

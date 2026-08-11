@@ -95,27 +95,6 @@ pub(crate) fn append_provider_stop_for_app<R: tauri::Runtime>(
         .append_provider_stop_batch_blocking(execution_id, events, provider_events, state_mutations)
 }
 
-pub(crate) fn commit_projection_with_mutations_for_app<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    execution_id: &str,
-    state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
-) -> Result<(), String> {
-    let Some(store) = app
-        .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
-    else {
-        #[cfg(test)]
-        return Ok(());
-        #[cfg(not(test))]
-        return Err("workflow SQLite event authority is not managed".to_string());
-    };
-    let store = store.inner().clone();
-    let repository: std::sync::Arc<
-        dyn crate::domain::local_event::LocalEventTransactionRepository,
-    > = store.clone();
-    WorkflowEventLog::with_authority(repository, store.installation_id().to_string())
-        .commit_projection_durable_blocking(execution_id, state_mutations)
-}
-
 pub(crate) fn read_events_for_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     execution_id: &str,

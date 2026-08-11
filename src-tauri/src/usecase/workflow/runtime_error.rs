@@ -1,8 +1,4 @@
-use crate::domain::local_event::SessionOperationFailureKind;
 use crate::domain::workflow::NodeExecutionFailureKind;
-use crate::usecase::agent_session::runtime::usecase::{
-    AgentRuntimeError, DurableWorkflowSendError,
-};
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
@@ -32,12 +28,6 @@ pub enum WorkflowRuntimeError {
     SessionStore(String),
     /// AgentSession起動エラー
     AgentSession(String),
-    /// Agent runtime が分類済み failure metadata とともに返したエラー
-    AgentRuntime {
-        message: String,
-        failure_kind: NodeExecutionFailureKind,
-        retry_count: Option<u32>,
-    },
 }
 
 impl std::fmt::Display for WorkflowRuntimeError {
@@ -46,7 +36,7 @@ impl std::fmt::Display for WorkflowRuntimeError {
             Self::ExecutionNotFound(id) => {
                 write!(f, "No workflow execution found for session '{id}'")
             }
-            Self::SessionNotFound(id) => write!(f, "ChatSession not found: {id}"),
+            Self::SessionNotFound(id) => write!(f, "AgentSession not found: {id}"),
             Self::InvalidWorkflow(msg) => write!(f, "{msg}"),
             Self::AlreadyActive(name) => {
                 write!(f, "Workflow '{name}' is already running for this session")
@@ -59,7 +49,6 @@ impl std::fmt::Display for WorkflowRuntimeError {
                 write!(f, "unauthorized_approval_target: {msg}")
             }
             Self::SessionStore(msg) | Self::AgentSession(msg) => write!(f, "{msg}"),
-            Self::AgentRuntime { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -67,7 +56,6 @@ impl std::fmt::Display for WorkflowRuntimeError {
 impl WorkflowRuntimeError {
     pub(crate) fn workflow_failure_kind(&self) -> NodeExecutionFailureKind {
         match self {
-            Self::AgentRuntime { failure_kind, .. } => *failure_kind,
             Self::SessionStore(_) => NodeExecutionFailureKind::InfrastructureCrash,
             Self::AgentSession(_) => NodeExecutionFailureKind::ValidationFailure,
             Self::ExecutionNotFound(_)
@@ -79,94 +67,6 @@ impl WorkflowRuntimeError {
             | Self::ValidationError(_)
             | Self::UnauthorizedWorktree(_)
             | Self::UnauthorizedApprovalTarget(_) => NodeExecutionFailureKind::ValidationFailure,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn retry_count(&self) -> Option<u32> {
-        match self {
-            Self::AgentRuntime { retry_count, .. } => *retry_count,
-            _ => None,
-        }
-    }
-
-    pub(crate) fn with_agent_runtime_context(
-        context: impl Into<String>,
-        error: AgentRuntimeError,
-    ) -> Self {
-        let context = context.into();
-        let (failure_kind, retry_count) = agent_runtime_failure_metadata(&error);
-        Self::AgentRuntime {
-            message: format!("{context}: {error}"),
-            failure_kind,
-            retry_count,
-        }
-    }
-}
-
-impl From<AgentRuntimeError> for WorkflowRuntimeError {
-    fn from(error: AgentRuntimeError) -> Self {
-        let (failure_kind, retry_count) = agent_runtime_failure_metadata(&error);
-        Self::AgentRuntime {
-            message: error.to_string(),
-            failure_kind,
-            retry_count,
-        }
-    }
-}
-
-fn agent_runtime_failure_metadata(
-    error: &AgentRuntimeError,
-) -> (NodeExecutionFailureKind, Option<u32>) {
-    match error {
-        AgentRuntimeError::StartupTimeout { retry_count, .. } => {
-            (NodeExecutionFailureKind::StartupTimeout, Some(*retry_count))
-        }
-        AgentRuntimeError::BackendSessionLost { .. } => {
-            (NodeExecutionFailureKind::InfrastructureCrash, None)
-        }
-        AgentRuntimeError::WorkflowTurnSend(error) => {
-            (workflow_turn_send_failure_kind(error), None)
-        }
-        AgentRuntimeError::WorkspaceQuery(
-            crate::domain::workflow::WorkflowError::StorageUnavailable { .. },
-        ) => (NodeExecutionFailureKind::InfrastructureCrash, None),
-        AgentRuntimeError::BackendSelectionLocked
-        | AgentRuntimeError::AcceptedEffectAdmissionDeferred
-        | AgentRuntimeError::AcceptedEffectAdmissionFailed { .. }
-        | AgentRuntimeError::WorkspaceQuery(_)
-        | AgentRuntimeError::Other(_) => (NodeExecutionFailureKind::ValidationFailure, None),
-    }
-}
-
-fn workflow_turn_send_failure_kind(error: &DurableWorkflowSendError) -> NodeExecutionFailureKind {
-    match error {
-        DurableWorkflowSendError::SessionStore(_) => NodeExecutionFailureKind::InfrastructureCrash,
-        DurableWorkflowSendError::Admission(failure)
-            if matches!(
-                failure.kind,
-                SessionOperationFailureKind::StorageUnavailable
-                    | SessionOperationFailureKind::StorageCorrupt
-                    | SessionOperationFailureKind::PersistFailure
-            ) =>
-        {
-            NodeExecutionFailureKind::InfrastructureCrash
-        }
-        DurableWorkflowSendError::Admission(failure)
-            if failure.kind == SessionOperationFailureKind::DeadlineExceeded =>
-        {
-            NodeExecutionFailureKind::StartupTimeout
-        }
-        DurableWorkflowSendError::SessionNotFound(_)
-        | DurableWorkflowSendError::InvalidWorkflowTarget
-        | DurableWorkflowSendError::AuthorityMismatch
-        | DurableWorkflowSendError::PayloadEncoding
-        | DurableWorkflowSendError::Operation(_)
-        | DurableWorkflowSendError::Admission(_)
-        | DurableWorkflowSendError::OutcomeUnknown(_)
-        | DurableWorkflowSendError::IncompatibleReceipt
-        | DurableWorkflowSendError::DriverUnavailable => {
-            NodeExecutionFailureKind::ValidationFailure
         }
     }
 }
@@ -192,24 +92,6 @@ impl From<ManagedWorktreeResolverError> for WorkflowRuntimeError {
     fn from(e: ManagedWorktreeResolverError) -> Self {
         match e {
             ManagedWorktreeResolverError::Validation(message) => Self::ValidationError(message),
-        }
-    }
-}
-
-impl From<crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError>
-    for WorkflowRuntimeError
-{
-    fn from(e: crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError) -> Self {
-        match e {
-            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::SessionNotFound(id) => {
-                Self::SessionNotFound(id)
-            }
-            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::SessionStore(message) => {
-                Self::SessionStore(message)
-            }
-            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::AgentSession(message) => {
-                Self::AgentSession(message)
-            }
         }
     }
 }
@@ -251,7 +133,6 @@ pub(crate) fn workflow_error_to_runtime_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
     #[test]
     fn workflow_failure_kind_only_uses_crash_for_storage_or_process_loss() {
@@ -277,58 +158,6 @@ mod tests {
             WorkflowRuntimeError::AgentSession("admission rejected".to_string())
                 .workflow_failure_kind(),
             NodeExecutionFailureKind::ValidationFailure
-        );
-        assert_eq!(
-            WorkflowRuntimeError::from(AgentRuntimeError::BackendSessionLost {
-                requested_resume_id: "lost".to_string(),
-            })
-            .workflow_failure_kind(),
-            NodeExecutionFailureKind::InfrastructureCrash
-        );
-    }
-
-    #[test]
-    fn workflow_failure_kind_preserves_agent_runtime_metadata() {
-        let error = WorkflowRuntimeError::from(AgentRuntimeError::StartupTimeout {
-            retry_count: 1,
-            max_retries: 2,
-        });
-
-        assert_eq!(
-            error.workflow_failure_kind(),
-            NodeExecutionFailureKind::StartupTimeout
-        );
-        assert_eq!(error.retry_count(), Some(1));
-    }
-
-    #[test]
-    fn workflow_send_failure_keeps_typed_admission_meaning() {
-        let business_rejection =
-            AgentRuntimeError::WorkflowTurnSend(DurableWorkflowSendError::Admission(
-                crate::domain::local_event::SafeOperationFailure::new(
-                    SessionOperationFailureKind::InvalidEffectIntent,
-                    false,
-                    "not runnable",
-                    "business-rejection",
-                ),
-            ));
-        assert_eq!(
-            WorkflowRuntimeError::from(business_rejection).workflow_failure_kind(),
-            NodeExecutionFailureKind::ValidationFailure
-        );
-
-        let storage_loss =
-            AgentRuntimeError::WorkflowTurnSend(DurableWorkflowSendError::Admission(
-                crate::domain::local_event::SafeOperationFailure::new(
-                    SessionOperationFailureKind::PersistFailure,
-                    true,
-                    "store unavailable",
-                    "storage-loss",
-                ),
-            ));
-        assert_eq!(
-            WorkflowRuntimeError::from(storage_loss).workflow_failure_kind(),
-            NodeExecutionFailureKind::InfrastructureCrash
         );
     }
 }
