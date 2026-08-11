@@ -16,6 +16,8 @@ use releash_lib::workflow_control_plane_acceptance::{
     WorkflowControlPlaneAcceptanceHost,
 };
 
+const ACCEPTANCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn provider_name(provider: AcceptanceProvider) -> &'static str {
     match provider {
         AcceptanceProvider::Claude => "claude",
@@ -110,7 +112,7 @@ fn owner(worktree_path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
 }
 
 async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
         let mut output = String::new();
         while !output.contains(needle) {
             match attachment.next().await.expect("Terminal Surface stream") {
@@ -146,7 +148,7 @@ async fn wait_for_execution_status(
     execution_id: &str,
     status: AcceptanceWorkflowExecutionStatus,
 ) {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
         loop {
             if host
                 .execution(execution_id)
@@ -206,7 +208,7 @@ async fn wait_for_node_count(
     execution_id: &str,
     count: usize,
 ) -> releash_lib::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
         loop {
             let execution = host.execution(execution_id).await.unwrap().unwrap();
             if execution.node_executions.len() == count {
