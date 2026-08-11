@@ -12,7 +12,11 @@ pub(crate) mod services;
 pub(crate) mod storage;
 pub(crate) mod value_objects;
 
-pub(crate) use provider_availability_gateway::ProviderAvailabilityGateway;
+pub(crate) use provider_availability_gateway::{
+    ProviderAvailabilityReader, ProviderExecutableConfigRepository,
+    ProviderExecutableConfigRepositoryError, ProviderExecutableProbeGateway,
+    ProviderExecutableProbeGatewayError,
+};
 pub(crate) use provider_history_gateway::{
     ProviderAgentSessionHistoryGateway, ProviderAgentSessionHistoryGatewayError,
     ProviderAgentSessionHistoryMetadata, ProviderAgentSessionOwnershipQuery,

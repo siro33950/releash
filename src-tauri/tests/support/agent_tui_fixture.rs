@@ -99,6 +99,8 @@ pub struct FixturePlan {
     pub alternate_screen: bool,
     pub cursor_after_input: Option<(usize, u16, u16)>,
     pub report_terminal_size: bool,
+    #[serde(default)]
+    pub emit_input_completion_marker: bool,
     pub(crate) lifecycle_endpoint: String,
     pub lifecycle_command: Option<FixtureLifecycleCommand>,
     pub lifecycle: Vec<FixtureLifecycleEmission>,
@@ -113,6 +115,7 @@ impl FixturePlan {
             alternate_screen: true,
             cursor_after_input: None,
             report_terminal_size: false,
+            emit_input_completion_marker: false,
             lifecycle_endpoint: String::new(),
             lifecycle_command: None,
             lifecycle,
@@ -235,6 +238,9 @@ fn test_agent_tui_fixture_process() {
             .unwrap_or(&input);
         let displayed_input = input.replace('\r', "\\r").replace('\n', "\\n");
         print!("\x1b[1;32mreceived-{index}:{displayed_input}\x1b[0m\r\n");
+        if plan.emit_input_completion_marker {
+            print!("releash-fixture-input-complete-{index}\r\n");
+        }
         let lifecycle_payload = input
             .strip_prefix(SESSION_START_INPUT_PREFIX)
             .map(|provider_session_id| FixtureLifecyclePayload::Raw {

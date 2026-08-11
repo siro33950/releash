@@ -5,6 +5,10 @@ mod agent_session_tests;
 pub mod backend_recovery_attempt;
 pub mod backend_recovery_projection;
 pub mod provider_establishment;
+mod provider_registry;
+#[cfg(test)]
+#[path = "provider_registry_test.rs"]
+mod provider_registry_tests;
 pub mod runtime_admission;
 pub mod runtime_permission;
 pub mod runtime_progress;
@@ -23,4 +27,10 @@ pub(crate) use agent_session::{
     AgentSessionOpenAction, AgentSessionOperations, AgentSessionOrigin,
     AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionRemovalAuthorization,
     ManagedPtyPresence,
+};
+#[cfg(test)]
+pub(crate) use provider_registry::ProviderRegistryError;
+pub(crate) use provider_registry::{
+    ProviderAvailability, ProviderExecutable, ProviderRegistry, ProviderRegistryEntry,
+    ProviderUnavailableReason, ResolvedProviderExecutable,
 };

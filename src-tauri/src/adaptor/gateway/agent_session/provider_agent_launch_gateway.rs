@@ -4,31 +4,22 @@ use sha2::{Digest, Sha256};
 
 use crate::adaptor::gateway::provider_lifecycle::{ProviderLaunchContext, ProviderLaunchSpec};
 use crate::domain::agent_session::{
-    PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderSessionLaunch,
+    aggregates::ResolvedProviderExecutable, PreparedProviderLaunch, ProviderAgentLaunchGateway,
+    ProviderAgentLaunchGatewayError, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{ArmedProviderLifecycle, ProviderKind};
 
 pub(crate) struct LocalProviderAgentLaunchGateway {
     data_dir: PathBuf,
     root: PathBuf,
-    claude_executable: String,
-    codex_executable: String,
     hook_cli_alias: String,
 }
 
 impl LocalProviderAgentLaunchGateway {
-    pub(crate) fn new(
-        data_dir: PathBuf,
-        claude_executable: String,
-        codex_executable: String,
-        hook_cli_alias: String,
-    ) -> Self {
+    pub(crate) fn new(data_dir: PathBuf, hook_cli_alias: String) -> Self {
         Self {
             root: data_dir.join("provider-launches"),
             data_dir,
-            claude_executable,
-            codex_executable,
             hook_cli_alias,
         }
     }
@@ -42,6 +33,7 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
     fn prepare(
         &self,
         armed: &ArmedProviderLifecycle,
+        executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         let session_directory = self.session_directory(armed.scope().agent_session_id());
@@ -73,12 +65,8 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             &files,
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::Unavailable)?;
-        let executable = match armed.provider() {
-            ProviderKind::Claude => &self.claude_executable,
-            ProviderKind::Codex => &self.codex_executable,
-        };
         let process = spec
-            .terminal_process(executable, launch)
+            .terminal_process(executable.as_path().as_os_str(), launch)
             .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
         let mut environment = process.environment().to_vec();
         environment.push((

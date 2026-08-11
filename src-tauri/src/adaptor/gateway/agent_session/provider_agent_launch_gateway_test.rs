@@ -3,7 +3,9 @@ use std::fs;
 use tempfile::tempdir;
 
 use super::LocalProviderAgentLaunchGateway;
-use crate::domain::agent_session::{ProviderAgentLaunchGateway, ProviderSessionLaunch};
+use crate::domain::agent_session::{
+    aggregates::ResolvedProviderExecutable, ProviderAgentLaunchGateway, ProviderSessionLaunch,
+};
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableReason,
@@ -22,15 +24,15 @@ fn armed(provider: ProviderKind) -> ArmedProviderLifecycle {
 #[test]
 fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcleanupする() {
     let data_dir = tempdir().unwrap();
-    let gateway = LocalProviderAgentLaunchGateway::new(
-        data_dir.path().to_path_buf(),
-        "/opt/bin/claude".to_string(),
-        "/opt/bin/codex".to_string(),
-        "releash".to_string(),
-    );
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
 
     let prepared = gateway
-        .prepare(&armed(ProviderKind::Claude), ProviderSessionLaunch::New)
+        .prepare(
+            &armed(ProviderKind::Claude),
+            ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
+            ProviderSessionLaunch::New,
+        )
         .unwrap();
 
     assert_eq!(prepared.process().executable(), "/opt/bin/claude");
@@ -71,14 +73,13 @@ fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で生�
     let data_dir = tempdir().unwrap();
     let gateway = LocalProviderAgentLaunchGateway::new(
         data_dir.path().to_path_buf(),
-        "/opt/bin/claude".to_string(),
-        "/opt/bin/codex".to_string(),
         "releash-dev".to_string(),
     );
 
     let prepared = gateway
         .prepare(
             &armed(ProviderKind::Codex),
+            ResolvedProviderExecutable::new("/opt/bin/codex".into()).unwrap(),
             ProviderSessionLaunch::resume("codex-session-1").unwrap(),
         )
         .unwrap();
@@ -104,16 +105,23 @@ fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で生�
 #[test]
 fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
     let data_dir = tempdir().unwrap();
-    let gateway = LocalProviderAgentLaunchGateway::new(
-        data_dir.path().to_path_buf(),
-        "/opt/bin/claude".to_string(),
-        "/opt/bin/codex".to_string(),
-        "releash".to_string(),
-    );
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
         let prepared = gateway
-            .prepare(&armed(provider), ProviderSessionLaunch::New)
+            .prepare(
+                &armed(provider),
+                ResolvedProviderExecutable::new(
+                    match provider {
+                        ProviderKind::Claude => "/opt/bin/claude",
+                        ProviderKind::Codex => "/opt/bin/codex",
+                    }
+                    .into(),
+                )
+                .unwrap(),
+                ProviderSessionLaunch::New,
+            )
             .unwrap();
         let launch_directory = prepared.resource_directory().unwrap();
         let marker = prepared
@@ -137,4 +145,27 @@ fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
         }));
         assert!(launch_directory.is_dir());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで保持する() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let data_dir = tempdir().unwrap();
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let executable = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+        b"/opt/bin/claude-\xff".to_vec(),
+    ));
+
+    let prepared = gateway
+        .prepare(
+            &armed(ProviderKind::Claude),
+            ResolvedProviderExecutable::new(executable.clone()).unwrap(),
+            ProviderSessionLaunch::New,
+        )
+        .unwrap();
+
+    assert_eq!(prepared.process().executable(), executable.as_os_str());
 }

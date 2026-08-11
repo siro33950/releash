@@ -1,8 +1,9 @@
 use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalProcessLaunch {
-    executable: String,
+    executable: OsString,
     arguments: Vec<String>,
     environment: Vec<(String, String)>,
 }
@@ -16,12 +17,16 @@ pub enum TerminalProcessLaunchError {
 
 impl TerminalProcessLaunch {
     pub fn new(
-        executable: impl Into<String>,
+        executable: impl Into<OsString>,
         arguments: Vec<String>,
         environment: Vec<(String, String)>,
     ) -> Result<Self, TerminalProcessLaunchError> {
         let executable = executable.into();
-        if executable.trim().is_empty() {
+        if executable.is_empty()
+            || executable
+                .to_str()
+                .is_some_and(|value| value.trim().is_empty())
+        {
             return Err(TerminalProcessLaunchError::ExecutableMissing);
         }
         let mut keys = HashSet::new();
@@ -40,7 +45,7 @@ impl TerminalProcessLaunch {
         })
     }
 
-    pub fn executable(&self) -> &str {
+    pub fn executable(&self) -> &OsStr {
         &self.executable
     }
 

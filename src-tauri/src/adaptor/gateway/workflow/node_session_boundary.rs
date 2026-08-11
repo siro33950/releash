@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::workflow::execution_store::ExecutionStore;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::adaptor::gateway::workflow::workflow_host::runtime_session as workflow_runtime_session;
-use crate::domain::agent_session::ProviderAvailabilityGateway;
+use crate::domain::agent_session::ProviderAvailabilityReader;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
@@ -49,14 +49,14 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
 pub(crate) struct ProviderWorkflowAgentSessionPort {
     launch: Arc<ProviderAgentSessionLaunchUsecase>,
     initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
-    availability: Arc<dyn ProviderAvailabilityGateway>,
+    availability: Arc<dyn ProviderAvailabilityReader>,
 }
 
 impl ProviderWorkflowAgentSessionPort {
     pub(crate) fn new(
         launch: Arc<ProviderAgentSessionLaunchUsecase>,
         initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
-        availability: Arc<dyn ProviderAvailabilityGateway>,
+        availability: Arc<dyn ProviderAvailabilityReader>,
     ) -> Self {
         Self {
             launch,

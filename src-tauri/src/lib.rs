@@ -837,13 +837,20 @@ pub fn run() {
     let startup_started = Instant::now();
     other::telemetry::set_startup_origin(startup_started);
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let provider_initial_search_path =
+        infrastructure::process::search_path::capture_login_shell_path(
+            infrastructure::process::search_path::LOGIN_SHELL_PATH_TIMEOUT,
+        );
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let Ok(search_path) = &provider_initial_search_path {
+        std::env::set_var("PATH", search_path);
+    }
+
     // OTLP exporter and async commands share the Tokio runtime installed for Tauri.
     let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let _runtime_guard = _runtime.enter();
     tauri::async_runtime::set(_runtime.handle().clone());
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let _ = fix_path_env::fix();
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -859,7 +866,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_wdio::init())
         .plugin(tauri_plugin_wdio_webdriver::init());
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(move |app| {
             let failure_exit: Arc<
                 dyn usecase::application_startup::ProcessLocalExitPort,
             > = Arc::new(
@@ -997,19 +1004,26 @@ pub fn run() {
                     agent_config_repository.clone(),
                 ),
             ));
-            let claude_executable = agent_config_repository
-                .cli_path_for("claude")
-                .map_err(|error| format!("Claude CLI設定の読み込みに失敗: {error}"))?
-                .unwrap_or_else(|| "claude".to_string());
-            let codex_executable = agent_config_repository
-                .cli_path_for("codex")
-                .map_err(|error| format!("Codex CLI設定の読み込みに失敗: {error}"))?
-                .unwrap_or_else(|| "codex".to_string());
-            let (claude_executable, codex_executable) = select_provider_agent_executables(
-                claude_executable,
-                codex_executable,
-                performance_provider_fixture_executable(),
-            );
+            let provider_executable_config: Arc<
+                dyn domain::agent_session::ProviderExecutableConfigRepository,
+            > = if let Some(fixture) = performance_provider_fixture_executable() {
+                let (claude, codex) = select_provider_agent_executables(
+                    "claude".to_string(),
+                    "codex".to_string(),
+                    Some(fixture),
+                );
+                Arc::new(
+                    adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
+                        Some(claude),
+                        Some(codex),
+                    )
+                    .map_err(|error| {
+                        format!("Provider performance fixture設定の初期化に失敗: {error:?}")
+                    })?,
+                )
+            } else {
+                app_config.clone()
+            };
             let provider_history_home = dirs::home_dir()
                 .unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
             let provider_agent_sessions =
@@ -1018,8 +1032,15 @@ pub fn run() {
                         repository: projected_local_event_repository.clone(),
                         installation_id: local_event_store.installation_id().to_string(),
                         data_dir: data_dir.clone(),
-                        claude_executable,
-                        codex_executable,
+                        provider_executable_config,
+                        provider_executable_probe: Arc::new(
+                            #[cfg(any(target_os = "macos", target_os = "linux"))]
+                            adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_initial_search_path(
+                                provider_initial_search_path.clone(),
+                            ),
+                            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                            adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
+                        ),
                         claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
                             .map(std::path::PathBuf::from)
                             .unwrap_or_else(|| provider_history_home.join(".claude")),
@@ -1037,12 +1058,13 @@ pub fn run() {
                             ),
                         ),
                     },
-                );
+                )
+                .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
             let provider_agent_session_launch = provider_agent_sessions.launch.clone();
             let provider_agent_initial_instruction =
                 provider_agent_sessions.initial_instruction.clone();
             let provider_agent_session_exit = provider_agent_sessions.exit.clone();
-            let provider_availability = provider_agent_sessions.availability_gateway.clone();
+            let provider_availability = provider_agent_sessions.availability_reader.clone();
             let provider_lifecycle_ingress = provider_agent_sessions.lifecycle_ingress.clone();
             let provider_workflow_stops = provider_agent_sessions.workflow_stops.clone();
             terminal_surface_runtime
@@ -1067,7 +1089,7 @@ pub fn run() {
             app.manage(provider_agent_sessions.lifecycle);
             app.manage(provider_agent_sessions.read);
             app.manage(provider_agent_session_exit);
-            app.manage(provider_agent_sessions.availability);
+            app.manage(provider_agent_sessions.provider_availability);
             app.manage(provider_agent_session_launch.clone());
             app.manage(provider_agent_initial_instruction.clone());
 

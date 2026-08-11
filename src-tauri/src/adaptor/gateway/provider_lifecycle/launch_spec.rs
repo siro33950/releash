@@ -166,11 +166,11 @@ impl ProviderLaunchSpec {
 
     pub(crate) fn terminal_process(
         &self,
-        executable: impl Into<String>,
+        executable: impl Into<std::ffi::OsString>,
         launch: ProviderSessionLaunch,
     ) -> Result<TerminalProcessLaunch, ProviderLaunchSpecError> {
         let executable = executable.into();
-        if executable.trim().is_empty() {
+        if executable.is_empty() {
             return Err(ProviderLaunchSpecError::EmptyField("executable"));
         }
         let mut arguments = self.arguments.clone();

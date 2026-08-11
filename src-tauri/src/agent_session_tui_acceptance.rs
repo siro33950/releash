@@ -18,15 +18,30 @@ use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
 use crate::usecase::agent_session::{
     ProviderAgentInitialInstructionUsecase, ProviderAgentSessionHistoryReadUsecase,
     ProviderAgentSessionLaunchUsecase, ProviderAgentSessionLifecycleUsecase,
-    ProviderAgentSessionReadUsecase, ProviderAvailabilityReadUsecase,
+    ProviderAgentSessionReadUsecase,
 };
 use crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct AcceptanceSearchPathSource(std::ffi::OsString);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl crate::infrastructure::process::search_path::SearchPathSource for AcceptanceSearchPathSource {
+    fn load(
+        &self,
+    ) -> Result<std::ffi::OsString, crate::infrastructure::process::search_path::LoginShellPathError>
+    {
+        Ok(self.0.clone())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AgentSessionTuiAcceptanceConfig {
     pub data_dir: PathBuf,
-    pub claude_executable: PathBuf,
-    pub codex_executable: PathBuf,
+    pub claude_executable: Option<PathBuf>,
+    pub codex_executable: Option<PathBuf>,
+    pub provider_search_path: Option<std::ffi::OsString>,
+    pub provider_refresh_search_path: Option<std::ffi::OsString>,
     pub claude_config_dir: PathBuf,
     pub codex_home: PathBuf,
 }
@@ -141,8 +156,39 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             repository,
             installation_id: store.installation_id().to_string(),
             data_dir: config.data_dir,
-            claude_executable: config.claude_executable.to_string_lossy().into_owned(),
-            codex_executable: config.codex_executable.to_string_lossy().into_owned(),
+            provider_executable_config: Arc::new(
+                crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
+                    config.claude_executable.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                    config.codex_executable.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                )
+                .map_err(|error| format!("Provider executable Config初期化失敗: {error:?}"))?,
+            ),
+            provider_executable_probe: {
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                {
+                    match config.provider_refresh_search_path {
+                        Some(refresh_search_path) => Arc::new(
+                            crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_search_path_source(
+                                config.provider_search_path,
+                                Arc::new(AcceptanceSearchPathSource(refresh_search_path)),
+                            ),
+                        ) as Arc<dyn crate::domain::agent_session::ProviderExecutableProbeGateway>,
+                        None => Arc::new(
+                            crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_search_path(
+                                config.provider_search_path,
+                            ),
+                        ),
+                    }
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                {
+                    Arc::new(
+                        crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_search_path(
+                            config.provider_search_path,
+                        ),
+                    )
+                }
+            },
             claude_config_dir: config.claude_config_dir,
             codex_home: config.codex_home,
             cli_binary: "releash-dev".to_string(),
@@ -152,7 +198,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     app.handle().clone(),
                 ),
             ),
-        });
+        })
+        .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
         let local_api_binding =
             crate::infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
                 .map_err(|error| error.to_string())?;
@@ -171,7 +218,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 composition.launch.clone(),
                 composition.initial_instruction.clone(),
-                composition.availability_gateway.clone(),
+                composition.availability_reader.clone(),
             ));
         terminal.bind_agent_session_activity(composition.activity.clone());
         let terminal_events = terminal.application().subscribe_events();
@@ -188,7 +235,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.manage(composition.initial_instruction.clone());
         app.manage(composition.lifecycle.clone());
         app.manage(composition.read.clone());
-        app.manage(composition.availability.clone());
+        app.manage(composition.provider_availability.clone());
         let window = tauri::WebviewWindowBuilder::new(
             &app,
             "agent-session-product-driver",
@@ -362,7 +409,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         _app.unmanage::<Arc<ProviderAgentInitialInstructionUsecase>>();
         _app.unmanage::<Arc<ProviderAgentSessionLifecycleUsecase>>();
         _app.unmanage::<Arc<ProviderAgentSessionReadUsecase>>();
-        _app.unmanage::<Arc<ProviderAvailabilityReadUsecase>>();
+        _app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
         drop((workflow_agent_sessions, window, _app));
         Ok(())
     }

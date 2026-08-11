@@ -5,7 +5,8 @@ use crate::domain::agent_session::aggregates::{
     AgentSessionRecoveryResult, ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
-    ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderSessionLaunch,
+    ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
+    ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{ProviderLifecycleScope, ProviderLifecycleSlotId};
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
@@ -48,6 +49,7 @@ pub(crate) struct ProviderAgentSessionLifecycleUsecase {
     sessions: Arc<ProviderAgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
+    availability: Arc<dyn ProviderAvailabilityReader>,
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     change_notifier: Arc<dyn ProviderAgentSessionChangeNotifier>,
@@ -58,6 +60,7 @@ impl ProviderAgentSessionLifecycleUsecase {
         sessions: Arc<ProviderAgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
+        availability: Arc<dyn ProviderAvailabilityReader>,
         terminal: Arc<dyn ProviderAgentTerminalGateway>,
         hook_health: Arc<ProviderHookHealthUsecase>,
         change_notifier: Arc<dyn ProviderAgentSessionChangeNotifier>,
@@ -66,6 +69,7 @@ impl ProviderAgentSessionLifecycleUsecase {
             sessions,
             lifecycle,
             launch_gateway,
+            availability,
             terminal,
             hook_health,
             change_notifier,
@@ -451,6 +455,10 @@ impl ProviderAgentSessionLifecycleUsecase {
             .session()
             .provider_session_id()
             .ok_or(ProviderAgentSessionLifecycleUsecaseError::InvalidOperation)?;
+        let executable = self
+            .availability
+            .resolved_executable(session.session().provider())
+            .ok_or(ProviderAgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
         let slot_id = ProviderLifecycleSlotId::new(crate::other::id::unique_simple_id())
             .map_err(|_| ProviderAgentSessionLifecycleUsecaseError::Corrupt)?;
         let scope = ProviderLifecycleScope::new(agent_session_id)
@@ -466,6 +474,7 @@ impl ProviderAgentSessionLifecycleUsecase {
             .map_err(map_lifecycle_error)?;
         let prepared = match self.launch_gateway.prepare(
             &armed,
+            executable,
             ProviderSessionLaunch::resume(provider_session_id)
                 .map_err(|_| ProviderAgentSessionLifecycleUsecaseError::Corrupt)?,
         ) {

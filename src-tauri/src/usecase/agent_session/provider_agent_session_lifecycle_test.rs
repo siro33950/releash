@@ -10,6 +10,7 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
 use crate::domain::agent_session::aggregates::{
     AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionOrigin, ManagedPtyPresence,
+    ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::{
     ProviderAgentSessionRepository, ProviderAgentSessionRepositoryError,
@@ -17,7 +18,8 @@ use crate::domain::agent_session::repository::{
 };
 use crate::domain::agent_session::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
+    ProviderSessionLaunch,
 };
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::{
@@ -70,6 +72,7 @@ impl ProviderAgentLaunchGateway for RecordingResumeLaunches {
     fn prepare(
         &self,
         armed: &ArmedProviderLifecycle,
+        _executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         self.armed.lock().unwrap().push(armed.clone());
@@ -87,6 +90,18 @@ impl ProviderAgentLaunchGateway for RecordingResumeLaunches {
             .unwrap()
             .push(agent_session_id.to_string());
         Ok(())
+    }
+}
+
+struct AlwaysProviderAvailable;
+
+impl ProviderAvailabilityReader for AlwaysProviderAvailable {
+    fn is_available(&self, _provider: ProviderKind) -> bool {
+        true
+    }
+
+    fn resolved_executable(&self, _provider: ProviderKind) -> Option<ResolvedProviderExecutable> {
+        Some(ResolvedProviderExecutable::new("/provider".into()).unwrap())
     }
 }
 
@@ -317,6 +332,7 @@ fn setup() -> LifecycleTestContext {
         sessions.clone(),
         lifecycle.clone(),
         launches.clone(),
+        Arc::new(AlwaysProviderAvailable),
         terminal.clone(),
         hook_health.clone(),
         change_notifier.clone(),
@@ -855,6 +871,7 @@ async fn test_provider_agent_session_resume状態保存失敗時は起動済みp
         sessions,
         provider_lifecycle,
         launches.clone(),
+        Arc::new(AlwaysProviderAvailable),
         terminal.clone(),
         hook_health,
         Arc::new(RecordingChangeNotifier::default()),
@@ -989,6 +1006,7 @@ async fn test_provider_agent_session_resume_同一sessionへの並行要求はpt
         sessions,
         provider_lifecycle,
         launches,
+        Arc::new(AlwaysProviderAvailable),
         terminal.clone(),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
@@ -1091,6 +1109,7 @@ async fn test_provider_agent_session_resume中のarchiveは同一sessionの操�
         sessions.clone(),
         provider_lifecycle,
         launches,
+        Arc::new(AlwaysProviderAvailable),
         terminal.clone(),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
@@ -1187,6 +1206,7 @@ async fn test_provider_agent_session_open_同一sessionへの並行要求は一�
             Arc::new(NoopLifecycleEvents),
         )),
         Arc::new(RecordingResumeLaunches::default()),
+        Arc::new(AlwaysProviderAvailable),
         terminal.clone(),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),

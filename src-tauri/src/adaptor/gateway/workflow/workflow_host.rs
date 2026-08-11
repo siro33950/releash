@@ -919,7 +919,7 @@ impl WorkflowRuntimeHost {
         installation_id: String,
         provider_agent_session_launch: Arc<ProviderAgentSessionLaunchUsecase>,
         provider_agent_initial_instruction: Arc<ProviderAgentInitialInstructionUsecase>,
-        provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityGateway>,
+        provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
     ) -> Self {
         Self::with_execution_store(
             workflow_resolver,

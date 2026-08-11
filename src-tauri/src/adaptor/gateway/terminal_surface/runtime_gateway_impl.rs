@@ -666,7 +666,7 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
                 runtime_id: runtime_generation,
                 extra_env,
                 process: request.process.map(|process| NativePtyProcessConfig {
-                    executable: process.executable().to_string(),
+                    executable: process.executable().to_os_string(),
                     arguments: process.arguments().to_vec(),
                     environment: process.environment().to_vec(),
                 }),

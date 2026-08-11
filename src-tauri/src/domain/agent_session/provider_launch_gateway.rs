@@ -6,6 +6,7 @@ use crate::domain::provider_lifecycle::{
 };
 use crate::domain::terminal_surface::TerminalProcessLaunch;
 
+use super::aggregates::ResolvedProviderExecutable;
 use super::ProviderSessionLaunch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,7 @@ pub(crate) trait ProviderAgentLaunchGateway: Send + Sync {
     fn prepare(
         &self,
         armed: &ArmedProviderLifecycle,
+        executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError>;
 

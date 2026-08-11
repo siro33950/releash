@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::domain::agent_session::aggregates::ProviderExecutable;
+use crate::domain::agent_session::{
+    ProviderExecutableConfigRepository, ProviderExecutableConfigRepositoryError,
+};
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
     AgentConfigRepository, ConfigRepository, ConfigSecretRepository, ConfigUpdate,
@@ -12,6 +16,7 @@ use crate::domain::app_config::repository::{
 };
 use crate::domain::app_config::services::generate_token;
 use crate::domain::app_config::value_objects as domain_vo;
+use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::config_models::{
     apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
@@ -98,6 +103,46 @@ impl AgentConfigRepository for AppConfig {
                 "config schema にバックエンド '{backend_id}' の CLI path が存在しません"
             ))),
         }
+    }
+}
+
+impl ProviderExecutableConfigRepository for AppConfig {
+    fn configured_executable(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
+        let config = self
+            .get_config()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let value = match provider {
+            ProviderKind::Claude => config.agents.claude.cli_path,
+            ProviderKind::Codex => config.agents.codex.cli_path,
+        };
+        value
+            .map(ProviderExecutable::new)
+            .transpose()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::InvalidInput)
+    }
+
+    fn save_configured_executable(
+        &self,
+        provider: ProviderKind,
+        executable: Option<&ProviderExecutable>,
+    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
+        let mut config = self
+            .config
+            .lock()
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let mut next = config.clone();
+        let value = executable.map(|executable| executable.as_str().to_string());
+        match provider {
+            ProviderKind::Claude => next.agents.claude.cli_path = value,
+            ProviderKind::Codex => next.agents.codex.cli_path = value,
+        }
+        write_config(&self.config_path, &next)
+            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        *config = next;
+        Ok(())
     }
 }
 
@@ -338,6 +383,79 @@ mod tests {
 
     fn config_path(dir: &TempDir) -> PathBuf {
         dir.path().join("releash.toml")
+    }
+
+    #[test]
+    fn provider_executable_config既存tomlのoverrideをupdateしresetする() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let app_config = AppConfig::new(ReleashConfig::default(), path.clone());
+        let executable = ProviderExecutable::new("/opt/custom/claude").unwrap();
+
+        ProviderExecutableConfigRepository::save_configured_executable(
+            &app_config,
+            ProviderKind::Claude,
+            Some(&executable),
+        )
+        .unwrap();
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap()
+            .unwrap(),
+            executable
+        );
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("cli_path = \"/opt/custom/claude\""));
+
+        ProviderExecutableConfigRepository::save_configured_executable(
+            &app_config,
+            ProviderKind::Claude,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_executable_config保存失敗時はmemory上のoverrideも進めない() {
+        let dir = TempDir::new().unwrap();
+        let mut config = ReleashConfig::default();
+        config.agents.claude.cli_path = Some("/before/claude".to_string());
+        let blocked_parent = dir.path().join("blocked-parent");
+        fs::write(&blocked_parent, "not a directory").unwrap();
+        let app_config = AppConfig::new(config, blocked_parent.join("releash.toml"));
+        let next = ProviderExecutable::new("/after/claude").unwrap();
+
+        assert_eq!(
+            ProviderExecutableConfigRepository::save_configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+                Some(&next),
+            )
+            .unwrap_err(),
+            ProviderExecutableConfigRepositoryError::Unavailable
+        );
+        assert_eq!(
+            ProviderExecutableConfigRepository::configured_executable(
+                &app_config,
+                ProviderKind::Claude,
+            )
+            .unwrap()
+            .unwrap()
+            .as_str(),
+            "/before/claude"
+        );
     }
 
     #[test]

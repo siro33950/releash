@@ -63,7 +63,7 @@ pub(crate) use provider_agent_session_read::{
     ProviderAgentSessionReadUsecase, ProviderAgentSessionReadUsecaseError,
 };
 pub(crate) use provider_availability::{
-    ProviderAvailabilityQueryService, ProviderAvailabilityReadUsecase,
+    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 
 #[cfg(test)]

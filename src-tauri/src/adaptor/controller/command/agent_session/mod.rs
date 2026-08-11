@@ -113,6 +113,10 @@ pub(super) const LEGACY_COMMAND_NAMES: &[&str] = &[
 
 pub(super) const PROVIDER_TUI_COMMAND_NAMES: &[&str] = &[
     "list_available_provider_agent_session_providers",
+    "get_provider_availability",
+    "refresh_provider_availability",
+    "update_provider_executable",
+    "reset_provider_executable",
     "create_provider_agent_session",
     "resume_provider_agent_session_history_candidate",
     "list_provider_agent_sessions",
@@ -213,6 +217,10 @@ pub(crate) fn provider_tui_invoke_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         provider_tui::list_available_provider_agent_session_providers,
+        provider_tui::get_provider_availability,
+        provider_tui::refresh_provider_availability,
+        provider_tui::update_provider_executable,
+        provider_tui::reset_provider_executable,
         provider_tui::create_provider_agent_session,
         provider_tui::resume_provider_agent_session_history_candidate,
         provider_tui::list_provider_agent_sessions,

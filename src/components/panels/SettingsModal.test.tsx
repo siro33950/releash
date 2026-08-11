@@ -60,6 +60,31 @@ describe("SettingsModal", () => {
 					return Promise.resolve({
 						approval_auto_approve: false,
 					});
+				case "get_provider_availability":
+					return Promise.resolve({
+						providers: [
+							{
+								provider: "claude",
+								displayName: "Claude",
+								defaultExecutable: "claude",
+								configuredExecutable: "/opt/custom/claude",
+								effectiveExecutable: "/opt/custom/claude",
+								available: true,
+								resolvedExecutable: "/opt/custom/claude",
+								unavailableReason: null,
+							},
+							{
+								provider: "codex",
+								displayName: "Codex",
+								defaultExecutable: "codex",
+								configuredExecutable: null,
+								effectiveExecutable: "codex",
+								available: false,
+								resolvedExecutable: null,
+								unavailableReason: "not_found",
+							},
+						],
+					});
 				case "update_workflow_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -146,6 +171,167 @@ describe("SettingsModal", () => {
 				vi.mocked(invoke).mock.calls.some(([command]) => command === removed),
 			).toBe(false);
 		}
+	});
+
+	it("Provider CLIはbackend一覧から利用可能と利用不可を表示する", async () => {
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		expect(
+			await screen.findByText("Provider CLI availability"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Claude")).toBeInTheDocument();
+		expect(screen.getAllByText("/opt/custom/claude").length).toBeGreaterThan(0);
+		expect(screen.getByText("not_found")).toBeInTheDocument();
+	});
+
+	it("Provider CLIはprovider IDと既定commandを明示する", async () => {
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+
+		await screen.findByText("Provider CLI availability");
+		expect(screen.getAllByText("Provider ID")).toHaveLength(2);
+		expect(screen.getAllByText("Default")).toHaveLength(2);
+		expect(screen.getAllByText("claude", { selector: "span" })).toHaveLength(2);
+		expect(screen.getAllByText("codex", { selector: "span" })).toHaveLength(3);
+	});
+
+	it("Provider CLI path変更をglobal Saveからbackendへ保存する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						{
+							provider: "claude",
+							displayName: "Claude",
+							defaultExecutable: "claude",
+							configuredExecutable: null,
+							effectiveExecutable: "claude",
+							available: true,
+							resolvedExecutable: "/usr/bin/claude",
+							unavailableReason: null,
+						},
+					],
+				});
+			}
+			if (cmd === "update_provider_executable") {
+				return Promise.resolve({ providers: [] });
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		const input = await screen.findByLabelText("Claude executable override");
+		await user.clear(input);
+		await user.type(input, "/custom/bin/claude");
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(invoke).toHaveBeenCalledWith("update_provider_executable", {
+			provider: "claude",
+			executable: "/custom/bin/claude",
+		});
+	});
+
+	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		await user.click(
+			await screen.findByRole("button", { name: "Reset Claude executable" }),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Refresh Provider CLI availability" }),
+		);
+
+		expect(invoke).toHaveBeenCalledWith("reset_provider_executable", {
+			provider: "claude",
+		});
+		expect(invoke).toHaveBeenCalledWith("refresh_provider_availability");
+	});
+
+	it("一方のProvider CLIをresetしても他方の未保存draftを維持する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		const provider = (id: string, configuredExecutable: string | null) => ({
+			provider: id,
+			displayName: id === "claude" ? "Claude" : "Codex",
+			defaultExecutable: id,
+			configuredExecutable,
+			effectiveExecutable: configuredExecutable ?? id,
+			available: true,
+			resolvedExecutable: `/usr/bin/${id}`,
+			unavailableReason: null,
+		});
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						provider("claude", "/opt/custom/claude"),
+						provider("codex", null),
+					],
+				});
+			}
+			if (command === "reset_provider_executable") {
+				return Promise.resolve({
+					providers: [provider("claude", null), provider("codex", null)],
+				});
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		const codex = await screen.findByLabelText("Codex executable override");
+		await user.type(codex, "/draft/codex");
+
+		await user.click(
+			screen.getByRole("button", { name: "Reset Claude executable" }),
+		);
+
+		expect(codex).toHaveValue("/draft/codex");
+	});
+
+	it("Provider CLI refresh失敗時は直前snapshotを維持してerrorを表示する", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			if (cmd === "get_provider_availability") {
+				return Promise.resolve({
+					providers: [
+						{
+							provider: "dynamic-provider",
+							displayName: "Dynamic Provider",
+							defaultExecutable: "dynamic",
+							configuredExecutable: null,
+							effectiveExecutable: "dynamic",
+							available: true,
+							resolvedExecutable: "/bin/dynamic",
+							unavailableReason: null,
+						},
+					],
+				});
+			}
+			if (cmd === "refresh_provider_availability") {
+				return Promise.reject(new Error("refresh failed"));
+			}
+			return Promise.resolve(null);
+		});
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Agent"));
+		expect(await screen.findByText("Dynamic Provider")).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", {
+				name: "Refresh Provider CLI availability",
+			}),
+		);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"refresh failed",
+		);
+		expect(screen.getByText("Dynamic Provider")).toBeInTheDocument();
 	});
 
 	it("Save button is disabled when no changes", () => {

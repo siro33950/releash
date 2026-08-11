@@ -53,7 +53,7 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) provider_agent_initial_instruction:
         Arc<crate::usecase::agent_session::ProviderAgentInitialInstructionUsecase>,
     pub(crate) provider_availability:
-        Arc<dyn crate::domain::agent_session::ProviderAvailabilityGateway>,
+        Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
 }
 
 struct WorkflowShutdownRecord<'a> {

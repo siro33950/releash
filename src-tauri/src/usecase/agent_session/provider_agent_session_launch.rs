@@ -4,12 +4,14 @@ use std::sync::Arc;
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::domain::agent_session::aggregates::{AgentSessionOrigin, ManagedPtyPresence};
+use crate::domain::agent_session::aggregates::{
+    AgentSessionOrigin, ManagedPtyPresence, ResolvedProviderExecutable,
+};
 use crate::domain::agent_session::repository::VersionedProviderAgentSession;
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
     ProviderAgentSessionHistoryGateway, ProviderAgentSessionHistoryGatewayError,
-    ProviderAgentTerminalGateway, ProviderAvailabilityGateway, ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAvailabilityReader, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
@@ -142,7 +144,7 @@ impl StandaloneLaunchRequestRegistry {
 pub(crate) struct ProviderAgentSessionLaunchUsecase {
     sessions: Arc<ProviderAgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
-    availability: Arc<dyn ProviderAvailabilityGateway>,
+    availability: Arc<dyn ProviderAvailabilityReader>,
     launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     history: Arc<dyn ProviderAgentSessionHistoryGateway>,
@@ -163,13 +165,14 @@ struct DurableProviderAgentLaunch {
     operation: OwnedMutexGuard<()>,
     created: VersionedProviderAgentSession,
     armed: ArmedProviderLifecycle,
+    executable: ResolvedProviderExecutable,
 }
 
 impl ProviderAgentSessionLaunchUsecase {
     pub(crate) fn new(
         sessions: Arc<ProviderAgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
-        availability: Arc<dyn ProviderAvailabilityGateway>,
+        availability: Arc<dyn ProviderAvailabilityReader>,
         launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
         terminal: Arc<dyn ProviderAgentTerminalGateway>,
         history: Arc<dyn ProviderAgentSessionHistoryGateway>,
@@ -312,9 +315,10 @@ impl ProviderAgentSessionLaunchUsecase {
         let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::AvailabilityAndLock,
         );
-        if !self.availability.is_available(request.provider) {
-            return Err(ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable);
-        }
+        let executable = self
+            .availability
+            .resolved_executable(request.provider)
+            .ok_or(ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable)?;
         let operation = self
             .sessions
             .lock_operation(&agent_session_id)
@@ -354,6 +358,7 @@ impl ProviderAgentSessionLaunchUsecase {
             operation,
             created,
             armed,
+            executable,
         };
         self.prepare_newly_created(
             durable,
@@ -432,7 +437,7 @@ impl ProviderAgentSessionLaunchUsecase {
         );
         let prepared = match self
             .launch_gateway
-            .prepare(&durable.armed, launch)
+            .prepare(&durable.armed, durable.executable.clone(), launch)
             .map_err(map_launch_error)
         {
             Ok(prepared) => prepared,
@@ -471,6 +476,7 @@ impl ProviderAgentSessionLaunchUsecase {
             operation: _operation,
             created,
             armed,
+            executable: _,
         } = durable;
         let initial_hook_warning = prepared.initial_hook_warning();
         if self
@@ -527,9 +533,10 @@ impl ProviderAgentSessionLaunchUsecase {
         }) {
             return Err(ProviderAgentSessionLaunchUsecaseError::InvalidInput);
         }
-        if !self.availability.is_available(request.provider) {
-            return Err(ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable);
-        }
+        let executable = self
+            .availability
+            .resolved_executable(request.provider)
+            .ok_or(ProviderAgentSessionLaunchUsecaseError::ProviderUnavailable)?;
         let _operation = self
             .sessions
             .lock_operation(&agent_session_id)
@@ -571,6 +578,7 @@ impl ProviderAgentSessionLaunchUsecase {
         };
         let prepared = match self.launch_gateway.prepare(
             &armed,
+            executable,
             ProviderSessionLaunch::resume(&request.provider_session_id)
                 .map_err(|_| ProviderAgentSessionLaunchUsecaseError::Corrupt)?,
         ) {
