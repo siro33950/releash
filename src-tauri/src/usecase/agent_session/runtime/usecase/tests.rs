@@ -8502,7 +8502,7 @@ mod tests {
             assert!(!state.interrupt_requested_for_current());
             state.runtime_epoch()
         };
-        let accepted_at = crate::usecase::agent_session::session::now_timestamp();
+        let accepted_at = 42.0;
         append_session_events_blocking(
             &usecase.ctx,
             &session.id,
@@ -8537,7 +8537,7 @@ mod tests {
             let sessions = usecase.ctx.sessions.lock().await;
             let state = sessions.get(&session.id).expect("active runtime state");
             assert!(state.queue_is_paused());
-			assert_eq!(state.queue_paused_at(), Some(accepted_at));
+            assert_eq!(state.queue_paused_at(), Some(accepted_at));
             assert!(
                 state.interrupt_requested_for_current(),
                 "durable Stop must fence the exact active process generation"
