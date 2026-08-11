@@ -16,8 +16,6 @@ use releash_lib::workflow_control_plane_acceptance::{
     WorkflowControlPlaneAcceptanceHost,
 };
 
-const ACCEPTANCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-
 fn provider_name(provider: AcceptanceProvider) -> &'static str {
     match provider {
         AcceptanceProvider::Claude => "claude",
@@ -35,6 +33,7 @@ fn install_fixture_executable(
     let command = fixture_process_shell_command(&FixturePlan {
         input_lines,
         alternate_screen: true,
+        emit_input_completion_marker: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
             executable: env!("CARGO_BIN_EXE_releash").to_string(),
             arguments: vec![
@@ -112,7 +111,7 @@ fn owner(worktree_path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
 }
 
 async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &str) {
-    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         let mut output = String::new();
         while !output.contains(needle) {
             match attachment.next().await.expect("Terminal Surface stream") {
@@ -148,7 +147,7 @@ async fn wait_for_execution_status(
     execution_id: &str,
     status: AcceptanceWorkflowExecutionStatus,
 ) {
-    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if host
                 .execution(execution_id)
@@ -208,7 +207,7 @@ async fn wait_for_node_count(
     execution_id: &str,
     count: usize,
 ) -> releash_lib::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
-    tokio::time::timeout(ACCEPTANCE_WAIT_TIMEOUT, async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let execution = host.execution(execution_id).await.unwrap().unwrap();
             if execution.node_executions.len() == count {
@@ -246,7 +245,7 @@ async fn test_atui_040_同時submit_stopは競合を利用者へ返さず一度�
         .terminal()
         .attach("atui-040-concurrent".to_string(), terminal_owner.clone())
         .unwrap();
-    receive_until(&mut terminal, "received-0:").await;
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-concurrent").await;
 
     let (submit, ()) = tokio::join!(
@@ -290,7 +289,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             .terminal()
             .attach(format!("atui-040-first-{index}"), first_owner.clone())
             .unwrap();
-        receive_until(&mut first_terminal, "received-0:").await;
+        receive_until(&mut first_terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
             &host,
             &mut first_terminal,
@@ -411,7 +410,7 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
             .terminal()
             .attach(format!("atui-041-{index}"), terminal_owner.clone())
             .unwrap();
-        receive_until(&mut terminal, "received-0:").await;
+        receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
             &host,
             &mut terminal,
@@ -513,8 +512,8 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
         .terminal()
         .attach("atui-041-fanout-second".to_string(), second_owner.clone())
         .unwrap();
-    receive_until(&mut first_terminal, "received-0:").await;
-    receive_until(&mut second_terminal, "received-0:").await;
+    receive_until(&mut first_terminal, "releash-fixture-input-complete-0").await;
+    receive_until(&mut second_terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(
         &host,
         &mut first_terminal,
@@ -630,7 +629,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
             .terminal()
             .attach(format!("atui-042-restart-{index}"), terminal_owner.clone())
             .unwrap();
-        receive_until(&mut terminal, "received-0:").await;
+        receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
         associate_provider_session(
             &host_before,
             &mut terminal,
@@ -703,7 +702,7 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
         .terminal()
         .attach("atui-042-retry-old".to_string(), old_owner.clone())
         .unwrap();
-    receive_until(&mut old_terminal, "received-0:").await;
+    receive_until(&mut old_terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut old_terminal, &old_owner, "provider-retry-old").await;
     host.submit(&execution_id, &old_attempt.node_name, &old_attempt.id)
         .await
@@ -749,7 +748,7 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
         .terminal()
         .attach("atui-042-retry-new".to_string(), new_owner.clone())
         .unwrap();
-    receive_until(&mut new_terminal, "received-0:").await;
+    receive_until(&mut new_terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut new_terminal, &new_owner, "provider-retry-new").await;
     host.submit(&execution_id, &new_attempt.node_name, &new_attempt.id)
         .await
@@ -782,7 +781,7 @@ async fn test_atui_042_別bindingのstopを拒否しinvalid_artifactはsubmitご
         .terminal()
         .attach("atui-042-artifact".to_string(), terminal_owner.clone())
         .unwrap();
-    receive_until(&mut terminal, "received-0:").await;
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(
         &host,
         &mut terminal,
@@ -871,7 +870,7 @@ async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加
             terminal_owner.clone(),
         )
         .unwrap();
-    receive_until(&mut terminal, "received-0:").await;
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
 
     send_hook(
         &host,

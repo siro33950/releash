@@ -51,6 +51,7 @@ fn test_atui_000_backend_capture_continues_without_surface_consumer() {
     let run = run_fixture(
         FixturePlan {
             input_lines: 2,
+            emit_input_completion_marker: true,
             ..FixturePlan::new("output-without-surface-consumer", vec![])
         },
         FixtureRunOptions {
@@ -65,6 +66,9 @@ fn test_atui_000_backend_capture_continues_without_surface_consumer() {
         .contains("output-without-surface-consumer"));
     assert!(run.terminal_output.contains("received-0:first-input"));
     assert!(run.terminal_output.contains("received-1:second-input"));
+    assert!(run
+        .terminal_output
+        .contains("releash-fixture-input-complete-1"));
 }
 
 #[cfg(unix)]
