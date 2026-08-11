@@ -5,7 +5,8 @@ use tauri::State;
 
 use crate::adaptor::protocol::provider_agent_session::{
     ProviderAgentSessionArchiveResponse, ProviderAgentSessionOpenResponse,
-    ProviderHookHealthProviderResponse, ProviderHookHealthWarningResponse,
+    ProviderAvailabilitySnapshotResponse, ProviderHookHealthProviderResponse,
+    ProviderHookHealthWarningResponse,
 };
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
@@ -21,7 +22,8 @@ use crate::usecase::agent_session::{
     ProviderAgentSessionListPageDto, ProviderAgentSessionListRequest,
     ProviderAgentSessionOpenOutcome, ProviderAgentSessionOriginFilter,
     ProviderAgentSessionProviderDto, ProviderAgentSessionReadUsecase,
-    ProviderAgentSessionReadUsecaseError, ProviderAvailabilityReadUsecase,
+    ProviderAgentSessionReadUsecaseError, ProviderAvailabilityUsecase,
+    ProviderAvailabilityUsecaseError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
@@ -29,9 +31,99 @@ use crate::usecase::provider_lifecycle::{
 
 #[tauri::command]
 pub fn list_available_provider_agent_session_providers(
-    read: State<'_, Arc<ProviderAvailabilityReadUsecase>>,
-) -> Vec<ProviderAgentSessionProviderDto> {
-    read.list_available_providers()
+    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+) -> Result<Vec<ProviderAgentSessionProviderDto>, AppError> {
+    availability
+        .available_providers()
+        .map(|providers| {
+            providers
+                .into_iter()
+                .map(|provider| match provider {
+                    ProviderKind::Claude => ProviderAgentSessionProviderDto::Claude,
+                    ProviderKind::Codex => ProviderAgentSessionProviderDto::Codex,
+                })
+                .collect()
+        })
+        .map_err(provider_availability_error)
+}
+
+#[tauri::command]
+pub fn get_provider_availability(
+    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+    availability
+        .snapshot()
+        .map(Into::into)
+        .map_err(provider_availability_error)
+}
+
+#[tauri::command]
+pub async fn refresh_provider_availability(
+    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+    let availability = Arc::clone(availability.inner());
+    run_provider_availability_blocking(move || availability.refresh())
+        .await
+        .map(Into::into)
+}
+
+#[tauri::command]
+pub async fn update_provider_executable(
+    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+    provider: String,
+    executable: String,
+) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+    let provider = parse_provider(&provider)?;
+    let availability = Arc::clone(availability.inner());
+    run_provider_availability_blocking(move || {
+        availability.update_configured_executable(provider, &executable)
+    })
+    .await
+    .map(Into::into)
+}
+
+#[tauri::command]
+pub async fn reset_provider_executable(
+    availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
+    provider: String,
+) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+    let provider = parse_provider(&provider)?;
+    let availability = Arc::clone(availability.inner());
+    run_provider_availability_blocking(move || availability.reset_configured_executable(provider))
+        .await
+        .map(Into::into)
+}
+
+async fn run_provider_availability_blocking<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ProviderAvailabilityUsecaseError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| provider_availability_error(ProviderAvailabilityUsecaseError::Corrupt))?
+        .map_err(provider_availability_error)
+}
+
+fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppError {
+    match error {
+        ProviderAvailabilityUsecaseError::InvalidInput => AppError::coded(
+            "PROVIDER_AVAILABILITY_INVALID_EXECUTABLE",
+            "Provider executable must be a non-empty command name or path",
+        ),
+        ProviderAvailabilityUsecaseError::ConfigUnavailable => AppError::coded(
+            "PROVIDER_AVAILABILITY_CONFIG_UNAVAILABLE",
+            "Provider executable Config is unavailable",
+        ),
+        ProviderAvailabilityUsecaseError::RefreshUnavailable => AppError::coded(
+            "PROVIDER_AVAILABILITY_REFRESH_UNAVAILABLE",
+            "Provider executable search environment refresh failed",
+        ),
+        ProviderAvailabilityUsecaseError::Corrupt => AppError::coded(
+            "PROVIDER_AVAILABILITY_CORRUPT",
+            "Provider availability registry is unavailable",
+        ),
+    }
 }
 
 #[tauri::command]

@@ -13,7 +13,7 @@ mod provider_agent_session_query_service;
 mod provider_agent_session_repository;
 mod provider_agent_terminal_gateway;
 mod provider_availability_gateway;
-mod provider_availability_query_service;
+mod provider_executable_config_repository;
 pub(crate) mod runtime_driver;
 pub(crate) mod runtime_projection;
 pub(crate) mod session_storage;
@@ -27,8 +27,8 @@ pub(crate) use provider_agent_session_history_gateway::LocalProviderAgentSession
 pub(crate) use provider_agent_session_history_query_service::LocalProviderAgentSessionHistoryQueryService;
 pub(crate) use provider_agent_session_query_service::LocalProviderAgentSessionQueryService;
 pub(crate) use provider_agent_session_repository::LocalProviderAgentSessionRepository;
-pub(crate) use provider_availability_gateway::LocalProviderAvailabilityGateway;
-pub(crate) use provider_availability_query_service::LocalProviderAvailabilityQueryService;
+pub(crate) use provider_availability_gateway::LocalProviderExecutableProbeGateway;
+pub(crate) use provider_executable_config_repository::InMemoryProviderExecutableConfigRepository;
 pub(crate) use runtime_driver::{TokioAgentTaskSpawner, WorkflowRuntimeAgentSessionNotifier};
 
 #[cfg(test)]

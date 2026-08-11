@@ -90,8 +90,10 @@ fn host(
     WorkflowControlPlaneAcceptanceHost::start(
         AgentSessionTuiAcceptanceConfig {
             data_dir: root.join("releash-data"),
-            claude_executable: claude,
-            codex_executable: codex,
+            claude_executable: Some(claude),
+            codex_executable: Some(codex),
+            provider_search_path: None,
+            provider_refresh_search_path: None,
             claude_config_dir: root.join("claude-home"),
             codex_home: root.join("codex-home"),
         },

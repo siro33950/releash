@@ -93,6 +93,24 @@ struct AgentSessionHistoryPage {
     items: Vec<releash_lib::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAvailabilitySnapshot {
+    providers: Vec<ProviderAvailabilityItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAvailabilityItem {
+    provider: AcceptanceProvider,
+    default_executable: String,
+    configured_executable: Option<String>,
+    effective_executable: String,
+    available: bool,
+    resolved_executable: Option<String>,
+    unavailable_reason: Option<String>,
+}
+
 struct AgentSessionTuiAcceptanceHost {
     composition: AgentSessionTuiAcceptanceComposition<tauri::test::MockRuntime>,
 }
@@ -173,6 +191,38 @@ impl AgentSessionTuiAcceptanceHost {
             serde_json::json!({}),
         )
         .expect("available Provider command")
+    }
+
+    fn provider_availability(&self) -> Result<ProviderAvailabilitySnapshot, String> {
+        self.invoke("get_provider_availability", serde_json::json!({}))
+    }
+
+    fn update_provider_executable(
+        &self,
+        provider: AcceptanceProvider,
+        executable: &Path,
+    ) -> Result<ProviderAvailabilitySnapshot, String> {
+        self.invoke(
+            "update_provider_executable",
+            serde_json::json!({
+                "provider": provider_name(provider),
+                "executable": executable.to_string_lossy(),
+            }),
+        )
+    }
+
+    fn reset_provider_executable(
+        &self,
+        provider: AcceptanceProvider,
+    ) -> Result<ProviderAvailabilitySnapshot, String> {
+        self.invoke(
+            "reset_provider_executable",
+            serde_json::json!({ "provider": provider_name(provider) }),
+        )
+    }
+
+    fn refresh_provider_availability(&self) -> Result<ProviderAvailabilitySnapshot, String> {
+        self.invoke("refresh_provider_availability", serde_json::json!({}))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -508,8 +558,10 @@ fn host(root: &Path, input_lines: usize) -> (AgentSessionTuiAcceptanceHost, Path
     let codex_home = root.join("codex-home");
     let host = AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
         data_dir: root.join("releash-data"),
-        claude_executable: claude,
-        codex_executable: codex,
+        claude_executable: Some(claude),
+        codex_executable: Some(codex),
+        provider_search_path: None,
+        provider_refresh_search_path: None,
         claude_config_dir: claude_home.clone(),
         codex_home: codex_home.clone(),
     })
@@ -522,6 +574,201 @@ fn owner(workspace: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
         workspace_path: workspace.to_string(),
         session_id: session_id.to_string(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_atui_025_初期化した全providerの利用可否と理由をproduction境界から取得する() {
+    let root = tempfile::TempDir::new().unwrap();
+    let login_shell_bin = root.path().join("login-shell-bin");
+    std::fs::create_dir(&login_shell_bin).unwrap();
+    let refreshed_login_shell_bin = root.path().join("refreshed-login-shell-bin");
+    std::fs::create_dir(&refreshed_login_shell_bin).unwrap();
+    let executable =
+        install_fixture_executable(&login_shell_bin, "claude", AcceptanceProvider::Claude, 4);
+    let host = AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
+        data_dir: root.path().join("data"),
+        claude_executable: None,
+        codex_executable: None,
+        provider_search_path: Some(login_shell_bin.into_os_string()),
+        provider_refresh_search_path: Some(refreshed_login_shell_bin.clone().into_os_string()),
+        claude_config_dir: root.path().join("claude-home"),
+        codex_home: root.path().join("codex-home"),
+    })
+    .unwrap();
+
+    let snapshot = host.provider_availability().unwrap();
+
+    assert!(host
+        .invoke::<ProviderAvailabilitySnapshot>(
+            "update_provider_executable",
+            serde_json::json!({ "provider": "unknown", "executable": "agent" }),
+        )
+        .is_err());
+    assert!(host
+        .invoke::<ProviderAvailabilitySnapshot>(
+            "update_provider_executable",
+            serde_json::json!({ "provider": "claude", "executable": "  " }),
+        )
+        .is_err());
+
+    assert_eq!(snapshot.providers.len(), 2);
+    let claude = snapshot
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Claude)
+        .unwrap();
+    assert!(claude.available);
+    assert_eq!(
+        claude.resolved_executable.as_deref(),
+        Some(executable.to_string_lossy().as_ref())
+    );
+    assert_eq!(claude.unavailable_reason, None);
+    let codex = snapshot
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert!(!codex.available);
+    assert_eq!(codex.resolved_executable, None);
+    assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
+    assert_eq!(host.available_providers(), vec![AcceptanceProvider::Claude]);
+
+    let refreshed_codex = install_fixture_executable(
+        &refreshed_login_shell_bin,
+        "codex",
+        AcceptanceProvider::Codex,
+        4,
+    );
+    let refreshed = host.refresh_provider_availability().unwrap();
+    let claude = refreshed
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Claude)
+        .unwrap();
+    assert!(!claude.available);
+    let codex = refreshed
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert_eq!(
+        codex.resolved_executable.as_deref(),
+        Some(refreshed_codex.to_string_lossy().as_ref())
+    );
+    assert_eq!(host.available_providers(), vec![AcceptanceProvider::Codex]);
+
+    let replacement = install_fixture_executable(
+        root.path(),
+        "non-standard-codex",
+        AcceptanceProvider::Codex,
+        4,
+    );
+    let updated = host
+        .update_provider_executable(AcceptanceProvider::Codex, &replacement)
+        .unwrap();
+    let codex = updated
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert!(codex.available);
+    assert_eq!(
+        codex.configured_executable.as_deref(),
+        Some(replacement.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        codex.resolved_executable.as_deref(),
+        Some(replacement.to_string_lossy().as_ref())
+    );
+    assert!(host
+        .available_providers()
+        .contains(&AcceptanceProvider::Codex));
+
+    let workspace = root.path().join("worktree");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.to_string_lossy().into_owned();
+    let standalone_id = host
+        .launch_standalone(
+            "workspace-atui-025",
+            &workspace,
+            AcceptanceProvider::Codex,
+            24,
+            80,
+            "atui-025-standalone",
+        )
+        .await
+        .unwrap();
+    let standalone_owner = owner("workspace-atui-025", &standalone_id);
+    let mut standalone = host
+        .terminal()
+        .attach("atui-025-standalone".to_string(), standalone_owner.clone())
+        .unwrap();
+    receive_until(&mut standalone, "non-standard-codex").await;
+    assert!(host
+        .launch_workflow(
+            &workspace,
+            AcceptanceProvider::Codex,
+            "atui-025-workflow",
+            "atui-025-node",
+            "verify shared registry",
+        )
+        .await
+        .is_ok());
+
+    std::fs::remove_file(&replacement).unwrap();
+    let refreshed = host.refresh_provider_availability().unwrap();
+    let codex = refreshed
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert!(!codex.available);
+    assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
+    let sessions_before = host.list("workspace-atui-025").await.unwrap().len();
+    assert!(host
+        .launch_standalone(
+            "workspace-atui-025",
+            &workspace,
+            AcceptanceProvider::Codex,
+            24,
+            80,
+            "atui-025-unavailable",
+        )
+        .await
+        .is_err());
+    assert!(host
+        .launch_workflow(
+            &workspace,
+            AcceptanceProvider::Codex,
+            "atui-025-workflow-unavailable",
+            "atui-025-node-unavailable",
+            "must be rejected before creation",
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        host.list("workspace-atui-025").await.unwrap().len(),
+        sessions_before
+    );
+
+    host.terminal()
+        .write(standalone_owner, "still-running\r")
+        .unwrap();
+    receive_until(&mut standalone, "received-0:still-running").await;
+
+    let reset = host
+        .reset_provider_executable(AcceptanceProvider::Codex)
+        .unwrap();
+    let codex = reset
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert_eq!(codex.configured_executable, None);
+    assert_eq!(codex.default_executable, "codex");
+    assert_eq!(codex.effective_executable, "codex");
+
+    host.shutdown().await.unwrap();
 }
 
 fn fixture_label(provider: AcceptanceProvider) -> &'static str {
@@ -603,8 +850,10 @@ fn install_actual_provider_host(root: &Path) -> AgentSessionTuiAcceptanceHost {
 
     AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
         data_dir: root.join("releash-data"),
-        claude_executable: claude,
-        codex_executable: codex,
+        claude_executable: Some(claude),
+        codex_executable: Some(codex),
+        provider_search_path: None,
+        provider_refresh_search_path: None,
         claude_config_dir,
         codex_home,
     })
@@ -1173,8 +1422,10 @@ async fn test_atui_030_provider利用不可とduplicate所有を永続境界で�
     let unavailable_root = tempfile::TempDir::new().unwrap();
     let unavailable = AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
         data_dir: unavailable_root.path().join("data"),
-        claude_executable: unavailable_root.path().join("missing-claude"),
-        codex_executable: unavailable_root.path().join("missing-codex"),
+        claude_executable: Some(unavailable_root.path().join("missing-claude")),
+        codex_executable: Some(unavailable_root.path().join("missing-codex")),
+        provider_search_path: None,
+        provider_refresh_search_path: None,
         claude_config_dir: unavailable_root.path().join("claude"),
         codex_home: unavailable_root.path().join("codex"),
     })

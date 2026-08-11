@@ -37,6 +37,7 @@ import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
+import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -56,6 +57,7 @@ import {
 import { AutomationSection } from "./AutomationSection";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { NotionSettingsSection } from "./NotionSettingsSection";
+import { ProviderAvailabilitySettings } from "./ProviderAvailabilitySettings";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
 
@@ -594,10 +596,12 @@ function AgentSection({
 	draft,
 	updateDraft,
 	workflow,
+	providerAvailability,
 }: {
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
 	workflow: ReturnType<typeof useWorkflowSettings>;
+	providerAvailability: ReturnType<typeof useProviderAvailabilitySettings>;
 }) {
 	const showAutoApprove =
 		draft.agent !== "none" &&
@@ -606,6 +610,8 @@ function AgentSection({
 
 	return (
 		<div className="flex flex-col gap-4">
+			<ProviderAvailabilitySettings settings={providerAvailability} />
+
 			<div className="flex flex-col gap-1.5">
 				<label htmlFor="agent-select" className={labelClass}>
 					Agent
@@ -1133,6 +1139,7 @@ export function SettingsModal({
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
+	const providerAvailability = useProviderAvailabilitySettings(open);
 
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
@@ -1156,6 +1163,10 @@ export function SettingsModal({
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
+	const {
+		isDirty: providerAvailabilityIsDirty,
+		save: providerAvailabilitySave,
+	} = providerAvailability;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1180,6 +1191,9 @@ export function SettingsModal({
 			}
 			if (workflowIsDirty) {
 				await workflowSave();
+			}
+			if (providerAvailabilityIsDirty) {
+				await providerAvailabilitySave();
 			}
 			if (performanceTelemetryChanged) {
 				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
@@ -1207,6 +1221,8 @@ export function SettingsModal({
 		editorSave,
 		workflowIsDirty,
 		workflowSave,
+		providerAvailabilityIsDirty,
+		providerAvailabilitySave,
 	]);
 
 	const isDirty =
@@ -1216,7 +1232,8 @@ export function SettingsModal({
 		reposIsDirty ||
 		notionIsDirty ||
 		editorIsDirty ||
-		workflowIsDirty;
+		workflowIsDirty ||
+		providerAvailabilityIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1256,6 +1273,7 @@ export function SettingsModal({
 						draft={draft}
 						updateDraft={updateDraft}
 						workflow={workflow}
+						providerAvailability={providerAvailability}
 					/>
 				);
 			case "background":

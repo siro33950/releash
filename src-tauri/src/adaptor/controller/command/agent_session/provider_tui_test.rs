@@ -1,4 +1,27 @@
 use super::*;
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_provider_availability_controller_blocking操作中もasync_runtimeを占有しない() {
+    let heartbeat = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let heartbeat_task = {
+        let heartbeat = heartbeat.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            heartbeat.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+
+    run_provider_availability_blocking(|| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        Ok(())
+    })
+    .await
+    .unwrap();
+    heartbeat_task.await.unwrap();
+
+    assert!(heartbeat.load(std::sync::atomic::Ordering::SeqCst));
+}
+
 #[test]
 fn test_provider_agent_session_controller_lifecycle入力を閉じた型へ変換する() {
     assert_eq!(

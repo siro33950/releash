@@ -12,7 +12,7 @@ use super::{
 use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionOrigin};
 use crate::domain::agent_session::aggregates::{
     AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionRecoveryResult, ManagedPtyPresence, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::{
     ProviderAgentSessionRepository, ProviderAgentSessionRepositoryError,
@@ -22,7 +22,7 @@ use crate::domain::agent_session::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
     ProviderAgentSessionHistoryGateway, ProviderAgentSessionHistoryGatewayError,
     ProviderAgentSessionHistoryMetadata, ProviderAgentTerminalGateway,
-    ProviderAgentTerminalGatewayError, ProviderAvailabilityGateway, ProviderSessionLaunch,
+    ProviderAgentTerminalGatewayError, ProviderAvailabilityReader, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -180,10 +180,15 @@ struct FixedAvailability {
     checks: Mutex<Vec<ProviderKind>>,
 }
 
-impl ProviderAvailabilityGateway for FixedAvailability {
+impl ProviderAvailabilityReader for FixedAvailability {
     fn is_available(&self, provider: ProviderKind) -> bool {
         self.checks.lock().unwrap().push(provider);
         self.available
+    }
+
+    fn resolved_executable(&self, provider: ProviderKind) -> Option<ResolvedProviderExecutable> {
+        self.is_available(provider)
+            .then(|| ResolvedProviderExecutable::new("/provider-fixture".into()).unwrap())
     }
 }
 
@@ -191,12 +196,17 @@ struct PanicOnFirstCheckAvailability {
     checks: AtomicUsize,
 }
 
-impl ProviderAvailabilityGateway for PanicOnFirstCheckAvailability {
+impl ProviderAvailabilityReader for PanicOnFirstCheckAvailability {
     fn is_available(&self, _provider: ProviderKind) -> bool {
         if self.checks.fetch_add(1, Ordering::SeqCst) == 0 {
             panic!("availability check panicked for the launch panic test");
         }
         true
+    }
+
+    fn resolved_executable(&self, provider: ProviderKind) -> Option<ResolvedProviderExecutable> {
+        self.is_available(provider)
+            .then(|| ResolvedProviderExecutable::new("/provider-fixture".into()).unwrap())
     }
 }
 
@@ -239,6 +249,7 @@ impl ProviderLifecycleEventRepository for RecordingLifecycleEvents {
 struct RecordingLaunchGateway {
     armed: Mutex<Vec<ArmedProviderLifecycle>>,
     launches: Mutex<Vec<ProviderSessionLaunch>>,
+    executables: Mutex<Vec<ResolvedProviderExecutable>>,
     cleanups: Mutex<Vec<String>>,
     fail_prepare: Mutex<bool>,
 }
@@ -247,12 +258,14 @@ impl ProviderAgentLaunchGateway for RecordingLaunchGateway {
     fn prepare(
         &self,
         armed: &ArmedProviderLifecycle,
+        executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         if *self.fail_prepare.lock().unwrap() {
             return Err(ProviderAgentLaunchGatewayError::Unavailable);
         }
         self.launches.lock().unwrap().push(launch);
+        self.executables.lock().unwrap().push(executable);
         self.armed.lock().unwrap().push(armed.clone());
         Ok(PreparedProviderLaunch::new(
             TerminalProcessLaunch::new(
@@ -1076,6 +1089,10 @@ async fn test_provider_agent_session_launch_pty起動中のsessionをgcしない
         sessions.clone(),
         provider_lifecycle,
         launches.clone(),
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
         terminal.clone(),
         hook_health,
         Arc::new(NoopChangeNotifier),

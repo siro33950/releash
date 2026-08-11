@@ -418,8 +418,18 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			repository: repository.clone(),
 			installation_id: installation_id.clone(),
 			data_dir: config.data_dir.clone(),
-			claude_executable: config.claude_executable.to_string_lossy().into_owned(),
-			codex_executable: config.codex_executable.to_string_lossy().into_owned(),
+				provider_executable_config: Arc::new(
+					crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
+						config.claude_executable.as_ref().map(|path| path.to_string_lossy().into_owned()),
+						config.codex_executable.as_ref().map(|path| path.to_string_lossy().into_owned()),
+					)
+					.map_err(|error| format!("Provider executable Config初期化失敗: {error:?}"))?,
+				),
+				provider_executable_probe: Arc::new(
+					crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_search_path(
+						config.provider_search_path,
+					),
+				),
 			claude_config_dir: config.claude_config_dir,
 			codex_home: config.codex_home,
 			cli_binary: "releash-dev".to_string(),
@@ -429,7 +439,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 					app.handle().clone(),
 				),
 			),
-		});
+		})
+		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
         terminal.bind_agent_session_activity(composition.activity.clone());
 
         let session_store = Arc::new(SessionStore::new_canonical(
@@ -471,7 +482,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             installation_id.clone(),
             composition.launch.clone(),
             composition.initial_instruction.clone(),
-            composition.availability_gateway.clone(),
+            composition.availability_reader.clone(),
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),

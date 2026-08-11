@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
 
@@ -16,7 +17,7 @@ pub(crate) struct NativePtySpawnConfig {
 }
 
 pub(crate) struct NativePtyProcessConfig {
-    pub(crate) executable: String,
+    pub(crate) executable: OsString,
     pub(crate) arguments: Vec<String>,
     pub(crate) environment: Vec<(String, String)>,
 }

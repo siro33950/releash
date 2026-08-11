@@ -4,21 +4,23 @@ use std::sync::Arc;
 use crate::adaptor::gateway::agent_session::{
     LocalProviderAgentLaunchGateway, LocalProviderAgentSessionHistoryGateway,
     LocalProviderAgentSessionHistoryQueryService, LocalProviderAgentSessionQueryService,
-    LocalProviderAgentSessionRepository, LocalProviderAvailabilityGateway,
-    LocalProviderAvailabilityQueryService,
+    LocalProviderAgentSessionRepository,
 };
 use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderHookHealthFailureQuery, LocalProviderHookHealthRepository,
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
 };
-use crate::domain::agent_session::ProviderAvailabilityGateway;
+use crate::domain::agent_session::{
+    ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
+};
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::usecase::agent_session::{
     ProviderAgentInitialInstructionUsecase, ProviderAgentSessionActivityUsecase,
     ProviderAgentSessionChangeNotifier, ProviderAgentSessionExitUsecase,
     ProviderAgentSessionHistoryReadUsecase, ProviderAgentSessionLaunchUsecase,
     ProviderAgentSessionLifecycleUsecase, ProviderAgentSessionQueryService,
-    ProviderAgentSessionReadUsecase, ProviderAgentSessionUsecase, ProviderAvailabilityReadUsecase,
+    ProviderAgentSessionReadUsecase, ProviderAgentSessionUsecase, ProviderAvailabilityUsecase,
+    ProviderAvailabilityUsecaseError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase,
@@ -31,8 +33,8 @@ pub(crate) struct ProviderAgentSessionCompositionInput {
     pub(crate) repository: Arc<dyn LocalEventTransactionRepository>,
     pub(crate) installation_id: String,
     pub(crate) data_dir: PathBuf,
-    pub(crate) claude_executable: String,
-    pub(crate) codex_executable: String,
+    pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
+    pub(crate) provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
     pub(crate) claude_config_dir: PathBuf,
     pub(crate) codex_home: PathBuf,
     pub(crate) cli_binary: String,
@@ -53,8 +55,8 @@ pub(crate) struct ProviderAgentSessionComposition {
     pub(crate) exit: Arc<ProviderAgentSessionExitUsecase>,
     pub(crate) activity: Arc<ProviderAgentSessionActivityUsecase>,
     pub(crate) read: Arc<ProviderAgentSessionReadUsecase>,
-    pub(crate) availability: Arc<ProviderAvailabilityReadUsecase>,
-    pub(crate) availability_gateway: Arc<dyn ProviderAvailabilityGateway>,
+    pub(crate) provider_availability: Arc<ProviderAvailabilityUsecase>,
+    pub(crate) availability_reader: Arc<dyn ProviderAvailabilityReader>,
     pub(crate) workflow_stops: Arc<DeferredProviderWorkflowStopTransaction>,
 }
 
@@ -93,7 +95,7 @@ impl ProviderWorkflowStopTransaction for DeferredProviderWorkflowStopTransaction
 
 pub(crate) fn compose_provider_agent_sessions(
     input: ProviderAgentSessionCompositionInput,
-) -> ProviderAgentSessionComposition {
+) -> Result<ProviderAgentSessionComposition, ProviderAvailabilityUsecaseError> {
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(LocalProviderLifecycleEventRepository::new(
@@ -125,16 +127,13 @@ pub(crate) fn compose_provider_agent_sessions(
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
-        input.claude_executable.clone(),
-        input.codex_executable.clone(),
         input.cli_binary,
     ));
-    let availability_gateway: Arc<dyn ProviderAvailabilityGateway> = Arc::new(
-        LocalProviderAvailabilityGateway::new(input.claude_executable, input.codex_executable),
-    );
-    let availability = Arc::new(ProviderAvailabilityReadUsecase::new(Arc::new(
-        LocalProviderAvailabilityQueryService::new(availability_gateway.clone()),
-    )));
+    let provider_availability = Arc::new(ProviderAvailabilityUsecase::initialize(
+        input.provider_executable_config,
+        input.provider_executable_probe,
+    )?);
+    let availability_reader: Arc<dyn ProviderAvailabilityReader> = provider_availability.clone();
     let history_gateway = Arc::new(LocalProviderAgentSessionHistoryGateway::new(
         input.claude_config_dir,
         input.codex_home,
@@ -148,7 +147,7 @@ pub(crate) fn compose_provider_agent_sessions(
     let launch = Arc::new(ProviderAgentSessionLaunchUsecase::new(
         sessions.clone(),
         provider_lifecycle.clone(),
-        availability_gateway.clone(),
+        availability_reader.clone(),
         launch_gateway.clone(),
         input.terminal.clone(),
         history_gateway,
@@ -158,6 +157,7 @@ pub(crate) fn compose_provider_agent_sessions(
         sessions.clone(),
         provider_lifecycle.clone(),
         launch_gateway,
+        availability_reader.clone(),
         input.terminal.clone(),
         hook_health.clone(),
         input.change_notifier.clone(),
@@ -183,7 +183,7 @@ pub(crate) fn compose_provider_agent_sessions(
         lifecycle.clone(),
     ));
 
-    ProviderAgentSessionComposition {
+    Ok(ProviderAgentSessionComposition {
         provider_lifecycle,
         sessions,
         history_read,
@@ -196,8 +196,8 @@ pub(crate) fn compose_provider_agent_sessions(
         exit,
         activity,
         read,
-        availability,
-        availability_gateway,
+        provider_availability,
+        availability_reader,
         workflow_stops,
-    }
+    })
 }
