@@ -61,7 +61,7 @@
 		"tailwind-merge": "^3.6.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.5",
+		"@biomejs/biome": "^2.5.7",
 		"@playwright/test": "^1.62.1",
 		"@tailwindcss/vite": "^4.3.3",
 		"@tauri-apps/cli": "^2.11.4",
