@@ -361,7 +361,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             advanced.node_executions[1].agent_session_id
         );
 
-        host.submit(&first.id).await.unwrap();
+        assert!(host.submit(&first.id).await.is_err());
         emit_provider_stop(
             &host,
             &mut first_terminal,
@@ -951,13 +951,14 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
         3
     );
 
-    host.submit_artifact(
-        &node.id,
-        "acceptance-result",
-        serde_json::json!({"result": "terminal replacement"}),
-    )
-    .await
-    .unwrap();
+    assert!(host
+        .submit_artifact(
+            &node.id,
+            "acceptance-result",
+            serde_json::json!({"result": "terminal replacement"}),
+        )
+        .await
+        .is_err());
     let after_terminal_submit = host.execution(&execution_id).await.unwrap().unwrap();
     assert_eq!(
         after_terminal_submit.node_executions[0].artifact.as_ref(),
