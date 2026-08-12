@@ -434,7 +434,12 @@ impl AgentSessionLaunchUsecase {
         );
         let prepared = match self
             .launch_gateway
-            .prepare(&durable.armed, durable.executable.clone(), launch)
+            .prepare(
+                &durable.armed,
+                durable.executable.clone(),
+                launch,
+                durable.created.session().worktree_path(),
+            )
             .map_err(map_launch_error)
         {
             Ok(prepared) => prepared,
@@ -575,6 +580,7 @@ impl AgentSessionLaunchUsecase {
             executable,
             ProviderSessionLaunch::resume(&request.provider_session_id)
                 .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?,
+            associated.session().worktree_path(),
         ) {
             Ok(prepared) => prepared,
             Err(_) => {

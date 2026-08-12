@@ -254,6 +254,7 @@ impl ProviderAgentLaunchGateway for RecordingLaunchGateway {
         armed: &ArmedProviderLifecycle,
         executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
+        _worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         if *self.fail_prepare.lock().unwrap() {
             return Err(ProviderAgentLaunchGatewayError::Unavailable);

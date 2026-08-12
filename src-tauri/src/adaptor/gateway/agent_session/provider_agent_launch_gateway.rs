@@ -35,6 +35,7 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
         armed: &ArmedProviderLifecycle,
         executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
+        worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         let session_directory = self.session_directory(armed.scope().agent_session_id());
         let resource_directory = session_directory.join(digest(armed.binding_id()));
@@ -77,6 +78,15 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             "RELEASH_DATA_DIR".to_string(),
             self.data_dir.to_string_lossy().into_owned(),
         ));
+        if let Some(base_branch) =
+            crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch(
+                worktree_path,
+            )
+            .ok()
+            .flatten()
+        {
+            environment.push(("RELEASH_BASE_BRANCH".to_string(), base_branch));
+        }
         environment.push((
             "RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE".to_string(),
             resource_directory
