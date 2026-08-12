@@ -482,6 +482,7 @@ pub struct AppliedNodeCompletionHandshake {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSubmitTarget {
+    pub node_name: String,
     pub session_id: Option<String>,
     pub attempt: u32,
 }
@@ -501,7 +502,7 @@ pub struct RestartedNodeAttempt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeSubmitRejection {
     ExecutionNotActive,
-    NodeNotFound,
+    NodeExecutionNotFound,
     AttemptNotCurrent,
 }
 
@@ -1845,20 +1846,18 @@ impl WorkflowExecution {
 
     pub fn admit_node_submit(
         &self,
-        node_name: &str,
         node_execution_id: &str,
     ) -> Result<NodeSubmitTarget, NodeSubmitRejection> {
         if !self.is_active() {
             return Err(NodeSubmitRejection::ExecutionNotActive);
         }
-        if !self
+        let requested = self
             .runtime
             .node_executions
             .iter()
-            .any(|execution| execution.node_name == node_name)
-        {
-            return Err(NodeSubmitRejection::NodeNotFound);
-        }
+            .find(|execution| execution.id == node_execution_id)
+            .ok_or(NodeSubmitRejection::NodeExecutionNotFound)?;
+        let node_name = requested.node_name.as_str();
         let current_node = self
             .runtime
             .workflow
@@ -1892,6 +1891,7 @@ impl WorkflowExecution {
             })
             .ok_or(NodeSubmitRejection::AttemptNotCurrent)?;
         Ok(NodeSubmitTarget {
+            node_name: execution.node_name.clone(),
             session_id: execution.session_id.clone(),
             attempt: execution.attempt,
         })
@@ -3059,6 +3059,29 @@ mod tests {
             lifecycle: WorkflowExecution::lifecycle_from_state(state),
             ..WorkflowExecutionRestore::default()
         })
+    }
+
+    #[test]
+    fn node_submit_target_is_derived_from_node_execution_identity() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+
+        let target = execution.admit_node_submit("node-execution-1").unwrap();
+        assert_eq!(target.node_name, "implement");
+        assert_eq!(target.attempt, 1);
+        assert_eq!(
+            execution.admit_node_submit("missing"),
+            Err(NodeSubmitRejection::NodeExecutionNotFound)
+        );
     }
 
     #[test]

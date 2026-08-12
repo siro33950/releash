@@ -141,26 +141,26 @@ fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<
     result
 }
 
-pub(crate) fn append_artifact_completion_action(
+pub(crate) fn append_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,
     schemas: &BTreeMap<String, SchemaDef>,
-    execution_id: &str,
-    node_name: &str,
-    node_execution_id: Option<&str>,
+    node_execution_id: &str,
 ) {
-    let Some(contract) = artifact else {
-        return;
+    let (schema_guidance, action) = match artifact {
+        Some(contract) => {
+            let domain_schemas = schemas.clone();
+            let schema_guidance =
+                workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
+            let action =
+                prompt_composition::artifact_completion_action(contract, node_execution_id);
+            (schema_guidance, action)
+        }
+        None => (
+            None,
+            prompt_composition::artifactless_completion_action(node_execution_id),
+        ),
     };
-    let domain_schemas = schemas.clone();
-    let schema_guidance =
-        workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
-    let action = prompt_composition::artifact_completion_action(
-        contract,
-        execution_id,
-        node_name,
-        node_execution_id,
-    );
     if !prompt.is_empty() {
         prompt.push_str("\n\n");
     }
@@ -174,7 +174,7 @@ pub(crate) fn append_artifact_completion_action(
 pub(crate) fn build_node_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    execution_id: &str,
+    node_execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     schemas: &BTreeMap<String, SchemaDef>,
@@ -200,13 +200,11 @@ pub(crate) fn build_node_prompt(
         .map(|content| render_prompt_content(&content, &artifacts, None));
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, None);
     let mut prompt = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
-    append_artifact_completion_action(
+    append_completion_action(
         &mut prompt,
         node.artifact.as_deref(),
         schemas,
-        execution_id,
-        &node.name,
-        None,
+        node_execution_id,
     );
     Ok((system_prompt, prompt))
 }
@@ -229,7 +227,6 @@ impl<'a> FanoutChildPromptContext<'a> {
 pub(crate) fn build_fanout_child_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     context: FanoutChildPromptContext<'_>,
@@ -250,13 +247,11 @@ pub(crate) fn build_fanout_child_prompt(
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, context.item);
     let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
     let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), context.item);
-    append_artifact_completion_action(
+    append_completion_action(
         &mut user_message,
         node.artifact.as_deref(),
         schemas,
-        execution_id,
-        &node.name,
-        Some(context.node_execution_id),
+        context.node_execution_id,
     );
 
     Ok((system_prompt, user_message))
@@ -311,7 +306,7 @@ mod tests {
         let error = build_node_prompt(
             &node,
             None,
-            "execution-1",
+            "node-execution-1",
             None,
             &HashMap::new(),
             &BTreeMap::new(),
@@ -347,7 +342,7 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
+            "node-execution-1",
             Some("ship"),
             &outputs,
             &BTreeMap::new(),
@@ -382,7 +377,7 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
+            "node-execution-1",
             Some(""),
             &outputs,
             &BTreeMap::new(),
@@ -402,7 +397,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -439,7 +433,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             Some("ship"),
             &outputs,
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -454,6 +447,28 @@ mod tests {
         assert!(prompt.contains("\"summary\": \"ready\""));
         assert!(prompt.contains("## input: item (work-item)"));
         assert!(prompt.contains("\"priority\": 2"));
+    }
+
+    #[test]
+    fn build_node_prompt_appends_artifactless_output_submit_action() {
+        let node = make_test_node("review", "Review the change.");
+        let resolved = instruction_contents("Review the change.");
+
+        let (_system, prompt) = build_node_prompt(
+            &node,
+            Some(&resolved),
+            "node-execution-1",
+            None,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
+        assert!(prompt.contains("--node-execution node-execution-1"));
+        assert!(!prompt.contains("--type"));
+        assert!(!prompt.contains("--json"));
     }
 
     #[test]
@@ -475,7 +490,7 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
+            "node-execution-1",
             None,
             &HashMap::new(),
             &schemas,
@@ -485,12 +500,34 @@ mod tests {
         assert!(prompt.contains("## Artifact contract"));
         assert!(prompt.contains("\"verdict\": \"string\""));
         assert!(prompt.contains("Fields not listed in `properties` are accepted"));
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
+        assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
-        assert!(!prompt.contains("--node-execution"));
         let deprecated_step_flag = ["--", "step"].concat();
         assert!(!prompt.contains(&deprecated_step_flag));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_appends_artifactless_output_submit_action() {
+        let node = make_test_node("review", "Review the change.");
+        let resolved = instruction_contents("Review the change.");
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &node,
+            Some(&resolved),
+            None,
+            &HashMap::new(),
+            FanoutChildPromptContext::new(None, "node-execution-1"),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
+        assert!(prompt.contains("--node-execution node-execution-1"));
+        assert!(!prompt.contains("--type"));
+        assert!(!prompt.contains("--json"));
     }
 
     #[test]
@@ -504,7 +541,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -512,8 +548,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
     }

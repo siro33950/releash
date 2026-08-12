@@ -59,8 +59,6 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         command: &SubmitOutputCommand,
     ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone())?;
-        NodeDefinitionName::new(command.node_name.clone())?;
         if command.node_execution_id.trim().is_empty() {
             return Err(WorkflowError::validation(
                 "node_execution_id must not be empty",

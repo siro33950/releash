@@ -299,6 +299,29 @@ impl WorkflowUsecase {
         }
     }
 
+    pub fn authorize_node_execution_access_for_worktree(
+        &self,
+        node_execution_id: &str,
+        worktree_path: &str,
+    ) -> Result<(), WorkflowError> {
+        if node_execution_id.trim().is_empty() {
+            return Err(WorkflowError::validation(
+                "node_execution_id must not be empty",
+            ));
+        }
+        let node = self
+            .workspace_nodes
+            .load_node_by_node_execution_id(node_execution_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
+            })?;
+        let execution_id = node.execution_id.ok_or_else(|| {
+            WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
+        })?;
+        self.authorize_execution_access_for_worktree(&execution_id, worktree_path)
+    }
+
     pub fn resolve_worktree_by_execution(
         &self,
         execution_id: &str,
@@ -983,12 +1006,29 @@ mod tests {
         editors: Arc<FakeExternalEditorGateway>,
         definitions: Arc<FakeDefinitionRepository>,
         definition_sources: Arc<FakeDefinitionSourceGateway>,
+        workspace_nodes: Arc<FakeWorkspaceTreeRepository>,
         _workspace_root: tempfile::TempDir,
     }
 
-    struct EmptyWorkspaceTreeRepository;
+    #[derive(Default)]
+    struct FakeWorkspaceTreeRepository {
+        nodes: Mutex<HashMap<String, crate::domain::workspace_tree::WorkspaceTreeNode>>,
+    }
 
-    impl crate::domain::workspace_tree::WorkspaceTreeRepository for EmptyWorkspaceTreeRepository {
+    impl FakeWorkspaceTreeRepository {
+        fn insert(
+            &self,
+            node_execution_id: &str,
+            node: crate::domain::workspace_tree::WorkspaceTreeNode,
+        ) {
+            self.nodes
+                .lock()
+                .unwrap()
+                .insert(node_execution_id.to_string(), node);
+        }
+    }
+
+    impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTreeRepository {
         fn load(
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
@@ -1008,6 +1048,16 @@ mod tests {
             crate::domain::local_event::LocalEventQueryError,
         > {
             Ok(None)
+        }
+
+        fn load_node_by_node_execution_id(
+            &self,
+            node_execution_id: &str,
+        ) -> Result<
+            Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            Ok(self.nodes.lock().unwrap().get(node_execution_id).cloned())
         }
 
         fn node_id_for_session(
@@ -1043,6 +1093,7 @@ mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let editors = Arc::new(FakeExternalEditorGateway::default());
+            let workspace_nodes = Arc::new(FakeWorkspaceTreeRepository::default());
             let workspace_root = tempfile::tempdir().unwrap();
             let workspace_query =
                 crate::usecase::workspace_tree::TestWorkspaceQueryService::new(executions);
@@ -1064,7 +1115,7 @@ mod tests {
                 Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
                 Arc::new(NoopArchiveRepository),
-                Arc::new(EmptyWorkspaceTreeRepository),
+                workspace_nodes.clone(),
                 workspace_query,
             );
             Self {
@@ -1072,8 +1123,44 @@ mod tests {
                 editors,
                 definitions,
                 definition_sources,
+                workspace_nodes,
                 _workspace_root: workspace_root,
             }
+        }
+    }
+
+    fn workspace_node(
+        node_execution_id: &str,
+        execution_id: Option<&str>,
+    ) -> crate::domain::workspace_tree::WorkspaceTreeNode {
+        crate::domain::workspace_tree::WorkspaceTreeNode {
+            id: format!("node:{node_execution_id}"),
+            parent_id: execution_id.map(str::to_string),
+            sibling_order: 0,
+            kind: crate::domain::workspace_tree::WorkspaceNodeKind::WorkflowSession,
+            title: "node".to_string(),
+            status: crate::domain::workspace_tree::WorkspaceNodeStatus::Running,
+            error_reason: None,
+            updated_at_bits: 1.0_f64.to_bits(),
+            execution_id: execution_id.map(str::to_string),
+            node_execution_id: Some(node_execution_id.to_string()),
+            node_name: Some("node".to_string()),
+            attempt: Some(1),
+            completion_signals: Default::default(),
+            has_artifact: false,
+            session_id: None,
+            can_approve: false,
+            can_retry: false,
+            can_close: false,
+            can_stop: false,
+            can_resume: false,
+            recovery_owner_reason: None,
+            resume_unavailable_reason: None,
+            can_abort: false,
+            can_archive: false,
+            display_command: None,
+            command_result: None,
+            dynamic_fanout: false,
         }
     }
 
@@ -1283,6 +1370,51 @@ mod tests {
                 .authorize_execution_access_for_worktree("invalid", "repo"),
             Err(WorkflowError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership() {
+        let execution_id = "00000000-0000-0000-0000-000000000011";
+        let fixture = Fixture::with_executions(vec![execution_summary(
+            execution_id,
+            "/canonical/repo",
+            ExecutionStatus::Running,
+        )]);
+        fixture.workspace_nodes.insert(
+            "node-execution-1",
+            workspace_node("node-execution-1", Some(execution_id)),
+        );
+        fixture.workspace_nodes.insert(
+            "node-execution-without-owner",
+            workspace_node("node-execution-without-owner", None),
+        );
+
+        fixture
+            .usecase
+            .authorize_node_execution_access_for_worktree("node-execution-1", "repo")
+            .unwrap();
+        assert!(matches!(
+            fixture
+                .usecase
+                .authorize_node_execution_access_for_worktree("   ", "repo"),
+            Err(WorkflowError::Validation(_))
+        ));
+        for node_execution_id in ["missing", "node-execution-without-owner"] {
+            assert_eq!(
+                fixture
+                    .usecase
+                    .authorize_node_execution_access_for_worktree(node_execution_id, "repo")
+                    .unwrap_err(),
+                WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
+            );
+        }
+        assert_eq!(
+            fixture
+                .usecase
+                .authorize_node_execution_access_for_worktree("node-execution-1", "other")
+                .unwrap_err(),
+            WorkflowError::external(format!("Workflow execution not found: {execution_id}"))
+        );
     }
 
     #[test]

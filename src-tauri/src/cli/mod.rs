@@ -117,16 +117,12 @@ pub fn run() -> i32 {
                     }
                     WorkflowSubcommand::Output { command } => match command {
                         OutputSubcommand::Submit {
-                            execution_id,
-                            node,
                             node_execution,
                             contract,
                             json,
                             file,
                         } => output::cmd_output_submit(
                             &data_dir,
-                            &execution_id,
-                            &node,
                             node_execution,
                             contract.as_deref(),
                             json,

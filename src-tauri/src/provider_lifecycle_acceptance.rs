@@ -229,6 +229,14 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         "node-execution-test".to_string()
     }
 
+    async fn resolve_workflow_execution_id(
+        &self,
+        _node_execution_id: &str,
+    ) -> Result<Option<String>, WorkflowError> {
+        self.record_command();
+        Err(unavailable_workflow_runtime())
+    }
+
     async fn load_active_execution(
         &self,
         _execution_id: &str,

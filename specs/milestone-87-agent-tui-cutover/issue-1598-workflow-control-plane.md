@@ -117,7 +117,7 @@ ReleashはWorkflow ledgerを正本として、signalの受信、Artifact、Appro
 
 ## 5. Signal correlation
 
-- SubmitはWorkflowExecution ID、Node名、NodeExecution IDを必須入力として対象を特定する。
+- SubmitはNodeExecution IDだけを必須入力として対象を特定し、WorkflowExecution IDとNode名はbackendが永続化投影から解決する。
 - SubmitのNodeExecution IDは現在対象となるAttemptと一致しなければならない。
 - Provider Stopは検証済みAgentSession IDからAgentSession originを読み、WorkflowExecution IDとNodeExecution IDを解決する。
 - Standalone AgentSessionのStopはProvider lifecycle ledgerだけへ保存し、Workflowへ適用しない。
@@ -225,33 +225,31 @@ Provider lifecycle ledgerだけにStopが残りWorkflowへ適用されない中�
 Artifactなし:
 
 ```bash
-releash workflow output submit EXECUTION_ID \
-  --node NODE_NAME \
+releash workflow output submit \
   --node-execution NODE_EXECUTION_ID
 ```
 
 Artifactあり:
 
 ```bash
-releash workflow output submit EXECUTION_ID \
-  --node NODE_NAME \
+releash workflow output submit \
   --node-execution NODE_EXECUTION_ID \
   --type CONTRACT \
   --json JSON_VALUE
 ```
 
-- `--node-execution`は必須とする。
+- `--node-execution`はSubmit対象を一意に識別する唯一の必須identityとする。
 - Artifact指定時は`--type`と`--json`または`--file`を全て要求する。
 - Artifact未指定時は`--type`、`--json`、`--file`を要求しない。
 - `workflow output get`はArtifact取得のまま維持する。
 
 ### 8.2 Local API
 
-Local API requestはArtifact提出ではなくNode Submitを表す。requestは必須NodeExecution IDとoptional Artifactを持つ。ControllerはprotocolをUsecase commandへ変換するだけとし、signal合流、validation結果による遷移、current Attempt判定を行わない。
+Local API requestはArtifact提出ではなくNode Submitを表す。NodeExecution IDはpathで必須とし、request bodyはoptional Artifactだけを持つ。ControllerはprotocolをUsecase commandへ変換するだけとし、signal合流、validation結果による遷移、current Attempt判定を行わない。
 
 ### 8.3 Initial instruction
 
-通常Agent NodeとFanout Agent Nodeの両方へ、WorkflowExecution ID、Node名、NodeExecution IDを含む正確なSubmit commandを初回指示として渡す。Artifact contractがないNodeにもArtifactなしSubmitの指示を渡す。
+通常Agent NodeとFanout Agent Nodeの両方へ、NodeExecution IDだけで対象を識別する正確なSubmit commandを初回指示として渡す。Artifact contractがないNodeにもArtifactなしSubmitの指示を渡す。
 
 ## 9. Read model / TUI
 

@@ -28,6 +28,9 @@ pub(crate) const SQL_WORKFLOW_NODE_DETAIL: &str = "SELECT node.tree_record, node
      JOIN workflow_executions AS execution
        ON execution.execution_id = node.execution_id
      WHERE node.node_id = ?1 AND execution.workspace_identity = ?2";
+pub(crate) const SQL_WORKFLOW_NODE_BY_NODE_EXECUTION: &str =
+    "SELECT tree_record, detail_record FROM workflow_execution_nodes
+     WHERE node_execution_id = ?1";
 pub(crate) const SQL_WORKFLOW_NODE_ID_FOR_SESSION: &str = "SELECT node.node_id
      FROM workflow_execution_nodes AS node
      JOIN workflow_executions AS execution
@@ -141,6 +144,29 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         }
 
         Ok(None)
+    }
+
+    fn load_node_by_node_execution_id(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+        let requested = node_execution_id.to_string();
+        let workflow_node = self.run_indexed(move |connection| {
+            connection
+                .query_row(
+                    SQL_WORKFLOW_NODE_BY_NODE_EXECUTION,
+                    params![requested],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(sql_query_error)
+        })?;
+        workflow_node
+            .map(|(tree_record, detail_record)| {
+                decode_workflow_execution_node_detail_v1(&tree_record, &detail_record)
+                    .map_err(codec_query_error)
+            })
+            .transpose()
     }
 
     fn node_id_for_session(

@@ -2212,7 +2212,7 @@ impl WorkflowRuntimeHost {
         let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
             &node_clone,
             node_facet_contents,
-            &execution_id_for_ref,
+            &node_execution_id,
             task_clone.as_deref(),
             &artifacts_clone,
             &workflow_clone.schemas,

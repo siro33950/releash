@@ -82,9 +82,6 @@ fn test_clicommand整理_保持対象workflowとreview_commandを受理する() 
             "workflow",
             "output",
             "submit",
-            execution_id,
-            "--node",
-            "review",
             "--node-execution",
             "550e8400-e29b-41d4-a716-446655440001",
             "--type",
@@ -116,7 +113,7 @@ fn test_clicommand整理_一次owner文書が実装済みsurfaceだけを列挙�
 
     for retained in [
         "releash workflow status <execution-id>",
-        "releash workflow output submit <execution-id>",
+        "releash workflow output submit --node-execution <id>",
         "releash workflow output get <execution-id>",
     ] {
         assert!(

@@ -107,10 +107,10 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
     .unwrap();
     assert_eq!(status["id"], execution_id);
 
+    gateway.bind_node_execution("00000000-0000-4000-8000-000000000456", execution_id);
+
     output::cmd_output_submit(
         client_data.path(),
-        execution_id,
-        "review",
         "00000000-0000-4000-8000-000000000456".to_string(),
         Some("review-result"),
         Some(r#"{"status":"approved"}"#.to_string()),
@@ -126,7 +126,6 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
 
     let commands = gateway.commands.lock().unwrap();
     assert_eq!(commands.outputs.len(), 1);
-    assert_eq!(commands.outputs[0].execution_id, execution_id);
     assert_eq!(
         commands.outputs[0].node_execution_id,
         "00000000-0000-4000-8000-000000000456"

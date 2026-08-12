@@ -358,6 +358,29 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
         uuid::Uuid::new_v4().to_string()
     }
 
+    async fn resolve_workflow_execution_id(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<Option<String>, WorkflowError> {
+        let result = self
+            .local_event_repository
+            .query(
+                crate::domain::local_event::LocalEventQuery::WorkflowExecutionByNodeExecution {
+                    node_execution_id: node_execution_id.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| WorkflowError::external(error.to_string()))?;
+        match result {
+            crate::domain::local_event::LocalEventQueryResult::WorkflowExecutionByNodeExecution(
+                execution_id,
+            ) => Ok(execution_id),
+            _ => Err(WorkflowError::external(
+                "unexpected node execution lookup result",
+            )),
+        }
+    }
+
     async fn load_active_execution(
         &self,
         execution_id: &str,

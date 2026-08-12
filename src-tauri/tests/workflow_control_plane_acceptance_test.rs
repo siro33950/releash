@@ -249,7 +249,7 @@ async fn test_atui_040_同時submit_stopは競合を利用者へ返さず一度�
     associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-concurrent").await;
 
     let (submit, ()) = tokio::join!(
-        host.submit(&execution_id, &first.node_name, &first.id),
+        host.submit(&first.id),
         emit_provider_stop(&host, &mut terminal, &terminal_owner, "provider-concurrent",),
     );
     submit.unwrap();
@@ -300,12 +300,8 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
 
         match order {
             SignalOrder::SubmitThenStop => {
-                host.submit(&execution_id, &first.node_name, &first.id)
-                    .await
-                    .unwrap();
-                host.submit(&execution_id, &first.node_name, &first.id)
-                    .await
-                    .unwrap();
+                host.submit(&first.id).await.unwrap();
+                host.submit(&first.id).await.unwrap();
             }
             SignalOrder::StopThenSubmit => {
                 emit_provider_stop(
@@ -347,9 +343,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
                 .await;
             }
             SignalOrder::StopThenSubmit => {
-                host.submit(&execution_id, &first.node_name, &first.id)
-                    .await
-                    .unwrap();
+                host.submit(&first.id).await.unwrap();
             }
         }
 
@@ -367,9 +361,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             advanced.node_executions[1].agent_session_id
         );
 
-        host.submit(&execution_id, &first.node_name, &first.id)
-            .await
-            .unwrap();
+        host.submit(&first.id).await.unwrap();
         emit_provider_stop(
             &host,
             &mut first_terminal,
@@ -421,9 +413,7 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
 
         match order {
             SignalOrder::SubmitThenStop => {
-                host.submit(&execution_id, &node.node_name, &node.id)
-                    .await
-                    .unwrap();
+                host.submit(&node.id).await.unwrap();
             }
             SignalOrder::StopThenSubmit => {
                 emit_provider_stop(
@@ -453,9 +443,7 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
                 .await;
             }
             SignalOrder::StopThenSubmit => {
-                host.submit(&execution_id, &node.node_name, &node.id)
-                    .await
-                    .unwrap();
+                host.submit(&node.id).await.unwrap();
             }
         }
         let waiting = host.execution(&execution_id).await.unwrap().unwrap();
@@ -529,9 +517,7 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
     )
     .await;
 
-    host.submit(&execution_id, &first.node_name, &first.id)
-        .await
-        .unwrap();
+    host.submit(&first.id).await.unwrap();
     emit_provider_stop(
         &host,
         &mut first_terminal,
@@ -576,9 +562,7 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
         AcceptanceWorkflowExecutionStatus::Completed
     );
 
-    host.submit(&execution_id, &second.node_name, &second.id)
-        .await
-        .unwrap();
+    host.submit(&second.id).await.unwrap();
     emit_provider_stop(
         &host,
         &mut second_terminal,
@@ -638,10 +622,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
         )
         .await;
         match signal {
-            SignalOrder::SubmitThenStop => host_before
-                .submit(&execution_id, &node.node_name, &node.id)
-                .await
-                .unwrap(),
+            SignalOrder::SubmitThenStop => host_before.submit(&node.id).await.unwrap(),
             SignalOrder::StopThenSubmit => {
                 emit_provider_stop(
                     &host_before,
@@ -704,9 +685,7 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
         .unwrap();
     receive_until(&mut old_terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut old_terminal, &old_owner, "provider-retry-old").await;
-    host.submit(&execution_id, &old_attempt.node_name, &old_attempt.id)
-        .await
-        .unwrap();
+    host.submit(&old_attempt.id).await.unwrap();
     let retryable = host.execution(&execution_id).await.unwrap().unwrap();
     assert!(retryable.node_executions[0].can_retry);
 
@@ -750,9 +729,7 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
         .unwrap();
     receive_until(&mut new_terminal, "releash-fixture-input-complete-0").await;
     associate_provider_session(&host, &mut new_terminal, &new_owner, "provider-retry-new").await;
-    host.submit(&execution_id, &new_attempt.node_name, &new_attempt.id)
-        .await
-        .unwrap();
+    host.submit(&new_attempt.id).await.unwrap();
     emit_provider_stop(&host, &mut new_terminal, &new_owner, "provider-retry-new").await;
     wait_for_execution_status(
         &host,
@@ -802,8 +779,6 @@ async fn test_atui_042_別bindingのstopを拒否しinvalid_artifactはsubmitご
 
     assert!(host
         .submit_artifact(
-            &execution_id,
-            &node.node_name,
             &node.id,
             "acceptance-result",
             serde_json::json!({"unexpected": "value"}),
@@ -815,8 +790,6 @@ async fn test_atui_042_別bindingのstopを拒否しinvalid_artifactはsubmitご
     assert!(!after_invalid.node_executions[0].has_artifact);
 
     host.submit_artifact(
-        &execution_id,
-        &node.node_name,
         &node.id,
         "acceptance-result",
         serde_json::json!({"result": "ok"}),
@@ -883,9 +856,7 @@ async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加
         }),
     )
     .await;
-    host.submit(&execution_id, &node.node_name, &node.id)
-        .await
-        .unwrap();
+    host.submit(&node.id).await.unwrap();
     send_hook(
         &host,
         &mut terminal,

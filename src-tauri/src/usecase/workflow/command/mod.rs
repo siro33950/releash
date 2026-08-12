@@ -130,6 +130,15 @@ mod tests {
             "node-execution-test".to_string()
         }
 
+        async fn resolve_workflow_execution_id(
+            &self,
+            _node_execution_id: &str,
+        ) -> Result<Option<String>, WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
         async fn load_active_execution(
             &self,
             _execution_id: &str,
@@ -307,8 +316,6 @@ mod tests {
             .is_err());
         assert!(WorkflowSubmitOutputUsecase::new(gateway.clone())
             .execute(SubmitOutputCommand {
-                execution_id: valid_execution_id(),
-                node_name: "review".to_string(),
                 node_execution_id: "node-execution-1".to_string(),
                 artifact: Some(SubmitOutputArtifact {
                     contract: " ".to_string(),

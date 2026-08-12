@@ -17,9 +17,6 @@ pub(super) enum OutputSubcommand {
             .multiple(false)
     ))]
     Submit {
-        execution_id: String,
-        #[arg(long, value_name = "NODE_NAME")]
-        node: String,
         #[arg(long = "node-execution", value_name = "NODE_EXECUTION_ID")]
         node_execution: String,
         #[arg(long = "type", value_name = "CONTRACT", requires = "artifact_value")]
@@ -51,15 +48,16 @@ pub(super) enum OutputSubcommand {
 
 pub(super) fn cmd_output_submit(
     data_dir: &Path,
-    execution_id: &str,
-    node: &str,
     node_execution: String,
     contract: Option<&str>,
     json_arg: Option<String>,
     file_arg: Option<PathBuf>,
 ) -> Result<String, CliError> {
-    validate_execution_id(execution_id)?;
-    validate_node(node)?;
+    if node_execution.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--node-execution must not be empty".to_string(),
+        ));
+    }
     let artifact = match contract {
         Some(contract) => {
             validate_contract_argument(contract)?;
@@ -76,19 +74,15 @@ pub(super) fn cmd_output_submit(
             ));
         }
     };
-    let request = SubmitOutputRequest {
-        node: node.to_string(),
-        node_execution_id: node_execution,
-        artifact,
-    };
+    let request = SubmitOutputRequest { artifact };
     api_client::mutation(data_dir, |client| {
-        client.submit_output(execution_id, &request)
+        client.submit_output(&node_execution, &request)
     })?;
     Ok(match contract {
         Some(contract) => {
-            format!("submitted: execution_id={execution_id} node={node} type={contract}\n")
+            format!("submitted: node_execution_id={node_execution} type={contract}\n")
         }
-        None => format!("submitted: execution_id={execution_id} node={node}\n"),
+        None => format!("submitted: node_execution_id={node_execution}\n"),
     })
 }
 

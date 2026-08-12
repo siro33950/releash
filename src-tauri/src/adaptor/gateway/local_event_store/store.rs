@@ -249,6 +249,7 @@ enum ExistingDatabaseKind {
     Current,
     SupportedV1,
     SupportedV2,
+    SupportedV3,
 }
 
 fn classify_existing_database(
@@ -313,11 +314,15 @@ fn classify_existing_database(
         return Ok(ExistingDatabaseKind::SupportedV1);
     }
     if application_id == i64::from(APPLICATION_ID) {
-        if user_version == 2
+        if matches!(user_version, 2 | 3)
             && columns.iter().any(|column| column == "installation_id")
             && !columns.iter().any(|column| column == "store_id")
         {
-            return Ok(ExistingDatabaseKind::SupportedV2);
+            return Ok(if user_version == 2 {
+                ExistingDatabaseKind::SupportedV2
+            } else {
+                ExistingDatabaseKind::SupportedV3
+            });
         }
         if user_version != CURRENT_SCHEMA_VERSION {
             return Err(LocalEventStoreOpenError::UnsupportedStoreVersion);
@@ -559,7 +564,9 @@ impl LocalEventStore {
                 })?;
                 if matches!(
                     kind,
-                    ExistingDatabaseKind::SupportedV1 | ExistingDatabaseKind::SupportedV2
+                    ExistingDatabaseKind::SupportedV1
+                        | ExistingDatabaseKind::SupportedV2
+                        | ExistingDatabaseKind::SupportedV3
                 ) {
                     evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
                         classify_sqlite_error(

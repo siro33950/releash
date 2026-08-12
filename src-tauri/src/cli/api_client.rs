@@ -57,13 +57,19 @@ impl LocalApiClient {
 
     pub(super) fn submit_output(
         &self,
-        execution_id: &str,
+        node_execution_id: &str,
         request: &SubmitOutputRequest,
     ) -> Result<(), ApiRequestError> {
         let response: MutationResponse = self
             .transport
             .post_json(
-                &["v1", "workflow", "executions", execution_id, "submit"],
+                &[
+                    "v1",
+                    "workflow",
+                    "node-executions",
+                    node_execution_id,
+                    "submit",
+                ],
                 request,
             )
             .map_err(ApiRequestError::from)?;

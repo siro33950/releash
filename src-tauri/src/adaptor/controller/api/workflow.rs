@@ -81,7 +81,7 @@ pub(super) fn router() -> Router<LocalApiState> {
             post(retry_node),
         )
         .route(
-            "/v1/workflow/executions/{execution_id}/submit",
+            "/v1/workflow/node-executions/{node_execution_id}/submit",
             post(submit_output),
         )
         .route(
@@ -233,16 +233,14 @@ async fn retry_node(
 
 async fn submit_output(
     State(state): State<LocalApiState>,
-    Path(execution_id): Path<String>,
+    Path(node_execution_id): Path<String>,
     payload: Result<Json<SubmitOutputRequest>, JsonRejection>,
 ) -> Result<Json<MutationResponse>, ApiError> {
     let Json(payload) = payload.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     state
         .runtime
         .submit_output(SubmitOutputCommand {
-            execution_id,
-            node_name: payload.node,
-            node_execution_id: payload.node_execution_id,
+            node_execution_id,
             artifact: payload.artifact.map(|artifact| SubmitOutputArtifact {
                 contract: artifact.contract,
                 value: artifact.value,

@@ -7,7 +7,7 @@ use super::fault::{FaultInjector, InitialCreateFaultPoint};
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 pub const CURRENT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS logical_commits (
@@ -270,6 +270,12 @@ CREATE INDEX IF NOT EXISTS idx_session_projection_public_node
     WHERE public_summary IS NOT NULL;
 "#;
 
+const NODE_EXECUTION_IDENTITY_V4: &str = r#"
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_node_execution
+    ON workflow_execution_nodes (node_execution_id)
+    WHERE node_execution_id IS NOT NULL;
+"#;
+
 const SESSION_PROJECTION_TABLE_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS session_projection (
     session_id TEXT PRIMARY KEY,
@@ -314,7 +320,7 @@ fn create_store_metadata(
 ) -> Result<(), rusqlite::Error> {
     if !matches!(table_name, "store_metadata" | "store_metadata_v2")
         || !matches!(shutdown_plans_table, "shutdown_plans" | "shutdown_plans_v2")
-        || !matches!(schema_version, 2 | 3)
+        || !matches!(schema_version, 2..=4)
     {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -357,15 +363,16 @@ pub fn initialize_schema(
     if let Err(error) = (|| {
         connection.execute_batch(CURRENT_SCHEMA)?;
         connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 4)?;
         connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
+        connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
         connection.execute(
             "INSERT INTO store_metadata (
                 id, schema_version, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
                 next_global_sequence, health, current_shutdown_id,
                 shutdown_pointer_revision
-             ) VALUES (1, 3, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
+             ) VALUES (1, 4, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
                        NULL, 0)",
             rusqlite::params![
                 metadata.installation_id,
@@ -424,6 +431,57 @@ pub fn evolve_schema(
         return Ok(false);
     }
 
+    let is_supported_v3 = application_id == i64::from(APPLICATION_ID)
+        && user_version == 3
+        && metadata_columns
+            .iter()
+            .any(|column| column == "installation_id")
+        && !metadata_columns.iter().any(|column| column == "store_id");
+    if is_supported_v3 {
+        if fault.take_schema_fail_before_begin() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
+        let evolution = (|| {
+            connection.execute_batch("ALTER TABLE store_metadata RENAME TO store_metadata_v3;")?;
+            create_store_metadata(connection, "store_metadata", "shutdown_plans", 4)?;
+            connection.execute_batch(
+                "INSERT INTO store_metadata (
+                     id, schema_version, installation_id, created_at_ms,
+                     cursor_hmac_key, operation_binding_hmac_key,
+                     process_instance_id, next_global_sequence, health,
+                     current_shutdown_id, shutdown_pointer_revision
+                 )
+                 SELECT id, 4, installation_id, created_at_ms,
+                        cursor_hmac_key, operation_binding_hmac_key,
+                        process_instance_id, next_global_sequence, health,
+                        current_shutdown_id, shutdown_pointer_revision
+                 FROM store_metadata_v3;
+                 DROP TABLE store_metadata_v3;",
+            )?;
+            connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
+            connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+            if fault.take_schema_fail_before_commit() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok::<(), rusqlite::Error>(())
+        })();
+        if let Err(error) = evolution {
+            let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+            return Err(error);
+        }
+        connection.execute_batch("COMMIT; PRAGMA foreign_keys = ON;")?;
+        if fault.take_schema_commit_reply_loss() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if fault.take_schema_fail_before_readback() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        validate_current_schema(connection)?;
+        finish_schema_admission(connection)?;
+        return Ok(true);
+    }
+
     let is_supported_v2 = application_id == i64::from(APPLICATION_ID)
         && user_version == 2
         && metadata_columns
@@ -437,7 +495,7 @@ pub fn evolve_schema(
         connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
         let evolution = (|| {
             connection.execute_batch("ALTER TABLE store_metadata RENAME TO store_metadata_v2;")?;
-            create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+            create_store_metadata(connection, "store_metadata", "shutdown_plans", 4)?;
             connection.execute_batch(
                 "INSERT INTO store_metadata (
                      id, schema_version, installation_id, created_at_ms,
@@ -445,7 +503,7 @@ pub fn evolve_schema(
                      process_instance_id, next_global_sequence, health,
                      current_shutdown_id, shutdown_pointer_revision
                  )
-                 SELECT id, 3, installation_id, created_at_ms,
+                 SELECT id, 4, installation_id, created_at_ms,
                         cursor_hmac_key, operation_binding_hmac_key,
                         process_instance_id, next_global_sequence, health,
                         current_shutdown_id, shutdown_pointer_revision
@@ -455,6 +513,7 @@ pub fn evolve_schema(
             evolve_session_projection_v3(connection)?;
             connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
             super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
+            connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
             connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
             if fault.take_schema_fail_before_commit() {
                 return Err(rusqlite::Error::InvalidQuery);
@@ -670,7 +729,7 @@ pub fn evolve_schema(
                  ON shutdown_plans (details_state);
              PRAGMA application_id = 0x524C5348;",
         )?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 3)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 4)?;
         connection.execute_batch(
             "INSERT INTO store_metadata (
                  id, schema_version, installation_id, created_at_ms,
@@ -678,7 +737,7 @@ pub fn evolve_schema(
                  next_global_sequence, health, current_shutdown_id,
                  shutdown_pointer_revision
              )
-             SELECT id, 3, generation_id, created_at_ms,
+             SELECT id, 4, generation_id, created_at_ms,
                     cursor_hmac_key, operation_binding_hmac_key, boot_id,
                     next_global_sequence, 'ok', current_shutdown_plan_id,
                     shutdown_pointer_revision
@@ -688,6 +747,7 @@ pub fn evolve_schema(
         evolve_session_projection_v3(connection)?;
         connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
         super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
+        connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
         connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
         if fault.take_schema_fail_before_commit() {
             return Err(rusqlite::Error::InvalidQuery);
@@ -916,6 +976,7 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "idx_workflow_executions_global_list",
         "idx_workflow_execution_nodes_node",
         "idx_workflow_execution_nodes_occurrence",
+        "idx_workflow_execution_nodes_node_execution",
         "idx_workflow_execution_nodes_session",
         "idx_session_projection_public_list",
         "idx_session_projection_public_node",
@@ -1128,4 +1189,102 @@ fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, ru
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(columns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata() -> InitialStoreMetadata<'static> {
+        InitialStoreMetadata {
+            installation_id: "00000000-0000-4000-8000-000000000001",
+            cursor_hmac_key: &[1; 32],
+            operation_binding_hmac_key: &[2; 32],
+            process_instance_id: "00000000-0000-4000-8000-000000000002",
+            created_at_ms: 1,
+        }
+    }
+
+    fn initialize(connection: &Connection) {
+        initialize_schema(connection, &metadata(), &FaultInjector::new()).unwrap();
+    }
+
+    #[test]
+    fn schema_v3_evolves_to_global_node_execution_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize(&connection);
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 DROP INDEX idx_workflow_execution_nodes_node_execution;
+                 ALTER TABLE store_metadata RENAME TO store_metadata_v4;",
+            )
+            .unwrap();
+        create_store_metadata(&connection, "store_metadata", "shutdown_plans", 3).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO store_metadata (
+                     id, schema_version, installation_id, created_at_ms,
+                     cursor_hmac_key, operation_binding_hmac_key,
+                     process_instance_id, next_global_sequence, health,
+                     current_shutdown_id, shutdown_pointer_revision
+                 )
+                 SELECT id, 3, installation_id, created_at_ms,
+                        cursor_hmac_key, operation_binding_hmac_key,
+                        process_instance_id, next_global_sequence, health,
+                        current_shutdown_id, shutdown_pointer_revision
+                 FROM store_metadata_v4;
+                 DROP TABLE store_metadata_v4;
+                 PRAGMA user_version = 3;
+                 COMMIT;",
+            )
+            .unwrap();
+
+        assert!(evolve_schema(&connection, &FaultInjector::new()).unwrap());
+        validate_current_schema(&connection).unwrap();
+        require_index(&connection, "idx_workflow_execution_nodes_node_execution").unwrap();
+    }
+
+    #[test]
+    fn node_execution_identity_is_unique_across_workflow_executions() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize(&connection);
+        connection
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        for execution_id in ["execution-1", "execution-2"] {
+            connection
+                .execute(
+                    "INSERT INTO workflow_executions (
+                         execution_id, workspace_identity, status, list_kind,
+                         sort_at_bits, record_schema, record, source_revision, commit_id
+                     ) VALUES (?1, ?2, 'running', 'active', 0,
+                               'workflow_execution_record_v1', '{}', 0, 'commit')",
+                    rusqlite::params![execution_id, format!("/{execution_id}")],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO workflow_execution_nodes (
+                     execution_id, node_id, parent_id, sibling_order, session_id,
+                     node_execution_id, record_schema, tree_record, detail_record,
+                     source_revision, commit_id
+                 ) VALUES ('execution-1', 'node-1', NULL, 0, NULL, 'node-execution-1',
+                           'workflow_execution_node_record_v1', '{}', '{}', 0, 'commit')",
+                [],
+            )
+            .unwrap();
+
+        let duplicate = connection.execute(
+            "INSERT INTO workflow_execution_nodes (
+                 execution_id, node_id, parent_id, sibling_order, session_id,
+                 node_execution_id, record_schema, tree_record, detail_record,
+                 source_revision, commit_id
+             ) VALUES ('execution-2', 'node-2', NULL, 0, NULL, 'node-execution-1',
+                       'workflow_execution_node_record_v1', '{}', '{}', 0, 'commit')",
+            [],
+        );
+        assert!(duplicate.is_err());
+    }
 }

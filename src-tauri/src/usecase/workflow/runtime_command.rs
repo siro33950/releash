@@ -273,6 +273,15 @@ mod tests {
             "node-execution-test".to_string()
         }
 
+        async fn resolve_workflow_execution_id(
+            &self,
+            _node_execution_id: &str,
+        ) -> Result<Option<String>, WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
         async fn load_active_execution(
             &self,
             _execution_id: &str,
@@ -486,8 +495,6 @@ mod tests {
 
         let submit_err = usecase
             .submit_output(SubmitOutputCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: "review".to_string(),
                 node_execution_id: "node-execution-1".to_string(),
                 artifact: Some(crate::usecase::workflow::command::SubmitOutputArtifact {
                     contract: " ".to_string(),

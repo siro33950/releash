@@ -30,29 +30,44 @@ async fn authorize_output_execution_access(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-/// [08] Tauri command 経路: node に対する構造化出力を typed 提出する。
+async fn authorize_output_node_execution_access(
+    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
+    worktree_path: String,
+    node_execution_id: &str,
+) -> Result<(), String> {
+    let query = query.clone();
+    let node_execution_id = node_execution_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        query
+            .authorize_node_execution_access_for_worktree(&node_execution_id, &worktree_path)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+/// Tauri command 経路: NodeExecutionにSubmit signalとoptional Artifactを提出する。
 ///
 /// in-process caller (UI / API / 外部 Tauri caller) は workflow runtime usecase
 /// を経由して、CLI 経路と同一の state mutation 境界に合流する（spec [08] L169）。
 /// worktree-scoped 認可境界（spec [08] が依拠する [05] 観測経路の認可境界）を通過しない caller には
 /// 「該当 execution なし」と同表現で拒否を返し、存在情報を漏らさない。
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn workflow_submit_output(
     state: tauri::State<'_, AppState>,
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
     worktree_path: String,
-    execution_id: String,
-    node_name: String,
     node_execution_id: String,
     artifact: Option<WorkflowSubmitArtifactInput>,
 ) -> Result<(), String> {
-    authorize_output_execution_access(&state.workflow_usecase, worktree_path, &execution_id)
-        .await?;
+    authorize_output_node_execution_access(
+        &state.workflow_usecase,
+        worktree_path,
+        &node_execution_id,
+    )
+    .await?;
     runtime
         .submit_output(SubmitOutputCommand {
-            execution_id,
-            node_name,
             node_execution_id,
             artifact: artifact.map(|artifact| SubmitOutputArtifact {
                 contract: artifact.contract,

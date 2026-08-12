@@ -86,6 +86,9 @@ pub enum LocalEventQuery {
     SessionProjectionByIdentity {
         session_id: String,
     },
+    WorkflowExecutionByNodeExecution {
+        node_execution_id: String,
+    },
     AgentSessionProjectionPage {
         workspace_identity: String,
         lifecycle: Option<AgentSessionLifecycleRecord>,
@@ -322,6 +325,7 @@ pub enum LocalEventQueryResult {
     CallerAttemptPage(Vec<CallerAttemptView>),
     ObligationByIdentity(Option<ObligationView>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
+    WorkflowExecutionByNodeExecution(Option<String>),
     AgentSessionProjectionPage(AgentSessionProjectionPageView),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
     PendingRecoveryPage(PendingRecoveryPageView),
