@@ -9,7 +9,7 @@
 - 各Taskが参照するThreadの本文と履歴
 - 現在の実装と差分
 
-実装対象と順序はArtifactのTask配列を正とする。`verify_fixes`の`issues`が存在する場合は検証からの差し戻しであり、各issueが指す問題の解消を実装に含める。issueの解消は、対応するTaskの受入条件を満たすための修正であり、Taskにない修正の追加とはみなさない。
+実装対象と順序はArtifactのTask配列を正とする。`verify_fixes`の`issues`が存在する場合は検証からの差し戻しであり、各issueが指す問題の解消を実装に含める。issueの解消は、対応するTaskの受入条件を満たすための修正、またはTaskの実装が壊した検証command（test / lint / build等）を成立させるための修正であり、Taskにない修正の追加とはみなさない。
 
 ## 実装
 
