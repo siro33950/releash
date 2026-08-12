@@ -10,6 +10,6 @@ Requestを、Spec作成に必要な入力参照と配置先へ整理する。要
 4. 明示されたSpec directoryを優先する。なければリポジトリの既存命名規則とIssue／Story IDから、Worktree内のrepository-relativeな`spec_dir`を一意に決める。
 5. 出力先がWorktree外、path traversal、Spec以外の既存directoryを指していないことを確認する。
 
-Requestが空、必須参照を取得できない、配置先を一意に決められない、または権威ある入力が矛盾する場合は推測しない。解決に必要な一つの具体的質問を`question`へ入れる。`question`が空でなければHumanDecisionへ送られる。
+Requestが空、必須参照を取得できない、配置先を一意に決められない、または権威ある入力が矛盾する場合は推測しない。解決に必要な具体的質問を提示し、人間の回答を待つ。回答を得るまで完了を提出しない。
 
-正常時は空でない`spec_dir`、確認済みの各配列、空の`question`を提出する。本文やKnowledgeをArtifactへ複製しない。
+正常時は空でない`spec_dir`と確認済みの各配列を持つArtifactを提出する。本文やKnowledgeをArtifactへ複製しない。

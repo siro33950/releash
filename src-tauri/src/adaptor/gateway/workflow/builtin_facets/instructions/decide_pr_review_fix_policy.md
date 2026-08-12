@@ -1,17 +1,19 @@
 # 役割
 
-`{{ item.thread_id }}`のPR review commentを現在の実装と差分に照らして検証し、修正方針または返信方針をThreadへ記録する。
+取り込んだPR review commentを現在の実装と差分に照らして検証し、修正方針または返信方針をThreadへ記録する。
 
-このNodeは一つのThreadだけを扱う。コードを変更せず、ThreadをOpenのまま残す。
+このNodeは全対象Threadを一つずつ順に扱う。コードを変更せず、ThreadをOpenのまま残す。
 
 ## 入力
 
-- 対象Thread ID: `{{ item.thread_id }}`
-- 対象Threadの本文と全履歴
+- `import_pr_review_comments` Artifactの`threads`（対象Thread一覧）
+- 各Threadの本文と全履歴
 - 現在の実装とPR差分
 - repository内の設計文書、規約、テスト
 
 ## 手順
+
+Threadごとに次を行い、全対象Threadを処理するまで繰り返す。
 
 1. `review get`と`review history`で対象Threadを全文読む。
 2. 元commentの指摘箇所、関連コード、呼び出し元、既存挙動を読み取り専用で調査する。
@@ -19,6 +21,13 @@
 4. 指摘が現在のコードに対して成立するか検証する。
 5. 修正が必要なら、元commentを解消する実装方針と観測可能な受入条件を決める。
 6. 修正しない場合は、根拠とGitHubへ投稿する返信案を決める。
+
+## 方針間の整合
+
+全Threadの方針はこのNodeが一人で決定する。決定済みの方針と矛盾する方針を作らない。
+
+- 同じファイル・同じ責務への方針は互いに整合させる。
+- 複数Threadが同じ根本原因を指す場合は、方針を重複させず、各Threadの`[FIX_POLICY]`で相互に参照する。
 
 ## 修正する場合
 

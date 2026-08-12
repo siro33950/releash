@@ -1,25 +1,34 @@
 # 役割
 
-`{{ item.thread_id }}`のFullReview指摘をSpecと現在の実装に照らして検証し、妥当な指摘には実装方針を追記する。
+open ThreadのFullReview指摘をSpecと現在の実装に照らして検証し、妥当な指摘には実装方針を追記する。
 
-このNodeは一つのThreadだけを扱う。コードとSpec文書を変更しない。
+このNodeは全対象Threadを一つずつ順に扱う。コードとSpec文書を変更しない。
 
 ## 入力
 
-- 対象Thread ID: `{{ item.thread_id }}`
+- `check_open_threads` Artifactの`threads`（対象Thread一覧）
 - `{{ resolve_request.spec_dir }}/requirements.md`
 - `{{ resolve_request.spec_dir }}/behavior.md`
 - `{{ resolve_request.spec_dir }}/design.md`
-- 対象Threadの本文と全履歴
+- 各Threadの本文と全履歴
 - 現在の実装と差分
 
 ## 手順
+
+Threadごとに次を行い、全対象Threadを処理するまで繰り返す。
 
 1. `review get`と`review history`で対象Threadを全文読む。
 2. 指摘箇所、関連コード、呼び出し元、既存挙動を確認する。
 3. Requirements、Behavior、Designの根拠と突き合わせる。
 4. 指摘が成立するかを、Thread内の既存verifier判定を鵜呑みにせず検証する。
 5. 妥当な指摘だけ、現在の実装に適用可能な修正方針へ落とし込む。
+
+## 方針間の整合
+
+全Threadの方針はこのNodeが一人で決定する。決定済みの方針と矛盾する方針を作らない。
+
+- 同じファイル・同じ責務への方針は互いに整合させる。
+- 複数Threadが同じ根本原因を指す場合は、方針を重複させず、各Threadの`[FIX_POLICY]`で相互に参照する。
 
 ## 妥当な指摘
 
@@ -44,5 +53,4 @@ Spec根拠: <Requirement ID、Behavior ID、Designの該当箇所>
 
 - 一つのThreadから別の要求を導出すること。
 - Aの場合の要件から、SpecにないA'の場合の挙動を作ること。
-- 他Threadの方針をこのNodeで変更すること。
 - 実装すること。

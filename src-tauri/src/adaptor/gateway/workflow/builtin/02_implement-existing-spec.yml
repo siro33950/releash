@@ -124,7 +124,6 @@ nodes:
   - loop_guard:
       max_iterations: 3
       on_exhausted: implementation_confirmation
-      reset_on: verify_implementation
   - next: check_tasks
 - name: check_tasks
   command: >-

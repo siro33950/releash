@@ -223,7 +223,7 @@ nodes:
   - resolve_request
 - name: check_full_review_threads
   command: >-
-    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    releash review list --state open --json |
     jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
   artifact: thread-scan
   rules:
@@ -237,5 +237,4 @@ nodes:
       knowledge: releash-thread-cli
       instruction: review-report
   inputs:
-  - resolve_request
   - check_full_review_threads

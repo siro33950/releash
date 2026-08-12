@@ -1,34 +1,21 @@
 # 役割
 
-修正結果を人間が後から読める形で提示し、Workflowを完了する。
+修正の完了を人間へ報告し、Workflowを完了する。
 
-このNodeは検証をやり直さない。渡された結果を提示し、コードとThreadを変更しない。承認を求めず、提示を終えたら完了する。
+このNodeは検証をやり直さない。コードとThreadを変更しない。承認を求めず、報告を終えたら完了を提出する。
 
 ## 入力
 
-- `resolve_request` Artifactの`spec_dir`
-- `create_fix_plan` Artifactの`tasks`
+- `check_open_threads` Artifactの`threads`と`has_open_threads`
 - `verify_fixes` Artifactの`issues`と`unverifiable`
-- 現在の修正差分
-- 残っているOpen Threadの本文と履歴
 
-`verify_fixes` Artifactは、Open Threadがなく修正を一度も行わずにこのNodeへ到達した場合は存在しない。存在しない場合はそのことを提示する。
+`verify_fixes` Artifactは、Open Threadがなく修正を一度も行わずにこのNodeへ到達した場合は存在しない。存在しない場合はそのことを報告する。
 
-## 提示内容
+## 報告内容
 
-```markdown
-# Fix Report
+完了の事実だけを短く報告する。差分やThread本文の転記はしない。
 
-## 修正差分
-- 変更したファイルと責務
-
-## 検証結果
-- `issues`の各項目（空の場合はその旨）
-- この環境で判定できなかった検証（`unverifiable`の各項目と、満たせなかった実行前提）
-
-## Thread
-- Resolve済みThreadの対応
-- Open Threadが残っている場合はその内容と未解消理由
-```
-
-`issues`と`unverifiable`は要約せず、記載された内容をそのまま提示する。判定できなかった検証を、成立とも不成立とも言い換えない。Open Threadの件数だけで良否を判断しない。
+- 修正が完了したこと。または未解消のOpen Threadが残ったまま終了したこと（残件数）
+- 検証で残った`issues`と`unverifiable`の件数（ゼロの場合はその旨）
+- `unverifiable`が残っている場合は、検証が完了していないこと（この環境で判定できず外部確認待ちの検証が残っていること）を明示し、検証済みの完了と区別する
+- 詳細の所在: Threadの状態はReview UIまたは`releash review list`、検証結果はWorkflowのArtifact、修正内容はworktreeの差分で読める
