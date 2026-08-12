@@ -56,7 +56,7 @@ jobs:
           workspaces: src-tauri
           key: macos-universal
 
-      - uses: 1password/load-secrets-action@v4
+      - uses: 1password/load-secrets-action@e544b780808654ba8ceba5fb2fe2897103d92ff4 # v5
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           APPLE_CERTIFICATE: op://releash/apple-signing/certificate
@@ -70,6 +70,7 @@ jobs:
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
         with:
+          version: "2.38.1"
           export-env: true
 
       - uses: tauri-apps/tauri-action@v1

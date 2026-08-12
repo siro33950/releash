@@ -132,16 +132,8 @@ fn parse_node(
     match event {
         Event::MappingStart(_, _, _) => parse_mapping(cursor, path, map),
         Event::SequenceStart(_, _, _) => parse_sequence(cursor, path, map),
-        Event::Alias(_)
-        | Event::Scalar(_, _, _, _)
-        | Event::Nothing
-        | Event::StreamStart
-        | Event::StreamEnd
-        | Event::DocumentStart(_, _)
-        | Event::DocumentEnd
-        | Event::SequenceEnd
-        | Event::MappingEnd
-        | Event::Comment(_, _) => Ok(()),
+        Event::Alias(_) => Ok(()),
+        _ => Ok(()),
     }
 }
 
@@ -313,6 +305,21 @@ nodes:
 
         assert_eq!(missing_child, nearest_parent);
         assert_ne!(missing_child, map.value_span("").unwrap());
+    }
+
+    #[test]
+    fn alias_paths_fall_back_to_the_alias_token() {
+        let source = "defaults: &defaults\n  provider: claude\nsession: *defaults\n";
+        let map = YamlSpanMap::parse(source).unwrap();
+        let alias_span = DiagnosticSpan {
+            start_line: 3,
+            start_col: 10,
+            end_line: 3,
+            end_col: 19,
+        };
+
+        assert_eq!(map.value_span("session"), Some(alias_span));
+        assert_eq!(map.nearest_span("session.provider"), Some(alias_span));
     }
 
     #[test]
