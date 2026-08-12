@@ -132,16 +132,7 @@ fn parse_node(
     match event {
         Event::MappingStart(_, _, _) => parse_mapping(cursor, path, map),
         Event::SequenceStart(_, _, _) => parse_sequence(cursor, path, map),
-        Event::Alias(_)
-        | Event::Scalar(_, _, _, _)
-        | Event::Nothing
-        | Event::StreamStart
-        | Event::StreamEnd
-        | Event::DocumentStart(_, _)
-        | Event::DocumentEnd
-        | Event::SequenceEnd
-        | Event::MappingEnd
-        | Event::Comment(_, _) => Ok(()),
+        _ => Ok(()),
     }
 }
 
