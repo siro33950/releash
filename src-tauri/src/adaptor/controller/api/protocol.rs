@@ -37,8 +37,6 @@ pub(crate) struct SubmitOutputArtifactRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SubmitOutputRequest {
-    pub(crate) node: String,
-    pub(crate) node_execution_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) artifact: Option<SubmitOutputArtifactRequest>,
 }

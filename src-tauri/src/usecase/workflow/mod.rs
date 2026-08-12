@@ -299,6 +299,29 @@ impl WorkflowUsecase {
         }
     }
 
+    pub fn authorize_node_execution_access_for_worktree(
+        &self,
+        node_execution_id: &str,
+        worktree_path: &str,
+    ) -> Result<(), WorkflowError> {
+        if node_execution_id.trim().is_empty() {
+            return Err(WorkflowError::validation(
+                "node_execution_id must not be empty",
+            ));
+        }
+        let node = self
+            .workspace_nodes
+            .load_node_by_node_execution_id(node_execution_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
+            })?;
+        let execution_id = node.execution_id.ok_or_else(|| {
+            WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
+        })?;
+        self.authorize_execution_access_for_worktree(&execution_id, worktree_path)
+    }
+
     pub fn resolve_worktree_by_execution(
         &self,
         execution_id: &str,
@@ -1003,6 +1026,16 @@ mod tests {
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
             _node_id: &str,
+        ) -> Result<
+            Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            Ok(None)
+        }
+
+        fn load_node_by_node_execution_id(
+            &self,
+            _node_execution_id: &str,
         ) -> Result<
             Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
             crate::domain::local_event::LocalEventQueryError,

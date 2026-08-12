@@ -15,8 +15,6 @@ pub struct SubmitOutputArtifact {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubmitOutputCommand {
-    pub execution_id: String,
-    pub node_name: String,
     pub node_execution_id: String,
     pub artifact: Option<SubmitOutputArtifact>,
 }

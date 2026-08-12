@@ -122,11 +122,11 @@ CLI の更新操作は Tauri アプリ内の token-authenticated localhost API �
 
 ```sh
 releash workflow status <execution-id>
-releash workflow output submit <execution-id> --node <node-name> [--node-execution <id>] --type <contract> --json '<json>'
+releash workflow output submit --node-execution <id> --type <contract> --json '<json>'
 releash workflow output get <execution-id> --node <node-name>
 ```
 
-fanout で同名 NodeExecution が複数 active な場合は `node_execution_id` が必要。session 内の CLI は engine が注入する実行 ID を既定値に使う。
+Submitは通常Nodeとfanout childを区別せず、`node_execution_id`だけで対象を識別する。
 
 ## UI 方針
 

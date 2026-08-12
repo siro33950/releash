@@ -521,19 +521,11 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn submit(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-        node_execution_id: &str,
-    ) -> Result<(), String> {
+    pub async fn submit(&self, node_execution_id: &str) -> Result<(), String> {
         let response: MutationResponse = self
             .post(
-                &format!("/v1/workflow/executions/{execution_id}/submit"),
-                &serde_json::json!({
-                    "node": node_name,
-                    "node_execution_id": node_execution_id,
-                }),
+                &format!("/v1/workflow/node-executions/{node_execution_id}/submit"),
+                &serde_json::json!({}),
             )
             .await?;
         response
@@ -544,18 +536,14 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
     pub async fn submit_artifact(
         &self,
-        execution_id: &str,
-        node_name: &str,
         node_execution_id: &str,
         contract: &str,
         value: serde_json::Value,
     ) -> Result<(), String> {
         let response: MutationResponse = self
             .post(
-                &format!("/v1/workflow/executions/{execution_id}/submit"),
+                &format!("/v1/workflow/node-executions/{node_execution_id}/submit"),
                 &serde_json::json!({
-                    "node": node_name,
-                    "node_execution_id": node_execution_id,
                     "artifact": {
                         "contract": contract,
                         "value": value,

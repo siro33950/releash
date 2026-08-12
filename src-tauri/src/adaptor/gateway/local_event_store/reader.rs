@@ -329,6 +329,11 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 session_projection_by_identity(connection, session_id)?,
             ))
         }
+        LocalEventQuery::WorkflowExecutionByNodeExecution { node_execution_id } => {
+            Ok(LocalEventQueryResult::WorkflowExecutionByNodeExecution(
+                workflow_execution_by_node_execution(connection, node_execution_id)?,
+            ))
+        }
         LocalEventQuery::AgentSessionProjectionPage {
             workspace_identity,
             lifecycle,
@@ -427,6 +432,24 @@ pub(crate) fn run_query_in_recovery_snapshot(
             cursor.as_ref(),
         )?)),
     }
+}
+
+fn workflow_execution_by_node_execution(
+    connection: &Connection,
+    node_execution_id: &str,
+) -> Result<Option<String>, LocalEventQueryError> {
+    if node_execution_id.trim().is_empty() {
+        return Err(LocalEventQueryError::InvalidRequest);
+    }
+    connection
+        .query_row(
+            "SELECT execution_id FROM workflow_execution_nodes
+             WHERE node_execution_id = ?1",
+            params![node_execution_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| storage_unavailable(&error))
 }
 
 fn operation_binding_by_identity(
@@ -2445,6 +2468,35 @@ mod canonical_runtime_owner_snapshot_tests {
         assert_eq!(
             canonical_runtime_owner_snapshot(&connection, 1),
             Err(LocalEventQueryError::ResponseTooLarge)
+        );
+    }
+
+    #[test]
+    fn node_execution_identity_resolves_its_workflow_execution() {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE workflow_execution_nodes (
+                     execution_id TEXT NOT NULL,
+                     node_execution_id TEXT UNIQUE
+                 );
+                 INSERT INTO workflow_execution_nodes
+                     (execution_id, node_execution_id)
+                 VALUES ('execution-1', 'node-execution-1');",
+            )
+            .unwrap();
+
+        assert_eq!(
+            workflow_execution_by_node_execution(&connection, "node-execution-1").unwrap(),
+            Some("execution-1".to_string())
+        );
+        assert_eq!(
+            workflow_execution_by_node_execution(&connection, "missing").unwrap(),
+            None
+        );
+        assert_eq!(
+            workflow_execution_by_node_execution(&connection, ""),
+            Err(LocalEventQueryError::InvalidRequest)
         );
     }
 }

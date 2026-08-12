@@ -145,8 +145,6 @@ pub(crate) fn append_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,
     schemas: &BTreeMap<String, SchemaDef>,
-    execution_id: &str,
-    node_name: &str,
     node_execution_id: &str,
 ) {
     let (schema_guidance, action) = match artifact {
@@ -154,21 +152,13 @@ pub(crate) fn append_completion_action(
             let domain_schemas = schemas.clone();
             let schema_guidance =
                 workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
-            let action = prompt_composition::artifact_completion_action(
-                contract,
-                execution_id,
-                node_name,
-                Some(node_execution_id),
-            );
+            let action =
+                prompt_composition::artifact_completion_action(contract, node_execution_id);
             (schema_guidance, action)
         }
         None => (
             None,
-            prompt_composition::artifactless_completion_action(
-                execution_id,
-                node_name,
-                node_execution_id,
-            ),
+            prompt_composition::artifactless_completion_action(node_execution_id),
         ),
     };
     if !prompt.is_empty() {
@@ -184,7 +174,6 @@ pub(crate) fn append_completion_action(
 pub(crate) fn build_node_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    execution_id: &str,
     node_execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
@@ -215,8 +204,6 @@ pub(crate) fn build_node_prompt(
         &mut prompt,
         node.artifact.as_deref(),
         schemas,
-        execution_id,
-        &node.name,
         node_execution_id,
     );
     Ok((system_prompt, prompt))
@@ -240,7 +227,6 @@ impl<'a> FanoutChildPromptContext<'a> {
 pub(crate) fn build_fanout_child_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     context: FanoutChildPromptContext<'_>,
@@ -265,8 +251,6 @@ pub(crate) fn build_fanout_child_prompt(
         &mut user_message,
         node.artifact.as_deref(),
         schemas,
-        execution_id,
-        &node.name,
         context.node_execution_id,
     );
 
@@ -322,7 +306,6 @@ mod tests {
         let error = build_node_prompt(
             &node,
             None,
-            "execution-1",
             "node-execution-1",
             None,
             &HashMap::new(),
@@ -359,7 +342,6 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             "node-execution-1",
             Some("ship"),
             &outputs,
@@ -395,7 +377,6 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             "node-execution-1",
             Some(""),
             &outputs,
@@ -416,7 +397,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -453,7 +433,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             Some("ship"),
             &outputs,
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -478,7 +457,6 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             "node-execution-1",
             None,
             &HashMap::new(),
@@ -486,8 +464,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(!prompt.contains("--type"));
         assert!(!prompt.contains("--json"));
@@ -512,7 +490,6 @@ mod tests {
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             "node-execution-1",
             None,
             &HashMap::new(),
@@ -523,8 +500,8 @@ mod tests {
         assert!(prompt.contains("## Artifact contract"));
         assert!(prompt.contains("\"verdict\": \"string\""));
         assert!(prompt.contains("Fields not listed in `properties` are accepted"));
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
         let deprecated_step_flag = ["--", "step"].concat();
@@ -539,7 +516,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(None, "node-execution-1"),
@@ -547,8 +523,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(!prompt.contains("--type"));
         assert!(!prompt.contains("--json"));
@@ -565,7 +541,6 @@ mod tests {
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
-            "execution-1",
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -573,8 +548,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("releash workflow output submit execution-1"));
-        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("releash workflow output submit"));
+        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
     }

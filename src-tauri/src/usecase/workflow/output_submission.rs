@@ -7,7 +7,7 @@ use crate::domain::workflow::services::{contract as workflow_contract, secret_ma
 use crate::domain::workflow::RuntimeArtifact;
 use crate::domain::workflow::WorkflowDefinition;
 use crate::domain::workflow::WorkflowEvent;
-use crate::domain::workflow::{ContractType, ContractValidationResult, NodeDefinitionName};
+use crate::domain::workflow::{ContractType, ContractValidationResult};
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Debug)]
@@ -18,21 +18,14 @@ pub(crate) struct ValidatedSubmissionOutput {
 
 #[derive(Debug)]
 pub(crate) struct SubmissionTargetContext {
+    pub(crate) node_name: String,
     pub(crate) session_id: Option<String>,
     pub(crate) attempt: u32,
 }
 
 pub(crate) fn validate_submit_output_request(
-    execution_id: &str,
-    node_name: &str,
     node_execution_id: &str,
 ) -> Result<(), WorkflowRuntimeError> {
-    uuid::Uuid::parse_str(execution_id).map_err(|_| {
-        WorkflowRuntimeError::ValidationError("execution_id must be UUID".to_string())
-    })?;
-    NodeDefinitionName::new(node_name).map_err(|_| {
-        WorkflowRuntimeError::ValidationError("node_name must not be empty".to_string())
-    })?;
     if node_execution_id.trim().is_empty() {
         return Err(WorkflowRuntimeError::ValidationError(
             "node_execution_id must not be empty".to_string(),
@@ -44,26 +37,30 @@ pub(crate) fn validate_submit_output_request(
 pub(crate) fn validate_submit_target_context(
     exec: &DomainWorkflowExecution,
     execution_id: &str,
-    node_name: &str,
     node_execution_id: &str,
 ) -> Result<SubmissionTargetContext, WorkflowRuntimeError> {
     use crate::domain::workflow::entities::workflow_execution::NodeSubmitRejection;
 
-    let target = exec
-        .admit_node_submit(node_name, node_execution_id)
-        .map_err(|rejection| match rejection {
-            NodeSubmitRejection::ExecutionNotActive => WorkflowRuntimeError::InvalidState(format!(
-                "execution {execution_id} is not accepting node submit (state: {})",
-                exec.state().as_str()
-            )),
-            NodeSubmitRejection::NodeNotFound => WorkflowRuntimeError::ValidationError(format!(
-                "node '{node_name}' was not found in execution '{execution_id}'"
-            )),
-            NodeSubmitRejection::AttemptNotCurrent => WorkflowRuntimeError::InvalidState(format!(
-                "active node execution '{node_execution_id}' for node '{node_name}' was not found"
-            )),
-        })?;
+    let target =
+        exec.admit_node_submit(node_execution_id)
+            .map_err(|rejection| match rejection {
+                NodeSubmitRejection::ExecutionNotActive => {
+                    WorkflowRuntimeError::InvalidState(format!(
+                        "execution {execution_id} is not accepting node submit (state: {})",
+                        exec.state().as_str()
+                    ))
+                }
+                NodeSubmitRejection::NodeExecutionNotFound => {
+                    WorkflowRuntimeError::ValidationError(format!(
+                "node execution '{node_execution_id}' was not found in execution '{execution_id}'"
+            ))
+                }
+                NodeSubmitRejection::AttemptNotCurrent => WorkflowRuntimeError::InvalidState(
+                    format!("active node execution '{node_execution_id}' was not found"),
+                ),
+            })?;
     Ok(SubmissionTargetContext {
+        node_name: target.node_name,
         session_id: target.session_id,
         attempt: target.attempt,
     })
@@ -189,30 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_submit_output_request_rejects_invalid_identity_fields() {
+    fn validate_submit_output_request_requires_node_execution_identity() {
         assert!(matches!(
-            validate_submit_output_request("not-a-uuid", "review", "node-execution-1"),
-            Err(WorkflowRuntimeError::ValidationError(message))
-                if message == "execution_id must be UUID"
-        ));
-        assert!(matches!(
-            validate_submit_output_request(
-                "00000000-0000-0000-0000-000000000001",
-                " ",
-                "node-execution-1"
-            ),
-            Err(WorkflowRuntimeError::ValidationError(message))
-                if message == "node_name must not be empty"
-        ));
-        assert!(matches!(
-            validate_submit_output_request(
-                "00000000-0000-0000-0000-000000000001",
-                "review",
-                ""
-            ),
+            validate_submit_output_request(""),
             Err(WorkflowRuntimeError::ValidationError(message))
                 if message == "node_execution_id must not be empty"
         ));
+        assert!(validate_submit_output_request("node-execution-1").is_ok());
     }
 
     #[test]

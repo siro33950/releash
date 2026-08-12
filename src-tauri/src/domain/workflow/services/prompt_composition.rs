@@ -40,19 +40,9 @@ pub fn provider_tui_initial_instruction(system_prompt: Option<&str>, user_messag
     }
 }
 
-pub fn artifact_completion_action(
-    key: &str,
-    execution_id: &str,
-    node_name: &str,
-    node_execution_id: Option<&str>,
-) -> String {
+pub fn artifact_completion_action(key: &str, node_execution_id: &str) -> String {
     let quoted_key = crate::domain::shell::quote_path_for_shell(key);
-    let quoted_execution_id = crate::domain::shell::quote_path_for_shell(execution_id);
-    let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
-    let node_execution_arg = node_execution_id
-        .map(crate::domain::shell::quote_path_for_shell)
-        .map(|id| format!("  --node-execution {id} \\\n"))
-        .unwrap_or_default();
+    let quoted_node_execution_id = crate::domain::shell::quote_path_for_shell(node_execution_id);
     format!(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
@@ -60,22 +50,14 @@ pub fn artifact_completion_action(
 このコマンドが成功するまで node は完了していない。\n\
 成功したら追加の調査やtool実行を行わず、そのturnを終了すること。\n\n\
 ```sh\n\
-releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
+releash workflow output submit \\\n  --node-execution {node_execution_id} \\\n  --type {key} \\\n  --json '{{...}}'\n\
 ```",
-        execution_id = quoted_execution_id,
-        node_name = quoted_node_name,
-        node_execution_arg = node_execution_arg,
+        node_execution_id = quoted_node_execution_id,
         key = quoted_key
     )
 }
 
-pub fn artifactless_completion_action(
-    execution_id: &str,
-    node_name: &str,
-    node_execution_id: &str,
-) -> String {
-    let quoted_execution_id = crate::domain::shell::quote_path_for_shell(execution_id);
-    let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
+pub fn artifactless_completion_action(node_execution_id: &str) -> String {
     let quoted_node_execution_id = crate::domain::shell::quote_path_for_shell(node_execution_id);
     format!(
         "## 完了時の必須アクション\n\n\
@@ -84,10 +66,8 @@ pub fn artifactless_completion_action(
 このコマンドが成功するまで node は完了していない。\n\
 成功したら追加の調査やtool実行を行わず、そのturnを終了すること。\n\n\
 ```sh\n\
-releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --node-execution {node_execution_id}\n\
+releash workflow output submit \\\n  --node-execution {node_execution_id}\n\
 ```",
-        execution_id = quoted_execution_id,
-        node_name = quoted_node_name,
         node_execution_id = quoted_node_execution_id,
     )
 }

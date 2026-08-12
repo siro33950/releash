@@ -62,9 +62,6 @@ fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseす�
             "workflow",
             "output",
             "submit",
-            execution_id,
-            "--node",
-            "review",
             "--node-execution",
             "550e8400-e29b-41d4-a716-446655440001",
             "--type",
@@ -114,7 +111,6 @@ fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseす�
 
 #[test]
 fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_artifact() {
-    let execution_id = "550e8400-e29b-41d4-a716-446655440000";
     let node_execution_id = "550e8400-e29b-41d4-a716-446655440001";
 
     assert!(Cli::try_parse_from([
@@ -122,9 +118,6 @@ fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_ar
         "workflow",
         "output",
         "submit",
-        execution_id,
-        "--node",
-        "review",
         "--node-execution",
         node_execution_id,
     ])
@@ -134,13 +127,23 @@ fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_ar
         "workflow",
         "output",
         "submit",
-        execution_id,
-        "--node",
-        "review",
         "--node-execution",
         node_execution_id,
         "--type",
         "review-verdict",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from(["releash", "workflow", "output", "submit"]).is_err());
+    assert!(Cli::try_parse_from([
+        "releash",
+        "workflow",
+        "output",
+        "submit",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "--node",
+        "review",
+        "--node-execution",
+        node_execution_id,
     ])
     .is_err());
 }
@@ -153,8 +156,6 @@ fn test_workflow_output_submit_実行中アプリを要求する() {
 
     let error = cmd_output_submit(
         temp.path(),
-        &execution_id,
-        "review",
         "550e8400-e29b-41d4-a716-446655440001".to_string(),
         Some("review-verdict"),
         Some(r#"{"verdict":"LGTM"}"#.to_string()),

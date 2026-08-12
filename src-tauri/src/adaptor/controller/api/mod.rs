@@ -65,6 +65,7 @@ fn authenticated_with_tokens(router: Router, tokens: auth::AcceptedBearerTokens)
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -125,6 +126,7 @@ pub(crate) mod test_support {
     #[derive(Default)]
     pub(crate) struct RecordingRuntimeGateway {
         pub(crate) commands: Mutex<RecordedRuntimeCommands>,
+        node_execution_owners: Mutex<HashMap<String, String>>,
         workflow_resolution: Mutex<Option<(PathBuf, PathBuf)>>,
         output_persistence_data_dir: Mutex<Option<PathBuf>>,
         errors: Mutex<RecordedRuntimeErrors>,
@@ -137,6 +139,13 @@ pub(crate) mod test_support {
             facets_base_dir: PathBuf,
         ) {
             *self.workflow_resolution.lock().unwrap() = Some((workflows_dir, facets_base_dir));
+        }
+
+        pub(crate) fn bind_node_execution(&self, node_execution_id: &str, execution_id: &str) {
+            self.node_execution_owners
+                .lock()
+                .unwrap()
+                .insert(node_execution_id.to_string(), execution_id.to_string());
         }
 
         fn persist_submitted_outputs_to(&self, data_dir: PathBuf) {
@@ -348,6 +357,18 @@ pub(crate) mod test_support {
             "node-execution-next".to_string()
         }
 
+        async fn resolve_workflow_execution_id(
+            &self,
+            node_execution_id: &str,
+        ) -> Result<Option<String>, WorkflowError> {
+            Ok(self
+                .node_execution_owners
+                .lock()
+                .unwrap()
+                .get(node_execution_id)
+                .cloned())
+        }
+
         async fn load_active_execution(
             &self,
             execution_id: &str,
@@ -441,16 +462,18 @@ pub(crate) mod test_support {
                         }
                         _ => None,
                     });
-                    Some(SubmitOutputCommand {
-                        execution_id: execution_id.clone(),
+                    Some((
+                        SubmitOutputCommand {
+                            node_execution_id: node_execution_id.clone(),
+                            artifact,
+                        },
+                        execution_id.clone(),
                         node_name,
-                        node_execution_id: node_execution_id.clone(),
-                        artifact,
-                    })
+                    ))
                 }
                 _ => None,
             });
-            if let Some(command) = submit {
+            if let Some((command, execution_id, node_name)) = submit {
                 if let (Some(data_dir), Some(artifact)) = (
                     self.output_persistence_data_dir.lock().unwrap().clone(),
                     command.artifact.as_ref(),
@@ -458,12 +481,12 @@ pub(crate) mod test_support {
                     append_canonical_workflow_drafts(
                         &data_dir,
                         &[WorkflowEventDraft {
-                            execution_id: command.execution_id.clone(),
+                            execution_id,
                             event_kind: "artifact_produced".to_string(),
                             timestamp: 110.0,
                             payload: serde_json::json!({
                                 "node_execution_id": command.node_execution_id,
-                                "node_name": command.node_name,
+                                "node_name": node_name,
                                 "contract": artifact.contract,
                                 "value": artifact.value,
                                 "submitted_at": 109.0,
@@ -916,7 +939,7 @@ pub(crate) mod test_support {
             ),
             (
                 Method::POST,
-                format!("/v1/workflow/executions/{execution_id}/submit"),
+                "/v1/workflow/node-executions/ne-review-2/submit".to_string(),
             ),
             (
                 Method::POST,
@@ -954,6 +977,7 @@ pub(crate) mod test_support {
         let directory = tempfile::tempdir().unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
         let execution_id = "00000000-0000-4000-8000-000000000123";
+        gateway.bind_node_execution("ne-review-2", execution_id);
         let start = send_json(
             &router,
             "/v1/workflow/executions",
@@ -1039,10 +1063,8 @@ pub(crate) mod test_support {
 
         let submit = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/submit"),
+            "/v1/workflow/node-executions/ne-review-2/submit",
             serde_json::json!({
-                "node": "review",
-                "node_execution_id": "ne-review-2",
                 "artifact": {
                     "contract": "review-result",
                     "value": {"status": "approved"}
@@ -1089,8 +1111,6 @@ pub(crate) mod test_support {
         assert_eq!(commands.retries[0].node_execution_id, "ne-review-2");
 
         assert_eq!(commands.outputs.len(), 1);
-        assert_eq!(commands.outputs[0].execution_id, execution_id);
-        assert_eq!(commands.outputs[0].node_name, "review");
         assert_eq!(commands.outputs[0].node_execution_id, "ne-review-2");
         let artifact = commands.outputs[0].artifact.as_ref().unwrap();
         assert_eq!(artifact.contract, "review-result");
@@ -1165,12 +1185,11 @@ pub(crate) mod test_support {
 
         gateway.errors.lock().unwrap().output =
             Some(WorkflowError::NotFound("execution not found".to_string()));
+        gateway.bind_node_execution("ne-review-1", execution_id);
         let output = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/submit"),
+            "/v1/workflow/node-executions/ne-review-1/submit",
             serde_json::json!({
-                "node": "review",
-                "node_execution_id": "ne-review-1",
                 "artifact": {
                     "contract": "review-result",
                     "value": {"status": "approved"}
@@ -1187,14 +1206,23 @@ pub(crate) mod test_support {
         let directory = tempfile::tempdir().unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
         let execution_id = "00000000-0000-4000-8000-000000000123";
+        gateway.bind_node_execution("ne-review-2", execution_id);
 
-        let response = send_json(
+        let legacy_identity_fields = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/submit"),
+            "/v1/workflow/node-executions/ne-review-2/submit",
             serde_json::json!({
                 "node": "review",
                 "node_execution_id": "ne-review-2"
             }),
+        )
+        .await;
+        assert_eq!(legacy_identity_fields.0, StatusCode::BAD_REQUEST);
+
+        let response = send_json(
+            &router,
+            "/v1/workflow/node-executions/ne-review-2/submit",
+            serde_json::json!({}),
         )
         .await;
 
@@ -1318,13 +1346,12 @@ pub(crate) mod test_support {
         .unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
         gateway.persist_submitted_outputs_to(directory.path().to_path_buf());
+        gateway.bind_node_execution("ne-review-2", execution_id);
 
         let submit = send_json(
             &router,
-            &format!("/v1/workflow/executions/{execution_id}/submit"),
+            "/v1/workflow/node-executions/ne-review-2/submit",
             serde_json::json!({
-                "node": "review",
-                "node_execution_id": "ne-review-2",
                 "artifact": {
                     "contract": "review-result",
                     "value": {"status": "approved"}

@@ -110,7 +110,6 @@ fn prepare_fanout_child_prompt_plans(
             let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
                 &child.node,
                 facet_contents.for_node(&child.node.name),
-                &fanout_start.execution_id,
                 fanout_start.request.as_deref(),
                 &prompt_inputs.artifacts,
                 workflow_prompt::FanoutChildPromptContext::new(
