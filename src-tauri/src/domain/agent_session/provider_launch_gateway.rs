@@ -60,6 +60,7 @@ pub(crate) trait ProviderAgentLaunchGateway: Send + Sync {
         armed: &ArmedProviderLifecycle,
         executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
+        worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError>;
 
     fn cleanup(&self, agent_session_id: &str) -> Result<(), ProviderAgentLaunchGatewayError>;

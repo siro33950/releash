@@ -70,6 +70,7 @@ impl ProviderAgentLaunchGateway for RecordingResumeLaunches {
         armed: &ArmedProviderLifecycle,
         _executable: ResolvedProviderExecutable,
         launch: ProviderSessionLaunch,
+        _worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         self.armed.lock().unwrap().push(armed.clone());
         self.launches.lock().unwrap().push(launch);

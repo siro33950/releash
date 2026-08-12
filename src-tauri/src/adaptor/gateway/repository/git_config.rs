@@ -142,6 +142,45 @@ fn resolve_base_ref_oid(repo: &git2::Repository, base_name: &str) -> Option<git2
         .or_else(|| peel(&format!("refs/remotes/origin/{base_name}")))
 }
 
+/// Provider TUI の `RELEASH_BASE_BRANCH` に渡す現在ブランチの実効 base 名を返す。
+/// detached / unborn / ref 不在 / merge-base 不成立は `None`。
+pub(crate) fn resolve_effective_base_branch(
+    repo_path: &str,
+) -> Result<Option<String>, RepositoryError> {
+    let repo = match client::open(repo_path) {
+        Ok(repo) => repo,
+        Err(_) => return Ok(None),
+    };
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(_) => return Ok(None),
+    };
+    if !head.is_branch() {
+        return Ok(None);
+    }
+    let current_oid = match head.target() {
+        Some(oid) => oid,
+        None => return Ok(None),
+    };
+    let branch_name = match head.shorthand() {
+        Ok(branch_name) => branch_name.to_string(),
+        Err(_) => return Ok(None),
+    };
+    let config = repo.config().ok();
+    let base_name = match resolve_branch_base(&repo, config.as_ref(), &branch_name) {
+        Some(base_name) => base_name,
+        None => return Ok(None),
+    };
+    let base_oid = match resolve_base_ref_oid(&repo, &base_name) {
+        Some(base_oid) => base_oid,
+        None => return Ok(None),
+    };
+    if repo.merge_base(current_oid, base_oid).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(base_name))
+}
+
 pub(crate) fn resolve_base_commit_oid(
     path_hint: &str,
     base_name: &str,
@@ -303,6 +342,46 @@ mod git_config_gateway_tests {
 
         let result = resolve_current_base_branch(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_実効base_ref実在ならsome_ref不在ならnone() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        checkout_feature_branch(&repo);
+        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
+        assert_eq!(
+            resolve_effective_base_branch(repo_path).unwrap(),
+            Some(default_branch)
+        );
+
+        set_branch_base_override(repo_path, "feature", Some("no-such-branch")).unwrap();
+        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
+    }
+
+    #[test]
+    fn test_実効base_merge_base不成立ならnone() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+        let signature = repo.signature().unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let orphan = repo
+            .commit(None, &signature, &signature, "orphan root", &tree, &[])
+            .unwrap();
+        repo.reference("refs/heads/feature", orphan, true, "orphan")
+            .unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
+
+        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
     }
 
     #[test]

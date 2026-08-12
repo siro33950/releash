@@ -32,6 +32,7 @@ fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcleanu
             &armed(ProviderKind::Claude),
             ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
             ProviderSessionLaunch::New,
+            data_dir.path().to_str().unwrap(),
         )
         .unwrap();
 
@@ -81,6 +82,7 @@ fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で生�
             &armed(ProviderKind::Codex),
             ResolvedProviderExecutable::new("/opt/bin/codex".into()).unwrap(),
             ProviderSessionLaunch::resume("codex-session-1").unwrap(),
+            data_dir.path().to_str().unwrap(),
         )
         .unwrap();
 
@@ -121,6 +123,7 @@ fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
                 )
                 .unwrap(),
                 ProviderSessionLaunch::New,
+                data_dir.path().to_str().unwrap(),
             )
             .unwrap();
         let launch_directory = prepared.resource_directory().unwrap();
@@ -147,6 +150,77 @@ fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
     }
 }
 
+#[test]
+fn test_provider_launch_gateway_解決済みbase_branchを両providerへ渡す() {
+    let data_dir = tempdir().unwrap();
+    let (repo_dir, repo) = crate::test_support::git::create_test_repo();
+    crate::test_support::git::create_initial_commit(&repo);
+    let repo_path = repo_dir.path().to_str().unwrap();
+    let base_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("feature", &base_commit, false).unwrap();
+    repo.set_head("refs/heads/feature").unwrap();
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .unwrap();
+    crate::adaptor::gateway::repository::git_config::set_branch_base_override(
+        repo_path,
+        "feature",
+        Some(&base_branch),
+    )
+    .unwrap();
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        let prepared = gateway
+            .prepare(
+                &armed(provider),
+                ResolvedProviderExecutable::new(
+                    match provider {
+                        ProviderKind::Claude => "/opt/bin/claude",
+                        ProviderKind::Codex => "/opt/bin/codex",
+                    }
+                    .into(),
+                )
+                .unwrap(),
+                ProviderSessionLaunch::New,
+                repo_path,
+            )
+            .unwrap();
+
+        assert!(prepared
+            .process()
+            .environment()
+            .iter()
+            .any(|(key, value)| { key == "RELEASH_BASE_BRANCH" && value == &base_branch }));
+    }
+}
+
+#[test]
+fn test_provider_launch_gateway_base_branch未解決なら環境変数を渡さない() {
+    let data_dir = tempdir().unwrap();
+    let (repo_dir, repo) = crate::test_support::git::create_test_repo();
+    let head = crate::test_support::git::create_initial_commit(&repo);
+    repo.set_head_detached(head).unwrap();
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+
+    let prepared = gateway
+        .prepare(
+            &armed(ProviderKind::Claude),
+            ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
+            ProviderSessionLaunch::New,
+            repo_dir.path().to_str().unwrap(),
+        )
+        .unwrap();
+
+    assert!(prepared
+        .process()
+        .environment()
+        .iter()
+        .all(|(key, _)| key != "RELEASH_BASE_BRANCH"));
+}
+
 #[cfg(unix)]
 #[test]
 fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで保持する() {
@@ -164,6 +238,7 @@ fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで保�
             &armed(ProviderKind::Claude),
             ResolvedProviderExecutable::new(executable.clone()).unwrap(),
             ProviderSessionLaunch::New,
+            data_dir.path().to_str().unwrap(),
         )
         .unwrap();
 

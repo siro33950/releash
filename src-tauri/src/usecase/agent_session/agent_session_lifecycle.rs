@@ -469,6 +469,7 @@ impl AgentSessionLifecycleUsecase {
             executable,
             ProviderSessionLaunch::resume(provider_session_id)
                 .map_err(|_| AgentSessionLifecycleUsecaseError::Corrupt)?,
+            session.session().worktree_path(),
         ) {
             Ok(prepared) => prepared,
             Err(_) => {
