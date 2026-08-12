@@ -149,6 +149,16 @@ fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_ar
 }
 
 #[test]
+fn test_workflow_output_submit_rejects_blank_node_execution_id() {
+    let temp = TempDir::new().unwrap();
+
+    assert_eq!(
+        cmd_output_submit(temp.path(), "   ".to_string(), None, None, None).unwrap_err(),
+        CliError::InvalidInput("--node-execution must not be empty".to_string())
+    );
+}
+
+#[test]
 fn test_workflow_output_submit_実行中アプリを要求する() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(10);
