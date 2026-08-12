@@ -69,6 +69,29 @@ releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node
     )
 }
 
+pub fn artifactless_completion_action(
+    execution_id: &str,
+    node_name: &str,
+    node_execution_id: &str,
+) -> String {
+    let quoted_execution_id = crate::domain::shell::quote_path_for_shell(execution_id);
+    let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
+    let quoted_node_execution_id = crate::domain::shell::quote_path_for_shell(node_execution_id);
+    format!(
+        "## 完了時の必須アクション\n\n\
+作業が完了した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
+チャット本文に完了報告を書いても提出とは扱われない。必ず次のコマンドで完了を提出すること。\n\
+このコマンドが成功するまで node は完了していない。\n\
+成功したら追加の調査やtool実行を行わず、そのturnを終了すること。\n\n\
+```sh\n\
+releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --node-execution {node_execution_id}\n\
+```",
+        execution_id = quoted_execution_id,
+        node_name = quoted_node_name,
+        node_execution_id = quoted_node_execution_id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
