@@ -208,11 +208,43 @@ fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
             "RELEASH_NODE_EXECUTION_ID".to_string(),
             input.node_execution_id.clone(),
         ),
+        (
+            "RELEASH_WORKTREE_PATH".to_string(),
+            input.worktree_path.clone(),
+        ),
     ];
     if let Some(session_id) = input.session_id.as_ref() {
         env.push(("RELEASH_SESSION_ID".to_string(), session_id.clone()));
     }
     env
+}
+
+#[cfg(test)]
+mod command_env_tests {
+    use super::*;
+
+    #[test]
+    fn command_env_includes_worktree_path() {
+        let input = CommandExecutionInput {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
+            node_name: "check".to_string(),
+            attempt: 1,
+            worktree_path: "/repo/worktree".to_string(),
+            raw_command: Some("true".to_string()),
+            contract: None,
+            schemas: BTreeMap::new(),
+            fanout_parent: None,
+            session_id: None,
+        };
+
+        let env = command_env(&input);
+
+        assert!(env.contains(&(
+            "RELEASH_WORKTREE_PATH".to_string(),
+            "/repo/worktree".to_string()
+        )));
+    }
 }
 
 fn new_node_execution_id() -> String {

@@ -23,7 +23,7 @@ pub(super) enum ReviewSubcommand {
     /// review Thread 一覧を表示する。
     List {
         #[arg(long)]
-        session_id: String,
+        session_id: Option<String>,
         #[arg(long)]
         file: Option<String>,
         #[arg(long)]
@@ -101,13 +101,7 @@ fn review_actor_and_worktree(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<(ReviewActor, String), CliError> {
-    if session_id.trim().is_empty() {
-        return Err(CliError::InvalidInput(
-            "--session-id must not be empty".to_string(),
-        ));
-    }
-    let session = review_session_context(data_dir, session_id)?
-        .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
+    let session = required_review_session_context(data_dir, session_id)?;
     review_actor_and_worktree_from_context(session_id, session)
 }
 
@@ -134,20 +128,76 @@ fn review_actor_and_worktree_from_context(
     }
 }
 
-/// 読み取り専用 review コマンド (`get` / `history`) 向けの軽量 helper。
+fn review_actor_and_worktree_for_read(
+    data_dir: &Path,
+    session_id: &str,
+) -> Result<(ReviewActor, String), CliError> {
+    let session = required_review_session_context(data_dir, session_id)?;
+    Ok(match session {
+        ReviewSessionContext::Provider(session) => {
+            let provider = match session.provider {
+                AgentSessionProviderDto::Claude => "claude",
+                AgentSessionProviderDto::Codex => "codex",
+            };
+            (
+                ReviewActor::provider_agent(provider.to_string(), Some(session_id.to_string())),
+                session.worktree_path,
+            )
+        }
+    })
+}
+
+/// 読み取り専用 review コマンド (`list` / `get` / `history`) 向けの軽量 helper。
 ///
-/// Get / HistoryはAgentSessionのlifecycleに関係なくworktreeだけを解決する。
+/// List / Get / HistoryはAgentSessionのlifecycleに関係なくworktreeだけを解決する。
 fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<String, CliError> {
+    let session = required_review_session_context(data_dir, session_id)?;
+    Ok(match session {
+        ReviewSessionContext::Provider(session) => session.worktree_path,
+    })
+}
+
+fn required_review_session_context(
+    data_dir: &Path,
+    session_id: &str,
+) -> Result<ReviewSessionContext, CliError> {
     if session_id.trim().is_empty() {
         return Err(CliError::InvalidInput(
             "--session-id must not be empty".to_string(),
         ));
     }
-    let session = review_session_context(data_dir, session_id)?
-        .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
-    Ok(match session {
-        ReviewSessionContext::Provider(session) => session.worktree_path,
-    })
+    review_session_context(data_dir, session_id)?
+        .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))
+}
+
+fn review_list_actor_and_worktree(
+    data_dir: &Path,
+    session_id: Option<&str>,
+    worktree_path: Option<&str>,
+    actor_required: bool,
+) -> Result<(ReviewActor, String), CliError> {
+    if actor_required {
+        let session_id = session_id.ok_or_else(|| {
+            CliError::InvalidInput(
+                "--session-id is required when --author or --unread is specified".to_string(),
+            )
+        })?;
+        return review_actor_and_worktree_for_read(data_dir, session_id);
+    }
+    if let Some(session_id) = session_id {
+        return Ok((
+            ReviewActor::human(),
+            review_worktree_from_session(data_dir, session_id)?,
+        ));
+    }
+    let worktree_path = worktree_path
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::InvalidInput(
+                "review list requires --session-id or RELEASH_WORKTREE_PATH".to_string(),
+            )
+        })?;
+    Ok((ReviewActor::human(), worktree_path.to_string()))
 }
 
 fn review_session_context(
@@ -347,12 +397,22 @@ pub(super) fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<S
             thread_id,
             json,
         } => {
-            let (actor, review_worktree) = review_actor_and_worktree(data_dir, &session_id)?;
+            let state = parse_review_state(state)?;
+            let author = parse_optional_author_scope(author)?;
+            let unread = parse_optional_unread(unread)?;
+            let actor_required = author.is_some() || unread.is_some();
+            let worktree_path = std::env::var("RELEASH_WORKTREE_PATH").ok();
+            let (actor, review_worktree) = review_list_actor_and_worktree(
+                data_dir,
+                session_id.as_deref(),
+                worktree_path.as_deref(),
+                actor_required,
+            )?;
             let filter = ReviewThreadFilter {
                 file,
-                state: parse_review_state(state)?,
-                author: parse_optional_author_scope(author)?,
-                unread: parse_optional_unread(unread)?,
+                state,
+                author,
+                unread,
                 thread_id,
             };
             let threads = usecase
@@ -649,7 +709,7 @@ mod tests {
         let list_human = cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
-                session_id: session_id.clone(),
+                session_id: Some(session_id.clone()),
                 file: None,
                 state: None,
                 author: None,
@@ -670,7 +730,7 @@ mod tests {
         let list_json = cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
-                session_id: session_id.clone(),
+                session_id: Some(session_id.clone()),
                 file: None,
                 state: None,
                 author: None,
@@ -893,7 +953,7 @@ mod tests {
         let invalid_state = cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
-                session_id: session_id.clone(),
+                session_id: Some(session_id.clone()),
                 file: None,
                 state: Some("paused".to_string()),
                 author: None,
@@ -1116,6 +1176,94 @@ mod tests {
     }
 
     #[test]
+    fn review_list_allows_paused_and_archived_sessions() {
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let thread_id = seed_review_thread(tmp.path());
+
+        for lifecycle in [
+            crate::domain::local_event::AgentSessionLifecycleRecord::Paused,
+            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+        ] {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            write_review_session_with_lifecycle(tmp.path(), &session_id, Some("codex"), lifecycle);
+
+            let output = cmd_review(
+                tmp.path(),
+                ReviewSubcommand::List {
+                    session_id: Some(session_id.clone()),
+                    file: None,
+                    state: Some("open".to_string()),
+                    author: None,
+                    unread: None,
+                    thread_id: Vec::new(),
+                    json: true,
+                },
+            )
+            .unwrap();
+
+            assert!(output.contains(&thread_id));
+
+            let unread_output = cmd_review(
+                tmp.path(),
+                ReviewSubcommand::List {
+                    session_id: Some(session_id),
+                    file: None,
+                    state: Some("open".to_string()),
+                    author: None,
+                    unread: Some("true".to_string()),
+                    thread_id: Vec::new(),
+                    json: true,
+                },
+            )
+            .unwrap();
+
+            assert!(unread_output.contains(&thread_id));
+        }
+    }
+
+    #[test]
+    fn review_list_actor_filters_require_session_id() {
+        let tmp = TempDir::new().unwrap();
+
+        for (author, unread) in [
+            (Some("self".to_string()), None),
+            (None, Some("true".to_string())),
+        ] {
+            let error = cmd_review(
+                tmp.path(),
+                ReviewSubcommand::List {
+                    session_id: None,
+                    file: None,
+                    state: None,
+                    author,
+                    unread,
+                    thread_id: Vec::new(),
+                    json: true,
+                },
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                CliError::InvalidInput(message)
+                    if message == "--session-id is required when --author or --unread is specified"
+            ));
+        }
+    }
+
+    #[test]
+    fn review_list_uses_worktree_environment_without_session() {
+        let tmp = TempDir::new().unwrap();
+
+        let (actor, worktree) =
+            review_list_actor_and_worktree(tmp.path(), None, Some("/repo"), false).unwrap();
+
+        assert_eq!(actor, ReviewActor::human());
+        assert_eq!(worktree, "/repo");
+    }
+
+    #[test]
     fn review_cli_rejects_mutation_for_archived_session() {
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
@@ -1175,6 +1323,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn review_cli_parser_accepts_list_without_session_id() {
+        let parsed = Cli::try_parse_from(["releash", "review", "list", "--state", "open"]).unwrap();
+
+        match parsed.command {
+            TopCommand::Review {
+                command: ReviewSubcommand::List { session_id, .. },
+            } => assert_eq!(session_id, None),
+            _ => panic!("expected review list command"),
+        }
+    }
+
     /// `--worktree` フラグは spec design.md L37 で「提供しない」と明示されたため
     /// 受け付けない（session_id から worktree を解決する）。
     #[test]
@@ -1225,7 +1385,7 @@ mod tests {
         cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
-                session_id: session_id.clone(),
+                session_id: Some(session_id.clone()),
                 file: None,
                 state: Some("open".to_string()),
                 author: None,
