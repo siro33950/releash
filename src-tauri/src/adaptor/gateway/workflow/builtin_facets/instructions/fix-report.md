@@ -17,4 +17,5 @@
 
 - 修正が完了したこと。または未解消のOpen Threadが残ったまま終了したこと（残件数）
 - 検証で残った`issues`と`unverifiable`の件数（ゼロの場合はその旨）
+- `unverifiable`が残っている場合は、検証が完了していないこと（この環境で判定できず外部確認待ちの検証が残っていること）を明示し、検証済みの完了と区別する
 - 詳細の所在: Threadの状態はReview UIまたは`releash review list`、検証結果はWorkflowのArtifact、修正内容はworktreeの差分で読める
