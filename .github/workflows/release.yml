@@ -70,6 +70,7 @@ jobs:
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
         with:
+          version: "2.38.1"
           export-env: true
 
       - uses: tauri-apps/tauri-action@v1
