@@ -275,27 +275,31 @@ impl WorkflowControlPlaneUsecase {
         };
         let timestamp = self.runtime.current_timestamp();
         let mut candidate = current.clone();
-        match candidate.record_node_completion_signal(
+        let submit_signal_applied = match candidate.record_node_completion_signal(
             &command.node_execution_id,
             NodeCompletionSignal::Submit,
             timestamp,
         ) {
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied => {}
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied => {
-                return Ok(())
-            }
+            TransitionOutcome::Applied => true,
+            TransitionOutcome::AlreadyApplied => false,
             _ => {
                 return Err(WorkflowError::invalid_state(format!(
                     "node execution '{}' cannot accept Submit",
                     command.node_execution_id
                 )))
             }
+        };
+        if !submit_signal_applied && validated_artifact.is_none() {
+            return Ok(());
         }
-        let mut events = vec![WorkflowEvent::NodeSubmitReceived {
-            execution_id: execution_id.clone(),
-            node_execution_id: command.node_execution_id.clone(),
-            timestamp,
-        }];
+        let mut events = Vec::new();
+        if submit_signal_applied {
+            events.push(WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: command.node_execution_id.clone(),
+                timestamp,
+            });
+        }
         if let Some((contract, validated)) = validated_artifact {
             if candidate.apply_submitted_output(
                 target.node_name.clone(),
@@ -325,13 +329,18 @@ impl WorkflowControlPlaneUsecase {
                 timestamp,
             ));
         }
-        let (outcome, handshake_events) = apply_completion_handshake(
-            &mut candidate,
-            &command.node_execution_id,
-            self.runtime.new_node_execution_id(),
-            timestamp,
-        )?;
-        events.extend(handshake_events);
+        let outcome = if submit_signal_applied {
+            let (outcome, handshake_events) = apply_completion_handshake(
+                &mut candidate,
+                &command.node_execution_id,
+                self.runtime.new_node_execution_id(),
+                timestamp,
+            )?;
+            events.extend(handshake_events);
+            outcome
+        } else {
+            None
+        };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
             .runtime

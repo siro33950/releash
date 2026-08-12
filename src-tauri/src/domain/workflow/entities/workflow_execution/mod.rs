@@ -1524,6 +1524,12 @@ impl WorkflowExecution {
         else {
             return TransitionOutcome::NotApplicable;
         };
+        if !self.runtime.node_executions[execution_index]
+            .status
+            .is_active()
+        {
+            return TransitionOutcome::NotApplicable;
+        }
         let fanout_child = self.runtime.node_executions[execution_index]
             .fanout_parent
             .is_some();
@@ -3375,6 +3381,62 @@ mod tests {
         assert_eq!(
             resumed.completion_signals,
             NodeCompletionSignalState::SubmitReceived
+        );
+    }
+
+    #[test]
+    fn paused_attempt_accepts_artifact_replacement_without_changing_status() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                11.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 12.0),
+            TransitionOutcome::Applied
+        );
+        assert!(execution.admit_node_submit(&node_execution_id).is_ok());
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                13.0,
+            ),
+            TransitionOutcome::AlreadyApplied
+        );
+        assert_eq!(
+            execution.apply_submitted_output(
+                "implement".to_string(),
+                &node_execution_id,
+                1,
+                None,
+                "result".to_string(),
+                serde_json::json!({"result": "replacement"}),
+                None,
+                14.0,
+            ),
+            TransitionOutcome::Applied
+        );
+
+        let paused = &execution.node_executions()[0];
+        assert_eq!(paused.status, RuntimeNodeExecutionStatus::Paused);
+        assert_eq!(
+            paused.artifact.as_ref(),
+            Some(&serde_json::json!({"result": "replacement"}))
         );
     }
 
