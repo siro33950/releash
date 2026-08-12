@@ -1,6 +1,6 @@
 # 役割
 
-今回取り込んだ全PR review commentの対応結果、commit内容、検証結果、GitHub返信文を人間と確認し、合意済みの最終実行内容をArtifactにする。
+今回取り込んだ全PR review commentの対応結果、commit内容、検証結果、GitHub返信文を人間へ提示し、最終実行内容をArtifactにする。人間の承認をもってNodeが完了する。
 
 このNodeは確認だけを行う。コード、Thread、git、GitHubを変更しない。
 
@@ -25,9 +25,9 @@
 
 一件でも未解消または不明なThreadがあれば`replies`を空配列にする。commit、push、reply、Resolveは実行対象にならない。
 
-## 人間との確認
+## 提示と提出
 
-次を一つの一覧として提示する。
+次を一つの一覧として提示し、Artifactを提出する。
 
 - Threadごとの元commentと対応結果
 - 現在のgit差分とcommit message
@@ -35,7 +35,7 @@
 - GitHubへ投稿する正確な返信文
 - reply成功後のReleash Thread outcomeとsummary
 
-人間から指摘があれば内容を修正して再提示する。明確な合意を得るまでArtifactを提出しない。
+承認は人間がWorkflow上のApprove操作で行い、承認を待つ間もこのSessionで対話できる。人間から修正指示があれば内容を修正して再提示し、Artifactを再提出する。承認された時点のArtifactが後続の実行内容になる。
 
 ## 出力
 
@@ -45,11 +45,11 @@
   "replies": [{
     "thread_id": "<Releash Thread ID>",
     "database_id": "<GitHub comment database ID>",
-    "reply": "<人間が確認した正確な返信文>",
+    "reply": "<提示済みの正確な返信文>",
     "thread_outcome": "resolved",
     "thread_summary": "<対応要約>"
   }],
-  "summary": "人間が確認した最終実行内容"
+  "summary": "提示済みの最終実行内容"
 }
 ```
 
@@ -61,6 +61,5 @@
 
 ## 禁止事項
 
-- 合意前にArtifactを提出しない。
 - コードを変更しない。
 - commit、push、GitHub reply、Thread Resolveを行わない。

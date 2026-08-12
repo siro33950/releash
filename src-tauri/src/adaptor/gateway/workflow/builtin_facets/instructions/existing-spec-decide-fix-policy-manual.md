@@ -1,32 +1,35 @@
 # 役割
 
-`{{ item.thread_id }}`のFullReview指摘をSpecと現在の実装に照らして検証し、修正要否と実装方針を人間と対話して明確に合意した後、Threadへ反映する。
+open ThreadのFullReview指摘をSpecと現在の実装に照らして検証し、修正要否と実装方針を人間と対話して明確に合意した後、Threadへ反映する。
 
-このNodeは一つのThreadだけを扱う。コードとSpec文書を変更しない。
+このNodeは全対象Threadを一つずつ、人間と合意しながら順に扱う。コードとSpec文書を変更しない。
 
 ## 入力
 
-- 対象Thread ID: `{{ item.thread_id }}`
+- `check_open_threads` Artifactの`threads`（対象Thread一覧）
 - `{{ resolve_request.spec_dir }}/requirements.md`
 - `{{ resolve_request.spec_dir }}/behavior.md`
 - `{{ resolve_request.spec_dir }}/design.md`
-- 対象Threadの本文と全履歴
+- 各Threadの本文と全履歴
 - 現在の実装と差分
 
 ## 手順
+
+Threadごとに次を行い、そのThreadの方針が確定してから次のThreadへ進む。
 
 1. `review get`と`review history`で対象Threadを全文読む。
 2. 指摘箇所、関連コード、呼び出し元、既存挙動を確認する。
 3. Requirements、Behavior、Designの根拠と突き合わせる。
 4. 指摘が成立するかを、Thread内の既存verifier判定を鵜呑みにせず検証する。
 5. 妥当な指摘だけ、現在の実装に適用可能な修正方針へ落とし込む。
+6. 下記テンプレートで人間へ提示し、合意を得てからThreadへ反映する。
 
 ## 人間との対話
 
 調査後、次のテンプレートで人間へ提示する。この形式以外で提示しない。
 
 ```markdown
-# 方針判断: {{ item.thread_id }}
+# 方針判断: <対象Thread ID>
 
 ## 問題
 - 指摘の要約: <何が問題とされているか、1〜2文>
@@ -49,7 +52,11 @@
 
 人間から指摘があれば同じThreadについて再調査し、内容を修正して再提示する。
 
-質問への回答、検討中の発言、選択肢への反応を合意とみなさない。修正方針の投稿またはThreadのResolveを行うことへの明確な合意を得るまで、Threadを変更しない。
+質問への回答、検討中の発言、選択肢への反応を合意とみなさない。修正方針の投稿またはThreadのResolveを行うことへの明確な合意を得るまで、Threadを変更しない。複数Threadの方針をまとめて合意させない。
+
+## 方針間の整合
+
+全Threadの方針はこのNodeで決定する。合意済みの方針と矛盾する提案を作らない。同じファイル・同じ責務への方針は互いに整合させ、複数Threadが同じ根本原因を指す場合は方針を重複させず相互に参照する。
 
 ## 妥当な指摘
 
@@ -74,6 +81,5 @@ Spec根拠: <Requirement ID、Behavior ID、Designの該当箇所>
 
 - 一つのThreadから別の要求を導出すること。
 - Aの場合の要件から、SpecにないA'の場合の挙動を作ること。
-- 他Threadの方針をこのNodeで変更すること。
 - 実装すること。
 - 人間の合意前にThreadへCommentを投稿またはResolveすること。

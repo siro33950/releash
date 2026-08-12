@@ -17,7 +17,7 @@
 3. `gh repo view`でownerとrepository名を取得する。
 4. GraphQL APIでPRの`reviewThreads(first:, after: endCursor)`を取得し、`pageInfo.hasNextPage`が`false`になるまで`pageInfo.endCursor`を使って全ページを反復取得する。REST APIで代替しない。
 5. 各review threadの`comments(first:, after: endCursor)`も、`pageInfo.hasNextPage`が`false`になるまで`pageInfo.endCursor`を使って返信を全件取得する。
-6. `reviewThreads`または各threadの`comments`を全件取得できない場合はArtifactを提出せず、Nodeを失敗扱いにする。
+6. `reviewThreads`または各threadの`comments`を全件取得できない場合は、取得できない状況と原因を具体的に提示し、人間の指示を待つ。解決するまで完了を提出しない。
 7. `isResolved == false`のreview threadだけを対象にする。
 8. Releash Threadの本文と履歴を確認し、同じ`github_review_thread_id`または`database_id`を持つcommentを重複登録しない。
 9. 未登録のreview threadを一件ずつReleash Threadとして作成する。

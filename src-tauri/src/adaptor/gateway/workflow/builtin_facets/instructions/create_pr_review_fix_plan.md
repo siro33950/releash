@@ -9,7 +9,6 @@
 - `import_pr_review_comments` Artifactの全Thread ID
 - 各Threadの本文と全履歴
 - 各Threadの最新`[FIX_POLICY]`または`[PR_REVIEW_REPLY]`
-- `check_pr_review_fix_policy_consistency` Artifact
 - 現在の実装とPR差分
 
 ## 手順
@@ -23,7 +22,7 @@
 
 `[PR_REVIEW_REPLY]`だけがあるThreadはTaskに含めない。
 
-方針整合性の上限到達によって問題が残っている場合は、隠さず`summary`へ記載する。新しい要求を作って解消したことにしてはならない。
+方針に問題が残っている場合は、隠さず`summary`へ記載する。新しい要求を作って解消したことにしてはならない。
 
 ## 出力
 

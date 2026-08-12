@@ -114,7 +114,7 @@ nodes:
 
 - name: check_open_threads
   command: >-
-    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    releash review list --state open --json |
     jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
   artifact: thread-scan
   rules:
@@ -152,6 +152,7 @@ nodes:
       instruction: implement_fix_plan
   inputs:
   - create_fix_plan
+  - verify_fixes
   rules:
   - loop_guard:
       max_iterations: 3
@@ -191,7 +192,5 @@ nodes:
       knowledge: releash-thread-cli
       instruction: fix-report
   inputs:
-  - resolve_request
   - check_open_threads
-  - create_fix_plan
   - verify_fixes

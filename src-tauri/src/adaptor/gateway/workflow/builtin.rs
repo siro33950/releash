@@ -29,7 +29,7 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "01_author-spec.yml",
         content: BUILTIN_01_AUTHOR_SPEC,
-        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、3文書を1単位として検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
+        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、検証・検討・修正の1回パスを経て、最後に人間が完成Specをレビューする。",
     },
     BuiltinEntry {
         filename: "02_implement-existing-spec.yml",
@@ -44,12 +44,12 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "04_review-fix-policy.yml",
         content: BUILTIN_04_REVIEW_FIX_POLICY,
-        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証して完了する。",
+        description: "open Review Threadの修正方針を1つのSessionで順に決定し、完了を報告する。",
     },
     BuiltinEntry {
         filename: "04_review-fix-policy-manual.yml",
         content: BUILTIN_04_REVIEW_FIX_POLICY_MANUAL,
-        description: "open Review Threadごとに修正方針を人間と逐一合意して決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+        description: "open Review Threadの修正方針を1つのSessionで1件ずつ人間と合意しながら決定し、Human checkpointで承認する。",
     },
     BuiltinEntry {
         filename: "05_review-fix.yml",
@@ -59,12 +59,12 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "06_handle-pr-review.yml",
         content: BUILTIN_06_HANDLE_PR_REVIEW,
-        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。",
+        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正方針を1つのSessionで順に決定して修正し、人間の確認後にcommit、push、replyを行う。",
     },
     BuiltinEntry {
         filename: "06_handle-pr-review-manual.yml",
         content: BUILTIN_06_HANDLE_PR_REVIEW_MANUAL,
-        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針をThreadごとに人間と逐一合意して修正し、確認後にcommit、push、replyを行う。",
+        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針を1つのSessionで1件ずつ人間と合意しながら決定して修正し、確認後にcommit、push、replyを行う。",
     },
 ];
 
@@ -300,11 +300,6 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "author-spec-human-decision",
-        content: include_str!("builtin_facets/instructions/author-spec-human-decision.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
         key: "author-spec-intake",
         content: include_str!("builtin_facets/instructions/author-spec-intake.md"),
     },
@@ -340,13 +335,6 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "existing-spec-check-fix-policy-consistency",
-        content: include_str!(
-            "builtin_facets/instructions/existing-spec-check-fix-policy-consistency.md"
-        ),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
         key: "fix-report",
         content: include_str!("builtin_facets/instructions/fix-report.md"),
     },
@@ -372,20 +360,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "existing-spec-correct-fix-policy",
-        content: include_str!("builtin_facets/instructions/existing-spec-correct-fix-policy.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
         key: "existing-spec-create-fix-plan",
         content: include_str!("builtin_facets/instructions/existing-spec-create-fix-plan.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "existing-spec-correct-fix-policy-manual",
-        content: include_str!(
-            "builtin_facets/instructions/existing-spec-correct-fix-policy-manual.md"
-        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -476,25 +452,18 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "check_pr_review_fix_policy_consistency",
-        content: include_str!(
-            "builtin_facets/instructions/check_pr_review_fix_policy_consistency.md"
-        ),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "correct_pr_review_fix_policy",
-        content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "correct_pr_review_fix_policy_manual",
-        content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
         key: "create_pr_review_fix_plan",
         content: include_str!("builtin_facets/instructions/create_pr_review_fix_plan.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "report_no_pr_review_comments",
+        content: include_str!("builtin_facets/instructions/report_no_pr_review_comments.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "report_incomplete_pr_review",
+        content: include_str!("builtin_facets/instructions/report_incomplete_pr_review.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -565,8 +534,10 @@ mod tests {
         assert!(instruction.contains("comments(first:, after: endCursor)"));
         assert!(instruction.contains("pageInfo.hasNextPage"));
         assert!(instruction.contains("pageInfo.endCursor"));
-        assert!(instruction.contains("全件取得できない場合はArtifactを提出せず"));
-        assert!(instruction.contains("Nodeを失敗扱いにする"));
+        assert!(
+            instruction.contains("全件取得できない場合は、取得できない状況と原因を具体的に提示し")
+        );
+        assert!(instruction.contains("解決するまで完了を提出しない"));
     }
 
     #[test]

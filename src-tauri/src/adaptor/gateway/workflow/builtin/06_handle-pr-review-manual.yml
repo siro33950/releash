@@ -1,9 +1,8 @@
 name: 06_handle-pr-review-manual
-description: 現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針をThreadごとに人間と逐一合意して修正し、確認後にcommit、push、replyを行う。
+description: 現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針を1つのSessionで1件ずつ人間と合意しながら決定して修正し、確認後にcommit、push、replyを行う。
 builtin: true
 
 schemas:
-  thread-id: string
   workflow-text: string
   document-reference: string
   thread-reference:
@@ -29,39 +28,6 @@ schemas:
         type: boolean
     required:
     - has_open_threads
-  policy-correction-task:
-    type: object
-    properties:
-      task_id: string
-      thread_ids:
-        type: array
-        items: thread-id
-      problem: string
-      required_changes:
-        type: array
-        items: workflow-text
-    required:
-    - task_id
-    - thread_ids
-    - problem
-    - required_changes
-  policy-consistency-result:
-    type: object
-    properties:
-      tasks:
-        type: array
-        items: policy-correction-task
-      summary: string
-    required:
-    - tasks
-    - summary
-  policy-scan:
-    type: object
-    properties:
-      needs_correction:
-        type: boolean
-    required:
-    - needs_correction
   fix-plan-task:
     type: object
     properties:
@@ -173,21 +139,20 @@ nodes:
   rules:
   - when:
       on: has_open_threads
-      then: pr_review_fix_policy_fanout
+      then: decide_pr_review_fix_policies_manual
     next: report_no_pr_review_comments
 
 - name: report_no_pr_review_comments
-  command: >-
-    printf '対象となる未解決PR review commentはありません。\n'
+  session:
+    provider: claude
+    gate: auto
+    facets:
+      policy: reporting
+      instruction: report_no_pr_review_comments
+  inputs:
+  - import_pr_review_comments
 
-- name: pr_review_fix_policy_fanout
-  fanout:
-    child: decide_pr_review_fix_policy_manual
-    items: import_pr_review_comments.threads
-  rules:
-  - next: check_pr_review_fix_policy_consistency
-
-- name: decide_pr_review_fix_policy_manual
+- name: decide_pr_review_fix_policies_manual
   session:
     provider: claude
     gate: approval
@@ -195,51 +160,10 @@ nodes:
       policy: triage
       knowledge: releash-thread-cli
       instruction: decide_pr_review_fix_policy_manual
-  input: thread-reference
-
-- name: check_pr_review_fix_policy_consistency
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: reviewing
-      knowledge: releash-thread-cli
-      instruction: check_pr_review_fix_policy_consistency
-  artifact: policy-consistency-result
   inputs:
   - import_pr_review_comments
   rules:
-  - loop_guard: { max_iterations: 2, on_exhausted: create_pr_review_fix_plan }
-  - next: check_pr_review_policy_tasks
-
-- name: check_pr_review_policy_tasks
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node check_pr_review_fix_policy_consistency --json |
-    jq '{needs_correction: (.artifact.tasks | length > 0)}'
-  artifact: policy-scan
-  rules:
-  - when:
-      on: needs_correction
-      then: pr_review_fix_policy_correction_fanout
-    next: create_pr_review_fix_plan
-
-- name: pr_review_fix_policy_correction_fanout
-  fanout:
-    child: correct_pr_review_fix_policy_manual
-    items: check_pr_review_fix_policy_consistency.tasks
-  rules:
-  - next: check_pr_review_fix_policy_consistency
-
-- name: correct_pr_review_fix_policy_manual
-  session:
-    provider: claude
-    gate: approval
-    facets:
-      policy: triage
-      knowledge: releash-thread-cli
-      instruction: correct_pr_review_fix_policy_manual
-  input: policy-correction-task
+  - next: create_pr_review_fix_plan
 
 - name: create_pr_review_fix_plan
   session:
@@ -252,7 +176,6 @@ nodes:
   artifact: fix-plan
   inputs:
   - import_pr_review_comments
-  - check_pr_review_fix_policy_consistency
   rules:
   - next: implement_pr_review_fix_plan
 
@@ -266,6 +189,7 @@ nodes:
       instruction: implement_pr_review_fix_plan
   inputs:
   - create_pr_review_fix_plan
+  - verify_pr_review_fixes
   rules:
   - loop_guard:
       max_iterations: 3
@@ -327,8 +251,14 @@ nodes:
     next: report_incomplete_pr_review
 
 - name: report_incomplete_pr_review
-  command: >-
-    printf '未解消のPR review commentが残っているため、commit、push、replyは実行しません。\n'
+  session:
+    provider: claude
+    gate: auto
+    facets:
+      policy: reporting
+      instruction: report_incomplete_pr_review
+  inputs:
+  - pr_review_confirmation
 
 - name: finalize_pr_review
   session:

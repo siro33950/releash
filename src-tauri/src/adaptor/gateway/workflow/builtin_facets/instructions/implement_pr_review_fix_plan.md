@@ -7,8 +7,11 @@
 ## 入力
 
 - `create_pr_review_fix_plan` Artifactの全Task
+- `verify_pr_review_fixes` Artifactの`issues`（検証からの差し戻し時だけ存在する）
 - 各Taskが参照するThreadの本文と全履歴
 - 現在の実装とPR差分
+
+`verify_pr_review_fixes`の`issues`が存在する場合は検証からの差し戻しであり、各issueが指す問題の解消を実装に含める。
 
 ## 実装
 

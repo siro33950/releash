@@ -1,10 +1,9 @@
 name: 04_review-fix-policy
-description: open Review Threadごとに修正方針を決定し、方針間の整合性を検証して完了する。
+description: open Review Threadの修正方針を1つのSessionで順に決定し、完了を報告する。
 
 schemas:
   document-reference: string
   directive-text: string
-  workflow-text: string
   implementation-context:
     type: object
     properties:
@@ -23,7 +22,6 @@ schemas:
     - spec_documents
     - reference_documents
     - directives
-  thread-id: string
   thread-reference:
     type: object
     properties:
@@ -41,39 +39,6 @@ schemas:
     required:
     - threads
     - has_open_threads
-  policy-correction-task:
-    type: object
-    properties:
-      task_id: string
-      thread_ids:
-        type: array
-        items: thread-id
-      problem: string
-      required_changes:
-        type: array
-        items: workflow-text
-    required:
-    - task_id
-    - thread_ids
-    - problem
-    - required_changes
-  policy-consistency-result:
-    type: object
-    properties:
-      tasks:
-        type: array
-        items: policy-correction-task
-      summary: string
-    required:
-    - tasks
-    - summary
-  policy-scan:
-    type: object
-    properties:
-      needs_correction:
-        type: boolean
-    required:
-    - needs_correction
 
 nodes:
 
@@ -92,21 +57,15 @@ nodes:
 
 - name: check_open_threads
   command: >-
-    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    releash review list --state open --json |
     jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
   artifact: thread-scan
   rules:
   - when:
       on: has_open_threads
-      then: fix_policy_fanout
+      then: decide_fix_policies
     next: policy_report
-- name: fix_policy_fanout
-  fanout:
-    child: decide_fix_policy
-    items: check_open_threads.threads
-  rules:
-  - next: check_fix_policy_consistency
-- name: decide_fix_policy
+- name: decide_fix_policies
   session:
     provider: codex
     gate: auto
@@ -118,62 +77,11 @@ nodes:
       - spec-design
       - releash-thread-cli
       instruction: existing-spec-decide-fix-policy
-  input: thread-reference
-  inputs:
-  - resolve_request
-- name: check_fix_policy_consistency
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: reviewing
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      - releash-thread-cli
-      instruction: existing-spec-check-fix-policy-consistency
-  artifact: policy-consistency-result
   inputs:
   - resolve_request
   - check_open_threads
   rules:
-  - loop_guard:
-      max_iterations: 2
-      on_exhausted: policy_report
-  - next: check_policy_tasks
-- name: check_policy_tasks
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node check_fix_policy_consistency --json |
-    jq '{needs_correction: (.artifact.tasks | length > 0)}'
-  artifact: policy-scan
-  rules:
-  - when:
-      on: needs_correction
-      then: fix_policy_conflict_fanout
-    next: policy_report
-- name: fix_policy_conflict_fanout
-  fanout:
-    child: correct_fix_policy
-    items: check_fix_policy_consistency.tasks
-  rules:
-  - next: check_fix_policy_consistency
-- name: correct_fix_policy
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: triage
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      - releash-thread-cli
-      instruction: existing-spec-correct-fix-policy
-  input: policy-correction-task
-  inputs:
-  - resolve_request
+  - next: policy_report
 - name: policy_report
   session:
     provider: claude
@@ -183,6 +91,4 @@ nodes:
       knowledge: releash-thread-cli
       instruction: policy-report
   inputs:
-  - resolve_request
   - check_open_threads
-  - check_fix_policy_consistency
