@@ -23,7 +23,7 @@ Node は好きなように組み合わせられる。Sequence の子に Sequence
 
 ## プロダクト方針
 
-- workflow engine は制御フローの唯一の権威である。agent がフローに影響できる経路は、記録される typed command（Artifact 提出 — delegate の発火もこれに乗る）のみ。agent の暗黙の振る舞いでフローは変わらない。
+- workflow engine は制御フローの唯一の権威である。agent がフローに影響できる経路は、記録される typed command（Submit。Artifact は任意添付で、delegate の発火もこれに乗る）のみ。agent の暗黙の振る舞いでフローは変わらない。
 - human checkpoint は2箇所で担保する。Node の完了定義 `completion: approval`（承認主体は human のみ）と、Session への観測・介入（いつでも可能）。
 - 隔離環境の成果の統合（merge）はフローではなく作業状態への操作である。engine は機械的・無条件の merge を行わない。統合は判断主体（親 session の agent または human）が Artifact と diff を確認した上で、通常の Git 操作として行う。
 - 機械が勝手に回り続ける経路は静的に有界にする。非有界になれるのは agent の判断による反復だけであり、それはターン境界ごとに記録され、human が観測・中断できる。
@@ -50,7 +50,7 @@ Sequence  -> 子 Node 列の時系列実行（合成子）
 Node の実行インスタンスが成す再帰木。木は実行のレイヤーにのみ存在する。
 
 - WorkflowDefinition（YAML）は Sequence / Fanout 部分のテンプレートであり、木ではない。分岐・ループは定義側の規則で、実行木には展開結果（実際に起きたこと）だけが載る。ループが3回回れば実行木には Node が3つ並ぶ。
-- WorkflowExecution に属さない単独の Session は、定義なしで直接生える1ノードの実行木。workflow 配下の Session と単独の Session を区別するフラグ（`workflow_step_session`）は廃止する。
+- WorkflowExecution に属さない単独の Session は、定義なしで直接生える1ノードの実行木。workflow 配下の Session と単独の Session を実装上二分する区別（`AgentSessionOrigin` の Standalone / WorkflowNode、および実行木と別系統の standalone 一覧・別 query）は廃止する。区別は実行木上の位置で決まる。
 - 実行木は root を植えた Worktree に所属する。階層は `Workspace → Worktree → 実行木（複数）`。実行木の集合に固有名は与えない。
 
 ### 完了の定義と辺
@@ -60,9 +60,11 @@ Node の完了と、完了後の進行は別の概念であり、所有者が異
 **完了の定義（completion）は Node 自身が持つ。** 何をもってこの Node が完了するかの宣言である。
 
 ```text
-Session   -> completion: auto     … agent の Artifact 提出で完了
-           | completion: approval … human の承認で完了。承認までは対話で
-             指示し直せる。承認主体は human のみ。却下や再実行という別操作は無い
+Session   -> completion: auto     … agent の Submit と provider CLI の停止が揃って完了
+             （Artifact は任意添付。artifact 宣言がある node は
+              検証済み Artifact を含む Submit のみ有効）
+           | completion: approval … 二信号が揃った後、human の承認で完了。承認までは
+             対話で指示し直せる。承認主体は human のみ。却下や再実行という別操作は無い
 Command   -> exit code（宣言不要）
 Fanout    -> 全子完了
 Sequence  -> 終端 node への到達
@@ -74,7 +76,7 @@ Sequence  -> 終端 node への到達
 - 「gate」という語は使わない。「門 = 進行」を連想させ、完了の定義（Node の関心）と進行のトリガー（Sequence の関心）の混同を招いたため、completion に改名する。
 - completion は全 Node 種別で宣言可能・省略可能。`completion: approval` は「本来の完了条件を満たした後、human が承認するまで完了しない」で、どの種別にも同じ意味論が適用される（Fanout なら全子完了 + 承認）。
 
-改訂対象: evolution-plan / yaml-syntax の `gate`（auto / approval）を `completion` に改名する。意味論（承認されるまで完了しない）は現行のまま維持する。
+改訂対象: evolution-plan / yaml-syntax の `gate`（auto / approval）を `completion` に改名する。意味論（session は Submit + provider 停止の二信号で完了・approval は承認されるまで完了しない）は現行実装のまま維持し、語と宣言位置だけを変える。
 
 ### 定義と展開
 
@@ -100,7 +102,7 @@ Sequence  -> 終端 node への到達
 | | Fanout | delegate |
 | --- | --- | --- |
 | 何者か | 定義に書かれる合成子 Node | Session の宣言的能力（Node 種別ではない） |
-| 動的さの出所 | データ由来。items（前 Node の Artifact 配列）で子の数が決まる。YAML に記載された決定的振る舞い | 判断由来。親 session の Artifact 提出のたびに、宣言された child Node が起動する（発火回数は実行時に決まる） |
+| 動的さの出所 | データ由来。items（前 Node の Artifact 配列）で子の数が決まる。YAML に記載された決定的振る舞い | 判断由来。親 session の Submit のたびに、宣言された child Node が起動する（発火回数は実行時に決まる） |
 | 子の置き場所 | 実行木のノード | 実行木のノード。親 Session Node の部分木として発火ごとにぶら下がり、Workspace の実行木ツリーで観測する |
 
 子展開・`worktree: shared | isolated` の機構は共有する。delegate の仕様は milestone #85 が正本であり、#85 は本モデルの構文（children / completion / 合成子の再帰解禁）に依存する（本モデル完了後に着手）。
@@ -130,7 +132,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 
 ①/②の判定はディスク上の worktree からの推測ではなく、生成時に記録された所有情報と実体の突合で行う。
 
-- 台帳は永続化された実行状態そのもの = 実行木の状態。delegate の child も実行木の Node であり、その②も同じ台帳に載る（親 Session の delegate 状態という第二の台帳は持たない）。所有の実体と記録の場所が一致する。別台帳は新設しない。
+- 台帳は事実ログに記録された worktree 関連の事実（隔離環境の生成・解放・喪失）とその導出 = 実行木の状態の一部。delegate の child も実行木の Node であり、その②も同じ台帳に載る（親 Session の delegate 状態という第二の台帳は持たない）。所有の実体と記録の場所が一致する。別台帳は新設しない。
 - ②は専用パス + branch 命名規則で生成する（可読性と、台帳が読めない異常時のフォールバック判定）。
 - 起動時に台帳と `git worktree list` を突合する:
   - 台帳は②と言うが実体が無い → 該当 Node を「隔離環境喪失」としてマークし、resume 不可を明示する。
@@ -139,9 +141,18 @@ worktree は Node が親から継承する実行コンテキストであり、�
 
 ### 永続化
 
-- 木（root）ごとに1本の append-only イベントログを持つ。現行の per-execution イベントログの一般化であり、単独 Session の生成も「木が生えた」イベントとして同形式で記録する。
-- 実行木の現在状態は起動時 replay で構築する projection。スナップショット文書・別台帳は持たない。起動高速化はログファイルの DB 移行で解く。
-- 実行木が持つのは構造・状態・参照（session 参照 / Artifact 参照 / worktree 参照）のみ。Session 本文・Artifact 本体・Command output は各 store が所有したまま複製しない。
+- 正は SQLite 上の単一の正規化された事実ログテーブル。統一 Node の語彙でカラム化する:
+
+  ```text
+  node_events(tree_id, seq, node_execution_id, parent_id, node_name,
+              kind, attempt, event_type, detail, timestamp)
+  ```
+
+- **行は純粋な事実のみ**（外部入力・人間の行動・実行した副作用の記録: started / submit_received / stop_received / approval_granted / abort_requested / process_exited など）。遷移イベント（completed 等）や導出結果（status カラム）は書かない。「事実は揃っているのに遷移記録が無い」という不整合が定義上存在せず、原子性への依存は単一行 append のみになる。
+- **状態は読み取り側の導出**。完了・進行の規則（session の Submit + 停止、fanout の全子完了、sequence の前進）は Rust の domain が一元所有し、tree 単位の fold で導出する。SQL で状態判定を書かない（規則の二重実装禁止。カラムは tree / node / kind の絞り込み用）。導出結果は in-memory に保持してよいが、永続化された写し（projection 表・スナップショット文書・別台帳）は持たない。
+- **engine の駆動は冪等な reconciliation ループ**: 導出された状態を見て、まだ実行していない行動を実行し、実行した事実を追記する。起動時復旧はこのループの1周目と同一であり、復旧専用経路を持たない。行動と記録の間の窓（副作用実行後・記録前のクラッシュ）は、provider lifecycle の識別子による実世界との突合で潰す。
+- 規則の変更は過去ログの解釈に遡及する（「当時完了と判定した」という記録は持たない）。事実のみを記録する設計の代償として許容する。
+- 単独 Session の生成も同じテーブルへの started の追記であり、木（tree_id）ごとの行の集合がそのまま実行木。実行木が持つのは構造・状態・参照（session 参照 / Artifact 参照 / worktree 参照）のみ。Session 本文（会話の正本は provider CLI の transcript）・Artifact 本体・Command output は各 store が所有したまま複製しない。
 
 ## 採用するもの
 
@@ -149,12 +160,12 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | --- | --- |
 | Node 統一 | Session / Command / Fanout / Sequence の4種。葉と合成子。「Workflow」は木全体の単位（Definition / Execution）に残す。 |
 | 実行木 | 実行インスタンスのみが木を成す。Worktree に所属。単独 Session も1ノードの木。 |
-| completion | 完了の定義は Node 自身が持つ（Session: auto / approval 等）。gate から改名、意味論は現行維持。 |
+| completion | 完了の定義は Node 自身が持つ（Session: auto / approval 等）。gate から改名。session の完了は Submit + provider 停止の二信号（Artifact は任意添付）。 |
 | 辺 = 条件分岐のみ | 辺（rules）は Sequence が所有し、条件分岐（when / switch / next / loop_guard）のみ。承認は辺に置かない。 |
 | 再帰定義 | 合成子の子に任意の Node。定義を跨ぐ参照は持たず、部品化は定義言語の外（Lua）で行う。包含循環の検出で防御。 |
 | worktree 継承 | 実行コンテキストとして親から継承。隔離の宣言は関心の所有者に置く（単独 Node は自身の定義、並走の隔離は Fanout ブロック）。出自2種を分離。 |
 | 台帳突合 | 永続化された実行状態を台帳に、起動時に実体と突合。未統合成果は機械的に削除しない。 |
-| 木ごとイベントログ | per-execution ログの一般化。実行木は replay projection。 |
+| 純粋事実ログ | 正は node_events 単一テーブル（木 = tree_id の行集合）。遷移イベントなし。状態は読み取り側の Rust fold で導出し、engine は冪等 reconciliation ループで駆動する。 |
 | 実行木 UI の完全性 | 起きた実行はすべて行に出す。retry は attempt ごと、delegate は発火ごとに行が並ぶ。番号ラベルは表示しない（順序は並びでわかる）。決着済みの過去はデフォルト折り畳み。 |
 
 ## 採用しないもの
@@ -167,21 +178,23 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | loop_guard の必須化 | 「終わるまでやれ」が正当なユースケース。監督は観測・abort で行う。 |
 | merge の typed command 化 | merge はフローに影響しない作業状態への操作。通常の Git 操作でよい。 |
 | workspace 横断監督 view | 実行木の所属が root Worktree に固定されるため、Worktree 単位の view で監督が完結する。 |
-| 実行木スナップショットキャッシュ | イベントログとの二重管理になる。高速化は DB 移行で解く。 |
+| 遷移イベント・status カラムの記録 | 導出結果の記録は書き込み側に判断とクラッシュ窓（事実は揃ったが遷移が未記録）を残す。事実のみを記録すれば、その不整合クラスが定義上存在しない。 |
+| 永続化された導出状態（projection 表・スナップショット） | 正が2つになる。導出は in-memory・再構築可能に限る。ログテーブル自体が正規化されており検索もそこで足りる。 |
 | 再帰 delegate | 無限増殖の防止。milestone #85 で確定済み。 |
 
 ## 既存文書・実装との関係
 
 | 資産 | 関係 |
 | --- | --- |
-| milestone 82（新モデル移行） | 前提。command / session / fanout、Contract 検証済み Artifact、typed command、イベントログ / resume の上に立つ。 |
-| [#1454](https://github.com/siro33950/releash/issues/1454)（Node 中心再帰ツリー UI） | UI 骨格の先行実装。単独 Session も Node、合成子は branch、中央表示は単一 NodeContentView。本モデルはその backend 正本化と一般化。ただし「retry で行を増やさない（最新 attempt のみ関連付け）」の既定は本モデルで改訂 — 起きた実行はすべて行に出す（§採用するもの）。Fanout 結果への承認の表示場所は #1454 が扱う。 |
-| milestone 85（delegate + worktree 隔離） | **#85 は本モデル完了後に着手する（依存: children 構文・completion・合成子の再帰解禁）**。delegate の発火は親 session の Artifact 提出、child は任意の Node、completion の条件合成（when / and / or）は #85 の文法追記。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。 |
-| milestone 84（Agent チャット安定化） | 制御フローは独立。ただし **session の実行設定の語彙は MS84 の AgentSessionConfiguration に従う**: permission の値域 = AgentMode（ask / edit / plan / auto / bypass）、goal = AgentGoal（省略可）、effort = ReasoningEffort（省略可）。node session 生成経路は MS84 の設定型を組み立てる。 |
+| milestone 82（新モデル移行） | 前提。command / session / fanout、Contract 検証済み Artifact、typed command、resume の成果の上に立つ。MS82 由来の blob イベント + replay projection 構成は §永続化 の事実ログへ置き換える。 |
+| milestone 87（Agent TUI 移行） | 前提。session の実体は provider CLI の TUI（Terminal Surface）であり、会話の正本は provider の transcript。完了の二信号（Submit + provider Stop）と「Workflow 全体は Running / Completed / Aborted の3値・詳細状態（WaitingApproval / Paused / Failed）は Node 所有」を継承する。**Standalone AgentSession を実行木と別系統（別 query・別一覧）に置く MS87 の扱いは、本モデルが上書きする**（単独 Session も1ノードの実行木）。 |
+| [#1454](https://github.com/siro33950/releash/issues/1454)（Node 中心再帰ツリー UI）/ [#1512](https://github.com/siro33950/releash/issues/1512)（実行開始済み Node のみ表示） | UI 骨格の先行実装。合成子は branch、中央表示は単一 NodeContentView、木には起きた実行だけが載る（#1512 契約）。本モデルはその backend 正本化と一般化。ただし「retry で行を増やさない（最新 attempt のみ関連付け）」の既定は本モデルで改訂 — 起きた実行はすべて行に出す（§採用するもの）。MS87 後に standalone AgentSession が木と別リストになっている点は本モデルで木へ統合する。 |
+| milestone 85（delegate + worktree 隔離） | **#85 は本モデル完了後に着手する（依存: children 構文・completion・合成子の再帰解禁）**。delegate の発火は親 session の Submit、child は任意の Node、completion の条件合成（when / and / or）は #85 の文法追記。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。 |
+| milestone 84（Agent チャット安定化） | 制御フローは独立。旧記述「session の実行設定の語彙は MS84 の AgentSessionConfiguration に従う」は廃止（同構成は MS87 で消滅）。**session の実行設定（provider / model / permission）は workflow 定義が持ち、値域は provider CLI の語彙に従う**。Releash は写像・検証をせず、session 起動時に CLI への起動設定として注入する（workflow の再現性のため、実行構成の正は定義に置く）。 |
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
 | `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree ほか）。改訂は同上。 |
 | `docs/architecture/GLOSSARY.md` | §語彙 の反映。同上。 |
-| [`../workflow-lifecycle/workflow-ideal-lifecycle.md`](../workflow-lifecycle/workflow-ideal-lifecycle.md) | 実行時ライフサイクル不変条件(W-I 群)の正本。本モデルの実行木にも同じ invariant を適用し、実装時に状態語彙の対応(ExecutionStatus → Node 実行木の状態)を確定する。 |
+| [`../workflow-lifecycle/workflow-ideal-lifecycle.md`](../workflow-lifecycle/workflow-ideal-lifecycle.md) | 改訂対象。同文書は6値 ExecutionStatus 前提で書かれており、MS87 後の実装（木全体 = Running / Completed / Aborted の3値、WaitingApproval / Paused / Failed は Node 所有）に対して stale。本モデルの文法正本化 wave（#1468）で、3値 + Node 所有状態の形へ不変条件を書き直す。 |
 
 ## 語彙
 

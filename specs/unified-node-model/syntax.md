@@ -129,11 +129,9 @@ fix_each:
 ## command / session
 
 - command: 現行のまま（シェルコマンド、標準結果、`artifact:` で stdout を Contract 検証）。
-- session ブロックの中は実行設定のみ: `model` / `permission` / `facets` に加え、**`goal`（省略可）** と **`effort`（省略可）**。`gate` という語は使わない（完了の定義と進行のトリガーの混同を招くため廃止。completion に改名・意味論は現行のまま・Node 共通フィールドとして kind の外へ）。
-- **session の実行設定の語彙は milestone 84 の AgentSessionConfiguration に従う**:
-  - `permission` … 値域は **AgentMode**（`ask` / `edit` / `plan` / `auto` / `bypass`）。現行3値（ask / edit / full）からの写像（full → bypass 等）は MS84 の確定形に合わせて W1 実施時に確定する（examples は当面現行語彙のまま）。
-  - `goal` … AgentGoal の objective（文字列）。テンプレート補間可（パラメータからタスクごとの goal を配線できる）。省略時は Goal 未設定（instruction facet が目的を担う現行の形）。
-  - `effort` … ReasoningEffort。値域は MS84 に従う。省略時は既定。
+- session ブロックの中は実行設定のみ: **`provider`（必須。`claude` | `codex`）** / **`model`（省略可）** / **`permission`（省略可）** / `facets`。`gate` という語は使わない（完了の定義と進行のトリガーの混同を招くため廃止。completion に改名・意味論は現行実装のまま・Node 共通フィールドとして kind の外へ）。
+- **`model` / `permission` の値域は provider CLI が定める**。Releash は値の写像・検証をせず、session 起動時に provider CLI への起動設定として注入する。workflow の再現性（誰が実行しても同じ構成で走る）のため、実行構成の正は workflow 定義に置く。session 開始後に CLI 内で設定が切り替えられても、起動時構成の正は定義側に残る。examples の `permission` 値を各 CLI の実語彙へ写像する作業は W1（#1461）実施時に確定する。
+- 旧 milestone 84 AgentSessionConfiguration への従属（AgentMode 値域 / `goal` / `effort`）は廃止（同構成は MS87 で消滅）。
 - `worktree`: `shared`（既定）| `isolated`。Node 共通フィールド。単独の session / command なら自身の実行を、fanout なら子ごとの並走を隔離する。
 
 ## completion（完了の定義）
@@ -142,7 +140,7 @@ fix_each:
 
 | Node | 既定（省略時） | `completion: approval` |
 | --- | --- | --- |
-| session | agent の Artifact 提出で完了 | 提出後、human の承認で完了 |
+| session | Submit と provider 停止が揃って完了（Artifact は任意添付。`artifact` 宣言がある node は検証済み Artifact を含む Submit のみ有効） | 二信号が揃った後、human の承認で完了 |
 | command | exit code で完了 | 終了後、human の承認で完了 |
 | fanout | 全子完了 | 全子完了後、human の承認で完了 |
 | sequence | 終端 node への到達 | 到達後、human の承認で完了 |

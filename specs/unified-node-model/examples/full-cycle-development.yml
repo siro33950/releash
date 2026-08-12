@@ -245,6 +245,7 @@ nodes:
   # 実体は spec_dir 配下のファイルとして worktree に書く
   collect_inputs:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -368,6 +369,7 @@ nodes:
 
   write_requirements:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -379,6 +381,7 @@ nodes:
 
   write_behavior:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -394,6 +397,7 @@ nodes:
 
   refine_requirements:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -407,6 +411,7 @@ nodes:
 
   behavior_report:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -418,6 +423,7 @@ nodes:
 
   write_design:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -435,6 +441,7 @@ nodes:
 
   refine_behavior:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -450,6 +457,7 @@ nodes:
 
   design_report:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -461,6 +469,7 @@ nodes:
 
   spec_confirmation:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -533,6 +542,7 @@ nodes:
 
   create_detailed_design:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -583,6 +593,7 @@ nodes:
 
   implement_task:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -595,6 +606,7 @@ nodes:
 
   verify_task:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -610,6 +622,7 @@ nodes:
   # 親 worktree へ統合する。統合は通常の Git 操作（専用構文は持たない）。
   merge_implementations:
     session:
+      provider: claude
       model: claude-opus-5
       permission: full
       facets:
@@ -621,6 +634,7 @@ nodes:
 
   check_integration:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -637,6 +651,7 @@ nodes:
 
   fix_integration:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -648,6 +663,7 @@ nodes:
 
   implementation_report:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: edit
       facets:
@@ -801,6 +817,7 @@ nodes:
 
   full_review_acceptance_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -811,6 +828,7 @@ nodes:
     - spec
   full_review_acceptance_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -821,6 +839,7 @@ nodes:
     - spec
   full_review_structure_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -831,6 +850,7 @@ nodes:
     - spec
   full_review_structure_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -841,6 +861,7 @@ nodes:
     - spec
   full_review_quality_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -851,6 +872,7 @@ nodes:
     - spec
   full_review_quality_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -861,6 +883,7 @@ nodes:
     - spec
   full_review_test_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -871,6 +894,7 @@ nodes:
     - spec
   full_review_test_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -881,6 +905,7 @@ nodes:
     - spec
   full_review_security_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -891,6 +916,7 @@ nodes:
     - spec
   full_review_security_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -901,6 +927,7 @@ nodes:
     - spec
   full_review_architecture_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -911,6 +938,7 @@ nodes:
     - spec
   full_review_architecture_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -936,6 +964,7 @@ nodes:
 
   verify_full_review_opus:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -946,6 +975,7 @@ nodes:
     - spec
   verify_full_review_codex:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -976,6 +1006,7 @@ nodes:
 
   decide_fix_policy:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -992,6 +1023,7 @@ nodes:
 
   check_fix_policy_consistency:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -1019,6 +1051,7 @@ nodes:
 
   correct_fix_policy:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -1037,6 +1070,7 @@ nodes:
 
   create_fix_plan:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -1086,6 +1120,7 @@ nodes:
 
   fix_task:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
@@ -1098,6 +1133,7 @@ nodes:
 
   verify_fix:
     session:
+      provider: claude
       model: claude-opus-5
       permission: edit
       facets:
@@ -1111,6 +1147,7 @@ nodes:
 
   merge_fixes:
     session:
+      provider: claude
       model: claude-opus-5
       permission: full
       facets:
@@ -1122,6 +1159,7 @@ nodes:
 
   implementation_confirmation:
     session:
+      provider: codex
       model: gpt-5.6-sol
       permission: full
       facets:
