@@ -361,7 +361,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             advanced.node_executions[1].agent_session_id
         );
 
-        host.submit(&first.id).await.unwrap();
+        assert!(host.submit(&first.id).await.is_err());
         emit_provider_stop(
             &host,
             &mut first_terminal,
@@ -812,6 +812,167 @@ async fn test_atui_042_別bindingのstopを拒否しinvalid_artifactはsubmitご
         AcceptanceWorkflowExecutionStatus::Completed,
     )
     .await;
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1626_active_attemptへの再submitはartifactを差し替える() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("resubmit-artifact-worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 8);
+    let execution_id = host
+        .start_approval_artifact_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let initial = wait_for_node_count(&host, &execution_id, 1).await;
+    let node = initial.node_executions[0].clone();
+    let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
+    let mut terminal = host
+        .terminal()
+        .attach("issue-1626-resubmit".to_string(), terminal_owner.clone())
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-resubmit").await;
+
+    host.submit_artifact(
+        &node.id,
+        "acceptance-result",
+        serde_json::json!({"result": "first"}),
+    )
+    .await
+    .unwrap();
+    host.submit_artifact(
+        &node.id,
+        "acceptance-result",
+        serde_json::json!({"result": "running replacement"}),
+    )
+    .await
+    .unwrap();
+
+    let after_running_replacement = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_running_replacement.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Running
+    );
+    assert_eq!(
+        after_running_replacement.node_executions[0]
+            .artifact
+            .as_ref(),
+        Some(&serde_json::json!({"result": "running replacement"}))
+    );
+    let after_running_log = host.workflow_log(&execution_id).await.unwrap();
+    assert_eq!(
+        after_running_log
+            .iter()
+            .filter(|event| event["event"] == "node_submit_received")
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_running_log
+            .iter()
+            .filter(|event| event["event"] == "artifact_produced")
+            .count(),
+        2
+    );
+
+    assert!(host
+        .submit_artifact(
+            &node.id,
+            "acceptance-result",
+            serde_json::json!({"unexpected": "invalid replacement"}),
+        )
+        .await
+        .is_err());
+    let after_invalid = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_invalid.node_executions[0].artifact.as_ref(),
+        Some(&serde_json::json!({"result": "running replacement"}))
+    );
+    assert_eq!(
+        host.workflow_log(&execution_id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "artifact_produced")
+            .count(),
+        2
+    );
+
+    emit_provider_stop(&host, &mut terminal, &terminal_owner, "provider-resubmit").await;
+    let waiting = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        waiting.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::WaitingApproval
+    );
+
+    host.submit_artifact(
+        &node.id,
+        "acceptance-result",
+        serde_json::json!({"result": "waiting replacement"}),
+    )
+    .await
+    .unwrap();
+    let after_waiting_replacement = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_waiting_replacement.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::WaitingApproval
+    );
+    assert_eq!(
+        after_waiting_replacement.node_executions[0]
+            .artifact
+            .as_ref(),
+        Some(&serde_json::json!({"result": "waiting replacement"}))
+    );
+
+    host.approve(&execution_id, &node.node_name, &node.id)
+        .await
+        .unwrap();
+    wait_for_execution_status(
+        &host,
+        &execution_id,
+        AcceptanceWorkflowExecutionStatus::Completed,
+    )
+    .await;
+    let completed = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        completed.node_executions[0].artifact.as_ref(),
+        Some(&serde_json::json!({"result": "waiting replacement"}))
+    );
+    assert_eq!(
+        host.workflow_log(&execution_id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "artifact_produced")
+            .count(),
+        3
+    );
+
+    assert!(host
+        .submit_artifact(
+            &node.id,
+            "acceptance-result",
+            serde_json::json!({"result": "terminal replacement"}),
+        )
+        .await
+        .is_err());
+    let after_terminal_submit = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_terminal_submit.node_executions[0].artifact.as_ref(),
+        Some(&serde_json::json!({"result": "waiting replacement"}))
+    );
+    assert_eq!(
+        host.workflow_log(&execution_id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "artifact_produced")
+            .count(),
+        3
+    );
     host.shutdown().await.unwrap();
 }
 

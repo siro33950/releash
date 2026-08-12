@@ -125,6 +125,8 @@ ReleashはWorkflow ledgerを正本として、signalの受信、Artifact、Appro
 - Node名だけ、Provider session IDだけ、Terminal表示、現在選択中UIからAttemptを推定しない。
 - 同一signalの再送は冪等とし、Node遷移、Artifact、Approval、後続起動を重複させない。
 
+Issue #1626 は、上記の「同一signalの再送」に含まれる重複Submitの解釈を上書きする。SubmitReceivedからReadyまでのsignal遷移と二signal合流は一度きりのまま維持する一方、同一AttemptがRunning、Paused、WaitingApprovalの間は、Artifact付き再Submitを毎回検証してArtifactを差し替え、ArtifactProducedを再記録する。WaitingApprovalは差し替え後も維持する。Artifactなしの重複Submitは従来どおり冪等なno-opとし、終端AttemptへのSubmitは受理しない。
+
 ## 6. Domain model方針
 
 ### 6.1 WorkflowExecution aggregate

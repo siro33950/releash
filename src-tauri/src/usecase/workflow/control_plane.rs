@@ -223,38 +223,23 @@ impl WorkflowControlPlaneUsecase {
                 ))
             })?;
 
-        let active = self.runtime.load_active_execution(&execution_id).await?;
-        let persisted_events = if active.is_none() {
-            Some(self.runtime.load_persisted_events(&execution_id).await?)
-        } else {
-            None
-        };
+        let current = self
+            .runtime
+            .load_active_execution(&execution_id)
+            .await?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!(
+                    "Active node execution not found: {}",
+                    command.node_execution_id
+                ))
+            })?;
 
-        let Some(current) = active else {
-            let events = persisted_events.unwrap_or_default();
-            if submit_was_persisted(&events, &command.node_execution_id) {
-                return Ok(());
-            }
-            return Err(WorkflowError::NotFound(format!(
-                "Active node execution not found: {}",
-                command.node_execution_id
-            )));
-        };
-
-        let target = match submission::validate_submit_target_context(
+        let target = submission::validate_submit_target_context(
             &current,
             &execution_id,
             &command.node_execution_id,
-        ) {
-            Ok(target) => target,
-            Err(error) => {
-                let events = self.runtime.load_persisted_events(&execution_id).await?;
-                if submit_was_persisted(&events, &command.node_execution_id) {
-                    return Ok(());
-                }
-                return Err(runtime_error_to_workflow_error(error));
-            }
-        };
+        )
+        .map_err(runtime_error_to_workflow_error)?;
         let validated_artifact = if let Some(artifact) = command.artifact {
             submission::validate_artifact_contract_for_workflow(
                 &current.workflow,
@@ -275,27 +260,31 @@ impl WorkflowControlPlaneUsecase {
         };
         let timestamp = self.runtime.current_timestamp();
         let mut candidate = current.clone();
-        match candidate.record_node_completion_signal(
+        let submit_signal_applied = match candidate.record_node_completion_signal(
             &command.node_execution_id,
             NodeCompletionSignal::Submit,
             timestamp,
         ) {
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied => {}
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied => {
-                return Ok(())
-            }
+            TransitionOutcome::Applied => true,
+            TransitionOutcome::AlreadyApplied => false,
             _ => {
                 return Err(WorkflowError::invalid_state(format!(
                     "node execution '{}' cannot accept Submit",
                     command.node_execution_id
                 )))
             }
+        };
+        if !submit_signal_applied && validated_artifact.is_none() {
+            return Ok(());
         }
-        let mut events = vec![WorkflowEvent::NodeSubmitReceived {
-            execution_id: execution_id.clone(),
-            node_execution_id: command.node_execution_id.clone(),
-            timestamp,
-        }];
+        let mut events = Vec::new();
+        if submit_signal_applied {
+            events.push(WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: command.node_execution_id.clone(),
+                timestamp,
+            });
+        }
         if let Some((contract, validated)) = validated_artifact {
             if candidate.apply_submitted_output(
                 target.node_name.clone(),
@@ -325,13 +314,18 @@ impl WorkflowControlPlaneUsecase {
                 timestamp,
             ));
         }
-        let (outcome, handshake_events) = apply_completion_handshake(
-            &mut candidate,
-            &command.node_execution_id,
-            self.runtime.new_node_execution_id(),
-            timestamp,
-        )?;
-        events.extend(handshake_events);
+        let outcome = if submit_signal_applied {
+            let (outcome, handshake_events) = apply_completion_handshake(
+                &mut candidate,
+                &command.node_execution_id,
+                self.runtime.new_node_execution_id(),
+                timestamp,
+            )?;
+            events.extend(handshake_events);
+            outcome
+        } else {
+            None
+        };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
             .runtime
@@ -762,18 +756,6 @@ fn apply_fanout_approval(
     *outcome.snapshot_mut() = RuntimeCommitSnapshot::from_execution(execution)
         .map_err(runtime_error_to_workflow_error)?;
     Ok((outcome, events))
-}
-
-fn submit_was_persisted(events: &[WorkflowEvent], expected_node_execution_id: &str) -> bool {
-    events.iter().any(|event| {
-        matches!(
-            event,
-            WorkflowEvent::NodeSubmitReceived {
-                node_execution_id,
-                ..
-            } if node_execution_id == expected_node_execution_id
-        )
-    })
 }
 
 fn apply_completion_handshake(

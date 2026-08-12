@@ -40,6 +40,8 @@ const APPROVAL_FANOUT_CLAUDE_WORKFLOW: &str = "acceptance-approval-fanout-claude
 const APPROVAL_FANOUT_CODEX_WORKFLOW: &str = "acceptance-approval-fanout-codex";
 const ARTIFACT_CLAUDE_WORKFLOW: &str = "acceptance-artifact-claude";
 const ARTIFACT_CODEX_WORKFLOW: &str = "acceptance-artifact-codex";
+const APPROVAL_ARTIFACT_CLAUDE_WORKFLOW: &str = "acceptance-approval-artifact-claude";
+const APPROVAL_ARTIFACT_CODEX_WORKFLOW: &str = "acceptance-approval-artifact-codex";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceWorkflowExecutionStatus {
@@ -72,6 +74,7 @@ pub struct AcceptanceNodeExecution {
     pub can_approve: bool,
     pub can_retry: bool,
     pub has_artifact: bool,
+    pub artifact: Option<serde_json::Value>,
     pub failure_reason: Option<String>,
 }
 
@@ -118,7 +121,13 @@ struct NodeExecutionResponse {
     can_approve: bool,
     can_retry: bool,
     has_artifact: bool,
+    artifact: Option<ArtifactResponse>,
     failure: Option<NodeExecutionFailureResponse>,
+}
+
+#[derive(Deserialize)]
+struct ArtifactResponse {
+    value: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -212,13 +221,22 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             });
         }
         let artifact_provider = match workflow_name {
-            ARTIFACT_CLAUDE_WORKFLOW => Some(ProviderKind::Claude),
-            ARTIFACT_CODEX_WORKFLOW => Some(ProviderKind::Codex),
+            ARTIFACT_CLAUDE_WORKFLOW | APPROVAL_ARTIFACT_CLAUDE_WORKFLOW => {
+                Some(ProviderKind::Claude)
+            }
+            ARTIFACT_CODEX_WORKFLOW | APPROVAL_ARTIFACT_CODEX_WORKFLOW => Some(ProviderKind::Codex),
             _ => None,
         };
         if let Some(provider) = artifact_provider {
-            let mut node =
-                acceptance_session_node("agent", provider, SessionGate::Auto, Vec::new());
+            let gate = if matches!(
+                workflow_name,
+                APPROVAL_ARTIFACT_CLAUDE_WORKFLOW | APPROVAL_ARTIFACT_CODEX_WORKFLOW
+            ) {
+                SessionGate::Approval
+            } else {
+                SessionGate::Auto
+            };
+            let mut node = acceptance_session_node("agent", provider, gate, Vec::new());
             node.artifact = Some("acceptance-result".to_string());
             return Ok(WorkflowDefinition {
                 name: workflow_name.to_string(),
@@ -481,6 +499,19 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .await
     }
 
+    pub async fn start_approval_artifact_workflow(
+        &self,
+        worktree_path: &str,
+        provider: AcceptanceProvider,
+    ) -> Result<String, String> {
+        let workflow_name = match provider {
+            AcceptanceProvider::Claude => APPROVAL_ARTIFACT_CLAUDE_WORKFLOW,
+            AcceptanceProvider::Codex => APPROVAL_ARTIFACT_CODEX_WORKFLOW,
+        };
+        self.start_named_workflow(worktree_path, workflow_name)
+            .await
+    }
+
     async fn start_named_workflow(
         &self,
         worktree_path: &str,
@@ -519,6 +550,11 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .recover_startup()
             .await
             .map_err(|error| error.to_string())
+    }
+
+    pub async fn workflow_log(&self, execution_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        self.get(&format!("/v1/workflow/executions/{execution_id}/log"))
+            .await
     }
 
     pub async fn submit(&self, node_execution_id: &str) -> Result<(), String> {
@@ -739,6 +775,7 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
             can_approve: value.can_approve,
             can_retry: value.can_retry,
             has_artifact: value.has_artifact,
+            artifact: value.artifact.map(|artifact| artifact.value),
             failure_reason: value.failure.map(|failure| failure.reason),
         }
     }
