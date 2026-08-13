@@ -7,7 +7,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_workflow_session_providerを必須とし旧modelとpermissionを拒否する() {
+    fn test_workflow_session_providerを必須とする() {
         let with_provider = r#"
 name: provider-session
 description: Provider session
@@ -25,21 +25,9 @@ nodes:
     session:
       gate: auto
 "#;
-        let legacy_settings = r#"
-name: legacy-settings
-description: Legacy settings
-nodes:
-  - name: implement
-    session:
-      provider: claude
-      model: legacy-model
-      permission: edit
-      gate: auto
-"#;
 
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(with_provider).is_ok());
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(missing_provider).is_err());
-        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(legacy_settings).is_err());
     }
 
     #[test]
@@ -370,47 +358,6 @@ nodes:
     }
 
     #[test]
-    fn rejects_legacy_rule_match_key() {
-        let yaml = r#"
-name: legacy-rule
-description: invalid
-nodes:
-  - name: review
-    session:
-      provider: claude
-      gate: auto
-    rules:
-      - match: NEEDS_FIX
-        next: fix
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("match"));
-    }
-
-    #[test]
-    fn rejects_removed_reject_and_rerun_rules() {
-        for removed_action in ["reject", "rerun"] {
-            let yaml = format!(
-                r#"
-name: removed-rule
-description: invalid
-nodes:
-  - name: review
-    session:
-      provider: claude
-      gate: approval
-    rules:
-      - match: {removed_action}
-        next: fix
-"#
-            );
-
-            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&yaml).unwrap_err();
-            assert!(error.to_string().contains("match"));
-        }
-    }
-
-    #[test]
     fn rejects_rule_with_multiple_discriminators() {
         let yaml = r#"
 name: invalid-rule
@@ -452,27 +399,6 @@ nodes:
     }
 
     #[test]
-    fn rejects_node_direct_cycle_guard_and_resets_cycle_for() {
-        let yaml = r#"
-name: legacy-guards
-description: invalid
-nodes:
-  - name: fix
-    session:
-      provider: claude
-      gate: auto
-    cycle_guard:
-      max_iterations: 2
-    resets_cycle_for:
-      - fix
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("cycle_guard") || err.to_string().contains("resets_cycle_for")
-        );
-    }
-
-    #[test]
     fn rejects_missing_kind_block() {
         let yaml = r#"
 name: invalid
@@ -498,56 +424,6 @@ nodes:
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
-    }
-
-    #[test]
-    fn rejects_legacy_type_field() {
-        let yaml = r#"
-name: old-type
-description: invalid
-nodes:
-  - name: implement
-    type: agent
-    instruction: implement
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("type"));
-    }
-
-    #[test]
-    fn rejects_legacy_output_contract_field() {
-        let yaml = r#"
-name: old-output-contract
-description: invalid
-nodes:
-  - name: review
-    session:
-      provider: claude
-      gate: auto
-    output_contract: review-verdict
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("output_contract"));
-    }
-
-    #[test]
-    fn rejects_legacy_input_contracts_field() {
-        let yaml = r#"
-name: old-input-contracts
-description: invalid
-nodes:
-  - name: implement
-    session:
-      provider: claude
-      gate: auto
-    input_contracts:
-      - spec-directory
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("input_contracts"));
     }
 
     #[test]
@@ -598,156 +474,88 @@ nodes:
     }
 
     #[test]
-    fn schemas_reject_array_extra_keywords_with_allowed_field_message() {
-        let err = serde_json::from_value::<SchemaDef>(serde_json::json!({
-            "type": "array",
-            "items": "review-item",
-            "required": []
-        }))
-        .unwrap_err();
-
-        assert!(err.to_string().contains("array schema supports only items"));
-    }
-
-    #[test]
-    fn schemas_reject_retired_additional_properties_keyword() {
-        let err = serde_json::from_value::<SchemaDef>(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false
-        }))
-        .unwrap_err();
-
-        assert!(err
-            .to_string()
-            .contains("object schema supports only properties and required"));
-    }
-
-    #[test]
-    fn schemas_reject_subset_outside_keywords() {
-        let yaml = r#"
-name: invalid-schema-keyword
-description: invalid
+    fn deserializeは未知fieldとkeywordを拒否する() {
+        let known = r#"
+name: strict-grammar
+description: known values
 schemas:
   review:
     type: object
-    oneOf: []
-nodes:
-  - name: review
-    session:
-      provider: claude
-      gate: auto
-"#;
-        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).is_err());
-    }
-
-    #[test]
-    fn rejects_flat_session_facets() {
-        let yaml = r#"
-name: flat-facet
-description: invalid
-nodes:
-  - name: implement
-    session:
-      provider: claude
-      gate: auto
-    instruction: implement
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("instruction"));
-    }
-
-    #[test]
-    fn rejects_inline_prompt() {
-        let yaml = r#"
-name: inline-test
-description: invalid
-nodes:
-  - name: quick
-    session:
-      provider: claude
-      gate: auto
-    inline_prompt: "Do a quick analysis"
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("inline_prompt"));
-    }
-
-    #[test]
-    fn rejects_session_block_command_field() {
-        let yaml = r#"
-name: invalid-session
-description: invalid
-nodes:
-  - name: implement
-    session:
-      provider: claude
-      command: "cargo build"
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("command"));
-    }
-
-    #[test]
-    fn rejects_command_spec_session_fields() {
-        let yaml = r#"
-command: "cargo build"
-facets:
-  instruction: implement
-"#;
-        let err = serde_saphyr::from_str::<CommandSpec>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("facets"));
-    }
-
-    #[test]
-    fn rejects_command_node_session_fields() {
-        let yaml = r#"
-name: invalid-command
-description: invalid
+    properties:
+      verdict:
+        type: string
+        enum:
+          - LGTM
+          - NEEDS_FIX
+    required:
+      - verdict
 nodes:
   - name: build
-    command: "cargo build"
-    facets:
-      instruction: implement
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("facets"));
-    }
-
-    #[test]
-    fn rejects_fanout_block_session_fields() {
-        let yaml = r#"
-name: invalid-fanout
-description: invalid
-nodes:
+    command: cargo build
+    artifact: review
+    rules:
+      - when:
+          on: verdict
+          then: LGTM
+        next: review
   - name: review
-    fanout:
+    session:
+      provider: claude
+      gate: auto
       facets:
+        policy: coding
+        knowledge:
+          - workflow
         instruction: review
-      child: []
-"#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("facets"));
-    }
-
-    #[test]
-    fn rejects_legacy_parallel_children() {
-        let yaml = r#"
-name: invalid-parallel-children
-description: invalid
-nodes:
-  - name: review
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            LGTM: dispatch
+            NEEDS_FIX: build
+        next: dispatch
+  - name: dispatch
     fanout:
-      parallel_children:
-        - name: child
+      child: worker
+      items:
+        - api
+        - cli
+    rules:
+      - loop_guard:
+          max_iterations: 2
+          on_exhausted: review
+          reset_on: build
+  - name: worker
+    session:
+      provider: codex
+      gate: approval
 "#;
-        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("parallel_children"));
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(known).is_ok());
+
+        for (label, anchor, indent) in [
+            ("root", "description: known values", ""),
+            ("node", "  - name: build", "    "),
+            ("session", "      provider: claude", "      "),
+            ("session facets", "        policy: coding", "        "),
+            ("fanout", "      child: worker", "      "),
+            ("when rule", "          then: LGTM", "          "),
+            ("rule element", "        next: review", "        "),
+            ("switch rule", "            NEEDS_FIX: build", "          "),
+            ("loop_guard rule", "          reset_on: build", "          "),
+            ("schema", "    type: object", "    "),
+        ] {
+            let source = known.replace(anchor, &format!("{anchor}\n{indent}future_field: ignored"));
+            assert_ne!(source, known, "{label} anchor is missing");
+            assert!(
+                serde_saphyr::from_str::<WorkflowDefinitionYaml>(&source).is_err(),
+                "unknown field at {label} must be rejected"
+            );
+        }
+
+        assert!(serde_saphyr::from_str::<CommandSpec>("command: cargo build").is_ok());
+        assert!(serde_saphyr::from_str::<CommandSpec>(
+            "command: cargo build\nfuture_field: ignored\n"
+        )
+        .is_err());
     }
 }

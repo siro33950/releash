@@ -1,7 +1,0 @@
-name: legacy-workflow-variables
-description: workflow_variables was replaced by Artifact references
-workflow_variables:
-  request: legacy
-nodes:
-  - name: run
-    command: printf done

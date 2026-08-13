@@ -1,7 +1,0 @@
-name: legacy-parallel-children
-description: parallel_children was removed
-nodes:
-  - name: fanout
-    fanout:
-      parallel_children:
-        - name: worker

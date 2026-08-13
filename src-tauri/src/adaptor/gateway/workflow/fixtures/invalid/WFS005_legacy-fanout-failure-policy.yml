@@ -1,9 +1,0 @@
-name: legacy-fanout-failure-policy
-description: fanout has no kind-specific failure policy
-nodes:
-  - name: dispatch
-    fanout:
-      child: worker
-      failure_policy: fail_fast
-  - name: worker
-    command: printf done

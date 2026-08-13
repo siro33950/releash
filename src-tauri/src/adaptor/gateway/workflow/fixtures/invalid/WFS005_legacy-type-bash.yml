@@ -1,6 +1,0 @@
-name: legacy-type-bash
-description: type bash was removed in favor of the command kind block
-nodes:
-  - name: run
-    type: bash
-    command: printf done

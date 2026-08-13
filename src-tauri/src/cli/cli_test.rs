@@ -16,60 +16,6 @@ fn test_cli長文help_対応中のagent向けcommandだけを表示する() {
     ] {
         assert!(help.contains(command), "missing nested help: {command}");
     }
-    for removed in [
-        "$ releash workflow list --help",
-        "$ releash workflow start --help",
-        "$ releash workflow executions --help",
-        "$ releash workflow logs --help",
-        "$ releash workflow approve --help",
-        "$ releash workflow abort --help",
-        "$ releash workflow stop --help",
-        "$ releash workflow resume --help",
-        "$ releash workflow output validate --help",
-        "$ releash hook",
-    ] {
-        assert!(!help.contains(removed), "removed CLI surface: {removed}");
-    }
-}
-
-#[test]
-fn test_clicommand整理_削除対象workflow_commandを拒否する() {
-    let execution_id = "550e8400-e29b-41d4-a716-446655440000";
-    for argv in [
-        vec!["releash", "workflow", "list"],
-        vec!["releash", "workflow", "start", "review"],
-        vec!["releash", "workflow", "executions"],
-        vec!["releash", "workflow", "logs", execution_id],
-        vec![
-            "releash",
-            "workflow",
-            "approve",
-            execution_id,
-            "--node",
-            "review",
-        ],
-        vec!["releash", "workflow", "abort", execution_id],
-        vec!["releash", "workflow", "stop", execution_id],
-        vec!["releash", "workflow", "resume", execution_id],
-        vec![
-            "releash",
-            "workflow",
-            "output",
-            "validate",
-            execution_id,
-            "--node",
-            "review",
-            "--type",
-            "review-verdict",
-            "--file",
-            "out.json",
-        ],
-    ] {
-        assert!(
-            Cli::try_parse_from(argv.clone()).is_err(),
-            "removed command still parses: {argv:?}"
-        );
-    }
 }
 
 #[test]
@@ -108,7 +54,7 @@ fn test_clicommand整理_保持対象workflowとreview_commandを受理する() 
 }
 
 #[test]
-fn test_clicommand整理_一次owner文書が実装済みsurfaceだけを列挙する() {
+fn test_clicommand整理_一次owner文書が実装済みsurfaceを列挙する() {
     let document = include_str!("../../../docs/workflow-engine-evolution-plan.md");
 
     for retained in [
@@ -121,22 +67,42 @@ fn test_clicommand整理_一次owner文書が実装済みsurfaceだけを列挙�
             "missing CLI surface: {retained}"
         );
     }
-    for removed in [
-        "releash workflow list",
-        "releash workflow executions",
-        "releash workflow start",
-        "releash workflow logs",
-        "releash workflow approve",
-        "releash workflow abort",
-        "releash workflow stop",
-        "releash workflow resume",
-        "releash workflow output validate",
-    ] {
-        assert!(
-            !document.contains(removed),
-            "primary owner still advertises removed CLI surface: {removed}"
-        );
-    }
+}
+
+#[test]
+fn test_cli_parse境界_未知入力と現在の引数errorを拒否する() {
+    assert!(Cli::try_parse_from(["releash", "workflow", "future-command"]).is_err());
+
+    let unknown_option = Cli::try_parse_from([
+        "releash",
+        "workflow",
+        "status",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "--future-option",
+        "ignored",
+    ])
+    .unwrap_err();
+    assert_eq!(
+        unknown_option.kind(),
+        clap::error::ErrorKind::UnknownArgument
+    );
+
+    let missing_required =
+        Cli::try_parse_from(["releash", "workflow", "output", "submit"]).unwrap_err();
+    assert_eq!(
+        missing_required.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+
+    let invalid_value = Cli::try_parse_from([
+        "releash",
+        "hook",
+        "receive",
+        "--provider",
+        "future-provider",
+    ])
+    .unwrap_err();
+    assert_eq!(invalid_value.kind(), clap::error::ErrorKind::InvalidValue);
 }
 
 #[test]
@@ -165,22 +131,6 @@ fn test_cli長文help_複数回呼び出しでcacheを再利用する() {
     let first = render_long_help();
     let second = render_long_help();
     assert!(std::ptr::eq(first.as_ptr(), second.as_ptr()));
-}
-
-#[test]
-fn test_workflow_cli_旧file_queueへ依存しない() {
-    for source in [
-        include_str!("mod.rs"),
-        include_str!("workflow.rs"),
-        include_str!("output.rs"),
-        include_str!("api_client.rs"),
-        include_str!("file_direct.rs"),
-    ] {
-        let forbidden = ["workflow_", "pending"].concat();
-        assert!(!source.contains(&forbidden));
-        let mutation_event = ["CliMutation", "Requested"].concat();
-        assert!(!source.contains(&mutation_event));
-    }
 }
 
 #[test]

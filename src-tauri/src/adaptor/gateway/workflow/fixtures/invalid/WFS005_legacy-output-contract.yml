@@ -1,6 +1,0 @@
-name: legacy-output-contract
-description: output_contract was replaced by artifact and schemas
-nodes:
-  - name: run
-    output_contract: result
-    command: printf done

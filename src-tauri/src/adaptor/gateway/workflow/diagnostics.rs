@@ -258,7 +258,6 @@ fn parse_shape_diagnostics(
         root,
         "",
         &["name", "description", "builtin", "schemas", "nodes"],
-        &["steps", "variables", "workflow_variables", "tasks"],
         span_map,
         workflow_name,
         None,
@@ -310,26 +309,6 @@ fn parse_shape_diagnostics(
             &node_path,
             &[
                 "name", "command", "session", "fanout", "artifact", "input", "inputs", "rules",
-            ],
-            &[
-                "type",
-                "mode",
-                "facets",
-                "prompt",
-                "inline_prompt",
-                "output_contract",
-                "input_contracts",
-                "pass_output_from",
-                "pass_previous_response",
-                "variables",
-                "workflow_variables",
-                "cycle_guard",
-                "resets_cycle_for",
-                "collect",
-                "approval",
-                "bash",
-                "parallel",
-                "tasks",
             ],
             span_map,
             workflow_name,
@@ -403,7 +382,6 @@ fn parse_shape_diagnostics(
                 session,
                 &format!("{node_path}.session"),
                 &["provider", "gate", "facets"],
-                &["mode", "prompt", "inline_prompt"],
                 span_map,
                 workflow_name,
                 Some(node_name),
@@ -428,7 +406,6 @@ fn parse_shape_diagnostics(
                     facets,
                     &format!("{node_path}.session.facets"),
                     &["policy", "knowledge", "instruction"],
-                    &[],
                     span_map,
                     workflow_name,
                     Some(node_name),
@@ -444,35 +421,11 @@ fn parse_shape_diagnostics(
                 fanout,
                 &format!("{node_path}.fanout"),
                 &["child", "items"],
-                &[
-                    "parallel_children",
-                    "aggregate",
-                    "all_match",
-                    "any_match",
-                    "failure_policy",
-                    "on_failure",
-                    "fail_fast",
-                ],
                 span_map,
                 workflow_name,
                 Some(node_name),
                 &mut diagnostics,
             );
-            if let Some(aggregate) = fanout
-                .get("aggregate")
-                .and_then(serde_json::Value::as_object)
-            {
-                check_allowed_fields(
-                    aggregate,
-                    &format!("{node_path}.fanout.aggregate"),
-                    &[],
-                    &["all_match", "any_match", "then", "else"],
-                    span_map,
-                    workflow_name,
-                    Some(node_name),
-                    &mut diagnostics,
-                );
-            }
         }
         if let Some(rules) = node_obj.get("rules").and_then(serde_json::Value::as_array) {
             for (rule_index, rule) in rules.iter().enumerate() {
@@ -484,16 +437,6 @@ fn parse_shape_diagnostics(
                     rule_obj,
                     &rule_path,
                     &["when", "switch", "loop_guard", "next"],
-                    &[
-                        "match",
-                        "regex",
-                        "expression",
-                        "condition",
-                        "cycle_guard",
-                        "resets_cycle_for",
-                        "reject",
-                        "rerun",
-                    ],
                     span_map,
                     workflow_name,
                     Some(node_name),
@@ -524,12 +467,10 @@ fn parse_shape_diagnostics(
     diagnostics
 }
 
-#[allow(clippy::too_many_arguments)]
 fn check_allowed_fields(
     map: &serde_json::Map<String, serde_json::Value>,
     path: &str,
     allowed: &[&str],
-    old_fields: &[&str],
     span_map: &YamlSpanMap,
     workflow_name: &str,
     node_name: Option<&str>,
@@ -544,25 +485,12 @@ fn check_allowed_fields(
         } else {
             format!("{path}.{key}")
         };
-        let (code, message) = if old_fields.contains(&key.as_str()) {
-            (
-                "WFS005",
-                format!(
-                    "field '{key}' belongs to the old workflow syntax and is no longer accepted"
-                ),
-            )
-        } else {
-            (
-                "WFS002",
-                format!("unknown workflow field '{key}' is not allowed here"),
-            )
-        };
         let mut item = DiagnosticItem::new(
-            code,
+            "WFS002",
             Severity::Error,
             DiagnosticStage::ParseShape,
             span_map.field_span(&field_path),
-            message,
+            format!("unknown workflow field '{key}' is not allowed here"),
         )
         .workflow(workflow_name)
         .field(key);
@@ -598,9 +526,7 @@ fn deserialize_error_diagnostic(
     workflow_name_hint: Option<&str>,
 ) -> DiagnosticItem {
     let message = error.to_string();
-    let code = if message.contains("old workflow syntax") {
-        "WFS005"
-    } else if message.contains("unknown field") || message.contains("unknown variant") {
+    let code = if message.contains("unknown field") || message.contains("unknown variant") {
         "WFS002"
     } else if message.contains("kind block")
         || message.contains("requires sibling next")
@@ -1759,56 +1685,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cleanup_regression_fixture_manifest_is_complete() {
-        let fixture_names = fs::read_dir(fixture_dir("invalid"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                entry
-                    .path()
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(str::to_string)
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        let required = [
-            "WFS002_out-of-scope-external-event",
-            "WFS002_out-of-scope-timer",
-            "WFS002_out-of-scope-trigger",
-            "WFS005_legacy-aggregate-all-match",
-            "WFS005_legacy-aggregate-any-match",
-            "WFS005_legacy-approval-node",
-            "WFS005_legacy-bash-node",
-            "WFS005_legacy-collect",
-            "WFS005_legacy-fanout-failure-policy",
-            "WFS005_legacy-global-tasks",
-            "WFS005_legacy-input-contracts",
-            "WFS005_legacy-node-cycle-guard",
-            "WFS005_legacy-output-contract",
-            "WFS005_legacy-parallel-children",
-            "WFS005_legacy-parallel-node",
-            "WFS005_legacy-pass-output-from",
-            "WFS005_legacy-pass-previous-response",
-            "WFS005_legacy-rule-expression",
-            "WFS005_legacy-rule-reject",
-            "WFS005_legacy-rule-rerun",
-            "WFS005_legacy-rules-match-regex",
-            "WFS005_legacy-type-approval",
-            "WFS005_legacy-type-bash",
-            "WFS005_legacy-type-field",
-            "WFS005_legacy-type-parallel",
-            "WFS005_legacy-workflow-variables",
-        ];
-
-        for name in required {
-            assert!(
-                fixture_names.contains(name),
-                "legacy cleanup regression fixture is missing: {name}"
-            );
-        }
-    }
-
-    #[test]
     fn workflow_fixture_suite_invalid_fixtures_have_expected_diagnostic_code() {
         for entry in fs::read_dir(fixture_dir("invalid")).unwrap() {
             let path = entry.unwrap().path();
@@ -1861,6 +1737,161 @@ mod tests {
     }
 
     #[test]
+    fn workflow_source_diagnosticsは未知fieldとkeywordを拒否する() {
+        let cases = [
+            (
+                "root",
+                r#"
+name: unknown-root-field
+description: unknown root field
+future_field: ignored
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+"#,
+            ),
+            (
+                "node",
+                r#"
+name: unknown-node-field
+description: unknown node field
+nodes:
+  - name: implement
+    future_field: ignored
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+"#,
+            ),
+            (
+                "session",
+                r#"
+name: unknown-session-field
+description: unknown session field
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      gate: auto
+      future_field: ignored
+      facets:
+        instruction: implement
+"#,
+            ),
+            (
+                "session.facets",
+                r#"
+name: unknown-facet-field
+description: unknown session facet field
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+        future_field: ignored
+"#,
+            ),
+            (
+                "fanout",
+                r#"
+name: unknown-fanout-field
+description: unknown fanout field
+nodes:
+  - name: dispatch
+    fanout:
+      child: worker
+      future_field: ignored
+  - name: worker
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+"#,
+            ),
+            (
+                "rule",
+                r#"
+name: unknown-rule-field
+description: unknown rule field
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+    rules:
+      - next: review
+        future_field: ignored
+  - name: review
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+"#,
+            ),
+            (
+                "schemas",
+                r#"
+name: unknown-schema-keyword
+description: unknown schema keyword
+schemas:
+  review:
+    type: object
+    future_keyword: ignored
+    properties:
+      verdict:
+        type: boolean
+    required:
+      - verdict
+nodes:
+  - name: implement
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: implement
+"#,
+            ),
+        ];
+
+        for (label, source) in cases {
+            let known = source
+                .lines()
+                .filter(|line| !line.contains("future_"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let known_diagnosis = diagnose_workflow_source(&known, None);
+            assert!(
+                known_diagnosis.diagnostics.is_empty(),
+                "{label} without unknown input must be accepted: {:?}",
+                known_diagnosis.diagnostics
+            );
+
+            let diagnosis = diagnose_workflow_source(source, None);
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFS002"),
+                "unknown input at {label} must be rejected: {:?}",
+                diagnosis.diagnostics
+            );
+            assert!(diagnosis.workflow.is_none(), "{label}");
+        }
+    }
+
+    #[test]
     fn unknown_loop_guard_reset_node_diagnostic_identifies_reference() {
         let source = fs::read_to_string(
             fixture_dir("invalid").join("WFR001_unknown-loop-guard-reset-node.yml"),
@@ -1894,7 +1925,7 @@ name: yaml-name
 description: invalid workflow with mismatched name
 nodes:
   - name: implement
-    type: agent
+    command: printf implement
     session:
       provider: claude
       gate: auto
@@ -2237,8 +2268,9 @@ nodes:
     fn deserialize_error_diagnostic_classifies_error_messages() {
         let span_map = YamlSpanMap::parse("name: sample\nnodes: []\n").unwrap();
         let cases = [
-            ("old workflow syntax field", "WFS005"),
-            ("unknown field `type`", "WFS002"),
+            ("unknown field `future_field`", "WFS002"),
+            ("unknown variant `future_variant`", "WFS002"),
+            ("missing field `gate`", "WFS002"),
             ("when rule requires sibling next", "WFS003"),
             ("YAML syntax problem", "WFS001"),
             ("unclassified deserialize problem", "WFS002"),
@@ -2862,7 +2894,7 @@ nodes:
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         fs::create_dir_all(wf_dir).unwrap();
-        // Valid YAML but missing required `steps` field
+        // Valid YAML but missing required `nodes` field
         fs::write(
             wf_dir.join("bad-schema.yml"),
             "name: bad-schema\ndescription: test\n",

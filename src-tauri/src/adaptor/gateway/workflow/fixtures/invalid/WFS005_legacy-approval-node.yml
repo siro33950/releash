@@ -1,8 +1,0 @@
-name: legacy-approval-node
-description: approval is not a node kind
-nodes:
-  - name: approve
-    approval: true
-    session:
-      provider: claude
-      gate: approval

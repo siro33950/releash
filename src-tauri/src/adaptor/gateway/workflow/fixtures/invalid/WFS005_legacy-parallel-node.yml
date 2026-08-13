@@ -1,9 +1,0 @@
-name: legacy-parallel-node
-description: parallel is not a node kind
-nodes:
-  - name: dispatch
-    parallel: [worker]
-    fanout:
-      child: worker
-  - name: worker
-    command: printf done

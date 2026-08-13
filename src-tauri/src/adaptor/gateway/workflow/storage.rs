@@ -470,6 +470,52 @@ mod tests {
     }
 
     #[test]
+    fn save_sourceとloadは未知fieldを拒否する() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        fs::create_dir_all(&instructions).unwrap();
+        fs::write(instructions.join("review.md"), "Review.").unwrap();
+        let known = r#"
+name: strict-storage
+description: known values
+nodes:
+  - name: review
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: review
+"#;
+        let with_unknown = r#"
+name: strict-storage
+description: known values
+future_field: ignored
+nodes:
+  - name: review
+    session:
+      provider: claude
+      gate: auto
+      facets:
+        instruction: review
+"#;
+
+        assert!(save_workflow_source(dir, dir, known).is_ok());
+        let error = save_workflow_source(dir, dir, with_unknown).unwrap_err();
+        assert!(
+            matches!(error, StorageError::Diagnostics(ref items) if items.iter().any(|item| item.code == "WFS002")),
+            "unknown field must be rejected: {error:?}"
+        );
+
+        let file_path = dir.join("strict-unknown.yml");
+        fs::write(&file_path, with_unknown).unwrap();
+        let loaded = load_workflow(&file_path, dir);
+        assert!(
+            matches!(loaded, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS002"))
+        );
+    }
+
+    #[test]
     fn list_workflows_returns_sorted_summaries() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -530,8 +576,8 @@ name: broken
 description: invalid workflow
 nodes:
   - name: node
-    type: agent
-    instruction: implement
+    session:
+      provider: claude
 "#,
         )
         .unwrap();
@@ -822,31 +868,6 @@ nodes:
         }
     }
 
-    /// [02] schema 境界: 旧 `steps:` 表現で書かれた user-authored YAML は
-    /// 新 schema (`nodes:` 必須 + `deny_unknown_fields`) として load に失敗する。
-    /// これにより利用者は新表現で書き直さない限り実行に進めない。
-    #[test]
-    fn load_workflow_rejects_legacy_steps_yaml() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let yaml = r#"
-name: legacy-user
-description: legacy user yaml
-steps:
-  - name: x
-    mode: auto
-    instruction: x
-    provider: claude
-"#;
-        let file_path = dir.join("legacy-user.yml");
-        std::fs::write(&file_path, yaml).unwrap();
-        let result = load_workflow(&file_path, dir);
-        assert!(
-            matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005")),
-            "旧 steps YAML は load 段階で WFS005 diagnostic になる"
-        );
-    }
-
     /// [02] schema 境界: load 経路で 3 種全 facet (policy/knowledge/instruction)
     /// が通常の top-level node（fanout child を含む）の read model に解決済みで
     /// 格納されることを担保する。
@@ -1011,65 +1032,6 @@ nodes:
         let workflow = load_workflow(&file_path, dir).unwrap();
 
         assert_eq!(workflow.name, "builtin-facet-with-broken-inventory");
-    }
-
-    /// spec issues-1054 「未定義 workflow 変数の拒否」: facet 本文が宣言されていない
-    /// `variables:` は旧構文として schema deserialize 境界で拒否される。
-    #[test]
-    fn load_workflow_rejects_variables_section() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let yaml = r#"
-name: old-variables-section
-description: variables section test
-variables:
-  project_label: "Releash"
-nodes:
-  - name: implement
-    session:
-      provider: claude
-      gate: auto
-      facets:
-        instruction: missing
-"#;
-        let file_path = dir.join("old-variables-section.yml");
-        std::fs::write(&file_path, yaml).unwrap();
-        let result = load_workflow(&file_path, dir);
-        assert!(
-            matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005"))
-        );
-    }
-
-    #[test]
-    fn load_workflow_rejects_legacy_pass_fields() {
-        for (field, value) in [
-            ("pass_output_from", "plan"),
-            ("pass_previous_response", "true"),
-        ] {
-            let tmp = TempDir::new().unwrap();
-            let dir = tmp.path();
-            let yaml = format!(
-                r#"
-name: old-pass-field
-description: pass field test
-nodes:
-  - name: implement
-    {field}: {value}
-    session:
-      provider: claude
-      gate: auto
-      facets:
-        instruction: missing
-"#
-            );
-            let file_path = dir.join(format!("old-{field}.yml"));
-            std::fs::write(&file_path, yaml).unwrap();
-            let result = load_workflow(&file_path, dir);
-            assert!(
-                matches!(result, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS005"))
-            );
-        }
     }
 
     /// Artifact template references load without a workflow-level variables section.

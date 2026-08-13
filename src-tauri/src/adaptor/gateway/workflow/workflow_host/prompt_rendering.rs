@@ -465,7 +465,6 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("releash workflow output submit"));
-        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(!prompt.contains("--type"));
         assert!(!prompt.contains("--json"));
@@ -501,11 +500,8 @@ mod tests {
         assert!(prompt.contains("\"verdict\": \"string\""));
         assert!(prompt.contains("Fields not listed in `properties` are accepted"));
         assert!(prompt.contains("releash workflow output submit"));
-        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
-        let deprecated_step_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_step_flag));
     }
 
     #[test]
@@ -524,7 +520,6 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("releash workflow output submit"));
-        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(!prompt.contains("--type"));
         assert!(!prompt.contains("--json"));
@@ -549,7 +544,6 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("releash workflow output submit"));
-        assert!(!prompt.contains("--node review"));
         assert!(prompt.contains("--node-execution node-execution-1"));
         assert!(prompt.contains("--type review-result"));
     }
