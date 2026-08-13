@@ -213,8 +213,39 @@ export function useTerminal(
 			}
 		});
 
-		// ペイン操作に使うキーをxtermに処理させない
+		// IME変換中のEnterで xterm が送るEnter由来バイトを捨てるためのフラグ
+		let suppressImeEnterData = false;
+
+		// キー変換とペイン操作キーの入力抑止
 		terminal.attachCustomKeyEventHandler((event) => {
+			if (
+				event.key === "Enter" &&
+				(event.isComposing || event.keyCode === 229)
+			) {
+				// keyCode 229 では xterm がEnterをエンコードしないため抑止しない。
+				// keyCode 13 (WebKit系) では composition確定後にEnterがエンコードされるので抑止する。
+				// xtermの送出は同じtask内で同期的に終わるため、残ったフラグはmicrotaskで下ろす。
+				if (event.type === "keydown" && event.keyCode === 13) {
+					suppressImeEnterData = true;
+					queueMicrotask(() => {
+						suppressImeEnterData = false;
+					});
+				}
+				return true;
+			}
+			if (event.key === "Enter") {
+				const isShiftOnly =
+					event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+				const isMetaOnly =
+					event.metaKey && !event.shiftKey && !event.ctrlKey && !event.altKey;
+				if (isShiftOnly || isMetaOnly) {
+					if (event.type === "keydown") {
+						event.preventDefault();
+						terminal.input("\x1b\r", true);
+					}
+					return false;
+				}
+			}
 			const mod = event.metaKey || event.ctrlKey;
 			// Cmd+D (垂直分割) / Cmd+Shift+D (水平分割)
 			if (mod && event.key === "d") return false;
@@ -677,7 +708,13 @@ export function useTerminal(
 			deliverInput(data);
 		};
 		inputDispatchRef.current = dispatchInput;
-		terminal.onData(dispatchInput);
+		terminal.onData((data) => {
+			if (suppressImeEnterData && (data === "\r" || data === "\x1b\r")) {
+				suppressImeEnterData = false;
+				return;
+			}
+			dispatchInput(data);
+		});
 
 		const RESIZE_DEBOUNCE_MS = 100;
 		let resizeTimer: ReturnType<typeof setTimeout> | null = null;
