@@ -626,22 +626,21 @@ impl LocalEventStore {
                 checkpoint.log_frames,
                 checkpoint.checkpointed_frames
             );
-        } else {
-            layout.observe(StorePathOperation::Open, &database_path);
-            layout.observe(StorePathOperation::Sync, &database_path);
-            std::fs::File::open(&database_path)
-                .and_then(|file| file.sync_all())
-                .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
-            if config
+        }
+        layout.observe(StorePathOperation::Open, &database_path);
+        layout.observe(StorePathOperation::Sync, &database_path);
+        std::fs::File::open(&database_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        if config
+            .fault
+            .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
+        {
+            #[cfg(test)]
+            config
                 .fault
-                .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
-            {
-                #[cfg(test)]
-                config.fault.crash_initial_create_process_if_armed(
-                    InitialCreateFaultPoint::AfterDatabaseSync,
-                );
-                return Err(LocalEventStoreOpenError::StorageUnavailable);
-            }
+                .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterDatabaseSync);
+            return Err(LocalEventStoreOpenError::StorageUnavailable);
         }
         if config
             .fault
