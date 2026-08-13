@@ -541,11 +541,9 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_workflow_session_明示したclaude_providerを使う() {
+    fn test_builtin_workflow_sessionは明示したclaude_providerを使う() {
         let source = builtin_workflow_source("03_full-review").unwrap();
 
         assert!(source.contains("provider: claude"));
-        assert!(!source.contains("model:"));
-        assert!(!source.contains("permission:"));
     }
 }

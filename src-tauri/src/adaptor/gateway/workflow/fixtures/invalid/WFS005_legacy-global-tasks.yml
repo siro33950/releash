@@ -1,7 +1,0 @@
-name: legacy-global-tasks
-description: WorkflowExecution does not own global tasks
-tasks:
-  - id: task-1
-nodes:
-  - name: run
-    command: printf done

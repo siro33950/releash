@@ -269,15 +269,15 @@ nodes:
         )
     }
 
-    fn invalid_legacy_source(name: &str) -> String {
+    fn invalid_source_missing_gate(name: &str) -> String {
         format!(
             r#"
 name: {name}
 description: invalid workflow
 nodes:
   - name: node
-    type: agent
-    instruction: implement
+    session:
+      provider: claude
 "#
         )
     }
@@ -333,12 +333,12 @@ nodes:
         gateway.save_source(&original, None).unwrap();
 
         let err = gateway
-            .save_source(&invalid_legacy_source("stable"), Some("stable"))
+            .save_source(&invalid_source_missing_gate("stable"), Some("stable"))
             .unwrap_err();
         let loaded = gateway.get_source("stable").unwrap().unwrap();
 
         assert!(
-            matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS005"))
+            matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS002"))
         );
         assert_eq!(loaded, original);
     }

@@ -525,7 +525,7 @@ mod contract_schema_tests {
                 "object schema supports only properties and required",
             ),
             (
-                serde_json::json!({"type": "object", "additionalProperties": false}),
+                serde_json::json!({"type": "object", "future_keyword": false}),
                 "object schema supports only properties and required",
             ),
             (
@@ -538,6 +538,23 @@ mod contract_schema_tests {
             ),
         ] {
             assert_eq!(schema_def_from_json(&value).unwrap_err(), expected);
+        }
+    }
+
+    #[test]
+    fn test_schema_def_from_jsonは全型の未知keywordを拒否する() {
+        for value in [
+            serde_json::json!({"type": "object", "properties": {}, "future_keyword": "x"}),
+            serde_json::json!({"type": "array", "items": "review", "future_keyword": "x"}),
+            serde_json::json!({"type": "string", "enum": ["LGTM"], "future_keyword": "x"}),
+            serde_json::json!({"type": "boolean", "future_keyword": "x"}),
+            serde_json::json!({"type": "integer", "future_keyword": "x"}),
+            serde_json::json!({"type": "number", "future_keyword": "x"}),
+        ] {
+            assert!(
+                schema_def_from_json(&value).is_err(),
+                "unknown keyword must be rejected: {value}"
+            );
         }
     }
 

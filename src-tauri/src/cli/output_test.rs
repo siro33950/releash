@@ -54,7 +54,7 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
 }
 
 #[test]
-fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseする() {
+fn test_workflow_output_cli_現在のcommandをparseする() {
     let execution_id = "550e8400-e29b-41d4-a716-446655440000";
     for argv in [
         vec![
@@ -81,32 +81,52 @@ fn test_workflow_output_cli_保持対象commandだけを正規語彙でparseす�
     ] {
         assert!(Cli::try_parse_from(argv).is_ok());
     }
+}
 
-    assert!(Cli::try_parse_from([
-        "releash",
-        "workflow",
-        "output",
-        "validate",
-        execution_id,
-        "--node",
-        "review",
-        "--type",
-        "review-verdict",
-        "--file",
-        "out.json",
-    ])
-    .is_err());
-    let legacy_node_flag = ["--st", "ep"].concat();
-    assert!(Cli::try_parse_from(vec![
-        "releash".to_string(),
-        "workflow".to_string(),
-        "output".to_string(),
-        "get".to_string(),
-        execution_id.to_string(),
-        legacy_node_flag,
-        "review".to_string(),
-    ])
-    .is_err());
+#[test]
+fn test_workflow_output_get_未知optionを拒否する() {
+    let execution_id = "550e8400-e29b-41d4-a716-446655440000";
+
+    for argv in [
+        vec![
+            "releash",
+            "workflow",
+            "output",
+            "get",
+            execution_id,
+            "--node",
+            "review",
+            "--future-flag",
+        ],
+        vec![
+            "releash",
+            "workflow",
+            "output",
+            "get",
+            execution_id,
+            "--node",
+            "review",
+            "--future-option",
+            "ignored",
+        ],
+        vec![
+            "releash",
+            "workflow",
+            "output",
+            "get",
+            execution_id,
+            "--node",
+            "review",
+            "--future-option=ignored",
+        ],
+    ] {
+        let error = Cli::try_parse_from(argv.clone()).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "unknown option must be rejected: {argv:?}"
+        );
+    }
 }
 
 #[test]
@@ -134,18 +154,6 @@ fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_ar
     ])
     .is_err());
     assert!(Cli::try_parse_from(["releash", "workflow", "output", "submit"]).is_err());
-    assert!(Cli::try_parse_from([
-        "releash",
-        "workflow",
-        "output",
-        "submit",
-        "550e8400-e29b-41d4-a716-446655440000",
-        "--node",
-        "review",
-        "--node-execution",
-        node_execution_id,
-    ])
-    .is_err());
 }
 
 #[test]

@@ -1,6 +1,0 @@
-name: legacy-pass-output-from
-description: pass_output_from was replaced by inputs
-nodes:
-  - name: run
-    pass_output_from: [source]
-    command: printf done
