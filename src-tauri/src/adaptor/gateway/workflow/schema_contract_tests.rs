@@ -547,8 +547,13 @@ nodes:
             let source = known.replace(anchor, &format!("{anchor}\n{indent}future_field: ignored"));
             assert_ne!(source, known, "{label} anchor is missing");
             assert!(
-                serde_saphyr::from_str::<WorkflowDefinitionYaml>(&source).is_err(),
-                "unknown field at {label} must be rejected"
+                serde_saphyr::from_str::<serde_json::Value>(&source).is_ok(),
+                "{label} source must stay syntactically valid YAML"
+            );
+            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&source).unwrap_err();
+            assert!(
+                error.to_string().contains("future_field"),
+                "unknown field at {label} must be rejected: {error}"
             );
         }
 
