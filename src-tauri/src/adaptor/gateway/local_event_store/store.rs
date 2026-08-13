@@ -23,8 +23,11 @@ use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint;
 use crate::adaptor::gateway::local_event_store::layout::{
     create_initial_create_evidence_with_fault, inspect_initial_create_evidence,
     remove_initial_create_evidence, replace_invalid_evidence_for_absent_database_with_fault,
-    InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout, StorePathObserver,
-    StorePathOperation,
+    sqlite_sidecar_paths, InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout,
+    StorePathObserver, StorePathOperation,
+};
+use crate::adaptor::gateway::local_event_store::maintenance::{
+    run_startup_maintenance, StartupMaintenanceError,
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::canonical_mutation_identity_v1 as canonical_projection_mutation_identity_v1;
 use crate::adaptor::gateway::local_event_store::reader::{
@@ -99,6 +102,33 @@ fn classify_connection_error(
     }
 }
 
+fn classify_startup_maintenance_error(error: &StartupMaintenanceError) -> LocalEventStoreOpenError {
+    match error {
+        StartupMaintenanceError::Connection(error) => {
+            classify_connection_error(error, LocalEventStoreOpenError::StoreValidationFailed)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WalCheckpointResult {
+    busy: bool,
+    log_frames: i64,
+    checkpointed_frames: i64,
+}
+
+fn truncate_wal_checkpoint(
+    connection: &rusqlite::Connection,
+) -> Result<WalCheckpointResult, rusqlite::Error> {
+    connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+        Ok(WalCheckpointResult {
+            busy: row.get::<_, i64>(0)? != 0,
+            log_frames: row.get(1)?,
+            checkpointed_frames: row.get(2)?,
+        })
+    })
+}
+
 fn classify_writer_lock_error(error: &std::io::Error) -> LocalEventStoreOpenError {
     if error.kind() == std::io::ErrorKind::WouldBlock {
         LocalEventStoreOpenError::WriterLockHeld
@@ -146,12 +176,9 @@ fn open_schema_inspection(
     // not claim a read-mark or change a sidecar byte. `immutable=1` is never
     // used when a non-empty WAL exists because it could ignore committed
     // frames. No create flag is permitted at this boundary.
-    let wal_path = std::path::PathBuf::from(format!("{}-wal", path.display()));
+    let [wal_path, shm_path] = sqlite_sidecar_paths(path);
     let mut wal_has_bytes = false;
-    for sidecar in [
-        wal_path.clone(),
-        std::path::PathBuf::from(format!("{}-shm", path.display())),
-    ] {
+    for sidecar in [wal_path.clone(), shm_path] {
         layout.observe(StorePathOperation::Metadata, &sidecar);
         match std::fs::metadata(&sidecar) {
             Ok(metadata) => {
@@ -227,11 +254,8 @@ fn is_proven_initial_create_residue(
 
 fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEventStoreOpenError> {
     let database = layout.database_path();
-    for path in [
-        database.clone(),
-        std::path::PathBuf::from(format!("{}-wal", database.display())),
-        std::path::PathBuf::from(format!("{}-shm", database.display())),
-    ] {
+    let [wal_path, shm_path] = layout.database_sidecar_paths();
+    for path in [database, wal_path, shm_path] {
         layout.observe(StorePathOperation::Remove, &path);
         match std::fs::remove_file(path) {
             Ok(()) => {}
@@ -250,6 +274,7 @@ enum ExistingDatabaseKind {
     SupportedV1,
     SupportedV2,
     SupportedV3,
+    SupportedV4,
 }
 
 fn classify_existing_database(
@@ -314,14 +339,15 @@ fn classify_existing_database(
         return Ok(ExistingDatabaseKind::SupportedV1);
     }
     if application_id == i64::from(APPLICATION_ID) {
-        if matches!(user_version, 2 | 3)
+        if matches!(user_version, 2..=4)
             && columns.iter().any(|column| column == "installation_id")
             && !columns.iter().any(|column| column == "store_id")
         {
-            return Ok(if user_version == 2 {
-                ExistingDatabaseKind::SupportedV2
-            } else {
-                ExistingDatabaseKind::SupportedV3
+            return Ok(match user_version {
+                2 => ExistingDatabaseKind::SupportedV2,
+                3 => ExistingDatabaseKind::SupportedV3,
+                4 => ExistingDatabaseKind::SupportedV4,
+                _ => unreachable!("supported schema version was matched above"),
             });
         }
         if user_version != CURRENT_SCHEMA_VERSION {
@@ -567,6 +593,7 @@ impl LocalEventStore {
                     ExistingDatabaseKind::SupportedV1
                         | ExistingDatabaseKind::SupportedV2
                         | ExistingDatabaseKind::SupportedV3
+                        | ExistingDatabaseKind::SupportedV4
                 ) {
                     evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
                         classify_sqlite_error(
@@ -590,25 +617,31 @@ impl LocalEventStore {
             .map_err(|error| {
                 classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
             })?;
-        writer_connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .map_err(|error| {
-                classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
-            })?;
-        layout.observe(StorePathOperation::Open, &database_path);
-        layout.observe(StorePathOperation::Sync, &database_path);
-        std::fs::File::open(&database_path)
-            .and_then(|file| file.sync_all())
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
-        if config
-            .fault
-            .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
-        {
-            #[cfg(test)]
-            config
+        let checkpoint = truncate_wal_checkpoint(&writer_connection).map_err(|error| {
+            classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
+        })?;
+        if checkpoint.busy {
+            log::warn!(
+                "local event store startup maintenance skipped because WAL checkpoint is busy: log_frames={}, checkpointed_frames={}",
+                checkpoint.log_frames,
+                checkpoint.checkpointed_frames
+            );
+        } else {
+            layout.observe(StorePathOperation::Open, &database_path);
+            layout.observe(StorePathOperation::Sync, &database_path);
+            std::fs::File::open(&database_path)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            if config
                 .fault
-                .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterDatabaseSync);
-            return Err(LocalEventStoreOpenError::StorageUnavailable);
+                .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
+            {
+                #[cfg(test)]
+                config.fault.crash_initial_create_process_if_armed(
+                    InitialCreateFaultPoint::AfterDatabaseSync,
+                );
+                return Err(LocalEventStoreOpenError::StorageUnavailable);
+            }
         }
         if config
             .fault
@@ -632,6 +665,20 @@ impl LocalEventStore {
             );
             return Err(LocalEventStoreOpenError::StorageUnavailable);
         }
+
+        let writer_connection = if checkpoint.busy {
+            writer_connection
+        } else {
+            run_startup_maintenance(&layout, writer_connection, config.fault.as_ref()).map_err(
+                |error| {
+                    let correlation = correlation_id();
+                    log::error!(
+                        "local event store could not reopen after startup maintenance [{correlation}]: {error}"
+                    );
+                    classify_startup_maintenance_error(&error)
+                },
+            )?
+        };
 
         let (installation_id, cursor_key, operation_binding_key): (String, Vec<u8>, Vec<u8>) =
             writer_connection
@@ -1120,6 +1167,22 @@ mod startup_error_classification_tests {
                 &ConnectionError::SqliteTooOld { version_number: 0 },
                 LocalEventStoreOpenError::StorageUnavailable,
             ),
+            LocalEventStoreOpenError::UnsupportedRuntime
+        );
+    }
+
+    #[test]
+    fn startup_maintenance_reopen_failures_use_the_connection_classifier() {
+        assert_eq!(
+            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
+                ConnectionError::Sqlite(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
+            )),
+            LocalEventStoreOpenError::StorageUnavailable
+        );
+        assert_eq!(
+            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
+                ConnectionError::SqliteTooOld { version_number: 0 },
+            )),
             LocalEventStoreOpenError::UnsupportedRuntime
         );
     }

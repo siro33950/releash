@@ -11,6 +11,7 @@ pub(crate) mod fault;
 pub(crate) mod hmac_sha256;
 pub(crate) mod indexed_projection_codec;
 pub(crate) mod layout;
+pub(crate) mod maintenance;
 pub(crate) mod projection_record_codec;
 pub(crate) mod provider_hook_health_codec;
 pub(crate) mod provider_lifecycle_codec;

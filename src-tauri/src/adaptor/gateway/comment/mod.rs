@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::domain::comment::{
     ReviewActor, ReviewActorKind, ReviewError, ReviewEvent, ReviewTarget,
 };
+use crate::infrastructure::platform::file_replace;
 use crate::usecase::comment::{
     ReviewClock, ReviewEventMutation, ReviewEventStore, ReviewIdGenerator,
 };
@@ -395,7 +396,7 @@ impl FileReviewEventStore {
             file.write_all(json.as_bytes()).map_err(io_error)?;
             file.sync_all().map_err(io_error)?;
         }
-        replace_file(&tmp_path, &file_path)?;
+        file_replace::replace_file(&tmp_path, &file_path).map_err(io_error)?;
         Ok(())
     }
 }
@@ -474,60 +475,6 @@ fn acquire_worktree_file_lock(
             Err(e) => return Err(ReviewError::Io(e.to_string())),
         }
     }
-}
-
-fn replace_file(tmp_path: &Path, file_path: &Path) -> Result<(), ReviewError> {
-    #[cfg(windows)]
-    {
-        replace_file_windows(tmp_path, file_path)
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(tmp_path, file_path).map_err(io_error)
-    }
-}
-
-#[cfg(windows)]
-fn replace_file_windows(tmp_path: &Path, file_path: &Path) -> Result<(), ReviewError> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        REPLACEFILE_WRITE_THROUGH,
-    };
-
-    fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-
-    let tmp = wide(tmp_path);
-    let dest = wide(file_path);
-    let ok = if file_path.exists() {
-        unsafe {
-            ReplaceFileW(
-                dest.as_ptr(),
-                tmp.as_ptr(),
-                std::ptr::null(),
-                REPLACEFILE_WRITE_THROUGH,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        }
-    } else {
-        unsafe {
-            MoveFileExW(
-                tmp.as_ptr(),
-                dest.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        }
-    };
-    if ok == 0 {
-        return Err(ReviewError::Io(std::io::Error::last_os_error().to_string()));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

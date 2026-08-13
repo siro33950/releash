@@ -1,8 +1,8 @@
 //! Fixed production layout and initial-create evidence for the local event store.
 //!
-//! The layout deliberately derives exactly three application-owned paths from
-//! app-data. It never enumerates app-data and has no pointer, generation, or
-//! legacy-source concept.
+//! The layout derives only fixed application-owned paths from app-data. It
+//! never enumerates app-data and has no pointer, generation, or legacy-source
+//! concept.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -20,6 +20,7 @@ pub use crate::infrastructure::app_data_path::{
 };
 
 pub const DATABASE_FILE: &str = "local-event-store.sqlite3";
+pub const VACUUM_DATABASE_FILE: &str = "local-event-store.vacuum.sqlite3";
 pub const WRITER_LOCK_FILE: &str = "local-event-store.lock";
 pub const INITIAL_CREATE_EVIDENCE_FILE: &str = "local-event-store.initial-create";
 
@@ -54,6 +55,18 @@ impl StoreLayout {
         self.app_data_root.join(DATABASE_FILE)
     }
 
+    pub fn vacuum_database_path(&self) -> PathBuf {
+        self.app_data_root.join(VACUUM_DATABASE_FILE)
+    }
+
+    pub fn database_sidecar_paths(&self) -> [PathBuf; 2] {
+        sqlite_sidecar_paths(&self.database_path())
+    }
+
+    pub fn vacuum_database_sidecar_paths(&self) -> [PathBuf; 2] {
+        sqlite_sidecar_paths(&self.vacuum_database_path())
+    }
+
     pub fn writer_lock_path(&self) -> PathBuf {
         self.app_data_root.join(WRITER_LOCK_FILE)
     }
@@ -78,6 +91,13 @@ impl StoreLayout {
     pub fn observe(&self, operation: StorePathOperation, path: &Path) {
         self.observer.observe(operation, path);
     }
+}
+
+pub(super) fn sqlite_sidecar_paths(database_path: &Path) -> [PathBuf; 2] {
+    [
+        PathBuf::from(format!("{}-wal", database_path.display())),
+        PathBuf::from(format!("{}-shm", database_path.display())),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

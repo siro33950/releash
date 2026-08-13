@@ -22,6 +22,17 @@ pub enum InitialCreateFaultPoint {
     AfterEvidenceUnlink = 10,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceFaultPoint {
+    BeforeVacuumInto = 1,
+    BeforeOutputValidation = 2,
+    BeforeOutputPermission = 3,
+    BeforeOutputSync = 4,
+    BeforeCanonicalSidecarCleanup = 5,
+    BeforeReplace = 6,
+    AfterReplace = 7,
+}
+
 #[derive(Debug, Default)]
 pub struct FaultInjector {
     fail_before_begin: AtomicUsize,
@@ -36,6 +47,7 @@ pub struct FaultInjector {
     schema_commit_reply_loss: AtomicUsize,
     schema_fail_before_readback: AtomicUsize,
     initial_create_fault_point: AtomicUsize,
+    maintenance_fault_point: AtomicUsize,
     #[cfg(test)]
     initial_create_process_crash_point: AtomicUsize,
     #[cfg(test)]
@@ -101,6 +113,12 @@ impl FaultInjector {
         Self::take(&self.schema_fail_before_commit)
     }
 
+    #[cfg(test)]
+    pub fn arm_schema_fail_before_commit(&self) {
+        self.schema_fail_before_commit
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
     pub fn take_schema_commit_reply_loss(&self) -> bool {
         Self::take(&self.schema_commit_reply_loss)
     }
@@ -113,6 +131,18 @@ impl FaultInjector {
         self.initial_create_fault_point
             .compare_exchange(point as usize, 0, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+    }
+
+    pub fn take_maintenance_fault(&self, point: MaintenanceFaultPoint) -> bool {
+        self.maintenance_fault_point
+            .compare_exchange(point as usize, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub fn arm_maintenance_fault(&self, point: MaintenanceFaultPoint) {
+        self.maintenance_fault_point
+            .store(point as usize, Ordering::SeqCst);
     }
 
     /// Terminate the subprocess without unwinding after the production fault
