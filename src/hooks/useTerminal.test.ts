@@ -90,6 +90,9 @@ let mockTerminalInstance: {
 	focus: ReturnType<typeof vi.fn>;
 	write: ReturnType<typeof vi.fn>;
 	resize: ReturnType<typeof vi.fn>;
+	input: ReturnType<
+		typeof vi.fn<(data: string, wasUserInput?: boolean) => void>
+	>;
 	onData: ReturnType<typeof vi.fn>;
 	attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
@@ -125,6 +128,7 @@ vi.mock("@xterm/xterm", () => {
 				this.cols = cols;
 				this.rows = rows;
 			});
+			input = vi.fn((data: string) => mockOnDataCallback(data));
 			onData = vi
 				.fn()
 				.mockImplementation((callback: (data: string) => void) => {
@@ -145,6 +149,92 @@ vi.mock("@xterm/xterm", () => {
 		},
 	};
 });
+
+interface KeyboardSequenceInit {
+	key: string;
+	keyCode: number;
+	shiftKey?: boolean;
+	metaKey?: boolean;
+	ctrlKey?: boolean;
+	altKey?: boolean;
+	isComposing?: boolean;
+}
+
+function dispatchKeyboardSequence(
+	init: KeyboardSequenceInit,
+	xtermEncodedData: string | null,
+) {
+	const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+		.calls[0][0] as (event: KeyboardEvent) => boolean;
+	const events = (["keydown", "keypress", "keyup"] as const).map(
+		(type) =>
+			({
+				type,
+				key: init.key,
+				keyCode: init.keyCode,
+				shiftKey: init.shiftKey ?? false,
+				metaKey: init.metaKey ?? false,
+				ctrlKey: init.ctrlKey ?? false,
+				altKey: init.altKey ?? false,
+				isComposing: init.isComposing ?? false,
+				preventDefault: vi.fn(),
+				stopPropagation: vi.fn(),
+			}) as unknown as KeyboardEvent,
+	);
+	const delegated = events.map((event) => handler(event));
+	if (
+		delegated[0] &&
+		xtermEncodedData !== null &&
+		!events[0].isComposing &&
+		events[0].keyCode !== 229
+	) {
+		mockTerminalInstance.input(xtermEncodedData, true);
+	}
+	return { delegated, events };
+}
+
+function dispatchXtermCompositionEnter(
+	init: KeyboardSequenceInit,
+	compositionData: string,
+) {
+	const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+		.calls[0][0] as (event: KeyboardEvent) => boolean;
+	const event = {
+		type: "keydown",
+		key: init.key,
+		keyCode: init.keyCode,
+		shiftKey: init.shiftKey ?? false,
+		metaKey: init.metaKey ?? false,
+		ctrlKey: init.ctrlKey ?? false,
+		altKey: init.altKey ?? false,
+		isComposing: init.isComposing ?? false,
+		preventDefault: vi.fn(),
+		stopPropagation: vi.fn(),
+	} as unknown as KeyboardEvent;
+	const delegated = handler(event);
+	if (delegated) {
+		if (event.keyCode === 229) {
+			mockOnDataCallback(compositionData);
+		} else {
+			mockOnDataCallback(compositionData);
+			mockOnDataCallback(event.altKey ? "\x1b\r" : "\r");
+		}
+	}
+	return { delegated, event };
+}
+
+function terminalInputWrites() {
+	return mockInvoke.mock.calls
+		.filter(([command]) => command === "write_terminal_surface")
+		.map(
+			([, args]) =>
+				args as {
+					owner: unknown;
+					sequence: number;
+					data: string;
+				},
+		);
+}
 
 let mockFitAddonInstance: { fit: ReturnType<typeof vi.fn> };
 
@@ -2200,66 +2290,267 @@ describe("useTerminal", () => {
 	});
 
 	describe("attachCustomKeyEventHandler", () => {
-		it("ペイン操作キーを抑止する", () => {
-			renderHook(() => useTerminal(containerRef));
+		const agentSessionOwner = {
+			kind: "session",
+			workspacePath: "/repo",
+			sessionId: "agent-session-1",
+		} as const;
+		const surfaces = [
+			{
+				label: "workspace",
+				owner: REPO_WORKSPACE_OWNER,
+				options: { cwd: "/repo", owner: REPO_WORKSPACE_OWNER },
+			},
+			{
+				label: "Agent session",
+				owner: agentSessionOwner,
+				options: {
+					cwd: "/repo",
+					owner: agentSessionOwner,
+					initialization: "attach-existing" as const,
+				},
+			},
+		];
 
-			expect(
-				mockTerminalInstance.attachCustomKeyEventHandler,
-			).toHaveBeenCalledTimes(1);
-			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
-				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+		describe.each(surfaces)("$label terminal surface", (surface) => {
+			async function renderRunningSurface() {
+				const hook = renderHook(() =>
+					useTerminal(containerRef, surface.options),
+				);
+				await waitFor(() => {
+					expect(hook.result.current.isRunningRef.current).toBe(true);
+				});
+				mockInvoke.mockClear();
+				return hook;
+			}
 
-			// Cmd+D → false (垂直分割)
-			expect(
-				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "d" }),
-			).toBe(false);
-			// Cmd+Shift+D → false (水平分割)
-			expect(
-				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "D" }),
-			).toBe(false);
-			// Cmd+Option+ArrowRight → false (フォーカス移動)
-			expect(
-				handler({
-					metaKey: true,
-					ctrlKey: false,
-					altKey: true,
-					key: "ArrowRight",
-				}),
-			).toBe(false);
-			// Cmd+Option+ArrowLeft → false
-			expect(
-				handler({
-					metaKey: true,
-					ctrlKey: false,
-					altKey: true,
-					key: "ArrowLeft",
-				}),
-			).toBe(false);
-		});
+			it.each([
+				{
+					label: "Shift+Enter",
+					modifiers: { shiftKey: true },
+				},
+				{
+					label: "Cmd+Enter",
+					modifiers: { metaKey: true },
+				},
+			])("$labelをESC+CRとして一度だけ送る", async ({ modifiers }) => {
+				await renderRunningSurface();
 
-		it("通常キーは抑止しない", () => {
-			renderHook(() => useTerminal(containerRef));
+				const { delegated, events } = dispatchKeyboardSequence(
+					{ key: "Enter", keyCode: 13, ...modifiers },
+					"\r",
+				);
 
-			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
-				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+				expect(delegated).toEqual([false, false, false]);
+				expect(events[0].preventDefault).toHaveBeenCalledTimes(1);
+				expect(events[1].preventDefault).not.toHaveBeenCalled();
+				expect(events[2].preventDefault).not.toHaveBeenCalled();
+				expect(mockTerminalInstance.input).toHaveBeenCalledTimes(1);
+				expect(mockTerminalInstance.input).toHaveBeenCalledWith("\x1b\r", true);
+				expect(terminalInputWrites()).toEqual([
+					expect.objectContaining({
+						owner: surface.owner,
+						sequence: 0,
+						data: "\x1b\r",
+					}),
+				]);
+			});
 
-			// 通常の文字入力 → true
-			expect(
-				handler({ metaKey: false, ctrlKey: false, altKey: false, key: "a" }),
-			).toBe(true);
-			// Cmd+C (コピー) → true
-			expect(
-				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "c" }),
-			).toBe(true);
-			// 矢印キー（修飾なし） → true
-			expect(
-				handler({
-					metaKey: false,
-					ctrlKey: false,
-					altKey: false,
-					key: "ArrowRight",
-				}),
-			).toBe(true);
+			it("修飾キーなしのEnterをCRのまま送る", async () => {
+				await renderRunningSurface();
+
+				const { delegated } = dispatchKeyboardSequence(
+					{ key: "Enter", keyCode: 13 },
+					"\r",
+				);
+
+				expect(delegated).toEqual([true, true, true]);
+				expect(terminalInputWrites()).toEqual([
+					expect.objectContaining({
+						owner: surface.owner,
+						sequence: 0,
+						data: "\r",
+					}),
+				]);
+			});
+
+			it.each([
+				{
+					label: "isComposingかつkeyCode 13の修飾キーなし",
+					event: { keyCode: 13, isComposing: true },
+				},
+				{
+					label: "isComposingかつkeyCode 13のShift",
+					event: { keyCode: 13, isComposing: true, shiftKey: true },
+				},
+				{
+					label: "isComposingかつkeyCode 13のCmd",
+					event: { keyCode: 13, isComposing: true, metaKey: true },
+				},
+				{
+					label: "isComposingかつkeyCode 13のCtrl",
+					event: { keyCode: 13, isComposing: true, ctrlKey: true },
+				},
+				{
+					label: "isComposingかつkeyCode 13のAlt",
+					event: { keyCode: 13, isComposing: true, altKey: true },
+				},
+				{
+					label: "keyCode 229かつ修飾キーなし",
+					event: { keyCode: 229 },
+				},
+				{
+					label: "keyCode 229かつShift",
+					event: { keyCode: 229, shiftKey: true },
+				},
+				{
+					label: "keyCode 229かつCmd",
+					event: { keyCode: 229, metaKey: true },
+				},
+				{
+					label: "keyCode 229かつCtrl",
+					event: { keyCode: 229, ctrlKey: true },
+				},
+				{
+					label: "keyCode 229かつAlt",
+					event: { keyCode: 229, altKey: true },
+				},
+			])("$labelのEnterで確定文字列だけを一度送る", async ({ event }) => {
+				await renderRunningSurface();
+
+				const { delegated, event: keydown } = dispatchXtermCompositionEnter(
+					{ key: "Enter", ...event },
+					"確定文字列",
+				);
+
+				expect(delegated).toBe(true);
+				expect(keydown.preventDefault).not.toHaveBeenCalled();
+				expect(mockTerminalInstance.input).not.toHaveBeenCalled();
+				expect(terminalInputWrites()).toEqual([
+					expect.objectContaining({
+						owner: surface.owner,
+						sequence: 0,
+						data: "確定文字列",
+					}),
+				]);
+			});
+
+			it.each([
+				{
+					label: "Ctrl+Enter",
+					event: { key: "Enter", keyCode: 13, ctrlKey: true },
+					encoded: "\r",
+				},
+				{
+					label: "Alt+Enter",
+					event: { key: "Enter", keyCode: 13, altKey: true },
+					encoded: "\x1b\r",
+				},
+				{
+					label: "Shift+Ctrl+Enter",
+					event: {
+						key: "Enter",
+						keyCode: 13,
+						shiftKey: true,
+						ctrlKey: true,
+					},
+					encoded: "\r",
+				},
+				{
+					label: "Shift+Alt+Enter",
+					event: {
+						key: "Enter",
+						keyCode: 13,
+						shiftKey: true,
+						altKey: true,
+					},
+					encoded: "\x1b\r",
+				},
+				{
+					label: "Cmd+Ctrl+Enter",
+					event: {
+						key: "Enter",
+						keyCode: 13,
+						metaKey: true,
+						ctrlKey: true,
+					},
+					encoded: "\r",
+				},
+				{
+					label: "Cmd+Alt+Enter",
+					event: {
+						key: "Enter",
+						keyCode: 13,
+						metaKey: true,
+						altKey: true,
+					},
+					encoded: "\x1b\r",
+				},
+				{
+					label: "Shift+Cmd+Enter",
+					event: {
+						key: "Enter",
+						keyCode: 13,
+						shiftKey: true,
+						metaKey: true,
+					},
+					encoded: "\r",
+				},
+				{
+					label: "文字キー",
+					event: { key: "a", keyCode: 65 },
+					encoded: "a",
+				},
+				{
+					label: "矢印キー",
+					event: { key: "ArrowRight", keyCode: 39 },
+					encoded: "\x1b[C",
+				},
+			])("$labelをxtermの既存入力へ委譲する", async ({ event, encoded }) => {
+				await renderRunningSurface();
+
+				const { delegated, events } = dispatchKeyboardSequence(event, encoded);
+
+				expect(delegated).toEqual([true, true, true]);
+				expect(events[0].preventDefault).not.toHaveBeenCalled();
+				expect(terminalInputWrites()).toEqual([
+					expect.objectContaining({
+						owner: surface.owner,
+						sequence: 0,
+						data: encoded,
+					}),
+				]);
+			});
+
+			it.each([
+				{
+					label: "Cmd+D",
+					event: { key: "d", keyCode: 68, metaKey: true },
+				},
+				{
+					label: "Cmd+Shift+D",
+					event: {
+						key: "D",
+						keyCode: 68,
+						metaKey: true,
+						shiftKey: true,
+					},
+				},
+				...(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] as const).map(
+					(key) => ({
+						label: `Cmd+Option+${key}`,
+						event: { key, keyCode: 0, metaKey: true, altKey: true },
+					}),
+				),
+			])("$labelをPTY入力へ送らない", async ({ event }) => {
+				await renderRunningSurface();
+
+				const { delegated } = dispatchKeyboardSequence(event, null);
+
+				expect(delegated).toEqual([false, false, false]);
+				expect(mockTerminalInstance.input).not.toHaveBeenCalled();
+				expect(terminalInputWrites()).toEqual([]);
+			});
 		});
 	});
 
