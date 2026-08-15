@@ -47,8 +47,19 @@ impl RepositoryStateRepository for RepositoryStateRepositoryGateway {
 }
 
 struct RepositoryStateWatcherHandles {
-    _file_debouncer: RecommendedDebouncer,
-    _git_debouncer: RecommendedDebouncer,
+    file_debouncer: Option<RecommendedDebouncer>,
+    git_debouncer: Option<RecommendedDebouncer>,
+}
+
+impl Drop for RepositoryStateWatcherHandles {
+    fn drop(&mut self) {
+        // FsEventWatcher の drop は run loop の停止待ちでブロックし得るため、
+        // 呼び出し元スレッドでは実行しない（#1641）
+        crate::other::dispose::dispose_in_background(
+            "repository-watcher-dispose",
+            (self.file_debouncer.take(), self.git_debouncer.take()),
+        );
+    }
 }
 
 pub struct NotifyRepositoryStateWatcher {
@@ -73,8 +84,8 @@ impl RepositoryStateWatcher for NotifyRepositoryStateWatcher {
         let file_debouncer = start_file_watcher(state.clone(), &self.repository)?;
         let git_debouncer = start_git_watcher(state, &self.repository)?;
         Ok(Box::new(RepositoryStateWatcherHandles {
-            _file_debouncer: file_debouncer,
-            _git_debouncer: git_debouncer,
+            file_debouncer: Some(file_debouncer),
+            git_debouncer: Some(git_debouncer),
         }))
     }
 }

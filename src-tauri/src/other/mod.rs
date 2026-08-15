@@ -1,3 +1,4 @@
+pub mod dispose;
 pub mod error;
 pub(crate) mod id;
 pub mod performance_switches;

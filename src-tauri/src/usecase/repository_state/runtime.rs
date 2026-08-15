@@ -107,6 +107,40 @@ pub(crate) mod tests_support {
         }
     }
 
+    /// tokio ランタイム外（std スレッド）から `WorktreeState::new` を呼ぶテスト用。
+    /// worker を spawn しないため snapshot は更新されない。
+    pub(crate) struct NoSpawnRepositoryStateWorkerRuntime;
+
+    #[async_trait::async_trait]
+    impl RepositoryStateWorkerRuntime for NoSpawnRepositoryStateWorkerRuntime {
+        fn invalidation_channel(
+            &self,
+        ) -> (
+            Box<dyn RepositoryStateInvalidationSender>,
+            Box<dyn RepositoryStateInvalidationReceiver>,
+        ) {
+            let (tx, rx) = mpsc::unbounded_channel();
+            (
+                Box::new(TokioInvalidationSender(tx)),
+                Box::new(TokioInvalidationReceiver(rx)),
+            )
+        }
+
+        fn spawn_worker(&self, _future: RepositoryStateWorkerFuture) {}
+
+        async fn sleep(&self, _duration: Duration) {}
+
+        async fn scan(
+            &self,
+            _scanner: Arc<dyn RepositoryScanner>,
+            repo_path: String,
+        ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+            Err(RepositoryStateError::Watcher(format!(
+                "no-spawn runtime does not scan {repo_path}"
+            )))
+        }
+    }
+
     pub(crate) struct IdentityWorktreePathNormalizer;
 
     impl WorktreePathNormalizer for IdentityWorktreePathNormalizer {
