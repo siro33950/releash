@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::gateway::repository::watch::{
@@ -20,12 +20,17 @@ pub(crate) fn invoke_handler(
     tauri::generate_handler![start_watching, start_git_dir_watching, stop_watching]
 }
 
+// watcher の生成・破棄は FSEvents ストリームの停止待ちでブロックし得るため、
+// メインスレッドで実行せず spawn_blocking へ逃がす（#1641）
+
 #[tauri::command]
-pub fn start_watching(
-    app: AppHandle,
-    state: State<'_, FileWatcherManager>,
-    path: String,
-) -> Result<u64, String> {
+pub async fn start_watching(app: AppHandle, path: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || start_watching_blocking(app, path))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn start_watching_blocking(app: AppHandle, path: String) -> Result<u64, String> {
     if let Some(app_state) = app.try_state::<AppState>() {
         match app_state
             .repository_state
@@ -39,30 +44,33 @@ pub fn start_watching(
 
     let watcher_id = generate_watcher_id();
     let app_clone = app.clone();
-    state.start_watching(watcher_id, path, move |event| {
-        let event = file_change_event_from_path(watcher_id, &event.path);
-        let _ = app_clone.emit("file-change", event);
+    app.state::<FileWatcherManager>()
+        .start_watching(watcher_id, path, move |event| {
+            let event = file_change_event_from_path(watcher_id, &event.path);
+            let _ = app_clone.emit("file-change", event);
+        })
+}
+
+#[tauri::command]
+pub async fn start_git_dir_watching(app: AppHandle, repo_path: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .repository_state
+            .start_git_dir_watching(&repo_path)
+            .map_err(|err| err.to_string())
     })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-pub fn start_git_dir_watching(
-    app: AppHandle,
-    _state: State<'_, FileWatcherManager>,
-    repo_path: String,
-) -> Result<u64, String> {
-    app.state::<AppState>()
-        .repository_state
-        .start_git_dir_watching(&repo_path)
-        .map_err(|err| err.to_string())
+pub async fn stop_watching(app: AppHandle, watcher_id: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_watching_blocking(app, watcher_id))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
-#[tauri::command]
-pub fn stop_watching(
-    app: AppHandle,
-    state: State<'_, FileWatcherManager>,
-    watcher_id: u64,
-) -> Result<(), String> {
+fn stop_watching_blocking(app: AppHandle, watcher_id: u64) -> Result<(), String> {
     if let Some(app_state) = app.try_state::<AppState>() {
         match app_state.repository_state.stop_watching(watcher_id) {
             Ok(true) => return Ok(()),
@@ -71,7 +79,7 @@ pub fn stop_watching(
         }
     }
 
-    state.stop_watching(watcher_id)
+    app.state::<FileWatcherManager>().stop_watching(watcher_id)
 }
 
 fn file_change_event_from_path(watcher_id: u64, path: &Path) -> FileChangeEvent {

@@ -176,24 +176,31 @@ impl RepositoryStateService {
     }
 
     pub fn stop_watching(&self, watcher_id: u64) -> Result<bool, RepositoryStateError> {
-        let mut worktrees = self.worktrees.write();
-        let mut empty_key = None;
         let mut found = false;
+        let mut removed = None;
 
-        for (key, state) in worktrees.iter() {
-            if state.release_subscription(watcher_id) {
-                found = true;
-                if state.subscriber_count() == 0 {
-                    empty_key = Some(key.clone());
+        {
+            let mut worktrees = self.worktrees.write();
+            let mut empty_key = None;
+
+            for (key, state) in worktrees.iter() {
+                if state.release_subscription(watcher_id) {
+                    found = true;
+                    if state.subscriber_count() == 0 {
+                        empty_key = Some(key.clone());
+                    }
+                    break;
                 }
-                break;
+            }
+
+            if let Some(key) = empty_key {
+                removed = worktrees.remove(&key);
             }
         }
 
-        if let Some(key) = empty_key {
-            if let Some(state) = worktrees.remove(&key) {
-                state.shutdown();
-            }
+        // watcher の破棄はブロックし得るため worktrees ロックの外で行う（#1641）
+        if let Some(state) = removed {
+            state.shutdown();
         }
 
         Ok(found)
@@ -230,14 +237,9 @@ impl RepositoryStateService {
             return Ok(existing.clone());
         }
 
-        let mut worktrees = self.worktrees.write();
-        if let Some(existing) = worktrees.get(&key) {
-            if let Some((id, kind)) = subscription {
-                existing.add_subscription(id, kind, worktree_path.to_string());
-            }
-            return Ok(existing.clone());
-        }
-
+        // watcher の生成は watch ごとに FSEvents ストリームの破棄・再作成を伴い
+        // ブロックし得るため worktrees ロックの外で行う（#1641）。生成が競合した
+        // 場合は先に登録された state を採用し、負けた側の watcher は破棄する。
         let canonical_path = key.to_string_lossy().to_string();
         let state = WorktreeState::new(
             canonical_path,
@@ -246,12 +248,23 @@ impl RepositoryStateService {
             self.runtime.clone(),
             self.debounce,
         );
-        if let Some((id, kind)) = subscription {
-            state.add_subscription(id, kind, worktree_path.to_string());
-        }
         if let Err(err) = state.start_watchers(self.watcher.as_ref()) {
             state.shutdown();
             return Err(err);
+        }
+
+        let mut worktrees = self.worktrees.write();
+        if let Some(existing) = worktrees.get(&key) {
+            if let Some((id, kind)) = subscription {
+                existing.add_subscription(id, kind, worktree_path.to_string());
+            }
+            let existing = existing.clone();
+            drop(worktrees);
+            state.shutdown();
+            return Ok(existing);
+        }
+        if let Some((id, kind)) = subscription {
+            state.add_subscription(id, kind, worktree_path.to_string());
         }
         worktrees.insert(key, state.clone());
         Ok(state)
@@ -294,7 +307,7 @@ mod tests {
     use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
     use crate::usecase::repository_state::runtime::tests_support::{
         CanonicalWorktreePathNormalizer, IdentityWorktreePathNormalizer,
-        TestRepositoryStateWorkerRuntime,
+        NoSpawnRepositoryStateWorkerRuntime, TestRepositoryStateWorkerRuntime,
     };
     use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
     use crate::usecase::repository_state::worker::InvalidateReason;
@@ -948,5 +961,228 @@ mod tests {
         let ignored = service.get_status("/repo", true).unwrap();
         assert_eq!(ignored[0].worktree_status, "ignored");
         assert_eq!(scanner.ignored_calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct GateWatchSession {
+        drop_entered: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<std::sync::Barrier>,
+    }
+
+    impl Drop for GateWatchSession {
+        fn drop(&mut self) {
+            self.drop_entered.store(true, Ordering::SeqCst);
+            self.release.wait();
+        }
+    }
+
+    struct GateWatcher {
+        next_id: AtomicU64,
+        drop_entered: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<std::sync::Barrier>,
+    }
+
+    impl RepositoryStateWatcher for GateWatcher {
+        fn next_watcher_id(&self) -> u64 {
+            self.next_id.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        fn start_watchers(
+            &self,
+            _state: Arc<WorktreeState>,
+        ) -> Result<
+            Box<dyn crate::usecase::repository_state::worktree::RepositoryStateWatchSession>,
+            RepositoryStateError,
+        > {
+            Ok(Box::new(GateWatchSession {
+                drop_entered: self.drop_entered.clone(),
+                release: self.release.clone(),
+            }))
+        }
+    }
+
+    struct BlockingStartWatcher {
+        next_id: AtomicU64,
+        start_entered: Arc<AtomicUsize>,
+        release: Arc<std::sync::Barrier>,
+    }
+
+    impl RepositoryStateWatcher for BlockingStartWatcher {
+        fn next_watcher_id(&self) -> u64 {
+            self.next_id.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        fn start_watchers(
+            &self,
+            _state: Arc<WorktreeState>,
+        ) -> Result<
+            Box<dyn crate::usecase::repository_state::worktree::RepositoryStateWatchSession>,
+            RepositoryStateError,
+        > {
+            self.start_entered.fetch_add(1, Ordering::SeqCst);
+            self.release.wait();
+            Ok(Box::new(()))
+        }
+    }
+
+    fn no_spawn_service(watcher: Arc<dyn RepositoryStateWatcher>) -> Arc<RepositoryStateService> {
+        Arc::new(RepositoryStateService::new_with_scanner(
+            Arc::new(TestRepositoryStateRepository),
+            Arc::new(CountingScanner::default()),
+            Arc::new(NoopRepositoryStateNotifier),
+            watcher,
+            Arc::new(NoSpawnRepositoryStateWorkerRuntime),
+            Arc::new(IdentityWorktreePathNormalizer),
+            Duration::ZERO,
+        ))
+    }
+
+    #[test]
+    fn stop_watching_releases_worktrees_lock_before_watch_session_drop() {
+        let drop_entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let service = no_spawn_service(Arc::new(GateWatcher {
+            next_id: AtomicU64::new(0),
+            drop_entered: drop_entered.clone(),
+            release: release.clone(),
+        }));
+        let id = service
+            .subscribe("/repo", WatchSubscriptionKind::File)
+            .unwrap();
+
+        let stopper = {
+            let service = service.clone();
+            std::thread::spawn(move || service.stop_watching(id).unwrap())
+        };
+        while !drop_entered.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                let _ = probe_tx.send(service.get_snapshot("/repo").is_ok());
+            });
+        }
+        let probe = probe_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("watch session の drop 中も worktrees ロックが解放されていること");
+
+        release.wait();
+        assert!(probe);
+        assert!(stopper.join().unwrap());
+        assert_eq!(service.worktree_count(), 0);
+    }
+
+    #[test]
+    fn subscribe_starts_watchers_outside_worktrees_lock() {
+        let start_entered = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let service = no_spawn_service(Arc::new(BlockingStartWatcher {
+            next_id: AtomicU64::new(0),
+            start_entered: start_entered.clone(),
+            release: release.clone(),
+        }));
+
+        let subscriber = {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                service
+                    .subscribe("/blocked", WatchSubscriptionKind::File)
+                    .unwrap()
+            })
+        };
+        while start_entered.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                let _ = probe_tx.send(service.get_snapshot("/other").is_ok());
+            });
+        }
+        let probe = probe_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("start_watchers 中も worktrees ロックが解放されていること");
+
+        release.wait();
+        assert!(probe);
+        subscriber.join().unwrap();
+        assert_eq!(service.worktree_count(), 1);
+    }
+
+    #[test]
+    fn concurrent_subscribe_for_same_worktree_converges_to_single_state() {
+        let start_entered = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(std::sync::Barrier::new(3));
+        let service = no_spawn_service(Arc::new(BlockingStartWatcher {
+            next_id: AtomicU64::new(0),
+            start_entered: start_entered.clone(),
+            release: release.clone(),
+        }));
+
+        let first = {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                service
+                    .subscribe("/repo", WatchSubscriptionKind::File)
+                    .unwrap()
+            })
+        };
+        let second = {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                service
+                    .subscribe("/repo", WatchSubscriptionKind::Git)
+                    .unwrap()
+            })
+        };
+        while start_entered.load(Ordering::SeqCst) < 2 {
+            std::thread::yield_now();
+        }
+        release.wait();
+
+        let first_id = first.join().unwrap();
+        let second_id = second.join().unwrap();
+
+        assert_eq!(service.worktree_count(), 1);
+        assert!(service.stop_watching(first_id).unwrap());
+        assert_eq!(service.worktree_count(), 1);
+        assert!(service.stop_watching(second_id).unwrap());
+        assert_eq!(service.worktree_count(), 0);
+    }
+
+    #[test]
+    fn subscribe_failure_does_not_register_worktree() {
+        struct FailingWatcher {
+            next_id: AtomicU64,
+        }
+
+        impl RepositoryStateWatcher for FailingWatcher {
+            fn next_watcher_id(&self) -> u64 {
+                self.next_id.fetch_add(1, Ordering::SeqCst) + 1
+            }
+
+            fn start_watchers(
+                &self,
+                _state: Arc<WorktreeState>,
+            ) -> Result<
+                Box<dyn crate::usecase::repository_state::worktree::RepositoryStateWatchSession>,
+                RepositoryStateError,
+            > {
+                Err(RepositoryStateError::Watcher("start failed".to_string()))
+            }
+        }
+
+        let service = no_spawn_service(Arc::new(FailingWatcher {
+            next_id: AtomicU64::new(0),
+        }));
+
+        assert!(service
+            .subscribe("/repo", WatchSubscriptionKind::File)
+            .is_err());
+        assert_eq!(service.worktree_count(), 0);
     }
 }

@@ -70,10 +70,31 @@ impl FileWatcherManager {
     }
 
     pub(crate) fn stop_watching(&self, watcher_id: u64) -> Result<(), String> {
-        let mut sessions = self.sessions.lock();
-        sessions
+        let session = self
+            .sessions
+            .lock()
             .remove(&watcher_id)
             .ok_or_else(|| format!("Watcher {} not found", watcher_id))?;
+        // debouncer の drop はブロックし得るため sessions ロックの外・別スレッドで行う（#1641）
+        crate::other::dispose::dispose_in_background("file-watcher-dispose", session);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_watching_removes_session_and_errors_on_unknown_id() {
+        let manager = FileWatcherManager::default();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        let id = manager.start_watching(1, path, |_| {}).unwrap();
+        assert_eq!(id, 1);
+
+        manager.stop_watching(1).unwrap();
+        assert!(manager.stop_watching(1).is_err());
     }
 }
