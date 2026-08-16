@@ -31,6 +31,15 @@ pub enum ApplicationShutdownPhase {
     ReconciliationRequired,
 }
 
+impl ApplicationShutdownPhase {
+    /// A terminal plan no longer closes store admission.
+    /// `ReconciliationRequired` is not terminal: its plan still owns admission
+    /// until recovery drives it to a terminal phase.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
 /// Minimal application-stream event vocabulary owned by this module.
 /// The shutdown coordinator appends here; it must not invent a parallel
 /// event enum.

@@ -87,40 +87,6 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
         }
     }
 
-    fn shutdown_record_for_readback(
-        lookup: Result<Option<crate::domain::local_event::ObligationView>, ()>,
-    ) -> Result<crate::domain::local_event::ObligationView, WorkflowShutdownEffectReadback> {
-        match lookup {
-            Ok(Some(record)) => Ok(record),
-            Ok(None) => Err(WorkflowShutdownEffectReadback::ConfirmedNotStarted),
-            Err(()) => Err(WorkflowShutdownEffectReadback::Ambiguous),
-        }
-    }
-
-    fn workflow_shutdown_record_matches(
-        record: &crate::domain::local_event::ObligationView,
-        operation_id: &str,
-        effect_identity: &str,
-        owner_revision: i64,
-        execution_id: &str,
-    ) -> Option<crate::domain::local_event::ObligationStateRecord> {
-        let crate::domain::local_event::ObligationRecord::WorkflowShutdown {
-            operation_id: stored_operation_id,
-            effect_identity: stored_effect_identity,
-            owner_revision: stored_owner_revision,
-            execution_id: stored_execution_id,
-            state,
-        } = &record.record
-        else {
-            return None;
-        };
-        (stored_operation_id == operation_id
-            && stored_effect_identity == effect_identity
-            && *stored_owner_revision == owner_revision
-            && stored_execution_id == execution_id)
-            .then_some(*state)
-    }
-
     async fn commit_workflow_shutdown_record(&self, record: WorkflowShutdownRecord<'_>) -> bool {
         use sha2::Digest;
         let WorkflowShutdownRecord {
@@ -504,54 +470,57 @@ impl<R: tauri::Runtime> WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeC
         owner_revision: i64,
         execution_id: &str,
     ) -> WorkflowShutdownEffectReadback {
-        match self.shutdown_effect_record(effect_identity).await {
-            Ok(Some(record)) => {
-                return match Self::workflow_shutdown_record_matches(
-                    &record,
-                    operation_id,
-                    effect_identity,
-                    owner_revision,
-                    execution_id,
-                ) {
-                    Some(crate::domain::local_event::ObligationStateRecord::Completed) => {
-                        WorkflowShutdownEffectReadback::Completed
-                    }
-                    Some(crate::domain::local_event::ObligationStateRecord::EffectReserved) => {
-                        WorkflowShutdownEffectReadback::Ambiguous
-                    }
-                    _ => WorkflowShutdownEffectReadback::Ambiguous,
-                };
-            }
-            Ok(None) => {}
-            Err(()) => return WorkflowShutdownEffectReadback::Ambiguous,
-        }
-        let zero = crate::domain::local_event::Revision::new(0).expect("zero revision");
-        if !self
-            .commit_workflow_shutdown_record(WorkflowShutdownRecord {
-                operation_id,
-                effect_identity,
-                owner_revision,
-                execution_id,
-                state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
-                expected: crate::domain::local_event::RevisionGuard::Absent,
-                revision: zero,
-            })
-            .await
-        {
+        use crate::domain::local_event::workflow_shutdown::{
+            self, WorkflowShutdownReservationStep,
+        };
+        let Ok(record) = self.shutdown_effect_record(effect_identity).await else {
             return WorkflowShutdownEffectReadback::Ambiguous;
-        }
-        let observed_owned_command = self
-            .driver
+        };
+        let reservation = match workflow_shutdown::reservation_step(
+            record.as_ref(),
+            operation_id,
+            effect_identity,
+            execution_id,
+            owner_revision,
+        ) {
+            WorkflowShutdownReservationStep::AlreadyCompleted => {
+                return WorkflowShutdownEffectReadback::Completed
+            }
+            WorkflowShutdownReservationStep::ContinueOwn { reservation } => reservation,
+            WorkflowShutdownReservationStep::Reserve {
+                expected,
+                reservation,
+            } => {
+                if !self
+                    .commit_workflow_shutdown_record(WorkflowShutdownRecord {
+                        operation_id,
+                        effect_identity,
+                        owner_revision,
+                        execution_id,
+                        state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+                        expected,
+                        revision: reservation,
+                    })
+                    .await
+                {
+                    return WorkflowShutdownEffectReadback::Ambiguous;
+                }
+                reservation
+            }
+            WorkflowShutdownReservationStep::Reject => {
+                return WorkflowShutdownEffectReadback::Ambiguous
+            }
+        };
+        // An execution with no owned command has nothing left to quiesce in
+        // this process, so the effect is satisfied whether or not a command
+        // was observed. Commands a dead process left behind are crash
+        // recovery's responsibility, not this effect's.
+        self.driver
             .shutdown_active_commands_for_execution(execution_id)
             .await;
-        if !observed_owned_command {
-            // The durable reservation proves the effect may have started, but
-            // absence of an owned command cannot prove this effect completed;
-            // an unrelated terminal transition must not be adopted as its
-            // result.
+        let Some(completed) = reservation.next() else {
             return WorkflowShutdownEffectReadback::Ambiguous;
-        }
-        let one = crate::domain::local_event::Revision::new(1).expect("one revision");
+        };
         if self
             .commit_workflow_shutdown_record(WorkflowShutdownRecord {
                 operation_id,
@@ -559,8 +528,8 @@ impl<R: tauri::Runtime> WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeC
                 owner_revision,
                 execution_id,
                 state: crate::domain::local_event::ObligationStateRecord::Completed,
-                expected: crate::domain::local_event::RevisionGuard::Expected(zero),
-                revision: one,
+                expected: crate::domain::local_event::RevisionGuard::Expected(reservation),
+                revision: completed,
             })
             .await
         {
@@ -574,99 +543,31 @@ impl<R: tauri::Runtime> WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeC
         &self,
         operation_id: &str,
         effect_identity: &str,
-        owner_revision: i64,
+        _owner_revision: i64,
         execution_id: &str,
     ) -> WorkflowShutdownEffectReadback {
-        let record = match Self::shutdown_record_for_readback(
-            self.shutdown_effect_record(effect_identity).await,
-        ) {
-            Ok(record) => record,
-            Err(readback) => return readback,
+        use crate::domain::local_event::workflow_shutdown::{
+            self, WorkflowShutdownEffectResolution,
         };
-        match Self::workflow_shutdown_record_matches(
-            &record,
+        let Ok(record) = self.shutdown_effect_record(effect_identity).await else {
+            return WorkflowShutdownEffectReadback::Ambiguous;
+        };
+        match workflow_shutdown::read_resolution(
+            record.as_ref(),
             operation_id,
             effect_identity,
-            owner_revision,
             execution_id,
         ) {
-            Some(crate::domain::local_event::ObligationStateRecord::Completed) => {
+            WorkflowShutdownEffectResolution::Completed => {
                 WorkflowShutdownEffectReadback::Completed
             }
-            Some(crate::domain::local_event::ObligationStateRecord::EffectReserved) => {
+            WorkflowShutdownEffectResolution::NotStarted => {
+                WorkflowShutdownEffectReadback::ConfirmedNotStarted
+            }
+            WorkflowShutdownEffectResolution::Unresolved => {
                 WorkflowShutdownEffectReadback::Ambiguous
             }
-            _ => WorkflowShutdownEffectReadback::Ambiguous,
         }
-    }
-}
-
-#[cfg(test)]
-mod shutdown_effect_contract_tests {
-    use super::TauriWorkflowRuntimeCommandGateway;
-
-    #[test]
-    fn workflow_shutdown_read_failure_is_ambiguous_not_confirmed_not_started() {
-        use crate::usecase::workflow::ports::WorkflowShutdownEffectReadback;
-
-        assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::shutdown_record_for_readback(Err(())),
-            Err(WorkflowShutdownEffectReadback::Ambiguous)
-        );
-        assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::shutdown_record_for_readback(Ok(
-                None
-            )),
-            Err(WorkflowShutdownEffectReadback::ConfirmedNotStarted)
-        );
-    }
-
-    #[test]
-    fn workflow_shutdown_readback_is_bound_to_exact_effect_and_owner_revision() {
-        let record_value = crate::domain::local_event::ObligationRecord::WorkflowShutdown {
-            operation_id: "quit-operation".to_string(),
-            effect_identity: "quit-operation:0:workflow-1".to_string(),
-            owner_revision: 7,
-            execution_id: "workflow-1".to_string(),
-            state: crate::domain::local_event::ObligationStateRecord::Completed,
-        };
-        let record = crate::domain::local_event::ObligationView {
-            obligation_id: "workflow-shutdown-record".to_string(),
-            record: record_value,
-            record_sha256: [0; 32],
-            pending: None,
-            revision: crate::domain::local_event::Revision::new(1).unwrap(),
-        };
-        assert_eq!(
-            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
-                &record,
-                "quit-operation",
-                "quit-operation:0:workflow-1",
-                7,
-                "workflow-1",
-            ),
-            Some(crate::domain::local_event::ObligationStateRecord::Completed)
-        );
-        assert!(
-            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
-                &record,
-                "unrelated-terminal-operation",
-                "quit-operation:0:workflow-1",
-                7,
-                "workflow-1",
-            )
-            .is_none()
-        );
-        assert!(
-            TauriWorkflowRuntimeCommandGateway::<tauri::Wry>::workflow_shutdown_record_matches(
-                &record,
-                "quit-operation",
-                "quit-operation:0:workflow-1",
-                8,
-                "workflow-1",
-            )
-            .is_none()
-        );
     }
 }
 

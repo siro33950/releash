@@ -44,6 +44,21 @@ pub enum RevisionGuard {
     Expected(Revision),
 }
 
+impl RevisionGuard {
+    /// The mutation advances an existing row by exactly one revision.
+    pub fn advances_to(self, revision: Revision) -> bool {
+        let Self::Expected(current) = self else {
+            return false;
+        };
+        current.next() == Some(revision)
+    }
+
+    /// The mutation inserts a new row at revision zero.
+    pub fn inserts_zero(self, revision: Revision) -> bool {
+        matches!(self, Self::Absent) && revision.value() == 0
+    }
+}
+
 /// Caller-scoped identity tuple `(principal, generation, kind, caller key)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallerOperationKey {

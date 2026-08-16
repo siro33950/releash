@@ -7,6 +7,7 @@
 //! Tauri, or WebSocket dependency is allowed here.
 
 pub mod batch;
+pub mod commit_admission;
 pub mod events;
 pub mod failure;
 pub mod identifiers;
@@ -18,6 +19,7 @@ pub mod record;
 pub mod recovery;
 #[allow(clippy::module_inception)]
 pub mod repository;
+pub mod workflow_shutdown;
 
 pub use batch::{
     CommitBatchError, CommitBatchResult, CommitOperationKind, CommitResolution, CommittedBatch,
