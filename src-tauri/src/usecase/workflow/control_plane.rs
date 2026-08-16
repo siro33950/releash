@@ -1048,4 +1048,114 @@ mod control_plane_tests {
             Some(NodeExecutionFailureKind::InfrastructureCrash)
         );
     }
+
+    #[test]
+    fn test_fanout親承認_未終端childが残る間は承認を拒否し状態を変えない() {
+        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinition {
+                name: "workflow".to_string(),
+                nodes: vec![
+                    NodeDefinition {
+                        name: "fanout".to_string(),
+                        kind: NodeKind::Fanout(FanoutSpec {
+                            child: vec!["worker-a".to_string(), "worker-b".to_string()],
+                            items: None,
+                        }),
+                        completion: NodeCompletion::Approval,
+                        ..Default::default()
+                    },
+                    NodeDefinition {
+                        name: "worker-a".to_string(),
+                        ..Default::default()
+                    },
+                    NodeDefinition {
+                        name: "worker-b".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                entry: "fanout".to_string(),
+                ..Default::default()
+            },
+            lifecycle: WorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
+            ..WorkflowExecutionRestore::default()
+        });
+        let parent_execution_id = execution
+            .begin_node_attempt(
+                "fanout".to_string(),
+                NodeKindName::Fanout,
+                1,
+                None,
+                "parent-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        for (child_index, (child_execution_id, node_name)) in
+            [("child-a", "worker-a"), ("child-b", "worker-b")]
+                .into_iter()
+                .enumerate()
+        {
+            execution
+                .start_fanout_child_execution(
+                    "fanout".to_string(),
+                    parent_execution_id.clone(),
+                    child_execution_id.to_string(),
+                    node_name.to_string(),
+                    NodeKindName::Command,
+                    1,
+                    FanoutParentRef {
+                        parent_node: "fanout".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index,
+                    },
+                    10.0,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            execution.complete_fanout_child_execution(
+                "child-a",
+                Some("done".to_string()),
+                Some(serde_json::json!({"verdict": "LGTM"})),
+                None,
+                TokenUsage::default(),
+                11.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        // child-b は Running のまま残す
+        assert_eq!(
+            execution.mark_node_waiting_approval(&parent_execution_id, 12.0),
+            TransitionOutcome::Applied
+        );
+        let target = execution
+            .resolve_approval_attempt_target("fanout", Some(&parent_execution_id))
+            .unwrap();
+        let before = execution.clone();
+
+        let result = apply_fanout_parent_approval(
+            &mut execution,
+            &target,
+            None,
+            "next-node-execution".to_string(),
+            13.0,
+        );
+
+        let error = result
+            .err()
+            .expect("未終端 child が残る間は承認が拒否される");
+        assert!(
+            matches!(error, WorkflowError::InvalidState(_)),
+            "invalid_state で拒否される: {error:?}"
+        );
+        assert_eq!(execution, before, "拒否時は実行状態を変更しない");
+        let parent = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.id == parent_execution_id)
+            .unwrap();
+        assert_eq!(parent.status, RuntimeNodeExecutionStatus::WaitingApproval);
+        assert!(execution.fanout_runtime().is_some());
+    }
 }
