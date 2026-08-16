@@ -125,7 +125,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "node".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("implement".to_string()),
@@ -135,6 +135,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
+            entry: "main".to_string(),
         };
         storage::save_workflow(tmp.path(), &workflow).unwrap();
 

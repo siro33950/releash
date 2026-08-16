@@ -1171,6 +1171,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: Vec::new(),
+            entry: "main".to_string(),
         }
     }
 

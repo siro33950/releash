@@ -16,9 +16,9 @@ pub(crate) use provider_history_gateway::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
     AgentSessionOwnershipQuery,
 };
-pub(crate) use provider_launch::ProviderSessionLaunch;
 #[cfg(test)]
 pub(crate) use provider_launch::ProviderSessionLaunchError;
+pub(crate) use provider_launch::{ProviderLaunchOptions, ProviderSessionLaunch};
 pub(crate) use provider_launch_gateway::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
 };

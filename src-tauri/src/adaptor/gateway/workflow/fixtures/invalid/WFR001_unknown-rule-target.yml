@@ -1,10 +1,9 @@
 name: unknown-rule-target
 description: next points to a missing node
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
     rules:

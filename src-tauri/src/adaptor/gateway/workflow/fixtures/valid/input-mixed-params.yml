@@ -1,0 +1,13 @@
+name: input-mixed-params
+description: input accepts untyped and typed parameters together
+schemas:
+  some-contract: string
+nodes:
+  main:
+    input:
+      - spec
+      - task: some-contract
+    session:
+      provider: claude
+      facets:
+        instruction: implement

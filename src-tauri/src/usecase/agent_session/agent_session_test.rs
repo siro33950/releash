@@ -1478,6 +1478,8 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
+            model: None,
+            permission: None,
             workflow_execution_id: "workflow-1".to_string(),
             node_execution_id: "node-1".to_string(),
             initial_instruction: "Implement the workflow node.".to_string(),

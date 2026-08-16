@@ -6,13 +6,14 @@ schemas:
     properties:
       decision:
         type: string
-        enum: [done, fix]
+        enum:
+          - done
+          - fix
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge
     rules:
@@ -21,7 +22,7 @@ nodes:
           cases:
             done: done
             fix: fix
-  - name: done
+  done:
     command: printf done
-  - name: fix
+  fix:
     command: printf fix

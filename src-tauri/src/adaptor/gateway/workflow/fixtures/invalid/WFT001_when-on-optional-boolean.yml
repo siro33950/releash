@@ -7,17 +7,18 @@ schemas:
       passed:
         type: boolean
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge
     rules:
-      - when: { on: passed, then: done }
+      - when:
+          on: passed
+          then: done
         next: fix
-  - name: done
+  done:
     command: printf done
-  - name: fix
+  fix:
     command: printf fix

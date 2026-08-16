@@ -38,7 +38,10 @@ pub(crate) struct FacetRefsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SessionSpecDto {
     pub provider: SessionProviderDto,
-    pub gate: SessionGateDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
     pub facets: FacetRefsDto,
 }
 
@@ -51,10 +54,17 @@ pub(crate) enum SessionProviderDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum SessionGateDto {
+pub(crate) enum NodeCompletionDto {
     #[default]
     Auto,
     Approval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InputParamDto {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -84,12 +94,14 @@ pub(crate) struct NodeDefinitionDto {
     pub fanout: Option<FanoutSpecDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<InputParamDto>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<RuleDto>,
+    #[serde(default)]
+    pub completion: NodeCompletionDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -262,16 +274,25 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         session: node.session().map(session_to_dto),
         fanout: node.fanout().map(fanout_to_dto),
         artifact: node.artifact.clone(),
-        input: node.input.clone(),
+        input: node.input.iter().map(input_param_to_dto).collect(),
         inputs: node.inputs.clone(),
         rules: node.rules.iter().map(rule_to_dto).collect(),
+        completion: completion_to_dto(node.completion),
+    }
+}
+
+fn input_param_to_dto(param: &domain::InputParam) -> InputParamDto {
+    InputParamDto {
+        name: param.name.clone(),
+        contract: param.contract.clone(),
     }
 }
 
 fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
     SessionSpecDto {
         provider: provider_to_dto(session.provider),
-        gate: gate_to_dto(session.gate),
+        model: session.model.clone(),
+        permission: session.permission.clone(),
         facets: facet_refs_to_dto(&session.facets),
     }
 }
@@ -309,10 +330,10 @@ fn node_kind_to_dto(kind: domain::NodeKindName) -> NodeKindDto {
     }
 }
 
-fn gate_to_dto(gate: domain::SessionGate) -> SessionGateDto {
-    match gate {
-        domain::SessionGate::Auto => SessionGateDto::Auto,
-        domain::SessionGate::Approval => SessionGateDto::Approval,
+fn completion_to_dto(completion: domain::NodeCompletion) -> NodeCompletionDto {
+    match completion {
+        domain::NodeCompletion::Auto => NodeCompletionDto::Auto,
+        domain::NodeCompletion::Approval => NodeCompletionDto::Approval,
     }
 }
 
@@ -406,14 +427,18 @@ mod tests {
                 kind: NodeKindDto::Session,
                 session: Some(SessionSpecDto {
                     provider: SessionProviderDto::Claude,
-                    gate: SessionGateDto::Auto,
+                    model: None,
+                    permission: None,
                     facets: FacetRefsDto {
                         instruction: Some("inst".to_string()),
                         ..Default::default()
                     },
                 }),
                 artifact: Some("plan".to_string()),
-                input: Some("plan".to_string()),
+                input: vec![InputParamDto {
+                    name: "item".to_string(),
+                    contract: Some("plan".to_string()),
+                }],
                 rules: vec![RuleDto::Next {
                     next: "done".to_string(),
                 }],
@@ -439,14 +464,14 @@ mod tests {
                     "kind": "session",
                     "session": {
                         "provider": "claude",
-                        "gate": "auto",
                         "facets": {
                             "instruction": "inst"
                         }
                     },
                     "artifact": "plan",
-                    "input": "plan",
-                    "rules": [{"type": "next", "next": "done"}]
+                    "input": [{"name": "item", "contract": "plan"}],
+                    "rules": [{"type": "next", "next": "done"}],
+                    "completion": "auto"
                 }]
             })
         );
@@ -469,6 +494,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "review".to_string(),
             ..Default::default()
         };
 
@@ -503,6 +529,7 @@ mod tests {
                 }],
                 ..Default::default()
             }],
+            entry: "fix".to_string(),
             ..Default::default()
         };
 

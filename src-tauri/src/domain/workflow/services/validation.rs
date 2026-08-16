@@ -1,8 +1,8 @@
 use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW};
 use crate::domain::workflow::{
-    ItemsSource, NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowError,
+    is_reserved_node_name, InputParam, ItemsSource, NodeDefinition, NodeKindName, SchemaDef,
+    WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -49,6 +49,14 @@ pub enum ValidationError {
         name: String,
     },
     EmptyNodes,
+    /// nodes に root node（`main` 規約）が定義されていない。
+    MissingEntryNode {
+        entry: String,
+    },
+    /// node 名が予約語（kind 名・フィールド名）を使用している。
+    ReservedNodeName {
+        name: String,
+    },
     DuplicateNode {
         name: String,
     },
@@ -163,6 +171,12 @@ impl fmt::Display for ValidationError {
                 "ワークフロー名 '{name}' は先頭を英数字にし、2文字目以降は英数字・ハイフン・アンダースコアのみ使用できます"
             ),
             Self::EmptyNodes => write!(f, "ワークフローにnodeが定義されていません"),
+            Self::MissingEntryNode { entry } => {
+                write!(f, "nodes must define the root node '{entry}'")
+            }
+            Self::ReservedNodeName { name } => {
+                write!(f, "node name '{name}' is a reserved word and cannot be used")
+            }
             Self::DuplicateNode { name } => {
                 write!(f, "node名 '{name}' が重複しています")
             }
@@ -547,7 +561,7 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
         match &fanout.items {
             None => {
                 for child in resolved_children {
-                    if child.input.is_some() {
+                    if !child.input.is_empty() {
                         errors.push(ValidationError::FanoutInputMismatch {
                             node: parent.name.clone(),
                             child: child.name.clone(),
@@ -558,7 +572,7 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
             }
             Some(items) => {
                 for child in &resolved_children {
-                    if child.input.is_none() {
+                    if child.input.is_empty() {
                         errors.push(ValidationError::FanoutInputMismatch {
                             node: parent.name.clone(),
                             child: child.name.clone(),
@@ -593,7 +607,8 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
                                 items: element_contract,
                             })) => {
                                 for child in &resolved_children {
-                                    if let Some(input_contract) = child.input.as_deref() {
+                                    if let Some(input_contract) = fanout_child_items_contract(child)
+                                    {
                                         if input_contract != element_contract {
                                             errors.push(ValidationError::FanoutInputMismatch {
                                                 node: parent.name.clone(),
@@ -608,7 +623,7 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
                             }
                             Ok(Some(_)) | Ok(None) => {
                                 for child in &resolved_children {
-                                    if child.input.is_some() {
+                                    if fanout_child_items_contract(child).is_some() {
                                         errors.push(ValidationError::FanoutInputMismatch {
                                             node: parent.name.clone(),
                                             child: child.name.clone(),
@@ -623,7 +638,7 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
                     }
                     ItemsSource::Literal(values) => {
                         for child in &resolved_children {
-                            let Some(input_contract) = child.input.as_deref() else {
+                            let Some(input_contract) = fanout_child_items_contract(child) else {
                                 continue;
                             };
                             let Some(schema) = workflow.schemas.get(input_contract) else {
@@ -660,11 +675,29 @@ fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<Valida
     errors
 }
 
+fn fanout_child_items_contract(child: &NodeDefinition) -> Option<&str> {
+    child.sole_typed_input_contract()
+}
+
 pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     validate_name(&workflow.name)?;
 
     if workflow.nodes.is_empty() {
         return Err(ValidationError::EmptyNodes);
+    }
+    if workflow.entry_node().is_none() {
+        return Err(ValidationError::MissingEntryNode {
+            entry: workflow.entry.clone(),
+        });
+    }
+    if let Some(node) = workflow
+        .nodes
+        .iter()
+        .find(|node| is_reserved_node_name(&node.name))
+    {
+        return Err(ValidationError::ReservedNodeName {
+            name: node.name.clone(),
+        });
     }
     if let Some(err) = collect_node_count_errors(workflow).into_iter().next() {
         return Err(err);
@@ -734,7 +767,7 @@ pub fn validate_schema_refs(workflow: &WorkflowDefinition) -> Result<(), Validat
         validate_node_schema_refs(
             &node.name,
             node.artifact.as_deref(),
-            node.input.as_deref(),
+            &node.input,
             node.is_command(),
             node.is_fanout(),
             workflow,
@@ -818,7 +851,7 @@ fn validate_schema_def(
 fn validate_node_schema_refs(
     node_name: &str,
     artifact: Option<&str>,
-    input: Option<&str>,
+    input: &[InputParam],
     is_command: bool,
     is_fanout: bool,
     workflow: &WorkflowDefinition,
@@ -851,7 +884,10 @@ fn validate_node_schema_refs(
         }
     }
 
-    if let Some(contract) = input {
+    for param in input {
+        let Some(contract) = param.contract.as_deref() else {
+            continue;
+        };
         validate_schema_reference_identifier(node_name, "input", contract)?;
         if !workflow.schemas.contains_key(contract) {
             return Err(ValidationError::UnknownSchemaRef {
@@ -966,6 +1002,20 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
         errors.push(ValidationError::EmptyNodes);
         return errors;
     }
+    if workflow.entry_node().is_none() {
+        errors.push(ValidationError::MissingEntryNode {
+            entry: workflow.entry.clone(),
+        });
+        // root 不在では到達可能性以降のチェックが信頼できないため打ち切る。
+        return errors;
+    }
+    for node in &workflow.nodes {
+        if is_reserved_node_name(&node.name) {
+            errors.push(ValidationError::ReservedNodeName {
+                name: node.name.clone(),
+            });
+        }
+    }
     let count_errors = collect_node_count_errors(workflow);
     let has_too_many_nodes = count_errors
         .iter()
@@ -1028,7 +1078,7 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeKind, Rule, SchemaDef, SessionGate,
+        CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeKind, Rule, SchemaDef,
         SessionSpec,
     };
     use std::collections::{BTreeMap, BTreeSet};
@@ -1040,12 +1090,17 @@ mod tests {
     }
 
     fn make_workflow_exact(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| "main".to_string());
         WorkflowDefinition {
             schemas: Default::default(),
             name: "test".to_string(),
             description: "test workflow".to_string(),
             builtin: false,
             nodes,
+            entry,
         }
     }
 
@@ -1070,26 +1125,20 @@ mod tests {
     }
 
     fn make_node(name: &str, kind: TestKind, rules: Vec<Rule>) -> NodeDefinition {
-        let node_kind = match kind {
-            TestKind::Session => NodeKind::Session(SessionSpec {
-                facets: FacetRefs {
-                    instruction: Some("implement".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            TestKind::ApprovalSession => NodeKind::Session(SessionSpec {
-                gate: SessionGate::Approval,
-                facets: FacetRefs {
-                    instruction: Some("implement".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
+        let completion = match kind {
+            TestKind::Session => NodeCompletion::Auto,
+            TestKind::ApprovalSession => NodeCompletion::Approval,
         };
         NodeDefinition {
             name: name.to_string(),
-            kind: node_kind,
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some("implement".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            completion,
             rules,
             ..NodeDefinition::default()
         }
@@ -1130,7 +1179,10 @@ mod tests {
     }
 
     fn with_input(mut node: NodeDefinition, input: &str) -> NodeDefinition {
-        node.input = Some(input.to_string());
+        node.input = vec![InputParam {
+            name: "item".to_string(),
+            contract: Some(input.to_string()),
+        }];
         node
     }
 
@@ -1831,7 +1883,7 @@ mod tests {
         assert!(matches!(
             validate(&wf).unwrap_err(),
             ValidationError::FanoutChildLeafViolation { ref node, ref child, ref reason }
-                if node == "par" && child == "child" && reason.contains("entry")
+                if node == "par" && child == "child" && reason.contains("root node")
         ));
     }
 
@@ -2010,7 +2062,7 @@ mod tests {
     fn schema_refs_allow_session_artifact_and_input() {
         let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("review-output".to_string());
-        session.input = Some("review-input".to_string());
+        let session = with_input(session, "review-input");
         let mut wf = make_workflow(vec![session]);
         wf.schemas
             .insert("review-output".to_string(), object_schema(&["status"]));
@@ -2090,8 +2142,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_invalid_input_reference_identifier() {
-        let mut session = make_node("review", TestKind::Session, vec![]);
-        session.input = Some("../outside".to_string());
+        let session = with_input(make_node("review", TestKind::Session, vec![]), "../outside");
         let wf = make_workflow(vec![session]);
 
         assert!(matches!(
@@ -2263,10 +2314,7 @@ mod tests {
 
     #[test]
     fn validate_schema_refs_inspects_top_level_fanout_children() {
-        let child = NodeDefinition {
-            input: Some("nope".to_string()),
-            ..make_node("child1", TestKind::Session, vec![])
-        };
+        let child = with_input(make_node("child1", TestKind::Session, vec![]), "nope");
         let par = make_fanout_node_block("par", vec![make_fanout_node("child1")]);
         let wf = make_workflow(vec![par, child]);
         let err = validate_schema_refs(&wf).unwrap_err();
@@ -2274,6 +2322,84 @@ mod tests {
             err,
             ValidationError::UnknownSchemaRef { ref node, slot, ref key }
                 if node == "child1" && slot == "input" && key == "nope"
+        ));
+    }
+
+    // ---- 新構文（entry / 予約語 node 名 / input リスト）のテスト ----
+
+    #[test]
+    fn test_検証_main不在はvalidateとvalidate_allの両方で失敗する() {
+        let wf = WorkflowDefinition {
+            entry: "main".to_string(),
+            ..make_workflow(vec![make_node("plan", TestKind::Session, vec![])])
+        };
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::MissingEntryNode { ref entry } if entry == "main"
+        ));
+        assert!(matches!(
+            validate_all(&wf).as_slice(),
+            [ValidationError::MissingEntryNode { entry }] if entry == "main"
+        ));
+    }
+
+    #[test]
+    fn test_検証_予約語node名は失敗する() {
+        for reserved in ["sequence", "command", "completion", "entry"] {
+            let wf = make_workflow(vec![
+                make_node("main", TestKind::Session, vec![]),
+                make_node(reserved, TestKind::Session, vec![]),
+            ]);
+
+            assert!(matches!(
+                validate(&wf).unwrap_err(),
+                ValidationError::ReservedNodeName { ref name } if name == reserved
+            ));
+        }
+    }
+
+    #[test]
+    fn test_検証_input型ありなし混在リストを受理する() {
+        let mut session = make_node("review", TestKind::Session, vec![]);
+        session.input = vec![
+            InputParam {
+                name: "target".to_string(),
+                contract: None,
+            },
+            InputParam {
+                name: "payload".to_string(),
+                contract: Some("review-input".to_string()),
+            },
+        ];
+        let mut wf = make_workflow(vec![session]);
+        wf.schemas.insert(
+            "review-input".to_string(),
+            SchemaDef::String { r#enum: None },
+        );
+
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn test_検証_input未知contract参照は失敗する() {
+        let mut session = make_node("review", TestKind::Session, vec![]);
+        session.input = vec![
+            InputParam {
+                name: "target".to_string(),
+                contract: None,
+            },
+            InputParam {
+                name: "payload".to_string(),
+                contract: Some("missing-contract".to_string()),
+            },
+        ];
+        let wf = make_workflow(vec![session]);
+
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::UnknownSchemaRef { ref node, slot, ref key }
+                if node == "review" && slot == "input" && key == "missing-contract"
         ));
     }
 }

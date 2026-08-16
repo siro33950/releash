@@ -12,9 +12,9 @@ mod state;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
-    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, NodeKindName, Rule,
-    SchemaDef, SessionGate, SessionSpec, WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN,
-    MAX_NODES_PER_WORKFLOW,
+    is_reserved_node_name, CommandSpec, FacetRefs, FanoutSpec, InputParam, ItemsSource,
+    NodeCompletion, NodeDefinition, NodeKind, NodeKindName, Rule, SchemaDef, SessionSpec,
+    WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,

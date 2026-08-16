@@ -1087,6 +1087,7 @@ mod tests {
                 kind: NodeKind::default(),
                 ..NodeDefinition::default()
             }],
+            entry: "review".to_string(),
         }
     }
 

@@ -1629,7 +1629,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "review".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("review".to_string()),
@@ -1639,6 +1639,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
+            entry: "main".to_string(),
         }
     }
 
@@ -1717,8 +1718,8 @@ mod tests {
         definition.nodes[0].rules =
             vec![crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
                 max_iterations: 2,
-                on_exhausted: "review".to_string(),
-                reset_on: Some("review".to_string()),
+                on_exhausted: "main".to_string(),
+                reset_on: Some("main".to_string()),
             }];
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
@@ -1732,8 +1733,8 @@ mod tests {
 
         let serialized = serde_json::to_value(event).unwrap();
         assert_eq!(
-            serialized["definition"]["nodes"][0]["rules"][0]["loop_guard"]["reset_on"],
-            "review"
+            serialized["definition"]["nodes"]["main"]["rules"][0]["loop_guard"]["reset_on"],
+            "main"
         );
 
         let restored = serde_json::from_value::<WorkflowEvent>(serialized).unwrap();
@@ -1745,7 +1746,7 @@ mod tests {
             crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
                 reset_on: Some(reset_on),
                 ..
-            } if reset_on == "review"
+            } if reset_on == "main"
         ));
     }
 
@@ -1761,7 +1762,7 @@ mod tests {
             timestamp: 1.0,
         };
         let mut value = serde_json::to_value(event).unwrap();
-        value["definition"]["nodes"][0]["session"]["facets"]["knowledge"] =
+        value["definition"]["nodes"]["main"]["session"]["facets"]["knowledge"] =
             serde_json::json!("legacy-knowledge");
 
         let restored = serde_json::from_value::<WorkflowEvent>(value).unwrap();
@@ -1775,7 +1776,7 @@ mod tests {
 
         let serialized = serde_json::to_value(restored).unwrap();
         assert_eq!(
-            serialized["definition"]["nodes"][0]["session"]["facets"]["knowledge"],
+            serialized["definition"]["nodes"]["main"]["session"]["facets"]["knowledge"],
             serde_json::json!("legacy-knowledge")
         );
     }
@@ -1797,7 +1798,7 @@ mod tests {
 
         let serialized = serde_json::to_value(&event).unwrap();
         assert_eq!(
-            serialized["definition"]["nodes"][0]["session"]["facets"]["knowledge"],
+            serialized["definition"]["nodes"]["main"]["session"]["facets"]["knowledge"],
             serde_json::json!(["knowledge-a", "knowledge-b"])
         );
 

@@ -203,7 +203,7 @@ pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValida
     workflow
         .nodes
         .iter()
-        .skip(1)
+        .filter(|node| node.name != workflow.entry)
         .filter(|node| !reachable.contains(node.name.as_str()))
         .map(|node| RoutingValidationError::UnreachableNode {
             node: node.name.clone(),
@@ -217,7 +217,7 @@ fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
         .iter()
         .map(|node| (node.name.as_str(), node))
         .collect();
-    let Some(entry) = workflow.nodes.first() else {
+    let Some(entry) = workflow.entry_node() else {
         return HashSet::new();
     };
     let mut reachable = HashSet::new();
@@ -270,7 +270,7 @@ fn validate_fanout_child_leaf_constraints(
         .iter()
         .map(|node| (node.name.as_str(), node))
         .collect();
-    let entry = workflow.nodes.first().map(|node| node.name.as_str());
+    let entry = workflow.entry.as_str();
     let mut parent_by_child = BTreeMap::new();
     let mut errors = Vec::new();
 
@@ -282,11 +282,11 @@ fn validate_fanout_child_leaf_constraints(
             parent_by_child
                 .entry(child.as_str())
                 .or_insert(parent.name.as_str());
-            if entry == Some(child.as_str()) {
+            if entry == child.as_str() {
                 errors.push(RoutingValidationError::FanoutChildLeafViolation {
                     fanout: parent.name.clone(),
                     child: child.clone(),
-                    reason: "fanout child cannot be the workflow entry node".to_string(),
+                    reason: "fanout child cannot be the workflow root node".to_string(),
                 });
             }
             if node_by_name
@@ -791,12 +791,17 @@ mod routing_tests {
         nodes: Vec<NodeDefinition>,
         schemas: BTreeMap<String, SchemaDef>,
     ) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_default();
         WorkflowDefinition {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas,
             nodes,
+            entry,
         }
     }
 
@@ -1293,7 +1298,7 @@ mod routing_tests {
     fn test_loop_guard_reset_onはcontrol_flow_edgeとして扱わない() {
         let wf = workflow(
             vec![
-                session_node("entry", None, vec![Rule::Next("fix".to_string())]),
+                session_node("main", None, vec![Rule::Next("fix".to_string())]),
                 session_node(
                     "fix",
                     None,
@@ -1316,7 +1321,7 @@ mod routing_tests {
     fn reachability_starts_at_entry_and_does_not_seed_unreachable_subgraph_edges() {
         let wf = workflow(
             vec![
-                session_node("entry", None, vec![]),
+                session_node("main", None, vec![]),
                 session_node("orphan", None, vec![Rule::Next("target".to_string())]),
                 session_node("target", None, vec![]),
             ],
@@ -1325,7 +1330,7 @@ mod routing_tests {
 
         assert_eq!(
             reachable_node_names(&wf),
-            BTreeSet::from(["entry"]),
+            BTreeSet::from(["main"]),
             "unreachable subgraph edges must not mark their targets reachable"
         );
         let errors = validate_reachability(&wf);
@@ -1344,7 +1349,7 @@ mod routing_tests {
     fn reachability_follows_explicit_rule_targets_from_reachable_nodes() {
         let wf = workflow(
             vec![
-                session_node("entry", None, vec![Rule::Next("target".to_string())]),
+                session_node("main", None, vec![Rule::Next("target".to_string())]),
                 session_node("orphan", None, vec![]),
                 session_node("target", None, vec![]),
             ],
@@ -1353,7 +1358,7 @@ mod routing_tests {
 
         assert_eq!(
             reachable_node_names(&wf),
-            BTreeSet::from(["entry", "target"])
+            BTreeSet::from(["main", "target"])
         );
         let errors = validate_reachability(&wf);
         assert_eq!(errors.len(), 1);

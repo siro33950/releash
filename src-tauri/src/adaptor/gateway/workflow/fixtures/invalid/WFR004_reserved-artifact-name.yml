@@ -1,9 +1,15 @@
 name: reserved-artifact-name
 description: request is reserved
 nodes:
-  - name: request
+  main:
     session:
       provider: claude
-      gate: auto
+      facets:
+        instruction: entry
+    rules:
+      - next: request
+  request:
+    session:
+      provider: claude
       facets:
         instruction: request

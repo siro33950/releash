@@ -1,5 +1,5 @@
 name: canonical-syntax-surface
-description: canonical Contract, reference, permission, facet, gate, fanout, and routing surface
+description: canonical Contract, reference, permission, facet, completion, fanout, and routing surface
 schemas:
   text: string
   target:
@@ -15,68 +15,82 @@ schemas:
       labels:
         type: array
         items: text
-    required: [path, enabled, count, ratio, labels]
+    required:
+      - path
+      - enabled
+      - count
+      - ratio
+      - labels
   target-list:
     type: object
     properties:
       targets:
         type: array
         items: target
-    required: [targets]
+    required:
+      - targets
   route:
     type: object
     properties:
       verdict:
         type: string
-        enum: [SHIP, HOLD]
-    required: [verdict]
+        enum:
+          - SHIP
+          - HOLD
+    required:
+      - verdict
 nodes:
-  - name: prepare
+  main:
     command: "printf '%s' '{{ request }}'"
     artifact: target-list
-    inputs: [request]
+    inputs:
+      - request
     rules:
       - next: dispatch
-  - name: dispatch
+  dispatch:
     fanout:
       child: worker
-      items: prepare.targets
+      items: main.targets
     rules:
       - next: judge
-  - name: worker
+  worker:
     command: "printf '%s' '{{ item }} {{ item.path }}'"
-    input: target
-  - name: judge
+    input:
+      - item: target
+  judge:
     session:
       provider: claude
-      gate: auto
+      model: claude-opus-5
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread
         instruction: choose-route
     artifact: route
-    inputs: [dispatch]
+    inputs:
+      - dispatch
     rules:
       - switch:
           on: verdict
           cases:
             SHIP: approved
         next: review
-  - name: approved
+  approved:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: approved
-  - name: review
+  review:
     session:
       provider: claude
-      gate: approval
       facets:
         instruction: review
-    inputs: [judge]
+    completion: approval
+    inputs:
+      - judge
     rules:
       - next: done
-  - name: done
+  done:
     command: "printf '%s' '{{ judge.verdict }}'"
-    inputs: [judge]
+    inputs:
+      - judge

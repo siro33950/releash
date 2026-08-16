@@ -54,7 +54,7 @@ type Rule =
 	  };
 
 export type NodeKind = "command" | "session" | "fanout";
-export type SessionGate = "auto" | "approval";
+export type NodeCompletion = "auto" | "approval";
 
 export interface FacetRefs {
 	policy?: string;
@@ -64,8 +64,14 @@ export interface FacetRefs {
 
 export interface SessionSpec {
 	provider: "claude" | "codex";
-	gate: SessionGate;
+	model?: string;
+	permission?: string;
 	facets: FacetRefs;
+}
+
+export interface InputParam {
+	name: string;
+	contract?: string;
 }
 
 export type SchemaDefView = JsonValue;
@@ -84,11 +90,12 @@ export interface NodeDefinition {
 	session?: SessionSpec;
 	fanout?: FanoutSpec;
 	artifact?: string;
-	input?: string;
+	input?: InputParam[];
 	inputs?: string[];
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
 	rules?: Rule[];
+	completion?: NodeCompletion;
 }
 
 export interface WorkflowDefinition {

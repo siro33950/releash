@@ -1160,7 +1160,7 @@ mod tests {
     use super::*;
     use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::{
-        FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, SessionGate, SessionSpec,
+        FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, SessionSpec,
     };
     use crate::domain::workspace_tree::WorkspaceTreeVisibilityPolicy;
 
@@ -1174,14 +1174,17 @@ mod tests {
                 name: "plan".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     provider: ProviderKind::Claude,
-                    gate: SessionGate::Auto,
+                    model: None,
+                    permission: None,
                     facets: FacetRefs::default(),
                 }),
                 artifact: None,
-                input: None,
+                input: Vec::new(),
                 inputs: Vec::new(),
                 rules: Vec::new(),
+                completion: NodeCompletion::Auto,
             }],
+            entry: "plan".to_string(),
         }
     }
 

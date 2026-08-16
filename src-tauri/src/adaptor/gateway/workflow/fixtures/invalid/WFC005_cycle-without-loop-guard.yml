@@ -1,19 +1,17 @@
 name: cycle-without-loop-guard
 description: cycle must have loop_guard
 nodes:
-  - name: first
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: first
     rules:
       - next: second
-  - name: second
+  second:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: second
     rules:
-      - next: first
+      - next: main

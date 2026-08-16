@@ -1,0 +1,15 @@
+name: reserved-node-name
+description: sequence is a reserved node name
+nodes:
+  main:
+    session:
+      provider: claude
+      facets:
+        instruction: entry
+    rules:
+      - next: sequence
+  sequence:
+    session:
+      provider: claude
+      facets:
+        instruction: work

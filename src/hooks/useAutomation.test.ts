@@ -17,7 +17,6 @@ const sessionNode = {
 	kind: "session" as const,
 	session: {
 		provider: "claude" as const,
-		gate: "auto" as const,
 		facets: { instruction: "implement" },
 	},
 	rules: [],

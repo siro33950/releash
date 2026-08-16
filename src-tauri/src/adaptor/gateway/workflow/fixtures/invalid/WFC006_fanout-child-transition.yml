@@ -1,14 +1,14 @@
 name: fanout-child-transition
 description: fanout child cannot be a normal transition target
 nodes:
-  - name: fanout
+  main:
     fanout:
       child: worker
     rules:
       - next: source
-  - name: worker
+  worker:
     command: echo work
-  - name: source
+  source:
     command: echo source
     rules:
       - next: worker

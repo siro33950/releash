@@ -33,7 +33,7 @@ const EMPTY_REPORT: DiagnosticReport = {
 };
 
 function makeWorkflow(overrides?: {
-	input?: string;
+	input?: { name: string; contract?: string }[];
 	knowledge?: string[];
 }): WorkflowDefinition {
 	return {
@@ -46,7 +46,6 @@ function makeWorkflow(overrides?: {
 				kind: "session",
 				session: {
 					provider: "claude",
-					gate: "auto",
 					facets: {
 						policy: "coding",
 						knowledge: overrides?.knowledge ?? ["architecture"],
@@ -94,7 +93,10 @@ describe("WorkflowDetail facet refs row", () => {
 		render(
 			<WorkflowDetail
 				workflow={makeWorkflow({
-					input: "input-contract",
+					input: [
+						{ name: "item", contract: "input-contract" },
+						{ name: "spec" },
+					],
 				})}
 				report={EMPTY_REPORT}
 				onEdit={vi.fn()}
@@ -104,7 +106,7 @@ describe("WorkflowDetail facet refs row", () => {
 		await user.click(screen.getByText("implement"));
 
 		expect(screen.getByText(matchLabel("Input"))).toBeInTheDocument();
-		expect(screen.getByText("input-contract")).toBeInTheDocument();
+		expect(screen.getByText("item: input-contract, spec")).toBeInTheDocument();
 	});
 
 	it("displays multiple Knowledge refs in declaration order", async () => {

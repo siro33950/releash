@@ -191,6 +191,7 @@ mod contract_service_tests {
                     ..Default::default()
                 },
             ],
+            entry: "fanout".to_string(),
         }
     }
 

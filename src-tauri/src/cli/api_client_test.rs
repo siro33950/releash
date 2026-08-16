@@ -46,7 +46,7 @@ fn command_workflow(name: &str) -> WorkflowDefinitionYaml {
         name: name.to_string(),
         description: "live local API boundary fixture".to_string(),
         nodes: vec![NodeDefinition {
-            name: "execute".to_string(),
+            name: "main".to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: "true".to_string(),
             }),

@@ -99,98 +99,103 @@ schemas:
 
 nodes:
 
-- name: resolve_request
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: planning
-      instruction: existing-spec-resolve-request
-  artifact: implementation-context
-  inputs:
-  - request
-  rules:
-  - next: check_open_threads
+  main:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: planning
+        instruction: existing-spec-resolve-request
+    artifact: implementation-context
+    inputs:
+    - request
+    rules:
+    - next: check_open_threads
 
-- name: check_open_threads
-  command: >-
-    releash review list --state open --json |
-    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
-  artifact: thread-scan
-  rules:
-  - when:
-      on: has_open_threads
-      then: create_fix_plan
-    next: fix_report
-- name: create_fix_plan
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: reviewing
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      - releash-thread-cli
-      instruction: existing-spec-create-fix-plan
-  artifact: fix-plan
-  inputs:
-  - resolve_request
-  rules:
-  - loop_guard:
-      max_iterations: 5
-      on_exhausted: fix_report
-  - next: implement_fix_plan
-- name: implement_fix_plan
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: coding
-      knowledge: releash-thread-cli
-      instruction: implement_fix_plan
-  inputs:
-  - create_fix_plan
-  - verify_fixes
-  rules:
-  - loop_guard:
-      max_iterations: 3
-      on_exhausted: fix_report
-      reset_on: create_fix_plan
-  - next: verify_fixes
-- name: verify_fixes
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: reviewing
-      knowledge: releash-thread-cli
-      instruction: verify_fixes
-  artifact: fix-verification
-  inputs:
-  - create_fix_plan
-  rules:
-  - next: check_fix_verification
-- name: check_fix_verification
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node verify_fixes --json |
-    jq '{has_issues: (.artifact.issues | length > 0)}'
-  artifact: fix-verification-scan
-  rules:
-  - when:
-      on: has_issues
-      then: implement_fix_plan
-    next: check_open_threads
-- name: fix_report
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: reporting
-      knowledge: releash-thread-cli
-      instruction: fix-report
-  inputs:
-  - check_open_threads
-  - verify_fixes
+  check_open_threads:
+    command: >-
+      releash review list --state open --json |
+      jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+    artifact: thread-scan
+    rules:
+    - when:
+        on: has_open_threads
+        then: create_fix_plan
+      next: fix_report
+  create_fix_plan:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: reviewing
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: existing-spec-create-fix-plan
+    artifact: fix-plan
+    inputs:
+    - main
+    rules:
+    - loop_guard:
+        max_iterations: 5
+        on_exhausted: fix_report
+    - next: implement_fix_plan
+  implement_fix_plan:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: coding
+        knowledge: releash-thread-cli
+        instruction: implement_fix_plan
+    inputs:
+    - create_fix_plan
+    - verify_fixes
+    rules:
+    - loop_guard:
+        max_iterations: 3
+        on_exhausted: fix_report
+        reset_on: create_fix_plan
+    - next: verify_fixes
+  verify_fixes:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: verify_fixes
+    artifact: fix-verification
+    inputs:
+    - create_fix_plan
+    rules:
+    - next: check_fix_verification
+  check_fix_verification:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node verify_fixes --json |
+      jq '{has_issues: (.artifact.issues | length > 0)}'
+    artifact: fix-verification-scan
+    rules:
+    - when:
+        on: has_issues
+        then: implement_fix_plan
+      next: check_open_threads
+  fix_report:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: reporting
+        knowledge: releash-thread-cli
+        instruction: fix-report
+    inputs:
+    - check_open_threads
+    - verify_fixes

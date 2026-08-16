@@ -330,7 +330,11 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             .workflow_agent_sessions
             .prepare_workflow_agent_session(
                 worktree_path,
-                provider_kind(provider),
+                crate::adaptor::gateway::workflow::node_session_boundary::WorkflowSessionLaunchConfig {
+                    provider: provider_kind(provider),
+                    model: None,
+                    permission: None,
+                },
                 workflow_execution_id,
                 node_execution_id,
                 initial_instruction,

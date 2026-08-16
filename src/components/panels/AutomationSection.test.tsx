@@ -49,7 +49,6 @@ const SESSION_NODE = {
 	kind: "session" as const,
 	session: {
 		provider: "claude" as const,
-		gate: "auto" as const,
 		facets: { instruction: "implement" },
 	},
 	rules: [],
@@ -203,20 +202,19 @@ describe("AutomationSection", () => {
 					"name: new-wf",
 					'description: ""',
 					"nodes:",
-					"  - name: start",
+					"  main:",
 					"    session:",
 					"      provider: claude",
-					"      gate: auto",
-					"      facets: {}",
 					"",
 				].join("\n"),
 			);
 		});
 		const source = saveWorkflowSource.mock.calls[0][0];
 		expect(source).toContain("nodes:");
+		expect(source).toContain("main:");
 		expect(source).toContain("session:");
 		expect(source).toContain("provider: claude");
-		expect(source).toContain("facets: {}");
+		expect(source).not.toContain("gate:");
 		expect(source).not.toContain("instruction:");
 		expect(selectWorkflow).toHaveBeenCalledWith("new-wf");
 	});

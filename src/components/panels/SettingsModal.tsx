@@ -605,11 +605,11 @@ function AgentSection({
 						htmlFor="workflow-approval-auto-approve"
 						className={`${labelClass} cursor-pointer`}
 					>
-						Approval gate auto-approve
+						Approval auto-approve
 					</label>
 				</div>
 				<p className="text-[10px] text-muted-foreground">
-					Automatically approves completed sessions with gate: approval.
+					Automatically approves completed nodes with completion: approval.
 				</p>
 				{workflow.error && (
 					<p className="text-[10px] text-destructive">{workflow.error}</p>

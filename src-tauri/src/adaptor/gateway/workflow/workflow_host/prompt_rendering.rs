@@ -246,7 +246,11 @@ pub(crate) fn build_fanout_child_prompt(
         .map(|content| render_prompt_content(&content, &artifacts, context.item));
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, context.item);
     let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
-    let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), context.item);
+    let mut user_message = inject_fanout_item(
+        &rendered_user,
+        node.sole_typed_input_contract(),
+        context.item,
+    );
     append_completion_action(
         &mut user_message,
         node.artifact.as_deref(),
@@ -273,7 +277,7 @@ pub(crate) fn request_node_artifact(request: &str, timestamp: f64) -> RuntimeArt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{FacetRefs, NodeKind, SessionSpec};
+    use crate::domain::workflow::{FacetRefs, InputParam, NodeKind, SessionSpec};
 
     fn make_test_node(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
@@ -390,7 +394,10 @@ mod tests {
     #[test]
     fn build_fanout_child_prompt_binds_item_as_declared_input() {
         let mut node = make_test_node("worker", "Review {{ item.path }}");
-        node.input = Some("work-item".to_string());
+        node.input = vec![InputParam {
+            name: "item".to_string(),
+            contract: Some("work-item".to_string()),
+        }];
         let resolved = instruction_contents("Review {{ item.path }}");
         let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
 
@@ -413,7 +420,10 @@ mod tests {
     fn build_fanout_child_prompt_injects_ordinary_inputs_and_binds_item() {
         let mut node = make_test_node("worker", "Review {{ item.path }} for {{ request }}");
         node.inputs = vec!["request".to_string(), "plan".to_string()];
-        node.input = Some("work-item".to_string());
+        node.input = vec![InputParam {
+            name: "item".to_string(),
+            contract: Some("work-item".to_string()),
+        }];
         let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
         let outputs = HashMap::from([(
             "plan".to_string(),
@@ -528,7 +538,10 @@ mod tests {
     #[test]
     fn build_fanout_child_prompt_addresses_the_node_execution() {
         let mut node = make_test_node("review", "Review {{ item.path }}.");
-        node.input = Some("work-item".to_string());
+        node.input = vec![InputParam {
+            name: "item".to_string(),
+            contract: Some("work-item".to_string()),
+        }];
         node.artifact = Some("review-result".to_string());
         let resolved = instruction_contents("Review {{ item.path }}.");
         let item = serde_json::json!({"path": "src/lib.rs"});

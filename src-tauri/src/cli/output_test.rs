@@ -38,6 +38,7 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
             artifact: Some("review-verdict".to_string()),
             ..Default::default()
         }],
+        entry: "review".to_string(),
     };
     append_workflow_event(
         data_dir,

@@ -1,15 +1,13 @@
 name: unreachable-node
 description: second node is not reachable without a rule
 nodes:
-  - name: entry
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: entry
-  - name: orphan
+  orphan:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: orphan

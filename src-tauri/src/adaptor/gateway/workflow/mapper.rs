@@ -40,6 +40,7 @@ pub(crate) fn domain_workflow_to_schema(
                 .map(|(name, schema)| (name.clone(), domain_schema_to_schema(schema)))
                 .collect(),
             nodes: definition.nodes.iter().map(domain_node_to_schema).collect(),
+            entry: definition.entry.clone(),
         },
     )
 }
@@ -65,6 +66,7 @@ fn domain_node_to_schema(
             .cloned()
             .map(domain_rule_to_schema)
             .collect(),
+        completion: domain_completion_to_schema(node.completion),
     }
 }
 
@@ -83,7 +85,8 @@ fn domain_kind_to_schema(
             crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                 crate::adaptor::gateway::workflow::schema::SessionSpec {
                     provider: spec.provider,
-                    gate: domain_gate_to_schema(spec.gate),
+                    model: spec.model.clone(),
+                    permission: spec.permission.clone(),
                     facets: domain_facets_to_schema(&spec.facets),
                 },
             )
@@ -99,13 +102,15 @@ fn domain_kind_to_schema(
     }
 }
 
-fn domain_gate_to_schema(
-    gate: domain::SessionGate,
-) -> crate::adaptor::gateway::workflow::schema::SessionGate {
-    match gate {
-        domain::SessionGate::Auto => crate::adaptor::gateway::workflow::schema::SessionGate::Auto,
-        domain::SessionGate::Approval => {
-            crate::adaptor::gateway::workflow::schema::SessionGate::Approval
+fn domain_completion_to_schema(
+    completion: domain::NodeCompletion,
+) -> crate::adaptor::gateway::workflow::schema::NodeCompletion {
+    match completion {
+        domain::NodeCompletion::Auto => {
+            crate::adaptor::gateway::workflow::schema::NodeCompletion::Auto
+        }
+        domain::NodeCompletion::Approval => {
+            crate::adaptor::gateway::workflow::schema::NodeCompletion::Approval
         }
     }
 }
@@ -297,8 +302,8 @@ fn domain_schema_to_schema(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition,
-        NodeKind, SessionSpec, TokenUsage,
+        ExecutionOrigin, ExecutionStatus, FacetRefs, FanoutSpec, InputParam, ItemsSource,
+        NodeDefinition, NodeKind, SessionSpec, TokenUsage,
     };
 
     #[test]
@@ -408,6 +413,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "node".to_string(),
         };
 
         let schema = domain_workflow_to_schema(&definition).unwrap();
@@ -442,6 +448,7 @@ mod tests {
     fn workflow_mapping_round_trips_loop_guard_reset_on() {
         let definition = domain::WorkflowDefinition {
             name: "wf".to_string(),
+            entry: "fix".to_string(),
             nodes: vec![NodeDefinition {
                 name: "fix".to_string(),
                 rules: vec![domain::Rule::LoopGuard {
@@ -468,7 +475,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "fanout".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
                     child: vec!["worker".to_string()],
                     items: Some(ItemsSource::Literal(vec![serde_json::json!({
@@ -477,6 +484,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "main".to_string(),
         };
 
         let schema = domain_workflow_to_schema(&definition).unwrap();
@@ -517,11 +525,15 @@ mod tests {
                     },
                     ..Default::default()
                 }),
-                input: Some("plan".to_string()),
+                input: vec![InputParam {
+                    name: "item".to_string(),
+                    contract: Some("plan".to_string()),
+                }],
                 artifact: Some("plan".to_string()),
                 rules: vec![domain::Rule::Next("done".to_string())],
                 ..Default::default()
             }],
+            entry: "implement".to_string(),
         };
         let schema = domain_workflow_to_schema(&definition).unwrap();
 
@@ -536,19 +548,19 @@ mod tests {
                         "type": "object"
                     }
                 },
-                "nodes": [{
-                    "name": "implement",
-                    "session": {
-                        "provider": "claude",
-                        "gate": "auto",
-                        "facets": {
-                            "instruction": "inst"
-                        }
-                    },
-                    "artifact": "plan",
-                    "input": "plan",
-                    "rules": [{"next": "done"}]
-                }]
+                "nodes": {
+                    "implement": {
+                        "session": {
+                            "provider": "claude",
+                            "facets": {
+                                "instruction": "inst"
+                            }
+                        },
+                        "artifact": "plan",
+                        "input": [{"item": "plan"}],
+                        "rules": [{"next": "done"}]
+                    }
+                }
             })
         );
     }
@@ -567,13 +579,13 @@ mod tests {
                 "definition": {
                     "name": "wf",
                     "description": "",
-                    "nodes": [{
-                        "name": "review",
-                        "session": {
-                            "provider": "claude",
-                            "gate": "auto"
+                    "nodes": {
+                        "main": {
+                            "session": {
+                                "provider": "claude"
+                            }
                         }
-                    }]
+                    }
                 }
             }),
         };

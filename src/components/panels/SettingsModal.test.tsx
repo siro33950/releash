@@ -590,7 +590,7 @@ describe("SettingsModal", () => {
 		expect(await screen.findByText("Base branch")).toBeInTheDocument();
 	});
 
-	it("should load and save approval gate auto-approve independently from agent auto-approve", async () => {
+	it("should load and save approval auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
@@ -610,7 +610,7 @@ describe("SettingsModal", () => {
 		const nav = screen.getByRole("navigation");
 		fireEvent.click(within(nav).getByText("Agent"));
 		const workflowCheckbox = await screen.findByRole("checkbox", {
-			name: "Approval gate auto-approve",
+			name: "Approval auto-approve",
 		});
 		await waitFor(() => {
 			expect(workflowCheckbox).toBeChecked();

@@ -3,16 +3,17 @@ description: empty items complete without children and child rules are ignored b
 schemas:
   item-text: string
 nodes:
-  - name: dispatch
+  main:
     fanout:
       child: worker
       items: []
     rules:
       - next: done
-  - name: worker
-    input: item-text
+  worker:
+    input:
+      - item: item-text
     command: "printf '%s' '{{ item }}'"
     rules:
       - next: done
-  - name: done
+  done:
     command: printf done

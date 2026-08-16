@@ -396,6 +396,7 @@ pub(in crate::cli) mod test_support {
                 builtin: false,
                 schemas: Default::default(),
                 nodes: vec![],
+                entry: "main".to_string(),
             },
             timestamp: 100.0,
         }

@@ -91,102 +91,109 @@ schemas:
 
 nodes:
 
-- name: resolve_request
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: planning
-      instruction: existing-spec-resolve-request
-  artifact: implementation-context
-  inputs:
-  - request
-  rules:
-  - next: create_detailed_design
+  main:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: planning
+        instruction: existing-spec-resolve-request
+    artifact: implementation-context
+    inputs:
+    - request
+    rules:
+    - next: create_detailed_design
 
-- name: create_detailed_design
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: planning
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      - implement-task
-      instruction: create_parallel_tasks
-  artifact: implement-tasks
-  inputs:
-  - resolve_request
-  - verify_implementation
-  rules:
-  - loop_guard:
-      max_iterations: 3
-      on_exhausted: implementation_confirmation
-  - next: check_tasks
-- name: check_tasks
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node create_detailed_design --json |
-    jq '{has_tasks: (.artifact.tasks | length > 0)}'
-  artifact: task-scan
-  rules:
-  - when:
-      on: has_tasks
-      then: implement_fanout
-    next: implementation_confirmation
-- name: implement_fanout
-  fanout:
-    child: implement_task
-    items: create_detailed_design.tasks
-  rules:
-  - next: verify_implementation
-- name: implement_task
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: coding
-      knowledge: implement-task
-      instruction: implement_single_task
-  input: implement-task
-  inputs:
-  - resolve_request
-- name: verify_implementation
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: reviewing
-      knowledge: implement-task
-      instruction: verify_implementation
-  artifact: implementation-verification
-  inputs:
-  - resolve_request
-  - create_detailed_design
-  rules:
-  - next: check_verification
-- name: check_verification
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node verify_implementation --json |
-    jq '{has_issues: (.artifact.issues | length > 0)}'
-  artifact: verification-scan
-  rules:
-  - when:
-      on: has_issues
-      then: create_detailed_design
-    next: implementation_confirmation
-- name: implementation_confirmation
-  session:
-    provider: claude
-    gate: approval
-    facets:
-      policy: reporting
-      knowledge: releash-thread-cli
-      instruction: implementation-confirmation
-  inputs:
-  - resolve_request
-  - create_detailed_design
-  - verify_implementation
+  create_detailed_design:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - implement-task
+        instruction: create_parallel_tasks
+    artifact: implement-tasks
+    inputs:
+    - main
+    - verify_implementation
+    rules:
+    - loop_guard:
+        max_iterations: 3
+        on_exhausted: implementation_confirmation
+    - next: check_tasks
+  check_tasks:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node create_detailed_design --json |
+      jq '{has_tasks: (.artifact.tasks | length > 0)}'
+    artifact: task-scan
+    rules:
+    - when:
+        on: has_tasks
+        then: implement_fanout
+      next: implementation_confirmation
+  implement_fanout:
+    fanout:
+      child: implement_task
+      items: create_detailed_design.tasks
+    rules:
+    - next: verify_implementation
+  implement_task:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: coding
+        knowledge: implement-task
+        instruction: implement_single_task
+    input:
+    - item: implement-task
+    inputs:
+    - main
+  verify_implementation:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: reviewing
+        knowledge: implement-task
+        instruction: verify_implementation
+    artifact: implementation-verification
+    inputs:
+    - main
+    - create_detailed_design
+    rules:
+    - next: check_verification
+  check_verification:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node verify_implementation --json |
+      jq '{has_issues: (.artifact.issues | length > 0)}'
+    artifact: verification-scan
+    rules:
+    - when:
+        on: has_issues
+        then: create_detailed_design
+      next: implementation_confirmation
+  implementation_confirmation:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: reporting
+        knowledge: releash-thread-cli
+        instruction: implementation-confirmation
+    completion: approval
+    inputs:
+    - main
+    - create_detailed_design
+    - verify_implementation

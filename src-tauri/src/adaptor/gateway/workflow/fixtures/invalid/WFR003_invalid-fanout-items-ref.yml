@@ -6,19 +6,21 @@ schemas:
     properties:
       values:
         type: string
-    required: [values]
+    required:
+      - values
   target:
     type: string
 nodes:
-  - name: source
+  main:
     artifact: source-output
     command: echo source
     rules:
-      - next: fanout
-  - name: fanout
+      - next: dispatch
+  dispatch:
     fanout:
       child: worker
-      items: source.missing
-  - name: worker
-    input: target
+      items: main.missing
+  worker:
+    input:
+      - item: target
     command: echo {{ item }}

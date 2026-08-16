@@ -3,5 +3,5 @@ description: execution triggers do not belong to WorkflowDefinition
 trigger:
   event: push
 nodes:
-  - name: run
+  main:
     command: printf done

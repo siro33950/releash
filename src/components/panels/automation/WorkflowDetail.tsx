@@ -334,9 +334,9 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
 						{node.kind}
 					</span>
-					{session?.gate === "approval" && (
+					{node.completion === "approval" && (
 						<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
-							gate: approval
+							completion: approval
 						</span>
 					)}
 					{fanout && (
@@ -368,7 +368,11 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">Session</span>
 							<div className="text-muted-foreground">
-								Provider: {session.provider} | Gate: {session.gate}
+								Provider: {session.provider}
+								{session.model ? ` | Model: ${session.model}` : ""}
+								{session.permission
+									? ` | Permission: ${session.permission}`
+									: ""}
 							</div>
 						</div>
 					)}
@@ -379,7 +383,7 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 						facets?.instruction ||
 						node.artifact ||
 						(node.inputs && node.inputs.length > 0) ||
-						node.input) && (
+						(node.input && node.input.length > 0)) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Workflow References
@@ -402,7 +406,18 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 							{node.inputs && node.inputs.length > 0 && (
 								<FacetRefRow label="Inputs" value={node.inputs.join(", ")} />
 							)}
-							{node.input && <FacetRefRow label="Input" value={node.input} />}
+							{node.input && node.input.length > 0 && (
+								<FacetRefRow
+									label="Input"
+									value={node.input
+										.map((param) =>
+											param.contract
+												? `${param.name}: ${param.contract}`
+												: param.name,
+										)
+										.join(", ")}
+								/>
+							)}
 						</div>
 					)}
 

@@ -4,7 +4,8 @@ use tempfile::tempdir;
 
 use super::LocalProviderAgentLaunchGateway;
 use crate::domain::agent_session::{
-    aggregates::ResolvedProviderExecutable, ProviderAgentLaunchGateway, ProviderSessionLaunch,
+    aggregates::ResolvedProviderExecutable, ProviderAgentLaunchGateway, ProviderLaunchOptions,
+    ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
@@ -102,6 +103,66 @@ fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で生�
         .arguments()
         .iter()
         .any(|argument| { argument.contains("releash-dev hook receive --provider codex") }));
+}
+
+#[test]
+fn test_provider_launch_gateway_modelとpermissionをresume引数より前にcli引数へ注入する() {
+    let data_dir = tempdir().unwrap();
+    let gateway =
+        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+
+    for (provider, executable, permission_flag, resume_flag) in [
+        (
+            ProviderKind::Claude,
+            "/opt/bin/claude",
+            "--permission-mode",
+            "--resume",
+        ),
+        (ProviderKind::Codex, "/opt/bin/codex", "--sandbox", "resume"),
+    ] {
+        let launch = ProviderSessionLaunch::resume("session-1")
+            .unwrap()
+            .with_options(ProviderLaunchOptions::new(
+                Some("model-x".to_string()),
+                Some("permission-y".to_string()),
+            ));
+        let prepared = gateway
+            .prepare(
+                &armed(provider),
+                ResolvedProviderExecutable::new(executable.into()).unwrap(),
+                launch,
+                data_dir.path().to_str().unwrap(),
+            )
+            .unwrap();
+
+        let arguments = prepared.process().arguments();
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--model", "model-x"]),
+            "{provider:?}: model must be injected verbatim: {arguments:?}"
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == [permission_flag, "permission-y"]),
+            "{provider:?}: permission must be injected verbatim: {arguments:?}"
+        );
+        let model_index = arguments
+            .iter()
+            .position(|argument| argument == "--model")
+            .unwrap();
+        let permission_index = arguments
+            .iter()
+            .position(|argument| argument == permission_flag)
+            .unwrap();
+        let resume_index = arguments
+            .iter()
+            .position(|argument| argument == resume_flag)
+            .unwrap();
+        assert!(model_index < resume_index);
+        assert!(permission_index < resume_index);
+    }
 }
 
 #[test]

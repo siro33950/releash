@@ -56,12 +56,17 @@ mod tests {
     use crate::domain::workflow::NodeDefinition;
 
     fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| "main".to_string());
         WorkflowDefinition {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
             nodes,
+            entry,
         }
     }
 
