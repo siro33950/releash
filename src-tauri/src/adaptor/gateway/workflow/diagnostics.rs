@@ -379,7 +379,7 @@ fn parse_shape_diagnostics(
                     Severity::Error,
                     DiagnosticStage::ParseShape,
                     span_map.field_span(&node_path),
-                    format!("node name '{node_name}' is duplicated or invalid"),
+                    format!("node name '{node_name}' is not a safe identifier"),
                 )
                 .workflow(workflow_name)
                 .node(node_name)
