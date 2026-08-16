@@ -28,13 +28,12 @@ use crate::domain::local_event::{
     validate_operation_record, CallerAttemptMutation, CommitBatchError, CommitBatchResult,
     CommitOperationKind, CommitResolution, CommittedBatch, CommittedStreamHead, IdempotencyBinding,
     LocalEventQueryError, LocalStateMutation, ObligationMutation, ObligationRecord,
-    ObligationStateRecord, OperationBindingMutation, OperationKind, OperationRecordMutation,
-    RecoveryActionMutation, RecoveryAttemptRecord, RecoveryResourceViewRecord,
-    RecoveryResultRecord, Revision, RevisionGuard, SafeOperationFailure,
-    SessionOperationFailureKind, SessionProjectionMutation, ShutdownDetailsCompactionMutation,
-    ShutdownLatestPointerMutation, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
-    ShutdownTargetMutation, ShutdownTargetRecord, StreamId, StreamVersion,
-    WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+    OperationBindingMutation, OperationRecordMutation, RecoveryActionMutation,
+    RecoveryAttemptRecord, RecoveryResourceViewRecord, RecoveryResultRecord, Revision,
+    RevisionGuard, SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
+    ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation, ShutdownPlanMutation,
+    ShutdownRecoverySnapshotMutation, ShutdownTargetMutation, ShutdownTargetRecord, StreamId,
+    StreamVersion, WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
 };
 use crate::domain::workspace_tree::WorkspaceTree;
 
@@ -87,259 +86,6 @@ fn check_guard(existing: Option<i64>, guard: RevisionGuard) -> Result<(), Commit
         (Some(revision), _) => Err(conflict(revision)),
         (None, RevisionGuard::Expected(_)) => Err(conflict(0)),
     }
-}
-
-fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) -> bool {
-    let mut advances_existing_owner = false;
-    for mutation in mutations {
-        match mutation {
-            LocalStateMutation::OperationRecord(record) => {
-                if matches!(record.expected, RevisionGuard::Absent) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::Obligation(obligation) => {
-                if matches!(obligation.expected, RevisionGuard::Absent) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::RecoveryAction(action) => {
-                if matches!(action.expected, RevisionGuard::Absent) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::CallerAttempt(attempt) => {
-                if matches!(attempt.expected, RevisionGuard::Absent) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::SessionProjection(session) => {
-                if matches!(session.expected, RevisionGuard::Absent) {
-                    return false;
-                }
-            }
-            LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_) => {}
-            LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::SessionProjectionRemoval(_)
-            | LocalStateMutation::AgentSessionRemoval(_)
-            | LocalStateMutation::ShutdownPlan(_)
-            | LocalStateMutation::ShutdownTarget(_)
-            | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownDetailsCompaction(_)
-            | LocalStateMutation::ShutdownLatestPointer(_) => return false,
-        }
-    }
-    advances_existing_owner
-}
-
-/// Workflow and projection commits may drain through an active shutdown only
-/// when the batch proves that it advances already-admitted work.  In
-/// particular, the internal lane label is not authority to mint a new caller
-/// operation, binding, obligation, or recovery action.
-fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> bool {
-    let mutations = &prepared.batch.state_mutations;
-    let mut advances_existing_owner = false;
-    for mutation in mutations {
-        match mutation {
-            LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::AgentSessionRemoval(_)
-            | LocalStateMutation::CallerAttempt(_)
-            | LocalStateMutation::ShutdownPlan(_)
-            | LocalStateMutation::ShutdownTarget(_)
-            | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownDetailsCompaction(_)
-            | LocalStateMutation::ShutdownLatestPointer(_) => return false,
-            LocalStateMutation::OperationRecord(operation) => {
-                if !guard_advances_existing(operation.expected, operation.revision) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::Obligation(obligation) => {
-                if !guard_advances_existing(obligation.expected, obligation.revision) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::RecoveryAction(action) => {
-                if !guard_advances_existing(action.expected, action.revision) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::SessionProjection(session) => {
-                if guard_advances_existing(session.expected, session.revision) {
-                    advances_existing_owner = true;
-                } else if !guard_inserts_revision_zero(session.expected, session.revision) {
-                    return false;
-                }
-            }
-            LocalStateMutation::SessionProjectionRemoval(removal) => {
-                if !matches!(removal.expected, RevisionGuard::Expected(_)) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::WorkflowExecutionProjection(workflow) => {
-                if !guard_advances_existing(workflow.expected, workflow.revision)
-                    && !guard_inserts_revision_zero(workflow.expected, workflow.revision)
-                {
-                    return false;
-                }
-            }
-            LocalStateMutation::WorkflowExecutionNodeProjection(nodes) => {
-                if !guard_advances_existing(nodes.expected, nodes.revision)
-                    && !guard_inserts_revision_zero(nodes.expected, nodes.revision)
-                {
-                    return false;
-                }
-            }
-        }
-    }
-    if !advances_existing_owner {
-        return false;
-    }
-    match prepared.batch.idempotency.operation_kind {
-        CommitOperationKind::Projection => false,
-        CommitOperationKind::Workflow => workflow_progress_has_one_execution_scope(prepared),
-        CommitOperationKind::ApplicationQuit
-        | CommitOperationKind::Recovery
-        | CommitOperationKind::UserMutation
-        | CommitOperationKind::OperationProgress => false,
-    }
-}
-
-fn guard_advances_existing(expected: RevisionGuard, revision: Revision) -> bool {
-    let RevisionGuard::Expected(current) = expected else {
-        return false;
-    };
-    current.next() == Some(revision)
-}
-
-fn guard_inserts_revision_zero(expected: RevisionGuard, revision: Revision) -> bool {
-    matches!(expected, RevisionGuard::Absent) && revision.value() == 0
-}
-
-fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
-    let mut execution_id = None;
-    for mutation in &prepared.batch.state_mutations {
-        if let LocalStateMutation::Obligation(ObligationMutation {
-            record: ObligationRecord::WorkflowExecution { execution },
-            expected,
-            revision,
-            ..
-        }) = mutation
-        {
-            if !guard_advances_existing(*expected, *revision)
-                || execution_id
-                    .as_ref()
-                    .is_some_and(|stored| stored != &execution.execution_id)
-            {
-                return false;
-            }
-            execution_id = Some(execution.execution_id.clone());
-        }
-    }
-    let Some(execution_id) = execution_id else {
-        return false;
-    };
-    let expected_stream = match StreamId::workflow(&execution_id) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    if prepared
-        .batch
-        .expected_heads
-        .iter()
-        .any(|head| head.stream_id != expected_stream)
-        || prepared.batch.events.iter().any(|event| {
-            event.stream_id != expected_stream
-                || !matches!(
-                    &event.event,
-                    crate::domain::local_event::LocalDomainEvent::Workflow(workflow)
-                        if workflow.execution_id() == execution_id
-                )
-        })
-    {
-        return false;
-    }
-    prepared
-        .batch
-        .state_mutations
-        .iter()
-        .all(|mutation| match mutation {
-            LocalStateMutation::Obligation(ObligationMutation {
-                record: ObligationRecord::WorkflowExecution { execution },
-                ..
-            }) => execution.execution_id == execution_id,
-            LocalStateMutation::SessionProjection(projection) => match &projection.projection {
-                crate::domain::local_event::SessionProjectionRecord::WorkflowExecution(
-                    crate::domain::local_event::WorkflowExecutionProjectionRecord::Present(
-                        execution,
-                    ),
-                ) => {
-                    projection.session_id == format!("workflow:{execution_id}")
-                        && execution.execution_id == execution_id
-                }
-                crate::domain::local_event::SessionProjectionRecord::WorkflowExecution(
-                    crate::domain::local_event::WorkflowExecutionProjectionRecord::Deleted {
-                        execution_id: deleted,
-                    },
-                ) => {
-                    projection.session_id == format!("workflow:{execution_id}")
-                        && deleted == &execution_id
-                }
-                crate::domain::local_event::SessionProjectionRecord::WorkflowWorktreeOwner(
-                    owner,
-                ) => owner.execution_id == execution_id,
-                crate::domain::local_event::SessionProjectionRecord::AgentSession(_)
-                | crate::domain::local_event::SessionProjectionRecord::ProviderSessionOwnership(
-                    _,
-                )
-                | crate::domain::local_event::SessionProjectionRecord::ProviderHookHealth(_) => {
-                    false
-                }
-            },
-            LocalStateMutation::WorkflowExecutionProjection(projection) => {
-                prepared.batch.state_mutations.iter().any(|candidate| {
-                    matches!(
-                        candidate,
-                        LocalStateMutation::SessionProjection(source)
-                            if source.session_id == format!("workflow:{execution_id}")
-                                && source.expected == projection.expected
-                                && source.revision == projection.revision
-                    )
-                }) && match &projection.projection {
-                    crate::domain::local_event::WorkflowExecutionProjectionRecord::Present(
-                        execution,
-                    ) => execution.execution_id == execution_id,
-                    crate::domain::local_event::WorkflowExecutionProjectionRecord::Deleted {
-                        execution_id: deleted,
-                    } => deleted == &execution_id,
-                }
-            }
-            LocalStateMutation::WorkflowExecutionNodeProjection(nodes) => {
-                nodes.execution_id == execution_id
-                    && nodes
-                        .nodes
-                        .iter()
-                        .all(|node| node.execution_id.as_deref() == Some(execution_id.as_str()))
-                    && prepared.batch.state_mutations.iter().any(|candidate| {
-                        matches!(
-                            candidate,
-                            LocalStateMutation::WorkflowExecutionProjection(projection)
-                                if projection.expected == nodes.expected
-                                    && projection.revision == nodes.revision
-                        )
-                    })
-            }
-            _ => false,
-        })
 }
 
 fn recovery_result_targets_shutdown_target(
@@ -414,320 +160,91 @@ fn application_quit_progress_is_bound_to_current_plan(
     current_plan_summary: &str,
     prepared: &PreparedBatch,
 ) -> Result<bool, CommitBatchError> {
-    use crate::domain::local_event::{
-        ApplicationDomainEvent, OperationReceiptRecord, ShutdownPlanKey, ShutdownTargetKindRecord,
-        ShutdownTargetStateRecord,
-    };
+    use crate::domain::local_event::commit_admission::{self, QuitProgressFacts};
 
     let batch = &prepared.batch;
     let plan_summary =
         encoded_record(StoredShutdownPlanV1::decode(current_plan_summary))?.into_value();
-    let operation_id = plan_summary.operation_id.as_str();
-    if operation_id.is_empty() || batch.state_mutations.is_empty() {
-        return Ok(false);
-    }
 
-    // A caller joining the already accepted flight may add exactly one
-    // immutable binding to the current operation. It cannot smuggle any
-    // state or stream participant into that join commit.
-    if let [LocalStateMutation::OperationBinding(binding)] = batch.state_mutations.as_slice() {
-        return Ok(batch.expected_heads.is_empty()
-            && batch.events.is_empty()
-            && binding.key.kind == OperationKind::ApplicationQuit
-            && binding.key.installation_id == batch.idempotency.installation_id
-            && !binding.key.principal.is_empty()
-            && !binding.key.caller_request_id.is_empty()
-            && binding.operation_id == operation_id
-            && batch.idempotency.idempotency_key
-                == format!("{operation_id}.join.{}", binding.key.caller_request_id));
-    }
-
-    // The workflow executor's shutdown reservation is part of the fixed
-    // target effect. Its exact effect/session identity must already be in the
-    // current plan; an arbitrary obligation relabeled ApplicationQuit is not
-    // an admission capability.
+    // Facts for the single workflow-shutdown obligation batch: every target
+    // row of the current plan and the canonical obligation id derived from
+    // the batch obligation's effect identity.
+    let mut plan_targets: Vec<(ShutdownTargetRecord, i64)> = Vec::new();
+    let mut workflow_shutdown_obligation_id = None;
     if let [LocalStateMutation::Obligation(obligation)] = batch.state_mutations.as_slice() {
-        let ObligationRecord::WorkflowShutdown {
-            operation_id: stored_operation_id,
-            effect_identity,
-            owner_revision,
-            execution_id,
-            state,
+        if let ObligationRecord::WorkflowShutdown {
+            effect_identity, ..
         } = &obligation.record
-        else {
-            return Ok(false);
-        };
-        let mut target_matches = false;
-        let mut statement = connection
-            .prepare(
-                "SELECT detail, revision FROM shutdown_targets
-                 WHERE shutdown_id = ?1
-                 ORDER BY ordinal LIMIT 4097",
-            )
-            .map_err(|error| storage_unavailable(&error))?;
-        let rows = statement
-            .query_map(params![current_plan_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|error| storage_unavailable(&error))?;
-        for row in rows {
-            let (raw, revision) = row.map_err(|error| storage_unavailable(&error))?;
-            let detail = encoded_record(StoredShutdownTargetV1::decode(&raw))?.into_value();
-            if matches!(
-                detail,
-                ShutdownTargetRecord::Target {
-                    target_id,
-                    kind: ShutdownTargetKindRecord::WorkflowExecution,
-                    state: ShutdownTargetStateRecord::EffectReserved,
-                    effect_identity: stored_effect,
-                    owner_operation_id: Some(owner),
-                    ..
-                } if target_id == *execution_id
-                    && stored_effect == *effect_identity
-                    && owner == operation_id
-                    && revision == *owner_revision
-            ) {
-                if target_matches {
-                    return Ok(false);
-                }
-                target_matches = true;
-            }
-        }
-        let digest = hex::encode(Sha256::digest(effect_identity.as_bytes()));
-        let expected_obligation_id = format!("workflow-shutdown-{}", &digest[..32]);
-        let guard_matches = match (obligation.expected, *state) {
-            (RevisionGuard::Absent, ObligationStateRecord::EffectReserved) => {
-                guard_inserts_revision_zero(obligation.expected, obligation.revision)
-                    && obligation.pending.as_ref().is_some_and(|pending| {
-                        pending.owner == *execution_id
-                            && pending.partition
-                                == crate::domain::local_event::PendingPartition::Owner
-                            && pending.shutdown_plan.is_none()
-                            && pending.ordered_key == format!("workflow-shutdown-{effect_identity}")
-                    })
-            }
-            (RevisionGuard::Expected(_), ObligationStateRecord::Completed) => {
-                guard_advances_existing(obligation.expected, obligation.revision)
-                    && obligation.pending.is_none()
-            }
-            _ => false,
-        };
-        return Ok(target_matches
-            && batch.expected_heads.is_empty()
-            && batch.events.is_empty()
-            && stored_operation_id == operation_id
-            && obligation.obligation_id == expected_obligation_id
-            && batch.idempotency.idempotency_key
-                == format!("{expected_obligation_id}.{}", obligation.revision.value())
-            && guard_matches);
-    }
-
-    let current_plan = ShutdownPlanKey {
-        shutdown_id: current_plan_id.to_string(),
-    };
-    let mut operation_revision = None;
-    let mut operation_status = None;
-    let mut plan_phase = None;
-    let mut target_transition = None;
-    let mut saw_plan = false;
-    let mut saw_pointer = false;
-    for mutation in &batch.state_mutations {
-        match mutation {
-            LocalStateMutation::OperationRecord(operation) => {
-                let OperationReceiptRecord::ApplicationQuit {
-                    operation_id: receipt_operation_id,
-                    plan,
-                    ..
-                } = &operation.receipt;
-                if operation_revision.replace(operation.revision).is_some()
-                    || operation.kind != OperationKind::ApplicationQuit
-                    || operation.operation_id != operation_id
-                    || receipt_operation_id != operation_id
-                    || plan != &current_plan
-                    || operation.latest_status.kind != OperationKind::ApplicationQuit
-                    || !guard_advances_existing(operation.expected, operation.revision)
-                {
-                    return Ok(false);
-                }
-                operation_status = Some(&operation.latest_status.value);
-            }
-            LocalStateMutation::ShutdownPlan(plan) => {
-                if saw_plan
-                    || plan.key != current_plan
-                    || plan.summary.operation_id != operation_id
-                    || !guard_advances_existing(plan.expected, plan.revision)
-                {
-                    return Ok(false);
-                }
-                saw_plan = true;
-                plan_phase = Some(plan.phase);
-            }
-            LocalStateMutation::ShutdownTarget(target) => {
-                if target_transition.replace(target).is_some()
-                    || target.key != current_plan
-                    || !guard_advances_existing(target.expected, target.revision)
-                {
-                    return Ok(false);
-                }
-                let existing: Option<(String, i64)> = connection
-                    .query_row(
-                        "SELECT detail, revision FROM shutdown_targets
-                         WHERE shutdown_id = ?1 AND ordinal = ?2",
-                        params![current_plan_id, target.ordinal],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(|error| storage_unavailable(&error))?;
-                let Some((raw, revision)) = existing else {
-                    return Ok(false);
-                };
-                let RevisionGuard::Expected(expected) = target.expected else {
-                    return Ok(false);
-                };
-                if expected.value() != revision {
-                    return Ok(false);
-                }
-                let existing = encoded_record(StoredShutdownTargetV1::decode(&raw))?.into_value();
-                let (
-                    ShutdownTargetRecord::Target {
-                        target_id: old_target_id,
-                        kind: old_kind,
-                        state: old_state,
-                        effect_identity: old_effect,
-                        owner_operation_id: old_owner,
-                        recovery_action: old_recovery,
-                        ..
-                    },
-                    ShutdownTargetRecord::Target {
-                        target_id,
-                        kind,
-                        state,
-                        effect_identity,
-                        owner_operation_id,
-                        failure,
-                        recovery_action,
-                    },
-                ) = (&existing, &target.detail)
-                else {
-                    return Ok(false);
-                };
-                let transition_matches = matches!(
-                    (*old_state, *state),
-                    (
-                        ShutdownTargetStateRecord::Prepared,
-                        ShutdownTargetStateRecord::EffectReserved
-                    ) | (
-                        ShutdownTargetStateRecord::EffectReserved,
-                        ShutdownTargetStateRecord::Completed
-                    ) | (
-                        ShutdownTargetStateRecord::EffectReserved,
-                        ShutdownTargetStateRecord::ReconciliationRequired
-                    )
-                );
-                if target_id != old_target_id
-                    || kind != old_kind
-                    || effect_identity != old_effect
-                    || old_owner
-                        .as_deref()
-                        .is_some_and(|owner| owner != operation_id)
-                    || owner_operation_id.as_deref() != Some(operation_id)
-                    || recovery_action != old_recovery
-                    || !transition_matches
-                    || (*state == ShutdownTargetStateRecord::ReconciliationRequired)
-                        != failure.is_some()
-                {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::ShutdownLatestPointer(pointer) => {
-                if saw_pointer
-                    || pointer.expected.as_ref() != Some(&current_plan)
-                    || pointer.new.is_some()
-                {
-                    return Ok(false);
-                }
-                saw_pointer = true;
-            }
-            LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::CallerAttempt(_)
-            | LocalStateMutation::SessionProjection(_)
-            | LocalStateMutation::SessionProjectionRemoval(_)
-            | LocalStateMutation::AgentSessionRemoval(_)
-            | LocalStateMutation::Obligation(_)
-            | LocalStateMutation::RecoveryAction(_)
-            | LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_)
-            | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownDetailsCompaction(_) => return Ok(false),
-        }
-    }
-
-    if let Some(target) = target_transition {
-        if batch.state_mutations.len() != 1
-            || !batch.expected_heads.is_empty()
-            || !batch.events.is_empty()
-            || batch.idempotency.idempotency_key
-                != format!(
-                    "{operation_id}.target.{}.{}",
-                    target.ordinal,
-                    target.revision.value()
-                )
         {
-            return Ok(false);
+            let mut statement = connection
+                .prepare(
+                    "SELECT detail, revision FROM shutdown_targets
+                     WHERE shutdown_id = ?1
+                     ORDER BY ordinal LIMIT 4097",
+                )
+                .map_err(|error| storage_unavailable(&error))?;
+            let rows = statement
+                .query_map(params![current_plan_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|error| storage_unavailable(&error))?;
+            for row in rows {
+                let (raw, revision) = row.map_err(|error| storage_unavailable(&error))?;
+                let detail = encoded_record(StoredShutdownTargetV1::decode(&raw))?.into_value();
+                plan_targets.push((detail, revision));
+            }
+            let digest = hex::encode(Sha256::digest(effect_identity.as_bytes()));
+            workflow_shutdown_obligation_id = Some(format!("workflow-shutdown-{}", &digest[..32]));
         }
-        return Ok(true);
     }
-    let Some(operation_revision) = operation_revision else {
-        return Ok(false);
+
+    // Fact for the single shutdown-target transition batch: the stored row at
+    // the mutation's ordinal.
+    let target_ordinal = batch
+        .state_mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            LocalStateMutation::ShutdownTarget(target) => Some(target.ordinal),
+            _ => None,
+        });
+    let existing_target = match target_ordinal {
+        Some(ordinal) => fetch_shutdown_target_row(connection, current_plan_id, ordinal)?,
+        None => None,
     };
-    if !saw_plan
-        || batch.expected_heads.len() != 1
-        || batch.expected_heads[0].stream_id != StreamId::application()
-        || batch.events.len() != 1
-    {
-        return Ok(false);
-    }
-    let event = &batch.events[0];
-    let event_matches = event.stream_id == StreamId::application()
-        && matches!(
-            &event.event,
-            crate::domain::local_event::LocalDomainEvent::Application(
-                ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                    shutdown_id,
-                    phase,
-                    ..
-                }
-            ) if shutdown_id == current_plan_id
-                && Some(*phase) == plan_phase
-        );
-    let activation = batch.idempotency.idempotency_key == format!("{operation_id}.activate")
-        && operation_status == Some(&crate::domain::local_event::OperationStatusValue::Activated)
-        && plan_phase == Some(crate::domain::local_event::ApplicationShutdownPhase::Activated)
-        && !saw_pointer
-        && batch.state_mutations.len() == 2;
-    let finish_identity = batch.idempotency.idempotency_key
-        == format!("{operation_id}.finish.{}", operation_revision.value());
-    let finish = finish_identity
-        && match (operation_status, plan_phase) {
-            (
-                Some(crate::domain::local_event::OperationStatusValue::Completed),
-                Some(crate::domain::local_event::ApplicationShutdownPhase::Completed),
-            ) => saw_pointer && batch.state_mutations.len() == 3,
-            (
-                Some(crate::domain::local_event::OperationStatusValue::FailedBeforeActivation {
-                    ..
-                }),
-                Some(crate::domain::local_event::ApplicationShutdownPhase::Failed),
-            )
-            | (
-                Some(crate::domain::local_event::OperationStatusValue::ReconciliationRequired {
-                    ..
-                }),
-                Some(crate::domain::local_event::ApplicationShutdownPhase::ReconciliationRequired),
-            ) => !saw_pointer && batch.state_mutations.len() == 2,
-            _ => false,
-        };
-    Ok(event_matches && (activation || finish))
+
+    Ok(
+        commit_admission::application_quit_progress_is_bound_to_current_plan(
+            batch,
+            &QuitProgressFacts {
+                plan_id: current_plan_id,
+                plan_summary: &plan_summary,
+                workflow_shutdown_obligation_id: workflow_shutdown_obligation_id.as_deref(),
+                plan_targets: &plan_targets,
+                existing_target: existing_target.as_ref(),
+            },
+        ),
+    )
+}
+
+fn fetch_shutdown_target_row(
+    connection: &Connection,
+    plan_id: &str,
+    ordinal: i64,
+) -> Result<Option<(ShutdownTargetRecord, i64)>, CommitBatchError> {
+    let existing: Option<(String, i64)> = connection
+        .query_row(
+            "SELECT detail, revision FROM shutdown_targets
+             WHERE shutdown_id = ?1 AND ordinal = ?2",
+            params![plan_id, ordinal],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| storage_unavailable(&error))?;
+    let Some((raw, revision)) = existing else {
+        return Ok(None);
+    };
+    let detail = encoded_record(StoredShutdownTargetV1::decode(&raw))?.into_value();
+    Ok(Some((detail, revision)))
 }
 
 fn shutdown_target_recovery_is_bound_to_current_plan(
@@ -736,174 +253,48 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
     current_plan_summary: &str,
     mutations: &[LocalStateMutation],
 ) -> Result<bool, CommitBatchError> {
+    use crate::domain::local_event::commit_admission::{
+        self, ExistingRecoveryAction, ShutdownRecoveryFacts,
+    };
+
     let plan_summary =
         encoded_record(StoredShutdownPlanV1::decode(current_plan_summary))?.into_value();
-    let mut recovery_action = None;
-    let mut shutdown_target = None;
-    let mut closure_operation = None;
-    let mut closure_plan = None;
-    let mut closure_pointer = None;
-    for mutation in mutations {
-        match mutation {
-            LocalStateMutation::RecoveryAction(action) => {
-                if recovery_action.replace(action).is_some() {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::ShutdownTarget(target) => {
-                if shutdown_target.replace(target).is_some() {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::OperationRecord(operation)
-                if operation.kind == OperationKind::ApplicationQuit =>
-            {
-                if closure_operation.replace(operation).is_some() {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::ShutdownPlan(plan) => {
-                if closure_plan.replace(plan).is_some() {
-                    return Ok(false);
-                }
-            }
-            LocalStateMutation::ShutdownLatestPointer(pointer) => {
-                if closure_pointer.replace(pointer).is_some() {
-                    return Ok(false);
-                }
-            }
-            _ => return Ok(false),
-        }
-    }
-    let (Some(action), Some(target)) = (recovery_action, shutdown_target) else {
-        return Ok(false);
-    };
-    let has_plan_closure = match (closure_operation, closure_plan, closure_pointer) {
-        (None, None, None) => false,
-        (Some(operation), Some(plan), Some(pointer))
-            if operation.operation_id == plan_summary.operation_id
-                && matches!(operation.expected, RevisionGuard::Expected(_))
-                && plan.key.shutdown_id == current_plan_id
-                && plan.phase
-                    == crate::domain::local_event::ApplicationShutdownPhase::Completed
-                && plan.summary.operation_id == plan_summary.operation_id
-                && plan.summary.intent == plan_summary.intent
-                && matches!(plan.expected, RevisionGuard::Expected(_))
-                && pointer
-                    .expected
-                    .as_ref()
-                    .is_some_and(|key| key.shutdown_id == current_plan_id)
-                && pointer.new.is_none() =>
-        {
-            true
-        }
-        _ => return Ok(false),
-    };
-    if target.key.shutdown_id != current_plan_id || target.ordinal < 0 {
-        return Ok(false);
-    }
-    let RevisionGuard::Expected(expected_target_revision) = target.expected else {
-        // Shutdown recovery may only mutate a member of the plan's fixed
-        // target set. In particular, Recovery is never an insert path.
-        return Ok(false);
-    };
-    let existing_target: Option<(String, i64)> = connection
-        .query_row(
-            "SELECT detail, revision FROM shutdown_targets
-             WHERE shutdown_id = ?1 AND ordinal = ?2",
-            params![current_plan_id, target.ordinal],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    let Some((existing_target, existing_target_revision)) = existing_target else {
-        return Ok(false);
-    };
-    if expected_target_revision.value() != existing_target_revision
-        || target.revision.value()
-            != match existing_target_revision.checked_add(1) {
-                Some(next) => next,
-                None => return Ok(false),
-            }
-    {
-        return Ok(false);
-    }
-    let existing_target =
-        encoded_record(StoredShutdownTargetV1::decode(&existing_target))?.into_value();
-    let (
-        ShutdownTargetRecord::Target {
-            target_id: existing_target_id,
-            kind: existing_kind,
-            state: existing_state,
-            effect_identity: existing_effect_identity,
-            owner_operation_id: existing_owner_operation_id,
-            failure: existing_failure,
-            recovery_action: existing_target_recovery,
-        },
-        ShutdownTargetRecord::Target {
-            target_id,
-            kind,
-            state,
-            effect_identity,
-            owner_operation_id,
-            failure,
-            recovery_action: Some(target_recovery),
-        },
-    ) = (&existing_target, &target.detail)
-    else {
-        return Ok(false);
-    };
-    if target_id != existing_target_id
-        || kind != existing_kind
-        || effect_identity != existing_effect_identity
-        || owner_operation_id != existing_owner_operation_id
-    {
-        // A recovery transition may change target state/failure, but never
-        // the executor-owned identity at the admitted ordinal.
-        return Ok(false);
-    }
+    let action = mutations.iter().find_map(|mutation| match mutation {
+        LocalStateMutation::RecoveryAction(action) => Some(action),
+        _ => None,
+    });
+    let target = mutations.iter().find_map(|mutation| match mutation {
+        LocalStateMutation::ShutdownTarget(target) => Some(target),
+        _ => None,
+    });
 
-    let RecoveryAttemptRecord::ShutdownTarget {
-        resource_ref,
-        plan,
-        ordinal,
-        target_key,
-        origin_revision,
-        action: attempted_action,
-        effect_identity_sha256,
-        intent,
-        state: attempt_state,
-        failure: attempt_failure,
-    } = &action.attempt;
-    let expected_resource_ref = format!(
-        "shutdown-target:{current_plan_id}:{}:{target_key}",
-        target.ordinal
-    );
-    if plan.shutdown_id != current_plan_id
-        || *ordinal != target.ordinal
-        || target_key != &shutdown_target_key(*existing_kind, existing_target_id)
-        || resource_ref != &expected_resource_ref
-        || target_recovery.action_id != action.action_id
-        || target_recovery.origin_revision != *origin_revision
-        || target_recovery.action != *attempted_action
-        || target_recovery.state != *attempt_state
-        || *effect_identity_sha256
-            != <[u8; 32]>::from(Sha256::digest(existing_effect_identity.as_bytes()))
-        || *intent != plan_summary.intent
-        || attempt_failure.is_some()
-    {
-        return Ok(false);
-    }
+    // Facts derived from the stored row at the batch target's ordinal: the
+    // decoded row plus the identity-authority values (canonical target key,
+    // effect-identity digest) the domain rule compares against.
+    let existing_target = match target {
+        Some(target) => fetch_shutdown_target_row(connection, current_plan_id, target.ordinal)?,
+        None => None,
+    };
+    let (existing_target_key, existing_effect_identity_sha256) = match existing_target.as_ref() {
+        Some((
+            ShutdownTargetRecord::Target {
+                target_id,
+                kind,
+                effect_identity,
+                ..
+            },
+            _,
+        )) => (
+            Some(shutdown_target_key(*kind, target_id)),
+            Some(<[u8; 32]>::from(Sha256::digest(effect_identity.as_bytes()))),
+        ),
+        _ => (None, None),
+    };
 
-    match action.expected {
-        RevisionGuard::Absent => Ok(action.revision.value() == 0
-            && action.completed.is_none()
-            && *origin_revision == existing_target_revision as u64
-            && *attempt_state == ObligationStateRecord::EffectReserved
-            && *state == *existing_state
-            && *failure == *existing_failure),
-        RevisionGuard::Expected(expected_action_revision) => {
-            let existing_action: Option<(String, Option<String>, i64)> = connection
+    // Fact for the finish path: the stored recovery action row.
+    let existing_action_row: Option<(RecoveryAttemptRecord, bool, i64)> = match action {
+        Some(action) if matches!(action.expected, RevisionGuard::Expected(_)) => {
+            let row: Option<(String, Option<String>, i64)> = connection
                 .query_row(
                     "SELECT attempt, completed, revision FROM recovery_action_attempts
                      WHERE action_id = ?1",
@@ -912,72 +303,60 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
                 )
                 .optional()
                 .map_err(|error| storage_unavailable(&error))?;
-            let Some((existing_attempt, existing_completed, existing_action_revision)) =
-                existing_action
-            else {
-                return Ok(false);
-            };
-            if expected_action_revision.value() != existing_action_revision
-                || action.revision.value()
-                    != match existing_action_revision.checked_add(1) {
-                        Some(next) => next,
-                        None => return Ok(false),
-                    }
-                || existing_completed.is_some()
-            {
-                return Ok(false);
+            match row {
+                Some((raw_attempt, completed, revision)) => {
+                    let attempt =
+                        encoded_record(StoredRecoveryActionV1::decode(&raw_attempt))?.into_value();
+                    Some((attempt, completed.is_some(), revision))
+                }
+                None => None,
             }
-            let existing_attempt =
-                encoded_record(StoredRecoveryActionV1::decode(&existing_attempt))?.into_value();
-            let RecoveryAttemptRecord::ShutdownTarget {
-                resource_ref: existing_resource_ref,
-                plan: existing_plan,
-                ordinal: existing_ordinal,
-                target_key: existing_target_key,
-                origin_revision: existing_origin_revision,
-                action: existing_action_kind,
-                effect_identity_sha256: existing_effect_identity_sha256,
-                intent: existing_intent,
-                state: existing_attempt_state,
-                failure: existing_attempt_failure,
-            } = existing_attempt;
-            let Some(existing_target_recovery) = existing_target_recovery else {
-                return Ok(false);
-            };
-            if existing_resource_ref != *resource_ref
-                || existing_plan != *plan
-                || existing_ordinal != *ordinal
-                || existing_target_key != *target_key
-                || existing_origin_revision != *origin_revision
-                || existing_action_kind != *attempted_action
-                || existing_effect_identity_sha256 != *effect_identity_sha256
-                || existing_intent != *intent
-                || existing_attempt_state != ObligationStateRecord::EffectReserved
-                || existing_attempt_failure.is_some()
-                || existing_target_recovery.action_id != action.action_id
-                || existing_target_recovery.origin_revision != *origin_revision
-                || existing_target_recovery.action != *attempted_action
-                || existing_target_recovery.state != ObligationStateRecord::EffectReserved
-                || *attempt_state != ObligationStateRecord::Completed
-                || target_recovery.state != ObligationStateRecord::Completed
-            {
-                return Ok(false);
-            }
-            let Some(RecoveryResultRecord::Action(completed)) = action.completed.as_ref() else {
-                return Ok(false);
-            };
-            Ok((!has_plan_closure
-                || *state == crate::domain::local_event::ShutdownTargetStateRecord::Completed)
-                && completed.resource_revision == target.revision.value() as u64
-                && recovery_result_targets_shutdown_target(
+        }
+        _ => None,
+    };
+
+    // Fact for the finish path: the batch's completed recovery result must
+    // reference this exact target in its canonical result payload.
+    let completed_result_targets_target = match (action, target) {
+        (Some(action), Some(target)) => {
+            let RecoveryAttemptRecord::ShutdownTarget { target_key, .. } = &action.attempt;
+            match (&target.detail, action.completed.as_ref()) {
+                (
+                    ShutdownTargetRecord::Target { state, .. },
+                    Some(RecoveryResultRecord::Action(completed)),
+                ) => recovery_result_targets_shutdown_target(
                     &completed.resource_view,
                     current_plan_id,
                     target.ordinal,
                     target_key,
                     *state,
-                ))
+                ),
+                _ => false,
+            }
         }
-    }
+        _ => false,
+    };
+
+    Ok(
+        commit_admission::shutdown_target_recovery_is_bound_to_current_plan(
+            mutations,
+            &ShutdownRecoveryFacts {
+                plan_id: current_plan_id,
+                plan_summary: &plan_summary,
+                existing_target: existing_target.as_ref(),
+                existing_target_key: existing_target_key.as_deref(),
+                existing_effect_identity_sha256,
+                existing_action: existing_action_row.as_ref().map(
+                    |(attempt, has_completed_result, revision)| ExistingRecoveryAction {
+                        attempt,
+                        has_completed_result: *has_completed_result,
+                        revision: *revision,
+                    },
+                ),
+                completed_result_targets_target,
+            },
+        ),
+    )
 }
 
 fn encode_stream_heads(heads: &[CommittedStreamHead]) -> String {
@@ -1304,8 +683,13 @@ fn execute_in_transaction(
         current_shutdown_summary.as_deref(),
     ) {
         (None, None, None) => false,
-        (Some(_), Some("failed" | "cancelled" | "completed"), Some(_)) => false,
-        (Some(_), Some(_), Some(_)) => true,
+        // An undecodable stored phase keeps admission closed (fail closed).
+        (Some(_), Some(raw_phase), Some(_)) => {
+            !crate::adaptor::gateway::local_event_store::envelope::label_to_shutdown_phase(
+                raw_phase,
+            )
+            .is_some_and(crate::domain::local_event::ApplicationShutdownPhase::is_terminal)
+        }
         _ => return Err(corrupt("current shutdown pointer has no exact plan phase")),
     };
     let shutdown_target_recovery = if shutdown_admission_closed
@@ -1326,13 +710,17 @@ fn execute_in_transaction(
     };
     let operation_progress = batch.idempotency.operation_kind
         == CommitOperationKind::OperationProgress
-        && operation_progress_is_structurally_valid(&batch.state_mutations);
+        && crate::domain::local_event::commit_admission::operation_progress_is_structurally_valid(
+            &batch.state_mutations,
+        );
     let internal_progress = shutdown_admission_closed
         && matches!(
             batch.idempotency.operation_kind,
             CommitOperationKind::Workflow | CommitOperationKind::Projection
         )
-        && internal_progress_is_anchored_to_existing_owner(prepared);
+        && crate::domain::local_event::commit_admission::internal_progress_is_anchored_to_existing_owner(
+            batch,
+        );
     let application_quit_progress = if shutdown_admission_closed
         && batch.idempotency.operation_kind == CommitOperationKind::ApplicationQuit
     {
@@ -1367,16 +755,12 @@ fn execute_in_transaction(
         ));
     }
     if shutdown_admission_closed
-        && (matches!(
+        && crate::domain::local_event::commit_admission::closed_admission_rejects(
             batch.idempotency.operation_kind,
-            CommitOperationKind::UserMutation
-                | CommitOperationKind::Recovery
-                | CommitOperationKind::Workflow
-                | CommitOperationKind::Projection
-                | CommitOperationKind::ApplicationQuit
-        ) && !shutdown_target_recovery
-            && !internal_progress
-            && !application_quit_progress)
+            shutdown_target_recovery,
+            internal_progress,
+            application_quit_progress,
+        )
     {
         return Err(CommitBatchError::StorageUnavailable {
             failure: SafeOperationFailure::new(
@@ -1833,7 +1217,7 @@ fn validate_one_guard(
 }
 
 fn valid_projection_revision(expected: RevisionGuard, revision: Revision) -> bool {
-    guard_inserts_revision_zero(expected, revision) || guard_advances_existing(expected, revision)
+    expected.inserts_zero(revision) || expected.advances_to(revision)
 }
 
 fn validate_workflow_execution_projection(
