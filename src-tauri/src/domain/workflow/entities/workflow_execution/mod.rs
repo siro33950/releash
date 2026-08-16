@@ -2460,13 +2460,16 @@ impl WorkflowExecution {
         TransitionOutcome::Applied
     }
 
-    /// fanout の全 child が成功完了しているか（parent の既定完了条件）。
-    pub fn all_fanout_children_completed(&self) -> bool {
+    /// fanout の全 child が terminal（Completed / Failed）に達しているか。
+    /// parent の既定完了条件であり、承認要求（divert）と承認適用は同じこの条件を使う。
+    pub fn all_fanout_children_terminal(&self) -> bool {
         self.runtime.fanout_runtime.as_ref().is_some_and(|fanout| {
-            fanout
-                .children
-                .iter()
-                .all(|child| child.state == FanoutChildRuntimeState::Completed)
+            fanout.children.iter().all(|child| {
+                matches!(
+                    child.state,
+                    FanoutChildRuntimeState::Completed | FanoutChildRuntimeState::Failed
+                )
+            })
         })
     }
 

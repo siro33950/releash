@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::domain::local_event::CommitOperationKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    NodeRestartMode, ProviderStopRejection, TransitionOutcome,
+    FanoutChildRuntimeState, NodeRestartMode, ProviderStopRejection, TransitionOutcome,
     WorkflowExecution as DomainWorkflowExecution,
 };
 use crate::domain::workflow::services::{
@@ -11,7 +11,8 @@ use crate::domain::workflow::services::{
     transition as workflow_transition,
 };
 use crate::domain::workflow::{
-    NodeCompletionSignal, WorkflowError, WorkflowEvent, NODE_STATUS_COMPLETED,
+    NodeCompletionSignal, WorkflowError, WorkflowEvent, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
+    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
 };
 
 use super::command::{ApprovalCommand, RetryNodeCommand, SubmitOutputCommand};
@@ -686,8 +687,8 @@ fn apply_fanout_approval(
         timestamp,
     });
 
-    let all_children_succeeded = execution.all_fanout_children_completed();
-    let mut outcome = if all_children_succeeded {
+    let all_children_terminal = execution.all_fanout_children_terminal();
+    let mut outcome = if all_children_terminal {
         let parent_node_name = execution
             .fanout_runtime
             .as_ref()
@@ -777,7 +778,13 @@ fn finalize_fanout_parent_with_advance(
             token_usage: child.token_usage.clone(),
             attempt: child.attempt,
             completed_at: child.completed_at.unwrap_or(timestamp),
-            state: NODE_STATUS_COMPLETED.to_string(),
+            state: match child.state {
+                FanoutChildRuntimeState::Running => NODE_STATUS_RUNNING,
+                FanoutChildRuntimeState::Completed => NODE_STATUS_COMPLETED,
+                FanoutChildRuntimeState::Failed => NODE_STATUS_FAILED,
+                FanoutChildRuntimeState::Interrupted => NODE_STATUS_INTERRUPTED,
+            }
+            .to_string(),
             failure_kind: child.failure_kind,
             failure_disposition: child.failure_disposition,
         })
@@ -827,9 +834,9 @@ fn apply_fanout_parent_approval(
     next_node_execution_id: String,
     timestamp: f64,
 ) -> Result<(NodeOutcome, Vec<WorkflowEvent>), WorkflowError> {
-    if !execution.all_fanout_children_completed() {
+    if !execution.all_fanout_children_terminal() {
         return Err(WorkflowError::invalid_state(
-            "fanout parent approval requires all children completed",
+            "fanout parent approval requires all children to be terminal",
         ));
     }
     let mut events = vec![WorkflowEvent::ApprovalResolved {
@@ -892,5 +899,153 @@ fn runtime_error_to_workflow_error(error: WorkflowRuntimeError) -> WorkflowError
         }
         WorkflowRuntimeError::SessionStore(message)
         | WorkflowRuntimeError::AgentSession(message) => WorkflowError::external(message),
+    }
+}
+
+#[cfg(test)]
+mod control_plane_tests {
+    use super::*;
+    use crate::domain::workflow::entities::workflow_execution::{
+        RuntimeNodeExecutionStatus, WorkflowExecution, WorkflowExecutionRestore,
+    };
+    use crate::domain::workflow::{
+        FailureDisposition, FanoutParentRef, FanoutSpec, NodeCompletion, NodeDefinition,
+        NodeExecutionFailureKind, NodeKind, NodeKindName, RuntimeExecutionState, TokenUsage,
+        WorkflowDefinition, NODE_STATUS_FAILED,
+    };
+
+    #[test]
+    fn test_fanout親承認_失敗childを含んでいても承認で完了する() {
+        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinition {
+                name: "workflow".to_string(),
+                nodes: vec![
+                    NodeDefinition {
+                        name: "fanout".to_string(),
+                        kind: NodeKind::Fanout(FanoutSpec {
+                            child: vec!["worker-a".to_string(), "worker-b".to_string()],
+                            items: None,
+                        }),
+                        completion: NodeCompletion::Approval,
+                        ..Default::default()
+                    },
+                    NodeDefinition {
+                        name: "worker-a".to_string(),
+                        ..Default::default()
+                    },
+                    NodeDefinition {
+                        name: "worker-b".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                entry: "fanout".to_string(),
+                ..Default::default()
+            },
+            lifecycle: WorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
+            ..WorkflowExecutionRestore::default()
+        });
+        let parent_execution_id = execution
+            .begin_node_attempt(
+                "fanout".to_string(),
+                NodeKindName::Fanout,
+                1,
+                None,
+                "parent-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        for (child_index, (child_execution_id, node_name)) in
+            [("child-a", "worker-a"), ("child-b", "worker-b")]
+                .into_iter()
+                .enumerate()
+        {
+            execution
+                .start_fanout_child_execution(
+                    "fanout".to_string(),
+                    parent_execution_id.clone(),
+                    child_execution_id.to_string(),
+                    node_name.to_string(),
+                    NodeKindName::Command,
+                    1,
+                    FanoutParentRef {
+                        parent_node: "fanout".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index,
+                    },
+                    10.0,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            execution.complete_fanout_child_execution(
+                "child-a",
+                Some("done".to_string()),
+                Some(serde_json::json!({"verdict": "LGTM"})),
+                None,
+                TokenUsage::default(),
+                11.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.fail_fanout_child_execution(
+                "child-b",
+                "boom".to_string(),
+                NodeExecutionFailureKind::InfrastructureCrash,
+                FailureDisposition::Terminal,
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.mark_node_waiting_approval(&parent_execution_id, 13.0),
+            TransitionOutcome::Applied
+        );
+        let target = execution
+            .resolve_approval_attempt_target("fanout", None)
+            .unwrap();
+
+        let (_, events) = apply_fanout_parent_approval(
+            &mut execution,
+            &target,
+            None,
+            "next-node-execution".to_string(),
+            14.0,
+        )
+        .expect("失敗 child を含む terminal 状態でも承認は適用できる");
+
+        let parent = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.id == parent_execution_id)
+            .unwrap();
+        assert_eq!(parent.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert!(execution.fanout_runtime().is_none());
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ApprovalResolved { .. })));
+        let parent_artifact = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    value, node_name, ..
+                } if node_name == "fanout" => Some(value.clone()),
+                _ => None,
+            })
+            .expect("親 artifact が集約される");
+        assert_eq!(
+            parent_artifact,
+            serde_json::json!([{"verdict": "LGTM"}, null]),
+            "失敗 child は null として集約される"
+        );
+        let history = execution.node_history.last().unwrap();
+        let children = history.fanout_children.as_ref().unwrap();
+        assert_eq!(children[1].state, NODE_STATUS_FAILED);
+        assert_eq!(
+            children[1].failure_kind,
+            Some(NodeExecutionFailureKind::InfrastructureCrash)
+        );
     }
 }
