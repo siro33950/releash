@@ -1,9 +1,8 @@
 name: minimal-session
 description: valid single node workflow
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement

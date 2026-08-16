@@ -20,6 +20,7 @@ pub(crate) fn workflow_definition_to_domain(
             .iter()
             .map(node_definition_to_domain)
             .collect(),
+        entry: workflow.entry.clone(),
     }
 }
 
@@ -126,6 +127,7 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         input: node.input.clone(),
         inputs: node.inputs.clone(),
         rules: node.rules.iter().map(rule_to_domain).collect(),
+        completion: node_completion_to_domain(node.completion),
     }
 }
 
@@ -136,7 +138,8 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
         }),
         schema::NodeKind::Session(spec) => domain::NodeKind::Session(domain::SessionSpec {
             provider: spec.provider,
-            gate: session_gate_to_domain(spec.gate),
+            model: spec.model.clone(),
+            permission: spec.permission.clone(),
             facets: facet_refs_to_domain(&spec.facets),
         }),
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
@@ -146,10 +149,10 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
     }
 }
 
-fn session_gate_to_domain(gate: schema::SessionGate) -> domain::SessionGate {
-    match gate {
-        schema::SessionGate::Auto => domain::SessionGate::Auto,
-        schema::SessionGate::Approval => domain::SessionGate::Approval,
+fn node_completion_to_domain(completion: schema::NodeCompletion) -> domain::NodeCompletion {
+    match completion {
+        schema::NodeCompletion::Auto => domain::NodeCompletion::Auto,
+        schema::NodeCompletion::Approval => domain::NodeCompletion::Approval,
     }
 }
 
@@ -243,6 +246,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "implement".to_string(),
         };
 
         let mapped = workflow_definition_to_domain(&workflow);
@@ -270,7 +274,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![schema::NodeDefinition {
-                name: "fanout".to_string(),
+                name: "main".to_string(),
                 kind: schema::NodeKind::Fanout(schema::FanoutSpec {
                     child: vec!["lint".to_string(), "test".to_string()],
                     items: Some(schema::ItemsSource::ArtifactField {
@@ -280,6 +284,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "main".to_string(),
         };
 
         let mapped = workflow_definition_to_domain(&workflow);

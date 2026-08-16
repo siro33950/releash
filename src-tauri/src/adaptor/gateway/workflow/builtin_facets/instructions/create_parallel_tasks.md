@@ -6,13 +6,13 @@
 
 ## 入力
 
-`resolve_request` Artifactの`spec_dir`を使い、次を全文読む。
+`main` Artifactの`spec_dir`を使い、次を全文読む。
 
-- `{{ resolve_request.spec_dir }}/requirements.md`
-- `{{ resolve_request.spec_dir }}/behavior.md`
-- `{{ resolve_request.spec_dir }}/design.md`
+- `{{ main.spec_dir }}/requirements.md`
+- `{{ main.spec_dir }}/behavior.md`
+- `{{ main.spec_dir }}/design.md`
 
-`resolve_request` Artifactの`reference_documents`を実際に読み、`directives`を原文どおり遵守する。関連する既存実装、プロジェクト規約、設計ドキュメントも必ず実際に読む。
+`main` Artifactの`reference_documents`を実際に読み、`directives`を原文どおり遵守する。関連する既存実装、プロジェクト規約、設計ドキュメントも必ず実際に読む。
 
 `verify_implementation` Artifactが存在する場合は再分解であり、その`issues`を必ず全件読む。`unverifiable`はこの環境で判定できなかった項目であり、実装で解消する対象ではない。Taskを作る根拠にしない。
 

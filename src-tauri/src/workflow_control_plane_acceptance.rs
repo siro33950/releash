@@ -14,7 +14,7 @@ use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
-    FacetRefs, FanoutSpec, NodeDefinition, NodeKind, Rule, SchemaDef, SessionGate, SessionSpec,
+    FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind, Rule, SchemaDef, SessionSpec,
     WorkflowDefinition,
 };
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
@@ -156,23 +156,25 @@ struct AcceptanceWorkflowDefinitionResolver;
 fn acceptance_session_node(
     name: &str,
     provider: ProviderKind,
-    gate: SessionGate,
+    completion: NodeCompletion,
     rules: Vec<Rule>,
 ) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Session(SessionSpec {
             provider,
-            gate,
+            model: None,
+            permission: None,
             facets: FacetRefs {
                 instruction: Some("policy-confirmation".to_string()),
                 ..FacetRefs::default()
             },
         }),
         artifact: None,
-        input: None,
+        input: Vec::new(),
         inputs: Vec::new(),
         rules,
+        completion,
     }
 }
 
@@ -201,23 +203,25 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                             items: None,
                         }),
                         artifact: None,
-                        input: None,
+                        input: Vec::new(),
                         inputs: Vec::new(),
                         rules: Vec::new(),
+                        completion: NodeCompletion::Auto,
                     },
                     acceptance_session_node(
                         "review-a",
                         provider,
-                        SessionGate::Approval,
+                        NodeCompletion::Approval,
                         Vec::new(),
                     ),
                     acceptance_session_node(
                         "review-b",
                         provider,
-                        SessionGate::Approval,
+                        NodeCompletion::Approval,
                         Vec::new(),
                     ),
                 ],
+                entry: "fanout".to_string(),
             });
         }
         let artifact_provider = match workflow_name {
@@ -228,15 +232,15 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             _ => None,
         };
         if let Some(provider) = artifact_provider {
-            let gate = if matches!(
+            let completion = if matches!(
                 workflow_name,
                 APPROVAL_ARTIFACT_CLAUDE_WORKFLOW | APPROVAL_ARTIFACT_CODEX_WORKFLOW
             ) {
-                SessionGate::Approval
+                NodeCompletion::Approval
             } else {
-                SessionGate::Auto
+                NodeCompletion::Auto
             };
-            let mut node = acceptance_session_node("agent", provider, gate, Vec::new());
+            let mut node = acceptance_session_node("agent", provider, completion, Vec::new());
             node.artifact = Some("acceptance-result".to_string());
             return Ok(WorkflowDefinition {
                 name: workflow_name.to_string(),
@@ -254,15 +258,16 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                 .into_iter()
                 .collect(),
                 nodes: vec![node],
+                entry: "agent".to_string(),
             });
         }
-        let (provider, gate, chained) = match workflow_name {
-            AUTO_CLAUDE_WORKFLOW => (ProviderKind::Claude, SessionGate::Auto, false),
-            AUTO_CODEX_WORKFLOW => (ProviderKind::Codex, SessionGate::Auto, false),
-            AUTO_CHAIN_CLAUDE_WORKFLOW => (ProviderKind::Claude, SessionGate::Auto, true),
-            AUTO_CHAIN_CODEX_WORKFLOW => (ProviderKind::Codex, SessionGate::Auto, true),
-            APPROVAL_CLAUDE_WORKFLOW => (ProviderKind::Claude, SessionGate::Approval, false),
-            APPROVAL_CODEX_WORKFLOW => (ProviderKind::Codex, SessionGate::Approval, false),
+        let (provider, completion, chained) = match workflow_name {
+            AUTO_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Auto, false),
+            AUTO_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Auto, false),
+            AUTO_CHAIN_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Auto, true),
+            AUTO_CHAIN_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Auto, true),
+            APPROVAL_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Approval, false),
+            APPROVAL_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Approval, false),
             _ => {
                 return Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
                     "unknown acceptance workflow '{workflow_name}'"
@@ -274,20 +279,27 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                 acceptance_session_node(
                     "agent-first",
                     provider,
-                    gate,
+                    completion,
                     vec![Rule::Next("agent-second".to_string())],
                 ),
-                acceptance_session_node("agent-second", provider, gate, Vec::new()),
+                acceptance_session_node("agent-second", provider, completion, Vec::new()),
             ]
         } else {
-            vec![acceptance_session_node("agent", provider, gate, Vec::new())]
+            vec![acceptance_session_node(
+                "agent",
+                provider,
+                completion,
+                Vec::new(),
+            )]
         };
+        let entry = nodes[0].name.clone();
         Ok(WorkflowDefinition {
             name: workflow_name.to_string(),
             description: "Workflow control-plane product acceptance".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes,
+            entry,
         })
     }
 }

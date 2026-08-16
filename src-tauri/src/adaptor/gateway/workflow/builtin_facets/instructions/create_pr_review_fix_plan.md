@@ -6,7 +6,7 @@
 
 ## 入力
 
-- `import_pr_review_comments` Artifactの全Thread ID
+- `main` Artifactの全Thread ID
 - 各Threadの本文と全履歴
 - 各Threadの最新`[FIX_POLICY]`または`[PR_REVIEW_REPLY]`
 - 現在の実装とPR差分

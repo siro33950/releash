@@ -3,5 +3,5 @@ description: external event subscriptions do not belong to WorkflowDefinition
 external_event:
   source: webhook
 nodes:
-  - name: run
+  main:
     command: printf done

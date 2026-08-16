@@ -11,7 +11,37 @@ use crate::domain::workflow::services::{contract_schema, reference};
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
 pub const MAX_FANOUT_CHILDREN: usize = 64;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+/// root node の規約名。YAML に entry フィールドは持たず、loader が設定する。
+pub const MAIN_ENTRY_NODE_NAME: &str = "main";
+
+/// node 名として使用禁止の予約語（kind 名とフィールド名）。
+pub const RESERVED_NODE_NAMES: [&str; 15] = [
+    "command",
+    "session",
+    "fanout",
+    "sequence",
+    "input",
+    "artifact",
+    "completion",
+    "worktree",
+    "inputs",
+    "rules",
+    "on_failure",
+    "items",
+    "entry",
+    "output",
+    "children",
+];
+
+pub fn is_reserved_node_name(name: &str) -> bool {
+    RESERVED_NODE_NAMES.contains(&name)
+}
+
+fn default_entry_node() -> String {
+    MAIN_ENTRY_NODE_NAME.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowDefinition {
     pub name: String,
@@ -20,7 +50,37 @@ pub struct WorkflowDefinition {
     pub builtin: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, SchemaDef>,
+    #[serde(
+        deserialize_with = "deserialize_node_catalog",
+        serialize_with = "serialize_node_catalog"
+    )]
     pub nodes: Vec<NodeDefinition>,
+    /// root node 名。YAML には露出せず、deserialize 時は常に `main`。
+    #[serde(skip, default = "default_entry_node")]
+    pub entry: String,
+}
+
+impl Default for WorkflowDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            builtin: false,
+            schemas: BTreeMap::new(),
+            nodes: Vec::new(),
+            entry: default_entry_node(),
+        }
+    }
+}
+
+impl WorkflowDefinition {
+    pub fn entry_node(&self) -> Option<&NodeDefinition> {
+        self.entry_index().map(|index| &self.nodes[index])
+    }
+
+    pub fn entry_index(&self) -> Option<usize> {
+        self.nodes.iter().position(|node| node.name == self.entry)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,12 +160,19 @@ pub struct CommandSpec {
     pub command: String,
 }
 
+/// Node 自身が持つ完了の定義。全 Node 種別で宣言可・省略可。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum SessionGate {
+pub enum NodeCompletion {
     #[default]
     Auto,
     Approval,
+}
+
+impl NodeCompletion {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -138,7 +205,12 @@ pub struct SessionSpec {
         serialize_with = "serialize_provider_kind"
     )]
     pub provider: ProviderKind,
-    pub gate: SessionGate,
+    /// provider CLI へそのまま渡す model 指定。値域は provider CLI が定める。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// provider CLI へそのまま渡す permission 指定。値域は provider CLI が定める。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
 }
@@ -148,7 +220,8 @@ impl Default for SessionSpec {
     fn default() -> Self {
         Self {
             provider: ProviderKind::Claude,
-            gate: SessionGate::Auto,
+            model: None,
+            permission: None,
             facets: FacetRefs::default(),
         }
     }
@@ -261,21 +334,78 @@ impl Serialize for ItemsSource {
     }
 }
 
+/// Node の Interface パラメータ。文字列（型なし）または `名前: Contract`（型あり）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputParam {
+    pub name: String,
+    pub contract: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for InputParam {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawInputParam {
+            Name(String),
+            Typed(BTreeMap<String, String>),
+        }
+
+        match RawInputParam::deserialize(deserializer)? {
+            RawInputParam::Name(name) => Ok(Self {
+                name,
+                contract: None,
+            }),
+            RawInputParam::Typed(map) => {
+                let mut entries = map.into_iter();
+                match (entries.next(), entries.next()) {
+                    (Some((name, contract)), None) => Ok(Self {
+                        name,
+                        contract: Some(contract),
+                    }),
+                    _ => Err(de::Error::custom(
+                        "input entry must be a parameter name or a single `<name>: <Contract>` pair",
+                    )),
+                }
+            }
+        }
+    }
+}
+
+impl Serialize for InputParam {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match &self.contract {
+            None => serializer.serialize_str(&self.name),
+            Some(contract) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(&self.name, contract)?;
+                map.end()
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(test, derive(Default))]
 pub struct NodeDefinition {
     pub name: String,
     pub kind: NodeKind,
     pub artifact: Option<String>,
-    pub input: Option<String>,
+    pub input: Vec<InputParam>,
     pub inputs: Vec<String>,
     pub rules: Vec<Rule>,
+    pub completion: NodeCompletion,
 }
 
+/// nodes マップの値（node 名は親マップのキー）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawNodeDefinition {
-    name: String,
+struct RawNodeBody {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
@@ -285,46 +415,92 @@ struct RawNodeDefinition {
     #[serde(default)]
     artifact: Option<String>,
     #[serde(default)]
-    input: Option<String>,
+    input: Vec<InputParam>,
     #[serde(default)]
     inputs: Vec<String>,
-    #[serde(default, rename = "rules")]
+    #[serde(default)]
     rules: Vec<Rule>,
+    #[serde(default)]
+    completion: NodeCompletion,
 }
 
-impl<'de> Deserialize<'de> for NodeDefinition {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+impl RawNodeBody {
+    fn into_node_definition<E>(self, name: String) -> Result<NodeDefinition, E>
     where
-        D: Deserializer<'de>,
+        E: de::Error,
     {
-        let raw = RawNodeDefinition::deserialize(deserializer)?;
-        let kind_count = raw.command.is_some() as usize
-            + raw.session.is_some() as usize
-            + raw.fanout.is_some() as usize;
+        let kind_count = self.command.is_some() as usize
+            + self.session.is_some() as usize
+            + self.fanout.is_some() as usize;
         if kind_count != 1 {
-            return Err(de::Error::custom(format!(
-                "NodeDefinition '{}' must contain exactly one kind block: command, session, or fanout",
-                raw.name
+            return Err(E::custom(format!(
+                "node '{name}' must contain exactly one kind block: command, session, or fanout"
             )));
         }
-        let kind = if let Some(command) = raw.command {
+        let kind = if let Some(command) = self.command {
             NodeKind::Command(CommandSpec { command })
-        } else if let Some(session) = raw.session {
+        } else if let Some(session) = self.session {
             NodeKind::Session(session)
-        } else if let Some(fanout) = raw.fanout {
+        } else if let Some(fanout) = self.fanout {
             NodeKind::Fanout(fanout)
         } else {
             unreachable!("kind_count checked above")
         };
-        Ok(Self {
-            name: raw.name,
+        Ok(NodeDefinition {
+            name,
             kind,
-            artifact: raw.artifact,
-            input: raw.input,
-            inputs: raw.inputs,
-            rules: raw.rules,
+            artifact: self.artifact,
+            input: self.input,
+            inputs: self.inputs,
+            rules: self.rules,
+            completion: self.completion,
         })
     }
+}
+
+fn deserialize_node_catalog<'de, D>(deserializer: D) -> Result<Vec<NodeDefinition>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct CatalogVisitor;
+
+    impl<'de> de::Visitor<'de> for CatalogVisitor {
+        type Value = Vec<NodeDefinition>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a mapping of node name to node definition")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::MapAccess<'de>,
+        {
+            let mut nodes: Vec<NodeDefinition> = Vec::new();
+            let mut seen = BTreeSet::new();
+            while let Some((name, body)) = access.next_entry::<String, RawNodeBody>()? {
+                if !seen.insert(name.clone()) {
+                    return Err(de::Error::custom(format!(
+                        "node name '{name}' is duplicated"
+                    )));
+                }
+                nodes.push(body.into_node_definition(name)?);
+            }
+            Ok(nodes)
+        }
+    }
+
+    deserializer.deserialize_map(CatalogVisitor)
+}
+
+fn serialize_node_catalog<S>(nodes: &[NodeDefinition], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut map = serializer.serialize_map(Some(nodes.len()))?;
+    for node in nodes {
+        map.serialize_entry(&node.name, node)?;
+    }
+    map.end()
 }
 
 impl Serialize for NodeDefinition {
@@ -333,14 +509,18 @@ impl Serialize for NodeDefinition {
         S: Serializer,
     {
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("name", &self.name)?;
         match &self.kind {
             NodeKind::Command(spec) => map.serialize_entry("command", &spec.command)?,
             NodeKind::Session(spec) => map.serialize_entry("session", spec)?,
             NodeKind::Fanout(spec) => map.serialize_entry("fanout", spec)?,
         }
+        if !self.input.is_empty() {
+            map.serialize_entry("input", &self.input)?;
+        }
         serialize_option(&mut map, "artifact", &self.artifact)?;
-        serialize_option(&mut map, "input", &self.input)?;
+        if !self.completion.is_auto() {
+            map.serialize_entry("completion", &self.completion)?;
+        }
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
         }
@@ -380,14 +560,17 @@ impl NodeDefinition {
         matches!(self.kind, NodeKind::Session(_))
     }
 
-    pub fn is_approval_session(&self) -> bool {
-        matches!(
-            self.kind,
-            NodeKind::Session(SessionSpec {
-                gate: SessionGate::Approval,
-                ..
-            })
-        )
+    pub fn requires_approval_completion(&self) -> bool {
+        self.completion == NodeCompletion::Approval
+    }
+
+    /// 配線（children の inputs）が未導入のため、fanout items の要素型は
+    /// `input` が単一の型付きパラメータの場合にのみ確定する。
+    pub fn sole_typed_input_contract(&self) -> Option<&str> {
+        match self.input.as_slice() {
+            [param] => param.contract.as_deref(),
+            _ => None,
+        }
     }
 
     pub fn is_fanout(&self) -> bool {
@@ -592,5 +775,34 @@ mod definition_tests {
             session.facets.knowledge = vec!["releash-thread-cli".to_string()];
         }
         assert!(node.has_facet_refs());
+    }
+
+    #[test]
+    fn test_entry解決_mainが先頭以外でもrootとして解決される() {
+        let node = |name: &str| NodeDefinition {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let workflow = WorkflowDefinition {
+            nodes: vec![node("helper"), node("main"), node("done")],
+            ..Default::default()
+        };
+
+        assert_eq!(workflow.entry_index(), Some(1));
+        assert_eq!(workflow.entry_node().map(|n| n.name.as_str()), Some("main"));
+    }
+
+    #[test]
+    fn test_entry解決_entryと同名nodeが無ければ解決しない() {
+        let workflow = WorkflowDefinition {
+            nodes: vec![NodeDefinition {
+                name: "helper".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(workflow.entry_index(), None);
+        assert!(workflow.entry_node().is_none());
     }
 }

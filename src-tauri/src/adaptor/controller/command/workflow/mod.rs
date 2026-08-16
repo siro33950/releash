@@ -927,7 +927,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step1".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
@@ -937,6 +937,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
+            entry: "main".to_string(),
         }
     }
 
@@ -1761,6 +1762,7 @@ mod tests {
                     builtin: false,
                     schemas: Default::default(),
                     nodes: vec![],
+                    entry: "main".to_string(),
                 },
                 timestamp: 100.0,
             }],
@@ -1830,6 +1832,7 @@ mod tests {
                     builtin: false,
                     schemas: Default::default(),
                     nodes: vec![],
+                    entry: "main".to_string(),
                 },
                 timestamp: 400.0,
             }],
@@ -1951,6 +1954,7 @@ mod tests {
                 ),
                 ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
             }],
+            entry: "plan".to_string(),
         };
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &local_event_store,

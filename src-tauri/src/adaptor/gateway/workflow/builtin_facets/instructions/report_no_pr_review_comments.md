@@ -6,7 +6,7 @@
 
 ## 入力
 
-- `import_pr_review_comments` Artifactの`summary`
+- `main` Artifactの`summary`
 
 ## 報告内容
 

@@ -152,7 +152,7 @@ mod tests {
             name: name.to_string(),
             description: "test workflow".to_string(),
             nodes: vec![NodeDefinition {
-                name: "node1".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Command(CommandSpec {
                     command: "true".to_string(),
                 }),

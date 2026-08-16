@@ -1,0 +1,11 @@
+name: input-single-string
+description: legacy single string input is rejected
+schemas:
+  some-contract: string
+nodes:
+  main:
+    input: some-contract
+    session:
+      provider: claude
+      facets:
+        instruction: consume

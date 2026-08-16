@@ -352,6 +352,10 @@ mod tests {
         nodes: Vec<NodeDefinition>,
     ) -> crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution
     {
+        let entry = nodes
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| "main".to_string());
         crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: "execution-1".to_string(),
             workflow: WorkflowDefinition {
@@ -360,6 +364,7 @@ mod tests {
                 builtin: false,
                 schemas: Default::default(),
                 nodes,
+                entry,
             },
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 0,

@@ -1,5 +1,5 @@
 name: unknown-template-ref
 description: command template references a missing artifact node
 nodes:
-  - name: run
+  main:
     command: "echo {{ missing_node }}"

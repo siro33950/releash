@@ -1,0 +1,6 @@
+name: top-level-entry-field
+description: entry does not belong to WorkflowDefinition
+entry: main
+nodes:
+  main:
+    command: printf done

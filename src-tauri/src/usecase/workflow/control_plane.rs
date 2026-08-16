@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::domain::local_event::CommitOperationKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
-    FanoutChildRuntimeState, NodeRestartMode, ProviderStopRejection, TransitionOutcome,
+    NodeRestartMode, ProviderStopRejection, TransitionOutcome,
     WorkflowExecution as DomainWorkflowExecution,
 };
 use crate::domain::workflow::services::{
@@ -556,6 +556,15 @@ fn apply_linear_approval(
         .nodes
         .get(execution.current_node_index)
         .ok_or_else(|| WorkflowError::invalid_state("current node index is out of range"))?;
+    if node.is_fanout() {
+        return apply_fanout_parent_approval(
+            execution,
+            target,
+            comment,
+            next_node_execution_id,
+            timestamp,
+        );
+    }
     let contract = node.artifact.clone();
     let submitted = contract.as_deref().and_then(|contract| {
         submission::submitted_node_artifact_for(
@@ -644,10 +653,11 @@ fn apply_fanout_approval(
             ))
         })?;
     let result = child.result.clone().or_else(|| Some("approve".to_string()));
+    let approved_artifact = target.artifact.clone().or_else(|| child.artifact.clone());
     if execution.complete_fanout_child_execution(
         &target.node_execution_id,
         result.clone(),
-        target.artifact.clone(),
+        approved_artifact,
         node_contract.clone(),
         child.token_usage.clone(),
         timestamp,
@@ -676,79 +686,162 @@ fn apply_fanout_approval(
         timestamp,
     });
 
-    let all_children_succeeded = execution.fanout_runtime.as_ref().is_some_and(|fanout| {
-        fanout
-            .children
-            .iter()
-            .all(|child| child.state == FanoutChildRuntimeState::Completed)
-    });
+    let all_children_succeeded = execution.all_fanout_children_completed();
     let mut outcome = if all_children_succeeded {
-        let fanout = execution.fanout_runtime.as_ref().ok_or_else(|| {
-            WorkflowError::invalid_state("fanout runtime disappeared before completion")
-        })?;
-        let parent_node_name = fanout.parent_node_name.clone();
-        let parent_node_execution_id = fanout.parent_node_execution_id.clone();
-        let parent_attempt = execution
-            .node_execution_counts
-            .get(&parent_node_name)
-            .copied()
-            .unwrap_or(1);
-        let child_inputs = fanout
-            .children
+        let parent_node_name = execution
+            .fanout_runtime
+            .as_ref()
+            .map(|fanout| fanout.parent_node_name.clone())
+            .ok_or_else(|| {
+                WorkflowError::invalid_state("fanout runtime disappeared before completion")
+            })?;
+        let parent_requires_approval = execution
+            .workflow
+            .nodes
             .iter()
-            .map(|child| workflow_fanout::FanoutChildCompletionInput {
-                node_name: child.node_name.clone(),
-                session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
-                result: child.result.clone(),
-                artifact: child.artifact.clone().unwrap_or(serde_json::Value::Null),
-                contract: child.contract.clone(),
-                token_usage: child.token_usage.clone(),
-                attempt: child.attempt,
-                completed_at: child.completed_at.unwrap_or(timestamp),
-                state: NODE_STATUS_COMPLETED.to_string(),
-                failure_kind: child.failure_kind,
-                failure_disposition: child.failure_disposition,
-            })
-            .collect::<Vec<_>>();
-        let plan = workflow_fanout::plan_fanout_parent_completion(
-            &parent_node_name,
-            parent_attempt,
-            &child_inputs,
-            timestamp,
-        );
-        events.push(WorkflowEvent::ArtifactProduced {
-            execution_id: execution.id.clone(),
-            node_execution_id: parent_node_execution_id.clone(),
-            node_name: parent_node_name,
-            contract: None,
-            value: plan
-                .parent_artifact
-                .artifact
-                .clone()
-                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
-            request_id: None,
-            submitted_at: None,
-            timestamp,
-        });
-        if execution.finalize_fanout_parent(
-            &parent_node_execution_id,
-            plan.parent_artifact,
-            plan.history_entry,
-            timestamp,
-        ) != TransitionOutcome::Applied
-        {
-            return Err(WorkflowError::invalid_state(
-                "fanout parent could not be completed",
-            ));
+            .find(|node| node.name == parent_node_name)
+            .map(workflow_transition::decide_completion_disposition)
+            == Some(workflow_transition::CompletionDisposition::RequestApproval);
+        if parent_requires_approval {
+            // completion: approval — 全子完了後、human の承認まで parent は完了しない。
+            let parent_node_execution_id = execution
+                .fanout_runtime
+                .as_ref()
+                .map(|fanout| fanout.parent_node_execution_id.clone())
+                .ok_or_else(|| {
+                    WorkflowError::invalid_state("fanout runtime disappeared before completion")
+                })?;
+            if execution.mark_node_waiting_approval(&parent_node_execution_id, timestamp)
+                != TransitionOutcome::Applied
+            {
+                return Err(WorkflowError::invalid_state(format!(
+                    "fanout parent NodeExecution '{parent_node_execution_id}' cannot wait for approval"
+                )));
+            }
+            events.push(WorkflowEvent::ApprovalRequested {
+                execution_id: execution.id.clone(),
+                node_execution_id: parent_node_execution_id,
+                node_name: parent_node_name,
+                timestamp,
+            });
+            NodeOutcome::Persist(
+                RuntimeCommitSnapshot::from_execution(execution)
+                    .map_err(runtime_error_to_workflow_error)?,
+            )
+        } else {
+            let (advance, artifact_event) =
+                finalize_fanout_parent_with_advance(execution, next_node_execution_id, timestamp)?;
+            events.push(artifact_event);
+            advance
         }
-        runtime_driver::apply_advance(execution, next_node_execution_id, timestamp)
-            .map_err(runtime_error_to_workflow_error)?
     } else {
         NodeOutcome::Persist(
             RuntimeCommitSnapshot::from_execution(execution)
                 .map_err(runtime_error_to_workflow_error)?,
         )
     };
+    events.extend(
+        runtime_events::pre_commit_required_events_for_outcome(&outcome)
+            .map_err(runtime_error_to_workflow_error)?,
+    );
+    *outcome.snapshot_mut() = RuntimeCommitSnapshot::from_execution(execution)
+        .map_err(runtime_error_to_workflow_error)?;
+    Ok((outcome, events))
+}
+
+/// 全子完了済みの fanout parent を集約・完了させ、次 node へ進める。
+fn finalize_fanout_parent_with_advance(
+    execution: &mut DomainWorkflowExecution,
+    next_node_execution_id: String,
+    timestamp: f64,
+) -> Result<(NodeOutcome, WorkflowEvent), WorkflowError> {
+    let fanout = execution.fanout_runtime.as_ref().ok_or_else(|| {
+        WorkflowError::invalid_state("fanout runtime disappeared before completion")
+    })?;
+    let parent_node_name = fanout.parent_node_name.clone();
+    let parent_node_execution_id = fanout.parent_node_execution_id.clone();
+    let parent_attempt = execution
+        .node_execution_counts
+        .get(&parent_node_name)
+        .copied()
+        .unwrap_or(1);
+    let child_inputs = fanout
+        .children
+        .iter()
+        .map(|child| workflow_fanout::FanoutChildCompletionInput {
+            node_name: child.node_name.clone(),
+            session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
+            result: child.result.clone(),
+            artifact: child.artifact.clone().unwrap_or(serde_json::Value::Null),
+            contract: child.contract.clone(),
+            token_usage: child.token_usage.clone(),
+            attempt: child.attempt,
+            completed_at: child.completed_at.unwrap_or(timestamp),
+            state: NODE_STATUS_COMPLETED.to_string(),
+            failure_kind: child.failure_kind,
+            failure_disposition: child.failure_disposition,
+        })
+        .collect::<Vec<_>>();
+    let plan = workflow_fanout::plan_fanout_parent_completion(
+        &parent_node_name,
+        parent_attempt,
+        &child_inputs,
+        timestamp,
+    );
+    let artifact_event = WorkflowEvent::ArtifactProduced {
+        execution_id: execution.id.clone(),
+        node_execution_id: parent_node_execution_id.clone(),
+        node_name: parent_node_name,
+        contract: None,
+        value: plan
+            .parent_artifact
+            .artifact
+            .clone()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        request_id: None,
+        submitted_at: None,
+        timestamp,
+    };
+    if execution.finalize_fanout_parent(
+        &parent_node_execution_id,
+        plan.parent_artifact,
+        plan.history_entry,
+        timestamp,
+    ) != TransitionOutcome::Applied
+    {
+        return Err(WorkflowError::invalid_state(
+            "fanout parent could not be completed",
+        ));
+    }
+    let outcome = runtime_driver::apply_advance(execution, next_node_execution_id, timestamp)
+        .map_err(runtime_error_to_workflow_error)?;
+    Ok((outcome, artifact_event))
+}
+
+/// `completion: approval` の fanout parent を human 承認で完了させる。
+/// 全子完了済み・parent WaitingApproval が前提（resolve_approval_attempt_target 検証済み）。
+fn apply_fanout_parent_approval(
+    execution: &mut DomainWorkflowExecution,
+    target: &crate::domain::workflow::entities::workflow_execution::ApprovalAttemptTarget,
+    comment: Option<String>,
+    next_node_execution_id: String,
+    timestamp: f64,
+) -> Result<(NodeOutcome, Vec<WorkflowEvent>), WorkflowError> {
+    if !execution.all_fanout_children_completed() {
+        return Err(WorkflowError::invalid_state(
+            "fanout parent approval requires all children completed",
+        ));
+    }
+    let mut events = vec![WorkflowEvent::ApprovalResolved {
+        execution_id: execution.id.clone(),
+        node_execution_id: target.node_execution_id.clone(),
+        node_name: target.node_name.clone(),
+        comment,
+        timestamp,
+    }];
+    let (mut outcome, artifact_event) =
+        finalize_fanout_parent_with_advance(execution, next_node_execution_id, timestamp)?;
+    events.push(artifact_event);
     events.extend(
         runtime_events::pre_commit_required_events_for_outcome(&outcome)
             .map_err(runtime_error_to_workflow_error)?,

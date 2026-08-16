@@ -6,7 +6,7 @@
 
 ## 入力
 
-- `resolve_request` Artifactの`spec_dir`
+- `main` Artifactの`spec_dir`
 - `create_detailed_design` Artifactの`tasks`と`summary`
 - `verify_implementation` Artifactの`issues`と`unverifiable`
 - 現在の実装差分

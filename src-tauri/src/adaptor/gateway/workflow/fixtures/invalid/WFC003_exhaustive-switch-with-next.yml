@@ -6,14 +6,16 @@ schemas:
     properties:
       verdict:
         type: string
-        enum: [SHIP, HOLD]
-    required: [verdict]
+        enum:
+          - SHIP
+          - HOLD
+    required:
+      - verdict
 nodes:
-  - name: judge
+  main:
     artifact: route
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge
     rules:
@@ -23,21 +25,18 @@ nodes:
             SHIP: shipped
             HOLD: held
         next: fallback
-  - name: shipped
+  shipped:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: shipped
-  - name: held
+  held:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: held
-  - name: fallback
+  fallback:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: fallback

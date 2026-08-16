@@ -1,0 +1,9 @@
+name: main-not-first
+description: main does not need to be the first key in the nodes map
+nodes:
+  finish:
+    command: printf finish
+  main:
+    command: printf start
+    rules:
+      - next: finish

@@ -4,10 +4,9 @@ schemas:
   verdict:
     type: string
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge

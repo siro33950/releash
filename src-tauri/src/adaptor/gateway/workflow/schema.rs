@@ -8,8 +8,8 @@ use serde::Serialize;
 #[cfg(test)]
 pub use crate::domain::workflow::NodeKindName;
 pub use crate::domain::workflow::{
-    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, Rule, SchemaDef,
-    SessionGate, SessionSpec, WorkflowDefinition as WorkflowDefinitionYaml,
+    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
+    Rule, SchemaDef, SessionSpec, WorkflowDefinition as WorkflowDefinitionYaml,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

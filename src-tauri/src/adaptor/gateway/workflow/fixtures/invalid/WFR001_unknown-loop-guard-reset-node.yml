@@ -1,10 +1,9 @@
 name: unknown-loop-guard-reset-node
 description: loop_guard.reset_on points to a missing node
 nodes:
-  - name: fix
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
     rules:
@@ -13,9 +12,8 @@ nodes:
           on_exhausted: done
           reset_on: missing-boundary
       - next: done
-  - name: done
+  done:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement

@@ -1,7 +1,7 @@
 name: fanout-inputs
 description: fanout node must not declare inputs
 nodes:
-  - name: fanout
+  main:
     fanout:
       child:
         - lint
@@ -10,9 +10,9 @@ nodes:
       - request
     rules:
       - next: done
-  - name: lint
+  lint:
     command: cargo clippy
-  - name: test
+  test:
     command: cargo test
-  - name: done
+  done:
     command: echo done

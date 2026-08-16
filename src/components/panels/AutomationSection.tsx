@@ -142,11 +142,9 @@ export function AutomationSection({
 				`name: ${name}`,
 				'description: ""',
 				"nodes:",
-				"  - name: start",
+				"  main:",
 				"    session:",
 				"      provider: claude",
-				"      gate: auto",
-				"      facets: {}",
 				"",
 			].join("\n");
 			const result = await saveWorkflowSource(source);

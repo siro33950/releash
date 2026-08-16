@@ -9,7 +9,7 @@ schemas:
     required:
       - passed
 nodes:
-  - name: fanout
+  main:
     artifact: verdict
     fanout:
       child: child
@@ -18,15 +18,13 @@ nodes:
           on: passed
           then: done
         next: done
-  - name: child
+  child:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: child
-  - name: done
+  done:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: done

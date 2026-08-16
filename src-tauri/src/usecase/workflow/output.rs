@@ -304,17 +304,17 @@ mod tests {
                 artifact: Some(contract.to_string()),
                 ..Default::default()
             }],
+            entry: "review".to_string(),
         }
     }
 
     fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
-        let definition = crate::usecase::workflow::dto::workflow_to_dto(&definition);
         WorkflowEventDraft {
             execution_id: execution_id.to_string(),
             event_kind: "execution_started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "definition": definition,
+                "definition": serde_json::to_value(&definition).unwrap(),
             }),
         }
     }

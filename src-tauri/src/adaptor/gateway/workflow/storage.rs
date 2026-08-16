@@ -282,6 +282,7 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
                 builtin: false,
                 schemas: Default::default(),
                 nodes: Vec::new(),
+                ..Default::default()
             });
         }
         let mut workflow = diagnosis.workflow.ok_or_else(|| {
@@ -425,7 +426,7 @@ mod tests {
             builtin,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "node1".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
@@ -435,6 +436,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
+            entry: "main".to_string(),
         }
     }
 
@@ -480,10 +482,9 @@ mod tests {
 name: strict-storage
 description: known values
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: review
 "#;
@@ -492,10 +493,9 @@ name: strict-storage
 description: known values
 future_field: ignored
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: review
 "#;
@@ -575,9 +575,8 @@ nodes:
 name: broken
 description: invalid workflow
 nodes:
-  - name: node
-    session:
-      provider: claude
+  main:
+    artifact: something
 "#,
         )
         .unwrap();
@@ -769,10 +768,9 @@ nodes:
 name: facet-load-test
 description: facet resolution test
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         policy: coding
         instruction: implement
@@ -781,7 +779,7 @@ nodes:
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).unwrap();
         let resolved = resolve_and_validate_workflow_facets(&wf, dir).unwrap();
-        let contents = resolved.for_node("implement").unwrap();
+        let contents = resolved.for_node("main").unwrap();
         assert_eq!(contents.policy.as_deref(), Some("POLICY_BODY"));
         assert_eq!(contents.instruction.as_deref(), Some("INSTRUCTION_BODY"));
     }
@@ -803,10 +801,9 @@ nodes:
 name: facet-reference-{facet_key}
 description: invalid facet reference
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: {facet_key}
 "#
@@ -846,10 +843,9 @@ nodes:
 name: knowledge-reference-validation
 description: every knowledge body is validated
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge: [first, second]
 "#;
@@ -894,31 +890,28 @@ nodes:
 name: facet-all
 description: all three facets per node
 nodes:
-  - name: lead
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         policy: p
         knowledge: [k1, k2]
         instruction: i
     rules:
       - next: par
-  - name: par
+  par:
     fanout:
       child: [c1, c2]
-  - name: c1
+  c1:
     session:
       provider: claude
-      gate: auto
       facets:
         policy: pc
         knowledge: [kc1, kc2]
         instruction: ic
-  - name: c2
+  c2:
     session:
       provider: claude
-      gate: auto
       facets:
         policy: pc
         knowledge: [kc1, kc2]
@@ -929,7 +922,7 @@ nodes:
         let wf = load_workflow(&file_path, dir).unwrap();
         let resolved = resolve_and_validate_workflow_facets(&wf, dir).unwrap();
 
-        let lead_contents = resolved.for_node("lead").unwrap();
+        let lead_contents = resolved.for_node("main").unwrap();
         assert_eq!(lead_contents.policy.as_deref(), Some("POLICY"));
         assert_eq!(
             lead_contents.knowledge,
@@ -978,10 +971,9 @@ nodes:
 name: {workflow_name}
 description: missing {facet_kind} test
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         {facet_yaml}
 "#
@@ -1002,7 +994,7 @@ nodes:
                 missing.workflow_name.as_deref(),
                 Some(workflow_name.as_str())
             );
-            assert_eq!(missing.node_name.as_deref(), Some("implement"));
+            assert_eq!(missing.node_name.as_deref(), Some("main"));
             assert_eq!(missing.facet_key.as_deref(), Some(facet_key));
             assert_eq!(missing.facet_kind.as_deref(), Some(facet_kind));
             assert_eq!(missing.field.as_deref(), Some(facet_kind));
@@ -1019,10 +1011,9 @@ nodes:
 name: builtin-facet-with-broken-inventory
 description: builtin facet load test
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge: [releash-thread-cli]
 "#;
@@ -1047,16 +1038,15 @@ nodes:
 name: request-ref
 description: request reference test
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: impl
 "#;
         let file_path = dir.join("request-ref.yml");
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).expect("load must succeed");
-        assert_eq!(wf.nodes[0].name, "implement");
+        assert_eq!(wf.nodes[0].name, "main");
     }
 }

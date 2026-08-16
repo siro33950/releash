@@ -6,15 +6,18 @@ schemas:
     properties:
       passed:
         type: boolean
-    required: [passed]
+    required:
+      - passed
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     command: printf '{"passed":true}'
     rules:
-      - when: { on: passed, then: done }
+      - when:
+          on: passed
+          then: done
       - next: fix
-  - name: done
+  done:
     command: printf done
-  - name: fix
+  fix:
     command: printf fix

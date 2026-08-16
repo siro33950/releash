@@ -6,7 +6,7 @@
 
 ## 入力
 
-- `import_pr_review_comments` Artifactの`threads`（対象Thread一覧）
+- `main` Artifactの`threads`（対象Thread一覧）
 - 各Threadの本文と全履歴
 - 現在の実装とPR差分
 - repository内のSpec、ADR、設計文書、規約、テスト

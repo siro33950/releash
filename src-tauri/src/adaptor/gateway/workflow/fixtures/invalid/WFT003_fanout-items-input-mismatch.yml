@@ -4,10 +4,12 @@ schemas:
   target:
     type: integer
 nodes:
-  - name: fanout
+  main:
     fanout:
       child: worker
-      items: [not-an-integer]
-  - name: worker
-    input: target
+      items:
+        - not-an-integer
+  worker:
+    input:
+      - item: target
     command: echo {{ item }}

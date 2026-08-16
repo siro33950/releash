@@ -234,7 +234,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "node".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("review-acceptance".to_string()),
@@ -244,6 +244,7 @@ mod tests {
                 }),
                 ..Default::default()
             }],
+            entry: "main".to_string(),
         }
     }
 
@@ -259,23 +260,23 @@ mod tests {
 name: {name}
 description: source workflow
 nodes:
-  - name: node
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#
         )
     }
 
-    fn invalid_source_missing_gate(name: &str) -> String {
+    fn invalid_source_unknown_field(name: &str) -> String {
         format!(
             r#"
 name: {name}
 description: invalid workflow
+future_field: ignored
 nodes:
-  - name: node
+  main:
     session:
       provider: claude
 "#
@@ -333,7 +334,7 @@ nodes:
         gateway.save_source(&original, None).unwrap();
 
         let err = gateway
-            .save_source(&invalid_source_missing_gate("stable"), Some("stable"))
+            .save_source(&invalid_source_unknown_field("stable"), Some("stable"))
             .unwrap_err();
         let loaded = gateway.get_source("stable").unwrap().unwrap();
 
@@ -407,10 +408,9 @@ nodes:
 name: missing-knowledge
 description: missing knowledge diagnostic
 nodes:
-  - name: node
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge: [known, missing-name]
 "#;
@@ -426,7 +426,7 @@ nodes:
             .find(|item| item["code"] == "FAC002")
             .expect("missing knowledge FAC002");
         assert_eq!(diagnostic["workflow_name"], "missing-knowledge");
-        assert_eq!(diagnostic["node_name"], "node");
+        assert_eq!(diagnostic["node_name"], "main");
         assert_eq!(diagnostic["facet_key"], "missing-name");
         assert_eq!(diagnostic["facet_kind"], "knowledge");
         assert_eq!(diagnostic["field"], "knowledge");

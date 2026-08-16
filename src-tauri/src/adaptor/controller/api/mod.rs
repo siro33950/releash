@@ -246,8 +246,9 @@ pub(crate) mod test_support {
             WorkflowExecution, WorkflowExecutionRestore,
         };
         use crate::domain::workflow::{
-            FanoutParentRef, FanoutSpec, NodeCompletionSignal, NodeDefinition as DomainNode,
-            NodeKind as DomainNodeKind, NodeKindName, SchemaDef, SessionSpec,
+            FanoutParentRef, FanoutSpec, NodeCompletion, NodeCompletionSignal,
+            NodeDefinition as DomainNode, NodeKind as DomainNodeKind, NodeKindName, SchemaDef,
+            SessionSpec,
         };
 
         let workflow = WorkflowDefinition {
@@ -276,15 +277,14 @@ pub(crate) mod test_support {
                 },
                 DomainNode {
                     name: "review".to_string(),
-                    kind: DomainNodeKind::Session(SessionSpec {
-                        gate: crate::domain::workflow::SessionGate::Approval,
-                        ..Default::default()
-                    }),
+                    kind: DomainNodeKind::Session(SessionSpec::default()),
                     artifact: Some("review-result".to_string()),
                     rules: Vec::new(),
+                    completion: NodeCompletion::Approval,
                     ..Default::default()
                 },
             ],
+            entry: "fanout".to_string(),
         };
         let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
             id: execution_id.to_string(),
@@ -762,11 +762,12 @@ pub(crate) mod test_support {
                             "required": ["status"]
                         }
                     },
-                    "nodes": [{
-                        "name": "review",
-                        "session": {"provider": "claude", "gate": "auto"},
-                        "artifact": "review-result"
-                    }]
+                    "nodes": {
+                        "review": {
+                            "session": {"provider": "claude"},
+                            "artifact": "review-result"
+                        }
+                    }
                 }
             }),
         };
@@ -817,7 +818,7 @@ pub(crate) mod test_support {
             name: "declared-name".to_string(),
             description: "API start fixture".to_string(),
             nodes: vec![NodeDefinition {
-                name: "execute".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Command(CommandSpec {
                     command: "true".to_string(),
                 }),

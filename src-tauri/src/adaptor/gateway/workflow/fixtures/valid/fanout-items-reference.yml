@@ -9,17 +9,19 @@ schemas:
       targets:
         type: array
         items: target
-    required: [targets]
+    required:
+      - targets
 nodes:
-  - name: source
+  main:
     artifact: source-output
     command: echo source
     rules:
-      - next: fanout
-  - name: fanout
+      - next: dispatch
+  dispatch:
     fanout:
       child: worker
-      items: source.targets
-  - name: worker
-    input: target
+      items: main.targets
+  worker:
+    input:
+      - item: target
     command: echo {{ item }}

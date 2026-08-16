@@ -13,6 +13,24 @@ use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_events as workflow_runtime_events;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
+/// workflow 定義の session 実行設定。値は provider CLI へ無変換で注入される。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkflowSessionLaunchConfig {
+    pub(crate) provider: ProviderKind,
+    pub(crate) model: Option<String>,
+    pub(crate) permission: Option<String>,
+}
+
+impl WorkflowSessionLaunchConfig {
+    pub(crate) fn from_session_spec(spec: &crate::domain::workflow::SessionSpec) -> Self {
+        Self {
+            provider: spec.provider,
+            model: spec.model.clone(),
+            permission: spec.permission.clone(),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
     fn is_provider_available(&self, provider: ProviderKind) -> bool;
@@ -20,7 +38,7 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
     async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
-        provider: ProviderKind,
+        config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
         node_execution_id: &str,
         initial_instruction: &str,
@@ -83,7 +101,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
     async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
-        provider: ProviderKind,
+        config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
         node_execution_id: &str,
         initial_instruction: &str,
@@ -93,7 +111,9 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
                 workspace: WorkspaceIdentity::new(worktree_path),
                 worktree_path: worktree_path.to_string(),
-                provider,
+                provider: config.provider,
+                model: config.model,
+                permission: config.permission,
                 workflow_execution_id: workflow_execution_id.to_string(),
                 node_execution_id: node_execution_id.to_string(),
                 initial_instruction: initial_instruction.to_string(),
@@ -187,7 +207,7 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
     async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
-        provider: ProviderKind,
+        config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
         node_execution_id: &str,
         initial_instruction: &str,
@@ -229,7 +249,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
     async fn prepare_workflow_agent_session(
         &self,
         worktree_path: &str,
-        provider: ProviderKind,
+        config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
         node_execution_id: &str,
         initial_instruction: &str,
@@ -237,7 +257,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
         self.agent_sessions
             .prepare_workflow_agent_session(
                 worktree_path,
-                provider,
+                config,
                 workflow_execution_id,
                 node_execution_id,
                 initial_instruction,

@@ -132,27 +132,20 @@ fn lookup_node_artifact_contract(
 ) -> Result<Option<String>, String> {
     let nodes = workflow
         .get("nodes")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "definition.nodes must be an array".to_string())?;
-    for node in nodes {
-        if node.get("name").and_then(Value::as_str) == Some(node_name) {
-            return artifact_contract_from_node(node);
-        }
+        .and_then(Value::as_object)
+        .ok_or_else(|| "definition.nodes must be a map".to_string())?;
+    match nodes.get(node_name) {
+        Some(node) => artifact_contract_from_node(node),
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 fn workflow_contains_node(workflow: &Value, node_name: &str) -> Result<bool, String> {
     let nodes = workflow
         .get("nodes")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "definition.nodes must be an array".to_string())?;
-    for node in nodes {
-        if node.get("name").and_then(Value::as_str) == Some(node_name) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+        .and_then(Value::as_object)
+        .ok_or_else(|| "definition.nodes must be a map".to_string())?;
+    Ok(nodes.contains_key(node_name))
 }
 
 fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
@@ -214,11 +207,12 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "builtin": false,
-                    "nodes": [{
-                        "name": "review",
-                        "session": {"provider": "claude", "gate": "auto"},
-                        "artifact": "review-verdict"
-                    }]
+                    "nodes": {
+                        "review": {
+                            "session": {"provider": "claude"},
+                            "artifact": "review-verdict"
+                        }
+                    }
                 }
             }),
         }];
@@ -240,11 +234,12 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "builtin": false,
-                    "nodes": [{
-                        "name": "review",
-                        "session": {"provider": "claude", "gate": "auto"},
-                        "artifact": "review-verdict"
-                    }]
+                    "nodes": {
+                        "review": {
+                            "session": {"provider": "claude"},
+                            "artifact": "review-verdict"
+                        }
+                    }
                 }
             }),
         }];
@@ -268,18 +263,17 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "builtin": false,
-                    "nodes": [
-                    {
-                        "name": "review-fanout",
-                        "fanout": {
-                            "child": "security-review"
+                    "nodes": {
+                        "review-fanout": {
+                            "fanout": {
+                                "child": "security-review"
+                            }
+                        },
+                        "security-review": {
+                            "session": {"provider": "claude"},
+                            "artifact": "review-verdict"
                         }
-                    },
-                    {
-                        "name": "security-review",
-                        "session": {"provider": "claude", "gate": "auto"},
-                        "artifact": "review-verdict"
-                    }]
+                    }
                 }
             }),
         }];
@@ -302,10 +296,11 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "builtin": false,
-                    "nodes": [{
-                        "name": "review",
-                        "session": {"provider": "claude", "gate": "auto"}
-                    }]
+                    "nodes": {
+                        "review": {
+                            "session": {"provider": "claude"}
+                        }
+                    }
                 }
             }),
         }];

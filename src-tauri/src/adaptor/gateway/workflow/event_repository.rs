@@ -135,10 +135,11 @@ mod tests {
                 "definition": {
                     "name": "wf",
                     "description": "",
-                    "nodes": [{
-                        "name": "node",
-                        "session": { "provider": "claude", "gate": "auto" }
-                    }]
+                    "nodes": {
+                        "node": {
+                            "session": { "provider": "claude" }
+                        }
+                    }
                 }
             }),
         })
@@ -177,10 +178,11 @@ mod tests {
                 "definition": {
                     "name": "wf",
                     "description": "",
-                    "nodes": [{
-                        "name": "node",
-                        "session": { "provider": "claude", "gate": "auto" }
-                    }]
+                    "nodes": {
+                        "node": {
+                            "session": { "provider": "claude" }
+                        }
+                    }
                 }
             }),
         })

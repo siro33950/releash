@@ -9,7 +9,7 @@ use crate::domain::workflow::validation::{
     InvalidArtifactReferenceKind, InvalidRuleKind, InvalidSchemaKind,
 };
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const ALL_FACET_KINDS: [FacetKind; 3] = [
@@ -280,12 +280,28 @@ fn parse_shape_diagnostics(
         }
     }
 
-    let Some(nodes) = root.get("nodes").and_then(serde_json::Value::as_array) else {
+    let Some(nodes_value) = root.get("nodes") else {
         return diagnostics;
     };
-    let mut names = BTreeSet::new();
-    for (index, node) in nodes.iter().enumerate() {
-        let node_path = format!("nodes[{index}]");
+    let Some(nodes) = nodes_value.as_object() else {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span("nodes"),
+                "nodes must be a mapping of node name to node definition",
+            )
+            .workflow(workflow_name)
+            .field("nodes"),
+        );
+        return diagnostics;
+    };
+    // nodes マップの重複キーは serde-saphyr が raw parse 時点で拒否し、
+    // deserialize エラー分類（WFS006）として報告される。
+    for (node_name, node) in nodes {
+        let node_name = node_name.as_str();
+        let node_path = format!("nodes.{node_name}");
         let Some(node_obj) = node.as_object() else {
             diagnostics.push(
                 DiagnosticItem::new(
@@ -296,19 +312,23 @@ fn parse_shape_diagnostics(
                     "node must be a mapping",
                 )
                 .workflow(workflow_name)
+                .node(node_name)
                 .field("nodes"),
             );
             continue;
         };
-        let node_name = node_obj
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("<unknown>");
         check_allowed_fields(
             node_obj,
             &node_path,
             &[
-                "name", "command", "session", "fanout", "artifact", "input", "inputs", "rules",
+                "command",
+                "session",
+                "fanout",
+                "artifact",
+                "input",
+                "completion",
+                "inputs",
+                "rules",
             ],
             span_map,
             workflow_name,
@@ -335,35 +355,52 @@ fn parse_shape_diagnostics(
                 .field("kind"),
             );
         }
-        if node_name == "request" || node_name == "item" {
+        if node_name == "request"
+            || node_name == "item"
+            || crate::domain::workflow::is_reserved_node_name(node_name)
+        {
             diagnostics.push(
                 DiagnosticItem::new(
                     "WFR004",
                     Severity::Error,
                     DiagnosticStage::Resolve,
-                    span_map.field_span(&format!("{node_path}.name")),
+                    span_map.field_span(&node_path),
                     format!("node name '{node_name}' is reserved"),
                 )
                 .workflow(workflow_name)
                 .node(node_name)
-                .field("name"),
+                .field("nodes"),
             );
         }
-        if node_name != "<unknown>"
-            && (validation::validate_name(node_name).is_err() || !names.insert(node_name))
-        {
+        if validation::validate_name(node_name).is_err() {
             diagnostics.push(
                 DiagnosticItem::new(
                     "WFS006",
                     Severity::Error,
                     DiagnosticStage::ParseShape,
-                    span_map.field_span(&format!("{node_path}.name")),
+                    span_map.field_span(&node_path),
                     format!("node name '{node_name}' is duplicated or invalid"),
                 )
                 .workflow(workflow_name)
                 .node(node_name)
-                .field("name"),
+                .field("nodes"),
             );
+        }
+        if let Some(input) = node_obj.get("input") {
+            if !input.is_array() {
+                diagnostics.push(
+                    DiagnosticItem::new(
+                        "WFS002",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        span_map.field_span(&format!("{node_path}.input")),
+                        format!("node '{node_name}' input must be a list of parameters"),
+                    )
+                    .workflow(workflow_name)
+                    .node(node_name)
+                    .field("input"),
+                );
+            }
         }
         if node_obj.contains_key("fanout") && node_obj.contains_key("inputs") {
             diagnostics.push(kind_disallowed_diagnostic(
@@ -381,26 +418,12 @@ fn parse_shape_diagnostics(
             check_allowed_fields(
                 session,
                 &format!("{node_path}.session"),
-                &["provider", "gate", "facets"],
+                &["provider", "model", "permission", "facets"],
                 span_map,
                 workflow_name,
                 Some(node_name),
                 &mut diagnostics,
             );
-            if !session.contains_key("gate") {
-                diagnostics.push(
-                    DiagnosticItem::new(
-                        "WFS002",
-                        Severity::Error,
-                        DiagnosticStage::ParseShape,
-                        span_map.nearest_span(&format!("{node_path}.session")),
-                        format!("session node '{node_name}' requires gate: auto or gate: approval"),
-                    )
-                    .workflow(workflow_name)
-                    .node(node_name)
-                    .field("session.gate"),
-                );
-            }
             if let Some(facets) = session.get("facets").and_then(serde_json::Value::as_object) {
                 check_allowed_fields(
                     facets,
@@ -526,7 +549,9 @@ fn deserialize_error_diagnostic(
     workflow_name_hint: Option<&str>,
 ) -> DiagnosticItem {
     let message = error.to_string();
-    let code = if message.contains("unknown field") || message.contains("unknown variant") {
+    let code = if message.contains("duplicate") || message.contains("is duplicated") {
+        "WFS006"
+    } else if message.contains("unknown field") || message.contains("unknown variant") {
         "WFS002"
     } else if message.contains("kind block")
         || message.contains("requires sibling next")
@@ -585,6 +610,8 @@ fn validation_error_code_stage(
         | ValidationError::EmptyCommand { .. }
         | ValidationError::TooManyNodes { .. }
         | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
+        ValidationError::MissingEntryNode { .. } => "WFR006",
+        ValidationError::ReservedNodeName { .. } => "WFR004",
         ValidationError::UnknownRuleTarget { .. }
         | ValidationError::UnknownLoopGuardResetNode { .. }
         | ValidationError::UnknownFanoutChild { .. } => "WFR001",
@@ -693,10 +720,10 @@ fn span_for_validation_error(
 }
 
 fn input_reference_path(wf: &WorkflowDefinitionYaml, reference: &str) -> Option<String> {
-    for (index, node) in wf.nodes.iter().enumerate() {
+    for node in &wf.nodes {
         for (input_index, input) in node.inputs.iter().enumerate() {
             if input == reference {
-                return Some(format!("nodes[{index}].inputs[{input_index}]"));
+                return Some(format!("nodes.{}.inputs[{input_index}]", node.name));
             }
         }
     }
@@ -753,12 +780,10 @@ fn node_base_path_with_node<'a>(
     wf: &'a WorkflowDefinitionYaml,
     node_name: &str,
 ) -> Option<(String, &'a NodeDefinition)> {
-    for (index, node) in wf.nodes.iter().enumerate() {
-        if node.name == node_name {
-            return Some((format!("nodes[{index}]"), node));
-        }
-    }
-    None
+    wf.nodes
+        .iter()
+        .find(|node| node.name == node_name)
+        .map(|node| (format!("nodes.{}", node.name), node))
 }
 
 fn rule_index(node: &NodeDefinition, matches_rule: impl Fn(&Rule) -> bool) -> Option<usize> {
@@ -766,12 +791,10 @@ fn rule_index(node: &NodeDefinition, matches_rule: impl Fn(&Rule) -> bool) -> Op
 }
 
 fn node_base_path(wf: &WorkflowDefinitionYaml, node_name: &str) -> Option<String> {
-    for (index, node) in wf.nodes.iter().enumerate() {
-        if node.name == node_name {
-            return Some(format!("nodes[{index}]"));
-        }
-    }
-    None
+    wf.nodes
+        .iter()
+        .find(|node| node.name == node_name)
+        .map(|node| format!("nodes.{}", node.name))
 }
 
 fn node_field_path(wf: &WorkflowDefinitionYaml, node_name: &str, field: &str) -> Option<String> {
@@ -1078,6 +1101,10 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (None, Some("name".to_string()))
         }
         ValidationError::EmptyNodes => (None, Some("nodes".to_string())),
+        ValidationError::MissingEntryNode { .. } => (None, Some("nodes".to_string())),
+        ValidationError::ReservedNodeName { name } => {
+            (Some(name.clone()), Some("nodes".to_string()))
+        }
         ValidationError::DuplicateNode { name } => (Some(name.clone()), Some("name".to_string())),
         ValidationError::EmptyFanoutChildren { node } => {
             (Some(node.clone()), Some("fanout.child".to_string()))
@@ -1443,6 +1470,7 @@ mod tests {
         CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeKind, Rule, SchemaDef, SessionSpec,
         WorkflowDefinitionYaml,
     };
+    use crate::domain::workflow::InputParam;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1528,7 +1556,7 @@ mod tests {
             name: "knowledge-only".to_string(),
             description: "knowledge-only diagnostic".to_string(),
             nodes: vec![NodeDefinition {
-                name: "node".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         knowledge: vec!["known".to_string()],
@@ -1554,7 +1582,7 @@ mod tests {
             name: "custom-policy".to_string(),
             description: "custom policy diagnostic".to_string(),
             nodes: vec![NodeDefinition {
-                name: "node".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         policy: Some("custom-policy".to_string()),
@@ -1580,7 +1608,7 @@ mod tests {
             name: "builtin-knowledge".to_string(),
             description: "builtin knowledge diagnostic".to_string(),
             nodes: vec![NodeDefinition {
-                name: "node".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         knowledge: vec!["releash-thread-cli".to_string()],
@@ -1746,10 +1774,9 @@ name: unknown-root-field
 description: unknown root field
 future_field: ignored
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1760,11 +1787,10 @@ nodes:
 name: unknown-node-field
 description: unknown node field
 nodes:
-  - name: implement
+  main:
     future_field: ignored
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1775,10 +1801,9 @@ nodes:
 name: unknown-session-field
 description: unknown session field
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       future_field: ignored
       facets:
         instruction: implement
@@ -1790,10 +1815,9 @@ nodes:
 name: unknown-facet-field
 description: unknown session facet field
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
         future_field: ignored
@@ -1805,14 +1829,13 @@ nodes:
 name: unknown-fanout-field
 description: unknown fanout field
 nodes:
-  - name: dispatch
+  main:
     fanout:
       child: worker
       future_field: ignored
-  - name: worker
+  worker:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1823,19 +1846,17 @@ nodes:
 name: unknown-rule-field
 description: unknown rule field
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
     rules:
       - next: review
         future_field: ignored
-  - name: review
+  review:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1855,10 +1876,9 @@ schemas:
     required:
       - verdict
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1905,7 +1925,7 @@ nodes:
             .find(|item| item.code == "WFR001")
             .expect("unknown reset_on node must produce WFR001");
 
-        assert_eq!(diagnostic.node_name.as_deref(), Some("fix"));
+        assert_eq!(diagnostic.node_name.as_deref(), Some("main"));
         assert_eq!(
             diagnostic.field.as_deref(),
             Some("rules.loop_guard.reset_on")
@@ -1924,11 +1944,10 @@ nodes:
 name: yaml-name
 description: invalid workflow with mismatched name
 nodes:
-  - name: implement
+  main:
     command: printf implement
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
 "#,
@@ -1970,8 +1989,9 @@ nodes:
             name: "semantic-template".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_node("node1", Some("bad"))],
+            nodes: vec![make_node("main", Some("bad"))],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -1980,7 +2000,7 @@ nodes:
             assert!(
                 report.items.iter().any(|item| item.code == code
                     && item.workflow_name.as_deref() == Some("semantic-template")
-                    && item.node_name.as_deref() == Some("node1")
+                    && item.node_name.as_deref() == Some("main")
                     && item.facet_key.as_deref() == Some("bad")
                     && item.field.as_deref() == Some("content")
                     && item.span.is_some()),
@@ -2006,7 +2026,7 @@ nodes:
             fs::read_to_string(fixture_dir("invalid").join("WFT001_when-on-enum.yml")).unwrap();
         let span_map = YamlSpanMap::parse(&source).unwrap();
         let expected = span_map
-            .field_span("nodes[0].rules[0].when.on")
+            .field_span("nodes.main.rules[0].when.on")
             .expect("fixture must have when.on span");
         let diagnosis = diagnose_workflow_source(&source, Some("WFT001_when-on-enum"));
         let item = diagnosis
@@ -2266,11 +2286,10 @@ nodes:
 
     #[test]
     fn deserialize_error_diagnostic_classifies_error_messages() {
-        let span_map = YamlSpanMap::parse("name: sample\nnodes: []\n").unwrap();
+        let span_map = YamlSpanMap::parse("name: sample\nnodes: {}\n").unwrap();
         let cases = [
             ("unknown field `future_field`", "WFS002"),
             ("unknown variant `future_variant`", "WFS002"),
-            ("missing field `gate`", "WFS002"),
             ("when rule requires sibling next", "WFS003"),
             ("YAML syntax problem", "WFS001"),
             ("unclassified deserialize problem", "WFS002"),
@@ -2319,9 +2338,10 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "node1".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         knowledge: vec!["known".to_string(), "missing-knowledge".to_string()],
@@ -2341,7 +2361,7 @@ nodes:
             .find(|item| item.code == "FAC002")
             .expect("missing knowledge FAC002");
         assert_eq!(missing.workflow_name.as_deref(), Some("test-wf"));
-        assert_eq!(missing.node_name.as_deref(), Some("node1"));
+        assert_eq!(missing.node_name.as_deref(), Some("main"));
         assert_eq!(missing.facet_key.as_deref(), Some("missing-knowledge"));
         assert_eq!(missing.facet_kind.as_deref(), Some("knowledge"));
         assert_eq!(missing.field.as_deref(), Some("knowledge"));
@@ -2360,10 +2380,14 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                input: Some("nonexistent-contract".to_string()),
-                ..make_node("node1", Some("impl"))
+                input: vec![InputParam {
+                    name: "item".to_string(),
+                    contract: Some("nonexistent-contract".to_string()),
+                }],
+                ..make_node("main", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -2373,7 +2397,7 @@ nodes:
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
-                && i.node_name.as_deref() == Some("node1")
+                && i.node_name.as_deref() == Some("main")
                 && i.field.as_deref() == Some("input")),
             "Expected missing-input-schema error, got: {:?}",
             report.items
@@ -2390,10 +2414,11 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 artifact: Some("nonexistent-contract".to_string()),
-                ..make_node("node1", Some("impl"))
+                ..make_node("main", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -2403,9 +2428,9 @@ nodes:
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
-                && i.node_name.as_deref() == Some("node1")
+                && i.node_name.as_deref() == Some("main")
                 && i.field.as_deref() == Some("artifact")),
-            "Expected missing-artifact-schema error on node1, got: {:?}",
+            "Expected missing-artifact-schema error on main, got: {:?}",
             report.items
         );
     }
@@ -2420,6 +2445,7 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: [(
                 "review-list".to_string(),
                 SchemaDef::Array {
@@ -2428,7 +2454,7 @@ nodes:
             )]
             .into_iter()
             .collect(),
-            nodes: vec![make_node("node1", Some("impl"))],
+            nodes: vec![make_node("main", Some("impl"))],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2464,6 +2490,7 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: [(
                 "input-contract".to_string(),
                 SchemaDef::Object {
@@ -2474,8 +2501,11 @@ nodes:
             .into_iter()
             .collect(),
             nodes: vec![NodeDefinition {
-                input: Some("input-contract".to_string()),
-                ..make_node("node1", Some("impl"))
+                input: vec![InputParam {
+                    name: "item".to_string(),
+                    contract: Some("input-contract".to_string()),
+                }],
+                ..make_node("main", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -2500,11 +2530,15 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
-                make_fanout("parent", vec!["child1"]),
+                make_fanout("main", vec!["child1"]),
                 NodeDefinition {
-                    input: Some("nonexistent-contract".to_string()),
+                    input: vec![InputParam {
+                        name: "item".to_string(),
+                        contract: Some("nonexistent-contract".to_string()),
+                    }],
                     ..make_child("child1", Some("impl"))
                 },
             ],
@@ -2532,10 +2566,11 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 rules: vec![Rule::Next("nonexistent".to_string())],
-                ..make_node("node1", Some("impl"))
+                ..make_node("main", Some("impl"))
             }],
         };
         save_workflow_yaml(wf_dir, &wf);
@@ -2546,7 +2581,7 @@ nodes:
             .iter()
             .filter(|i| {
                 i.severity == Severity::Error
-                    && i.node_name.as_deref() == Some("node1")
+                    && i.node_name.as_deref() == Some("main")
                     && i.field.as_deref() == Some("rules.next")
                     && i.message.contains("存在しないnode")
             })
@@ -2564,16 +2599,17 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
 
-        // node1 が Auto + rules で node3 へ遷移 → orphan は到達不能
+        // main が Auto + rules で node3 へ遷移 → orphan は到達不能
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
                     rules: vec![Rule::Next("node3".to_string())],
-                    ..make_node("node1", Some("impl"))
+                    ..make_node("main", Some("impl"))
                 },
                 make_node("orphan", Some("impl")),
                 make_node("node3", Some("impl")),
@@ -2603,9 +2639,10 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
-                make_node("node1", Some("impl")),
+                make_node("main", Some("impl")),
                 make_node("node2", Some("impl")),
                 make_node("node3", Some("impl")),
             ],
@@ -2675,8 +2712,9 @@ nodes:
             name: "bad-template".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_node("node1", Some("bad"))],
+            nodes: vec![make_node("main", Some("bad"))],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2711,15 +2749,16 @@ nodes:
             name: "command-wf".to_string(),
             description: "command test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_command("build", "cargo build")],
+            nodes: vec![make_command("main", "cargo build")],
         };
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
-                && i.node_name.as_deref() == Some("build")
+                && i.node_name.as_deref() == Some("main")
                 && i.message.contains("ファセット参照")),
             "command node with command must not trigger facet requirement error: {:?}",
             report.items
@@ -2736,8 +2775,9 @@ nodes:
             name: "command-wf".to_string(),
             description: "command test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_command("build", "   ")],
+            nodes: vec![make_command("main", "   ")],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2762,8 +2802,9 @@ nodes:
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_node("node1", Some("impl"))],
+            nodes: vec![make_node("main", Some("impl"))],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2785,9 +2826,10 @@ nodes:
             name: "knowledge-usage".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "node1".to_string(),
+                name: "main".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         knowledge: vec!["first".to_string(), "second".to_string()],
@@ -2808,7 +2850,7 @@ nodes:
                 .unwrap_or_else(|| panic!("missing usage for {facet_id}"));
             assert_eq!(usages.len(), 1);
             assert_eq!(usages[0].workflow_name, "knowledge-usage");
-            assert_eq!(usages[0].node_name, "node1");
+            assert_eq!(usages[0].node_name, "main");
             assert_eq!(usages[0].slot, "knowledge");
         }
     }
@@ -2825,8 +2867,9 @@ nodes:
             name: "bad workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![make_node("node1", Some("impl"))],
+            nodes: vec![make_node("main", Some("impl"))],
         };
         let content = serde_saphyr::to_string(&wf).unwrap();
         fs::write(wf_dir.join("bad workflow.yml"), content).unwrap();
@@ -2871,10 +2914,9 @@ schemas:
     required:
       - status
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: review
     artifact: "review; curl https://example.invalid #"
@@ -2914,33 +2956,150 @@ nodes:
     // `diagnose_missing_mode_via_validation` は YAML deserialize 段階で吸収されるため削除した。
 
     #[test]
-    fn diagnose_duplicate_node_via_validation() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "task", "content");
+    fn test_診断_nodesマップの重複キーはwfs006で再出現位置を指す() {
+        let source = r#"name: dup-node
+description: duplicate node key
+nodes:
+  main:
+    command: printf first
+  main:
+    command: printf second
+"#;
 
-        let wf = WorkflowDefinitionYaml {
-            name: "dup-node".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                make_node("same-name", Some("task")),
-                make_node("same-name", Some("task")),
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(
-            report.items.iter().any(|i| i.code == "WFS006"
-                && i.severity == Severity::Error
-                && i.stage == DiagnosticStage::ParseShape
-                && i.workflow_name.as_deref() == Some("dup-node")
-                && i.field.as_deref() == Some("name")),
-            "Expected WFS006 duplicate node error, got: {:?}",
-            report.items
+        let diagnosis = diagnose_workflow_source(source, Some("dup-node"));
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFS006")
+            .expect("duplicate node key must produce WFS006");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::ParseShape);
+        assert_eq!(item.workflow_name.as_deref(), Some("dup-node"));
+        let span = item
+            .span
+            .expect("duplicate node key diagnostic must carry a span");
+        assert_eq!(
+            span.start_line, 6,
+            "span must point at the re-occurring node key"
         );
+        assert!(diagnosis.workflow.is_none());
+    }
+
+    #[test]
+    fn test_診断_main不在はwfr006になる() {
+        let source = r#"name: no-main
+description: nodes without the main root node
+nodes:
+  prepare:
+    command: printf prepare
+"#;
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFR006")
+            .expect("nodes without main must produce WFR006");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::Resolve);
+        assert_eq!(item.field.as_deref(), Some("nodes"));
+        assert!(item.message.contains("main"));
+    }
+
+    #[test]
+    fn test_診断_予約語node名はwfr004になる() {
+        let source = r#"name: reserved-node-name
+description: sequence is a reserved node name
+nodes:
+  main:
+    command: printf main
+    rules:
+      - next: sequence
+  sequence:
+    command: printf work
+"#;
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFR004")
+            .expect("reserved node name must produce WFR004");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::Resolve);
+        assert_eq!(item.node_name.as_deref(), Some("sequence"));
+        assert!(item.span.is_some());
+        assert!(diagnosis.workflow.is_none());
+    }
+
+    #[test]
+    fn test_診断_旧リスト形式のnodesはwfs002で拒否される() {
+        let source = r#"name: nodes-list-form
+description: legacy list form nodes are rejected
+nodes:
+  - name: main
+    command: printf done
+"#;
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFS002")
+            .expect("list form nodes must produce WFS002");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::ParseShape);
+        assert_eq!(item.field.as_deref(), Some("nodes"));
+        assert!(item.message.contains("mapping"));
+        assert!(diagnosis.workflow.is_none());
+    }
+
+    #[test]
+    fn test_診断_input単一文字列はwfs002で拒否される() {
+        let source = r#"name: input-single-string
+description: legacy single string input is rejected
+schemas:
+  some-contract: string
+nodes:
+  main:
+    command: printf done
+    input: some-contract
+"#;
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFS002")
+            .expect("single string input must produce WFS002");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::ParseShape);
+        assert_eq!(item.node_name.as_deref(), Some("main"));
+        assert_eq!(item.field.as_deref(), Some("input"));
+        assert!(item.message.contains("list of parameters"));
+        assert!(diagnosis.workflow.is_none());
+    }
+
+    #[test]
+    fn test_診断_トップレベルentryはwfs002で拒否される() {
+        let source = r#"name: top-level-entry
+description: entry is not part of the workflow YAML surface
+entry: main
+nodes:
+  main:
+    command: printf done
+"#;
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        let item = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFS002")
+            .expect("top-level entry must produce WFS002");
+        assert_eq!(item.severity, Severity::Error);
+        assert_eq!(item.stage, DiagnosticStage::ParseShape);
+        assert_eq!(item.field.as_deref(), Some("entry"));
+        assert!(diagnosis.workflow.is_none());
     }
 
     #[test]
@@ -2953,6 +3112,7 @@ nodes:
             name: "input-ref".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: [(
                 "artifact".to_string(),
                 SchemaDef::Object {
@@ -2965,10 +3125,10 @@ nodes:
             nodes: vec![
                 NodeDefinition {
                     artifact: Some("artifact".to_string()),
-                    ..make_node("node1", Some("task"))
+                    ..make_node("main", Some("task"))
                 },
                 NodeDefinition {
-                    inputs: vec!["node1".to_string()],
+                    inputs: vec!["main".to_string()],
                     artifact: Some("artifact".to_string()),
                     ..make_node("node2", Some("task"))
                 },
@@ -2993,7 +3153,7 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "{{ item.path }}");
 
-        let mut fanout = make_fanout("par", vec!["child1"]);
+        let mut fanout = make_fanout("main", vec!["child1"]);
         let NodeKind::Fanout(fanout_spec) = &mut fanout.kind else {
             unreachable!();
         };
@@ -3004,6 +3164,7 @@ nodes:
             name: "par-item".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: [(
                 "item-contract".to_string(),
                 SchemaDef::Object {
@@ -3018,7 +3179,10 @@ nodes:
             nodes: vec![
                 fanout,
                 NodeDefinition {
-                    input: Some("item-contract".to_string()),
+                    input: vec![InputParam {
+                        name: "item".to_string(),
+                        contract: Some("item-contract".to_string()),
+                    }],
                     ..make_child("child1", Some("task"))
                 },
             ],
@@ -3041,12 +3205,13 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
 
-        let mut fanout = make_fanout("par", vec!["child1", "child2"]);
+        let mut fanout = make_fanout("main", vec!["child1", "child2"]);
         fanout.inputs = vec!["request".to_string()];
         let wf = WorkflowDefinitionYaml {
             name: "fanout-inputs".to_string(),
             description: "test".to_string(),
             builtin: false,
+            entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
                 fanout,

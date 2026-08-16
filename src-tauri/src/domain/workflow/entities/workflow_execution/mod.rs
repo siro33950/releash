@@ -14,7 +14,7 @@ use crate::domain::workflow::services::{
 use crate::domain::workflow::value_objects::{
     ExecutionInterruptionReason, ExecutionOrigin, FanoutParentRef, NodeCompletionSignal,
     NodeCompletionSignalState, NodeExecutionFailureKind, NodeHistoryEntry, NodeKindName,
-    RuntimeArtifact, RuntimeExecutionState, SessionGate, TokenUsage, WorkflowDefinition,
+    RuntimeArtifact, RuntimeExecutionState, TokenUsage, WorkflowDefinition,
 };
 use crate::domain::workflow::FailureDisposition;
 use crate::domain::workflow::WorkflowEvent;
@@ -1239,10 +1239,10 @@ impl WorkflowExecution {
                     "Node '{node_name}' not found in workflow"
                 ))
             })?;
-        if !node.is_approval_session() {
+        if !node.requires_approval_completion() {
             return Err(
                 crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
-                    "node is not an approval-gated session".to_string(),
+                    "node does not declare completion: approval".to_string(),
                 ),
             );
         }
@@ -1927,19 +1927,23 @@ impl WorkflowExecution {
         if !execution.completion_signals.is_ready() {
             return NodeCompletionHandshakeDecision::AwaitingSignal;
         }
-        let Some(session) = self
+        let Some(node) = self
             .runtime
             .workflow
             .nodes
             .iter()
             .find(|node| node.name == execution.node_name)
-            .and_then(|node| node.session())
+            .filter(|node| node.is_session())
         else {
             return NodeCompletionHandshakeDecision::NotApplicable;
         };
-        match session.gate {
-            SessionGate::Auto => NodeCompletionHandshakeDecision::CompleteAuto,
-            SessionGate::Approval => NodeCompletionHandshakeDecision::RequestApproval,
+        match workflow_transition::decide_completion_disposition(node) {
+            workflow_transition::CompletionDisposition::Complete => {
+                NodeCompletionHandshakeDecision::CompleteAuto
+            }
+            workflow_transition::CompletionDisposition::RequestApproval => {
+                NodeCompletionHandshakeDecision::RequestApproval
+            }
         }
     }
 
@@ -2421,6 +2425,41 @@ impl WorkflowExecution {
         self.runtime.current_session_id = None;
         self.runtime.node_history.push(history_entry);
         self.runtime.fanout_runtime = None;
+        self.runtime.updated_at = timestamp;
+        TransitionOutcome::Applied
+    }
+
+    /// fanout の全 child が成功完了しているか（parent の既定完了条件）。
+    pub fn all_fanout_children_completed(&self) -> bool {
+        self.runtime.fanout_runtime.as_ref().is_some_and(|fanout| {
+            fanout
+                .children
+                .iter()
+                .all(|child| child.state == FanoutChildRuntimeState::Completed)
+        })
+    }
+
+    /// 完了を保留したまま fanout child の成果物を記録する
+    /// （`completion: approval` の child が承認待ちに入るときに使う）。
+    pub fn record_fanout_child_output(
+        &mut self,
+        node_execution_id: &str,
+        result: Option<String>,
+        artifact: Option<serde_json::Value>,
+        contract: Option<String>,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(child) = self.runtime.fanout_runtime.as_mut().and_then(|fanout| {
+            fanout
+                .children
+                .iter_mut()
+                .find(|child| child.node_execution_id == node_execution_id)
+        }) else {
+            return TransitionOutcome::NotApplicable;
+        };
+        child.result = result;
+        child.artifact = artifact;
+        child.contract = contract;
         self.runtime.updated_at = timestamp;
         TransitionOutcome::Applied
     }
@@ -3060,6 +3099,7 @@ mod tests {
                     name: "implement".to_string(),
                     ..Default::default()
                 }],
+                entry: "implement".to_string(),
                 ..Default::default()
             },
             lifecycle: WorkflowExecution::lifecycle_from_state(state),
@@ -3481,11 +3521,8 @@ mod tests {
     #[test]
     fn approval_target_requires_an_exact_attempt_when_fanout_names_are_ambiguous() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes[0].kind =
-            crate::domain::workflow::NodeKind::Session(crate::domain::workflow::SessionSpec {
-                gate: SessionGate::Approval,
-                ..Default::default()
-            });
+        execution.runtime.workflow.nodes[0].completion =
+            crate::domain::workflow::NodeCompletion::Approval;
         for (id, child_index) in [("child-1", 0), ("child-2", 1)] {
             execution
                 .begin_node_attempt(

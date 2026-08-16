@@ -1,8 +1,10 @@
 name: fanout-child-entry
-description: fanout child cannot be the workflow entry
+description: fanout child cannot be the workflow root
 nodes:
-  - name: worker
+  main:
     command: echo work
-  - name: fanout
+    rules:
+      - next: dispatch
+  dispatch:
     fanout:
-      child: worker
+      child: main

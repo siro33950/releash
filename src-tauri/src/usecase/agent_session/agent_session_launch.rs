@@ -39,6 +39,9 @@ pub(crate) struct WorkflowAgentSessionLaunchRequest {
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
+    /// workflow 定義が指定した provider CLI 起動設定（無変換で注入する）。
+    pub(crate) model: Option<String>,
+    pub(crate) permission: Option<String>,
     pub(crate) workflow_execution_id: String,
     pub(crate) node_execution_id: String,
     pub(crate) initial_instruction: String,
@@ -260,7 +263,11 @@ impl AgentSessionLaunchUsecase {
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let launch =
             ProviderSessionLaunch::new_with_initial_instruction(request.initial_instruction)
-                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
+                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?
+                .with_options(crate::domain::agent_session::ProviderLaunchOptions::new(
+                    request.model,
+                    request.permission,
+                ));
         let pending = self
             .prepare_new_session(
                 agent_session_id.clone(),

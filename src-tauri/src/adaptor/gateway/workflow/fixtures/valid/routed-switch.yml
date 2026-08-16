@@ -12,11 +12,10 @@ schemas:
     required:
       - decision
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge
     rules:
@@ -25,15 +24,13 @@ nodes:
           cases:
             done: done
             retry: retry
-  - name: done
+  done:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: done
-  - name: retry
+  retry:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: retry

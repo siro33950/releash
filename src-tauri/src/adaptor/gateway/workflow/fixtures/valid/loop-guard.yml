@@ -1,14 +1,16 @@
 name: loop-guard
 description: a reachable cycle is bounded by loop_guard
 nodes:
-  - name: check
+  main:
     command: test -f Cargo.toml
     rules:
       - next: fix
-  - name: fix
+  fix:
     command: printf fix
     rules:
-      - loop_guard: { max_iterations: 2, on_exhausted: give-up }
-      - next: check
-  - name: give-up
+      - loop_guard:
+          max_iterations: 2
+          on_exhausted: give-up
+      - next: main
+  give-up:
     command: printf give-up

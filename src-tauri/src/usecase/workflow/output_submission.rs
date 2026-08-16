@@ -218,6 +218,7 @@ mod tests {
             .into_iter()
             .collect(),
             nodes: vec![],
+            entry: "main".to_string(),
         };
         let validated = validate_submission_output_with_secrets(
             &workflow,

@@ -155,7 +155,7 @@ fn parse_mapping(
             Some((Event::Scalar(value, _, _, _), span)) => {
                 let span = diagnostic_span(&span).expect("parser spans always have coordinates");
                 let child = child_path(&path, &value);
-                map.key_spans.insert(child.clone(), span);
+                map.key_spans.entry(child.clone()).or_insert(span);
                 (child, span)
             }
             Some((_, _)) => continue,
@@ -239,7 +239,7 @@ schemas:
   review:
     type: object
 nodes:
-  - name: entry
+  main:
     session:
       provider: claude
       facets:
@@ -249,7 +249,7 @@ nodes:
           on: passed
           then: done
         next: done
-  - name: done
+  done:
     session:
       provider: claude
 "#;
@@ -268,7 +268,7 @@ nodes:
             })
         );
         assert_eq!(
-            map.field_span("nodes[0].rules[0].when.on"),
+            map.field_span("nodes.main.rules[0].when.on"),
             Some(DiagnosticSpan {
                 start_line: 13,
                 start_col: 11,
@@ -283,24 +283,24 @@ nodes:
         let map = YamlSpanMap::parse(SOURCE).unwrap();
 
         assert_eq!(
-            map.key_span("nodes[1].name"),
+            map.key_span("nodes.done"),
             Some(DiagnosticSpan {
                 start_line: 16,
-                start_col: 5,
+                start_col: 3,
                 end_line: 16,
-                end_col: 9,
+                end_col: 7,
             })
         );
-        assert!(map.value_span("nodes[0].rules[0]").is_some());
-        assert!(map.value_span("nodes[1]").is_some());
+        assert!(map.value_span("nodes.main.rules[0]").is_some());
+        assert!(map.value_span("nodes.done").is_some());
     }
 
     #[test]
     fn nearest_span_falls_back_to_nearest_parent_not_root() {
         let map = YamlSpanMap::parse(SOURCE).unwrap();
-        let nearest_parent = map.nearest_span("nodes[0].rules[0].when").unwrap();
+        let nearest_parent = map.nearest_span("nodes.main.rules[0].when").unwrap();
         let missing_child = map
-            .nearest_span("nodes[0].rules[0].when.missing_field")
+            .nearest_span("nodes.main.rules[0].when.missing_field")
             .unwrap();
 
         assert_eq!(missing_child, nearest_parent);
@@ -324,14 +324,14 @@ nodes:
 
     #[test]
     fn parent_path_handles_sequence_indices_and_dotted_keys() {
-        assert_eq!(parent_path("nodes[0]").as_deref(), Some("nodes"));
+        assert_eq!(parent_path("rules[0]").as_deref(), Some("rules"));
         assert_eq!(
-            parent_path("nodes[0].rules[0]").as_deref(),
-            Some("nodes[0].rules")
+            parent_path("nodes.main.rules[0]").as_deref(),
+            Some("nodes.main.rules")
         );
         assert_eq!(
-            parent_path("nodes[0].rules[0].when.on").as_deref(),
-            Some("nodes[0].rules[0].when")
+            parent_path("nodes.main.rules[0].when.on").as_deref(),
+            Some("nodes.main.rules[0].when")
         );
         assert_eq!(
             parent_path("schemas.review.properties.status").as_deref(),

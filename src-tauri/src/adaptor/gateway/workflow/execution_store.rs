@@ -3038,10 +3038,12 @@ mod tests {
                     crate::domain::workflow::SessionSpec::default(),
                 ),
                 artifact: None,
-                input: None,
+                input: Vec::new(),
                 inputs: Vec::new(),
                 rules: Vec::new(),
+                completion: crate::domain::workflow::NodeCompletion::Auto,
             }],
+            entry: "node-1".to_string(),
         };
         snapshot
             .node_execution_counts

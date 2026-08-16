@@ -15,11 +15,10 @@ schemas:
       - passed
       - decision
 nodes:
-  - name: judge
+  main:
     artifact: verdict
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: judge
     rules:
@@ -32,15 +31,13 @@ nodes:
           cases:
             done: done
             fix: fix
-  - name: done
+  done:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: done
-  - name: fix
+  fix:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: fix

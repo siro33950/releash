@@ -218,8 +218,8 @@ fn latest_artifact_produced_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, FacetRefs, NodeDefinition, NodeExecution,
-        NodeExecutionStatus, NodeKind, NodeKindName, SessionGate, SessionSpec, TokenUsage,
+        ExecutionOrigin, ExecutionStatus, FacetRefs, NodeCompletion, NodeDefinition, NodeExecution,
+        NodeExecutionStatus, NodeKind, NodeKindName, SessionSpec, TokenUsage,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -428,15 +428,16 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
                 kind: NodeKind::Session(SessionSpec {
-                    gate: SessionGate::Approval,
                     facets: FacetRefs {
                         instruction: Some("implement".to_string()),
                         ..Default::default()
                     },
                     ..Default::default()
                 }),
+                completion: NodeCompletion::Approval,
                 ..Default::default()
             }],
+            entry: "review".to_string(),
         }
     }
 

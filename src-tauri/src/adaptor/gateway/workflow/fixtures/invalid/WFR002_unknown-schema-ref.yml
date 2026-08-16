@@ -1,10 +1,10 @@
 name: unknown-schema-ref
 description: input references a missing schema
 nodes:
-  - name: consume
-    input: missing-contract
+  main:
+    input:
+      - item: missing-contract
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: consume

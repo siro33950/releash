@@ -51,7 +51,8 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 
 pub(crate) struct FanoutChildSessionPlan {
     pub(crate) node_execution_id: String,
-    pub(crate) provider: crate::domain::provider_lifecycle::ProviderKind,
+    pub(crate) launch_config:
+        crate::adaptor::gateway::workflow::node_session_boundary::WorkflowSessionLaunchConfig,
     pub(crate) initial_instruction: String,
 }
 
@@ -67,19 +68,22 @@ pub(crate) fn prepare_fanout_child_session_plans(
         .into_iter()
         .map(|prompt_plan| {
             let child = &fanout_start.children[prompt_plan.expansion_index];
-            let provider = child
+            let launch_config = child
                 .node
                 .session()
+                .map(
+                    crate::adaptor::gateway::workflow::node_session_boundary::
+                        WorkflowSessionLaunchConfig::from_session_spec,
+                )
                 .ok_or_else(|| {
                     WorkflowRuntimeError::InvalidState(format!(
                         "fanout child '{}' is not a Session Node",
                         child.node.name
                     ))
-                })?
-                .provider;
+                })?;
             Ok(FanoutChildSessionPlan {
                 node_execution_id: child.node_execution_id.clone(),
-                provider,
+                launch_config,
                 initial_instruction: crate::domain::workflow::services::prompt_composition::provider_tui_initial_instruction(
                     prompt_plan.system_prompt.as_deref(),
                     &prompt_plan.user_message,
@@ -151,6 +155,7 @@ mod tests {
                     name: node_name.clone(),
                     ..Default::default()
                 }],
+                entry: node_name.clone(),
             },
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
             current_node_index: 0,

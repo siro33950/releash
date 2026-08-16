@@ -1,5 +1,5 @@
 name: missing-kind
 description: node without kind block
 nodes:
-  - name: implement
+  main:
     artifact: result

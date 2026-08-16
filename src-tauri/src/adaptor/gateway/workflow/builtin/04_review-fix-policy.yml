@@ -42,53 +42,56 @@ schemas:
 
 nodes:
 
-- name: resolve_request
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: planning
-      instruction: existing-spec-resolve-request
-  artifact: implementation-context
-  inputs:
-  - request
-  rules:
-  - next: check_open_threads
+  main:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: planning
+        instruction: existing-spec-resolve-request
+    artifact: implementation-context
+    inputs:
+    - request
+    rules:
+    - next: check_open_threads
 
-- name: check_open_threads
-  command: >-
-    releash review list --state open --json |
-    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
-  artifact: thread-scan
-  rules:
-  - when:
-      on: has_open_threads
-      then: decide_fix_policies
-    next: policy_report
-- name: decide_fix_policies
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: triage
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      - releash-thread-cli
-      instruction: existing-spec-decide-fix-policy
-  inputs:
-  - resolve_request
-  - check_open_threads
-  rules:
-  - next: policy_report
-- name: policy_report
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: reporting
-      knowledge: releash-thread-cli
-      instruction: policy-report
-  inputs:
-  - check_open_threads
+  check_open_threads:
+    command: >-
+      releash review list --state open --json |
+      jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+    artifact: thread-scan
+    rules:
+    - when:
+        on: has_open_threads
+        then: decide_fix_policies
+      next: policy_report
+  decide_fix_policies:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: triage
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: existing-spec-decide-fix-policy
+    inputs:
+    - main
+    - check_open_threads
+    rules:
+    - next: policy_report
+  policy_report:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: reporting
+        knowledge: releash-thread-cli
+        instruction: policy-report
+    inputs:
+    - check_open_threads

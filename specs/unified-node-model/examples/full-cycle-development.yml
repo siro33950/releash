@@ -247,7 +247,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: planning
         instruction: collect_inputs
@@ -371,7 +371,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge: spec-requirements
@@ -383,7 +383,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge:
@@ -399,7 +399,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge:
@@ -413,7 +413,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         instruction: behavior_report
@@ -425,7 +425,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge:
@@ -443,7 +443,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge:
@@ -459,7 +459,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         instruction: design_report
@@ -471,7 +471,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: planning
         knowledge:
@@ -544,7 +544,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: planning
         knowledge:
@@ -595,7 +595,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: coding
         knowledge: implement-task
@@ -608,7 +608,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: coding
         knowledge: implement-task
@@ -624,7 +624,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: full
+      permission: bypassPermissions
       facets:
         policy: coding
         instruction: merge_implementations
@@ -636,7 +636,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: coding
         knowledge:
@@ -653,7 +653,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: coding
         instruction: fix_integration
@@ -665,7 +665,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: edit
+      permission: workspace-write
       facets:
         policy: coding
         instruction: implementation_report
@@ -819,7 +819,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -830,7 +830,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -841,7 +841,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -852,7 +852,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -863,7 +863,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -874,7 +874,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -885,7 +885,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -896,7 +896,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -907,7 +907,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -918,7 +918,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -929,7 +929,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -940,7 +940,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -966,7 +966,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -977,7 +977,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -1008,7 +1008,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: triage
         knowledge:
@@ -1025,7 +1025,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge:
@@ -1053,7 +1053,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: triage
         knowledge:
@@ -1072,7 +1072,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reviewing
         knowledge:
@@ -1122,7 +1122,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: coding
         knowledge: releash-thread-cli
@@ -1135,7 +1135,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: edit
+      permission: acceptEdits
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -1149,7 +1149,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: full
+      permission: bypassPermissions
       facets:
         policy: coding
         instruction: merge_fixes
@@ -1161,7 +1161,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: full
+      permission: danger-full-access
       facets:
         policy: reporting
         knowledge: releash-thread-cli

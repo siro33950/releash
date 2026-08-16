@@ -39,12 +39,17 @@ mod submission_tests {
     }
 
     fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_default();
         WorkflowDefinition {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
             nodes,
+            entry,
         }
     }
 

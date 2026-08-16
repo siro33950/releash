@@ -1,0 +1,5 @@
+name: nodes-list-form
+description: legacy list form nodes are rejected
+nodes:
+  - name: main
+    command: printf done

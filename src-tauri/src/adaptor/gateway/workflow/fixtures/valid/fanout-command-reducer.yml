@@ -6,35 +6,42 @@ schemas:
     properties:
       lgtm:
         type: boolean
-    required: [lgtm]
+    required:
+      - lgtm
   judge-result:
     type: object
     properties:
       all_lgtm:
         type: boolean
-    required: [all_lgtm]
+    required:
+      - all_lgtm
 nodes:
-  - name: review
+  main:
     fanout:
-      child: [review-a, review-b]
+      child:
+        - review-a
+        - review-b
     rules:
       - next: judge
-  - name: review-a
+  review-a:
     command: >-
       printf '{"lgtm":true}'
     artifact: review-verdict
-  - name: review-b
+  review-b:
     command: >-
       printf '{"lgtm":false}'
     artifact: review-verdict
-  - name: judge
-    command: "echo '{{ review }}' | jq '{all_lgtm: all(.[]; .lgtm)}'"
-    inputs: [review]
+  judge:
+    command: "echo '{{ main }}' | jq '{all_lgtm: all(.[]; .lgtm)}'"
+    inputs:
+      - main
     artifact: judge-result
     rules:
-      - when: { on: all_lgtm, then: ready }
+      - when:
+          on: all_lgtm
+          then: ready
         next: fix
-  - name: ready
+  ready:
     command: printf ready
-  - name: fix
+  fix:
     command: printf fix

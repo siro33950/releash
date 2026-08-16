@@ -1,0 +1,23 @@
+name: completion-per-kind
+description: completion approval on command, fanout, and session nodes
+nodes:
+  main:
+    command: printf build
+    completion: approval
+    rules:
+      - next: dispatch
+  dispatch:
+    fanout:
+      child:
+        - worker
+    completion: approval
+    rules:
+      - next: review
+  worker:
+    command: printf work
+  review:
+    session:
+      provider: claude
+      facets:
+        instruction: review
+    completion: approval

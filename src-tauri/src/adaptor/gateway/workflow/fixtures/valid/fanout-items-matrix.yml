@@ -6,21 +6,26 @@ schemas:
     properties:
       path:
         type: string
-    required: [path]
+    required:
+      - path
 nodes:
-  - name: fanout
+  main:
     fanout:
-      child: [lint, test]
+      child:
+        - lint
+        - test
       items:
         - path: src/lib.rs
         - path: src/main.rs
     rules:
       - next: done
-  - name: lint
-    input: target
+  lint:
+    input:
+      - item: target
     command: echo {{ item.path }}
-  - name: test
-    input: target
+  test:
+    input:
+      - item: target
     command: echo {{ item.path }}
-  - name: done
+  done:
     command: echo done

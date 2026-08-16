@@ -1,14 +1,16 @@
 name: fanout-children
 description: valid fanout with multiple top-level children
 nodes:
-  - name: fanout
+  main:
     fanout:
-      child: [lint, test]
+      child:
+        - lint
+        - test
     rules:
       - next: done
-  - name: lint
+  lint:
     command: cargo clippy
-  - name: test
+  test:
     command: cargo test
-  - name: done
+  done:
     command: echo done

@@ -12,18 +12,17 @@ mod tests {
 name: provider-session
 description: Provider session
 nodes:
-  - name: implement
+  main:
     session:
       provider: codex
-      gate: auto
 "#;
         let missing_provider = r#"
 name: missing-provider
 description: Missing Provider
 nodes:
-  - name: implement
+  main:
     session:
-      gate: auto
+      model: opus
 "#;
 
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(with_provider).is_ok());
@@ -36,10 +35,9 @@ nodes:
 name: session-only
 description: 単一セッション
 nodes:
-  - name: implement
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         instruction: implement
         policy: coding
@@ -50,7 +48,7 @@ nodes:
         let session = node.session().unwrap();
         assert_eq!(session.facets.instruction.as_deref(), Some("implement"));
         assert_eq!(session.facets.policy.as_deref(), Some("coding"));
-        assert_eq!(session.gate, SessionGate::Auto);
+        assert_eq!(node.completion, NodeCompletion::Auto);
     }
 
     #[test]
@@ -59,16 +57,14 @@ nodes:
 name: knowledge-shapes
 description: knowledge scalar and sequence
 nodes:
-  - name: scalar
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge: releash-thread-cli
-  - name: sequence
+  many:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge:
           - releash-thread-cli
@@ -94,7 +90,7 @@ nodes:
             description: String::new(),
             nodes: vec![
                 NodeDefinition {
-                    name: "scalar".to_string(),
+                    name: "main".to_string(),
                     kind: NodeKind::Session(SessionSpec {
                         facets: FacetRefs {
                             knowledge: vec!["releash-thread-cli".to_string()],
@@ -105,7 +101,7 @@ nodes:
                     ..Default::default()
                 },
                 NodeDefinition {
-                    name: "sequence".to_string(),
+                    name: "many".to_string(),
                     kind: NodeKind::Session(SessionSpec {
                         facets: FacetRefs {
                             knowledge: vec![
@@ -126,11 +122,11 @@ nodes:
         let value = serde_saphyr::from_str::<Value>(&serialized).unwrap();
 
         assert_eq!(
-            value["nodes"][0]["session"]["facets"]["knowledge"],
+            value["nodes"]["main"]["session"]["facets"]["knowledge"],
             Value::String("releash-thread-cli".to_string())
         );
         assert_eq!(
-            value["nodes"][1]["session"]["facets"]["knowledge"],
+            value["nodes"]["many"]["session"]["facets"]["knowledge"],
             serde_json::json!(["releash-thread-cli", "requirements-design"])
         );
     }
@@ -141,10 +137,9 @@ nodes:
 name: invalid-knowledge
 description: invalid knowledge element
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
       facets:
         knowledge:
           - releash-thread-cli
@@ -155,42 +150,26 @@ nodes:
     }
 
     #[test]
-    fn parse_approval_gate_session_node() {
+    fn test_schema契約_completion承認のsession_nodeをパースする() {
         let yaml = r#"
 name: approval-only
 description: 承認セッション
 nodes:
-  - name: approve
+  main:
     session:
       provider: claude
-      gate: approval
       facets:
         instruction: approve
         policy: planning
+    completion: approval
 "#;
         let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
-        assert!(node.is_approval_session());
+        assert!(node.requires_approval_completion());
         assert_eq!(
             node.session().unwrap().facets.instruction.as_deref(),
             Some("approve")
         );
-    }
-
-    #[test]
-    fn parse_session_node_requires_gate() {
-        let yaml = r#"
-name: missing-gate
-description: gate is required
-nodes:
-  - name: implement
-    session:
-      provider: claude
-"#;
-
-        let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
-
-        assert!(error.to_string().contains("missing field `gate`"));
     }
 
     #[test]
@@ -199,7 +178,7 @@ nodes:
 name: command-only
 description: command node
 nodes:
-  - name: build
+  main:
     command: "cargo build"
 "#;
         let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
@@ -217,7 +196,7 @@ nodes:
 name: fanout
 description: fanout test
 nodes:
-  - name: review
+  main:
     fanout:
       child: [arch-review, security-review]
       items: plan.targets
@@ -238,11 +217,11 @@ nodes:
         let serialized = serde_saphyr::to_string(&wf).unwrap();
         let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
         assert_eq!(
-            serialized_value["nodes"][0]["fanout"]["child"],
+            serialized_value["nodes"]["main"]["fanout"]["child"],
             serde_json::json!(["arch-review", "security-review"])
         );
         assert_eq!(
-            serialized_value["nodes"][0]["fanout"]["items"],
+            serialized_value["nodes"]["main"]["fanout"]["items"],
             Value::String("plan.targets".to_string())
         );
     }
@@ -253,7 +232,7 @@ nodes:
 name: fanout
 description: fanout test
 nodes:
-  - name: review
+  main:
     fanout:
       child: reviewer
       items: [api, cli]
@@ -273,7 +252,7 @@ nodes:
         let serialized = serde_saphyr::to_string(&wf).unwrap();
         let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
         assert_eq!(
-            serialized_value["nodes"][0]["fanout"]["child"],
+            serialized_value["nodes"]["main"]["fanout"]["child"],
             Value::String("reviewer".to_string())
         );
     }
@@ -286,7 +265,7 @@ nodes:
 name: invalid-items
 description: invalid
 nodes:
-  - name: review
+  main:
     fanout:
       child: reviewer
       items: {items}
@@ -307,18 +286,16 @@ nodes:
 name: rules
 description: rules test
 nodes:
-  - name: judge
+  main:
     session:
       provider: claude
-      gate: auto
     rules:
       - when: { on: ok, then: done }
         next: fix
-      - loop_guard: { max_iterations: 3, on_exhausted: give_up, reset_on: judge }
-  - name: triage
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up, reset_on: main }
+  triage:
     session:
       provider: claude
-      gate: auto
     rules:
       - switch:
           on: verdict
@@ -341,7 +318,7 @@ nodes:
                 max_iterations: 3,
                 on_exhausted,
                 reset_on: Some(reset_on),
-            } if on_exhausted == "give_up" && reset_on == "judge"
+            } if on_exhausted == "give_up" && reset_on == "main"
         ));
         assert!(matches!(
             &wf.nodes[1].rules[0],
@@ -363,10 +340,9 @@ nodes:
 name: invalid-rule
 description: invalid
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
     rules:
       - when: { on: ok, then: done }
         switch:
@@ -387,10 +363,9 @@ nodes:
 name: invalid-when
 description: invalid
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
     rules:
       - when: { on: ok, then: done }
 "#;
@@ -404,7 +379,8 @@ nodes:
 name: invalid
 description: invalid
 nodes:
-  - name: missing
+  main:
+    artifact: review
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
@@ -416,11 +392,10 @@ nodes:
 name: invalid
 description: invalid
 nodes:
-  - name: duplicate
+  main:
     command: "echo hi"
     session:
       provider: claude
-      gate: auto
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
@@ -434,11 +409,11 @@ description: valid
 schemas:
   request_text: string
 nodes:
-  - name: review
+  main:
     session:
       provider: claude
-      gate: auto
-    input: request_text
+    input:
+      - item: request_text
 "#;
         let workflow = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
         assert!(matches!(
@@ -490,7 +465,7 @@ schemas:
     required:
       - verdict
 nodes:
-  - name: build
+  main:
     command: cargo build
     artifact: review
     rules:
@@ -498,10 +473,9 @@ nodes:
           on: verdict
           then: LGTM
         next: review
-  - name: review
+  review:
     session:
       provider: claude
-      gate: auto
       facets:
         policy: coding
         knowledge:
@@ -512,9 +486,9 @@ nodes:
           on: verdict
           cases:
             LGTM: dispatch
-            NEEDS_FIX: build
+            NEEDS_FIX: main
         next: dispatch
-  - name: dispatch
+  dispatch:
     fanout:
       child: worker
       items:
@@ -524,24 +498,24 @@ nodes:
       - loop_guard:
           max_iterations: 2
           on_exhausted: review
-          reset_on: build
-  - name: worker
+          reset_on: main
+  worker:
     session:
       provider: codex
-      gate: approval
+    completion: approval
 "#;
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(known).is_ok());
 
         for (label, anchor, indent) in [
             ("root", "description: known values", ""),
-            ("node", "  - name: build", "    "),
+            ("node", "    command: cargo build", "    "),
             ("session", "      provider: claude", "      "),
             ("session facets", "        policy: coding", "        "),
             ("fanout", "      child: worker", "      "),
             ("when rule", "          then: LGTM", "          "),
             ("rule element", "        next: review", "        "),
-            ("switch rule", "            NEEDS_FIX: build", "          "),
-            ("loop_guard rule", "          reset_on: build", "          "),
+            ("switch rule", "            NEEDS_FIX: main", "          "),
+            ("loop_guard rule", "          reset_on: main", "          "),
             ("schema", "    type: object", "    "),
         ] {
             let source = known.replace(anchor, &format!("{anchor}\n{indent}future_field: ignored"));

@@ -174,6 +174,19 @@ impl ProviderLaunchSpec {
             return Err(ProviderLaunchSpecError::EmptyField("executable"));
         }
         let mut arguments = self.arguments.clone();
+        if let Some(model) = launch.options().model.as_deref() {
+            arguments.extend(["--model".to_string(), model.to_string()]);
+        }
+        if let Some(permission) = launch.options().permission.as_deref() {
+            match self.provider {
+                ProviderKind::Claude => {
+                    arguments.extend(["--permission-mode".to_string(), permission.to_string()])
+                }
+                ProviderKind::Codex => {
+                    arguments.extend(["--sandbox".to_string(), permission.to_string()])
+                }
+            }
+        }
         if let Some(provider_session_id) = launch.provider_session_id() {
             match self.provider {
                 ProviderKind::Claude => {

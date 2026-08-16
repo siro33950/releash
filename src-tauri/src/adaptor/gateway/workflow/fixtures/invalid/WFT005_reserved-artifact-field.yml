@@ -9,6 +9,6 @@ schemas:
     required:
       - ok
 nodes:
-  - name: build
+  main:
     artifact: output
     command: cargo test

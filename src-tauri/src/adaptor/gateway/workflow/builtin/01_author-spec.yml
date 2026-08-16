@@ -107,159 +107,168 @@ schemas:
     - summary
 
 nodes:
-# IntakeSequence: Requestを入力参照と配置先へ整理する。
-- name: spec_intake
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      instruction: author-spec-intake
-  artifact: spec-input
-  inputs:
-  - request
-  rules:
-  - next: requirements_author
+  # IntakeSequence: Requestを入力参照と配置先へ整理する。
+  main:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: author-spec-governance
+        instruction: author-spec-intake
+    artifact: spec-input
+    inputs:
+    - request
+    rules:
+    - next: requirements_author
 
-# AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
-- name: requirements_author
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge: spec-requirements
-      instruction: author-spec-write-requirements
-  inputs:
-  - spec_intake
-  rules:
-  - next: behavior_author
+  # AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
+  requirements_author:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: author-spec-governance
+        knowledge: spec-requirements
+        instruction: author-spec-write-requirements
+    inputs:
+    - main
+    rules:
+    - next: behavior_author
 
-- name: behavior_author
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      instruction: author-spec-write-behavior
-  inputs:
-  - spec_intake
-  rules:
-  - next: design_author
+  behavior_author:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        instruction: author-spec-write-behavior
+    inputs:
+    - main
+    rules:
+    - next: design_author
 
-- name: design_author
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-write-design
-  inputs:
-  - spec_intake
-  rules:
-  - next: spec_validate
+  design_author:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: author-spec-write-design
+    inputs:
+    - main
+    rules:
+    - next: spec_validate
 
-# SpecSequence: 3文書を1単位として検証・検討・修正を一度だけ行う。
-# 修正の確認と残る問題の裁定はFinalReviewの人間が行う。
-- name: spec_validate
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-validate-spec
-  artifact: validation-result
-  inputs:
-  - spec_intake
-  rules:
-  - next: check_validation
+  # SpecSequence: 3文書を1単位として検証・検討・修正を一度だけ行う。
+  # 修正の確認と残る問題の裁定はFinalReviewの人間が行う。
+  spec_validate:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: author-spec-validate-spec
+    artifact: validation-result
+    inputs:
+    - main
+    rules:
+    - next: check_validation
 
-- name: check_validation
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node spec_validate --json |
-    jq '{has_findings: (.artifact.findings | length > 0)}'
-  artifact: validation-scan
-  rules:
-  - when:
-      on: has_findings
-      then: spec_consider
-    next: final_review
+  check_validation:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node spec_validate --json |
+      jq '{has_findings: (.artifact.findings | length > 0)}'
+    artifact: validation-scan
+    rules:
+    - when:
+        on: has_findings
+        then: spec_consider
+      next: final_review
 
-- name: spec_consider
-  session:
-    provider: codex
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-consider-spec
-  artifact: consideration-result
-  inputs:
-  - spec_intake
-  - spec_validate
-  rules:
-  - next: check_consideration
+  spec_consider:
+    session:
+      provider: codex
+      model: gpt-5.6-sol
+      permission: danger-full-access
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: author-spec-consider-spec
+    artifact: consideration-result
+    inputs:
+    - main
+    - spec_validate
+    rules:
+    - next: check_consideration
 
-- name: check_consideration
-  command: >-
-    releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-    --node spec_consider --json |
-    jq '{has_accepted: (.artifact.accepted_finding_ids | length > 0)}'
-  artifact: consideration-scan
-  rules:
-  - when:
-      on: has_accepted
-      then: spec_repair
-    next: final_review
+  check_consideration:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node spec_consider --json |
+      jq '{has_accepted: (.artifact.accepted_finding_ids | length > 0)}'
+    artifact: consideration-scan
+    rules:
+    - when:
+        on: has_accepted
+        then: spec_repair
+      next: final_review
 
-- name: spec_repair
-  session:
-    provider: claude
-    gate: auto
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-repair-spec
-  artifact: repair-result
-  inputs:
-  - spec_intake
-  - spec_validate
-  - spec_consider
-  rules:
-  - next: final_review
+  spec_repair:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: author-spec-repair-spec
+    artifact: repair-result
+    inputs:
+    - main
+    - spec_validate
+    - spec_consider
+    rules:
+    - next: final_review
 
-# FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
-- name: final_review
-  session:
-    provider: claude
-    gate: approval
-    facets:
-      policy: author-spec-governance
-      knowledge:
-      - spec-requirements
-      - spec-behavior
-      - spec-design
-      instruction: author-spec-final-review
-  inputs:
-  - spec_intake
-  - spec_validate
-  - spec_consider
-  - spec_repair
+  # FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
+  final_review:
+    session:
+      provider: claude
+      model: claude-opus-5
+      permission: acceptEdits
+      facets:
+        policy: author-spec-governance
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: author-spec-final-review
+    completion: approval
+    inputs:
+    - main
+    - spec_validate
+    - spec_consider
+    - spec_repair

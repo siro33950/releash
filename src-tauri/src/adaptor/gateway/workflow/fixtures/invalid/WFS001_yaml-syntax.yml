@@ -1,5 +1,5 @@
 name: yaml-syntax
 description: malformed YAML is rejected at the parse boundary
 nodes:
-  - name: broken
+  main:
     command: [unterminated

@@ -6,11 +6,11 @@
 
 ## 入力
 
-- `resolve_request` Artifactの`spec_dir`と`directives`
+- `main` Artifactの`spec_dir`と`directives`
 - `create_detailed_design` Artifactの全Task
 - 現在の実装
 
-`{{ resolve_request.spec_dir }}/requirements.md`、`{{ resolve_request.spec_dir }}/behavior.md`、`{{ resolve_request.spec_dir }}/design.md`を全文読む。`directives`を原文どおり遵守し、実装がdirectivesに違反していないかを検証対象に含める。
+`{{ main.spec_dir }}/requirements.md`、`{{ main.spec_dir }}/behavior.md`、`{{ main.spec_dir }}/design.md`を全文読む。`directives`を原文どおり遵守し、実装がdirectivesに違反していないかを検証対象に含める。
 
 Taskの意味と各項目の扱いは`implement-task` Knowledgeに従う。
 
