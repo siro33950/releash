@@ -1,0 +1,9 @@
+name: sequence-pure-serial
+description: pure serial sequence of unnamed command entries chained by adjacency
+nodes:
+  main:
+    sequence:
+      children:
+      - command: "cargo test --workspace"
+      - command: "cargo clippy -- -D warnings"
+      - command: "cargo fmt --check"

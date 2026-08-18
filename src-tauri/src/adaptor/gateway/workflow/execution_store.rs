@@ -3039,9 +3039,8 @@ mod tests {
                 ),
                 artifact: None,
                 input: Vec::new(),
-                inputs: Vec::new(),
-                rules: Vec::new(),
                 completion: crate::domain::workflow::NodeCompletion::Auto,
+                worktree: None,
             }],
             entry: "node-1".to_string(),
         };

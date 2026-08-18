@@ -10,18 +10,22 @@ schemas:
         type: array
         items: target
     required:
-      - targets
+    - targets
 nodes:
   main:
-    artifact: source-output
+    sequence:
+      children:
+      - source
+      - dispatch
+  source:
     command: echo source
-    rules:
-      - next: dispatch
+    artifact: source-output
   dispatch:
     fanout:
-      child: worker
-      items: main.targets
+      children:
+      - worker
+      items: source.targets
   worker:
     input:
-      - item: target
+    - item: target
     command: echo {{ item }}

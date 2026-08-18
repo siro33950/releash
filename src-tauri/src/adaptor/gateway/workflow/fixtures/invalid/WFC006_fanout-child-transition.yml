@@ -2,13 +2,17 @@ name: fanout-child-transition
 description: fanout child cannot be a normal transition target
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - source:
+          rules:
+          - next: worker
+  dispatch:
     fanout:
-      child: worker
-    rules:
-      - next: source
+      children:
+      - worker
   worker:
     command: echo work
   source:
     command: echo source
-    rules:
-      - next: worker

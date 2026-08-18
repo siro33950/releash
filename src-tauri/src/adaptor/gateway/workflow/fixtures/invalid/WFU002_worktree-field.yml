@@ -1,0 +1,6 @@
+name: worktree-field
+description: the worktree field is not supported yet
+nodes:
+  main:
+    command: printf done
+    worktree: isolated

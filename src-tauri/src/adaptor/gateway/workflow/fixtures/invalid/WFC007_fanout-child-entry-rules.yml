@@ -1,0 +1,11 @@
+name: fanout-child-entry-rules
+description: fanout child entries cannot declare rules
+nodes:
+  main:
+    fanout:
+      children:
+      - worker:
+          rules:
+          - next: worker
+  worker:
+    command: echo work

@@ -6,10 +6,11 @@ schemas:
 nodes:
   main:
     fanout:
-      child: worker
+      children:
+      - worker
       items:
-        - not-an-integer
+      - not-an-integer
   worker:
     input:
-      - item: target
+    - item: target
     command: echo {{ item }}

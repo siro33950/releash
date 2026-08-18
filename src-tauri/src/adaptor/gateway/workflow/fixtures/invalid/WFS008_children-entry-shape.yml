@@ -1,0 +1,11 @@
+name: children-entry-shape
+description: a named children entry cannot have extra sibling keys in its mapping
+nodes:
+  main:
+    sequence:
+      children:
+      - implement:
+          rules: []
+        extra_key: ignored
+  implement:
+    command: printf implement

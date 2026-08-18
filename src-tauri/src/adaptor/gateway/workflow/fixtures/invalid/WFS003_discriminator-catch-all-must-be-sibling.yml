@@ -7,16 +7,22 @@ schemas:
       passed:
         type: boolean
     required:
-      - passed
+    - passed
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - when:
+              on: passed
+              then: done
+          - next: fix
+      - done
+      - fix
+  judge:
     artifact: verdict
     command: printf '{"passed":true}'
-    rules:
-      - when:
-          on: passed
-          then: done
-      - next: fix
   done:
     command: printf done
   fix:

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::domain::workflow::value_objects::{
-    default_node_history_status, FailureDisposition, FanoutChildSnapshot, ItemsSource,
+    default_node_history_status, ChildEntry, FailureDisposition, FanoutChildSnapshot, ItemsSource,
     NodeExecutionFailureKind, NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinition,
 };
 use crate::domain::workflow::WorkflowError;
@@ -107,7 +107,7 @@ fn next_child_attempts(
 
 pub fn plan_fanout_expansion(
     workflow: &WorkflowDefinition,
-    child_names: &[String],
+    children_entries: &[ChildEntry],
     items_source: Option<&ItemsSource>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     counts: &HashMap<String, u32>,
@@ -118,12 +118,12 @@ pub fn plan_fanout_expansion(
             .into_iter()
             .enumerate()
             .flat_map(|(item_index, item)| {
-                child_names
+                children_entries
                     .iter()
                     .enumerate()
-                    .map(move |(child_index, name)| {
+                    .map(move |(child_index, entry)| {
                         (
-                            name.clone(),
+                            entry.name.clone(),
                             Some(item.clone()),
                             Some(item_index),
                             child_index,
@@ -131,10 +131,10 @@ pub fn plan_fanout_expansion(
                     })
             })
             .collect::<Vec<_>>(),
-        None => child_names
+        None => children_entries
             .iter()
             .enumerate()
-            .map(|(child_index, name)| (name.clone(), None, None, child_index))
+            .map(|(child_index, entry)| (entry.name.clone(), None, None, child_index))
             .collect(),
     };
     let attempts = next_child_attempts(
@@ -152,9 +152,9 @@ pub fn plan_fanout_expansion(
                 .ok_or_else(|| {
                     WorkflowError::invalid_state(format!("fanout child node '{name}' is undefined"))
                 })?;
-            if node.is_fanout() {
+            if node.is_composite() {
                 return Err(WorkflowError::invalid_state(format!(
-                    "fanout child node '{name}' cannot be a fanout"
+                    "fanout child node '{name}' cannot be a composite"
                 )));
             }
             Ok(FanoutChildExpansionPlan {
@@ -284,7 +284,7 @@ mod fanout_tests {
     #[test]
     fn plan_fanout_expansion_uses_items_major_order_and_indices() {
         let workflow = workflow_with_nodes(vec![session_node("a"), session_node("b")]);
-        let children = vec!["a".to_string(), "b".to_string()];
+        let children = vec![ChildEntry::reference("a"), ChildEntry::reference("b")];
         let plan = plan_fanout_expansion(
             &workflow,
             &children,
@@ -320,7 +320,7 @@ mod fanout_tests {
     #[test]
     fn plan_fanout_expansion_rejects_fanout_child() {
         let workflow = workflow_with_nodes(vec![fanout_node("nested")]);
-        let children = vec!["nested".to_string()];
+        let children = vec![ChildEntry::reference("nested")];
 
         let err =
             plan_fanout_expansion(&workflow, &children, None, &HashMap::new(), &HashMap::new())
@@ -329,7 +329,7 @@ mod fanout_tests {
         assert!(matches!(
             err,
             WorkflowError::InvalidState(message)
-                if message == "fanout child node 'nested' cannot be a fanout"
+                if message == "fanout child node 'nested' cannot be a composite"
         ));
     }
 

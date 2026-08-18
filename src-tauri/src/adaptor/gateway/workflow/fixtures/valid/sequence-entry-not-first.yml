@@ -1,0 +1,21 @@
+name: sequence-entry-not-first
+description: sequence entry starts from a child that is not first in the list
+nodes:
+  main:
+    sequence:
+      entry: start
+      children:
+      - finish:
+          rules: []
+      - start:
+          rules:
+          - next: wrap
+      - wrap:
+          rules:
+          - next: finish
+  finish:
+    command: printf finish
+  start:
+    command: printf start
+  wrap:
+    command: printf wrap

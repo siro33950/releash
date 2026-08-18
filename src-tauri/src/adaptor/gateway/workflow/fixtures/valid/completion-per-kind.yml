@@ -2,17 +2,19 @@ name: completion-per-kind
 description: completion approval on command, fanout, and session nodes
 nodes:
   main:
+    sequence:
+      children:
+      - build
+      - dispatch
+      - review
+  build:
     command: printf build
     completion: approval
-    rules:
-      - next: dispatch
   dispatch:
     fanout:
-      child:
-        - worker
+      children:
+      - worker
     completion: approval
-    rules:
-      - next: review
   worker:
     command: printf work
   review:

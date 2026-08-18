@@ -911,9 +911,9 @@ mod tests {
 
     #[test]
     fn validate_template_variables_mixed() {
-        let result = validate_template_variables("{{ request }} and {{ request.more }}");
+        let result = validate_template_variables("{{ goal }} and {{ goal.a.b }}");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("request.more"));
+        assert!(result.unwrap_err().contains("goal.a.b"));
     }
 
     // ---- duplicate logic tests ----
@@ -945,6 +945,13 @@ mod tests {
     fn duplicate_workflow_normal_case() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
         let wf = make_test_workflow("source-wf");
         storage::save_workflow(dir, &wf).unwrap();
 
@@ -1256,6 +1263,13 @@ mod tests {
     fn save_workflow_existing_same_name_update_succeeds() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
 
         let wf = make_test_workflow("my-wf");
         storage::save_workflow(dir, &wf).unwrap();

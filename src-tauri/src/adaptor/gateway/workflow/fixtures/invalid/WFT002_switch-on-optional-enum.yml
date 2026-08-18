@@ -7,21 +7,27 @@ schemas:
       decision:
         type: string
         enum:
-          - done
-          - fix
+        - done
+        - fix
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - switch:
+              on: decision
+              cases:
+                done: done
+                fix: fix
+      - done
+      - fix
+  judge:
     artifact: verdict
     session:
       provider: claude
       facets:
         instruction: judge
-    rules:
-      - switch:
-          on: decision
-          cases:
-            done: done
-            fix: fix
   done:
     command: printf done
   fix:

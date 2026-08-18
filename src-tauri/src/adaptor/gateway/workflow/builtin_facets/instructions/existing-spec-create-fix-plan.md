@@ -6,9 +6,9 @@ Spec、Open Threadの指摘、最新`[FIX_POLICY]`を読み、実装可能な一
 
 ## 入力
 
-- `{{ main.spec_dir }}/requirements.md`
-- `{{ main.spec_dir }}/behavior.md`
-- `{{ main.spec_dir }}/design.md`
+- `{{ spec }}/requirements.md`
+- `{{ spec }}/behavior.md`
+- `{{ spec }}/design.md`
 - 全Open Threadの本文と全履歴
 - 各Threadの最新`[FIX_POLICY]`
 - 現在の実装と差分

@@ -191,6 +191,157 @@ nodes:
     }
 
     #[test]
+    fn 純直列_無名commandエントリは合成内部名でカタログへ正規化され隣接辺で進む() {
+        let yaml = r#"
+name: pure-serial
+description: unnamed command entries
+nodes:
+  main:
+    sequence:
+      children:
+      - command: "cargo test --workspace"
+      - command: "cargo clippy -- -D warnings"
+"#;
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
+
+        let names: Vec<&str> = wf.nodes.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "main#0", "main#1"]);
+        assert_eq!(
+            wf.nodes[0].sequence().unwrap().children,
+            vec![
+                crate::domain::workflow::ChildEntry::reference("main#0"),
+                crate::domain::workflow::ChildEntry::reference("main#1"),
+            ]
+        );
+        assert_eq!(wf.nodes[1].command(), Some("cargo test --workspace"));
+        assert!(crate::domain::workflow::validation::validate(&wf).is_ok());
+
+        // 隣接辺: 先頭 → 次 → 終端。
+        assert_eq!(
+            wf.initial_execution_node().map(|node| node.name.as_str()),
+            Some("main#0")
+        );
+        let route = |name: &str| {
+            crate::domain::workflow::services::routing::route_with_reset_baselines(
+                &wf,
+                wf.nodes.iter().position(|node| node.name == name).unwrap(),
+                None,
+                &std::collections::HashMap::new(),
+                &Default::default(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            route("main#0"),
+            crate::domain::workflow::services::routing::RouteDecision::TransitionTo(
+                "main#1".to_string()
+            )
+        );
+        assert_eq!(
+            route("main#1"),
+            crate::domain::workflow::services::routing::RouteDecision::Completed
+        );
+    }
+
+    #[test]
+    fn 無名エントリ入り定義は正規形serializeを経てroundtripする() {
+        let yaml = r#"
+name: unnamed-roundtrip
+description: unnamed entries survive the event wire shape
+nodes:
+  main:
+    sequence:
+      children:
+      - command: "cargo test --workspace"
+      - command: "cargo clippy -- -D warnings"
+"#;
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
+
+        // ExecutionStarted と同じ経路: 正規形を serialize → deserialize で同値。
+        let json = serde_json::to_value(&wf).unwrap();
+        let restored: WorkflowDefinitionYaml = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, wf);
+
+        let yaml_normal_form = serde_saphyr::to_string(&wf).unwrap();
+        let reparsed: WorkflowDefinitionYaml = serde_saphyr::from_str(&yaml_normal_form).unwrap();
+        assert_eq!(reparsed, wf);
+    }
+
+    #[test]
+    fn インライン宣言はカタログ参照へ正規化され直書きと同じ正規形になる() {
+        let inline = r#"
+name: inline-sugar
+description: inline declaration
+nodes:
+  main:
+    sequence:
+      children:
+      - quick_check:
+          command: "cargo check"
+"#;
+        let expanded = r#"
+name: inline-sugar
+description: inline declaration
+nodes:
+  main:
+    sequence:
+      children:
+      - quick_check
+  quick_check:
+    command: "cargo check"
+"#;
+        let inline_wf: WorkflowDefinitionYaml = serde_saphyr::from_str(inline).unwrap();
+        let expanded_wf: WorkflowDefinitionYaml = serde_saphyr::from_str(expanded).unwrap();
+
+        assert_eq!(inline_wf, expanded_wf);
+        assert_eq!(
+            serde_saphyr::to_string(&inline_wf).unwrap(),
+            serde_saphyr::to_string(&expanded_wf).unwrap()
+        );
+    }
+
+    #[test]
+    fn インライン宣言の名前がカタログと衝突したら拒否される() {
+        let yaml = r#"
+name: inline-collision
+description: duplicate inline name
+nodes:
+  main:
+    sequence:
+      children:
+      - quick_check:
+          command: "cargo check"
+  quick_check:
+    command: "cargo build"
+"#;
+        let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(error.to_string().contains("is duplicated"), "{error}");
+    }
+
+    #[test]
+    fn 再帰カウント_インライン宣言もノード数上限ガードに数える() {
+        use crate::domain::workflow::validation;
+        use crate::domain::workflow::value_objects::MAX_NODES_PER_WORKFLOW;
+
+        // カタログ直書きは main の1つだけで、残りは全てインライン宣言。
+        // 正規化がカタログへ登録するため、総数 = 1 + インライン数で上限を超える。
+        let mut yaml = String::from(
+            "name: inline-bomb\ndescription: inline nodes exceed the guard\nnodes:\n  main:\n    sequence:\n      children:\n",
+        );
+        for index in 0..MAX_NODES_PER_WORKFLOW {
+            yaml.push_str(&format!(
+                "      - inline_{index}:\n          command: \"echo {index}\"\n"
+            ));
+        }
+
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(&yaml).unwrap();
+        assert_eq!(wf.nodes.len(), MAX_NODES_PER_WORKFLOW + 1);
+        assert!(validation::validate_all(&wf)
+            .iter()
+            .any(|error| matches!(error, validation::ValidationError::TooManyNodes { .. })));
+    }
+
+    #[test]
     fn parse_fanout_node_with_artifact_items() {
         let yaml = r#"
 name: fanout
@@ -198,14 +349,19 @@ description: fanout test
 nodes:
   main:
     fanout:
-      child: [arch-review, security-review]
+      children:
+      - arch-review
+      - security-review
       items: plan.targets
 "#;
         let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
         assert_eq!(
-            fanout.child,
-            vec!["arch-review".to_string(), "security-review".to_string()]
+            fanout.children,
+            vec![
+                crate::domain::workflow::ChildEntry::reference("arch-review"),
+                crate::domain::workflow::ChildEntry::reference("security-review"),
+            ]
         );
         assert_eq!(
             fanout.items,
@@ -217,7 +373,7 @@ nodes:
         let serialized = serde_saphyr::to_string(&wf).unwrap();
         let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
         assert_eq!(
-            serialized_value["nodes"]["main"]["fanout"]["child"],
+            serialized_value["nodes"]["main"]["fanout"]["children"],
             serde_json::json!(["arch-review", "security-review"])
         );
         assert_eq!(
@@ -227,21 +383,27 @@ nodes:
     }
 
     #[test]
-    fn parse_fanout_single_child_and_literal_items() {
+    fn parse_fanout_children_and_literal_items() {
         let yaml = r#"
 name: fanout
 description: fanout test
 nodes:
   main:
     fanout:
-      child: reviewer
-      items: [api, cli]
+      children:
+      - reviewer
+      items:
+      - api
+      - cli
 "#;
 
         let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
 
-        assert_eq!(fanout.child, vec!["reviewer"]);
+        assert_eq!(
+            fanout.children,
+            vec![crate::domain::workflow::ChildEntry::reference("reviewer")]
+        );
         assert_eq!(
             fanout.items,
             Some(ItemsSource::Literal(vec![
@@ -252,14 +414,14 @@ nodes:
         let serialized = serde_saphyr::to_string(&wf).unwrap();
         let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
         assert_eq!(
-            serialized_value["nodes"]["main"]["fanout"]["child"],
-            Value::String("reviewer".to_string())
+            serialized_value["nodes"]["main"]["fanout"]["children"],
+            serde_json::json!(["reviewer"])
         );
     }
 
     #[test]
     fn rejects_fanout_items_outside_literal_array_or_node_field_reference() {
-        for items in ["source", "source.field.nested", "item.field", "request"] {
+        for items in ["source", "source.field.nested", "request"] {
             let yaml = format!(
                 r#"
 name: invalid-items
@@ -267,7 +429,8 @@ description: invalid
 nodes:
   main:
     fanout:
-      child: reviewer
+      children:
+      - reviewer
       items: {items}
 "#
             );
@@ -287,41 +450,54 @@ name: rules
 description: rules test
 nodes:
   main:
+    sequence:
+      children:
+      - check:
+          rules:
+          - when:
+              on: ok
+              then: done
+            next: fix
+          - loop_guard:
+              max_iterations: 3
+              on_exhausted: give_up
+              reset_on: check
+      - triage:
+          rules:
+          - switch:
+              on: verdict
+              cases:
+                LGTM: done
+                NEEDS_FIX: fix
+            next: give_up
+          - next: done
+  check:
     session:
       provider: claude
-    rules:
-      - when: { on: ok, then: done }
-        next: fix
-      - loop_guard: { max_iterations: 3, on_exhausted: give_up, reset_on: main }
   triage:
     session:
       provider: claude
-    rules:
-      - switch:
-          on: verdict
-          cases:
-            LGTM: done
-            NEEDS_FIX: fix
-        next: give_up
-      - next: done
 "#;
         let wf = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
 
+        let sequence = wf.nodes[0].sequence().unwrap();
+        let check_rules = sequence.children[0].rules.as_deref().unwrap();
+        let triage_rules = sequence.children[1].rules.as_deref().unwrap();
         assert!(matches!(
-            &wf.nodes[0].rules[0],
+            &check_rules[0],
             Rule::When { on, then, next }
                 if on == "ok" && then == "done" && next == "fix"
         ));
         assert!(matches!(
-            &wf.nodes[0].rules[1],
+            &check_rules[1],
             Rule::LoopGuard {
                 max_iterations: 3,
                 on_exhausted,
                 reset_on: Some(reset_on),
-            } if on_exhausted == "give_up" && reset_on == "main"
+            } if on_exhausted == "give_up" && reset_on == "check"
         ));
         assert!(matches!(
-            &wf.nodes[1].rules[0],
+            &triage_rules[0],
             Rule::Switch { on, cases, next }
                 if on == "verdict"
                     && cases.get("LGTM").map(String::as_str) == Some("done")
@@ -329,7 +505,7 @@ nodes:
                     && next.as_deref() == Some("give_up")
         ));
         assert!(matches!(
-            &wf.nodes[1].rules[1],
+            &triage_rules[1],
             Rule::Next(next) if next == "done"
         ));
     }
@@ -341,15 +517,21 @@ name: invalid-rule
 description: invalid
 nodes:
   main:
+    sequence:
+      children:
+      - work:
+          rules:
+          - when:
+              on: ok
+              then: done
+            switch:
+              on: verdict
+              cases:
+                LGTM: done
+            next: fix
+  work:
     session:
       provider: claude
-    rules:
-      - when: { on: ok, then: done }
-        switch:
-          on: verdict
-          cases:
-            LGTM: done
-        next: fix
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err
@@ -364,10 +546,16 @@ name: invalid-when
 description: invalid
 nodes:
   main:
+    sequence:
+      children:
+      - work:
+          rules:
+          - when:
+              on: ok
+              then: done
+  work:
     session:
       provider: claude
-    rules:
-      - when: { on: ok, then: done }
 "#;
         let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("when rule requires sibling next"));
@@ -466,13 +654,31 @@ schemas:
       - verdict
 nodes:
   main:
+    sequence:
+      children:
+      - build:
+          rules:
+          - when:
+              on: verdict
+              then: review
+            next: review
+      - review:
+          rules:
+          - switch:
+              on: verdict
+              cases:
+                LGTM: dispatch
+                NEEDS_FIX: build
+            next: dispatch
+      - dispatch:
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: review
+              reset_on: build
+  build:
     command: cargo build
     artifact: review
-    rules:
-      - when:
-          on: verdict
-          then: LGTM
-        next: review
   review:
     session:
       provider: claude
@@ -481,27 +687,19 @@ nodes:
         knowledge:
           - workflow
         instruction: review
-    rules:
-      - switch:
-          on: verdict
-          cases:
-            LGTM: dispatch
-            NEEDS_FIX: main
-        next: dispatch
+    artifact: review
   dispatch:
     fanout:
-      child: worker
+      children:
+      - worker
       items:
         - api
         - cli
-    rules:
-      - loop_guard:
-          max_iterations: 2
-          on_exhausted: review
-          reset_on: main
   worker:
     session:
       provider: codex
+    input:
+    - item
     completion: approval
 "#;
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(known).is_ok());
@@ -511,11 +709,19 @@ nodes:
             ("node", "    command: cargo build", "    "),
             ("session", "      provider: claude", "      "),
             ("session facets", "        policy: coding", "        "),
-            ("fanout", "      child: worker", "      "),
-            ("when rule", "          then: LGTM", "          "),
-            ("rule element", "        next: review", "        "),
-            ("switch rule", "            NEEDS_FIX: main", "          "),
-            ("loop_guard rule", "          reset_on: main", "          "),
+            ("fanout", "      items:", "      "),
+            ("when rule", "              then: review", "              "),
+            ("rule element", "            next: review", "            "),
+            (
+                "switch rule",
+                "                NEEDS_FIX: build",
+                "              ",
+            ),
+            (
+                "loop_guard rule",
+                "              reset_on: build",
+                "              ",
+            ),
             ("schema", "    type: object", "    "),
         ] {
             let source = known.replace(anchor, &format!("{anchor}\n{indent}future_field: ignored"));

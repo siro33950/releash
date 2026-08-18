@@ -1,0 +1,20 @@
+name: fanout-items-auto-binding
+description: fanout child with exactly one input parameter auto-binds items without explicit inputs
+schemas:
+  target: string
+nodes:
+  main:
+    sequence:
+      children:
+      - dispatch
+  dispatch:
+    fanout:
+      children:
+      - worker
+      items:
+      - src/lib.rs
+      - src/main.rs
+  worker:
+    input:
+    - item: target
+    command: "printf '%s' '{{ item }}'"

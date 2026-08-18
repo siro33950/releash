@@ -269,17 +269,15 @@ pub(crate) mod test_support {
                 DomainNode {
                     name: "fanout".to_string(),
                     kind: DomainNodeKind::Fanout(FanoutSpec {
-                        child: vec!["review".to_string()],
+                        children: vec![crate::domain::workflow::ChildEntry::reference("review")],
                         items: None,
                     }),
-                    rules: Vec::new(),
                     ..Default::default()
                 },
                 DomainNode {
                     name: "review".to_string(),
                     kind: DomainNodeKind::Session(SessionSpec::default()),
                     artifact: Some("review-result".to_string()),
-                    rules: Vec::new(),
                     completion: NodeCompletion::Approval,
                     ..Default::default()
                 },

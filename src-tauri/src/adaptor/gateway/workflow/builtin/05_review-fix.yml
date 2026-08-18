@@ -100,6 +100,50 @@ schemas:
 nodes:
 
   main:
+    sequence:
+      children:
+      - resolve_request:
+          inputs:
+            goal: request
+      - check_open_threads:
+          rules:
+          - when:
+              on: has_open_threads
+              then: create_fix_plan
+            next: fix_report
+      - create_fix_plan:
+          inputs:
+            spec: resolve_request.spec_dir
+          rules:
+          - loop_guard:
+              max_iterations: 5
+              on_exhausted: fix_report
+          - next: implement_fix_plan
+      - implement_fix_plan:
+          inputs:
+            create_fix_plan: create_fix_plan
+            verify_fixes: verify_fixes
+          rules:
+          - loop_guard:
+              max_iterations: 3
+              on_exhausted: fix_report
+              reset_on: create_fix_plan
+          - next: verify_fixes
+      - verify_fixes:
+          inputs:
+            create_fix_plan: create_fix_plan
+      - check_fix_verification:
+          rules:
+          - when:
+              on: has_issues
+              then: implement_fix_plan
+            next: check_open_threads
+      - fix_report:
+          inputs:
+            check_open_threads: check_open_threads
+            verify_fixes: verify_fixes
+
+  resolve_request:
     session:
       provider: codex
       model: gpt-5.6-sol
@@ -108,21 +152,15 @@ nodes:
         policy: planning
         instruction: existing-spec-resolve-request
     artifact: implementation-context
-    inputs:
-    - request
-    rules:
-    - next: check_open_threads
+    input:
+    - goal
 
   check_open_threads:
     command: >-
       releash review list --state open --json |
       jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
     artifact: thread-scan
-    rules:
-    - when:
-        on: has_open_threads
-        then: create_fix_plan
-      next: fix_report
+
   create_fix_plan:
     session:
       provider: codex
@@ -137,13 +175,9 @@ nodes:
         - releash-thread-cli
         instruction: existing-spec-create-fix-plan
     artifact: fix-plan
-    inputs:
-    - main
-    rules:
-    - loop_guard:
-        max_iterations: 5
-        on_exhausted: fix_report
-    - next: implement_fix_plan
+    input:
+    - spec
+
   implement_fix_plan:
     session:
       provider: codex
@@ -153,15 +187,10 @@ nodes:
         policy: coding
         knowledge: releash-thread-cli
         instruction: implement_fix_plan
-    inputs:
+    input:
     - create_fix_plan
     - verify_fixes
-    rules:
-    - loop_guard:
-        max_iterations: 3
-        on_exhausted: fix_report
-        reset_on: create_fix_plan
-    - next: verify_fixes
+
   verify_fixes:
     session:
       provider: codex
@@ -172,21 +201,16 @@ nodes:
         knowledge: releash-thread-cli
         instruction: verify_fixes
     artifact: fix-verification
-    inputs:
+    input:
     - create_fix_plan
-    rules:
-    - next: check_fix_verification
+
   check_fix_verification:
     command: >-
       releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
       --node verify_fixes --json |
       jq '{has_issues: (.artifact.issues | length > 0)}'
     artifact: fix-verification-scan
-    rules:
-    - when:
-        on: has_issues
-        then: implement_fix_plan
-      next: check_open_threads
+
   fix_report:
     session:
       provider: claude
@@ -196,6 +220,6 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: fix-report
-    inputs:
+    input:
     - check_open_threads
     - verify_fixes

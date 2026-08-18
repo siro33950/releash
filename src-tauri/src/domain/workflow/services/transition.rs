@@ -107,7 +107,7 @@ mod transition_tests {
             command: "true".to_string(),
         });
         let fanout_kind = NodeKind::Fanout(FanoutSpec {
-            child: vec!["worker".to_string()],
+            children: vec![crate::domain::workflow::ChildEntry::reference("worker")],
             items: None,
         });
         for kind in [NodeKind::default(), command_kind, fanout_kind] {

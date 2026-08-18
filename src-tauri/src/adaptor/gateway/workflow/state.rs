@@ -54,6 +54,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
             NodeKindName::Command => crate::domain::workflow::NodeKindName::Command,
             NodeKindName::Session => crate::domain::workflow::NodeKindName::Session,
             NodeKindName::Fanout => crate::domain::workflow::NodeKindName::Fanout,
+            NodeKindName::Sequence => crate::domain::workflow::NodeKindName::Sequence,
         },
         attempt: execution.attempt,
         status: match execution.status {

@@ -59,14 +59,8 @@ fn domain_node_to_schema(
         kind: domain_kind_to_schema(&node.kind),
         artifact: node.artifact.clone(),
         input: node.input.clone(),
-        inputs: node.inputs.clone(),
-        rules: node
-            .rules
-            .iter()
-            .cloned()
-            .map(domain_rule_to_schema)
-            .collect(),
         completion: domain_completion_to_schema(node.completion),
+        worktree: node.worktree.clone(),
     }
 }
 
@@ -94,8 +88,17 @@ fn domain_kind_to_schema(
         domain::NodeKind::Fanout(spec) => {
             crate::adaptor::gateway::workflow::schema::NodeKind::Fanout(
                 crate::adaptor::gateway::workflow::schema::FanoutSpec {
-                    child: spec.child.clone(),
+                    children: spec.children.clone(),
                     items: spec.items.as_ref().map(domain_items_source_to_schema),
+                },
+            )
+        }
+        domain::NodeKind::Sequence(spec) => {
+            crate::adaptor::gateway::workflow::schema::NodeKind::Sequence(
+                crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                    entry: spec.entry.clone(),
+                    output: spec.output.clone(),
+                    children: spec.children.clone(),
                 },
             )
         }
@@ -138,27 +141,6 @@ fn domain_items_source_to_schema(
                 field: field.clone(),
             }
         }
-    }
-}
-
-fn domain_rule_to_schema(rule: domain::Rule) -> crate::adaptor::gateway::workflow::schema::Rule {
-    match rule {
-        domain::Rule::When { on, then, next } => {
-            crate::adaptor::gateway::workflow::schema::Rule::When { on, then, next }
-        }
-        domain::Rule::Switch { on, cases, next } => {
-            crate::adaptor::gateway::workflow::schema::Rule::Switch { on, cases, next }
-        }
-        domain::Rule::LoopGuard {
-            max_iterations,
-            on_exhausted,
-            reset_on,
-        } => crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
-            max_iterations,
-            on_exhausted,
-            reset_on,
-        },
-        domain::Rule::Next(next) => crate::adaptor::gateway::workflow::schema::Rule::Next(next),
     }
 }
 
@@ -448,16 +430,30 @@ mod tests {
     fn workflow_mapping_round_trips_loop_guard_reset_on() {
         let definition = domain::WorkflowDefinition {
             name: "wf".to_string(),
-            entry: "fix".to_string(),
-            nodes: vec![NodeDefinition {
-                name: "fix".to_string(),
-                rules: vec![domain::Rule::LoopGuard {
-                    max_iterations: 2,
-                    on_exhausted: "done".to_string(),
-                    reset_on: Some("round".to_string()),
-                }],
-                ..Default::default()
-            }],
+            entry: "main".to_string(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "main".to_string(),
+                    kind: NodeKind::Sequence(domain::SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![domain::ChildEntry {
+                            name: "fix".to_string(),
+                            inputs: Vec::new(),
+                            rules: Some(vec![domain::Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "done".to_string(),
+                                reset_on: Some("round".to_string()),
+                            }]),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         };
 
@@ -477,7 +473,7 @@ mod tests {
             nodes: vec![NodeDefinition {
                 name: "main".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
-                    child: vec!["worker".to_string()],
+                    children: vec![domain::ChildEntry::reference("worker")],
                     items: Some(ItemsSource::Literal(vec![serde_json::json!({
                         "path": "src/lib.rs"
                     })])),
@@ -530,7 +526,6 @@ mod tests {
                     contract: Some("plan".to_string()),
                 }],
                 artifact: Some("plan".to_string()),
-                rules: vec![domain::Rule::Next("done".to_string())],
                 ..Default::default()
             }],
             entry: "implement".to_string(),
@@ -557,8 +552,7 @@ mod tests {
                             }
                         },
                         "artifact": "plan",
-                        "input": [{"item": "plan"}],
-                        "rules": [{"next": "done"}]
+                        "input": [{"item": "plan"}]
                     }
                 }
             })

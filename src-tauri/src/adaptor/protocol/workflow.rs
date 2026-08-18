@@ -65,6 +65,7 @@ pub enum NodeKindView {
     Command,
     Session,
     Fanout,
+    Sequence,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

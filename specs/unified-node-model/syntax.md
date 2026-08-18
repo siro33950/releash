@@ -51,20 +51,20 @@ judge:
 ```yaml
 main:
   sequence:
-    entry: run_tests
     children:
-      fix_tests:
+    - run_tests
+    - fix_tests:
         inputs:
           test_result: run_tests
         rules:
-          - loop_guard:
-              max_iterations: 3
-              on_exhausted: give_up
-          - next: run_tests
+        - loop_guard:
+            max_iterations: 3
+            on_exhausted: give_up
+        - next: run_tests
 ```
 
-- `entry`: この sequence の開始 node。**省略時はリスト先頭**。先頭以外から始める場合に書く。
-- `output`: `artifact` を宣言した部品 sequence が、**どの子の Artifact を自分の Artifact として返すか**の名指し（entry と対になる出口の指定）。artifact 宣言が無ければ不要。
+- `entry`: この sequence の開始 node（**children のエントリ名**を指す）。**省略時はリスト先頭**。先頭以外から始める場合に書く。
+- `output`: `artifact` を宣言した部品 sequence が、**どの子の Artifact を自分の Artifact として返すか**の名指し（**children のエントリ名**。entry と対になる出口の指定）。artifact 宣言があれば必須、無ければ書かない。
 - `children`: **リスト**。子ごとの扱い（データの配線と制御の配線）を1箇所に持つ。
   - **rules を持たないエントリの既定の辺は「リストの次のエントリへ（auto）」。リスト末尾なら終端**。分岐もループも無い直列は、名前・entry・rules なしで書ける:
 
@@ -75,11 +75,14 @@ main:
         - command: "cargo clippy -- -D warnings"
     ```
 
-  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、`request`（起動時入力。**定義スコープの予約供給元であり、定義内のどの合成子の配線からも直接参照できる** — 兄弟名の解決が children に閉じるのとは別扱い）、fanout では `items`（展開の各要素）。
+  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は合成子の種別で決まる:
+    - **sequence の子**: 兄弟エントリ名（field パス `<兄弟>.<field>` 可）/ 自分（この sequence）の input パラメータ名 / `request`
+    - **fanout の子**: 自分（この fanout）の input パラメータ名（field パス可）/ `request` / `items`（展開の各要素）。fanout の子は並走し兄弟を持たないため、兄弟や他 node の直接参照は無い。外の値は親が fanout の input パラメータへ配線して渡す
+    - `request` は起動時入力の**定義スコープの予約供給元**であり、定義内のどの合成子の配線からも直接参照できる
   - `rules`: 辺定義のリスト。中身（`when` / `switch` / `next` / `loop_guard`）と検証（排他・網羅・ループ健全性）は現行のまま。**辺に承認は置かない**（human が進行を止めたい箇所は Node 側の `completion: approval`）。**`rules: []`（空リスト）は出る辺なしの明示 = 終端**（リスト中間に終端を置く場合に使う）。
   - `on_failure`: この子が失敗したときの扱い。**省略時は中断**（resume で失敗した node を再実行 — 失敗は直すべきもの、が既定）。`ignore` = 失敗しても続行する（fanout では失敗子を結果の配列から除く。失敗 node の artifact に依存する下流があれば load 時 Diagnostic）。`retry: <n>` = 新しい attempt で最大 n 回自動再実行し（isolated なら attempt ごとに worktree 再生成）、尽きたら既定（中断）へ。失敗の重要度は文脈の性質なので、Node 定義ではなく扱い（children エントリ）に書く。
 - **終端 = 出る辺（rules またはリストの次）が無い node**。children に載らず行き先参照だけされる node は次を持たないため終端。
-- 配線の原則: **配線は、その node を子として扱う合成子が書く**。sequence が孫（fanout の child 等）に配線することはない。名前解決は自分の children に閉じる。
+- 配線の原則: **配線は、その node を子として扱う合成子が書く**。sequence が孫（fanout の child 等）に配線することはない。供給元の名前解決は合成子のスコープに閉じる（sequence = 自分の children と自分の input パラメータ、fanout = 自分の input パラメータ）。外の値は各階層が input パラメータとして受けて1段ずつ引き渡す。
 
 ## children の要素（4形式）
 
@@ -114,15 +117,17 @@ children:
 fix_each:
   fanout:
     children:
-      - fix_one:
-          inputs:
-            thread: items        # 展開の各要素をこのパラメータへ
-            plan: make_plan      # 全子共通の供給（普通の node 参照）
+    - fix_one:
+        inputs:
+          thread: items          # 展開の各要素をこのパラメータへ
+          plan: plan             # 全子共通の供給（この fanout の input パラメータ）
     items: list_threads.threads
+  input:
+  - plan                         # 共通供給の受け口。親が fix_each のエントリで配線する
 ```
 
 - `children`: 展開対象のリスト（sequence の children と同形式。上記「children の要素」参照）。子は配線されないため無名エントリ（④）も書ける。
-- `items`: 展開する配列の定義。**宛先と共通供給は children の inputs で書く**（sequence と同一の構文）。展開の各要素は予約供給元名 `items` として配線する。child のパラメータが1つで items がある場合は宛先が一意なので inputs を省略できる。
+- `items`: 展開する配列の定義（リテラル配列、または定義内の Artifact を産出する node の `<node>.<field>` 参照。fanout の子の Artifact は親の配列へ集約されるため参照不可）。**宛先と共通供給は children の inputs で書く**（sequence と同一の構文。供給元は自 fanout の input パラメータ / `request` / `items`）。展開の各要素は予約供給元名 `items` として配線する。child のパラメータが1つで items がある場合は宛先が一意なので inputs を省略できる。
 - 失敗した子の扱いは children エントリの `on_failure`（sequence と共通。上記「sequence」参照）で書く。
 - 子を隔離して並走させたい場合は、**fanout node の `worktree: isolated`**（Node 共通フィールド・kind の外）で宣言する。child の node 定義には書かない。`isolated` は子の実行ごとに親の worktree HEAD から branch + worktree を生成し、diff は branch に残る。
 

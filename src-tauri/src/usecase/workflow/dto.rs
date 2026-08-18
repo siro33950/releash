@@ -23,6 +23,7 @@ pub(crate) enum NodeKindDto {
     Session,
     Command,
     Fanout,
+    Sequence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -69,9 +70,33 @@ pub(crate) struct InputParamDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct FanoutSpecDto {
-    pub child: Vec<String>,
+    pub children: Vec<ChildEntryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<ItemsSourceDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct SequenceSpecDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub children: Vec<ChildEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ChildEntryDto {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<ChildInputDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<RuleDto>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ChildInputDto {
+    pub parameter: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,15 +118,15 @@ pub(crate) struct NodeDefinitionDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fanout: Option<FanoutSpecDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<SequenceSpecDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<InputParamDto>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inputs: Vec<String>,
-    #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
-    pub rules: Vec<RuleDto>,
     #[serde(default)]
     pub completion: NodeCompletionDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -273,11 +298,37 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         command: node.command().map(str::to_string),
         session: node.session().map(session_to_dto),
         fanout: node.fanout().map(fanout_to_dto),
+        sequence: node.sequence().map(sequence_to_dto),
         artifact: node.artifact.clone(),
         input: node.input.iter().map(input_param_to_dto).collect(),
-        inputs: node.inputs.clone(),
-        rules: node.rules.iter().map(rule_to_dto).collect(),
         completion: completion_to_dto(node.completion),
+        worktree: node.worktree.clone(),
+    }
+}
+
+fn sequence_to_dto(sequence: &domain::SequenceSpec) -> SequenceSpecDto {
+    SequenceSpecDto {
+        entry: sequence.entry.clone(),
+        output: sequence.output.clone(),
+        children: sequence.children.iter().map(child_entry_to_dto).collect(),
+    }
+}
+
+fn child_entry_to_dto(entry: &domain::ChildEntry) -> ChildEntryDto {
+    ChildEntryDto {
+        name: entry.name.clone(),
+        inputs: entry
+            .inputs
+            .iter()
+            .map(|(parameter, source)| ChildInputDto {
+                parameter: parameter.clone(),
+                source: source.raw().to_string(),
+            })
+            .collect(),
+        rules: entry
+            .rules
+            .as_ref()
+            .map(|rules| rules.iter().map(rule_to_dto).collect()),
     }
 }
 
@@ -308,7 +359,7 @@ fn provider_to_dto(
 
 fn fanout_to_dto(fanout: &domain::FanoutSpec) -> FanoutSpecDto {
     FanoutSpecDto {
-        child: fanout.child.clone(),
+        children: fanout.children.iter().map(child_entry_to_dto).collect(),
         items: fanout.items.as_ref().map(items_source_to_dto),
     }
 }
@@ -327,6 +378,7 @@ fn node_kind_to_dto(kind: domain::NodeKindName) -> NodeKindDto {
         domain::NodeKindName::Command => NodeKindDto::Command,
         domain::NodeKindName::Session => NodeKindDto::Session,
         domain::NodeKindName::Fanout => NodeKindDto::Fanout,
+        domain::NodeKindName::Sequence => NodeKindDto::Sequence,
     }
 }
 
@@ -439,9 +491,6 @@ mod tests {
                     name: "item".to_string(),
                     contract: Some("plan".to_string()),
                 }],
-                rules: vec![RuleDto::Next {
-                    next: "done".to_string(),
-                }],
                 ..Default::default()
             }],
         };
@@ -470,7 +519,6 @@ mod tests {
                     },
                     "artifact": "plan",
                     "input": [{"name": "item", "contract": "plan"}],
-                    "rules": [{"type": "next", "next": "done"}],
                     "completion": "auto"
                 }]
             })
@@ -520,23 +568,37 @@ mod tests {
         let definition = domain::WorkflowDefinition {
             name: "wf".to_string(),
             description: String::new(),
-            nodes: vec![domain::NodeDefinition {
-                name: "fix".to_string(),
-                rules: vec![domain::Rule::LoopGuard {
-                    max_iterations: 2,
-                    on_exhausted: "done".to_string(),
-                    reset_on: Some("round".to_string()),
-                }],
-                ..Default::default()
-            }],
-            entry: "fix".to_string(),
+            nodes: vec![
+                domain::NodeDefinition {
+                    name: "main".to_string(),
+                    kind: domain::NodeKind::Sequence(domain::SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![domain::ChildEntry {
+                            name: "fix".to_string(),
+                            inputs: Vec::new(),
+                            rules: Some(vec![domain::Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "done".to_string(),
+                                reset_on: Some("round".to_string()),
+                            }]),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+                domain::NodeDefinition {
+                    name: "fix".to_string(),
+                    ..Default::default()
+                },
+            ],
+            entry: "main".to_string(),
             ..Default::default()
         };
 
         let dto = workflow_to_dto(&definition);
 
         assert_eq!(
-            serde_json::to_value(dto).unwrap()["nodes"][0]["rules"][0],
+            serde_json::to_value(dto).unwrap()["nodes"][0]["sequence"]["children"][0]["rules"][0],
             serde_json::json!({
                 "type": "loop_guard",
                 "max_iterations": 2,
@@ -549,7 +611,11 @@ mod tests {
     #[test]
     fn fanout_spec_dto_serializes_child_and_items_sources() {
         let literal = FanoutSpecDto {
-            child: vec!["review".to_string()],
+            children: vec![ChildEntryDto {
+                name: "review".to_string(),
+                inputs: Vec::new(),
+                rules: None,
+            }],
             items: Some(ItemsSourceDto::Literal(vec![serde_json::json!({
                 "thread_id": "thread-1"
             })])),
@@ -557,19 +623,30 @@ mod tests {
         assert_eq!(
             serde_json::to_value(literal).unwrap(),
             serde_json::json!({
-                "child": ["review"],
+                "children": [{"name": "review"}],
                 "items": [{"thread_id": "thread-1"}]
             })
         );
 
         let reference = FanoutSpecDto {
-            child: vec!["review-opus".to_string(), "review-gpt".to_string()],
+            children: vec![
+                ChildEntryDto {
+                    name: "review-opus".to_string(),
+                    inputs: Vec::new(),
+                    rules: None,
+                },
+                ChildEntryDto {
+                    name: "review-gpt".to_string(),
+                    inputs: Vec::new(),
+                    rules: None,
+                },
+            ],
             items: Some(ItemsSourceDto::ArtifactField("scan.threads".to_string())),
         };
         assert_eq!(
             serde_json::to_value(reference).unwrap(),
             serde_json::json!({
-                "child": ["review-opus", "review-gpt"],
+                "children": [{"name": "review-opus"}, {"name": "review-gpt"}],
                 "items": "scan.threads"
             })
         );

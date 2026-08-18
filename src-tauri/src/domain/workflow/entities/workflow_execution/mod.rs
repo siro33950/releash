@@ -3260,9 +3260,28 @@ mod tests {
     #[test]
     fn routing_failure_rejects_the_candidate_without_workflow_terminal_transition() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
-        execution.runtime.workflow.nodes[0].rules = vec![crate::domain::workflow::Rule::Next(
-            "missing-node".to_string(),
-        )];
+        execution
+            .runtime
+            .workflow
+            .nodes
+            .push(crate::domain::workflow::NodeDefinition {
+                name: "main".to_string(),
+                kind: crate::domain::workflow::NodeKind::Sequence(
+                    crate::domain::workflow::SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![crate::domain::workflow::ChildEntry {
+                            name: "implement".to_string(),
+                            inputs: Vec::new(),
+                            rules: Some(vec![crate::domain::workflow::Rule::Next(
+                                "missing-node".to_string(),
+                            )]),
+                        }],
+                    },
+                ),
+                ..Default::default()
+            });
+        execution.runtime.workflow.entry = "main".to_string();
         execution
             .begin_node_attempt(
                 "implement".to_string(),
@@ -3365,7 +3384,7 @@ mod tests {
                 name: "fanout".to_string(),
                 kind: crate::domain::workflow::NodeKind::Fanout(
                     crate::domain::workflow::FanoutSpec {
-                        child: vec!["worker".to_string()],
+                        children: vec![crate::domain::workflow::ChildEntry::reference("worker")],
                         items: None,
                     },
                 ),
@@ -3466,8 +3485,25 @@ mod tests {
                 ),
                 ..Default::default()
             });
-        execution.runtime.workflow.nodes[0].rules =
-            vec![crate::domain::workflow::Rule::Next("verify".to_string())];
+        execution
+            .runtime
+            .workflow
+            .nodes
+            .push(crate::domain::workflow::NodeDefinition {
+                name: "main".to_string(),
+                kind: crate::domain::workflow::NodeKind::Sequence(
+                    crate::domain::workflow::SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![
+                            crate::domain::workflow::ChildEntry::reference("implement"),
+                            crate::domain::workflow::ChildEntry::reference("verify"),
+                        ],
+                    },
+                ),
+                ..Default::default()
+            });
+        execution.runtime.workflow.entry = "main".to_string();
         let node_execution_id = execution
             .begin_node_attempt(
                 "implement".to_string(),

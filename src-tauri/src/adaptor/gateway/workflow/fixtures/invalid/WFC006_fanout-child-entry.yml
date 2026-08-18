@@ -3,8 +3,7 @@ description: fanout child cannot be the workflow root
 nodes:
   main:
     command: echo work
-    rules:
-      - next: dispatch
   dispatch:
     fanout:
-      child: main
+      children:
+      - main

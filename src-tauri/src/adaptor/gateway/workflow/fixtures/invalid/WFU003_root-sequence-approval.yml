@@ -1,0 +1,10 @@
+name: root-sequence-approval
+description: root sequence cannot declare completion approval yet
+nodes:
+  main:
+    sequence:
+      children:
+      - worker
+    completion: approval
+  worker:
+    command: echo work

@@ -287,6 +287,13 @@ nodes:
     fn saves_and_loads_workflow_yaml_through_existing_storage() {
         let workflows = TempDir::new().unwrap();
         let facets = TempDir::new().unwrap();
+        let instructions = facets.path().join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
         let repo = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
 
         repo.save(definition("wf"), None).unwrap();

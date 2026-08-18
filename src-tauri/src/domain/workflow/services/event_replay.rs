@@ -863,6 +863,7 @@ fn node_kind_to_domain(kind: EventNodeKindName) -> NodeKindName {
         EventNodeKindName::Command => NodeKindName::Command,
         EventNodeKindName::Session => NodeKindName::Session,
         EventNodeKindName::Fanout => NodeKindName::Fanout,
+        EventNodeKindName::Sequence => NodeKindName::Sequence,
     }
 }
 
@@ -1100,6 +1101,27 @@ mod tests {
             request: "please review".to_string(),
             definition: definition(),
             timestamp: 1.0,
+        }
+    }
+
+    fn root_sequence_node(
+        children: Vec<(&str, Option<Vec<crate::domain::workflow::Rule>>)>,
+    ) -> NodeDefinition {
+        NodeDefinition {
+            name: "main".to_string(),
+            kind: NodeKind::Sequence(crate::domain::workflow::SequenceSpec {
+                entry: None,
+                output: None,
+                children: children
+                    .into_iter()
+                    .map(|(name, rules)| crate::domain::workflow::ChildEntry {
+                        name: name.to_string(),
+                        inputs: Vec::new(),
+                        rules,
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
         }
     }
 
@@ -1724,7 +1746,6 @@ mod tests {
     fn rejects_workflow_level_interruption_after_node_completion() {
         let mut workflow = definition();
         workflow.nodes[0].name = "prepare".to_string();
-        workflow.nodes[0].rules = vec![crate::domain::workflow::Rule::Next("review".to_string())];
         workflow
             .nodes
             .push(crate::domain::workflow::NodeDefinition {
@@ -1772,18 +1793,24 @@ mod tests {
         let workflow = WorkflowDefinition {
             name: "reset-replay".to_string(),
             nodes: vec![
+                root_sequence_node(vec![
+                    ("round", Some(vec![Rule::Next("fix".to_string())])),
+                    (
+                        "fix",
+                        Some(vec![Rule::LoopGuard {
+                            max_iterations: 2,
+                            on_exhausted: "done".to_string(),
+                            reset_on: Some("round".to_string()),
+                        }]),
+                    ),
+                    ("done", None),
+                ]),
                 NodeDefinition {
                     name: "round".to_string(),
-                    rules: vec![Rule::Next("fix".to_string())],
                     ..Default::default()
                 },
                 NodeDefinition {
                     name: "fix".to_string(),
-                    rules: vec![Rule::LoopGuard {
-                        max_iterations: 2,
-                        on_exhausted: "done".to_string(),
-                        reset_on: Some("round".to_string()),
-                    }],
                     ..Default::default()
                 },
                 NodeDefinition {
@@ -1871,18 +1898,24 @@ mod tests {
         let workflow = WorkflowDefinition {
             name: "repeated-reset-replay".to_string(),
             nodes: vec![
+                root_sequence_node(vec![
+                    ("round", Some(vec![Rule::Next("fix".to_string())])),
+                    (
+                        "fix",
+                        Some(vec![Rule::LoopGuard {
+                            max_iterations: 2,
+                            on_exhausted: "done".to_string(),
+                            reset_on: Some("round".to_string()),
+                        }]),
+                    ),
+                    ("done", None),
+                ]),
                 NodeDefinition {
                     name: "round".to_string(),
-                    rules: vec![Rule::Next("fix".to_string())],
                     ..Default::default()
                 },
                 NodeDefinition {
                     name: "fix".to_string(),
-                    rules: vec![Rule::LoopGuard {
-                        max_iterations: 2,
-                        on_exhausted: "done".to_string(),
-                        reset_on: Some("round".to_string()),
-                    }],
                     ..Default::default()
                 },
                 NodeDefinition {
@@ -1961,13 +1994,24 @@ mod tests {
         let workflow = WorkflowDefinition {
             name: "fanout-parent-reset-replay".to_string(),
             nodes: vec![
+                root_sequence_node(vec![
+                    ("round", Some(vec![Rule::Next("fix".to_string())])),
+                    (
+                        "fix",
+                        Some(vec![Rule::LoopGuard {
+                            max_iterations: 2,
+                            on_exhausted: "done".to_string(),
+                            reset_on: Some("round".to_string()),
+                        }]),
+                    ),
+                    ("done", None),
+                ]),
                 NodeDefinition {
                     name: "round".to_string(),
                     kind: NodeKind::Fanout(FanoutSpec {
-                        child: vec!["worker".to_string()],
+                        children: vec![crate::domain::workflow::ChildEntry::reference("worker")],
                         items: None,
                     }),
-                    rules: vec![Rule::Next("fix".to_string())],
                     ..Default::default()
                 },
                 NodeDefinition {
@@ -1976,11 +2020,6 @@ mod tests {
                 },
                 NodeDefinition {
                     name: "fix".to_string(),
-                    rules: vec![Rule::LoopGuard {
-                        max_iterations: 2,
-                        on_exhausted: "done".to_string(),
-                        reset_on: Some("round".to_string()),
-                    }],
                     ..Default::default()
                 },
                 NodeDefinition {
@@ -2085,10 +2124,15 @@ mod tests {
         else {
             unreachable!("the first event is ExecutionStarted");
         };
+        let round_index = domain_workflow
+            .nodes
+            .iter()
+            .position(|node| node.name == "round")
+            .expect("round node exists");
         let route = |projection: &RetainedWorkflowExecutionProjection| {
             routing::route_with_reset_baselines(
                 domain_workflow,
-                0,
+                round_index,
                 None,
                 &projection.node_execution_counts,
                 &projection.loop_guard_reset_baselines,

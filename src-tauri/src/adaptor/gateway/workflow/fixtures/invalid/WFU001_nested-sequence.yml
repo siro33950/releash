@@ -1,0 +1,13 @@
+name: nested-sequence
+description: a sequence cannot reference another sequence as a child
+nodes:
+  main:
+    sequence:
+      children:
+      - inner
+  inner:
+    sequence:
+      children:
+      - worker
+  worker:
+    command: echo work

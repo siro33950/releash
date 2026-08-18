@@ -1,5 +1,0 @@
-name: item-out-of-scope
-description: item is only available in fanout child scope
-nodes:
-  main:
-    command: "echo {{ item.path }}"

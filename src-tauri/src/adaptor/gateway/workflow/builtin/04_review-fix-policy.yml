@@ -43,6 +43,26 @@ schemas:
 nodes:
 
   main:
+    sequence:
+      children:
+      - resolve_request:
+          inputs:
+            goal: request
+      - check_open_threads:
+          rules:
+          - when:
+              on: has_open_threads
+              then: decide_fix_policies
+            next: policy_report
+      - decide_fix_policies:
+          inputs:
+            spec: resolve_request.spec_dir
+            check_open_threads: check_open_threads
+      - policy_report:
+          inputs:
+            check_open_threads: check_open_threads
+
+  resolve_request:
     session:
       provider: codex
       model: gpt-5.6-sol
@@ -51,21 +71,15 @@ nodes:
         policy: planning
         instruction: existing-spec-resolve-request
     artifact: implementation-context
-    inputs:
-    - request
-    rules:
-    - next: check_open_threads
+    input:
+    - goal
 
   check_open_threads:
     command: >-
       releash review list --state open --json |
       jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
     artifact: thread-scan
-    rules:
-    - when:
-        on: has_open_threads
-        then: decide_fix_policies
-      next: policy_report
+
   decide_fix_policies:
     session:
       provider: codex
@@ -79,11 +93,10 @@ nodes:
         - spec-design
         - releash-thread-cli
         instruction: existing-spec-decide-fix-policy
-    inputs:
-    - main
+    input:
+    - spec
     - check_open_threads
-    rules:
-    - next: policy_report
+
   policy_report:
     session:
       provider: claude
@@ -93,5 +106,5 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: policy-report
-    inputs:
+    input:
     - check_open_threads

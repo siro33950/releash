@@ -1,0 +1,7 @@
+name: node-inputs
+description: node definitions cannot declare inputs directly
+nodes:
+  main:
+    command: printf done
+    inputs:
+      goal: request

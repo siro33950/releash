@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::domain::workflow::services::contract_schema::{self, RoutingFieldKind};
 use crate::domain::workflow::value_objects::{
-    NodeDefinition, NodeKind, Rule, SchemaDef, WorkflowDefinition,
+    ChildEntry, EffectiveRules, NodeDefinition, NodeKind, Rule, SchemaDef, SequenceSpec,
+    WorkflowDefinition,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -26,17 +27,18 @@ impl LoopGuardResetBaselines {
         completed_node_name: &str,
         node_execution_counts: &HashMap<String, u32>,
     ) {
-        for guarded_node in &workflow.nodes {
-            let Some((_, _, Some(reset_on))) = loop_guard(guarded_node) else {
+        // loop_guard は実行スコープ（root sequence）の children エントリに属する。
+        let Some(sequence) = workflow.root_sequence() else {
+            return;
+        };
+        for entry in &sequence.children {
+            let Some((_, _, Some(reset_on))) = entry_loop_guard(entry) else {
                 continue;
             };
             if reset_on == completed_node_name {
-                let cumulative_count = node_execution_counts
-                    .get(&guarded_node.name)
-                    .copied()
-                    .unwrap_or(0);
+                let cumulative_count = node_execution_counts.get(&entry.name).copied().unwrap_or(0);
                 self.by_guarded_node
-                    .insert(guarded_node.name.clone(), cumulative_count);
+                    .insert(entry.name.clone(), cumulative_count);
             }
         }
     }
@@ -62,6 +64,41 @@ impl LoopGuardResetBaselines {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingValidationError {
+    /// children エントリが存在しないカタログ node を参照している。
+    UnknownChildReference {
+        composite: String,
+        child: String,
+    },
+    /// 同一合成子の children が同じカタログ node を複数回参照している。
+    DuplicateChildReference {
+        composite: String,
+        child: String,
+    },
+    /// 合成子の children が空。
+    EmptyChildren {
+        composite: String,
+    },
+    /// sequence の entry が children のエントリ名を指していない。
+    SequenceEntryNotChild {
+        sequence: String,
+        entry: String,
+    },
+    /// sequence の output が children のエントリ名を指していない。
+    SequenceOutputNotChild {
+        sequence: String,
+        output: String,
+    },
+    /// fanout の children エントリに rules が書かれている（fanout に辺は無い）。
+    RulesOnFanoutChildEntry {
+        fanout: String,
+        child: String,
+    },
+    /// 合成子の子参照の一意性・root 参照禁止などの構造制約違反。
+    ChildReferenceViolation {
+        composite: String,
+        child: String,
+        reason: String,
+    },
     UnknownRuleTarget {
         node: String,
         target: String,
@@ -123,27 +160,525 @@ pub enum RoutingValidationError {
     UnreachableNode {
         node: String,
     },
-    FanoutChildLeafViolation {
-        fanout: String,
-        child: String,
-        reason: String,
-    },
+}
+
+/// 検証対象の合成子スコープ。検証は全合成子（ネスト含む）に対して行い、
+/// 実行（route）は root sequence の1段のみを使う。
+struct CompositeScope<'a> {
+    owner: &'a NodeDefinition,
+    children: &'a [ChildEntry],
+    sequence: Option<&'a SequenceSpec>,
+}
+
+fn composite_scopes(workflow: &WorkflowDefinition) -> Vec<CompositeScope<'_>> {
+    workflow
+        .nodes
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NodeKind::Sequence(sequence) => Some(CompositeScope {
+                owner: node,
+                children: &sequence.children,
+                sequence: Some(sequence),
+            }),
+            NodeKind::Fanout(fanout) => Some(CompositeScope {
+                owner: node,
+                children: &fanout.children,
+                sequence: None,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
-    let node_names: BTreeSet<_> = workflow
+    let node_by_name: BTreeMap<_, _> = workflow
         .nodes
         .iter()
-        .map(|node| node.name.as_str())
+        .map(|node| (node.name.as_str(), node))
         .collect();
+    let scopes = composite_scopes(workflow);
     let mut errors = Vec::new();
 
-    for node in &workflow.nodes {
-        errors.extend(validate_node_rules(workflow, node, &node_names));
+    // 子参照の帰属表（cross-composite 制約用）。
+    let mut composites_by_child: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for scope in &scopes {
+        for entry in scope.children {
+            composites_by_child
+                .entry(entry.name.as_str())
+                .or_default()
+                .push(scope.owner.name.as_str());
+        }
     }
-    errors.extend(validate_fanout_child_leaf_constraints(workflow));
-    errors.extend(validate_cycles_have_loop_guard(workflow));
 
+    for scope in &scopes {
+        errors.extend(validate_scope_children(workflow, scope, &node_by_name));
+    }
+
+    // 子参照の一意性: 同じ node を複数の合成子が子として扱うと、配線の帰属・
+    // attempt カウント・loop_guard baseline のキーが曖昧になる。
+    for (child, composites) in &composites_by_child {
+        if composites.len() > 1 {
+            for composite in &composites[1..] {
+                errors.push(RoutingValidationError::ChildReferenceViolation {
+                    composite: (*composite).to_string(),
+                    child: (*child).to_string(),
+                    reason: format!(
+                        "node '{child}' is already a child of composite '{}'",
+                        composites[0]
+                    ),
+                });
+            }
+        }
+    }
+
+    // root は合成子の子になれない。
+    if let Some(composites) = composites_by_child.get(workflow.entry.as_str()) {
+        for composite in composites {
+            errors.push(RoutingValidationError::ChildReferenceViolation {
+                composite: (*composite).to_string(),
+                child: workflow.entry.clone(),
+                reason: "the workflow root node cannot be a composite child".to_string(),
+            });
+        }
+    }
+
+    // rules ターゲットは、同一スコープの子か、どの合成子の子でもない node に限る。
+    for scope in &scopes {
+        let own_children: BTreeSet<_> = scope.children.iter().map(|c| c.name.as_str()).collect();
+        for entry in scope.children {
+            let Some(rules) = &entry.rules else { continue };
+            for target in rules.iter().flat_map(rule_targets) {
+                if own_children.contains(target) {
+                    continue;
+                }
+                let Some(owners) = composites_by_child.get(target) else {
+                    continue;
+                };
+                if let Some(owner) = owners.first() {
+                    errors.push(RoutingValidationError::ChildReferenceViolation {
+                        composite: (*owner).to_string(),
+                        child: target.to_string(),
+                        reason: format!(
+                            "a child of composite '{owner}' cannot be a transition target from '{}'",
+                            entry.name
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    for scope in &scopes {
+        if let Some(sequence) = scope.sequence {
+            errors.extend(validate_scope_cycles(&scope.owner.name, sequence));
+        }
+    }
+
+    errors
+}
+
+fn validate_scope_children(
+    workflow: &WorkflowDefinition,
+    scope: &CompositeScope<'_>,
+    node_by_name: &BTreeMap<&str, &NodeDefinition>,
+) -> Vec<RoutingValidationError> {
+    let composite = scope.owner.name.as_str();
+    let mut errors = Vec::new();
+
+    if scope.children.is_empty() {
+        errors.push(RoutingValidationError::EmptyChildren {
+            composite: composite.to_string(),
+        });
+        return errors;
+    }
+
+    let mut seen = BTreeSet::new();
+    for entry in scope.children {
+        if !seen.insert(entry.name.as_str()) {
+            errors.push(RoutingValidationError::DuplicateChildReference {
+                composite: composite.to_string(),
+                child: entry.name.clone(),
+            });
+        }
+        if !node_by_name.contains_key(entry.name.as_str()) {
+            errors.push(RoutingValidationError::UnknownChildReference {
+                composite: composite.to_string(),
+                child: entry.name.clone(),
+            });
+        }
+    }
+
+    match scope.sequence {
+        Some(sequence) => {
+            if let Some(entry_name) = &sequence.entry {
+                if !seen.contains(entry_name.as_str()) {
+                    errors.push(RoutingValidationError::SequenceEntryNotChild {
+                        sequence: composite.to_string(),
+                        entry: entry_name.clone(),
+                    });
+                }
+            }
+            if let Some(output) = &sequence.output {
+                if !seen.contains(output.as_str()) {
+                    errors.push(RoutingValidationError::SequenceOutputNotChild {
+                        sequence: composite.to_string(),
+                        output: output.clone(),
+                    });
+                }
+            }
+            for entry in scope.children {
+                let Some(rules) = &entry.rules else { continue };
+                let child = node_by_name.get(entry.name.as_str()).copied();
+                errors.extend(validate_entry_rules(
+                    workflow,
+                    &entry.name,
+                    rules,
+                    child,
+                    node_by_name,
+                ));
+            }
+        }
+        None => {
+            for entry in scope.children {
+                if entry.rules.is_some() {
+                    errors.push(RoutingValidationError::RulesOnFanoutChildEntry {
+                        fanout: composite.to_string(),
+                        child: entry.name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    errors
+}
+
+/// children エントリの rules の排他・網羅・ループ健全性・型を検証する。
+/// 判別（when / switch）の型検証はエントリが参照する子 node の artifact Contract
+/// に対して行う。
+fn validate_entry_rules(
+    workflow: &WorkflowDefinition,
+    entry_name: &str,
+    rules: &[Rule],
+    child: Option<&NodeDefinition>,
+    node_by_name: &BTreeMap<&str, &NodeDefinition>,
+) -> Vec<RoutingValidationError> {
+    let mut errors = Vec::new();
+    let mut discriminator_count = 0usize;
+    let mut loop_guard_count = 0usize;
+    let mut next_count = 0usize;
+
+    for rule in rules {
+        for target in rule_targets(rule) {
+            if !node_by_name.contains_key(target) {
+                errors.push(RoutingValidationError::UnknownRuleTarget {
+                    node: entry_name.to_string(),
+                    target: target.to_string(),
+                });
+            }
+        }
+        match rule {
+            Rule::When { .. } | Rule::Switch { .. } => discriminator_count += 1,
+            Rule::LoopGuard {
+                max_iterations,
+                reset_on,
+                ..
+            } => {
+                loop_guard_count += 1;
+                if *max_iterations == 0 {
+                    errors.push(RoutingValidationError::LoopGuardMaxIterations {
+                        node: entry_name.to_string(),
+                    });
+                }
+                if let Some(reset_on) = reset_on {
+                    if !node_by_name.contains_key(reset_on.as_str()) {
+                        errors.push(RoutingValidationError::UnknownLoopGuardResetNode {
+                            node: entry_name.to_string(),
+                            reset_on: reset_on.clone(),
+                        });
+                    }
+                }
+            }
+            Rule::Next(_) => next_count += 1,
+        }
+    }
+
+    if discriminator_count > 1 {
+        errors.push(RoutingValidationError::MultipleDiscriminators {
+            node: entry_name.to_string(),
+        });
+    }
+    if loop_guard_count > 1 {
+        errors.push(RoutingValidationError::MultipleLoopGuards {
+            node: entry_name.to_string(),
+        });
+    }
+    if next_count > 1 {
+        errors.push(RoutingValidationError::MultipleNextCatchAll {
+            node: entry_name.to_string(),
+        });
+    }
+    if discriminator_count > 0 && next_count > 0 {
+        errors.push(RoutingValidationError::StandaloneNextWithDiscriminator {
+            node: entry_name.to_string(),
+        });
+    }
+
+    let discriminator = rules
+        .iter()
+        .find(|rule| matches!(rule, Rule::When { .. } | Rule::Switch { .. }));
+    let Some(child) = child else {
+        // 参照先不明は UnknownChildReference 側で報告済み。型検証は行えない。
+        return errors;
+    };
+    match discriminator {
+        Some(Rule::When { on, .. }) => {
+            if let Err(reason) =
+                validate_routing_field(workflow, child, on, RoutingFieldKind::Boolean)
+            {
+                errors.push(RoutingValidationError::WhenFieldNotBoolean {
+                    node: entry_name.to_string(),
+                    field: on.clone(),
+                    reason: Some(reason),
+                });
+            }
+        }
+        Some(Rule::Switch { on, cases, next }) => {
+            match validate_routing_field(workflow, child, on, RoutingFieldKind::Enum) {
+                Ok(enum_values) => {
+                    let enum_set: BTreeSet<_> = enum_values.iter().map(String::as_str).collect();
+                    let case_set: BTreeSet<_> = cases.keys().map(String::as_str).collect();
+                    for case in case_set.difference(&enum_set) {
+                        errors.push(RoutingValidationError::SwitchUnknownCase {
+                            node: entry_name.to_string(),
+                            field: on.clone(),
+                            case: (*case).to_string(),
+                        });
+                    }
+                    let missing: Vec<_> = enum_set.difference(&case_set).copied().collect();
+                    let needs_p11_next =
+                        child.is_command() && child.artifact.is_some() && on != "ok";
+                    if missing.is_empty() {
+                        if next.is_some() && !needs_p11_next {
+                            errors.push(RoutingValidationError::SwitchExhaustiveHasNext {
+                                node: entry_name.to_string(),
+                            });
+                        }
+                        if needs_p11_next && next.is_none() {
+                            errors.push(RoutingValidationError::SwitchRequiresNext {
+                                node: entry_name.to_string(),
+                            });
+                        }
+                    } else if next.is_none() {
+                        errors.push(RoutingValidationError::SwitchMissingCases {
+                            node: entry_name.to_string(),
+                            field: on.clone(),
+                            missing: missing.into_iter().map(str::to_string).collect(),
+                        });
+                    }
+                }
+                Err(reason) => errors.push(RoutingValidationError::SwitchFieldNotEnum {
+                    node: entry_name.to_string(),
+                    field: on.clone(),
+                    reason: Some(reason),
+                }),
+            }
+        }
+        _ => {}
+    }
+
+    if discriminator.is_some() && child.is_fanout() {
+        errors.push(RoutingValidationError::DiscriminatorOnFanout {
+            node: entry_name.to_string(),
+        });
+    }
+    if discriminator.is_some() && child.artifact.is_none() && !child.is_command() {
+        errors.push(RoutingValidationError::DiscriminatorWithoutArtifact {
+            node: entry_name.to_string(),
+        });
+    }
+
+    errors
+}
+
+pub fn rule_targets(rule: &Rule) -> Vec<&str> {
+    match rule {
+        Rule::When { then, next, .. } => vec![then.as_str(), next.as_str()],
+        Rule::Switch { cases, next, .. } => cases
+            .values()
+            .map(String::as_str)
+            .chain(next.iter().map(String::as_str))
+            .collect(),
+        Rule::LoopGuard { on_exhausted, .. } => vec![on_exhausted.as_str()],
+        Rule::Next(next) => vec![next.as_str()],
+    }
+}
+
+/// 到達可能性は2層で検証する。
+/// (a) 各 sequence スコープ内: 実効 entry から実効辺で辿れない子。
+/// (b) カタログレベル: root からの構造参照（children / rules ターゲット）の閉包に
+///     入らない node（ネスト合成子配下も構造参照として辿る）。
+pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
+    let mut unreachable: BTreeSet<String> = BTreeSet::new();
+
+    let referenced = catalog_reference_closure(workflow);
+    for node in &workflow.nodes {
+        if node.name != workflow.entry && !referenced.contains(node.name.as_str()) {
+            unreachable.insert(node.name.clone());
+        }
+    }
+
+    for node in &workflow.nodes {
+        let Some(sequence) = node.sequence() else {
+            continue;
+        };
+        for name in scope_flow_unreachable(sequence) {
+            unreachable.insert(name.to_string());
+        }
+    }
+
+    unreachable
+        .into_iter()
+        .map(|node| RoutingValidationError::UnreachableNode { node })
+        .collect()
+}
+
+fn catalog_reference_closure(workflow: &WorkflowDefinition) -> HashSet<&str> {
+    let node_by_name: BTreeMap<_, _> = workflow
+        .nodes
+        .iter()
+        .map(|node| (node.name.as_str(), node))
+        .collect();
+    let mut reachable = HashSet::new();
+    let mut queue = VecDeque::from([workflow.entry.as_str()]);
+    while let Some(current) = queue.pop_front() {
+        if !reachable.insert(current) {
+            continue;
+        }
+        let Some(node) = node_by_name.get(current).copied() else {
+            continue;
+        };
+        let children = match &node.kind {
+            NodeKind::Sequence(sequence) => Some(&sequence.children),
+            NodeKind::Fanout(fanout) => Some(&fanout.children),
+            _ => None,
+        };
+        let Some(children) = children else { continue };
+        for entry in children {
+            if node_by_name.contains_key(entry.name.as_str()) {
+                queue.push_back(entry.name.as_str());
+            }
+            for target in entry.rules.iter().flatten().flat_map(rule_targets) {
+                if node_by_name.contains_key(target) {
+                    queue.push_back(target);
+                }
+            }
+        }
+    }
+    reachable
+}
+
+fn scope_flow_unreachable(sequence: &SequenceSpec) -> Vec<&str> {
+    let child_names: BTreeSet<_> = sequence
+        .children
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    let Some(entry_name) = sequence.entry_child_name() else {
+        return Vec::new();
+    };
+    if !child_names.contains(entry_name) {
+        // entry が children 外なら SequenceEntryNotChild 側で報告する。
+        return Vec::new();
+    }
+    let mut reached = BTreeSet::new();
+    let mut queue = VecDeque::from([entry_name]);
+    while let Some(current) = queue.pop_front() {
+        if !reached.insert(current) {
+            continue;
+        }
+        match sequence.effective_rules(current) {
+            EffectiveRules::AdjacentNext(next) => queue.push_back(next),
+            EffectiveRules::Rules(rules) => {
+                for target in rules.iter().flat_map(rule_targets) {
+                    if child_names.contains(target) {
+                        queue.push_back(target);
+                    }
+                }
+            }
+            EffectiveRules::Terminal => {}
+        }
+    }
+    child_names
+        .into_iter()
+        .filter(|name| !reached.contains(name))
+        .collect()
+}
+
+/// children エントリの明示 rules から loop_guard を取り出す。
+pub(crate) fn entry_loop_guard(entry: &ChildEntry) -> Option<(u32, &str, Option<&str>)> {
+    entry.rules.as_ref()?.iter().find_map(|rule| match rule {
+        Rule::LoopGuard {
+            max_iterations,
+            on_exhausted,
+            reset_on,
+        } => Some((*max_iterations, on_exhausted.as_str(), reset_on.as_deref())),
+        _ => None,
+    })
+}
+
+fn root_entry_loop_guard<'a>(
+    workflow: &'a WorkflowDefinition,
+    node_name: &str,
+) -> Option<(u32, &'a str, Option<&'a str>)> {
+    let sequence = workflow.root_sequence()?;
+    entry_loop_guard(sequence.child_entry(node_name)?)
+}
+
+fn validate_scope_cycles(owner: &str, sequence: &SequenceSpec) -> Vec<RoutingValidationError> {
+    let _ = owner;
+    let child_names: BTreeSet<&str> = sequence
+        .children
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    let mut graph: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for entry in &sequence.children {
+        graph.entry(entry.name.as_str()).or_default();
+        match sequence.effective_rules(&entry.name) {
+            EffectiveRules::AdjacentNext(next) => {
+                graph.entry(entry.name.as_str()).or_default().insert(next);
+            }
+            EffectiveRules::Rules(rules) => {
+                for target in rules.iter().flat_map(rule_targets) {
+                    if child_names.contains(target) {
+                        graph.entry(entry.name.as_str()).or_default().insert(target);
+                    }
+                }
+            }
+            EffectiveRules::Terminal => {}
+        }
+    }
+
+    let entry_by_name: BTreeMap<&str, &ChildEntry> = sequence
+        .children
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry))
+        .collect();
+    let mut errors = Vec::new();
+    for component in cyclic_strongly_connected_components(&child_names, &graph) {
+        let has_guard_on_cycle = component
+            .iter()
+            .filter_map(|name| entry_by_name.get(*name).copied())
+            .any(|entry| entry_loop_guard(entry).is_some());
+        if !has_guard_on_cycle {
+            for name in component {
+                errors.push(RoutingValidationError::CycleWithoutLoopGuard {
+                    node: name.to_string(),
+                });
+            }
+        }
+    }
     errors
 }
 
@@ -174,7 +709,17 @@ pub fn route_with_reset_baselines(
         WorkflowError::validation(format!("node index out of range: {current_index}"))
     })?;
 
-    let Some(target) = raw_target(node, artifact)? else {
+    // 配線は root sequence の children エントリが持つ。root が leaf / fanout の
+    // 場合は単独実行（辺なし = 完了）。
+    let target = match workflow.root_sequence() {
+        None => None,
+        Some(sequence) => match sequence.effective_rules(&node.name) {
+            EffectiveRules::Rules(rules) => raw_target(&node.name, rules, artifact)?,
+            EffectiveRules::AdjacentNext(next) => Some(next.to_string()),
+            EffectiveRules::Terminal => None,
+        },
+    };
+    let Some(target) = target else {
         return Ok(RouteDecision::Completed);
     };
     guarded_target_with_reset_baselines(
@@ -183,297 +728,6 @@ pub fn route_with_reset_baselines(
         node_execution_counts,
         loop_guard_reset_baselines,
     )
-}
-
-pub fn rule_targets(rule: &Rule) -> Vec<&str> {
-    match rule {
-        Rule::When { then, next, .. } => vec![then.as_str(), next.as_str()],
-        Rule::Switch { cases, next, .. } => cases
-            .values()
-            .map(String::as_str)
-            .chain(next.iter().map(String::as_str))
-            .collect(),
-        Rule::LoopGuard { on_exhausted, .. } => vec![on_exhausted.as_str()],
-        Rule::Next(next) => vec![next.as_str()],
-    }
-}
-
-pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
-    let reachable = reachable_nodes_from_entry(workflow);
-    workflow
-        .nodes
-        .iter()
-        .filter(|node| node.name != workflow.entry)
-        .filter(|node| !reachable.contains(node.name.as_str()))
-        .map(|node| RoutingValidationError::UnreachableNode {
-            node: node.name.clone(),
-        })
-        .collect()
-}
-
-fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
-    let node_by_name: BTreeMap<_, _> = workflow
-        .nodes
-        .iter()
-        .map(|node| (node.name.as_str(), node))
-        .collect();
-    let Some(entry) = workflow.entry_node() else {
-        return HashSet::new();
-    };
-    let mut reachable = HashSet::new();
-    let fanout_child_names = fanout_child_names(workflow);
-    let mut queue = VecDeque::from([entry.name.as_str()]);
-    while let Some(current) = queue.pop_front() {
-        if !reachable.insert(current) {
-            continue;
-        }
-        let Some(node) = node_by_name.get(current).copied() else {
-            continue;
-        };
-        for target in explicit_targets(node, &fanout_child_names) {
-            if node_by_name.contains_key(target) && !reachable.contains(target) {
-                queue.push_back(target);
-            }
-        }
-    }
-    reachable
-}
-
-fn explicit_targets<'a>(
-    node: &'a NodeDefinition,
-    fanout_child_names: &HashSet<&str>,
-) -> Vec<&'a str> {
-    if fanout_child_names.contains(node.name.as_str()) {
-        return Vec::new();
-    }
-    let mut targets = node.rules.iter().flat_map(rule_targets).collect::<Vec<_>>();
-    if let Some(fanout) = node.fanout() {
-        targets.extend(fanout.child.iter().map(String::as_str));
-    }
-    targets
-}
-
-fn fanout_child_names(workflow: &WorkflowDefinition) -> HashSet<&str> {
-    workflow
-        .nodes
-        .iter()
-        .filter_map(NodeDefinition::fanout)
-        .flat_map(|fanout| fanout.child.iter().map(String::as_str))
-        .collect()
-}
-
-fn validate_fanout_child_leaf_constraints(
-    workflow: &WorkflowDefinition,
-) -> Vec<RoutingValidationError> {
-    let node_by_name: BTreeMap<_, _> = workflow
-        .nodes
-        .iter()
-        .map(|node| (node.name.as_str(), node))
-        .collect();
-    let entry = workflow.entry.as_str();
-    let mut parent_by_child = BTreeMap::new();
-    let mut errors = Vec::new();
-
-    for parent in &workflow.nodes {
-        let Some(fanout) = parent.fanout() else {
-            continue;
-        };
-        for child in &fanout.child {
-            parent_by_child
-                .entry(child.as_str())
-                .or_insert(parent.name.as_str());
-            if entry == child.as_str() {
-                errors.push(RoutingValidationError::FanoutChildLeafViolation {
-                    fanout: parent.name.clone(),
-                    child: child.clone(),
-                    reason: "fanout child cannot be the workflow root node".to_string(),
-                });
-            }
-            if node_by_name
-                .get(child.as_str())
-                .is_some_and(|node| node.is_fanout())
-            {
-                errors.push(RoutingValidationError::FanoutChildLeafViolation {
-                    fanout: parent.name.clone(),
-                    child: child.clone(),
-                    reason: "fanout child must be a command or session node".to_string(),
-                });
-            }
-        }
-    }
-
-    for source in &workflow.nodes {
-        for target in source.rules.iter().flat_map(rule_targets) {
-            let Some(parent) = parent_by_child.get(target).copied() else {
-                continue;
-            };
-            errors.push(RoutingValidationError::FanoutChildLeafViolation {
-                fanout: parent.to_string(),
-                child: target.to_string(),
-                reason: format!(
-                    "fanout child cannot be a normal transition target from node '{}'",
-                    source.name
-                ),
-            });
-        }
-    }
-
-    errors
-}
-
-#[cfg(test)]
-fn reachable_node_names(workflow: &WorkflowDefinition) -> BTreeSet<&str> {
-    reachable_nodes_from_entry(workflow).into_iter().collect()
-}
-
-pub fn loop_guard(node: &NodeDefinition) -> Option<(u32, &str, Option<&str>)> {
-    node.rules.iter().find_map(|rule| match rule {
-        Rule::LoopGuard {
-            max_iterations,
-            on_exhausted,
-            reset_on,
-        } => Some((*max_iterations, on_exhausted.as_str(), reset_on.as_deref())),
-        _ => None,
-    })
-}
-
-fn validate_node_rules(
-    workflow: &WorkflowDefinition,
-    node: &NodeDefinition,
-    node_names: &BTreeSet<&str>,
-) -> Vec<RoutingValidationError> {
-    let mut errors = Vec::new();
-    let mut discriminator_count = 0usize;
-    let mut loop_guard_count = 0usize;
-    let mut next_count = 0usize;
-
-    for rule in &node.rules {
-        for target in rule_targets(rule) {
-            if !node_names.contains(target) {
-                errors.push(RoutingValidationError::UnknownRuleTarget {
-                    node: node.name.clone(),
-                    target: target.to_string(),
-                });
-            }
-        }
-        match rule {
-            Rule::When { .. } | Rule::Switch { .. } => discriminator_count += 1,
-            Rule::LoopGuard {
-                max_iterations,
-                reset_on,
-                ..
-            } => {
-                loop_guard_count += 1;
-                if *max_iterations == 0 {
-                    errors.push(RoutingValidationError::LoopGuardMaxIterations {
-                        node: node.name.clone(),
-                    });
-                }
-                if let Some(reset_on) = reset_on {
-                    if !node_names.contains(reset_on.as_str()) {
-                        errors.push(RoutingValidationError::UnknownLoopGuardResetNode {
-                            node: node.name.clone(),
-                            reset_on: reset_on.clone(),
-                        });
-                    }
-                }
-            }
-            Rule::Next(_) => next_count += 1,
-        }
-    }
-
-    if discriminator_count > 1 {
-        errors.push(RoutingValidationError::MultipleDiscriminators {
-            node: node.name.clone(),
-        });
-    }
-    if loop_guard_count > 1 {
-        errors.push(RoutingValidationError::MultipleLoopGuards {
-            node: node.name.clone(),
-        });
-    }
-    if next_count > 1 {
-        errors.push(RoutingValidationError::MultipleNextCatchAll {
-            node: node.name.clone(),
-        });
-    }
-    if discriminator_count > 0 && next_count > 0 {
-        errors.push(RoutingValidationError::StandaloneNextWithDiscriminator {
-            node: node.name.clone(),
-        });
-    }
-
-    let discriminator = node
-        .rules
-        .iter()
-        .find(|rule| matches!(rule, Rule::When { .. } | Rule::Switch { .. }));
-    match discriminator {
-        Some(Rule::When { on, .. }) => {
-            if let Err(reason) =
-                validate_routing_field(workflow, node, on, RoutingFieldKind::Boolean)
-            {
-                errors.push(RoutingValidationError::WhenFieldNotBoolean {
-                    node: node.name.clone(),
-                    field: on.clone(),
-                    reason: Some(reason),
-                });
-            }
-        }
-        Some(Rule::Switch { on, cases, next }) => {
-            match validate_routing_field(workflow, node, on, RoutingFieldKind::Enum) {
-                Ok(enum_values) => {
-                    let enum_set: BTreeSet<_> = enum_values.iter().map(String::as_str).collect();
-                    let case_set: BTreeSet<_> = cases.keys().map(String::as_str).collect();
-                    for case in case_set.difference(&enum_set) {
-                        errors.push(RoutingValidationError::SwitchUnknownCase {
-                            node: node.name.clone(),
-                            field: on.clone(),
-                            case: (*case).to_string(),
-                        });
-                    }
-                    let missing: Vec<_> = enum_set.difference(&case_set).copied().collect();
-                    let needs_p11_next = node.is_command() && node.artifact.is_some() && on != "ok";
-                    if missing.is_empty() {
-                        if next.is_some() && !needs_p11_next {
-                            errors.push(RoutingValidationError::SwitchExhaustiveHasNext {
-                                node: node.name.clone(),
-                            });
-                        }
-                        if needs_p11_next && next.is_none() {
-                            errors.push(RoutingValidationError::SwitchRequiresNext {
-                                node: node.name.clone(),
-                            });
-                        }
-                    } else if next.is_none() {
-                        errors.push(RoutingValidationError::SwitchMissingCases {
-                            node: node.name.clone(),
-                            field: on.clone(),
-                            missing: missing.into_iter().map(str::to_string).collect(),
-                        });
-                    }
-                }
-                Err(reason) => errors.push(RoutingValidationError::SwitchFieldNotEnum {
-                    node: node.name.clone(),
-                    field: on.clone(),
-                    reason: Some(reason),
-                }),
-            }
-        }
-        _ => {}
-    }
-
-    if discriminator.is_some() && matches!(node.kind, NodeKind::Fanout(_)) {
-        errors.push(RoutingValidationError::DiscriminatorOnFanout {
-            node: node.name.clone(),
-        });
-    }
-    if discriminator.is_some() && node.artifact.is_none() && !node.is_command() {
-        errors.push(RoutingValidationError::DiscriminatorWithoutArtifact {
-            node: node.name.clone(),
-        });
-    }
-
-    errors
 }
 
 fn validate_routing_field(
@@ -537,11 +791,11 @@ fn enum_values(schema: &SchemaDef, field: &str) -> Option<Vec<String>> {
 }
 
 fn raw_target(
-    node: &NodeDefinition,
+    node_name: &str,
+    rules: &[Rule],
     artifact: Option<&Value>,
 ) -> Result<Option<String>, WorkflowError> {
-    let discriminator = node
-        .rules
+    let discriminator = rules
         .iter()
         .find(|rule| matches!(rule, Rule::When { .. } | Rule::Switch { .. }));
     match discriminator {
@@ -562,12 +816,11 @@ fn raw_target(
             }
             next.clone().map(Some).ok_or_else(|| {
                 WorkflowError::validation(format!(
-                    "No matching switch case for node '{}' and no next catch-all",
-                    node.name
+                    "No matching switch case for node '{node_name}' and no next catch-all"
                 ))
             })
         }
-        _ => Ok(node.rules.iter().find_map(|rule| match rule {
+        _ => Ok(rules.iter().find_map(|rule| match rule {
             Rule::Next(next) => Some(next.clone()),
             _ => None,
         })),
@@ -581,12 +834,14 @@ pub fn guarded_target_with_reset_baselines(
     loop_guard_reset_baselines: &LoopGuardResetBaselines,
 ) -> Result<RouteDecision, WorkflowError> {
     for _ in 0..workflow.nodes.len() {
-        let target_node = workflow
-            .nodes
-            .iter()
-            .find(|node| node.name == target)
-            .ok_or_else(|| WorkflowError::validation(format!("node not found: {target}")))?;
-        let Some((max_iterations, on_exhausted, reset_on)) = loop_guard(target_node) else {
+        if workflow.node_by_name(&target).is_none() {
+            return Err(WorkflowError::validation(format!(
+                "node not found: {target}"
+            )));
+        }
+        let Some((max_iterations, on_exhausted, reset_on)) =
+            root_entry_loop_guard(workflow, &target)
+        else {
             return Ok(RouteDecision::TransitionTo(target));
         };
         let cumulative_count = node_execution_counts.get(&target).copied().unwrap_or(0);
@@ -599,50 +854,6 @@ pub fn guarded_target_with_reset_baselines(
     Err(WorkflowError::validation(
         "loop_guard on_exhausted chain depth exceeded",
     ))
-}
-
-fn validate_cycles_have_loop_guard(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
-    let node_names: BTreeSet<_> = workflow
-        .nodes
-        .iter()
-        .map(|node| node.name.as_str())
-        .collect();
-    let mut graph: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let fanout_child_names = fanout_child_names(workflow);
-    for node in &workflow.nodes {
-        graph.entry(node.name.as_str()).or_default();
-        if fanout_child_names.contains(node.name.as_str()) {
-            continue;
-        }
-        for target in node.rules.iter().flat_map(rule_targets) {
-            if node_names.contains(target) {
-                graph.entry(node.name.as_str()).or_default().insert(target);
-            }
-        }
-    }
-
-    let mut errors = Vec::new();
-    let node_by_name: BTreeMap<_, _> = workflow
-        .nodes
-        .iter()
-        .map(|node| (node.name.as_str(), node))
-        .collect();
-    for component in cyclic_strongly_connected_components(&node_names, &graph) {
-        let has_guard_on_cycle = component
-            .iter()
-            .filter_map(|name| node_by_name.get(*name).copied())
-            .any(|node| loop_guard(node).is_some());
-        if !has_guard_on_cycle {
-            for name in component {
-                if let Some(node) = node_by_name.get(name).copied() {
-                    errors.push(RoutingValidationError::CycleWithoutLoopGuard {
-                        node: node.name.clone(),
-                    });
-                }
-            }
-        }
-    }
-    errors
 }
 
 fn cyclic_strongly_connected_components<'a>(
@@ -714,811 +925,379 @@ fn is_reachable<'a>(
 mod routing_tests {
     use super::*;
     use crate::domain::workflow::value_objects::{
-        CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionSpec,
+        CommandSpec, FanoutSpec, InputSourceRef, NodeKind, SequenceSpec,
     };
-    use proptest::prelude::*;
 
-    fn bool_schema(field: &str) -> SchemaDef {
-        SchemaDef::Object {
-            properties: BTreeMap::from([(field.to_string(), SchemaDef::Boolean)]),
-            required: BTreeSet::from([field.to_string()]),
-        }
-    }
-
-    fn enum_schema(field: &str, values: &[&str]) -> SchemaDef {
-        SchemaDef::Object {
-            properties: BTreeMap::from([(
-                field.to_string(),
-                SchemaDef::String {
-                    r#enum: Some(values.iter().map(|value| (*value).to_string()).collect()),
-                },
-            )]),
-            required: BTreeSet::from([field.to_string()]),
-        }
-    }
-
-    fn mixed_schema(fields: Vec<(&str, SchemaDef)>, required: &[&str]) -> SchemaDef {
-        SchemaDef::Object {
-            properties: fields
-                .into_iter()
-                .map(|(name, schema)| (name.to_string(), schema))
-                .collect(),
-            required: required.iter().map(|value| (*value).to_string()).collect(),
-        }
-    }
-
-    fn session_node(name: &str, artifact: Option<&str>, rules: Vec<Rule>) -> NodeDefinition {
-        NodeDefinition {
-            name: name.to_string(),
-            kind: NodeKind::Session(SessionSpec {
-                facets: FacetRefs {
-                    instruction: Some("inst".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            artifact: artifact.map(ToOwned::to_owned),
-            rules,
-            ..Default::default()
-        }
-    }
-
-    fn command_node(name: &str, artifact: Option<&str>, rules: Vec<Rule>) -> NodeDefinition {
+    fn command_node(name: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
-                command: "true".to_string(),
+                command: "echo hi".to_string(),
             }),
-            artifact: artifact.map(ToOwned::to_owned),
-            rules,
-            ..Default::default()
+            artifact: None,
+            input: Vec::new(),
+            completion: Default::default(),
+            worktree: None,
         }
     }
 
-    fn fanout_node(name: &str, children: &[&str], rules: Vec<Rule>) -> NodeDefinition {
+    fn sequence_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Sequence(SequenceSpec {
+                entry: None,
+                output: None,
+                children,
+            }),
+            artifact: None,
+            input: Vec::new(),
+            completion: Default::default(),
+            worktree: None,
+        }
+    }
+
+    fn fanout_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: children.iter().map(|child| (*child).to_string()).collect(),
+                children,
                 items: None,
             }),
-            rules,
+            artifact: None,
+            input: Vec::new(),
+            completion: Default::default(),
+            worktree: None,
+        }
+    }
+
+    fn entry_with_rules(name: &str, rules: Vec<Rule>) -> ChildEntry {
+        ChildEntry {
+            name: name.to_string(),
+            inputs: Vec::new(),
+            rules: Some(rules),
+        }
+    }
+
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "wf".to_string(),
+            nodes,
             ..Default::default()
         }
     }
 
-    fn workflow(
-        nodes: Vec<NodeDefinition>,
-        schemas: BTreeMap<String, SchemaDef>,
-    ) -> WorkflowDefinition {
-        let entry = nodes
-            .first()
-            .map(|node| node.name.clone())
-            .unwrap_or_default();
-        WorkflowDefinition {
-            name: "wf".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas,
-            nodes,
-            entry,
-        }
+    fn node_index(workflow: &WorkflowDefinition, name: &str) -> usize {
+        workflow
+            .nodes
+            .iter()
+            .position(|node| node.name == name)
+            .expect("node exists")
     }
 
-    fn assert_invalid_reason(wf: &WorkflowDefinition, expected: &str) {
-        let errors = validate_rules(wf);
-        assert!(
-            errors
-                .iter()
-                .any(|error| routing_error_test_reason(error).contains(expected)),
-            "expected invalid reason containing '{expected}', got {errors:?}"
-        );
+    fn route_from(
+        workflow: &WorkflowDefinition,
+        name: &str,
+        artifact: Option<&Value>,
+    ) -> RouteDecision {
+        route(
+            workflow,
+            node_index(workflow, name),
+            artifact,
+            &HashMap::new(),
+        )
+        .expect("route succeeds")
     }
 
-    fn routing_error_test_reason(error: &RoutingValidationError) -> String {
-        match error {
-            RoutingValidationError::MultipleDiscriminators { .. } => {
-                "rules can contain at most one when or switch discriminator".to_string()
-            }
-            RoutingValidationError::MultipleLoopGuards { .. } => {
-                "rules can contain at most one loop_guard".to_string()
-            }
-            RoutingValidationError::MultipleNextCatchAll { .. } => {
-                "rules can contain at most one next catch-all".to_string()
-            }
-            RoutingValidationError::StandaloneNextWithDiscriminator { .. } => {
-                "standalone next cannot be combined with when or switch".to_string()
-            }
-            RoutingValidationError::WhenFieldNotBoolean { reason, .. }
-            | RoutingValidationError::SwitchFieldNotEnum { reason, .. } => {
-                reason.clone().unwrap_or_default()
-            }
-            RoutingValidationError::SwitchUnknownCase { field, case, .. } => {
-                format!("switch case '{case}' is not declared in enum field '{field}'")
-            }
-            RoutingValidationError::SwitchMissingCases { field, missing, .. } => format!(
-                "switch on '{field}' is missing enum cases [{}] and requires next",
-                missing.join(", ")
+    #[test]
+    fn test_隣接辺_rules無しエントリはリストの次へ進み末尾で完了する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("first"),
+                    ChildEntry::reference("second"),
+                ],
             ),
-            RoutingValidationError::SwitchExhaustiveHasNext { .. } => {
-                "exhaustive switch cannot also define next catch-all".to_string()
-            }
-            RoutingValidationError::SwitchRequiresNext { .. } => {
-                "command artifact routing on Contract field requires next catch-all".to_string()
-            }
-            RoutingValidationError::DiscriminatorOnFanout { .. } => {
-                "fanout nodes cannot use when or switch rules".to_string()
-            }
-            RoutingValidationError::DiscriminatorWithoutArtifact { .. } => {
-                "nodes without an artifact cannot use when or switch rules".to_string()
-            }
-            RoutingValidationError::LoopGuardMaxIterations { .. } => {
-                "loop_guard.max_iterations must be greater than 0".to_string()
-            }
-            RoutingValidationError::CycleWithoutLoopGuard { .. } => {
-                "cycle reachable from this node has no loop_guard on cycle nodes".to_string()
-            }
-            RoutingValidationError::FanoutChildLeafViolation { reason, .. } => reason.clone(),
-            RoutingValidationError::UnknownRuleTarget { .. }
-            | RoutingValidationError::UnknownLoopGuardResetNode { .. }
-            | RoutingValidationError::UnreachableNode { .. } => String::new(),
-        }
+            command_node("first"),
+            command_node("second"),
+        ]);
+
+        assert_eq!(
+            route_from(&wf, "first", None),
+            RouteDecision::TransitionTo("second".to_string())
+        );
+        assert_eq!(route_from(&wf, "second", None), RouteDecision::Completed);
     }
 
     #[test]
-    fn fanout_edges_reach_children_but_child_rules_do_not_escape_leaf_scope() {
-        let wf = workflow(
-            vec![
-                fanout_node("fanout", &["worker"], vec![Rule::Next("done".to_string())]),
-                session_node("worker", None, vec![Rule::Next("fanout".to_string())]),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
+    fn test_明示終端_空rulesは隣接辺を持たず完了する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules("first", Vec::new()),
+                    ChildEntry::reference("second"),
+                ],
+            ),
+            command_node("first"),
+            command_node("second"),
+        ]);
 
-        assert!(validate_rules(&wf).is_empty());
-        assert_eq!(
-            reachable_node_names(&wf),
-            BTreeSet::from(["done", "fanout", "worker"])
-        );
+        assert_eq!(route_from(&wf, "first", None), RouteDecision::Completed);
     }
 
     #[test]
-    fn test_rules_empty_nodeはcompletedを返す() {
-        let wf = workflow(vec![session_node("done", None, vec![])], BTreeMap::new());
+    fn test_children外ターゲット_遷移後は出る辺が無く完了する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![entry_with_rules(
+                    "first",
+                    vec![Rule::Next("target_only".to_string())],
+                )],
+            ),
+            command_node("first"),
+            command_node("target_only"),
+        ]);
 
         assert_eq!(
-            route(&wf, 0, None, &HashMap::new()).unwrap(),
+            route_from(&wf, "first", None),
+            RouteDecision::TransitionTo("target_only".to_string())
+        );
+        assert_eq!(
+            route_from(&wf, "target_only", None),
             RouteDecision::Completed
         );
     }
 
     #[test]
-    fn test_rules_whenはboolean_fieldで一意に遷移する() {
-        let wf = workflow(
-            vec![
-                session_node(
-                    "judge",
-                    Some("verdict"),
-                    vec![Rule::When {
-                        on: "passed".to_string(),
-                        then: "done".to_string(),
-                        next: "fix".to_string(),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-            ],
-            BTreeMap::from([("verdict".to_string(), bool_schema("passed"))]),
-        );
-        assert!(validate_rules(&wf).is_empty());
-        assert_eq!(
-            route(
-                &wf,
-                0,
-                Some(&serde_json::json!({"passed": true})),
-                &HashMap::new()
-            )
-            .unwrap(),
-            RouteDecision::TransitionTo("done".to_string())
-        );
-        assert_eq!(
-            route(
-                &wf,
-                0,
-                Some(&serde_json::json!({"passed": false})),
-                &HashMap::new()
-            )
-            .unwrap(),
-            RouteDecision::TransitionTo("fix".to_string())
-        );
-        assert_eq!(
-            route(&wf, 0, Some(&serde_json::json!({})), &HashMap::new()).unwrap(),
-            RouteDecision::TransitionTo("fix".to_string()),
-            "a missing when field is a no-match and must use sibling next"
-        );
+    fn test_単独実行_rootがleafなら完了する() {
+        let wf = workflow(vec![command_node("main")]);
+        assert_eq!(route_from(&wf, "main", None), RouteDecision::Completed);
     }
 
     #[test]
-    fn test_rules_switchはenum網羅ならcatch_all不要() {
-        let wf = workflow(
-            vec![
-                session_node(
-                    "judge",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([
-                            ("SHIP".to_string(), "done".to_string()),
-                            ("HOLD".to_string(), "fix".to_string()),
-                        ]),
-                        next: None,
-                    }],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
-        assert!(validate_rules(&wf).is_empty());
-    }
-
-    #[test]
-    fn test_rules_switch_enum抜けはnext必須() {
-        let wf = workflow(
-            vec![
-                session_node(
-                    "judge",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([("SHIP".to_string(), "done".to_string())]),
-                        next: None,
-                    }],
-                ),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
-        assert_eq!(validate_rules(&wf).len(), 1);
-    }
-
-    #[test]
-    fn test_rules_command_contract_field参照はnext必須() {
-        let wf = workflow(
-            vec![
-                command_node(
-                    "judge",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([
-                            ("SHIP".to_string(), "done".to_string()),
-                            ("HOLD".to_string(), "fix".to_string()),
-                        ]),
-                        next: None,
-                    }],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
-        assert_eq!(validate_rules(&wf).len(), 1);
-    }
-
-    #[test]
-    fn test_rules_validate_rulesは排他違反を拒否する() {
-        let wf = workflow(
-            vec![
-                session_node(
-                    "route",
-                    Some("verdict"),
-                    vec![
-                        Rule::When {
-                            on: "passed".to_string(),
-                            then: "done".to_string(),
-                            next: "fix".to_string(),
-                        },
-                        Rule::Switch {
-                            on: "decision".to_string(),
-                            cases: BTreeMap::from([("SHIP".to_string(), "done".to_string())]),
-                            next: Some("fix".to_string()),
-                        },
-                    ],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                mixed_schema(
-                    vec![
-                        ("passed", SchemaDef::Boolean),
-                        (
-                            "decision",
-                            SchemaDef::String {
-                                r#enum: Some(vec!["SHIP".to_string(), "HOLD".to_string()]),
+    fn test_loop_guard_上限到達でon_exhaustedへ迂回する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules("work", vec![Rule::Next("retry".to_string())]),
+                    entry_with_rules(
+                        "retry",
+                        vec![
+                            Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "done".to_string(),
+                                reset_on: None,
                             },
-                        ),
-                    ],
-                    &["passed", "decision"],
-                ),
-            )]),
-        );
+                            Rule::Next("work".to_string()),
+                        ],
+                    ),
+                    ChildEntry::reference("done"),
+                ],
+            ),
+            command_node("work"),
+            command_node("retry"),
+            command_node("done"),
+        ]);
 
-        assert_invalid_reason(&wf, "at most one when or switch discriminator");
+        let mut counts = HashMap::new();
+        counts.insert("retry".to_string(), 1u32);
+        let decision = route(&wf, node_index(&wf, "work"), None, &counts).unwrap();
+        assert_eq!(decision, RouteDecision::TransitionTo("retry".to_string()));
+
+        counts.insert("retry".to_string(), 2u32);
+        let decision = route(&wf, node_index(&wf, "work"), None, &counts).unwrap();
+        assert_eq!(decision, RouteDecision::TransitionTo("done".to_string()));
     }
 
     #[test]
-    fn test_rules_validate_rulesは網羅済みswitchのnextを拒否する() {
-        let wf = workflow(
-            vec![
-                session_node(
-                    "route",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([
-                            ("SHIP".to_string(), "done".to_string()),
-                            ("HOLD".to_string(), "fix".to_string()),
-                        ]),
-                        next: Some("fix".to_string()),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
+    fn test_reset_baselines_リセット後のカウントで上限を判定する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules("work", vec![Rule::Next("retry".to_string())]),
+                    entry_with_rules(
+                        "retry",
+                        vec![
+                            Rule::LoopGuard {
+                                max_iterations: 1,
+                                on_exhausted: "done".to_string(),
+                                reset_on: Some("work".to_string()),
+                            },
+                            Rule::Next("work".to_string()),
+                        ],
+                    ),
+                    ChildEntry::reference("done"),
+                ],
+            ),
+            command_node("work"),
+            command_node("retry"),
+            command_node("done"),
+        ]);
 
-        assert_invalid_reason(&wf, "exhaustive switch cannot also define next catch-all");
-    }
+        let mut counts = HashMap::new();
+        counts.insert("retry".to_string(), 1u32);
 
-    #[test]
-    fn test_rules_validate_rulesは判別ruleをfanoutやartifact無しnodeで拒否する() {
-        let fanout = NodeDefinition {
-            name: "fanout".to_string(),
-            kind: NodeKind::Fanout(Default::default()),
-            artifact: Some("verdict".to_string()),
-            rules: vec![Rule::When {
-                on: "passed".to_string(),
-                then: "done".to_string(),
-                next: "done".to_string(),
-            }],
-            ..Default::default()
-        };
-        let fanout_wf = workflow(
-            vec![fanout, session_node("done", None, vec![])],
-            BTreeMap::from([("verdict".to_string(), bool_schema("passed"))]),
-        );
-        assert_invalid_reason(&fanout_wf, "fanout nodes cannot use when or switch rules");
-
-        let no_artifact_wf = workflow(
-            vec![
-                session_node(
-                    "route",
-                    None,
-                    vec![Rule::When {
-                        on: "passed".to_string(),
-                        then: "done".to_string(),
-                        next: "done".to_string(),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-        assert_invalid_reason(
-            &no_artifact_wf,
-            "nodes without an artifact cannot use when or switch rules",
-        );
-    }
-
-    #[test]
-    fn test_rules_validate_rulesはwhen_switchの型不一致を拒否する() {
-        let when_on_enum = workflow(
-            vec![
-                session_node(
-                    "route",
-                    Some("verdict"),
-                    vec![Rule::When {
-                        on: "decision".to_string(),
-                        then: "done".to_string(),
-                        next: "done".to_string(),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
-        assert_invalid_reason(
-            &when_on_enum,
-            "when.on field 'decision' must be a required boolean",
-        );
-
-        let switch_on_bool = workflow(
-            vec![
-                session_node(
-                    "route",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "passed".to_string(),
-                        cases: BTreeMap::from([("true".to_string(), "done".to_string())]),
-                        next: Some("done".to_string()),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::from([("verdict".to_string(), bool_schema("passed"))]),
-        );
-        assert_invalid_reason(
-            &switch_on_bool,
-            "switch.on field 'passed' must be a required enum",
-        );
-    }
-
-    #[test]
-    fn test_rules_switch_field不在時はnextへfallbackする() {
-        let wf = workflow(
-            vec![
-                command_node(
-                    "route",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([
-                            ("SHIP".to_string(), "done".to_string()),
-                            ("HOLD".to_string(), "fix".to_string()),
-                        ]),
-                        next: Some("fallback".to_string()),
-                    }],
-                ),
-                session_node("done", None, vec![]),
-                session_node("fix", None, vec![]),
-                session_node("fallback", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["SHIP", "HOLD"]),
-            )]),
-        );
-
-        assert!(validate_rules(&wf).is_empty());
-        assert_eq!(
-            route(&wf, 0, Some(&serde_json::json!({})), &HashMap::new()).unwrap(),
-            RouteDecision::TransitionTo("fallback".to_string())
-        );
-    }
-
-    #[test]
-    fn test_rules_loop_guard超過でon_exhaustedへ遷移する() {
-        let wf = workflow(
-            vec![
-                session_node("fix", None, vec![Rule::Next("review".to_string())]),
-                session_node(
-                    "review",
-                    None,
-                    vec![
-                        Rule::LoopGuard {
-                            max_iterations: 2,
-                            on_exhausted: "give_up".to_string(),
-                            reset_on: None,
-                        },
-                        Rule::Next("fix".to_string()),
-                    ],
-                ),
-                session_node("give_up", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-        assert!(validate_rules(&wf).is_empty());
-        assert_eq!(
-            route(&wf, 0, None, &HashMap::from([("review".to_string(), 2)])).unwrap(),
-            RouteDecision::TransitionTo("give_up".to_string())
-        );
-    }
-
-    #[test]
-    fn test_loop_guard_reset_on正常完了ごとに新しいカウント範囲を開始する() {
-        let wf = workflow(
-            vec![
-                session_node("round", None, vec![Rule::Next("fix".to_string())]),
-                session_node(
-                    "fix",
-                    None,
-                    vec![
-                        Rule::LoopGuard {
-                            max_iterations: 2,
-                            on_exhausted: "give_up".to_string(),
-                            reset_on: Some("round".to_string()),
-                        },
-                        Rule::Next("round".to_string()),
-                    ],
-                ),
-                session_node("give_up", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-        let mut counts = HashMap::from([("fix".to_string(), 2)]);
         let mut baselines = LoopGuardResetBaselines::default();
-
-        assert_eq!(
-            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
-                .unwrap(),
-            RouteDecision::TransitionTo("give_up".to_string()),
-            "reset_on が未到達なら Workflow 開始からの累計を使う"
-        );
-
-        baselines.record_successful_completion(&wf, "round", &counts);
-        assert_eq!(
-            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
-                .unwrap(),
-            RouteDecision::TransitionTo("fix".to_string())
-        );
-
-        counts.insert("fix".to_string(), 3);
-        assert_eq!(
-            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
-                .unwrap(),
-            RouteDecision::TransitionTo("fix".to_string())
-        );
-        counts.insert("fix".to_string(), 4);
-        assert_eq!(
-            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
-                .unwrap(),
-            RouteDecision::TransitionTo("give_up".to_string())
-        );
-
-        baselines.record_successful_completion(&wf, "round", &counts);
-        assert_eq!(
-            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
-                .unwrap(),
-            RouteDecision::TransitionTo("fix".to_string()),
-            "2 回目の正常完了でも新しい範囲を開始する"
-        );
+        baselines.record_successful_completion(&wf, "work", &counts);
+        let decision =
+            route_with_reset_baselines(&wf, node_index(&wf, "work"), None, &counts, &baselines)
+                .unwrap();
+        assert_eq!(decision, RouteDecision::TransitionTo("retry".to_string()));
     }
 
     #[test]
-    fn test_loop_guard_reset_onはcontrol_flow_edgeとして扱わない() {
-        let wf = workflow(
-            vec![
-                session_node("main", None, vec![Rule::Next("fix".to_string())]),
-                session_node(
-                    "fix",
-                    None,
-                    vec![Rule::LoopGuard {
-                        max_iterations: 2,
-                        on_exhausted: "done".to_string(),
-                        reset_on: Some("boundary".to_string()),
-                    }],
-                ),
-                session_node("boundary", None, vec![]),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-
-        assert!(!reachable_node_names(&wf).contains("boundary"));
-    }
-
-    #[test]
-    fn reachability_starts_at_entry_and_does_not_seed_unreachable_subgraph_edges() {
-        let wf = workflow(
-            vec![
-                session_node("main", None, vec![]),
-                session_node("orphan", None, vec![Rule::Next("target".to_string())]),
-                session_node("target", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-
-        assert_eq!(
-            reachable_node_names(&wf),
-            BTreeSet::from(["main"]),
-            "unreachable subgraph edges must not mark their targets reachable"
-        );
-        let errors = validate_reachability(&wf);
-        for node in ["orphan", "target"] {
-            assert!(
-                errors.iter().any(|error| matches!(
-                    error,
-                    RoutingValidationError::UnreachableNode { node: found } if found == node
-                )),
-                "expected unreachable error for {node}, got {errors:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn reachability_follows_explicit_rule_targets_from_reachable_nodes() {
-        let wf = workflow(
-            vec![
-                session_node("main", None, vec![Rule::Next("target".to_string())]),
-                session_node("orphan", None, vec![]),
-                session_node("target", None, vec![]),
-            ],
-            BTreeMap::new(),
-        );
-
-        assert_eq!(
-            reachable_node_names(&wf),
-            BTreeSet::from(["main", "target"])
-        );
-        let errors = validate_reachability(&wf);
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            &errors[0],
-            RoutingValidationError::UnreachableNode { node } if node == "orphan"
-        ));
-    }
-
-    fn cycle_with_exit_guard_workflow(guard_on_cycle: bool) -> WorkflowDefinition {
-        let mut node_b_rules = vec![Rule::Next("node_a".to_string())];
-        if guard_on_cycle {
-            node_b_rules.insert(
-                0,
-                Rule::LoopGuard {
-                    max_iterations: 3,
-                    on_exhausted: "done".to_string(),
-                    reset_on: None,
-                },
-            );
-        }
-        workflow(
-            vec![
-                session_node(
-                    "node_a",
-                    Some("verdict"),
-                    vec![Rule::Switch {
-                        on: "decision".to_string(),
-                        cases: BTreeMap::from([
-                            ("LOOP".to_string(), "node_b".to_string()),
-                            ("EXIT".to_string(), "node_c".to_string()),
-                        ]),
-                        next: None,
-                    }],
-                ),
-                session_node("node_b", None, node_b_rules),
-                session_node(
-                    "node_c",
-                    None,
-                    vec![Rule::LoopGuard {
-                        max_iterations: 3,
-                        on_exhausted: "done".to_string(),
-                        reset_on: None,
-                    }],
-                ),
-                session_node("done", None, vec![]),
-            ],
-            BTreeMap::from([(
-                "verdict".to_string(),
-                enum_schema("decision", &["LOOP", "EXIT"]),
-            )]),
-        )
-    }
-
-    #[test]
-    fn test_rules_cycle_guardは閉路外分岐のloop_guardでは充足しない() {
-        let wf = cycle_with_exit_guard_workflow(false);
-
-        let errors = validate_rules(&wf);
-
-        assert!(
-            errors.iter().any(|error| matches!(
-                error,
-                RoutingValidationError::CycleWithoutLoopGuard { node }
-                    if node == "node_a"
-            )),
-            "expected node_a cycle guard error, got {errors:?}"
-        );
-        assert!(
-            errors.iter().any(|error| matches!(
-                error,
-                RoutingValidationError::CycleWithoutLoopGuard { node }
-                    if node == "node_b"
-            )),
-            "expected node_b cycle guard error, got {errors:?}"
-        );
-    }
-
-    #[test]
-    fn test_rules_cycle_guardは閉路上nodeにloop_guardがあれば通る() {
-        let wf = cycle_with_exit_guard_workflow(true);
-
-        assert!(validate_rules(&wf).is_empty());
-    }
-
-    proptest! {
-        #[test]
-        fn prop_when_boolean_artifact値は必ず一意の遷移先に定まる(passed in any::<bool>()) {
-            let wf = workflow(
+    fn test_検証_同一合成子への重複子参照を拒否する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
                 vec![
-                    session_node(
-                        "judge",
-                        Some("verdict"),
-                        vec![Rule::When {
-                            on: "passed".to_string(),
-                            then: "done".to_string(),
-                            next: "fix".to_string(),
-                        }],
-                    ),
-                    session_node("done", None, vec![]),
-                    session_node("fix", None, vec![]),
+                    ChildEntry::reference("first"),
+                    ChildEntry::reference("first"),
                 ],
-                BTreeMap::from([("verdict".to_string(), bool_schema("passed"))]),
-            );
-            prop_assert!(validate_rules(&wf).is_empty());
+            ),
+            command_node("first"),
+        ]);
 
-            let decision = route(
-                &wf,
-                0,
-                Some(&serde_json::json!({ "passed": passed })),
-                &HashMap::new(),
-            )
-            .unwrap();
-            prop_assert_eq!(
-                decision,
-                RouteDecision::TransitionTo(if passed { "done" } else { "fix" }.to_string())
-            );
-        }
+        assert!(validate_rules(&wf).iter().any(|error| matches!(
+            error,
+            RoutingValidationError::DuplicateChildReference { child, .. } if child == "first"
+        )));
+    }
 
-        #[test]
-        fn prop_switch_enum_artifact値は必ず一意の遷移先に定まる(index in 0usize..3) {
-            let values = ["LGTM", "NEEDS_FIX", "ESCALATE"];
-            let targets = ["done", "fix", "approval"];
-            let wf = workflow(
+    #[test]
+    fn test_検証_未知の子参照を拒否する() {
+        let wf = workflow(vec![sequence_node(
+            "main",
+            vec![ChildEntry::reference("ghost")],
+        )]);
+
+        assert!(validate_rules(&wf).iter().any(|error| matches!(
+            error,
+            RoutingValidationError::UnknownChildReference { child, .. } if child == "ghost"
+        )));
+    }
+
+    #[test]
+    fn test_検証_fanout子エントリのrulesを拒否する() {
+        let wf = workflow(vec![
+            sequence_node("main", vec![ChildEntry::reference("fan")]),
+            fanout_node(
+                "fan",
+                vec![entry_with_rules(
+                    "worker",
+                    vec![Rule::Next("worker".to_string())],
+                )],
+            ),
+            command_node("worker"),
+        ]);
+
+        assert!(validate_rules(&wf).iter().any(|error| matches!(
+            error,
+            RoutingValidationError::RulesOnFanoutChildEntry { child, .. } if child == "worker"
+        )));
+    }
+
+    #[test]
+    fn test_検証_他合成子の子への遷移ターゲットを拒否する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
                 vec![
-                    session_node(
-                        "judge",
-                        Some("verdict"),
-                        vec![Rule::Switch {
-                            on: "decision".to_string(),
-                            cases: BTreeMap::from([
-                                ("LGTM".to_string(), "done".to_string()),
-                                ("NEEDS_FIX".to_string(), "fix".to_string()),
-                                ("ESCALATE".to_string(), "approval".to_string()),
-                            ]),
-                            next: None,
-                        }],
-                    ),
-                    session_node("done", None, vec![]),
-                    session_node("fix", None, vec![]),
-                    session_node("approval", None, vec![]),
+                    entry_with_rules("first", vec![Rule::Next("worker".to_string())]),
+                    ChildEntry::reference("fan"),
                 ],
-                BTreeMap::from([(
-                    "verdict".to_string(),
-                    enum_schema("decision", &values),
-                )]),
-            );
-            prop_assert!(validate_rules(&wf).is_empty());
+            ),
+            command_node("first"),
+            fanout_node("fan", vec![ChildEntry::reference("worker")]),
+            command_node("worker"),
+        ]);
 
-            let decision = route(
-                &wf,
-                0,
-                Some(&serde_json::json!({ "decision": values[index] })),
-                &HashMap::new(),
-            )
-            .unwrap();
-            prop_assert_eq!(
-                decision,
-                RouteDecision::TransitionTo(targets[index].to_string())
-            );
-        }
+        assert!(validate_rules(&wf).iter().any(|error| matches!(
+            error,
+            RoutingValidationError::ChildReferenceViolation { child, .. } if child == "worker"
+        )));
+    }
+
+    #[test]
+    fn test_検証_隣接辺を含む閉路にloop_guardが無ければ拒否する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("first"),
+                    entry_with_rules("second", vec![Rule::Next("first".to_string())]),
+                ],
+            ),
+            command_node("first"),
+            command_node("second"),
+        ]);
+
+        assert!(validate_rules(&wf)
+            .iter()
+            .any(|error| matches!(error, RoutingValidationError::CycleWithoutLoopGuard { .. })));
+    }
+
+    #[test]
+    fn test_検証_entryがchildren外ならエラー() {
+        let mut seq = SequenceSpec {
+            entry: Some("outside".to_string()),
+            output: None,
+            children: vec![ChildEntry::reference("first")],
+        };
+        let wf = workflow(vec![
+            NodeDefinition {
+                name: "main".to_string(),
+                kind: NodeKind::Sequence(std::mem::take(&mut seq)),
+                artifact: None,
+                input: Vec::new(),
+                completion: Default::default(),
+                worktree: None,
+            },
+            command_node("first"),
+            command_node("outside"),
+        ]);
+
+        assert!(validate_rules(&wf).iter().any(|error| matches!(
+            error,
+            RoutingValidationError::SequenceEntryNotChild { entry, .. } if entry == "outside"
+        )));
+    }
+
+    #[test]
+    fn test_到達可能性_スコープ内で辿れない子とカタログ未参照nodeを検出する() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules("first", Vec::new()),
+                    ChildEntry::reference("orphan_child"),
+                ],
+            ),
+            command_node("first"),
+            command_node("orphan_child"),
+            command_node("unreferenced"),
+        ]);
+
+        let unreachable: Vec<_> = validate_reachability(&wf)
+            .into_iter()
+            .map(|error| match error {
+                RoutingValidationError::UnreachableNode { node } => node,
+                other => panic!("unexpected error: {other:?}"),
+            })
+            .collect();
+        assert!(unreachable.contains(&"orphan_child".to_string()));
+        assert!(unreachable.contains(&"unreferenced".to_string()));
+        assert!(!unreachable.contains(&"first".to_string()));
+    }
+
+    #[test]
+    fn test_パラメータ配線_供給元参照のroot分解() {
+        let source = InputSourceRef::new("collect_inputs.spec_dir");
+        assert_eq!(source.root(), "collect_inputs");
+        assert_eq!(source.field(), Some("spec_dir"));
     }
 }

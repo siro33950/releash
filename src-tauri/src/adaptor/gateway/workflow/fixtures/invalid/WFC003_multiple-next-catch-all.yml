@@ -2,13 +2,18 @@ name: multiple-next-catch-all
 description: only one next catch-all is allowed
 nodes:
   main:
+    sequence:
+      children:
+      - route:
+          rules:
+          - next: done
+          - next: done
+      - done
+  route:
     session:
       provider: claude
       facets:
         instruction: route
-    rules:
-      - next: done
-      - next: done
   done:
     session:
       provider: claude

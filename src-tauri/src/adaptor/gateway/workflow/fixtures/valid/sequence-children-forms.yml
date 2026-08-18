@@ -1,0 +1,33 @@
+name: sequence-children-forms
+description: sequence children covering all four entry forms - catalog reference, reference with treatment, inline declaration, and unnamed entry
+schemas:
+  collected:
+    type: object
+    properties:
+      note:
+        type: string
+    required:
+    - note
+nodes:
+  main:
+    sequence:
+      children:
+      - collect
+      - review:
+          inputs:
+            spec: collect
+          rules:
+          - next: build
+      - build:
+          command: "printf build"
+      - session:
+          provider: claude
+          facets:
+            instruction: wrap-up
+  collect:
+    command: "printf collect"
+    artifact: collected
+  review:
+    command: "printf '%s' '{{ spec.note }}'"
+    input:
+    - spec: collected

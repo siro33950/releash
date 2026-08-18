@@ -7,24 +7,31 @@ schemas:
       verdict:
         type: string
         enum:
-          - SHIP
-          - HOLD
+        - SHIP
+        - HOLD
     required:
-      - verdict
+    - verdict
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - switch:
+              on: verdict
+              cases:
+                SHIP: shipped
+                HOLD: held
+            next: fallback
+      - shipped
+      - held
+      - fallback
+  judge:
     artifact: route
     session:
       provider: claude
       facets:
         instruction: judge
-    rules:
-      - switch:
-          on: verdict
-          cases:
-            SHIP: shipped
-            HOLD: held
-        next: fallback
   shipped:
     session:
       provider: claude

@@ -1,0 +1,7 @@
+name: reserved-parameter-name
+description: a node cannot declare an input parameter named request
+nodes:
+  main:
+    command: "printf '%s' '{{ request }}'"
+    input:
+    - request

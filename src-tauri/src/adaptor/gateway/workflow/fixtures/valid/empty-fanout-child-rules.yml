@@ -1,19 +1,21 @@
 name: empty-fanout-child-rules
-description: empty items complete without children and child rules are ignored by fanout execution
+description: empty items complete without invoking any child and the parent sequence routes past the fanout
 schemas:
   item-text: string
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - done
+  dispatch:
     fanout:
-      child: worker
+      children:
+      - worker
       items: []
-    rules:
-      - next: done
   worker:
-    input:
-      - item: item-text
     command: "printf '%s' '{{ item }}'"
-    rules:
-      - next: done
+    input:
+    - item: item-text
   done:
     command: printf done

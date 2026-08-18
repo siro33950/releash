@@ -3,4 +3,5 @@ description: fanout child must reference a top-level node
 nodes:
   main:
     fanout:
-      child: missing
+      children:
+      - missing

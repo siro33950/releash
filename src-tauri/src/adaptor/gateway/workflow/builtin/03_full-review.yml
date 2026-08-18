@@ -45,6 +45,23 @@ schemas:
 nodes:
 
   main:
+    sequence:
+      children:
+      - resolve_request:
+          inputs:
+            goal: request
+      - full_review_fanout:
+          inputs:
+            resolve_request: resolve_request
+      - verify_full_review_fanout:
+          inputs:
+            resolve_request: resolve_request
+      - check_full_review_threads
+      - review_report:
+          inputs:
+            check_full_review_threads: check_full_review_threads
+
+  resolve_request:
     session:
       provider: codex
       model: gpt-5.6-sol
@@ -53,28 +70,63 @@ nodes:
         policy: planning
         instruction: existing-spec-resolve-request
     artifact: implementation-context
-    inputs:
-    - request
-    rules:
-    - next: full_review_fanout
+    input:
+    - goal
 
   full_review_fanout:
+    input:
+    - resolve_request
     fanout:
-      child:
-      - full_review_acceptance_opus
-      - full_review_acceptance_codex
-      - full_review_structure_opus
-      - full_review_structure_codex
-      - full_review_quality_opus
-      - full_review_quality_codex
-      - full_review_test_opus
-      - full_review_test_codex
-      - full_review_security_opus
-      - full_review_security_codex
-      - full_review_architecture_opus
-      - full_review_architecture_codex
-    rules:
-    - next: verify_full_review_fanout
+      children:
+      - full_review_acceptance_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_acceptance_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_structure_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_structure_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_quality_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_quality_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_test_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_test_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_security_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_security_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_architecture_opus:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+      - full_review_architecture_codex:
+          inputs:
+            goal: request
+            resolve_request: resolve_request
+
   full_review_acceptance_opus:
     session:
       provider: claude
@@ -84,8 +136,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-acceptance
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_acceptance_codex:
     session:
       provider: codex
@@ -95,8 +148,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-acceptance
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_structure_opus:
     session:
       provider: claude
@@ -106,8 +160,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-structure
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_structure_codex:
     session:
       provider: codex
@@ -117,8 +172,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-structure
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_quality_opus:
     session:
       provider: claude
@@ -128,8 +184,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-quality
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_quality_codex:
     session:
       provider: codex
@@ -139,8 +196,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-quality
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_test_opus:
     session:
       provider: claude
@@ -150,8 +208,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-test
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_test_codex:
     session:
       provider: codex
@@ -161,8 +220,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-test
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_security_opus:
     session:
       provider: claude
@@ -172,8 +232,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-security
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_security_codex:
     session:
       provider: codex
@@ -183,8 +244,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-security
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_architecture_opus:
     session:
       provider: claude
@@ -194,8 +256,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-architecture
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
   full_review_architecture_codex:
     session:
       provider: codex
@@ -205,15 +268,22 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: review-architecture
-    inputs:
-    - main
+    input:
+    - goal
+    - resolve_request
+
   verify_full_review_fanout:
+    input:
+    - resolve_request
     fanout:
-      child:
-      - verify_full_review_opus
-      - verify_full_review_codex
-    rules:
-    - next: check_full_review_threads
+      children:
+      - verify_full_review_opus:
+          inputs:
+            resolve_request: resolve_request
+      - verify_full_review_codex:
+          inputs:
+            resolve_request: resolve_request
+
   verify_full_review_opus:
     session:
       provider: claude
@@ -223,8 +293,8 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
-    inputs:
-    - main
+    input:
+    - resolve_request
   verify_full_review_codex:
     session:
       provider: codex
@@ -234,15 +304,15 @@ nodes:
         policy: reviewing
         knowledge: releash-thread-cli
         instruction: full-review-verify-and-classify
-    inputs:
-    - main
+    input:
+    - resolve_request
+
   check_full_review_threads:
     command: >-
       releash review list --state open --json |
       jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
     artifact: thread-scan
-    rules:
-    - next: review_report
+
   review_report:
     session:
       provider: claude
@@ -252,5 +322,5 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: review-report
-    inputs:
+    input:
     - check_full_review_threads

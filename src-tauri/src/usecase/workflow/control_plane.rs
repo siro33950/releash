@@ -909,9 +909,9 @@ mod control_plane_tests {
         RuntimeNodeExecutionStatus, WorkflowExecution, WorkflowExecutionRestore,
     };
     use crate::domain::workflow::{
-        FailureDisposition, FanoutParentRef, FanoutSpec, NodeCompletion, NodeDefinition,
-        NodeExecutionFailureKind, NodeKind, NodeKindName, RuntimeExecutionState, TokenUsage,
-        WorkflowDefinition, NODE_STATUS_FAILED,
+        ChildEntry, FailureDisposition, FanoutParentRef, FanoutSpec, NodeCompletion,
+        NodeDefinition, NodeExecutionFailureKind, NodeKind, NodeKindName, RuntimeExecutionState,
+        TokenUsage, WorkflowDefinition, NODE_STATUS_FAILED,
     };
 
     #[test]
@@ -924,7 +924,10 @@ mod control_plane_tests {
                     NodeDefinition {
                         name: "fanout".to_string(),
                         kind: NodeKind::Fanout(FanoutSpec {
-                            child: vec!["worker-a".to_string(), "worker-b".to_string()],
+                            children: vec![
+                                ChildEntry::reference("worker-a"),
+                                ChildEntry::reference("worker-b"),
+                            ],
                             items: None,
                         }),
                         completion: NodeCompletion::Approval,
@@ -1059,7 +1062,10 @@ mod control_plane_tests {
                     NodeDefinition {
                         name: "fanout".to_string(),
                         kind: NodeKind::Fanout(FanoutSpec {
-                            child: vec!["worker-a".to_string(), "worker-b".to_string()],
+                            children: vec![
+                                ChildEntry::reference("worker-a"),
+                                ChildEntry::reference("worker-b"),
+                            ],
                             items: None,
                         }),
                         completion: NodeCompletion::Approval,

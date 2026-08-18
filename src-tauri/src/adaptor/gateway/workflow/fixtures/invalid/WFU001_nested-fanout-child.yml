@@ -3,9 +3,11 @@ description: fanout cannot reference another fanout as its child
 nodes:
   main:
     fanout:
-      child: inner
+      children:
+      - inner
   inner:
     fanout:
-      child: worker
+      children:
+      - worker
   worker:
     command: echo work

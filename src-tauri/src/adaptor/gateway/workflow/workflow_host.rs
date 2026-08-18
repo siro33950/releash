@@ -665,7 +665,7 @@ impl WorkflowRuntimeHost {
                 workflow_name: workflow.name.clone(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: workflow.entry_node().map(|n| n.name.clone()),
+                current_node: workflow.initial_execution_node().map(|n| n.name.clone()),
                 created_from,
                 started_at: now,
                 updated_at: now,
@@ -738,9 +738,11 @@ impl WorkflowRuntimeHost {
             crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
             workflow_prompt::request_node_artifact(&request_text, now),
         );
-        let entry_index = workflow.entry_index().ok_or_else(|| {
+        // root が sequence の場合、実行は実効 entry の子から始まる（root
+        // sequence 自身は NodeExecution 行を持たない）。
+        let entry_index = workflow.initial_execution_node_index().ok_or_else(|| {
             WorkflowRuntimeError::InvalidWorkflow(format!(
-                "workflow '{}' does not define the root node '{}'",
+                "workflow '{}' does not define an executable root node '{}'",
                 workflow.name, workflow.entry
             ))
         })?;
@@ -1585,6 +1587,10 @@ impl WorkflowRuntimeHost {
             NodeKindName::Command => self.run_current_command_node(app, worktree_path).await,
             NodeKindName::Session => self.start_node_session(app, worktree_path).await,
             NodeKindName::Fanout => self.start_fanout_children(app, worktree_path).await,
+            NodeKindName::Sequence => Err(WorkflowRuntimeError::InvalidState(
+                "sequence nodes are not executable as current node (W2 executes the root sequence children only)"
+                    .to_string(),
+            )),
         }
     }
 
@@ -1775,9 +1781,13 @@ impl WorkflowRuntimeHost {
                 node.name
             )));
         };
-        let artifacts = workflow_prompt::artifact_values(&exec.artifacts, exec.request.as_deref());
-        let rendered_command =
-            workflow_prompt::render_artifact_references(command, &artifacts, None);
+        let entry = exec
+            .workflow
+            .root_sequence()
+            .and_then(|sequence| sequence.child_entry(&node.name));
+        let bindings =
+            workflow_prompt::parameter_bindings(entry, &exec.artifacts, exec.request.as_deref());
+        let rendered_command = workflow_prompt::render_parameter_references(command, &bindings);
         let attempt = exec
             .node_execution_counts
             .get(&node.name)
@@ -2402,10 +2412,14 @@ impl WorkflowRuntimeHost {
         let node_facet_contents = facet_contents.for_node(&node_clone.name);
 
         // プロンプト合成に失敗した場合はAgentSessionもPTYも作成しない。
+        let root_entry = workflow_clone
+            .root_sequence()
+            .and_then(|sequence| sequence.child_entry(&node_clone.name));
         let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
             &node_clone,
             node_facet_contents,
             &node_execution_id,
+            root_entry,
             task_clone.as_deref(),
             &artifacts_clone,
             &workflow_clone.schemas,
@@ -2994,7 +3008,7 @@ impl WorkflowRuntimeHost {
         worktree_path: &str,
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
-        let (execution_id, fanout_start, prompt_inputs, workflow, node_kind, attempt) = {
+        let (execution_id, fanout_start, workflow, node_kind, attempt) = {
             let executions = self.executions.lock().await;
             let (execution_id, execution) = find_by_worktree(&executions, worktree_path)
                 .ok_or_else(|| {
@@ -3039,7 +3053,6 @@ impl WorkflowRuntimeHost {
             (
                 execution_id.clone(),
                 fanout_start,
-                workflow_fanout_runtime::fanout_prompt_inputs(execution),
                 execution.workflow.clone(),
                 node_execution.kind,
                 node_execution.attempt,
@@ -3048,13 +3061,15 @@ impl WorkflowRuntimeHost {
         let activation_gate = self.runtime_activation_gate(&execution_id).await;
         let _activation_guard = activation_gate.lock.lock().await;
         match node_kind {
+            NodeKindName::Sequence => Err(WorkflowRuntimeError::InvalidState(
+                "sequence nodes have no runtime execution to retry".to_string(),
+            )),
             NodeKindName::Session => {
                 let facet_contents = self
                     .facet_contents_for_execution(&execution_id, &workflow)
                     .await?;
                 let mut plans = workflow_runtime_session::prepare_fanout_child_session_plans(
                     &fanout_start,
-                    &prompt_inputs,
                     &facet_contents,
                     &workflow.schemas,
                 )?;
@@ -3156,9 +3171,12 @@ impl WorkflowRuntimeHost {
                         "retried Command NodeExecution '{node_execution_id}' has no command"
                     ))
                 })?;
-                let artifacts = workflow_prompt::artifact_values(
-                    &prompt_inputs.artifacts,
+                let bindings = workflow_prompt::fanout_child_bindings(
+                    &child.node,
+                    Some(&child.entry),
+                    &fanout_start.parent_parameters,
                     fanout_start.request.as_deref(),
+                    child.item.as_ref(),
                 );
                 self.spawn_command_execution(
                     app,
@@ -3168,10 +3186,8 @@ impl WorkflowRuntimeHost {
                         node_name: child.node.name.clone(),
                         attempt,
                         worktree_path: worktree_path.to_string(),
-                        raw_command: Some(workflow_prompt::render_artifact_references(
-                            command,
-                            &artifacts,
-                            child.item.as_ref(),
+                        raw_command: Some(workflow_prompt::render_parameter_references(
+                            command, &bindings,
                         )),
                         contract: child.node.artifact.clone(),
                         schemas: workflow.schemas.clone(),
@@ -3200,14 +3216,12 @@ impl WorkflowRuntimeHost {
         };
         let activation_gate = self.runtime_activation_gate(&activation_execution_id).await;
         let activation_guard = activation_gate.lock.lock().await;
-        let workflow_runtime_session::FanoutStartRuntimeInputs {
-            mut fanout_start,
-            prompt_inputs,
-        } = workflow_runtime_session::load_fanout_start_runtime_inputs(
-            &self.executions,
-            worktree_path,
-        )
-        .await?;
+        let workflow_runtime_session::FanoutStartRuntimeInputs { mut fanout_start } =
+            workflow_runtime_session::load_fanout_start_runtime_inputs(
+                &self.executions,
+                worktree_path,
+            )
+            .await?;
         if fanout_start.execution_id != activation_execution_id {
             return Err(WorkflowRuntimeError::InvalidState(format!(
                 "worktree {worktree_path} changed execution before fanout activation"
@@ -3264,10 +3278,6 @@ impl WorkflowRuntimeHost {
         let facet_contents = self
             .facet_contents_for_execution(&fanout_start.execution_id, &workflow_for_facets)
             .await?;
-        let command_artifacts = workflow_prompt::artifact_values(
-            &prompt_inputs.artifacts,
-            fanout_start.request.as_deref(),
-        );
         let command_schemas = workflow_for_facets.schemas.clone();
         let command_inputs = fanout_start
             .children
@@ -3277,16 +3287,21 @@ impl WorkflowRuntimeHost {
                     return None;
                 }
                 let command = child.node.command()?;
+                let bindings = workflow_prompt::fanout_child_bindings(
+                    &child.node,
+                    Some(&child.entry),
+                    &fanout_start.parent_parameters,
+                    fanout_start.request.as_deref(),
+                    child.item.as_ref(),
+                );
                 Some(CommandExecutionInput {
                     execution_id: fanout_start.execution_id.clone(),
                     node_execution_id: child.node_execution_id.clone(),
                     node_name: child.node.name.clone(),
                     attempt: child.attempt,
                     worktree_path: worktree_path.to_string(),
-                    raw_command: Some(workflow_prompt::render_artifact_references(
-                        command,
-                        &command_artifacts,
-                        child.item.as_ref(),
+                    raw_command: Some(workflow_prompt::render_parameter_references(
+                        command, &bindings,
                     )),
                     contract: child.node.artifact.clone(),
                     schemas: command_schemas.clone(),
@@ -3298,7 +3313,6 @@ impl WorkflowRuntimeHost {
 
         let child_session_plans = workflow_runtime_session::prepare_fanout_child_session_plans(
             &fanout_start,
-            &prompt_inputs,
             &facet_contents,
             &workflow_for_facets.schemas,
         )?;

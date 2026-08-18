@@ -22,6 +22,8 @@ use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 pub(crate) struct FanoutChildExpansion {
     pub(crate) node_execution_id: String,
     pub(crate) node: NodeDefinition,
+    /// この子に対応する fanout children エントリ（inputs 配線の出所）。
+    pub(crate) entry: crate::domain::workflow::ChildEntry,
     pub(crate) attempt: u32,
     pub(crate) item: Option<serde_json::Value>,
     pub(crate) item_index: Option<usize>,
@@ -47,6 +49,9 @@ pub(crate) struct FanoutStartContext {
     pub(crate) parent_attempt: u32,
     pub(crate) execution_id: String,
     pub(crate) request: Option<String>,
+    /// fanout 自身の束縛済み input パラメータ。子への供給元はこれと
+    /// `request` / `items` に閉じる。
+    pub(crate) parent_parameters: HashMap<String, serde_json::Value>,
 }
 
 impl FanoutStartContext {
@@ -57,11 +62,6 @@ impl FanoutStartContext {
             .map(|child| child.node.name.clone())
             .collect()
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FanoutPromptInputs {
-    pub(crate) artifacts: HashMap<String, RuntimeArtifact>,
 }
 
 pub(crate) struct FanoutChildSessionSetup {
@@ -88,7 +88,7 @@ pub(crate) fn prepare_fanout_start_context(
             node.name
         ))
     })?;
-    if fanout.child.is_empty() {
+    if fanout.children.is_empty() {
         return Err(WorkflowRuntimeError::InvalidState(format!(
             "StartFanout requires child references for node '{}'",
             node.name
@@ -118,7 +118,7 @@ pub(crate) fn prepare_fanout_start_context(
     })?;
     let expansion_plan = workflow_fanout::plan_fanout_expansion(
         &domain_workflow,
-        &domain_fanout.child,
+        &domain_fanout.children,
         domain_fanout.items.as_ref(),
         &domain_artifacts,
         &exec.node_execution_counts,
@@ -140,9 +140,20 @@ pub(crate) fn prepare_fanout_start_context(
                         child.node_name
                     ))
                 })?;
+            let entry = domain_fanout
+                .children
+                .get(child.child_index)
+                .cloned()
+                .ok_or_else(|| {
+                    WorkflowRuntimeError::InvalidState(format!(
+                        "fanout child index {} is out of bounds for node '{}'",
+                        child.child_index, child.node_name
+                    ))
+                })?;
             Ok(FanoutChildExpansion {
                 node_execution_id: uuid::Uuid::new_v4().to_string(),
                 node,
+                entry,
                 attempt: child.attempt,
                 item: child.item,
                 item_index: child.item_index,
@@ -151,19 +162,21 @@ pub(crate) fn prepare_fanout_start_context(
             })
         })
         .collect::<Result<Vec<_>, WorkflowRuntimeError>>()?;
+    let parent_parameters =
+        crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::fanout_parent_parameters(
+            &exec.workflow,
+            &node.name,
+            &exec.artifacts,
+            exec.request.as_deref(),
+        );
     Ok(FanoutStartContext {
         parent_node_name: node.name.clone(),
         parent_attempt,
         children,
         execution_id: exec.id.clone(),
         request: exec.request.clone(),
+        parent_parameters,
     })
-}
-
-pub(crate) fn fanout_prompt_inputs(exec: &DomainWorkflowExecution) -> FanoutPromptInputs {
-    FanoutPromptInputs {
-        artifacts: exec.artifacts.clone(),
-    }
 }
 
 pub(crate) fn apply_fanout_runtime_state(
@@ -409,7 +422,10 @@ mod tests {
         NodeDefinition {
             name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: children.iter().map(|name| (*name).to_string()).collect(),
+                children: children
+                    .iter()
+                    .map(|name| crate::domain::workflow::ChildEntry::reference(*name))
+                    .collect(),
                 items,
             }),
             ..Default::default()
@@ -827,24 +843,6 @@ mod tests {
             WorkflowRuntimeError::InvalidState(message)
                 if message == "StartFanout requires child references for node 'fanout-review'"
         ));
-    }
-
-    #[test]
-    fn fanout_prompt_inputs_clones_runtime_inputs() {
-        let mut exec = workflow_execution_with_nodes(vec![
-            fanout_node(&["review-a"], None),
-            session_node("review-a"),
-        ]);
-        exec.artifacts.insert(
-            "plan".to_string(),
-            make_node_output("plan", "draft", Some("DONE")),
-        );
-        let inputs = fanout_prompt_inputs(&exec);
-
-        assert_eq!(
-            inputs.artifacts["plan"].artifact,
-            Some(serde_json::json!({ "text": "draft" }))
-        );
     }
 
     fn make_node_output(node_name: &str, text: &str, result: Option<&str>) -> RuntimeArtifact {

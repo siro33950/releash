@@ -2,12 +2,19 @@ name: command-result-routing
 description: command reserved ok field drives a typed boolean route
 nodes:
   main:
+    sequence:
+      children:
+      - check:
+          rules:
+          - when:
+              on: ok
+              then: passed
+            next: failed
+      - passed:
+          rules: []
+      - failed
+  check:
     command: test -f Cargo.toml
-    rules:
-      - when:
-          on: ok
-          then: passed
-        next: failed
   passed:
     command: printf passed
   failed:

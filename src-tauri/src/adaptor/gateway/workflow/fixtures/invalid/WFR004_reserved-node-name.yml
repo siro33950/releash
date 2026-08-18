@@ -1,14 +1,19 @@
 name: reserved-node-name
-description: sequence is a reserved node name
+description: children is a reserved node name
 nodes:
   main:
+    sequence:
+      children:
+      - entry:
+          rules:
+          - next: children
+      - children
+  entry:
     session:
       provider: claude
       facets:
         instruction: entry
-    rules:
-      - next: sequence
-  sequence:
+  children:
     session:
       provider: claude
       facets:

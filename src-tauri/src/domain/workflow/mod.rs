@@ -33,7 +33,7 @@ pub use value_objects::ExecutionListFilter;
 #[cfg(test)]
 pub use value_objects::WorkflowExecutionRecord;
 pub use value_objects::{
-    is_reserved_node_name, ApprovalTarget, Artifact, CommandSpec, ContractType,
+    is_reserved_node_name, ApprovalTarget, Artifact, ChildEntry, CommandSpec, ContractType,
     ContractValidationResult, ContractViolationRecord, ExecutionInterruptionReason,
     ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, FacetContents, FacetKey, FacetKind,
     FacetRefs, FacetSummary, FailureClassification, FailureDisposition, Fanout,
@@ -41,9 +41,9 @@ pub use value_objects::{
     NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
     NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus,
     NodeHistoryEntry, NodeKind, NodeKindName, Rule, RuntimeArtifact, RuntimeExecutionState,
-    SchemaDef, SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition, WorkflowDefinitionName,
-    WorkflowEvent, WorkflowExecution, WorkflowExecutionId, WorkflowExecutionSummary,
-    WorkflowFacetContents, WorkflowPageRequest, WorkflowRuntimeSnapshot, WorkflowSummary,
-    WorkspaceWorktreePath, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
-    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
+    SchemaDef, SequenceSpec, SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowEvent, WorkflowExecution, WorkflowExecutionId,
+    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest, WorkflowRuntimeSnapshot,
+    WorkflowSummary, WorkspaceWorktreePath, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
+    NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
 };
