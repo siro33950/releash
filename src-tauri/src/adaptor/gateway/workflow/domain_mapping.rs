@@ -96,8 +96,8 @@ fn node_history_entry_to_domain(
 #[cfg(test)]
 fn child_output_to_domain(
     output: &runtime_state::FanoutChildSnapshot,
-) -> domain::FanoutChildSnapshot {
-    domain::FanoutChildSnapshot {
+) -> domain::value_objects::FanoutChildSnapshot {
+    domain::value_objects::FanoutChildSnapshot {
         node_name: output.node_name.clone(),
         session_id: output.session_id.clone(),
         result: output.result.clone(),

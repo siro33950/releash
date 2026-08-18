@@ -12,7 +12,6 @@ pub(super) struct CommandExecutionInput {
     pub(super) raw_command: Option<String>,
     pub(super) contract: Option<String>,
     pub(super) schemas: BTreeMap<String, DomainSchemaDef>,
-    pub(super) fanout_parent: Option<String>,
     pub(super) session_id: Option<String>,
 }
 
@@ -20,21 +19,15 @@ pub(super) fn command_execution_input_is_current(
     execution: &DomainWorkflowExecution,
     input: &CommandExecutionInput,
 ) -> bool {
-    let node_execution_is_active = execution.node_executions.iter().any(|node_execution| {
-        node_execution.id == input.node_execution_id && node_execution.status.is_active()
-    });
-    if input.fanout_parent.is_some() {
-        node_execution_is_active
-            && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
-                fanout.children.iter().any(|child| {
-                    child.node_execution_id == input.node_execution_id
-                        && child.state == FanoutChildRuntimeState::Running
-                })
-            })
-    } else {
-        node_execution_is_active
-            && is_still_current_execution(execution, &input.node_name, input.attempt)
-    }
+    // Running のみ受理する。stop は対象 node を Paused にするため、is_active
+    //（Paused 含む）で判定すると停止後の stale command を準備・起動してしまう。
+    // resume は新しい attempt（Running で開始）を作るので Paused を通す必要はない。
+    execution.is_active()
+        && execution.node_executions.iter().any(|node_execution| {
+            node_execution.id == input.node_execution_id
+                && node_execution.status
+                    == crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+        })
 }
 
 impl WorkflowRuntimeHost {
@@ -108,5 +101,69 @@ impl WorkflowRuntimeHost {
         self.finalize_after_commit(app, &snapshot, &worktree_path)
             .await;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod command_preparation_tests {
+    use super::*;
+    use crate::domain::workflow::entities::workflow_execution::{
+        WorkflowExecution, WorkflowExecutionRestore,
+    };
+    use crate::domain::workflow::{NodeDefinition, NodeKindName, WorkflowDefinition};
+
+    fn input_for(node_execution_id: &str) -> CommandExecutionInput {
+        CommandExecutionInput {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: node_execution_id.to_string(),
+            node_name: "check".to_string(),
+            attempt: 1,
+            worktree_path: "/repo".to_string(),
+            raw_command: Some("true".to_string()),
+            contract: None,
+            schemas: Default::default(),
+            session_id: None,
+        }
+    }
+
+    fn execution_with_running_command() -> (WorkflowExecution, String) {
+        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinition {
+                name: "wf".to_string(),
+                entry: "check".to_string(),
+                nodes: vec![NodeDefinition {
+                    name: "check".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..WorkflowExecutionRestore::default()
+        });
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "check".to_string(),
+                NodeKindName::Command,
+                1,
+                None,
+                "command-1".to_string(),
+                1.0,
+            )
+            .unwrap();
+        (execution, node_execution_id)
+    }
+
+    #[test]
+    fn command_input_is_current_only_while_the_node_execution_is_running() {
+        let (mut execution, node_execution_id) = execution_with_running_command();
+        let input = input_for(&node_execution_id);
+        assert!(command_execution_input_is_current(&execution, &input));
+
+        // stop で Paused になった stale command は受理しない。
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 2.0),
+            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+        );
+        assert!(!command_execution_input_is_current(&execution, &input));
     }
 }

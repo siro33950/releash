@@ -36,7 +36,7 @@ pub fn workflow_fact(
             node_name,
             kind,
             attempt,
-            fanout_parent,
+            parent,
             timestamp,
         } => F::NodeStarted {
             execution_id: execution_id.clone(),
@@ -44,7 +44,7 @@ pub fn workflow_fact(
             node_name: node_name.clone(),
             kind: *kind,
             attempt: *attempt,
-            fanout_parent: fanout_parent.clone(),
+            parent: parent.clone(),
             timestamp: *timestamp,
         },
         E::NodeExecutionAgentBound {
@@ -224,7 +224,7 @@ pub fn runtime_snapshot_nodes(
             node_name: node.node_name.clone(),
             kind: node.kind,
             attempt: node.attempt,
-            fanout_parent: node.fanout_parent.clone(),
+            parent: node.parent.clone(),
             timestamp: node.started_at,
         });
         if let Some(session_id) = &node.session_id {
@@ -317,9 +317,7 @@ pub fn runtime_snapshot_nodes(
         node.can_retry = runtime.can_retry()
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
-            })
-            && (runtime.fanout_parent.is_some()
-                || execution.current_node.as_deref() == Some(runtime.node_name.as_str()));
+            });
         if runtime.status == S::Paused {
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
         }
@@ -331,7 +329,7 @@ fn same_retry_target(
     left: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
     right: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
 ) -> bool {
-    left.node_name == right.node_name && left.fanout_parent == right.fanout_parent
+    left.node_name == right.node_name && left.parent == right.parent
 }
 
 #[cfg(test)]
@@ -367,7 +365,7 @@ mod tests {
             artifact: None,
             token_usage: None,
             failure: None,
-            fanout_parent: None,
+            parent: None,
             completion_signals: NodeCompletionSignalState::Pending,
             started_at: 2.0,
             completed_at: None,
@@ -390,6 +388,30 @@ mod tests {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
+    }
+
+    #[test]
+    fn same_retry_target_requires_matching_name_and_parent_scope() {
+        use crate::domain::workflow::ExecutionParentRef;
+
+        let base = node("left", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let mut same_lane = node("right", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        assert!(same_retry_target(&base, &same_lane));
+
+        // 別名は別ターゲット。
+        let mut other_name = same_lane.clone();
+        other_name.node_name = "other".to_string();
+        assert!(!same_retry_target(&base, &other_name));
+
+        // 同名でも親スコープ（lane）が違えば別ターゲット。
+        same_lane.parent = Some(ExecutionParentRef::sequence_child("part-lane-1"));
+        let mut other_lane = same_lane.clone();
+        other_lane.parent = Some(ExecutionParentRef::sequence_child("part-lane-2"));
+        assert!(!same_retry_target(&same_lane, &other_lane));
+
+        let mut peer = same_lane.clone();
+        peer.parent = Some(ExecutionParentRef::sequence_child("part-lane-1"));
+        assert!(same_retry_target(&same_lane, &peer));
     }
 
     #[test]

@@ -62,10 +62,19 @@ pub enum AcceptanceNodeExecutionStatus {
     Aborted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptanceNodeKind {
+    Command,
+    Session,
+    Fanout,
+    Sequence,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptanceNodeExecution {
     pub id: String,
     pub node_name: String,
+    pub kind: AcceptanceNodeKind,
     pub attempt: u32,
     pub status: AcceptanceNodeExecutionStatus,
     pub agent_session_id: Option<String>,
@@ -109,10 +118,20 @@ enum ExecutionStatusResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NodeKindResponse {
+    Command,
+    Session,
+    Fanout,
+    Sequence,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NodeExecutionResponse {
     id: String,
     node_name: String,
+    kind: NodeKindResponse,
     attempt: u32,
     status: NodeExecutionStatusResponse,
     session_id: Option<String>,
@@ -766,6 +785,12 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
         Self {
             id: value.id,
             node_name: value.node_name,
+            kind: match value.kind {
+                NodeKindResponse::Command => AcceptanceNodeKind::Command,
+                NodeKindResponse::Session => AcceptanceNodeKind::Session,
+                NodeKindResponse::Fanout => AcceptanceNodeKind::Fanout,
+                NodeKindResponse::Sequence => AcceptanceNodeKind::Sequence,
+            },
             attempt: value.attempt,
             status: match value.status {
                 NodeExecutionStatusResponse::Running => AcceptanceNodeExecutionStatus::Running,

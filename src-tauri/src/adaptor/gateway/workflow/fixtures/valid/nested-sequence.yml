@@ -1,5 +1,5 @@
 name: nested-sequence
-description: a sequence cannot reference another sequence as a child
+description: a sequence can reference another sequence as a child
 nodes:
   main:
     sequence:

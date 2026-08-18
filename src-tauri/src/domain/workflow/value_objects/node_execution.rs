@@ -25,12 +25,51 @@ pub enum NodeCompletionSignal {
     Stop,
 }
 
-/// fanout child execution が属する親 fanout と、宣言順上の位置。
+/// 実行木上の親参照。root の実行インスタンス以外のすべての NodeExecution が持つ。
+///
+/// 親は合成子（sequence / fanout）の実行インスタンスを node_execution_id で
+/// 直接指す。ループで同名 node のインスタンスが複数並ぶ実行木でも一意に決まる。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FanoutParentRef {
-    pub parent_node: String,
-    pub parent_attempt: u32,
+pub struct ExecutionParentRef {
+    /// 親（合成子インスタンス）の node_execution_id。
+    pub parent_id: String,
+    /// fanout の子のみ: 展開座標（items 行 / children 列）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fanout_slot: Option<FanoutSlot>,
+}
+
+impl ExecutionParentRef {
+    pub fn sequence_child(parent_id: impl Into<String>) -> Self {
+        Self {
+            parent_id: parent_id.into(),
+            fanout_slot: None,
+        }
+    }
+
+    pub fn fanout_child(
+        parent_id: impl Into<String>,
+        item_index: Option<usize>,
+        child_index: usize,
+    ) -> Self {
+        Self {
+            parent_id: parent_id.into(),
+            fanout_slot: Some(FanoutSlot {
+                item_index,
+                child_index,
+            }),
+        }
+    }
+
+    pub fn is_fanout_child(&self) -> bool {
+        self.fanout_slot.is_some()
+    }
+}
+
+/// fanout 展開の座標（宣言順上の位置）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FanoutSlot {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub item_index: Option<usize>,
     pub child_index: usize,
@@ -85,13 +124,19 @@ pub struct NodeExecution {
     pub artifact: Option<Artifact>,
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<NodeExecutionFailure>,
-    pub fanout_parent: Option<FanoutParentRef>,
+    pub parent: Option<ExecutionParentRef>,
     pub completion_signals: NodeCompletionSignalState,
     pub started_at: f64,
     pub completed_at: Option<f64>,
 }
 
 impl NodeExecution {
+    pub fn is_fanout_child(&self) -> bool {
+        self.parent
+            .as_ref()
+            .is_some_and(ExecutionParentRef::is_fanout_child)
+    }
+
     pub fn can_retry(&self) -> bool {
         self.status == NodeExecutionStatus::Failed
             || (matches!(
@@ -169,7 +214,7 @@ mod tests {
             artifact: None,
             token_usage: None,
             failure: None,
-            fanout_parent: None,
+            parent: None,
             completion_signals: NodeCompletionSignalState::StopReceived,
             started_at: 1.0,
             completed_at: None,
@@ -180,5 +225,37 @@ mod tests {
         assert!(!node.can_retry());
         node.status = NodeExecutionStatus::Failed;
         assert!(node.can_retry());
+    }
+
+    #[test]
+    fn sequence_child_has_no_fanout_slot() {
+        let parent = ExecutionParentRef::sequence_child("seq-1");
+        assert_eq!(parent.parent_id, "seq-1");
+        assert_eq!(parent.fanout_slot, None);
+        assert!(!parent.is_fanout_child());
+    }
+
+    #[test]
+    fn fanout_child_carries_its_expansion_coordinates() {
+        let parent = ExecutionParentRef::fanout_child("fan-1", Some(2), 1);
+        assert_eq!(parent.parent_id, "fan-1");
+        assert_eq!(
+            parent.fanout_slot,
+            Some(FanoutSlot {
+                item_index: Some(2),
+                child_index: 1,
+            })
+        );
+        assert!(parent.is_fanout_child());
+
+        let static_child = ExecutionParentRef::fanout_child("fan-1", None, 0);
+        assert!(static_child.is_fanout_child());
+        assert_eq!(
+            static_child.fanout_slot,
+            Some(FanoutSlot {
+                item_index: None,
+                child_index: 0,
+            })
+        );
     }
 }

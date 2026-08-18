@@ -406,6 +406,7 @@ fn node_kind_label(value: WorkspaceNodeKind) -> &'static str {
     match value {
         WorkspaceNodeKind::Workflow => "workflow",
         WorkspaceNodeKind::Fanout => "fanout",
+        WorkspaceNodeKind::Sequence => "sequence",
         WorkspaceNodeKind::WorkflowSession => "workflow_session",
         WorkspaceNodeKind::WorkflowCommand => "workflow_command",
     }
@@ -415,6 +416,7 @@ fn parse_node_kind(value: &str) -> Result<WorkspaceNodeKind, String> {
     match value {
         "workflow" => Ok(WorkspaceNodeKind::Workflow),
         "fanout" => Ok(WorkspaceNodeKind::Fanout),
+        "sequence" => Ok(WorkspaceNodeKind::Sequence),
         "workflow_session" => Ok(WorkspaceNodeKind::WorkflowSession),
         "workflow_command" => Ok(WorkspaceNodeKind::WorkflowCommand),
         _ => Err("invalid Workspace node kind".to_string()),

@@ -560,7 +560,7 @@ impl WorkflowRuntimeHost {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await?;
-        let (current_node_session_id, fanout_session_ids) = match lookup {
+        let (current_node_session_id, active_node_session_ids) = match lookup {
             AbortTargetLookup::NotFound => {
                 return Ok(AbortCommit::NotFound);
             }
@@ -569,11 +569,11 @@ impl WorkflowRuntimeHost {
             }
             AbortTargetLookup::Active {
                 current_node_session_id,
-                fanout_session_ids,
-            } => (current_node_session_id, fanout_session_ids),
+                active_node_session_ids,
+            } => (current_node_session_id, active_node_session_ids),
         };
         let mut session_ids = current_node_session_id.into_iter().collect::<Vec<_>>();
-        session_ids.extend(fanout_session_ids.into_iter().flatten());
+        session_ids.extend(active_node_session_ids.into_iter().flatten());
         session_ids.sort();
         session_ids.dedup();
         // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
@@ -598,59 +598,20 @@ impl WorkflowRuntimeHost {
                 return Ok(AbortCommit::AlreadyTerminal);
             }
             if let Some(expected_node_name) = expected_node_name {
-                let current_node = exec
-                    .workflow
-                    .nodes
-                    .get(exec.current_node_index)
-                    .map(|node| node.name.as_str())
-                    .ok_or_else(|| {
-                        WorkflowRuntimeError::InvalidState(format!(
-                            "execution {execution_id} has invalid current node"
-                        ))
-                    })?;
-                if expected_node_name != current_node {
+                let current_node = exec.display_current_node();
+                if current_node.as_deref() != Some(expected_node_name) {
                     return Err(WorkflowRuntimeError::UnauthorizedApprovalTarget(
                         "node does not match".to_string(),
                     ));
                 }
             }
             let snapshot_before = exec.clone();
-            let aborted_node_for_event = exec
-                .fanout_runtime
-                .as_ref()
-                .map(|fanout| fanout.parent_node_name.clone())
-                .or_else(|| {
-                    exec.workflow
-                        .nodes
-                        .get(exec.current_node_index)
-                        .map(|node| node.name.clone())
-                });
+            let aborted_node_for_event = exec.display_current_node();
 
-            // spec issues-1023: state を Aborted にする前に、中断時の current node /
-            // fanout children を `node_history` に "aborted" entry として記録する。
-            // これにより UI 側は既存 history 描画経路 + session_id を使って中断 node の
-            // session log にアクセスできるようになる。集約の `clear_fanout` で
-            // 明示クリアして `to_commit_snapshot()` 経由の二重表示を防ぐ。
-            if exec.fanout_runtime.is_some() {
-                if let Some(entry) = exec.make_aborted_fanout_history_entry(timestamp) {
-                    exec.record_history_entry(entry, timestamp);
-                }
-                let _ = exec.clear_fanout(timestamp);
-            } else {
-                let current_node_name = exec.workflow.nodes[exec.current_node_index].name.clone();
-                let current_attempt = exec
-                    .node_execution_counts
-                    .get(&current_node_name)
-                    .copied()
-                    .unwrap_or(1);
-                let already_in_history = exec.node_history.last().is_some_and(|e| {
-                    e.node_name == current_node_name && e.attempt == current_attempt
-                });
-                if !already_in_history {
-                    let entry = exec.make_aborted_history_entry(timestamp);
-                    exec.record_history_entry(entry, timestamp);
-                }
-            }
+            // spec issues-1023: state を Aborted にする前に、中断時のアクティブ leaf を
+            // `node_history` に "aborted" entry として記録する。UI 側は既存 history
+            // 描画経路 + session_id で中断 node の session log にアクセスできる。
+            exec.record_aborted_history_for_active_leaves(timestamp);
 
             let _ = exec.transition_aborted();
             exec.clear_node_stalls(timestamp);
@@ -785,16 +746,16 @@ impl WorkflowRuntimeHost {
                     return Ok(AbortTargetLookup::AlreadyTerminal);
                 }
                 let current_node_session_id = exec.current_session_id.clone();
-                let fanout_session_ids = exec.fanout_runtime.as_ref().map(|pr| {
-                    pr.children
+                let active_node_session_ids = Some(
+                    exec.node_executions
                         .iter()
-                        .filter(|c| c.state == FanoutChildRuntimeState::Running)
-                        .map(|c| c.session_id.clone())
-                        .collect::<Vec<_>>()
-                });
+                        .filter(|node| node.status.is_active())
+                        .filter_map(|node| node.session_id.clone())
+                        .collect::<Vec<_>>(),
+                );
                 return Ok(AbortTargetLookup::Active {
                     current_node_session_id,
-                    fanout_session_ids,
+                    active_node_session_ids,
                 });
             }
         }

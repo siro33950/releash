@@ -96,40 +96,6 @@ impl From<ManagedWorktreeResolverError> for WorkflowRuntimeError {
     }
 }
 
-pub(crate) fn workflow_error_to_runtime_error(
-    err: crate::domain::workflow::WorkflowError,
-) -> WorkflowRuntimeError {
-    match err {
-        crate::domain::workflow::WorkflowError::InvalidState(message) => {
-            WorkflowRuntimeError::InvalidState(message)
-        }
-        crate::domain::workflow::WorkflowError::Conflict(message) => {
-            WorkflowRuntimeError::Conflict(message)
-        }
-        crate::domain::workflow::WorkflowError::Validation(message) => {
-            if let Some(node_name) = message.strip_prefix("node not found: ") {
-                WorkflowRuntimeError::InvalidWorkflow(format!(
-                    "Node '{node_name}' not found in workflow"
-                ))
-            } else {
-                WorkflowRuntimeError::InvalidWorkflow(message)
-            }
-        }
-        crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(message) => {
-            WorkflowRuntimeError::UnauthorizedApprovalTarget(message)
-        }
-        crate::domain::workflow::WorkflowError::NotFound(message)
-        | crate::domain::workflow::WorkflowError::External(message) => {
-            WorkflowRuntimeError::InvalidWorkflow(message)
-        }
-        crate::domain::workflow::WorkflowError::StorageUnavailable { message, .. }
-        | crate::domain::workflow::WorkflowError::CorruptStoredState(message)
-        | crate::domain::workflow::WorkflowError::IncompatibleStoredEvent(message) => {
-            WorkflowRuntimeError::SessionStore(message)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

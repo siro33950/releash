@@ -222,12 +222,11 @@ nodes:
             Some("main#0")
         );
         let route = |name: &str| {
-            crate::domain::workflow::services::routing::route_with_reset_baselines(
+            crate::domain::workflow::services::routing::route(
                 &wf,
                 wf.nodes.iter().position(|node| node.name == name).unwrap(),
                 None,
                 &std::collections::HashMap::new(),
-                &Default::default(),
             )
             .unwrap()
         };
@@ -461,7 +460,6 @@ nodes:
           - loop_guard:
               max_iterations: 3
               on_exhausted: give_up
-              reset_on: check
       - triage:
           rules:
           - switch:
@@ -493,8 +491,7 @@ nodes:
             Rule::LoopGuard {
                 max_iterations: 3,
                 on_exhausted,
-                reset_on: Some(reset_on),
-            } if on_exhausted == "give_up" && reset_on == "check"
+            } if on_exhausted == "give_up"
         ));
         assert!(matches!(
             &triage_rules[0],
@@ -675,7 +672,6 @@ nodes:
           - loop_guard:
               max_iterations: 2
               on_exhausted: review
-              reset_on: build
   build:
     command: cargo build
     artifact: review
@@ -719,7 +715,7 @@ nodes:
             ),
             (
                 "loop_guard rule",
-                "              reset_on: build",
+                "              on_exhausted: review",
                 "              ",
             ),
             ("schema", "    type: object", "    "),

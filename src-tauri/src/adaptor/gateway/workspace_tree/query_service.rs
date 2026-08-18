@@ -278,13 +278,15 @@ fn project_tree(tree: &WorkspaceTree, hidden: &HashSet<String>) -> Vec<Workspace
                         updated_at: node.updated_at(),
                     })
                 }
-                WorkspaceNodeKind::Fanout => WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
-                    id: node.id.clone(),
-                    title: node.title.clone(),
-                    status: node.status.as_public_str().to_string(),
-                    children: branch(Some(&node.id), children, hidden),
-                    updated_at: node.updated_at(),
-                }),
+                WorkspaceNodeKind::Fanout | WorkspaceNodeKind::Sequence => {
+                    WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
+                        id: node.id.clone(),
+                        title: node.title.clone(),
+                        status: node.status.as_public_str().to_string(),
+                        children: branch(Some(&node.id), children, hidden),
+                        updated_at: node.updated_at(),
+                    })
+                }
                 _ => WorkspaceTreeItemDto::Node(WorkspaceNodeDto {
                     id: node.id.clone(),
                     title: node.title.clone(),

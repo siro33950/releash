@@ -240,13 +240,13 @@ pub(crate) mod test_support {
     fn control_plane_execution_fixture(
         execution_id: &str,
     ) -> crate::domain::workflow::entities::workflow_execution::WorkflowExecution {
-        use std::collections::{BTreeMap, BTreeSet, HashMap};
+        use std::collections::{BTreeMap, BTreeSet};
 
         use crate::domain::workflow::entities::workflow_execution::{
             WorkflowExecution, WorkflowExecutionRestore,
         };
         use crate::domain::workflow::{
-            FanoutParentRef, FanoutSpec, NodeCompletion, NodeCompletionSignal,
+            ExecutionParentRef, FanoutSpec, NodeCompletion, NodeCompletionSignal,
             NodeDefinition as DomainNode, NodeKind as DomainNodeKind, NodeKindName, SchemaDef,
             SessionSpec,
         };
@@ -287,22 +287,18 @@ pub(crate) mod test_support {
         let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
             id: execution_id.to_string(),
             workflow,
-            node_execution_counts: HashMap::from([
-                ("fanout".to_string(), 1),
-                ("review".to_string(), 3),
-            ]),
             worktree_path: "/repo".to_string(),
             started_at: 100.0,
             updated_at: 100.0,
             ..WorkflowExecutionRestore::default()
         });
         execution
-            .begin_node_attempt(
-                "fanout".to_string(),
+            .replay_node_started(
+                "fanout-parent",
+                "fanout",
                 NodeKindName::Fanout,
                 1,
                 None,
-                "fanout-parent".to_string(),
                 100.0,
             )
             .unwrap();
@@ -312,19 +308,16 @@ pub(crate) mod test_support {
             (3, "00000000-0000-4000-8000-000000000456"),
         ] {
             execution
-                .start_fanout_child_execution(
-                    "fanout".to_string(),
-                    "fanout-parent".to_string(),
-                    node_execution_id.to_string(),
-                    "review".to_string(),
+                .replay_node_started(
+                    node_execution_id,
+                    "review",
                     NodeKindName::Session,
                     attempt,
-                    FanoutParentRef {
-                        parent_node: "fanout".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(attempt as usize - 1),
-                        child_index: 0,
-                    },
+                    Some(ExecutionParentRef::fanout_child(
+                        "fanout-parent",
+                        Some(attempt as usize - 1),
+                        0,
+                    )),
                     100.0 + f64::from(attempt),
                 )
                 .unwrap();
@@ -506,15 +499,6 @@ pub(crate) mod test_support {
             _worktree_path: &str,
             _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
             _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        async fn finish_retried_fanout_commit(
-            &self,
-            _worktree_path: &str,
-            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
-            _node_execution_id: &str,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }

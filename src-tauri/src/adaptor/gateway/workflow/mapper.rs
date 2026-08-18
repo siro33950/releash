@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_mapping_round_trips_loop_guard_reset_on() {
+    fn workflow_mapping_round_trips_loop_guard() {
         let definition = domain::WorkflowDefinition {
             name: "wf".to_string(),
             entry: "main".to_string(),
@@ -443,7 +443,6 @@ mod tests {
                             rules: Some(vec![domain::Rule::LoopGuard {
                                 max_iterations: 2,
                                 on_exhausted: "done".to_string(),
-                                reset_on: Some("round".to_string()),
                             }]),
                         }],
                     }),

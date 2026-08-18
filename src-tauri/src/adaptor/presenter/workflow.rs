@@ -144,13 +144,12 @@ fn node_execution_to_view_with_retry(
                 reason: failure.reason,
                 kind: failure_kind_to_view(failure.kind),
             }),
-        fanout_parent: node
-            .fanout_parent
-            .map(|parent| workflow_wire::FanoutParentRefView {
-                parent_node: parent.parent_node,
-                parent_attempt: parent.parent_attempt,
-                item_index: parent.item_index,
-                child_index: parent.child_index,
+        parent: node
+            .parent
+            .map(|parent| workflow_wire::ExecutionParentRefView {
+                parent_id: parent.parent_id,
+                item_index: parent.fanout_slot.and_then(|slot| slot.item_index),
+                child_index: parent.fanout_slot.map(|slot| slot.child_index),
             }),
         started_at: node.started_at,
         completed_at: node.completed_at,
@@ -289,7 +288,7 @@ mod tests {
                 output_tokens: 2,
             }),
             failure: None,
-            fanout_parent: None,
+            parent: None,
             completion_signals: workflow::NodeCompletionSignalState::StopReceived,
             started_at: 1.5,
             completed_at: None,

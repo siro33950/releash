@@ -517,7 +517,7 @@ function formatRule(rule: Rule): string {
 				: `switch ${rule.on}: ${cases}`;
 		}
 		case "loop_guard":
-			return `loop_guard max ${rule.max_iterations} -> ${rule.on_exhausted}${rule.reset_on ? `, reset on ${rule.reset_on}` : ""}`;
+			return `loop_guard max ${rule.max_iterations} -> ${rule.on_exhausted}`;
 		case "next":
 			return `next -> ${rule.next}`;
 	}
@@ -530,7 +530,7 @@ function ruleKey(rule: Rule): string {
 		case "switch":
 			return `switch:${rule.on}:${sortedCases(rule.cases)}:${rule.next ?? ""}`;
 		case "loop_guard":
-			return `loop_guard:${rule.max_iterations}:${rule.on_exhausted}:${rule.reset_on ?? ""}`;
+			return `loop_guard:${rule.max_iterations}:${rule.on_exhausted}`;
 		case "next":
 			return `next:${rule.next}`;
 	}

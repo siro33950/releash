@@ -86,8 +86,8 @@ impl WorkflowDefinition {
         self.nodes.iter().find(|node| node.name == name)
     }
 
-    /// 実行スコープ（W2 では root の sequence 1 段のみ）の children。
-    /// root が leaf / fanout の場合は None（単独実行）。
+    /// root node が sequence の場合の children（テスト用の互換入口）。
+    #[cfg(test)]
     pub fn root_sequence(&self) -> Option<&SequenceSpec> {
         self.entry_node().and_then(NodeDefinition::sequence)
     }
@@ -157,6 +157,12 @@ pub enum NodeKindName {
     Session,
     Fanout,
     Sequence,
+}
+
+impl NodeKindName {
+    pub fn is_composite_kind(self) -> bool {
+        matches!(self, Self::Fanout | Self::Sequence)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1184,7 +1190,6 @@ pub enum Rule {
     LoopGuard {
         max_iterations: u32,
         on_exhausted: String,
-        reset_on: Option<String>,
     },
     Next(String),
 }
@@ -1208,8 +1213,6 @@ struct SwitchRule {
 struct LoopGuardRule {
     max_iterations: u32,
     on_exhausted: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reset_on: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1251,7 +1254,6 @@ impl<'de> Deserialize<'de> for Rule {
             (None, None, Some(loop_guard), None) => Ok(Self::LoopGuard {
                 max_iterations: loop_guard.max_iterations,
                 on_exhausted: loop_guard.on_exhausted,
-                reset_on: loop_guard.reset_on,
             }),
             (None, None, None, Some(next)) => Ok(Self::Next(next)),
             (None, None, Some(_), Some(_)) => {
@@ -1298,14 +1300,12 @@ impl Serialize for Rule {
             Self::LoopGuard {
                 max_iterations,
                 on_exhausted,
-                reset_on,
             } => {
                 map.serialize_entry(
                     "loop_guard",
                     &LoopGuardRule {
                         max_iterations: *max_iterations,
                         on_exhausted: on_exhausted.clone(),
-                        reset_on: reset_on.clone(),
                     },
                 )?;
             }

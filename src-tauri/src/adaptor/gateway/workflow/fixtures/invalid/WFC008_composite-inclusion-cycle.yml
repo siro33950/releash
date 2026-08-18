@@ -1,0 +1,14 @@
+name: composite-inclusion-cycle
+description: a sequence must not contain itself through its children
+nodes:
+  main:
+    sequence:
+      children:
+      - loop_part
+  loop_part:
+    sequence:
+      children:
+      - step
+      - loop_part
+  step:
+    command: echo hi

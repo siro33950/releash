@@ -6,8 +6,10 @@ use crate::adaptor::gateway::workflow::schema::NodeKindName;
 pub use crate::domain::workflow::entities::workflow_execution::{
     RuntimeNodeExecution as NodeExecution, RuntimeNodeExecutionStatus as NodeExecutionStatus,
 };
+#[cfg(test)]
+pub use crate::domain::workflow::value_objects::FanoutChildSnapshot;
 pub use crate::domain::workflow::{
-    FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
+    NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
 };
 
 pub(crate) use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
@@ -25,11 +27,9 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
         request: state.request,
         error_reason: state.error_reason,
         state: runtime_execution_state_to_domain(&state.state),
-        current_node_index: state.current_node_index,
         current_node_name: state.current_node_name,
         current_session_id: state.current_session_id,
         node_history: node_history_entries_to_domain(&state.node_history),
-        node_execution_counts: state.node_execution_counts,
         workflow_definition,
         total_token_usage: token_usage_to_domain(&state.total_token_usage),
         artifacts: artifacts_to_domain(&state.artifacts),
@@ -87,14 +87,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
                 reason: failure.reason,
                 kind: failure.kind,
             }),
-        fanout_parent: execution.fanout_parent.map(|parent| {
-            crate::domain::workflow::FanoutParentRef {
-                parent_node: parent.parent_node,
-                parent_attempt: parent.parent_attempt,
-                item_index: parent.item_index,
-                child_index: parent.child_index,
-            }
-        }),
+        parent: execution.parent,
         completion_signals: execution.completion_signals,
         started_at: execution.started_at,
         completed_at: execution.completed_at,

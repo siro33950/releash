@@ -19,7 +19,7 @@ pub(crate) enum AbortTargetLookup {
     AlreadyTerminal,
     Active {
         current_node_session_id: Option<String>,
-        fanout_session_ids: Option<Vec<String>>,
+        active_node_session_ids: Option<Vec<String>>,
     },
 }
 
@@ -92,7 +92,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
                 .sync_active_projection_with_usage(
                     execution_id,
                     ExecutionStatus::Running,
-                    Some(current_node),
+                    current_node,
                     now,
                     Some(total_token_usage),
                 )
@@ -104,7 +104,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
                 .sync_active_projection_with_usage(
                     execution_id,
                     ExecutionStatus::WaitingApproval,
-                    Some(snapshot.current_node_name.clone()),
+                    snapshot.current_node_name.clone(),
                     now,
                     Some(total_token_usage),
                 )

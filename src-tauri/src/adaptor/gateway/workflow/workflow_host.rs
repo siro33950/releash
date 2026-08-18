@@ -16,13 +16,11 @@ pub(crate) mod approval_runtime;
 mod command_preparation;
 pub(crate) mod execution_registry;
 pub(crate) mod execution_state;
-pub(crate) mod fanout_runtime;
 mod lifecycle_commands;
 pub(crate) mod node_settings;
 pub(crate) mod output_limit;
 pub(crate) mod prompt_rendering;
 mod restart_recovery;
-mod resume_orchestration;
 pub(crate) mod resume_projection;
 pub(crate) mod runtime_commit;
 pub(crate) mod runtime_session;
@@ -37,17 +35,17 @@ use crate::adaptor::gateway::workflow::execution_store::{
 };
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 use crate::adaptor::gateway::workflow::node_session_boundary::{
-    NodeSessionDeps, ProviderWorkflowAgentSessionPort, RealNodeSessionDeps,
-    WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
+    ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
 };
 use crate::adaptor::gateway::workflow::secret_source;
 use crate::domain::local_event::CommitOperationKind;
 use crate::domain::workflow::entities::workflow_execution::{
-    RuntimeNodeExecution as NodeExecution, RuntimeNodeExecutionStatus as NodeExecutionStatus,
+    AppliedAdvance, LeafStart, RuntimeNodeExecutionStatus as NodeExecutionStatus, TransitionOutcome,
 };
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::transition as workflow_transition;
+use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::WorkflowFacetContents;
 use crate::domain::workflow::{
@@ -55,7 +53,6 @@ use crate::domain::workflow::{
     SchemaDef as DomainSchemaDef,
 };
 use crate::domain::workflow::{NodeKindName, WorkflowDefinition};
-use crate::domain::workflow::{RuntimeArtifact, RuntimeExecutionState, TokenUsage};
 use crate::infrastructure::process::command_runner::{
     self as workflow_command_runner, ActiveCommandHandle, CommandRunOutput, CommandRunnerError,
 };
@@ -67,15 +64,13 @@ use crate::usecase::workflow::runtime_driver::{
     WorkflowRuntimeEffect, WorkflowTransactionCommitError,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
-use crate::usecase::workflow::runtime_events as workflow_runtime_events;
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, WorkflowDefinitionResolver,
 };
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 use crate::usecase::workflow::runtime_start_guard as workflow_runtime_start_guard;
-use execution_registry::{find_any_by_worktree, find_by_worktree, find_by_worktree_mut};
-use execution_state::{DomainWorkflowExecution, FanoutChildRuntimeState, SessionWorkflowRef};
-use fanout_runtime as workflow_fanout_runtime;
+use execution_registry::{find_any_by_worktree, find_by_worktree};
+use execution_state::{DomainWorkflowExecution, SessionWorkflowRef};
 use node_settings::WorkflowDefaults;
 use output_limit as workflow_output_limit;
 use prompt_rendering as workflow_prompt;
@@ -103,8 +98,6 @@ pub struct WorkflowRuntimeHost {
     session_workflow_refs: Arc<Mutex<HashMap<String, SessionWorkflowRef>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
     execution_facet_contents: Arc<Mutex<HashMap<String, WorkflowFacetContents>>>,
-    /// Confirmed children of an interrupted fanout, consumed exactly once by its resumed parent.
-    fanout_resume_checkpoints: Arc<Mutex<HashMap<String, FanoutResumeCheckpoint>>>,
     /// execution_id → runtime activation serialization lock.
     ///
     /// Weak references keep session/fanout startup and stop/abort mutually exclusive without
@@ -148,13 +141,6 @@ impl RequiredEventCommitFailure {
     }
 }
 
-struct FanoutChildCompletionCommit {
-    outcome: Option<NodeOutcome>,
-    snapshot_before: DomainWorkflowExecution,
-    progress_events: Vec<WorkflowEvent>,
-    failure_telemetry: Option<FailureClassification>,
-}
-
 struct ControlPlaneCommitCandidate<'a> {
     operation_kind: CommitOperationKind,
     execution_id: &'a str,
@@ -165,19 +151,6 @@ struct ControlPlaneCommitCandidate<'a> {
 }
 
 #[derive(Clone)]
-struct FanoutResumeChild {
-    node_name: String,
-    item_index: Option<usize>,
-    child_index: usize,
-    reusable: workflow_fanout_runtime::ReusableFanoutChild,
-}
-
-#[derive(Clone)]
-struct FanoutResumeCheckpoint {
-    parent_node_name: String,
-    children: Vec<FanoutResumeChild>,
-}
-
 struct WorkflowExecutionInsert {
     execution_id: String,
     workflow: WorkflowDefinition,
@@ -218,34 +191,6 @@ fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
         env.push(("RELEASH_SESSION_ID".to_string(), session_id.clone()));
     }
     env
-}
-
-#[cfg(test)]
-mod command_env_tests {
-    use super::*;
-
-    #[test]
-    fn command_env_includes_worktree_path() {
-        let input = CommandExecutionInput {
-            execution_id: "execution-1".to_string(),
-            node_execution_id: "node-execution-1".to_string(),
-            node_name: "check".to_string(),
-            attempt: 1,
-            worktree_path: "/repo/worktree".to_string(),
-            raw_command: Some("true".to_string()),
-            contract: None,
-            schemas: BTreeMap::new(),
-            fanout_parent: None,
-            session_id: None,
-        };
-
-        let env = command_env(&input);
-
-        assert!(env.contains(&(
-            "RELEASH_WORKTREE_PATH".to_string(),
-            "/repo/worktree".to_string()
-        )));
-    }
 }
 
 fn new_node_execution_id() -> String {
@@ -318,25 +263,6 @@ fn build_command_artifact(
     }
 }
 
-fn is_still_current_execution(
-    exec: &DomainWorkflowExecution,
-    node_name: &str,
-    attempt: u32,
-) -> bool {
-    if !exec.is_active() {
-        return false;
-    }
-    let current_node = &exec.workflow.nodes[exec.current_node_index];
-    if current_node.name != node_name {
-        return false;
-    }
-    exec.node_execution_counts
-        .get(node_name)
-        .copied()
-        .unwrap_or(1)
-        == attempt
-}
-
 fn commit_snapshot_is_current(
     exec: &DomainWorkflowExecution,
     snapshot: &RuntimeCommitSnapshot,
@@ -344,142 +270,8 @@ fn commit_snapshot_is_current(
     exec.id == snapshot.execution_id
         && exec.updated_at == snapshot.updated_at
         && exec.state() == &snapshot.state
-        && exec.current_node_index == snapshot.current_node_index
         && exec.current_session_id == snapshot.current_session_id
         && exec.node_executions == snapshot.node_executions
-}
-
-fn complete_fanout_parent_after_all_children(
-    exec: &mut DomainWorkflowExecution,
-    snapshot_before: DomainWorkflowExecution,
-    mut progress_events: Vec<WorkflowEvent>,
-    failure_telemetry: Option<FailureClassification>,
-) -> Result<FanoutChildCompletionCommit, WorkflowRuntimeError> {
-    let Some(fanout_runtime) = exec.fanout_runtime.as_ref() else {
-        return Err(WorkflowRuntimeError::InvalidState(
-            "fanout parent completion requires an active fanout runtime".to_string(),
-        ));
-    };
-    let parent_node_name = fanout_runtime.parent_node_name.clone();
-    let parent_node_execution_id = fanout_runtime.parent_node_execution_id.clone();
-    let parent_attempt = exec
-        .node_execution_counts
-        .get(&parent_node_name)
-        .copied()
-        .unwrap_or(1);
-    let completed_at = current_timestamp();
-    let parent_requires_approval = exec
-        .workflow
-        .nodes
-        .iter()
-        .find(|node| node.name == parent_node_name)
-        .map(workflow_transition::decide_completion_disposition)
-        == Some(workflow_transition::CompletionDisposition::RequestApproval);
-    if parent_requires_approval {
-        // completion: approval — 全子完了後、human の承認まで parent は完了しない。
-        if exec.mark_node_waiting_approval(&parent_node_execution_id, completed_at)
-            != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-        {
-            return Err(WorkflowRuntimeError::InvalidState(format!(
-                "fanout parent NodeExecution '{parent_node_execution_id}' cannot wait for approval"
-            )));
-        }
-        progress_events.push(WorkflowEvent::ApprovalRequested {
-            execution_id: exec.id.clone(),
-            node_execution_id: parent_node_execution_id,
-            node_name: parent_node_name,
-            timestamp: completed_at,
-        });
-        let snapshot = RuntimeCommitSnapshot::from_execution(exec)?;
-        return Ok(FanoutChildCompletionCommit {
-            outcome: Some(NodeOutcome::Persist(snapshot)),
-            snapshot_before,
-            progress_events,
-            failure_telemetry,
-        });
-    }
-    let completion_plan = workflow_fanout_runtime::plan_fanout_parent_completion(
-        &parent_node_name,
-        parent_attempt,
-        &fanout_runtime.children,
-        completed_at,
-    );
-    let parent_artifact = completion_plan
-        .parent_artifact
-        .artifact
-        .clone()
-        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    progress_events.push(WorkflowEvent::ArtifactProduced {
-        execution_id: exec.id.clone(),
-        node_execution_id: parent_node_execution_id.clone(),
-        node_name: parent_node_name.clone(),
-        contract: None,
-        value: parent_artifact.clone(),
-        request_id: None,
-        submitted_at: None,
-        timestamp: completed_at,
-    });
-
-    let _ = exec.finalize_fanout_parent(
-        &parent_node_execution_id,
-        completion_plan.parent_artifact,
-        completion_plan.history_entry,
-        completed_at,
-    );
-
-    let outcome =
-        workflow_runtime_driver::apply_advance(exec, new_node_execution_id(), completed_at)?;
-
-    Ok(FanoutChildCompletionCommit {
-        outcome: Some(outcome),
-        snapshot_before,
-        progress_events,
-        failure_telemetry,
-    })
-}
-
-fn finalize_child_terminal_state(
-    exec: &mut DomainWorkflowExecution,
-    snapshot_before: DomainWorkflowExecution,
-    progress_events: Vec<WorkflowEvent>,
-    failure_telemetry: Option<FailureClassification>,
-) -> Result<FanoutChildCompletionCommit, WorkflowRuntimeError> {
-    let Some(fanout_runtime) = exec.fanout_runtime.as_ref() else {
-        return Err(WorkflowRuntimeError::InvalidState(
-            "fanout child terminal state requires an active fanout runtime".to_string(),
-        ));
-    };
-    let all_done = fanout_runtime.children.iter().all(|c| {
-        matches!(
-            c.state,
-            FanoutChildRuntimeState::Completed | FanoutChildRuntimeState::Failed
-        )
-    });
-
-    if !all_done {
-        exec.touch(current_timestamp());
-        let snapshot = RuntimeCommitSnapshot::from_execution(exec)?;
-        return Ok(FanoutChildCompletionCommit {
-            outcome: Some(NodeOutcome::Persist(snapshot)),
-            snapshot_before,
-            progress_events,
-            failure_telemetry,
-        });
-    }
-
-    complete_fanout_parent_after_all_children(
-        exec,
-        snapshot_before,
-        progress_events,
-        failure_telemetry,
-    )
-}
-
-fn record_fanout_child_successful_completion(
-    execution: &mut DomainWorkflowExecution,
-    child_node_name: &str,
-) {
-    execution.record_successful_node_completion(child_node_name, current_timestamp());
 }
 
 // [08] `lookup_node_contract` は domain の contract service に移動済み。
@@ -523,37 +315,6 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    pub(crate) async fn finish_retried_fanout_control_plane_commit<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-        snapshot: &RuntimeCommitSnapshot,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        self.finish_control_plane_commit(app, worktree_path, snapshot, None)
-            .await?;
-        if let Err(error) = self
-            .start_retried_fanout_child(app, worktree_path, node_execution_id)
-            .await
-        {
-            if let Err(settle_error) = self
-                .settle_runtime_failure_for_node(
-                    app,
-                    worktree_path,
-                    &snapshot.execution_id,
-                    node_execution_id,
-                    &error,
-                )
-                .await
-            {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "{error}; NodeFailed settlement failed: {settle_error}"
-                )));
-            }
-            return Ok(());
-        }
-        Ok(())
-    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_canonical(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
@@ -593,7 +354,6 @@ impl WorkflowRuntimeHost {
             executions: Arc::new(Mutex::new(HashMap::new())),
             session_workflow_refs: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
-            fanout_resume_checkpoints: Arc::new(Mutex::new(HashMap::new())),
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
@@ -722,7 +482,7 @@ impl WorkflowRuntimeHost {
     async fn insert_workflow_execution(
         &self,
         input: WorkflowExecutionInsert,
-    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+    ) -> Result<(RuntimeCommitSnapshot, AppliedAdvance), WorkflowRuntimeError> {
         let WorkflowExecutionInsert {
             execution_id,
             workflow,
@@ -732,27 +492,10 @@ impl WorkflowRuntimeHost {
             workflow_defaults,
             now,
         } = input;
-        let request_text = request.clone().unwrap_or_default();
-        let mut artifacts = HashMap::new();
-        artifacts.insert(
-            crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
-            workflow_prompt::request_node_artifact(&request_text, now),
-        );
-        // root が sequence の場合、実行は実効 entry の子から始まる（root
-        // sequence 自身は NodeExecution 行を持たない）。
-        let entry_index = workflow.initial_execution_node_index().ok_or_else(|| {
-            WorkflowRuntimeError::InvalidWorkflow(format!(
-                "workflow '{}' does not define an executable root node '{}'",
-                workflow.name, workflow.entry
-            ))
-        })?;
         let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
             lifecycle: DomainWorkflowExecution::lifecycle_from_state(RuntimeExecutionState::Running),
-            current_node_index: entry_index,
-            node_execution_counts: HashMap::new(),
-            loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
             workflow_defaults,
             created_from,
@@ -760,31 +503,26 @@ impl WorkflowRuntimeHost {
             started_at: now,
             updated_at: now,
             current_session_id: None,
-            current_node_token_usage: TokenUsage::default(),
-            artifacts,
+            scopes: Vec::new(),
             node_executions: Vec::new(),
             request,
-            fanout_runtime: None,
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
         };
 
-        let node_name = workflow.nodes[entry_index].name.clone();
         let mut execs = self.executions.lock().await;
         DomainWorkflowExecution::validate_start(
             &workflow,
             find_any_by_worktree(&execs, &worktree_path),
         )?;
-        execution.start_node_execution(
-            node_name,
-            workflow.nodes[entry_index].kind_name(),
-            1,
-            None,
-            new_node_execution_id(),
-            now,
-        );
+        // 実行木の起動カスケード: root（合成子なら実効 entry の leaf まで）を開始する。
+        let mut new_id = new_node_execution_id;
+        let applied = execution
+            .start_root(&mut new_id, now)
+            .map_err(|error| WorkflowRuntimeError::InvalidState(error.to_string()))?;
         execs.insert(execution_id.clone(), execution);
-        RuntimeCommitSnapshot::from_execution(execs.get(&execution_id).unwrap())
+        let snapshot = RuntimeCommitSnapshot::from_execution(execs.get(&execution_id).unwrap())?;
+        Ok((snapshot, applied))
     }
 
     pub(crate) async fn application_shutdown_target_execution_ids(
@@ -1174,7 +912,7 @@ impl WorkflowRuntimeHost {
                 now,
             })
             .await;
-        let snapshot = match snapshot_result {
+        let (snapshot, applied) = match snapshot_result {
             Ok(s) => s,
             Err(e) => {
                 self.release_execution_facet_contents(&execution_id).await;
@@ -1183,34 +921,18 @@ impl WorkflowRuntimeHost {
             }
         };
 
-        // [04] commit point: ExecutionStarted と初回 NodeStarted を同一の required batch で
-        // append する。初回 NodeExecution は insert 時点で採番済みなので、両 event を
-        // atomic に記録しないと strict projection が execution の第一級 id を復元できない。
-        let initial_node_started_event =
-            match workflow_runtime_events::node_started_event_for_snapshot(&snapshot) {
-                Ok(event) => event,
-                Err(error) => {
-                    self.executions.lock().await.remove(&execution_id);
-                    self.release_execution_facet_contents(&execution_id).await;
-                    rollback_reservation(format!(
-                        "initial NodeStarted event construction failed: {error}"
-                    ))
-                    .await;
-                    return Err(error);
-                }
-            };
-        let required_start_events = vec![
-            WorkflowEvent::ExecutionStarted {
-                execution_id: snapshot.execution_id.clone(),
-                workflow_name: snapshot.workflow_name.clone(),
-                worktree_path: worktree_path.clone(),
-                created_from,
-                request: request.clone().unwrap_or_default(),
-                definition: workflow.clone(),
-                timestamp: now,
-            },
-            initial_node_started_event,
-        ];
+        // [04] commit point: ExecutionStarted と起動カスケードの NodeStarted 群を
+        // 同一の required batch で append する。
+        let mut required_start_events = vec![WorkflowEvent::ExecutionStarted {
+            execution_id: snapshot.execution_id.clone(),
+            workflow_name: snapshot.workflow_name.clone(),
+            worktree_path: worktree_path.clone(),
+            created_from,
+            request: request.clone().unwrap_or_default(),
+            definition: workflow.clone(),
+            timestamp: now,
+        }];
+        required_start_events.extend(applied.events);
         let start_projection_mutations = match self
             .execution_store
             .prepare_atomic_initial_snapshot_mutations(&snapshot)
@@ -1263,16 +985,20 @@ impl WorkflowRuntimeHost {
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
         //    初回 runtime 起動失敗は Failed 状態遷移として観測し、
         //    start primitive は Ok(execution_id) を返す（spec [04]『command 受理境界』Rule）。
-        if let Err(e) = self.start_current_node_runtime(app, &worktree_path).await {
-            if let Err(settle_error) = self
-                .settle_runtime_failure(app, &worktree_path, &execution_id, &e)
-                .await
-            {
-                log::error!(
-                    "workflow {execution_id}: runtime start failed and NodeFailed settlement also failed: {settle_error}"
-                );
+        if let crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartLeaves(leaves) =
+            applied.decision
+        {
+            if let Err(e) = self.start_leaves(app, &worktree_path, leaves).await {
+                if let Err(settle_error) = self
+                    .settle_runtime_failure(app, &worktree_path, &execution_id, &e)
+                    .await
+                {
+                    log::error!(
+                        "workflow {execution_id}: runtime start failed and NodeFailed settlement also failed: {settle_error}"
+                    );
+                }
+                log::warn!("workflow {execution_id}: post-commit node runtime start failed: {e}");
             }
-            log::warn!("workflow {execution_id}: post-commit node runtime start failed: {e}");
         }
         Ok(execution_id)
     }
@@ -1329,7 +1055,7 @@ impl WorkflowRuntimeHost {
     ) -> Result<(), WorkflowRuntimeError> {
         let timestamp = current_timestamp();
         let new_node_execution_id = new_node_execution_id();
-        let (snapshot_before, mut candidate, worktree_path, is_fanout_child) = {
+        let (snapshot_before, mut candidate, worktree_path) = {
             let executions = self.executions.lock().await;
             let current = executions
                 .get(execution_id)
@@ -1338,11 +1064,6 @@ impl WorkflowRuntimeHost {
                 current.clone(),
                 current.clone(),
                 current.worktree_path.clone(),
-                current
-                    .node_executions
-                    .iter()
-                    .find(|attempt| attempt.id == node_execution_id)
-                    .is_some_and(|attempt| attempt.fanout_parent.is_some()),
             )
         };
         let restarted = candidate
@@ -1358,7 +1079,6 @@ impl WorkflowRuntimeHost {
                 ))
             })?;
         let new_attempt = restarted.attempt;
-        debug_assert_eq!(is_fanout_child, restarted.fanout_child);
         let events = vec![
             WorkflowEvent::NodeRetryRequested {
                 execution_id: execution_id.to_string(),
@@ -1371,7 +1091,7 @@ impl WorkflowRuntimeHost {
                 node_name: new_attempt.node_name.clone(),
                 kind: new_attempt.kind,
                 attempt: new_attempt.attempt,
-                fanout_parent: new_attempt.fanout_parent.clone(),
+                parent: new_attempt.parent.clone(),
                 timestamp,
             },
         ];
@@ -1388,35 +1108,16 @@ impl WorkflowRuntimeHost {
                 },
             )
             .await?;
-        if is_fanout_child {
-            self.finish_control_plane_commit(app, &worktree_path, &snapshot, None)
-                .await?;
-            if let Err(error) = self
-                .start_retried_fanout_child(app, &worktree_path, &new_attempt.id)
-                .await
-            {
-                self.settle_runtime_failure_for_node(
-                    app,
-                    &worktree_path,
-                    execution_id,
-                    &new_attempt.id,
-                    &error,
-                )
-                .await?;
-                log::warn!(
-                    "workflow {execution_id}: retried fanout NodeExecution '{}' failed to activate: {error}",
-                    new_attempt.id
-                );
-            }
-        } else {
-            self.finish_control_plane_commit(
-                app,
-                &worktree_path,
-                &snapshot,
-                Some(NodeOutcome::RetryCurrentNode(snapshot.clone())),
-            )
-            .await?;
-        }
+        self.finish_control_plane_commit(
+            app,
+            &worktree_path,
+            &snapshot,
+            Some(NodeOutcome::StartLeaves(
+                snapshot.clone(),
+                vec![restarted.leaf],
+            )),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1543,13 +1244,6 @@ impl WorkflowRuntimeHost {
             .remove(execution_id);
     }
 
-    async fn release_fanout_resume_checkpoint(&self, execution_id: &str) {
-        self.fanout_resume_checkpoints
-            .lock()
-            .await
-            .remove(execution_id);
-    }
-
     async fn release_terminal_execution(&self, execution_id: &str) {
         let removed = {
             let mut execs = self.executions.lock().await;
@@ -1565,42 +1259,281 @@ impl WorkflowRuntimeHost {
         };
         if removed {
             self.release_execution_facet_contents(execution_id).await;
-            self.release_fanout_resume_checkpoint(execution_id).await;
         }
     }
 
     // ---- 内部メソッド ----
 
-    async fn start_current_node_runtime<R: tauri::Runtime + 'static>(
+    /// advance が返した leaf 群を起動する。Session はまとめて prepare →
+    /// SessionAttached を一括 commit → activate、Command は spawn する。
+    async fn start_leaves<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
         worktree_path: &str,
+        leaves: Vec<LeafStart>,
     ) -> Result<(), WorkflowRuntimeError> {
-        let kind = {
-            let execs = self.executions.lock().await;
-            let (_, exec) = find_by_worktree(&execs, worktree_path).ok_or_else(|| {
-                WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-            })?;
-            exec.workflow.nodes[exec.current_node_index].kind_name()
-        };
-        match kind {
-            NodeKindName::Command => self.run_current_command_node(app, worktree_path).await,
-            NodeKindName::Session => self.start_node_session(app, worktree_path).await,
-            NodeKindName::Fanout => self.start_fanout_children(app, worktree_path).await,
-            NodeKindName::Sequence => Err(WorkflowRuntimeError::InvalidState(
-                "sequence nodes are not executable as current node (W2 executes the root sequence children only)"
-                    .to_string(),
-            )),
+        if leaves.is_empty() {
+            return Ok(());
         }
+        let (execution_id, workflow, attempts_by_id) = {
+            let executions = self.executions.lock().await;
+            let (execution_id, exec) =
+                find_by_worktree(&executions, worktree_path).ok_or_else(|| {
+                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
+                })?;
+            let attempts_by_id: HashMap<String, u32> = exec
+                .node_executions
+                .iter()
+                .map(|execution| (execution.id.clone(), execution.attempt))
+                .collect();
+            (execution_id.clone(), exec.workflow.clone(), attempts_by_id)
+        };
+        let activation_gate = self.runtime_activation_gate(&execution_id).await;
+        let activation_guard = activation_gate.lock.lock().await;
+        let facet_contents = self
+            .facet_contents_for_execution(&execution_id, &workflow)
+            .await?;
+
+        let mut command_inputs = Vec::new();
+        let mut session_plans = Vec::new();
+        for leaf in leaves {
+            let node = workflow
+                .node_by_name(&leaf.node_name)
+                .cloned()
+                .ok_or_else(|| {
+                    WorkflowRuntimeError::InvalidWorkflow(format!(
+                        "node '{}' is undefined",
+                        leaf.node_name
+                    ))
+                })?;
+            match leaf.kind {
+                NodeKindName::Command => {
+                    let command = node.command().ok_or_else(|| {
+                        WorkflowRuntimeError::InvalidState(format!(
+                            "node '{}' is not a command",
+                            leaf.node_name
+                        ))
+                    })?;
+                    let rendered =
+                        workflow_prompt::render_parameter_references(command, &leaf.bindings);
+                    command_inputs.push(CommandExecutionInput {
+                        execution_id: execution_id.clone(),
+                        node_execution_id: leaf.node_execution_id.clone(),
+                        node_name: leaf.node_name.clone(),
+                        attempt: attempts_by_id
+                            .get(&leaf.node_execution_id)
+                            .copied()
+                            .unwrap_or(1),
+                        worktree_path: worktree_path.to_string(),
+                        raw_command: Some(rendered),
+                        contract: node.artifact.clone(),
+                        schemas: workflow.schemas.clone(),
+                        session_id: None,
+                    });
+                }
+                NodeKindName::Session => {
+                    let (system_prompt, user_message) = workflow_prompt::build_leaf_prompt(
+                        &node,
+                        facet_contents.for_node(&node.name),
+                        &leaf.node_execution_id,
+                        &leaf.bindings,
+                        &workflow.schemas,
+                    )?;
+                    let initial_instruction =
+                        crate::domain::workflow::services::prompt_composition::provider_tui_initial_instruction(
+                            system_prompt.as_deref(),
+                            &user_message,
+                        );
+                    let launch_config = node
+                        .session()
+                        .map(WorkflowSessionLaunchConfig::from_session_spec)
+                        .ok_or_else(|| {
+                            WorkflowRuntimeError::InvalidWorkflow(format!(
+                                "Node '{}' is not a Session Node",
+                                node.name
+                            ))
+                        })?;
+                    session_plans.push((
+                        leaf.node_execution_id.clone(),
+                        launch_config,
+                        initial_instruction,
+                    ));
+                }
+                NodeKindName::Fanout | NodeKindName::Sequence => {
+                    return Err(WorkflowRuntimeError::InvalidState(format!(
+                        "composite node '{}' has no leaf runtime to start",
+                        leaf.node_name
+                    )));
+                }
+            }
+        }
+
+        // Session を先に全 prepare し、SessionAttached を一括 commit してから activate する。
+        let mut session_setups: Vec<(String, String)> = Vec::with_capacity(session_plans.len());
+        for (node_execution_id, launch_config, initial_instruction) in session_plans {
+            match self
+                .workflow_agent_sessions
+                .prepare_workflow_agent_session(
+                    worktree_path,
+                    launch_config,
+                    &execution_id,
+                    &node_execution_id,
+                    &initial_instruction,
+                )
+                .await
+            {
+                Ok(session) => {
+                    self.session_workflow_refs.lock().await.insert(
+                        session.id.clone(),
+                        SessionWorkflowRef {
+                            execution_id: execution_id.clone(),
+                        },
+                    );
+                    session_setups.push((node_execution_id, session.id));
+                }
+                Err(launch_error) => {
+                    return match self.rollback_prepared_sessions(&session_setups).await {
+                        Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
+                            "{launch_error}; rollback failed: {rollback_error}"
+                        ))),
+                        None => Err(launch_error),
+                    };
+                }
+            }
+        }
+        if !session_setups.is_empty() {
+            let timestamp = current_timestamp();
+            let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = async {
+                let (snapshot_before, snapshot, events) = {
+                    let mut executions = self.executions.lock().await;
+                    let execution = executions.get_mut(&execution_id).ok_or_else(|| {
+                        WorkflowRuntimeError::ExecutionNotFound(execution_id.clone())
+                    })?;
+                    let snapshot_before = execution.clone();
+                    let mut events = Vec::new();
+                    for (node_execution_id, session_id) in &session_setups {
+                        if execution.attach_node_session(
+                            node_execution_id,
+                            session_id.clone(),
+                            timestamp,
+                        ) != TransitionOutcome::Applied
+                        {
+                            *execution = snapshot_before;
+                            return Err(WorkflowRuntimeError::InvalidState(format!(
+                                "NodeExecution '{node_execution_id}' does not admit AgentSession attachment"
+                            )));
+                        }
+                        events.push(WorkflowEvent::SessionAttached {
+                            execution_id: execution_id.clone(),
+                            node_execution_id: node_execution_id.clone(),
+                            session_id: session_id.clone(),
+                            timestamp,
+                        });
+                    }
+                    (
+                        snapshot_before,
+                        RuntimeCommitSnapshot::from_execution(execution)?,
+                        events,
+                    )
+                };
+                let execution_store_snapshot_before = self
+                    .execution_store
+                    .active_execution_snapshot(&execution_id)
+                    .await;
+                self.commit_required_events(
+                    app,
+                    RequiredEventCommit {
+                        operation_kind: CommitOperationKind::Workflow,
+                        execution_id: &execution_id,
+                        snapshot_for_commit: &snapshot,
+                        snapshot_before,
+                        execution_store_snapshot_before,
+                        required_events: events,
+                        append_error_context: "session attachment event append failed",
+                    },
+                )
+                .await?;
+                Ok(snapshot)
+            }
+            .await;
+            let snapshot = match commit_result {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return match self.rollback_prepared_sessions(&session_setups).await {
+                        Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
+                            "{error}; rollback failed: {rollback_error}"
+                        ))),
+                        None => Err(error),
+                    };
+                }
+            };
+            workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
+        }
+        for (node_execution_id, session_id) in &session_setups {
+            if let Err(error) = run_runtime_activation(
+                &activation_gate,
+                &execution_id,
+                "session",
+                self.workflow_agent_sessions
+                    .activate_workflow_agent_session(session_id, node_execution_id),
+            )
+            .await
+            {
+                self.settle_runtime_failure_for_node(
+                    app,
+                    worktree_path,
+                    &execution_id,
+                    node_execution_id,
+                    &error,
+                )
+                .await?;
+                log::warn!(
+                    "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
+                );
+            }
+        }
+        drop(activation_guard);
+        drop(activation_gate);
+        for input in command_inputs {
+            let node_execution_id = input.node_execution_id.clone();
+            if let Err(error) = self.spawn_command_execution(app, input).await {
+                self.settle_runtime_failure_for_node(
+                    app,
+                    worktree_path,
+                    &execution_id,
+                    &node_execution_id,
+                    &error,
+                )
+                .await?;
+                log::warn!(
+                    "workflow {execution_id}: Command NodeExecution '{node_execution_id}' failed to activate: {error}"
+                );
+            }
+        }
+        Ok(())
     }
 
-    async fn run_current_command_node<R: tauri::Runtime + 'static>(
+    async fn rollback_prepared_sessions(
         &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let input = self.command_execution_input(worktree_path).await?;
-        self.spawn_command_execution(app, input).await
+        session_setups: &[(String, String)],
+    ) -> Option<WorkflowRuntimeError> {
+        {
+            let mut refs = self.session_workflow_refs.lock().await;
+            for (_, session_id) in session_setups {
+                refs.remove(session_id);
+            }
+        }
+        let mut rollback_failure = None;
+        for (node_execution_id, session_id) in session_setups {
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .rollback_workflow_agent_session(session_id, node_execution_id)
+                .await
+            {
+                rollback_failure.get_or_insert(error);
+            }
+        }
+        rollback_failure
     }
 
     async fn spawn_command_execution<R: tauri::Runtime + 'static>(
@@ -1767,68 +1700,6 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    async fn command_execution_input(
-        &self,
-        worktree_path: &str,
-    ) -> Result<CommandExecutionInput, WorkflowRuntimeError> {
-        let execs = self.executions.lock().await;
-        let (execution_id, exec) = find_by_worktree(&execs, worktree_path)
-            .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string()))?;
-        let node = &exec.workflow.nodes[exec.current_node_index];
-        let Some(command) = node.command() else {
-            return Err(WorkflowRuntimeError::InvalidState(format!(
-                "current node '{}' is not a command",
-                node.name
-            )));
-        };
-        let entry = exec
-            .workflow
-            .root_sequence()
-            .and_then(|sequence| sequence.child_entry(&node.name));
-        let bindings =
-            workflow_prompt::parameter_bindings(entry, &exec.artifacts, exec.request.as_deref());
-        let rendered_command = workflow_prompt::render_parameter_references(command, &bindings);
-        let attempt = exec
-            .node_execution_counts
-            .get(&node.name)
-            .copied()
-            .unwrap_or(1);
-        let node_execution_id = exec
-            .node_executions
-            .iter()
-            .rev()
-            .find(|node_execution| {
-                node_execution.node_name == node.name
-                    && node_execution.attempt == attempt
-                    && node_execution.fanout_parent.is_none()
-                    && node_execution.status.is_active()
-            })
-            .map(|node_execution| node_execution.id.clone())
-            .ok_or_else(|| {
-                WorkflowRuntimeError::InvalidState(format!(
-                    "active NodeExecution for '{}' attempt {} is unavailable",
-                    node.name, attempt
-                ))
-            })?;
-        Ok(CommandExecutionInput {
-            execution_id: execution_id.clone(),
-            node_execution_id,
-            node_name: node.name.clone(),
-            attempt,
-            worktree_path: exec.worktree_path.clone(),
-            raw_command: Some(rendered_command),
-            contract: node.artifact.clone(),
-            schemas: exec.workflow.schemas.clone(),
-            fanout_parent: None,
-            session_id: exec.current_session_id.clone().or_else(|| {
-                exec.node_executions
-                    .iter()
-                    .rev()
-                    .find_map(|node_execution| node_execution.session_id.clone())
-            }),
-        })
-    }
-
     async fn command_execution_still_current(&self, input: &CommandExecutionInput) -> bool {
         let execs = self.executions.lock().await;
         let Some(exec) = execs.get(&input.execution_id) else {
@@ -1837,167 +1708,100 @@ impl WorkflowRuntimeHost {
         command_execution_input_is_current(exec, input)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn commit_command_output<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         input: CommandExecutionInput,
         output: CommandRunOutput,
     ) -> Result<(), WorkflowRuntimeError> {
-        if input.fanout_parent.is_some() {
-            return self.commit_fanout_command_output(app, input, output).await;
-        }
         let secrets = secret_source::collect_configured_secret_values(app);
         let artifact =
             build_command_artifact(&input.schemas, input.contract.as_deref(), output, &secrets);
         let artifact_value = artifact.value.clone();
         let artifact_event_contract = artifact.event_contract.clone();
-        let result_summary = Some(artifact.result_summary.clone());
+        let result_summary = artifact.result_summary.clone();
         let timestamp = current_timestamp();
 
-        let (outcome, snapshot_before, snapshot_for_commit, worktree_path) = {
+        let (outcome, snapshot_before, snapshot_for_commit, worktree_path, required_events) = {
             let mut execs = self.executions.lock().await;
             let Some(exec) = execs.get_mut(&input.execution_id) else {
                 return Ok(());
             };
-            if !is_still_current_execution(exec, &input.node_name, input.attempt) {
+            if !command_execution_input_is_current(exec, &input) {
                 return Ok(());
             }
+            let snapshot_before = exec.clone();
             let requires_approval = exec
                 .workflow
-                .nodes
-                .iter()
-                .find(|node| node.name == input.node_name)
+                .node_by_name(&input.node_name)
                 .map(workflow_transition::decide_completion_disposition)
                 == Some(workflow_transition::CompletionDisposition::RequestApproval);
-            if requires_approval {
+            let _ = exec.record_pending_result(
+                &input.node_execution_id,
+                Some(result_summary.clone()),
+                Some(artifact_value.clone()),
+                artifact_event_contract.clone(),
+                timestamp,
+            );
+            let mut required_events = vec![WorkflowEvent::ArtifactProduced {
+                execution_id: input.execution_id.clone(),
+                node_execution_id: input.node_execution_id.clone(),
+                node_name: input.node_name.clone(),
+                contract: artifact_event_contract,
+                value: artifact_value,
+                request_id: None,
+                submitted_at: None,
+                timestamp,
+            }];
+            let outcome = if requires_approval {
                 // completion: approval — exit code での既定完了後、human の承認まで完了しない。
-                let snapshot_before = exec.clone();
-                exec.upsert_artifact(
-                    RuntimeArtifact {
-                        node_name: input.node_name.clone(),
-                        attempt: input.attempt,
-                        session_id: None,
-                        result: result_summary.clone(),
-                        artifact: Some(artifact_value.clone()),
-                        contract: artifact_event_contract.clone(),
-                        token_usage: None,
-                        completed_at: timestamp,
-                    },
-                    timestamp,
-                );
                 if exec.mark_node_waiting_approval(&input.node_execution_id, timestamp)
-                    != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                    != TransitionOutcome::Applied
                 {
+                    *exec = snapshot_before;
                     return Err(WorkflowRuntimeError::InvalidState(format!(
                         "command NodeExecution '{}' cannot wait for approval",
                         input.node_execution_id
                     )));
                 }
-                let snapshot_for_commit = RuntimeCommitSnapshot::from_execution(exec)?;
-                let worktree_path = exec.worktree_path.clone();
-                let required_events = vec![
-                    WorkflowEvent::ArtifactProduced {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        contract: artifact_event_contract,
-                        value: artifact_value,
-                        request_id: None,
-                        submitted_at: None,
-                        timestamp,
-                    },
-                    WorkflowEvent::ApprovalRequested {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        timestamp,
-                    },
-                ];
-                drop(execs);
-                let execution_store_snapshot_before = self
-                    .execution_store
-                    .active_execution_snapshot(&input.execution_id)
-                    .await;
-                self.commit_required_events(
-                    app,
-                    RequiredEventCommit {
-                        operation_kind: CommitOperationKind::Workflow,
-                        execution_id: &input.execution_id,
-                        snapshot_for_commit: &snapshot_for_commit,
-                        snapshot_before,
-                        execution_store_snapshot_before,
-                        required_events,
-                        append_error_context: "command approval request event append failed",
-                    },
-                )
-                .await?;
-                self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path)
-                    .await;
-                return Ok(());
-            }
-
-            let snapshot_before = exec.clone();
-            let entry = workflow_runtime_driver::make_node_history_entry(
-                exec,
-                result_summary,
-                None,
-                None,
-                timestamp,
-            );
-            let completed_at = entry.completed_at;
-            let attempt = entry.attempt;
-            exec.record_history_entry(entry, completed_at);
-            exec.upsert_artifact(
-                RuntimeArtifact {
+                required_events.push(WorkflowEvent::ApprovalRequested {
+                    execution_id: input.execution_id.clone(),
+                    node_execution_id: input.node_execution_id.clone(),
                     node_name: input.node_name.clone(),
-                    attempt,
-                    session_id: None,
-                    result: Some(artifact.result_summary),
-                    artifact: Some(artifact_value.clone()),
-                    contract: artifact_event_contract.clone(),
-                    token_usage: None,
-                    completed_at,
-                },
-                completed_at,
-            );
-            let _ = exec.complete_node_execution(
-                &input.node_execution_id,
-                Some(artifact_value.clone()),
-                None,
-                timestamp,
-            );
-            let outcome =
-                workflow_runtime_driver::apply_advance(exec, new_node_execution_id(), timestamp)?;
+                    timestamp,
+                });
+                None
+            } else {
+                let mut new_id = new_node_execution_id;
+                let applied = match exec.complete_leaf_and_advance(
+                    &input.node_execution_id,
+                    &mut new_id,
+                    timestamp,
+                ) {
+                    Ok(applied) => applied,
+                    Err(error) => {
+                        *exec = snapshot_before;
+                        return Err(WorkflowRuntimeError::InvalidState(error.to_string()));
+                    }
+                };
+                required_events.extend(applied.events);
+                match workflow_runtime_driver::node_outcome_from_advance(exec, applied.decision) {
+                    Ok(outcome) => Some(outcome),
+                    Err(error) => {
+                        *exec = snapshot_before;
+                        return Err(error);
+                    }
+                }
+            };
             (
                 outcome,
                 snapshot_before,
                 RuntimeCommitSnapshot::from_execution(exec)?,
                 exec.worktree_path.clone(),
+                required_events,
             )
         };
 
-        let artifact_event = WorkflowEvent::ArtifactProduced {
-            execution_id: input.execution_id.clone(),
-            node_execution_id: input.node_execution_id.clone(),
-            node_name: input.node_name.clone(),
-            contract: artifact_event_contract,
-            value: artifact_value,
-            request_id: None,
-            submitted_at: None,
-            timestamp,
-        };
-        let mut required_events = vec![artifact_event];
-        match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
-            Ok(events) => required_events.extend(events),
-            Err(error) => {
-                let mut execs = self.executions.lock().await;
-                if let Some(exec) = execs.get_mut(&input.execution_id) {
-                    *exec = snapshot_before;
-                }
-                return Err(error);
-            }
-        }
         let execution_store_snapshot_before = self
             .execution_store
             .active_execution_snapshot(&input.execution_id)
@@ -2017,165 +1821,10 @@ impl WorkflowRuntimeHost {
         .await?;
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path)
             .await;
-        Box::pin(self.dispatch_node_outcome_side_effects(app, &worktree_path, outcome)).await
-    }
-
-    async fn commit_fanout_command_output<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        input: CommandExecutionInput,
-        output: CommandRunOutput,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let secrets = secret_source::collect_configured_secret_values(app);
-        let artifact =
-            build_command_artifact(&input.schemas, input.contract.as_deref(), output, &secrets);
-        let artifact_value = artifact.value;
-        let result_summary = artifact.result_summary;
-        let event_contract = artifact.event_contract;
-        let completed_at = current_timestamp();
-
-        let completion = {
-            let mut executions = self.executions.lock().await;
-            let Some(execution) = executions.get_mut(&input.execution_id) else {
-                return Ok(());
-            };
-            if !self.command_input_is_active_fanout_child(execution, &input) {
-                return Ok(());
-            }
-            let snapshot_before = execution.clone();
-            let child_requires_approval = execution
-                .workflow
-                .nodes
-                .iter()
-                .find(|node| node.name == input.node_name)
-                .map(workflow_transition::decide_completion_disposition)
-                == Some(workflow_transition::CompletionDisposition::RequestApproval);
-            if child_requires_approval {
-                // completion: approval — 子の成果を保持したまま human の承認まで完了しない。
-                let _ = execution.record_fanout_child_output(
-                    &input.node_execution_id,
-                    Some(result_summary.clone()),
-                    Some(artifact_value.clone()),
-                    event_contract.clone(),
-                    completed_at,
-                );
-                if execution.mark_node_waiting_approval(&input.node_execution_id, completed_at)
-                    != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-                {
-                    return Err(WorkflowRuntimeError::InvalidState(format!(
-                        "fanout command child '{}' cannot wait for approval",
-                        input.node_execution_id
-                    )));
-                }
-                let progress_events = vec![
-                    WorkflowEvent::ArtifactProduced {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        contract: event_contract,
-                        value: artifact_value,
-                        request_id: None,
-                        submitted_at: None,
-                        timestamp: completed_at,
-                    },
-                    WorkflowEvent::ApprovalRequested {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        timestamp: completed_at,
-                    },
-                ];
-                let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
-                FanoutChildCompletionCommit {
-                    outcome: Some(NodeOutcome::Persist(snapshot)),
-                    snapshot_before,
-                    progress_events,
-                    failure_telemetry: None,
-                }
-            } else {
-                let child = execution
-                    .fanout_runtime
-                    .as_ref()
-                    .and_then(|fanout| {
-                        fanout
-                            .children
-                            .iter()
-                            .find(|child| child.node_execution_id == input.node_execution_id)
-                    })
-                    .ok_or_else(|| {
-                        WorkflowRuntimeError::InvalidState(format!(
-                            "active fanout command child '{}' was not found",
-                            input.node_execution_id
-                        ))
-                    })?;
-                let child_contract = child.contract.clone();
-                let child_token_usage = child.token_usage.clone();
-                let _ = execution.complete_fanout_child_execution(
-                    &input.node_execution_id,
-                    Some(result_summary.clone()),
-                    Some(artifact_value.clone()),
-                    child_contract,
-                    child_token_usage,
-                    completed_at,
-                );
-                record_fanout_child_successful_completion(execution, &input.node_name);
-                let progress_events = vec![
-                    WorkflowEvent::ArtifactProduced {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        contract: event_contract,
-                        value: artifact_value.clone(),
-                        request_id: None,
-                        submitted_at: None,
-                        timestamp: completed_at,
-                    },
-                    WorkflowEvent::NodeCompleted {
-                        execution_id: input.execution_id.clone(),
-                        node_execution_id: input.node_execution_id.clone(),
-                        node_name: input.node_name.clone(),
-                        result_summary: Some(result_summary),
-                        token_usage: None,
-                        attempt: input.attempt,
-                        timestamp: completed_at,
-                    },
-                ];
-                finalize_child_terminal_state(execution, snapshot_before, progress_events, None)?
-            }
-        };
-
-        if let Some(outcome) = completion.outcome {
-            self.commit_required_fanout_progress_events_and_execute_outcome(
-                app,
-                &input.worktree_path,
-                CommitOperationKind::Workflow,
-                outcome,
-                completion.snapshot_before,
-                completion.progress_events,
-                completion.failure_telemetry,
-            )
-            .await?;
+        if let Some(outcome) = outcome {
+            Box::pin(self.dispatch_node_outcome_side_effects(app, &worktree_path, outcome)).await?;
         }
         Ok(())
-    }
-
-    fn command_input_is_active_fanout_child(
-        &self,
-        execution: &DomainWorkflowExecution,
-        input: &CommandExecutionInput,
-    ) -> bool {
-        execution.is_active()
-            && execution.node_executions.iter().any(|node_execution| {
-                node_execution.id == input.node_execution_id
-                    && node_execution.status == NodeExecutionStatus::Running
-            })
-            && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
-                input.fanout_parent.as_deref() == Some(fanout.parent_node_name.as_str())
-                    && fanout.children.iter().any(|child| {
-                        child.node_execution_id == input.node_execution_id
-                            && child.state == FanoutChildRuntimeState::Running
-                    })
-            })
     }
 
     async fn fail_current_command_node<R: tauri::Runtime>(
@@ -2313,199 +1962,6 @@ impl WorkflowRuntimeHost {
         for node_execution_id in &node_execution_ids {
             executions.remove(node_execution_id);
         }
-    }
-
-    /// 現在のSession Node用AgentSessionを起動し、初期指示を送信する。
-    async fn start_node_session<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let deps = RealNodeSessionDeps {
-            app,
-            agent_sessions: self.workflow_agent_sessions.as_ref(),
-            execution_store: &self.execution_store,
-        };
-        self.start_node_session_with_deps(&deps, worktree_path)
-            .await
-    }
-
-    /// `start_node_session` のコアロジック。副作用境界は `NodeSessionDeps` 経由で注入する。
-    ///
-    /// プロンプト合成、AgentSession起動、Workflow所有関係の永続化、初期指示の順で実行する。
-    async fn start_node_session_with_deps<D: NodeSessionDeps + ?Sized>(
-        &self,
-        deps: &D,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let activation_execution_id = {
-            let executions = self.executions.lock().await;
-            let (execution_id, execution) = find_by_worktree(&executions, worktree_path)
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
-            if !matches!(
-                execution.start_fanout_child(),
-                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-            ) {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "execution {execution_id} does not admit fanout expansion"
-                )));
-            }
-            execution_id.clone()
-        };
-        let activation_gate = self.runtime_activation_gate(&activation_execution_id).await;
-        let _activation_guard = activation_gate.lock.lock().await;
-        let (
-            execution_id_for_ref,
-            node_clone,
-            artifacts_clone,
-            task_clone,
-            node_execution_id,
-            workflow_clone,
-        ) = {
-            let execs = self.executions.lock().await;
-            let (execution_id, exec) =
-                find_by_worktree(&execs, worktree_path).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
-            if execution_id != &activation_execution_id {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "worktree {worktree_path} changed execution before session activation"
-                )));
-            }
-            let node = &exec.workflow.nodes[exec.current_node_index];
-            let node_attempt = exec
-                .node_execution_counts
-                .get(&node.name)
-                .copied()
-                .unwrap_or(1);
-            let node_execution_id = exec
-                .node_executions
-                .iter()
-                .rev()
-                .find(|node_execution| {
-                    node_execution.node_name == node.name
-                        && node_execution.attempt == node_attempt
-                        && node_execution.fanout_parent.is_none()
-                        && node_execution.status.is_active()
-                })
-                .map(|node_execution| node_execution.id.clone())
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "active NodeExecution for '{}' attempt {} is unavailable",
-                        node.name, node_attempt
-                    ))
-                })?;
-            (
-                execution_id.clone(),
-                node.clone(),
-                exec.artifacts.clone(),
-                exec.request.clone(),
-                node_execution_id,
-                exec.workflow.clone(),
-            )
-        };
-        let facet_contents = self
-            .facet_contents_for_execution(&execution_id_for_ref, &workflow_clone)
-            .await?;
-        let node_facet_contents = facet_contents.for_node(&node_clone.name);
-
-        // プロンプト合成に失敗した場合はAgentSessionもPTYも作成しない。
-        let root_entry = workflow_clone
-            .root_sequence()
-            .and_then(|sequence| sequence.child_entry(&node_clone.name));
-        let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
-            &node_clone,
-            node_facet_contents,
-            &node_execution_id,
-            root_entry,
-            task_clone.as_deref(),
-            &artifacts_clone,
-            &workflow_clone.schemas,
-        )?;
-        let initial_instruction =
-            crate::domain::workflow::services::prompt_composition::provider_tui_initial_instruction(
-                system_prompt.as_deref(),
-                &prompt,
-            );
-        let launch_config = node_clone
-            .session()
-            .map(WorkflowSessionLaunchConfig::from_session_spec)
-            .ok_or_else(|| {
-                WorkflowRuntimeError::InvalidWorkflow(format!(
-                    "Node '{}' is not a Session Node",
-                    node_clone.name
-                ))
-            })?;
-        let node_session = deps
-            .prepare_workflow_agent_session(
-                worktree_path,
-                launch_config,
-                &execution_id_for_ref,
-                &node_execution_id,
-                &initial_instruction,
-            )
-            .await?;
-        let node_session_id = node_session.id.clone();
-
-        // SessionAttached とその projection が durable になるまで、候補 aggregate を
-        // live registry へ公開しない。これにより、UI/Hook が session_id を観測して
-        // 完了処理を開始し、添付 event の commit を追い越すことを防ぐ。
-        let snapshot = {
-            let mut execs = self.executions.lock().await;
-            let execution = execs.get_mut(&execution_id_for_ref).ok_or_else(|| {
-                WorkflowRuntimeError::ExecutionNotFound(execution_id_for_ref.clone())
-            })?;
-            let mut candidate = execution.clone();
-            if !matches!(
-                candidate.attach_node_session(
-                    &node_execution_id,
-                    node_session_id.clone(),
-                    current_timestamp(),
-                ),
-                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-            ) {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "NodeExecution '{node_execution_id}' does not admit AgentSession attachment"
-                )));
-            }
-            let snapshot = RuntimeCommitSnapshot::from_execution(&candidate)?;
-            if let Err(append_error) = deps.append_node_session_started(&snapshot).await {
-                deps.rollback_workflow_agent_session(&node_session_id, &node_execution_id)
-                    .await
-                    .map_err(|rollback_error| {
-                        WorkflowRuntimeError::AgentSession(format!(
-                            "{append_error}; rollback failed: {rollback_error}"
-                        ))
-                    })?;
-                return Err(append_error);
-            }
-            *execution = candidate;
-            snapshot
-        };
-
-        // durable attachmentだけをAgentSessionからWorkflowへ解決可能にする。
-        {
-            let mut map = self.session_workflow_refs.lock().await;
-            map.insert(
-                node_session_id.clone(),
-                SessionWorkflowRef {
-                    execution_id: execution_id_for_ref.clone(),
-                },
-            );
-        }
-        deps.broadcast_state(worktree_path, snapshot).await;
-
-        // AgentSession/Workflow双方のdurable stateを確定した後に、初回指示を起動引数として
-        // Provider TUIをspawnする。PTY起動直後の入力競合は作らない。
-        run_runtime_activation(
-            &activation_gate,
-            &execution_id_for_ref,
-            "session",
-            deps.activate_workflow_agent_session(&node_session_id, &node_execution_id),
-        )
-        .await
     }
 
     /// [04] post-commit projection phase: required event append 後に Execution Store の
@@ -2677,56 +2133,6 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_required_fanout_progress_events_and_execute_outcome<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-        operation_kind: CommitOperationKind,
-        outcome: NodeOutcome,
-        snapshot_before: DomainWorkflowExecution,
-        mut progress_events: Vec<WorkflowEvent>,
-        failure_telemetry: Option<FailureClassification>,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let snapshot_for_commit = outcome.snapshot().clone();
-        let execution_id = snapshot_for_commit.execution_id.clone();
-        let outcome_events =
-            match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
-                Ok(events) => events,
-                Err(error) => {
-                    if let Some(execution) = self.executions.lock().await.get_mut(&execution_id) {
-                        *execution = snapshot_before;
-                    }
-                    return Err(error);
-                }
-            };
-        progress_events.extend(outcome_events);
-        let execution_store_snapshot_before = self
-            .execution_store
-            .active_execution_snapshot(&execution_id)
-            .await;
-        self.commit_required_events(
-            app,
-            RequiredEventCommit {
-                operation_kind,
-                execution_id: &execution_id,
-                snapshot_for_commit: &snapshot_for_commit,
-                snapshot_before,
-                execution_store_snapshot_before,
-                required_events: progress_events,
-                append_error_context: "fanout progress event append failed",
-            },
-        )
-        .await?;
-        self.finalize_after_commit(app, &snapshot_for_commit, worktree_path)
-            .await;
-        if let Some(classification) = failure_telemetry {
-            crate::other::telemetry::record_workflow_node_failure(classification, None);
-        }
-        self.dispatch_node_outcome_side_effects(app, worktree_path, outcome)
-            .await
-    }
-
     async fn settle_runtime_failure<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -2743,8 +2149,11 @@ impl WorkflowRuntimeHost {
                 return Ok(());
             }
             execution
-                .active_current_node_execution_id()
-                .map(str::to_owned)
+                .node_executions
+                .iter()
+                .rev()
+                .find(|node| node.status.is_active() && !node.kind.is_composite_kind())
+                .map(|node| node.id.clone())
                 .ok_or_else(|| {
                     WorkflowRuntimeError::InvalidState(format!(
                         "workflow '{execution_id}' has no active node attempt to fail"
@@ -2813,7 +2222,7 @@ impl WorkflowRuntimeHost {
         failure_kind: NodeExecutionFailureKind,
     ) -> Result<(), WorkflowRuntimeError> {
         let timestamp = current_timestamp();
-        let (snapshot_before, mut candidate, node_name, attempt, is_fanout_child) = {
+        let (snapshot_before, mut candidate, node_name, attempt, session_id, is_fanout_child) = {
             let executions = self.executions.lock().await;
             let execution = executions
                 .get(execution_id)
@@ -2835,38 +2244,37 @@ impl WorkflowRuntimeHost {
                 execution.clone(),
                 node.node_name.clone(),
                 node.attempt,
-                node.fanout_parent.is_some(),
+                node.session_id.clone(),
+                node.is_fanout_child(),
             )
         };
-        let transition = if is_fanout_child {
-            candidate.fail_fanout_child_execution(
-                node_execution_id,
-                reason.clone(),
-                failure_kind,
-                FailureDisposition::Terminal,
-                timestamp,
-            )
-        } else {
-            candidate.fail_node_execution(
-                node_execution_id,
-                reason.clone(),
-                failure_kind,
-                timestamp,
-            )
-        };
+        let transition = candidate.fail_leaf_execution(
+            node_execution_id,
+            reason.clone(),
+            failure_kind,
+            FailureDisposition::Terminal,
+            timestamp,
+        );
         if transition
             != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
         {
             return Ok(());
         }
         if !is_fanout_child {
-            let history = candidate.make_failed_node_history_entry_at(
-                Some(reason.clone()),
-                None,
-                None,
+            candidate.record_history_entry(
+                crate::domain::workflow::NodeHistoryEntry {
+                    node_name: node_name.clone(),
+                    completed_at: timestamp,
+                    result: Some(reason.clone()),
+                    session_id,
+                    token_usage: None,
+                    artifact: None,
+                    attempt,
+                    fanout_children: None,
+                    state: crate::domain::workflow::NODE_STATUS_FAILED.to_string(),
+                },
                 timestamp,
             );
-            candidate.record_history_entry(history, timestamp);
         }
         let events = vec![WorkflowEvent::NodeFailed {
             execution_id: execution_id.to_string(),
@@ -2918,46 +2326,8 @@ impl WorkflowRuntimeHost {
         }
         match outcome {
             NodeOutcome::Persist(_) => Ok(()),
-            NodeOutcome::RetryCurrentNode(snapshot) => {
-                if let Err(e) = Box::pin(self.start_current_node_runtime(app, worktree_path)).await
-                {
-                    if let Err(settle_error) = Box::pin(self.settle_runtime_failure(
-                        app,
-                        worktree_path,
-                        &snapshot.execution_id,
-                        &e,
-                    ))
-                    .await
-                    {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "{e}; NodeFailed settlement failed: {settle_error}"
-                        )));
-                    }
-                    return Ok(());
-                }
-                Ok(())
-            }
-            NodeOutcome::TransitionAndStart(snapshot) => {
-                if let Err(e) = Box::pin(self.start_current_node_runtime(app, worktree_path)).await
-                {
-                    if let Err(settle_error) = Box::pin(self.settle_runtime_failure(
-                        app,
-                        worktree_path,
-                        &snapshot.execution_id,
-                        &e,
-                    ))
-                    .await
-                    {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "{e}; NodeFailed settlement failed: {settle_error}"
-                        )));
-                    }
-                    return Ok(());
-                }
-                Ok(())
-            }
-            NodeOutcome::StartFanout(snapshot) => {
-                if let Err(e) = Box::pin(self.start_fanout_children(app, worktree_path)).await {
+            NodeOutcome::StartLeaves(snapshot, leaves) => {
+                if let Err(e) = Box::pin(self.start_leaves(app, worktree_path, leaves)).await {
                     if let Err(settle_error) = Box::pin(self.settle_runtime_failure(
                         app,
                         worktree_path,
@@ -2975,625 +2345,6 @@ impl WorkflowRuntimeHost {
                 Ok(())
             }
         }
-    }
-
-    /// fanout の子 node execution を展開して起動する。
-    #[allow(clippy::too_many_arguments)]
-    async fn rollback_unattached_fanout_sessions(
-        &self,
-        child_setups: &[workflow_fanout_runtime::FanoutChildSessionSetup],
-    ) -> Option<WorkflowRuntimeError> {
-        {
-            let mut refs = self.session_workflow_refs.lock().await;
-            for setup in child_setups {
-                refs.remove(&setup.session_id);
-            }
-        }
-        let mut rollback_failure = None;
-        for setup in child_setups {
-            if let Err(error) = self
-                .workflow_agent_sessions
-                .rollback_workflow_agent_session(&setup.session_id, &setup.node_execution_id)
-                .await
-            {
-                rollback_failure.get_or_insert(error);
-            }
-        }
-        rollback_failure
-    }
-
-    async fn start_retried_fanout_child<R: tauri::Runtime + 'static>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let (execution_id, fanout_start, workflow, node_kind, attempt) = {
-            let executions = self.executions.lock().await;
-            let (execution_id, execution) = find_by_worktree(&executions, worktree_path)
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
-            let node_execution = execution
-                .node_executions
-                .iter()
-                .find(|node| {
-                    node.id == node_execution_id
-                        && node.status.is_active()
-                        && node.fanout_parent.is_some()
-                })
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "retried fanout NodeExecution '{node_execution_id}' is not active"
-                    ))
-                })?;
-            let fanout_parent = node_execution
-                .fanout_parent
-                .as_ref()
-                .expect("fanout retry target must have a parent");
-            let mut fanout_start =
-                workflow_fanout_runtime::prepare_fanout_start_context(execution)?;
-            let mut child = fanout_start
-                .children
-                .into_iter()
-                .find(|child| {
-                    child.node.name == node_execution.node_name
-                        && child.item_index == fanout_parent.item_index
-                        && child.child_index == fanout_parent.child_index
-                })
-                .ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "fanout expansion no longer contains retried NodeExecution '{node_execution_id}'"
-                    ))
-                })?;
-            child.node_execution_id = node_execution_id.to_string();
-            child.attempt = node_execution.attempt;
-            child.reused = None;
-            fanout_start.children = vec![child];
-            (
-                execution_id.clone(),
-                fanout_start,
-                execution.workflow.clone(),
-                node_execution.kind,
-                node_execution.attempt,
-            )
-        };
-        let activation_gate = self.runtime_activation_gate(&execution_id).await;
-        let _activation_guard = activation_gate.lock.lock().await;
-        match node_kind {
-            NodeKindName::Sequence => Err(WorkflowRuntimeError::InvalidState(
-                "sequence nodes have no runtime execution to retry".to_string(),
-            )),
-            NodeKindName::Session => {
-                let facet_contents = self
-                    .facet_contents_for_execution(&execution_id, &workflow)
-                    .await?;
-                let mut plans = workflow_runtime_session::prepare_fanout_child_session_plans(
-                    &fanout_start,
-                    &facet_contents,
-                    &workflow.schemas,
-                )?;
-                let plan = plans.pop().ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "retried Session NodeExecution '{node_execution_id}' has no activation plan"
-                    ))
-                })?;
-                let session = self
-                    .workflow_agent_sessions
-                    .prepare_workflow_agent_session(
-                        worktree_path,
-                        plan.launch_config,
-                        &execution_id,
-                        node_execution_id,
-                        &plan.initial_instruction,
-                    )
-                    .await?;
-                let timestamp = current_timestamp();
-                let attach_result = async {
-                    let (snapshot_before, mut candidate) = {
-                        let executions = self.executions.lock().await;
-                        let execution = executions.get(&execution_id).ok_or_else(|| {
-                            WorkflowRuntimeError::ExecutionNotFound(execution_id.clone())
-                        })?;
-                        (execution.clone(), execution.clone())
-                    };
-                    if candidate.attach_child_node_session(
-                        node_execution_id,
-                        session.id.clone(),
-                        timestamp,
-                    ) != crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-                    {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "retried fanout NodeExecution '{node_execution_id}' rejected its AgentSession"
-                        )));
-                    }
-                    let snapshot = self
-                        .commit_control_plane_candidate(
-                            app,
-                            ControlPlaneCommitCandidate {
-                                operation_kind: CommitOperationKind::Workflow,
-                                execution_id: &execution_id,
-                                snapshot_before,
-                                candidate,
-                                events: &[WorkflowEvent::SessionAttached {
-                                    execution_id: execution_id.clone(),
-                                    node_execution_id: node_execution_id.to_string(),
-                                    session_id: session.id.clone(),
-                                    timestamp,
-                                }],
-                                provider_events: Vec::new(),
-                            },
-                        )
-                        .await?;
-                    self.finish_control_plane_commit(
-                        app,
-                        worktree_path,
-                        &snapshot,
-                        None,
-					)
-					.await?;
-                    Ok::<(), WorkflowRuntimeError>(())
-                }
-                .await;
-                if let Err(error) = attach_result {
-                    self.workflow_agent_sessions
-                        .rollback_workflow_agent_session(&session.id, node_execution_id)
-                        .await
-                        .map_err(|rollback_error| {
-                            WorkflowRuntimeError::AgentSession(format!(
-                                "{error}; rollback failed: {rollback_error}"
-                            ))
-                        })?;
-                    return Err(error);
-                }
-                self.session_workflow_refs.lock().await.insert(
-                    session.id.clone(),
-                    SessionWorkflowRef {
-                        execution_id: execution_id.clone(),
-                    },
-                );
-                run_runtime_activation(
-                    &activation_gate,
-                    &execution_id,
-                    "fanout retry",
-                    self.workflow_agent_sessions
-                        .activate_workflow_agent_session(&session.id, node_execution_id),
-                )
-                .await
-            }
-            NodeKindName::Command => {
-                let child = fanout_start
-                    .children
-                    .first()
-                    .expect("retried fanout context must contain one child");
-                let command = child.node.command().ok_or_else(|| {
-                    WorkflowRuntimeError::InvalidState(format!(
-                        "retried Command NodeExecution '{node_execution_id}' has no command"
-                    ))
-                })?;
-                let bindings = workflow_prompt::fanout_child_bindings(
-                    &child.node,
-                    Some(&child.entry),
-                    &fanout_start.parent_parameters,
-                    fanout_start.request.as_deref(),
-                    child.item.as_ref(),
-                );
-                self.spawn_command_execution(
-                    app,
-                    CommandExecutionInput {
-                        execution_id,
-                        node_execution_id: node_execution_id.to_string(),
-                        node_name: child.node.name.clone(),
-                        attempt,
-                        worktree_path: worktree_path.to_string(),
-                        raw_command: Some(workflow_prompt::render_parameter_references(
-                            command, &bindings,
-                        )),
-                        contract: child.node.artifact.clone(),
-                        schemas: workflow.schemas.clone(),
-                        fanout_parent: Some(fanout_start.parent_node_name),
-                        session_id: None,
-                    },
-                )
-                .await
-            }
-            NodeKindName::Fanout => Err(WorkflowRuntimeError::InvalidState(format!(
-                "nested fanout NodeExecution '{node_execution_id}' cannot be retried"
-            ))),
-        }
-    }
-
-    async fn start_fanout_children<R: tauri::Runtime + 'static>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let activation_execution_id = {
-            let executions = self.executions.lock().await;
-            find_by_worktree(&executions, worktree_path)
-                .map(|(execution_id, _)| execution_id.clone())
-                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string()))?
-        };
-        let activation_gate = self.runtime_activation_gate(&activation_execution_id).await;
-        let activation_guard = activation_gate.lock.lock().await;
-        let workflow_runtime_session::FanoutStartRuntimeInputs { mut fanout_start } =
-            workflow_runtime_session::load_fanout_start_runtime_inputs(
-                &self.executions,
-                worktree_path,
-            )
-            .await?;
-        if fanout_start.execution_id != activation_execution_id {
-            return Err(WorkflowRuntimeError::InvalidState(format!(
-                "worktree {worktree_path} changed execution before fanout activation"
-            )));
-        }
-        // A resume checkpoint remains available until the copied child facts have been durably
-        // committed. Consuming it here would lose confirmed children if prompt/session setup or
-        // the child-event append failed and this parent had to be resumed again.
-        let fanout_resume_checkpoint = self
-            .fanout_resume_checkpoints
-            .lock()
-            .await
-            .get(&fanout_start.execution_id)
-            .cloned();
-        if let Some(checkpoint) = fanout_resume_checkpoint.as_ref() {
-            if checkpoint.parent_node_name != fanout_start.parent_node_name {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "fanout resume checkpoint targets '{}' but current parent is '{}'",
-                    checkpoint.parent_node_name, fanout_start.parent_node_name
-                )));
-            }
-            if checkpoint.children.iter().any(|confirmed| {
-                !fanout_start.children.iter().any(|child| {
-                    confirmed.node_name == child.node.name
-                        && confirmed.item_index == child.item_index
-                        && confirmed.child_index == child.child_index
-                })
-            }) {
-                return Err(WorkflowRuntimeError::InvalidState(format!(
-                    "fanout resume checkpoint for '{}' does not match the workflow snapshot",
-                    fanout_start.parent_node_name
-                )));
-            }
-            for child in &mut fanout_start.children {
-                child.reused = checkpoint
-                    .children
-                    .iter()
-                    .find(|confirmed| {
-                        confirmed.node_name == child.node.name
-                            && confirmed.item_index == child.item_index
-                            && confirmed.child_index == child.child_index
-                    })
-                    .map(|confirmed| confirmed.reusable.clone());
-            }
-        }
-        let workflow_for_facets = {
-            let execs = self.executions.lock().await;
-            let (_execution_id, exec) =
-                find_by_worktree(&execs, worktree_path).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
-            exec.workflow.clone()
-        };
-        let facet_contents = self
-            .facet_contents_for_execution(&fanout_start.execution_id, &workflow_for_facets)
-            .await?;
-        let command_schemas = workflow_for_facets.schemas.clone();
-        let command_inputs = fanout_start
-            .children
-            .iter()
-            .filter_map(|child| {
-                if child.reused.is_some() {
-                    return None;
-                }
-                let command = child.node.command()?;
-                let bindings = workflow_prompt::fanout_child_bindings(
-                    &child.node,
-                    Some(&child.entry),
-                    &fanout_start.parent_parameters,
-                    fanout_start.request.as_deref(),
-                    child.item.as_ref(),
-                );
-                Some(CommandExecutionInput {
-                    execution_id: fanout_start.execution_id.clone(),
-                    node_execution_id: child.node_execution_id.clone(),
-                    node_name: child.node.name.clone(),
-                    attempt: child.attempt,
-                    worktree_path: worktree_path.to_string(),
-                    raw_command: Some(workflow_prompt::render_parameter_references(
-                        command, &bindings,
-                    )),
-                    contract: child.node.artifact.clone(),
-                    schemas: command_schemas.clone(),
-                    fanout_parent: Some(fanout_start.parent_node_name.clone()),
-                    session_id: None,
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let child_session_plans = workflow_runtime_session::prepare_fanout_child_session_plans(
-            &fanout_start,
-            &facet_contents,
-            &workflow_for_facets.schemas,
-        )?;
-        let mut child_setups: Vec<workflow_fanout_runtime::FanoutChildSessionSetup> =
-            Vec::with_capacity(child_session_plans.len());
-        for plan in child_session_plans {
-            let session = match self
-                .workflow_agent_sessions
-                .prepare_workflow_agent_session(
-                    worktree_path,
-                    plan.launch_config.clone(),
-                    &fanout_start.execution_id,
-                    &plan.node_execution_id,
-                    &plan.initial_instruction,
-                )
-                .await
-            {
-                Ok(session) => session,
-                Err(launch_error) => {
-                    return match self
-                        .rollback_unattached_fanout_sessions(&child_setups)
-                        .await
-                    {
-                        Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
-                            "{launch_error}; rollback failed: {rollback_error}"
-                        ))),
-                        None => Err(launch_error),
-                    };
-                }
-            };
-            self.session_workflow_refs.lock().await.insert(
-                session.id.clone(),
-                SessionWorkflowRef {
-                    execution_id: fanout_start.execution_id.clone(),
-                },
-            );
-            child_setups.push(workflow_fanout_runtime::FanoutChildSessionSetup {
-                node_execution_id: plan.node_execution_id,
-                session_id: session.id,
-            });
-        }
-
-        let timestamp = current_timestamp();
-        let (snapshot_before, snapshot) = {
-            let mut executions = self.executions.lock().await;
-            let execution =
-                find_by_worktree_mut(&mut executions, worktree_path).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
-            let snapshot_before = execution.clone();
-            workflow_fanout_runtime::apply_fanout_runtime_state(
-                execution,
-                &fanout_start,
-                &child_setups,
-                timestamp,
-            )?;
-            for child in fanout_start
-                .children
-                .iter()
-                .filter(|child| child.reused.is_some())
-            {
-                record_fanout_child_successful_completion(execution, &child.node.name);
-            }
-            let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
-            (snapshot_before, snapshot)
-        };
-
-        // Child IDs are allocated during expansion, after the parent transition commit. Commit
-        // their NodeStarted and SessionAttached facts atomically with the expanded live state
-        // before broadcasting or activating any runtime. Workspace queries replay this log, so
-        // the first child-visible broadcast must never expose a Session Node whose attachment is
-        // still absent from the durable projection.
-        if !fanout_start.children.is_empty() {
-            let session_ids_by_node_execution = child_setups
-                .iter()
-                .map(|setup| (setup.node_execution_id.as_str(), setup.session_id.as_str()))
-                .collect::<HashMap<_, _>>();
-            let mut started_events = Vec::new();
-            for child in &fanout_start.children {
-                started_events.push(WorkflowEvent::NodeStarted {
-                    execution_id: fanout_start.execution_id.clone(),
-                    node_execution_id: child.node_execution_id.clone(),
-                    node_name: child.node.name.clone(),
-                    kind: child.node.kind_name(),
-                    attempt: child.attempt,
-                    fanout_parent: Some(crate::domain::workflow::FanoutParentRef {
-                        parent_node: fanout_start.parent_node_name.clone(),
-                        parent_attempt: fanout_start.parent_attempt,
-                        item_index: child.item_index,
-                        child_index: child.child_index,
-                    }),
-                    timestamp,
-                });
-                if let Some(session_id) =
-                    session_ids_by_node_execution.get(child.node_execution_id.as_str())
-                {
-                    started_events.push(WorkflowEvent::SessionAttached {
-                        execution_id: fanout_start.execution_id.clone(),
-                        node_execution_id: child.node_execution_id.clone(),
-                        session_id: (*session_id).to_string(),
-                        timestamp,
-                    });
-                }
-            }
-            // The live expansion installs every child NodeExecution before reused children are
-            // completed. Keep the durable fact order identical so replay sees the same execution
-            // counts at each reused child completion boundary.
-            for child in &fanout_start.children {
-                if let Some(reused) = child.reused.as_ref() {
-                    if let Some(display_command) = reused.display_command.clone() {
-                        started_events.push(WorkflowEvent::CommandPrepared {
-                            execution_id: fanout_start.execution_id.clone(),
-                            node_execution_id: child.node_execution_id.clone(),
-                            display_command,
-                            timestamp,
-                        });
-                    }
-                    if let Some(value) = reused.artifact.clone() {
-                        started_events.push(WorkflowEvent::ArtifactProduced {
-                            execution_id: fanout_start.execution_id.clone(),
-                            node_execution_id: child.node_execution_id.clone(),
-                            node_name: child.node.name.clone(),
-                            contract: reused.contract.clone(),
-                            value,
-                            request_id: None,
-                            submitted_at: None,
-                            timestamp,
-                        });
-                    }
-                    started_events.push(WorkflowEvent::NodeCompleted {
-                        execution_id: fanout_start.execution_id.clone(),
-                        node_execution_id: child.node_execution_id.clone(),
-                        node_name: child.node.name.clone(),
-                        attempt: child.attempt,
-                        result_summary: reused.result.clone(),
-                        // Usage was already accounted by the confirmed prior child attempt.
-                        token_usage: None,
-                        timestamp,
-                    });
-                }
-            }
-            let execution_store_snapshot_before = self
-                .execution_store
-                .active_execution_snapshot(&fanout_start.execution_id)
-                .await;
-            if let Err(failure) = self
-                .commit_required_events_with_phase(
-                    app,
-                    RequiredEventCommit {
-                        operation_kind: CommitOperationKind::Workflow,
-                        execution_id: &fanout_start.execution_id,
-                        snapshot_for_commit: &snapshot,
-                        snapshot_before: snapshot_before.clone(),
-                        execution_store_snapshot_before,
-                        required_events: started_events,
-                        append_error_context: "fanout child start event append failed",
-                    },
-                )
-                .await
-            {
-                return match failure {
-                    RequiredEventCommitFailure::BeforeDurableAppend(error) => {
-                        match self
-                            .rollback_unattached_fanout_sessions(&child_setups)
-                            .await
-                        {
-                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
-                                format!("{error}; rollback failed: {rollback_error}"),
-                            )),
-                            None => Err(error),
-                        }
-                    }
-                    #[cfg(test)]
-                    RequiredEventCommitFailure::AfterDurableAppend(error) => Err(error),
-                };
-            }
-            if fanout_resume_checkpoint.is_some() {
-                self.fanout_resume_checkpoints
-                    .lock()
-                    .await
-                    .remove(&fanout_start.execution_id);
-            }
-        }
-
-        let all_children_completed = {
-            let executions = self.executions.lock().await;
-            executions
-                .get(&fanout_start.execution_id)
-                .and_then(|execution| execution.fanout_runtime.as_ref())
-                .is_some_and(|fanout| {
-                    fanout
-                        .children
-                        .iter()
-                        .all(|child| child.state == FanoutChildRuntimeState::Completed)
-                })
-        };
-        if fanout_start.children.is_empty() || all_children_completed {
-            // No child runtime remains to activate. Release the activation lock before completing
-            // the parent because its outcome may synchronously start the next node.
-            drop(activation_guard);
-            drop(activation_gate);
-            let completion = {
-                let mut executions = self.executions.lock().await;
-                let execution =
-                    executions
-                        .get_mut(&fanout_start.execution_id)
-                        .ok_or_else(|| {
-                            WorkflowRuntimeError::ExecutionNotFound(
-                                fanout_start.execution_id.clone(),
-                            )
-                        })?;
-                let snapshot_before_parent_completion = execution.clone();
-                complete_fanout_parent_after_all_children(
-                    execution,
-                    snapshot_before_parent_completion,
-                    Vec::new(),
-                    None,
-                )?
-            };
-            if let Some(outcome) = completion.outcome {
-                self.commit_required_fanout_progress_events_and_execute_outcome(
-                    app,
-                    worktree_path,
-                    CommitOperationKind::Workflow,
-                    outcome,
-                    completion.snapshot_before,
-                    completion.progress_events,
-                    completion.failure_telemetry,
-                )
-                .await?;
-            }
-            return Ok(());
-        }
-
-        workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
-        for setup in &child_setups {
-            if let Err(error) = run_runtime_activation(
-                &activation_gate,
-                &fanout_start.execution_id,
-                "fanout",
-                self.workflow_agent_sessions
-                    .activate_workflow_agent_session(&setup.session_id, &setup.node_execution_id),
-            )
-            .await
-            {
-                self.settle_runtime_failure_for_node(
-                    app,
-                    worktree_path,
-                    &fanout_start.execution_id,
-                    &setup.node_execution_id,
-                    &error,
-                )
-                .await?;
-                log::warn!(
-                    "workflow {}: fanout NodeExecution '{}' failed to activate: {error}",
-                    fanout_start.execution_id,
-                    setup.node_execution_id
-                );
-            }
-        }
-
-        for input in command_inputs {
-            let node_execution_id = input.node_execution_id.clone();
-            if let Err(error) = self.spawn_command_execution(app, input).await {
-                self.settle_runtime_failure_for_node(
-                    app,
-                    worktree_path,
-                    &fanout_start.execution_id,
-                    &node_execution_id,
-                    &error,
-                )
-                .await?;
-                log::warn!(
-                    "workflow {}: fanout Command NodeExecution '{}' failed to activate: {error}",
-                    fanout_start.execution_id,
-                    node_execution_id
-                );
-            }
-        }
-
-        Ok(())
     }
 
     /// 複数の必須 event を 1 つの atomic commit point として一括追記する。
@@ -3649,5 +2400,32 @@ impl WorkflowRuntimeHost {
             events,
             mutations,
         )
+    }
+}
+
+#[cfg(test)]
+mod command_env_tests {
+    use super::*;
+
+    #[test]
+    fn command_env_includes_worktree_path() {
+        let input = CommandExecutionInput {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
+            node_name: "check".to_string(),
+            attempt: 1,
+            worktree_path: "/repo/worktree".to_string(),
+            raw_command: Some("true".to_string()),
+            contract: None,
+            schemas: BTreeMap::new(),
+            session_id: None,
+        };
+
+        let env = command_env(&input);
+
+        assert!(env.contains(&(
+            "RELEASH_WORKTREE_PATH".to_string(),
+            "/repo/worktree".to_string()
+        )));
     }
 }

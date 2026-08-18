@@ -109,15 +109,32 @@ nodes:
           rules:
           - when:
               on: has_open_threads
-              then: create_fix_plan
+              then: fix_round
             next: fix_report
-      - create_fix_plan:
+      - fix_round:
           inputs:
             spec: resolve_request.spec_dir
           rules:
           - loop_guard:
               max_iterations: 5
               on_exhausted: fix_report
+          - next: check_open_threads
+      - fix_report:
+          inputs:
+            check_open_threads: check_open_threads
+            verify_fixes: fix_round
+
+  # 修正ラウンド（部品 sequence）: 1つの修正計画を作り、検証が通るか実装
+  # リトライが尽きるまで実装・検証を繰り返す。ラウンドを再訪するたび新しい
+  # スコープが生まれ、内側の loop_guard カウントはフレッシュになる。
+  fix_round:
+    sequence:
+      output: close_round
+      children:
+      - create_fix_plan:
+          inputs:
+            spec: spec
+          rules:
           - next: implement_fix_plan
       - implement_fix_plan:
           inputs:
@@ -126,22 +143,23 @@ nodes:
           rules:
           - loop_guard:
               max_iterations: 3
-              on_exhausted: fix_report
-              reset_on: create_fix_plan
+              on_exhausted: close_round
           - next: verify_fixes
       - verify_fixes:
           inputs:
             create_fix_plan: create_fix_plan
+          rules:
+          - next: check_fix_verification
       - check_fix_verification:
           rules:
           - when:
               on: has_issues
               then: implement_fix_plan
-            next: check_open_threads
-      - fix_report:
-          inputs:
-            check_open_threads: check_open_threads
-            verify_fixes: verify_fixes
+            next: close_round
+      - close_round
+    input:
+    - spec
+    artifact: fix-verification
 
   resolve_request:
     session:
@@ -210,6 +228,14 @@ nodes:
       --node verify_fixes --json |
       jq '{has_issues: (.artifact.issues | length > 0)}'
     artifact: fix-verification-scan
+
+  # ラウンドの出口: 最終検証結果を部品 sequence の Artifact として確定する。
+  close_round:
+    command: >-
+      releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
+      --node verify_fixes --json |
+      jq '{issues: .artifact.issues, unverifiable: .artifact.unverifiable}'
+    artifact: fix-verification
 
   fix_report:
     session:

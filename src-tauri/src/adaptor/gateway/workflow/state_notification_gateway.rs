@@ -109,29 +109,12 @@ fn enrich_node_executions(nodes: &mut [NodeExecution], state: &WorkflowRuntimeSn
 }
 
 fn result_summary(state: &WorkflowRuntimeSnapshot, node: &NodeExecution) -> Option<String> {
-    if node.fanout_parent.is_none() {
-        return state
-            .node_history
-            .iter()
-            .rev()
-            .find(|entry| entry.node_name == node.node_name && entry.attempt == node.attempt)
-            .and_then(|entry| entry.result.clone());
-    }
-    let parent = node.fanout_parent.as_ref()?;
     state
         .node_history
         .iter()
         .rev()
-        .find(|entry| {
-            entry.node_name == parent.parent_node && entry.attempt == parent.parent_attempt
-        })
-        .and_then(|entry| entry.fanout_children.as_ref())
-        .and_then(|children| {
-            children
-                .iter()
-                .find(|child| child.node_name == node.node_name && child.attempt == node.attempt)
-        })
-        .and_then(|child| child.result.clone())
+        .find(|entry| entry.node_name == node.node_name && entry.attempt == node.attempt)
+        .and_then(|entry| entry.result.clone())
 }
 
 pub(crate) async fn build_workflow_execution_view_from_snapshot(
@@ -156,16 +139,14 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::adaptor::gateway::workflow::event::{
-        FanoutParentRef as EventFanoutParentRef, TokenUsage as EventTokenUsage, WorkflowEvent,
-    };
+    use crate::adaptor::gateway::workflow::event::{TokenUsage as EventTokenUsage, WorkflowEvent};
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition as EventNodeDefinition, NodeKindName as EventNodeKindName,
         WorkflowDefinitionYaml as EventWorkflowDefinitionYaml,
     };
     use crate::domain::workflow::services::event_replay::project_workflow_execution;
     use crate::domain::workflow::{
-        FanoutParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
+        ExecutionParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
         NodeExecutionStatus, NodeHistoryEntry, NodeKindName, RuntimeArtifact, TokenUsage,
         WorkflowDefinition,
     };
@@ -199,7 +180,7 @@ mod tests {
                 node_name: "review".to_string(),
                 kind: EventNodeKindName::Session,
                 attempt: 1,
-                fanout_parent: None,
+                parent: None,
                 timestamp: 2.0,
             },
             WorkflowEvent::ArtifactProduced {
@@ -251,8 +232,7 @@ mod tests {
                 request: "ship it".to_string(),
                 error_reason: None,
                 state: RuntimeExecutionState::Completed,
-                current_node_index: 0,
-                current_node_name: "review".to_string(),
+                current_node_name: Some("review".to_string()),
                 current_session_id: None,
                 node_history: vec![NodeHistoryEntry {
                     node_name: "review".to_string(),
@@ -268,7 +248,6 @@ mod tests {
                     fanout_children: None,
                     state: crate::domain::workflow::NODE_STATUS_COMPLETED.to_string(),
                 }],
-                node_execution_counts: HashMap::from([("review".to_string(), 1)]),
                 workflow_definition: WorkflowDefinition {
                     name: "review".to_string(),
                     nodes: vec![NodeDefinition {
@@ -314,7 +293,7 @@ mod tests {
                         output_tokens: 2,
                     }),
                     failure: None,
-                    fanout_parent: None,
+                    parent: None,
                     completion_signals: Default::default(),
                     started_at: 2.0,
                     completed_at: Some(4.0),
@@ -329,12 +308,8 @@ mod tests {
     #[test]
     fn node_failure_does_not_create_a_workflow_terminal_projection() {
         let execution_id = "00000000-0000-4000-8000-000000000002";
-        let event_parent = |item_index| EventFanoutParentRef {
-            parent_node: "reviews".to_string(),
-            parent_attempt: 1,
-            item_index: Some(item_index),
-            child_index: 0,
-        };
+        let event_parent =
+            |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
         let events = vec![
             WorkflowEvent::ExecutionStarted {
                 execution_id: execution_id.to_string(),
@@ -344,6 +319,24 @@ mod tests {
                 request: "ship it".to_string(),
                 definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
+                    nodes: vec![
+                        EventNodeDefinition {
+                            name: "review".to_string(),
+                            ..Default::default()
+                        },
+                        EventNodeDefinition {
+                            name: "reviews".to_string(),
+                            kind: crate::domain::workflow::NodeKind::Fanout(
+                                crate::domain::workflow::FanoutSpec {
+                                    children: vec![crate::domain::workflow::ChildEntry::reference(
+                                        "review",
+                                    )],
+                                    items: None,
+                                },
+                            ),
+                            ..Default::default()
+                        },
+                    ],
                     ..Default::default()
                 },
                 timestamp: 1.0,
@@ -354,7 +347,7 @@ mod tests {
                 node_name: "reviews".to_string(),
                 kind: EventNodeKindName::Fanout,
                 attempt: 1,
-                fanout_parent: None,
+                parent: None,
                 timestamp: 2.0,
             },
             WorkflowEvent::NodeStarted {
@@ -363,7 +356,7 @@ mod tests {
                 node_name: "review".to_string(),
                 kind: EventNodeKindName::Session,
                 attempt: 1,
-                fanout_parent: Some(event_parent(0)),
+                parent: Some(event_parent(0)),
                 timestamp: 2.1,
             },
             WorkflowEvent::NodeStarted {
@@ -372,7 +365,7 @@ mod tests {
                 node_name: "review".to_string(),
                 kind: EventNodeKindName::Session,
                 attempt: 1,
-                fanout_parent: Some(event_parent(1)),
+                parent: Some(event_parent(1)),
                 timestamp: 2.2,
             },
             WorkflowEvent::NodeFailed {
@@ -393,18 +386,14 @@ mod tests {
             reason: "review failed".to_string(),
             kind: NodeExecutionFailureKind::ValidationFailure,
         };
-        let domain_parent = |item_index| FanoutParentRef {
-            parent_node: "reviews".to_string(),
-            parent_attempt: 1,
-            item_index: Some(item_index),
-            child_index: 0,
-        };
+        let domain_parent =
+            |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
         let node = |id: &str,
                     node_name: &str,
                     kind: NodeKindName,
                     status: NodeExecutionStatus,
                     failure: Option<NodeExecutionFailure>,
-                    fanout_parent: Option<FanoutParentRef>,
+                    parent: Option<ExecutionParentRef>,
                     started_at: f64,
                     completed_at: Option<f64>| NodeExecution {
             id: id.to_string(),
@@ -419,7 +408,7 @@ mod tests {
             artifact: None,
             token_usage: None,
             failure,
-            fanout_parent,
+            parent,
             completion_signals: Default::default(),
             started_at,
             completed_at,
@@ -433,14 +422,9 @@ mod tests {
                 request: "ship it".to_string(),
                 error_reason: None,
                 state: RuntimeExecutionState::Running,
-                current_node_index: 0,
-                current_node_name: "reviews".to_string(),
+                current_node_name: Some("reviews".to_string()),
                 current_session_id: None,
                 node_history: Vec::new(),
-                node_execution_counts: HashMap::from([
-                    ("reviews".to_string(), 1),
-                    ("review".to_string(), 1),
-                ]),
                 workflow_definition: WorkflowDefinition {
                     name: "review".to_string(),
                     ..Default::default()

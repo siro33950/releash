@@ -38,13 +38,14 @@ pub use ids::{
     NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
 };
 pub use node_execution::{
-    FanoutParentRef, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
+    ExecutionParentRef, FanoutSlot, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
     NodeExecutionFailure, NodeExecutionStatus,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
+#[cfg(test)]
+pub use runtime_projection::FanoutChildSnapshot;
 pub use runtime_projection::{
-    default_node_history_status, FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact,
-    TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
-    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING,
+    NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
+    NODE_STATUS_FAILED,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};

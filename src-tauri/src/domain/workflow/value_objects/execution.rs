@@ -176,13 +176,9 @@ impl WorkflowExecution {
             .iter()
             .filter(|node| node.can_retry())
             .filter(|node| {
-                node.fanout_parent.is_some()
-                    || self.current_node.as_deref() == Some(node.node_name.as_str())
-            })
-            .filter(|node| {
                 self.node_executions.iter().all(|candidate| {
                     candidate.node_name != node.node_name
-                        || candidate.fanout_parent != node.fanout_parent
+                        || candidate.parent != node.parent
                         || candidate.attempt <= node.attempt
                 })
             })
@@ -270,7 +266,7 @@ mod tests {
             artifact: None,
             token_usage: None,
             failure: None,
-            fanout_parent: None,
+            parent: None,
             completion_signals: super::super::NodeCompletionSignalState::Pending,
             started_at: 1.0,
             completed_at: Some(2.0),
@@ -301,7 +297,7 @@ mod tests {
 
         assert_eq!(
             execution.retryable_node_execution_ids(),
-            std::collections::HashSet::from(["review-2".to_string()])
+            std::collections::HashSet::from(["review-2".to_string(), "other-1".to_string()])
         );
     }
 }

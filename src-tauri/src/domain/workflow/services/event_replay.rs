@@ -1,22 +1,16 @@
 //! On-demand projection from the append-only workflow execution event log.
 
-use std::collections::HashMap;
-
 use crate::domain::workflow::entities::workflow_execution::{
-    CanonicalNodeFact, NodeStallObservation as AggregateStallObservation, ReplayOutcome,
-    WorkflowDefaults, WorkflowExecution as WorkflowExecutionAggregate, WorkflowExecutionRestore,
+    NodeStallObservation as AggregateStallObservation, ReplayOutcome, WorkflowDefaults,
+    WorkflowExecution as WorkflowExecutionAggregate, WorkflowExecutionRestore,
 };
-use crate::domain::workflow::services::routing::LoopGuardResetBaselines;
-#[cfg(test)]
-use crate::domain::workflow::services::routing::{self, RouteDecision};
 use crate::domain::workflow::{
-    ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeCompletionSignal,
+    ApprovalTarget, Artifact, ExecutionStatus, Fanout, NodeCompletionSignal,
     NodeCompletionSignalState, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
     NodeKindName, TokenUsage, WorkflowExecution,
 };
 use crate::domain::workflow::{
-    FanoutParentRef as EventFanoutParentRef, NodeKindName as EventNodeKindName,
-    TokenUsage as EventTokenUsage, WorkflowEvent,
+    NodeKindName as EventNodeKindName, TokenUsage as EventTokenUsage, WorkflowEvent,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,8 +25,7 @@ pub(crate) struct DerivedWorkflowExecutionFields {
 #[derive(Debug)]
 pub(crate) struct RetainedWorkflowExecutionProjection {
     pub(crate) execution: WorkflowExecution,
-    pub(crate) node_execution_counts: HashMap<String, u32>,
-    pub(crate) loop_guard_reset_baselines: LoopGuardResetBaselines,
+    pub(crate) aggregate: WorkflowExecutionAggregate,
 }
 
 struct ProjectedWorkflowExecution {
@@ -59,8 +52,7 @@ pub(crate) fn project_retained_workflow_execution(
     project_workflow_execution_retained(execution_id, events).map(|projection| {
         projection.map(|projection| RetainedWorkflowExecutionProjection {
             execution: projection.execution,
-            node_execution_counts: projection.aggregate.node_execution_counts.clone(),
-            loop_guard_reset_baselines: projection.aggregate.loop_guard_reset_baselines.clone(),
+            aggregate: projection.aggregate,
         })
     })
 }
@@ -156,7 +148,7 @@ fn project_workflow_execution_retained(
                 node_name,
                 kind,
                 attempt,
-                fanout_parent,
+                parent,
                 timestamp,
                 ..
             } => {
@@ -182,7 +174,7 @@ fn project_workflow_execution_retained(
                     artifact: None,
                     token_usage: None,
                     failure: None,
-                    fanout_parent: fanout_parent.as_ref().map(fanout_parent_to_domain),
+                    parent: parent.clone(),
                     completion_signals: NodeCompletionSignalState::Pending,
                     started_at: *timestamp,
                     completed_at: None,
@@ -458,7 +450,7 @@ fn apply_event_to_aggregate(
             node_name,
             kind,
             attempt,
-            fanout_parent,
+            parent,
             timestamp,
             ..
         } => {
@@ -471,62 +463,20 @@ fn apply_event_to_aggregate(
                         "execution {execution_id} contains duplicate node_execution_id {node_execution_id}"
                     ));
             }
-            if let Some(index) = aggregate
-                .workflow
-                .nodes
-                .iter()
-                .position(|node| node.name == *node_name)
-            {
-                let _ = aggregate.set_current_node(index, *timestamp);
-            }
-            if let Some(parent) = fanout_parent {
-                let parent_node_execution_id = aggregate
-                        .node_executions
-                        .iter()
-                        .rev()
-                        .find(|node| {
-                            node.node_name == parent.parent_node
-                                && node.attempt == parent.parent_attempt
-                                && node.fanout_parent.is_none()
-                        })
-                        .map(|node| node.id.clone())
-                        .ok_or_else(|| {
-                            format!(
-                                "execution {execution_id} fanout child {node_execution_id} has no parent attempt"
-                            )
-                        })?;
-                aggregate
-                        .start_fanout_child_execution(
-                            parent.parent_node.clone(),
-                            parent_node_execution_id,
-                            node_execution_id.clone(),
-                            node_name.clone(),
-                            node_kind_to_domain(*kind),
-                            *attempt,
-                            fanout_parent_to_domain(parent),
-                            *timestamp,
-                        )
-                        .map_err(|reason| {
-                            format!(
-                                "execution {execution_id} rejected node_started for {node_execution_id}: {reason:?}"
-                            )
-                        })?;
-            } else {
-                aggregate
-                        .begin_node_attempt(
-                            node_name.clone(),
-                            node_kind_to_domain(*kind),
-                            *attempt,
-                            None,
-                            node_execution_id.clone(),
-                            *timestamp,
-                        )
-                        .map_err(|reason| {
-                            format!(
-                                "execution {execution_id} rejected node_started for {node_execution_id}: {reason:?}"
-                            )
-                        })?;
-            }
+            aggregate
+                .replay_node_started(
+                    node_execution_id,
+                    node_name,
+                    node_kind_to_domain(*kind),
+                    *attempt,
+                    parent.clone(),
+                    *timestamp,
+                )
+                .map_err(|reason| {
+                    format!(
+                        "execution {execution_id} rejected node_started for {node_execution_id}: {reason}"
+                    )
+                })?;
         }
         WorkflowEvent::SessionAttached {
             node_execution_id,
@@ -534,20 +484,8 @@ fn apply_event_to_aggregate(
             timestamp,
             ..
         } => {
-            let fanout_child = aggregate
-                .node_executions
-                .iter()
-                .find(|node| node.id == *node_execution_id)
-                .is_some_and(|node| node.fanout_parent.is_some());
-            let outcome = if fanout_child {
-                aggregate.attach_child_node_session(
-                    node_execution_id,
-                    session_id.clone(),
-                    *timestamp,
-                )
-            } else {
-                aggregate.attach_node_session(node_execution_id, session_id.clone(), *timestamp)
-            };
+            let outcome =
+                aggregate.attach_node_session(node_execution_id, session_id.clone(), *timestamp);
             require_transition(execution_id, "session_attached", outcome)?;
         }
         WorkflowEvent::NodeSubmitReceived {
@@ -650,35 +588,17 @@ fn apply_event_to_aggregate(
         }
         WorkflowEvent::NodeCompleted {
             node_execution_id,
-            node_name,
+            result_summary,
             token_usage,
             timestamp,
             ..
         } => {
-            let artifact = aggregate
-                .node_executions
-                .iter()
-                .find(|node| node.id == *node_execution_id)
-                .and_then(|node| node.artifact.clone());
-            let decision = aggregate.apply_observed_turn(
+            aggregate.replay_node_completed(
                 node_execution_id,
-                CanonicalNodeFact::Completed,
-                artifact,
+                result_summary.clone(),
                 token_usage.as_ref().map(token_usage_to_domain),
                 *timestamp,
-            );
-            if decision.application
-                    != crate::domain::workflow::entities::workflow_execution::TurnCompletionApplication::Superseded
-                {
-                    aggregate.record_successful_node_completion(node_name, *timestamp);
-                }
-            let parent_completed = aggregate
-                .fanout_runtime
-                .as_ref()
-                .is_some_and(|fanout| fanout.parent_node_execution_id == *node_execution_id);
-            if parent_completed {
-                let _ = aggregate.clear_fanout(*timestamp);
-            }
+            )?;
         }
         WorkflowEvent::NodeFailed {
             node_execution_id,
@@ -687,16 +607,12 @@ fn apply_event_to_aggregate(
             timestamp,
             ..
         } => {
-            aggregate.apply_observed_turn(
+            aggregate.replay_node_failed(
                 node_execution_id,
-                CanonicalNodeFact::Failed {
-                    reason: reason.clone(),
-                    kind: *failure_kind,
-                },
-                None,
-                None,
+                reason.clone(),
+                *failure_kind,
                 *timestamp,
-            );
+            )?;
         }
         WorkflowEvent::ApprovalRequested {
             node_execution_id,
@@ -867,15 +783,6 @@ fn node_kind_to_domain(kind: EventNodeKindName) -> NodeKindName {
     }
 }
 
-fn fanout_parent_to_domain(parent: &EventFanoutParentRef) -> FanoutParentRef {
-    FanoutParentRef {
-        parent_node: parent.parent_node.clone(),
-        parent_attempt: parent.parent_attempt,
-        item_index: parent.item_index,
-        child_index: parent.child_index,
-    }
-}
-
 fn token_usage_to_domain(usage: &EventTokenUsage) -> TokenUsage {
     TokenUsage {
         input_tokens: usage.input_tokens,
@@ -910,42 +817,15 @@ fn close_active_nodes(
 }
 
 fn derive_total_token_usage(nodes: &[NodeExecution]) -> TokenUsage {
+    // 合成子インスタンスの token は子の合算値のため、leaf だけを数える。
     let mut usage = TokenUsage::default();
     for node in nodes {
-        let include = match &node.fanout_parent {
-            None => true,
-            Some(parent) => {
-                let own_parent_has_usage = nodes.iter().any(|candidate| {
-                    candidate.node_name == parent.parent_node
-                        && candidate.attempt == parent.parent_attempt
-                        && candidate.token_usage.is_some()
-                });
-                let usage_was_carried_into_later_parent = nodes.iter().any(|candidate| {
-                    let Some(candidate_parent) = candidate.fanout_parent.as_ref() else {
-                        return false;
-                    };
-                    candidate.node_name == node.node_name
-                        && candidate_parent.parent_node == parent.parent_node
-                        && candidate_parent.item_index == parent.item_index
-                        && candidate_parent.child_index == parent.child_index
-                        && candidate_parent.parent_attempt > parent.parent_attempt
-                        && candidate.status == NodeExecutionStatus::Succeeded
-                        && candidate.session_id.is_none()
-                        && candidate.token_usage.is_none()
-                        && nodes.iter().any(|later_parent| {
-                            later_parent.node_name == candidate_parent.parent_node
-                                && later_parent.attempt == candidate_parent.parent_attempt
-                                && later_parent.token_usage.is_some()
-                        })
-                });
-                !own_parent_has_usage && !usage_was_carried_into_later_parent
-            }
-        };
-        if include {
-            if let Some(node_usage) = &node.token_usage {
-                usage.input_tokens = usage.input_tokens.saturating_add(node_usage.input_tokens);
-                usage.output_tokens = usage.output_tokens.saturating_add(node_usage.output_tokens);
-            }
+        if node.kind.is_composite_kind() {
+            continue;
+        }
+        if let Some(node_usage) = &node.token_usage {
+            usage.input_tokens = usage.input_tokens.saturating_add(node_usage.input_tokens);
+            usage.output_tokens = usage.output_tokens.saturating_add(node_usage.output_tokens);
         }
     }
     usage
@@ -981,7 +861,9 @@ pub(crate) fn derive_top_level_artifacts(
     let successful = nodes
         .iter()
         .filter(|node| {
-            node.fanout_parent.is_none() && node.status == NodeExecutionStatus::Succeeded
+            // fanout 子の成果は親の集約 Artifact に含まれるため、
+            // トップレベル一覧には混ぜない。
+            node.status == NodeExecutionStatus::Succeeded && !node.is_fanout_child()
         })
         .filter_map(|node| node.artifact.clone())
         .collect::<Vec<_>>();
@@ -994,30 +876,29 @@ pub(crate) fn derive_top_level_artifacts(
 pub(crate) fn derive_fanouts(nodes: &[NodeExecution]) -> Vec<Fanout> {
     nodes
         .iter()
-        .filter(|parent| parent.kind == NodeKindName::Fanout && parent.fanout_parent.is_none())
+        .filter(|parent| parent.kind == NodeKindName::Fanout)
         .cloned()
         .map(|parent| {
             let mut children = nodes
                 .iter()
                 .filter(|child| {
-                    child.fanout_parent.as_ref().is_some_and(|reference| {
-                        reference.parent_node == parent.node_name
-                            && reference.parent_attempt == parent.attempt
-                    })
+                    child
+                        .parent
+                        .as_ref()
+                        .is_some_and(|reference| reference.parent_id == parent.id)
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             children.sort_by(|left, right| {
-                let left_ref = left
-                    .fanout_parent
-                    .as_ref()
-                    .expect("fanout children have a parent reference");
-                let right_ref = right
-                    .fanout_parent
-                    .as_ref()
-                    .expect("fanout children have a parent reference");
-                (left_ref.item_index.unwrap_or(0), left_ref.child_index)
-                    .cmp(&(right_ref.item_index.unwrap_or(0), right_ref.child_index))
+                let slot = |node: &NodeExecution| {
+                    node.parent
+                        .as_ref()
+                        .and_then(|reference| reference.fanout_slot)
+                        .map(|slot| (slot.item_index.unwrap_or(0), slot.child_index))
+                        .unwrap_or((0, 0))
+                };
+                slot(left)
+                    .cmp(&slot(right))
                     .then_with(|| left.started_at.total_cmp(&right.started_at))
                     .then_with(|| left.id.cmp(&right.id))
             });
@@ -1046,10 +927,7 @@ fn derive_active_fields(
         .filter(|node| node.status == NodeExecutionStatus::WaitingApproval)
         .collect::<Vec<_>>();
     if let Some(node) = waiting.first() {
-        let current_node = Some(node.fanout_parent.as_ref().map_or_else(
-            || node.node_name.clone(),
-            |parent| parent.parent_node.clone(),
-        ));
+        let current_node = Some(node.node_name.clone());
         let approval_target = (waiting.len() == 1).then(|| ApprovalTarget {
             node_execution_id: node.id.clone(),
             node_name: node.node_name.clone(),
@@ -1061,7 +939,11 @@ fn derive_active_fields(
     let current_node = nodes
         .iter()
         .rev()
-        .find(|node| node.fanout_parent.is_none() && node.status.is_active())
+        .find(|node| node.status.is_active() && !node.kind.is_composite_kind())
+        .or_else(|| nodes.iter().rev().find(|node| node.status.is_active()))
+        // アクティブが無い（失敗停止した Running など）場合も「現在の node」
+        // は空にしない: 最後に開始された node（失敗した node）を指す。
+        .or_else(|| nodes.last())
         .map(|node| node.node_name.clone());
     (ExecutionStatus::Running, current_node, None)
 }
@@ -1069,25 +951,64 @@ fn derive_active_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::FanoutParentRef as EventFanoutParentRef;
+    use crate::domain::workflow::ExecutionParentRef;
     use crate::domain::workflow::{
-        ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
+        ChildEntry, ExecutionInterruptionReason, ExecutionOrigin, FanoutSpec,
+        NodeExecutionFailureKind,
     };
     use crate::domain::workflow::{NodeDefinition, NodeKind, WorkflowDefinition};
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000001";
 
     fn definition() -> WorkflowDefinition {
+        let leaf = |name: &str| NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::default(),
+            ..NodeDefinition::default()
+        };
         WorkflowDefinition {
             name: "review".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![NodeDefinition {
-                name: "review".to_string(),
-                kind: NodeKind::default(),
-                ..NodeDefinition::default()
-            }],
+            nodes: vec![
+                leaf("review"),
+                leaf("prepare"),
+                leaf("check"),
+                leaf("worker"),
+                leaf("fix"),
+                leaf("round"),
+                leaf("done"),
+                leaf("A"),
+                leaf("B"),
+                leaf("C"),
+                NodeDefinition {
+                    name: "run".to_string(),
+                    kind: NodeKind::Command(crate::domain::workflow::CommandSpec {
+                        command: "true".to_string(),
+                    }),
+                    ..NodeDefinition::default()
+                },
+                NodeDefinition {
+                    name: "fanout".to_string(),
+                    kind: NodeKind::Fanout(FanoutSpec {
+                        children: vec![
+                            ChildEntry::reference("check"),
+                            ChildEntry::reference("worker"),
+                        ],
+                        items: None,
+                    }),
+                    ..NodeDefinition::default()
+                },
+                NodeDefinition {
+                    name: "reviews".to_string(),
+                    kind: NodeKind::Fanout(FanoutSpec {
+                        children: vec![ChildEntry::reference("review")],
+                        items: None,
+                    }),
+                    ..NodeDefinition::default()
+                },
+            ],
             entry: "review".to_string(),
         }
     }
@@ -1132,22 +1053,103 @@ mod tests {
             node_name: name.to_string(),
             kind,
             attempt: 1,
-            fanout_parent: None,
+            parent: None,
             timestamp: 2.0,
         }
     }
 
     fn child_node_started(id: &str, name: &str, item_index: usize) -> WorkflowEvent {
         let mut event = node_started(id, name, EventNodeKindName::Session);
-        if let WorkflowEvent::NodeStarted { fanout_parent, .. } = &mut event {
-            *fanout_parent = Some(EventFanoutParentRef {
-                parent_node: "fanout".to_string(),
-                parent_attempt: 1,
-                item_index: Some(item_index),
-                child_index: 0,
-            });
+        if let WorkflowEvent::NodeStarted { parent, .. } = &mut event {
+            *parent = Some(ExecutionParentRef::fanout_child(
+                "parent",
+                Some(item_index),
+                0,
+            ));
         }
         event
+    }
+
+    #[test]
+    fn failed_running_execution_keeps_the_failed_node_as_current_node() {
+        let events = vec![
+            started(),
+            node_started("node-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::NodeFailed {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                node_name: "review".to_string(),
+                attempt: 1,
+                reason: "exit 1".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                retry_count: None,
+                timestamp: 3.0,
+            },
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        // 失敗停止した Running でも current_node は空にならない（Running の
+        // metadata reconciliation は current_node を要求する）。
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.current_node.as_deref(), Some("review"));
+    }
+
+    #[test]
+    fn node_executions_expose_sequence_parentage_in_the_read_model() {
+        let definition = crate::domain::workflow::WorkflowDefinition {
+            name: "review".to_string(),
+            entry: "main".to_string(),
+            nodes: vec![
+                root_sequence_node(vec![("review", None)]),
+                NodeDefinition {
+                    name: "review".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut child_started = node_started("node-1", "review", EventNodeKindName::Session);
+        if let WorkflowEvent::NodeStarted {
+            parent, timestamp, ..
+        } = &mut child_started
+        {
+            *parent = Some(ExecutionParentRef::sequence_child("seq-1"));
+            *timestamp = 3.0;
+        }
+        let events = vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                workflow_name: "review".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: "please review".to_string(),
+                definition,
+                timestamp: 1.0,
+            },
+            node_started("seq-1", "main", EventNodeKindName::Sequence),
+            child_started,
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        let sequence = execution
+            .node_executions
+            .iter()
+            .find(|node| node.id == "seq-1")
+            .expect("sequence instance must be in the read model");
+        assert_eq!(sequence.parent, None);
+        let child = execution
+            .node_executions
+            .iter()
+            .find(|node| node.id == "node-1")
+            .expect("sequence child must be in the read model");
+        assert_eq!(
+            child.parent,
+            Some(ExecutionParentRef::sequence_child("seq-1"))
+        );
     }
 
     #[test]
@@ -1296,7 +1298,7 @@ mod tests {
                 node_name: "review".to_string(),
                 kind: EventNodeKindName::Session,
                 attempt: 2,
-                fanout_parent: None,
+                parent: None,
                 timestamp: 3.0,
             },
         ];
@@ -1329,7 +1331,7 @@ mod tests {
             &events,
         )
         .unwrap();
-        assert!(!aggregate.artifacts.contains_key("review"));
+        assert!(!aggregate.flattened_artifacts().contains_key("review"));
     }
 
     #[test]
@@ -1416,21 +1418,10 @@ mod tests {
                 node_execution_id: "node-1".to_string(),
                 timestamp: 3.5,
             },
-            node_completed(
-                "node-1",
-                "review",
-                Some(EventTokenUsage {
-                    input_tokens: 2,
-                    output_tokens: 3,
-                }),
-                4.0,
-            ),
+            node_completed("node-1", "review", None, 4.0),
             WorkflowEvent::ExecutionCompleted {
                 execution_id: EXECUTION_ID.to_string(),
-                total_token_usage: EventTokenUsage {
-                    input_tokens: 2,
-                    output_tokens: 3,
-                },
+                total_token_usage: EventTokenUsage::default(),
                 timestamp: 5.0,
             },
         ];
@@ -1490,31 +1481,13 @@ mod tests {
             live.record_node_completion_signal("node-1", NodeCompletionSignal::Stop, 3.5),
             crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
         );
-        live.apply_observed_turn(
-            "node-1",
-            CanonicalNodeFact::Completed,
-            Some(serde_json::json!({"approved": true})),
-            Some(TokenUsage {
-                input_tokens: 2,
-                output_tokens: 3,
-            }),
-            4.0,
-        );
-        live.record_successful_node_completion("review", 4.0);
-        assert_eq!(
-            live.transition_completed(),
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-        );
-        live.touch(5.0);
+        let mut new_id = || unreachable!("a single-node completion starts no new node");
+        live.apply_node_completion_handshake("node-1", &mut new_id, 4.0)
+            .unwrap();
 
         assert_eq!(replayed.state(), live.state());
         assert_eq!(replayed.node_executions, live.node_executions);
-        assert_eq!(replayed.node_execution_counts, live.node_execution_counts);
-        assert_eq!(replayed.artifacts, live.artifacts);
-        assert_eq!(
-            replayed.loop_guard_reset_baselines,
-            live.loop_guard_reset_baselines
-        );
+        assert_eq!(replayed.scopes, live.scopes);
     }
 
     fn node_completed(
@@ -1800,7 +1773,6 @@ mod tests {
                         Some(vec![Rule::LoopGuard {
                             max_iterations: 2,
                             on_exhausted: "done".to_string(),
-                            reset_on: Some("round".to_string()),
                         }]),
                     ),
                     ("done", None),
@@ -1864,7 +1836,7 @@ mod tests {
                 node_name: "round".to_string(),
                 kind: EventNodeKindName::Session,
                 attempt: 1,
-                fanout_parent: None,
+                parent: None,
                 timestamp: 6.0,
             },
             WorkflowEvent::NodeCompleted {
@@ -1905,7 +1877,6 @@ mod tests {
                         Some(vec![Rule::LoopGuard {
                             max_iterations: 2,
                             on_exhausted: "done".to_string(),
-                            reset_on: Some("round".to_string()),
                         }]),
                     ),
                     ("done", None),
@@ -1932,7 +1903,7 @@ mod tests {
                 node_name: name.to_string(),
                 kind: EventNodeKindName::Session,
                 attempt,
-                fanout_parent: None,
+                parent: None,
                 timestamp,
             };
         let complete_node =
@@ -1984,187 +1955,6 @@ mod tests {
         assert_eq!(
             project_workflow_execution(EXECUTION_ID, &events).unwrap_err(),
             "workflow-level interruption events are unsupported"
-        );
-    }
-
-    #[test]
-    fn fanout_child_completion_does_not_reset_a_guard_bound_to_the_parent() {
-        use crate::domain::workflow::{FanoutSpec, Rule};
-
-        let workflow = WorkflowDefinition {
-            name: "fanout-parent-reset-replay".to_string(),
-            nodes: vec![
-                root_sequence_node(vec![
-                    ("round", Some(vec![Rule::Next("fix".to_string())])),
-                    (
-                        "fix",
-                        Some(vec![Rule::LoopGuard {
-                            max_iterations: 2,
-                            on_exhausted: "done".to_string(),
-                            reset_on: Some("round".to_string()),
-                        }]),
-                    ),
-                    ("done", None),
-                ]),
-                NodeDefinition {
-                    name: "round".to_string(),
-                    kind: NodeKind::Fanout(FanoutSpec {
-                        children: vec![crate::domain::workflow::ChildEntry::reference("worker")],
-                        items: None,
-                    }),
-                    ..Default::default()
-                },
-                NodeDefinition {
-                    name: "worker".to_string(),
-                    ..Default::default()
-                },
-                NodeDefinition {
-                    name: "fix".to_string(),
-                    ..Default::default()
-                },
-                NodeDefinition {
-                    name: "done".to_string(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        let start = WorkflowEvent::ExecutionStarted {
-            execution_id: EXECUTION_ID.to_string(),
-            workflow_name: workflow.name.clone(),
-            worktree_path: "/repo".to_string(),
-            created_from: ExecutionOrigin::Cli,
-            request: "review".to_string(),
-            definition: workflow,
-            timestamp: 1.0,
-        };
-        let mut events_before_child_completion = vec![start];
-        for (id, attempt, started_at, completed_at) in
-            [("fix-1", 1, 2.0, 3.0), ("fix-2", 2, 4.0, 5.0)]
-        {
-            events_before_child_completion.extend([
-                WorkflowEvent::NodeStarted {
-                    execution_id: EXECUTION_ID.to_string(),
-                    node_execution_id: id.to_string(),
-                    node_name: "fix".to_string(),
-                    kind: EventNodeKindName::Session,
-                    attempt,
-                    fanout_parent: None,
-                    timestamp: started_at,
-                },
-                WorkflowEvent::NodeCompleted {
-                    execution_id: EXECUTION_ID.to_string(),
-                    node_execution_id: id.to_string(),
-                    node_name: "fix".to_string(),
-                    attempt,
-                    result_summary: None,
-                    token_usage: None,
-                    timestamp: completed_at,
-                },
-            ]);
-        }
-        events_before_child_completion.extend([
-            WorkflowEvent::NodeStarted {
-                execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "round-1".to_string(),
-                node_name: "round".to_string(),
-                kind: EventNodeKindName::Fanout,
-                attempt: 1,
-                fanout_parent: None,
-                timestamp: 6.0,
-            },
-            WorkflowEvent::NodeStarted {
-                execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "worker-1".to_string(),
-                node_name: "worker".to_string(),
-                kind: EventNodeKindName::Session,
-                attempt: 1,
-                fanout_parent: Some(EventFanoutParentRef {
-                    parent_node: "round".to_string(),
-                    parent_attempt: 1,
-                    item_index: Some(0),
-                    child_index: 0,
-                }),
-                timestamp: 7.0,
-            },
-        ]);
-        let mut events_after_child_completion = events_before_child_completion.clone();
-        events_after_child_completion.push(WorkflowEvent::NodeCompleted {
-            execution_id: EXECUTION_ID.to_string(),
-            node_execution_id: "worker-1".to_string(),
-            node_name: "worker".to_string(),
-            attempt: 1,
-            result_summary: None,
-            token_usage: None,
-            timestamp: 8.0,
-        });
-        let mut events_after_parent_completion = events_after_child_completion.clone();
-        events_after_parent_completion.push(WorkflowEvent::NodeCompleted {
-            execution_id: EXECUTION_ID.to_string(),
-            node_execution_id: "round-1".to_string(),
-            node_name: "round".to_string(),
-            attempt: 1,
-            result_summary: None,
-            token_usage: None,
-            timestamp: 9.0,
-        });
-
-        let replay = |events: &[WorkflowEvent]| {
-            project_retained_workflow_execution(EXECUTION_ID, events)
-                .unwrap()
-                .unwrap()
-        };
-        let before_child = replay(&events_before_child_completion);
-        let after_child = replay(&events_after_child_completion);
-        let after_parent = replay(&events_after_parent_completion);
-        let WorkflowEvent::ExecutionStarted {
-            definition: domain_workflow,
-            ..
-        } = &events_before_child_completion[0]
-        else {
-            unreachable!("the first event is ExecutionStarted");
-        };
-        let round_index = domain_workflow
-            .nodes
-            .iter()
-            .position(|node| node.name == "round")
-            .expect("round node exists");
-        let route = |projection: &RetainedWorkflowExecutionProjection| {
-            routing::route_with_reset_baselines(
-                domain_workflow,
-                round_index,
-                None,
-                &projection.node_execution_counts,
-                &projection.loop_guard_reset_baselines,
-            )
-            .unwrap()
-        };
-        let in_range_count = |projection: &RetainedWorkflowExecutionProjection| {
-            projection.loop_guard_reset_baselines.execution_count(
-                "fix",
-                projection.node_execution_counts["fix"],
-                Some("round"),
-            )
-        };
-
-        assert_eq!(before_child.node_execution_counts["fix"], 2);
-        assert_eq!(after_child.node_execution_counts["fix"], 2);
-        assert_eq!(in_range_count(&before_child), 2);
-        assert_eq!(in_range_count(&after_child), 2);
-        assert_eq!(
-            route(&before_child),
-            RouteDecision::TransitionTo("done".into())
-        );
-        assert_eq!(
-            route(&after_child),
-            RouteDecision::TransitionTo("done".into())
-        );
-
-        assert_eq!(after_parent.node_execution_counts["fix"], 2);
-        assert_eq!(in_range_count(&after_parent), 0);
-        assert_eq!(
-            route(&after_parent),
-            RouteDecision::TransitionTo("fix".into())
         );
     }
 
@@ -2245,7 +2035,9 @@ mod tests {
         let execution = project_workflow_execution(EXECUTION_ID, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(execution.total_token_usage.input_tokens, 100);
+        // 合成子（fanout parent）の token は子の合算値なので総和から除外され、
+        // leaf の合算だけが数えられる。
+        assert_eq!(execution.total_token_usage.input_tokens, 8);
         assert_eq!(execution.total_token_usage.output_tokens, 10);
     }
 
@@ -2285,93 +2077,41 @@ mod tests {
     }
 
     #[test]
-    fn fallback_usage_does_not_double_count_a_child_reused_by_a_later_parent_attempt() {
-        let node = |id: &str,
-                    name: &str,
-                    kind: NodeKindName,
-                    attempt: u32,
-                    status: NodeExecutionStatus,
-                    session_id: Option<&str>,
-                    token_usage: Option<TokenUsage>,
-                    fanout_parent: Option<FanoutParentRef>| NodeExecution {
+    fn total_token_usage_counts_only_leaf_executions() {
+        let node = |id: &str, kind: NodeKindName, tokens: u64| NodeExecution {
             id: id.to_string(),
             execution_id: EXECUTION_ID.to_string(),
-            node_name: name.to_string(),
+            node_name: id.to_string(),
             kind,
-            attempt,
-            status,
-            session_id: session_id.map(str::to_string),
+            attempt: 1,
+            status: NodeExecutionStatus::Succeeded,
+            session_id: None,
             display_command: None,
             result_summary: None,
             artifact: None,
-            token_usage,
+            token_usage: Some(TokenUsage {
+                input_tokens: tokens,
+                output_tokens: tokens,
+            }),
             failure: None,
-            fanout_parent,
+            parent: None,
             completion_signals: Default::default(),
-            started_at: f64::from(attempt),
-            completed_at: Some(f64::from(attempt) + 0.5),
-        };
-        let coordinate = |parent_attempt| FanoutParentRef {
-            parent_node: "fanout".to_string(),
-            parent_attempt,
-            item_index: Some(0),
-            child_index: 0,
+            started_at: 1.0,
+            completed_at: Some(2.0),
         };
         let nodes = vec![
-            node(
-                "parent-1",
-                "fanout",
-                NodeKindName::Fanout,
-                1,
-                NodeExecutionStatus::Aborted,
-                None,
-                None,
-                None,
-            ),
-            node(
-                "child-1",
-                "review",
-                NodeKindName::Session,
-                1,
-                NodeExecutionStatus::Succeeded,
-                Some("old-session"),
-                Some(TokenUsage {
-                    input_tokens: 3,
-                    output_tokens: 4,
-                }),
-                Some(coordinate(1)),
-            ),
-            node(
-                "parent-2",
-                "fanout",
-                NodeKindName::Fanout,
-                2,
-                NodeExecutionStatus::Succeeded,
-                None,
-                Some(TokenUsage {
-                    input_tokens: 8,
-                    output_tokens: 10,
-                }),
-                None,
-            ),
-            // Synthetic confirmation copied from child-1 during resume.
-            node(
-                "child-2-copy",
-                "review",
-                NodeKindName::Session,
-                2,
-                NodeExecutionStatus::Succeeded,
-                None,
-                None,
-                Some(coordinate(2)),
-            ),
+            node("leaf-1", NodeKindName::Session, 2),
+            node("leaf-2", NodeKindName::Command, 3),
+            // 合成子の token は子の合算値なので総和から除外される。
+            node("fanout-1", NodeKindName::Fanout, 5),
+            node("sequence-1", NodeKindName::Sequence, 5),
         ];
 
         assert_eq!(
             derive_total_token_usage(&nodes),
             TokenUsage {
-                input_tokens: 8,
-                output_tokens: 10,
+                input_tokens: 5,
+                output_tokens: 5,
             }
         );
     }
@@ -2381,26 +2121,14 @@ mod tests {
         let mut child_two = node_started("child-2", "check", EventNodeKindName::Session);
         let mut child_one = node_started("child-1", "check", EventNodeKindName::Session);
         if let WorkflowEvent::NodeStarted {
-            fanout_parent,
-            timestamp,
-            ..
+            parent, timestamp, ..
         } = &mut child_two
         {
-            *fanout_parent = Some(EventFanoutParentRef {
-                parent_node: "fanout".to_string(),
-                parent_attempt: 1,
-                item_index: Some(1),
-                child_index: 0,
-            });
+            *parent = Some(ExecutionParentRef::fanout_child("parent", Some(1), 0));
             *timestamp = 3.0;
         }
-        if let WorkflowEvent::NodeStarted { fanout_parent, .. } = &mut child_one {
-            *fanout_parent = Some(EventFanoutParentRef {
-                parent_node: "fanout".to_string(),
-                parent_attempt: 1,
-                item_index: Some(0),
-                child_index: 0,
-            });
+        if let WorkflowEvent::NodeStarted { parent, .. } = &mut child_one {
+            *parent = Some(ExecutionParentRef::fanout_child("parent", Some(0), 0));
         }
 
         let events = vec![
@@ -2490,13 +2218,12 @@ mod tests {
         let mut first = node_started("child-1", "review", EventNodeKindName::Session);
         let mut second = node_started("child-2", "review", EventNodeKindName::Session);
         for (event, item_index) in [(&mut first, 0), (&mut second, 1)] {
-            if let WorkflowEvent::NodeStarted { fanout_parent, .. } = event {
-                *fanout_parent = Some(EventFanoutParentRef {
-                    parent_node: "reviews".to_string(),
-                    parent_attempt: 1,
-                    item_index: Some(item_index),
-                    child_index: 0,
-                });
+            if let WorkflowEvent::NodeStarted { parent, .. } = event {
+                *parent = Some(ExecutionParentRef::fanout_child(
+                    "parent",
+                    Some(item_index),
+                    0,
+                ));
             }
         }
         let events = vec![
@@ -2522,7 +2249,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(execution.status, ExecutionStatus::Running);
-        assert_eq!(execution.current_node.as_deref(), Some("reviews"));
+        assert_eq!(execution.current_node.as_deref(), Some("review"));
         assert_eq!(execution.approval_target, None);
     }
 
@@ -2531,13 +2258,12 @@ mod tests {
         let mut failed_child = node_started("child-1", "review", EventNodeKindName::Session);
         let mut sibling = node_started("child-2", "review", EventNodeKindName::Session);
         for (event, item_index) in [(&mut failed_child, 0), (&mut sibling, 1)] {
-            if let WorkflowEvent::NodeStarted { fanout_parent, .. } = event {
-                *fanout_parent = Some(EventFanoutParentRef {
-                    parent_node: "reviews".to_string(),
-                    parent_attempt: 1,
-                    item_index: Some(item_index),
-                    child_index: 0,
-                });
+            if let WorkflowEvent::NodeStarted { parent, .. } = event {
+                *parent = Some(ExecutionParentRef::fanout_child(
+                    "parent",
+                    Some(item_index),
+                    0,
+                ));
             }
         }
         let events = vec![
