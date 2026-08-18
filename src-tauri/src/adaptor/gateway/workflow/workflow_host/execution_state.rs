@@ -8,10 +8,7 @@ use crate::domain::workflow::WorkflowDefinition;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::runtime_start_guard;
 
-pub(crate) use crate::domain::workflow::entities::workflow_execution::{
-    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
-    WorkflowExecution as DomainWorkflowExecution,
-};
+pub(crate) use crate::domain::workflow::entities::workflow_execution::WorkflowExecution as DomainWorkflowExecution;
 macro_rules! domain_workflow_execution {
     ($($fields:tt)*) => {
         $crate::domain::workflow::entities::workflow_execution::WorkflowExecution::restore_runtime(

@@ -19,13 +19,13 @@ pub(crate) struct RuntimeCommitSnapshot {
     pub(crate) request: String,
     pub(crate) error_reason: Option<String>,
     pub(crate) state: RuntimeExecutionState,
-    pub(crate) current_node_index: usize,
-    pub(crate) current_node_name: String,
+    /// 表示用の「現在の node」（実行木からの導出値）。
+    pub(crate) current_node_name: Option<String>,
     pub(crate) current_session_id: Option<String>,
     pub(crate) node_history: Vec<NodeHistoryEntry>,
-    pub(crate) node_execution_counts: HashMap<String, u32>,
     pub(crate) workflow_definition: WorkflowDefinition,
     pub(crate) total_token_usage: TokenUsage,
+    /// 全スコープの Artifact をフラット化した互換 read（CLI / 表示用）。
     pub(crate) artifacts: HashMap<String, RuntimeArtifact>,
     pub(crate) node_executions: Vec<RuntimeNodeExecution>,
     pub(crate) started_at: f64,
@@ -36,21 +36,6 @@ impl RuntimeCommitSnapshot {
     pub(crate) fn from_execution(
         execution: &WorkflowExecutionAggregate,
     ) -> Result<Self, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
-        let current_node_name = execution
-            .workflow
-            .nodes
-            .get(execution.current_node_index)
-            .ok_or_else(|| {
-                crate::usecase::workflow::runtime_error::WorkflowRuntimeError::InvalidState(
-                    format!(
-                        "current_node_index {} is out of bounds for {} workflow nodes",
-                        execution.current_node_index,
-                        execution.workflow.nodes.len()
-                    ),
-                )
-            })?
-            .name
-            .clone();
         Ok(Self {
             execution_id: execution.id.clone(),
             workflow_name: execution.workflow.name.clone(),
@@ -59,28 +44,16 @@ impl RuntimeCommitSnapshot {
             request: execution.request.clone().unwrap_or_default(),
             error_reason: execution.error_reason.clone(),
             state: execution.state().clone(),
-            current_node_index: execution.current_node_index,
-            current_node_name,
+            current_node_name: execution.display_current_node(),
             current_session_id: execution.current_session_id.clone(),
             node_history: execution.node_history.clone(),
-            node_execution_counts: execution.node_execution_counts.clone(),
             workflow_definition: execution.workflow.clone(),
             total_token_usage: workflow_projection::total_token_usage(&execution.node_history),
-            artifacts: execution.artifacts.clone(),
+            artifacts: execution.flattened_artifacts(),
             node_executions: execution.node_executions.clone(),
             started_at: execution.started_at,
             updated_at: execution.updated_at,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn apply_lifecycle_projection(
-        &mut self,
-        state: RuntimeExecutionState,
-        updated_at: f64,
-    ) {
-        self.state = state;
-        self.updated_at = updated_at;
     }
 }
 
@@ -95,11 +68,9 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
         request: state.request,
         error_reason: state.error_reason,
         state: state.state,
-        current_node_index: state.current_node_index,
         current_node_name: state.current_node_name,
         current_session_id: state.current_session_id,
         node_history: state.node_history,
-        node_execution_counts: state.node_execution_counts,
         workflow_definition: state.workflow_definition,
         total_token_usage: state.total_token_usage,
         artifacts: state.artifacts,
@@ -164,7 +135,7 @@ fn runtime_node_execution_to_domain(
                 reason: failure.reason,
                 kind: failure.kind,
             }),
-        fanout_parent: execution.fanout_parent,
+        parent: execution.parent,
         completion_signals: execution.completion_signals,
         started_at: execution.started_at,
         completed_at: execution.completed_at,

@@ -46,7 +46,6 @@ export type Rule =
 			type: "loop_guard";
 			max_iterations: number;
 			on_exhausted: string;
-			reset_on?: string;
 	  }
 	| {
 			type: "next";
@@ -130,11 +129,10 @@ export type NodeExecutionStatus =
 	| "failed"
 	| "aborted";
 
-export interface FanoutParentRef {
-	parentNode: string;
-	parentAttempt: number;
+export interface ExecutionParentRef {
+	parentId: string;
 	itemIndex?: number;
-	childIndex: number;
+	childIndex?: number;
 }
 
 export interface NodeExecutionFailure {
@@ -159,7 +157,7 @@ export interface NodeExecution {
 	artifact?: Artifact;
 	tokenUsage?: TokenUsage;
 	failure?: NodeExecutionFailure;
-	fanoutParent?: FanoutParentRef;
+	parent?: ExecutionParentRef;
 	startedAt: number;
 	completedAt?: number;
 }

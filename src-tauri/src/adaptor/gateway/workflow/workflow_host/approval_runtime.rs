@@ -52,7 +52,7 @@ pub(crate) fn auto_approve_target_for_persisted_snapshot(
     if should_auto_approve_workflow_approval(snapshot, approval_auto_approve_enabled) {
         Some((
             snapshot.execution_id.clone(),
-            snapshot.current_node_name.clone(),
+            snapshot.current_node_name.clone()?,
         ))
     } else {
         None
@@ -78,11 +78,9 @@ mod tests {
             request: "ship it".to_string(),
             error_reason: None,
             state: RuntimeExecutionState::Running,
-            current_node_index: 0,
-            current_node_name: "approval".to_string(),
+            current_node_name: Some("approval".to_string()),
             current_session_id: None,
             node_history: Vec::new(),
-            node_execution_counts: HashMap::new(),
             workflow_definition: WorkflowDefinition::default(),
             total_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
@@ -99,7 +97,7 @@ mod tests {
                     artifact: None,
                     token_usage: None,
                     failure: None,
-                    fanout_parent: None,
+                    parent: None,
                     completion_signals: Default::default(),
                     started_at: 1.0,
                     completed_at: None,

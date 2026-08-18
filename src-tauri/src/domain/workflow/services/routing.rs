@@ -15,53 +15,6 @@ pub enum RouteDecision {
     TransitionTo(String),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LoopGuardResetBaselines {
-    by_guarded_node: HashMap<String, u32>,
-}
-
-impl LoopGuardResetBaselines {
-    pub fn record_successful_completion(
-        &mut self,
-        workflow: &WorkflowDefinition,
-        completed_node_name: &str,
-        node_execution_counts: &HashMap<String, u32>,
-    ) {
-        // loop_guard は実行スコープ（root sequence）の children エントリに属する。
-        let Some(sequence) = workflow.root_sequence() else {
-            return;
-        };
-        for entry in &sequence.children {
-            let Some((_, _, Some(reset_on))) = entry_loop_guard(entry) else {
-                continue;
-            };
-            if reset_on == completed_node_name {
-                let cumulative_count = node_execution_counts.get(&entry.name).copied().unwrap_or(0);
-                self.by_guarded_node
-                    .insert(entry.name.clone(), cumulative_count);
-            }
-        }
-    }
-
-    pub fn execution_count(
-        &self,
-        guarded_node_name: &str,
-        cumulative_count: u32,
-        reset_on: Option<&str>,
-    ) -> u32 {
-        if reset_on.is_some() {
-            cumulative_count.saturating_sub(
-                self.by_guarded_node
-                    .get(guarded_node_name)
-                    .copied()
-                    .unwrap_or(0),
-            )
-        } else {
-            cumulative_count
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingValidationError {
     /// children エントリが存在しないカタログ node を参照している。
@@ -102,10 +55,6 @@ pub enum RoutingValidationError {
     UnknownRuleTarget {
         node: String,
         target: String,
-    },
-    UnknownLoopGuardResetNode {
-        node: String,
-        reset_on: String,
     },
     MultipleDiscriminators {
         node: String,
@@ -380,24 +329,12 @@ fn validate_entry_rules(
         }
         match rule {
             Rule::When { .. } | Rule::Switch { .. } => discriminator_count += 1,
-            Rule::LoopGuard {
-                max_iterations,
-                reset_on,
-                ..
-            } => {
+            Rule::LoopGuard { max_iterations, .. } => {
                 loop_guard_count += 1;
                 if *max_iterations == 0 {
                     errors.push(RoutingValidationError::LoopGuardMaxIterations {
                         node: entry_name.to_string(),
                     });
-                }
-                if let Some(reset_on) = reset_on {
-                    if !node_by_name.contains_key(reset_on.as_str()) {
-                        errors.push(RoutingValidationError::UnknownLoopGuardResetNode {
-                            node: entry_name.to_string(),
-                            reset_on: reset_on.clone(),
-                        });
-                    }
                 }
             }
             Rule::Next(_) => next_count += 1,
@@ -617,23 +554,14 @@ fn scope_flow_unreachable(sequence: &SequenceSpec) -> Vec<&str> {
 }
 
 /// children エントリの明示 rules から loop_guard を取り出す。
-pub(crate) fn entry_loop_guard(entry: &ChildEntry) -> Option<(u32, &str, Option<&str>)> {
+pub(crate) fn entry_loop_guard(entry: &ChildEntry) -> Option<(u32, &str)> {
     entry.rules.as_ref()?.iter().find_map(|rule| match rule {
         Rule::LoopGuard {
             max_iterations,
             on_exhausted,
-            reset_on,
-        } => Some((*max_iterations, on_exhausted.as_str(), reset_on.as_deref())),
+        } => Some((*max_iterations, on_exhausted.as_str())),
         _ => None,
     })
-}
-
-fn root_entry_loop_guard<'a>(
-    workflow: &'a WorkflowDefinition,
-    node_name: &str,
-) -> Option<(u32, &'a str, Option<&'a str>)> {
-    let sequence = workflow.root_sequence()?;
-    entry_loop_guard(sequence.child_entry(node_name)?)
 }
 
 fn validate_scope_cycles(owner: &str, sequence: &SequenceSpec) -> Vec<RoutingValidationError> {
@@ -683,6 +611,7 @@ fn validate_scope_cycles(owner: &str, sequence: &SequenceSpec) -> Vec<RoutingVal
     errors
 }
 
+/// root sequence スコープの前進（テスト用の互換入口）。
 #[cfg(test)]
 pub fn route(
     workflow: &WorkflowDefinition,
@@ -690,45 +619,70 @@ pub fn route(
     artifact: Option<&Value>,
     node_execution_counts: &HashMap<String, u32>,
 ) -> Result<RouteDecision, WorkflowError> {
-    route_with_reset_baselines(
-        workflow,
-        current_index,
-        artifact,
-        node_execution_counts,
-        &LoopGuardResetBaselines::default(),
-    )
-}
-
-pub fn route_with_reset_baselines(
-    workflow: &WorkflowDefinition,
-    current_index: usize,
-    artifact: Option<&Value>,
-    node_execution_counts: &HashMap<String, u32>,
-    loop_guard_reset_baselines: &LoopGuardResetBaselines,
-) -> Result<RouteDecision, WorkflowError> {
     let node = workflow.nodes.get(current_index).ok_or_else(|| {
         WorkflowError::validation(format!("node index out of range: {current_index}"))
     })?;
+    match workflow.root_sequence() {
+        None => Ok(RouteDecision::Completed),
+        Some(sequence) => route_in_scope(
+            workflow,
+            sequence,
+            &node.name,
+            artifact,
+            node_execution_counts,
+        ),
+    }
+}
 
-    // 配線は root sequence の children エントリが持つ。root が leaf / fanout の
-    // 場合は単独実行（辺なし = 完了）。
-    let target = match workflow.root_sequence() {
-        None => None,
-        Some(sequence) => match sequence.effective_rules(&node.name) {
-            EffectiveRules::Rules(rules) => raw_target(&node.name, rules, artifact)?,
-            EffectiveRules::AdjacentNext(next) => Some(next.to_string()),
-            EffectiveRules::Terminal => None,
-        },
+/// 1 つの sequence スコープ内の前進を決める。
+///
+/// 辺（rules / 隣接辺）はスコープの children エントリが持ち、loop_guard の
+/// カウント範囲はスコープインスタンスの `child_counts` に閉じる。children に
+/// 載らず行き先参照だけされた node は次を持たないため、そこからの前進は終端。
+pub fn route_in_scope(
+    workflow: &WorkflowDefinition,
+    sequence: &SequenceSpec,
+    from_child: &str,
+    artifact: Option<&Value>,
+    child_counts: &HashMap<String, u32>,
+) -> Result<RouteDecision, WorkflowError> {
+    let target = match sequence.effective_rules(from_child) {
+        EffectiveRules::Rules(rules) => raw_target(from_child, rules, artifact)?,
+        EffectiveRules::AdjacentNext(next) => Some(next.to_string()),
+        EffectiveRules::Terminal => None,
     };
     let Some(target) = target else {
         return Ok(RouteDecision::Completed);
     };
-    guarded_target_with_reset_baselines(
-        workflow,
-        target,
-        node_execution_counts,
-        loop_guard_reset_baselines,
-    )
+    guarded_target_in_scope(workflow, sequence, target, child_counts)
+}
+
+fn guarded_target_in_scope(
+    workflow: &WorkflowDefinition,
+    sequence: &SequenceSpec,
+    mut target: String,
+    child_counts: &HashMap<String, u32>,
+) -> Result<RouteDecision, WorkflowError> {
+    for _ in 0..workflow.nodes.len() {
+        if workflow.node_by_name(&target).is_none() {
+            return Err(WorkflowError::validation(format!(
+                "node not found: {target}"
+            )));
+        }
+        let Some((max_iterations, on_exhausted)) =
+            sequence.child_entry(&target).and_then(entry_loop_guard)
+        else {
+            return Ok(RouteDecision::TransitionTo(target));
+        };
+        let count = child_counts.get(&target).copied().unwrap_or(0);
+        if count < max_iterations {
+            return Ok(RouteDecision::TransitionTo(target));
+        }
+        target = on_exhausted.to_string();
+    }
+    Err(WorkflowError::validation(
+        "loop_guard on_exhausted chain depth exceeded",
+    ))
 }
 
 fn validate_routing_field(
@@ -826,35 +780,6 @@ fn raw_target(
             _ => None,
         })),
     }
-}
-
-pub fn guarded_target_with_reset_baselines(
-    workflow: &WorkflowDefinition,
-    mut target: String,
-    node_execution_counts: &HashMap<String, u32>,
-    loop_guard_reset_baselines: &LoopGuardResetBaselines,
-) -> Result<RouteDecision, WorkflowError> {
-    for _ in 0..workflow.nodes.len() {
-        if workflow.node_by_name(&target).is_none() {
-            return Err(WorkflowError::validation(format!(
-                "node not found: {target}"
-            )));
-        }
-        let Some((max_iterations, on_exhausted, reset_on)) =
-            root_entry_loop_guard(workflow, &target)
-        else {
-            return Ok(RouteDecision::TransitionTo(target));
-        };
-        let cumulative_count = node_execution_counts.get(&target).copied().unwrap_or(0);
-        let count = loop_guard_reset_baselines.execution_count(&target, cumulative_count, reset_on);
-        if count < max_iterations {
-            return Ok(RouteDecision::TransitionTo(target));
-        }
-        target = on_exhausted.to_string();
-    }
-    Err(WorkflowError::validation(
-        "loop_guard on_exhausted chain depth exceeded",
-    ))
 }
 
 fn cyclic_strongly_connected_components<'a>(
@@ -1090,7 +1015,6 @@ mod routing_tests {
                             Rule::LoopGuard {
                                 max_iterations: 2,
                                 on_exhausted: "done".to_string(),
-                                reset_on: None,
                             },
                             Rule::Next("work".to_string()),
                         ],
@@ -1111,43 +1035,6 @@ mod routing_tests {
         counts.insert("retry".to_string(), 2u32);
         let decision = route(&wf, node_index(&wf, "work"), None, &counts).unwrap();
         assert_eq!(decision, RouteDecision::TransitionTo("done".to_string()));
-    }
-
-    #[test]
-    fn test_reset_baselines_リセット後のカウントで上限を判定する() {
-        let wf = workflow(vec![
-            sequence_node(
-                "main",
-                vec![
-                    entry_with_rules("work", vec![Rule::Next("retry".to_string())]),
-                    entry_with_rules(
-                        "retry",
-                        vec![
-                            Rule::LoopGuard {
-                                max_iterations: 1,
-                                on_exhausted: "done".to_string(),
-                                reset_on: Some("work".to_string()),
-                            },
-                            Rule::Next("work".to_string()),
-                        ],
-                    ),
-                    ChildEntry::reference("done"),
-                ],
-            ),
-            command_node("work"),
-            command_node("retry"),
-            command_node("done"),
-        ]);
-
-        let mut counts = HashMap::new();
-        counts.insert("retry".to_string(), 1u32);
-
-        let mut baselines = LoopGuardResetBaselines::default();
-        baselines.record_successful_completion(&wf, "work", &counts);
-        let decision =
-            route_with_reset_baselines(&wf, node_index(&wf, "work"), None, &counts, &baselines)
-                .unwrap();
-        assert_eq!(decision, RouteDecision::TransitionTo("retry".to_string()));
     }
 
     #[test]

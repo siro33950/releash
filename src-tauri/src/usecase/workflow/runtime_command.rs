@@ -331,15 +331,6 @@ mod tests {
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
-
-        async fn finish_retried_fanout_commit(
-            &self,
-            _worktree_path: &str,
-            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
-            _node_execution_id: &str,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
     }
 
     #[async_trait::async_trait]

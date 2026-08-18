@@ -1988,7 +1988,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 101.0,
                 },
                 WorkflowEvent::NodeCompleted {

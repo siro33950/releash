@@ -1,10 +1,7 @@
 //! Structured-output validation and transactional mutation preparation.
 
-use std::collections::HashMap;
-
 use crate::domain::workflow::entities::workflow_execution::WorkflowExecution as DomainWorkflowExecution;
 use crate::domain::workflow::services::{contract as workflow_contract, secret_masker};
-use crate::domain::workflow::RuntimeArtifact;
 use crate::domain::workflow::WorkflowDefinition;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::{ContractType, ContractValidationResult};
@@ -132,58 +129,10 @@ pub(crate) fn artifact_produced_event(
     }
 }
 
-pub(crate) fn submitted_node_artifact_for(
-    artifacts: &HashMap<String, RuntimeArtifact>,
-    node_name: &str,
-    attempt: u32,
-    contract: &str,
-) -> Option<RuntimeArtifact> {
-    let output = artifacts.get(node_name)?;
-    if output.attempt == attempt
-        && output.contract.as_deref() == Some(contract)
-        && output.artifact.is_some()
-    {
-        Some(output.clone())
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{SchemaDef, TokenUsage};
-
-    fn node_output(attempt: u32, contract: Option<&str>, structured: bool) -> RuntimeArtifact {
-        RuntimeArtifact {
-            node_name: "review-a".to_string(),
-            attempt,
-            session_id: None,
-            result: Some("LGTM".to_string()),
-            artifact: structured.then(|| serde_json::json!({"verdict": "LGTM"})),
-            contract: contract.map(ToOwned::to_owned),
-            token_usage: Some(TokenUsage::default()),
-            completed_at: 1000.0,
-        }
-    }
-
-    #[test]
-    fn submitted_node_output_requires_matching_attempt_contract_and_artifact() {
-        let outputs = HashMap::from([(
-            "review-a".to_string(),
-            node_output(2, Some("review-verdict"), true),
-        )]);
-
-        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "review-verdict").is_some());
-        assert!(submitted_node_artifact_for(&outputs, "review-a", 1, "review-verdict").is_none());
-        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "other-contract").is_none());
-
-        let outputs = HashMap::from([(
-            "review-a".to_string(),
-            node_output(2, Some("review-verdict"), false),
-        )]);
-        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "review-verdict").is_none());
-    }
+    use crate::domain::workflow::SchemaDef;
 
     #[test]
     fn validate_submit_output_request_requires_node_execution_identity() {

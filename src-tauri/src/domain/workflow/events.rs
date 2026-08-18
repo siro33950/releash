@@ -5,7 +5,7 @@
 //! into the agent-session event stream.
 
 use super::{
-    ExecutionInterruptionReason, ExecutionOrigin, FanoutParentRef, NodeExecutionFailureKind,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind,
     NodeKindName, TokenUsage, WorkflowDefinition,
 };
 
@@ -45,7 +45,7 @@ pub enum WorkflowDomainEvent {
         node_name: String,
         kind: NodeKindName,
         attempt: u32,
-        fanout_parent: Option<FanoutParentRef>,
+        parent: Option<ExecutionParentRef>,
         timestamp: f64,
     },
     NodeExecutionAgentBound {

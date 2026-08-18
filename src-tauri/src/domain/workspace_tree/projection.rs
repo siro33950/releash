@@ -36,7 +36,7 @@ pub fn workflow_fact(
             node_name,
             kind,
             attempt,
-            fanout_parent,
+            parent,
             timestamp,
         } => F::NodeStarted {
             execution_id: execution_id.clone(),
@@ -44,7 +44,7 @@ pub fn workflow_fact(
             node_name: node_name.clone(),
             kind: *kind,
             attempt: *attempt,
-            fanout_parent: fanout_parent.clone(),
+            parent: parent.clone(),
             timestamp: *timestamp,
         },
         E::NodeExecutionAgentBound {
@@ -224,7 +224,7 @@ pub fn runtime_snapshot_nodes(
             node_name: node.node_name.clone(),
             kind: node.kind,
             attempt: node.attempt,
-            fanout_parent: node.fanout_parent.clone(),
+            parent: node.parent.clone(),
             timestamp: node.started_at,
         });
         if let Some(session_id) = &node.session_id {
@@ -317,9 +317,7 @@ pub fn runtime_snapshot_nodes(
         node.can_retry = runtime.can_retry()
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
-            })
-            && (runtime.fanout_parent.is_some()
-                || execution.current_node.as_deref() == Some(runtime.node_name.as_str()));
+            });
         if runtime.status == S::Paused {
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
         }
@@ -331,7 +329,7 @@ fn same_retry_target(
     left: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
     right: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
 ) -> bool {
-    left.node_name == right.node_name && left.fanout_parent == right.fanout_parent
+    left.node_name == right.node_name && left.parent == right.parent
 }
 
 #[cfg(test)]
@@ -367,7 +365,7 @@ mod tests {
             artifact: None,
             token_usage: None,
             failure: None,
-            fanout_parent: None,
+            parent: None,
             completion_signals: NodeCompletionSignalState::Pending,
             started_at: 2.0,
             completed_at: None,

@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::domain::workflow::{
-    ContractViolationRecord, FanoutParentRef, TokenUsage, WorkflowEvent,
+    ContractViolationRecord, ExecutionParentRef, TokenUsage, WorkflowEvent,
 };
 use crate::domain::workflow::{
     ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
@@ -44,7 +44,7 @@ enum StoredExecutionInterruptionReasonV1 {
 }
 
 /// Gateway-owned V1 NDJSON record. Scalar fields cross explicit total
-/// converters, while `definition` / `fanout_parent` / `token_usage` /
+/// converters, while `definition` / `parent` / `token_usage` /
 /// `violations` reuse the domain types whose serde shapes double as the wire
 /// shapes; those shapes are pinned by the contract tests below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ enum StoredWorkflowEventV1 {
         kind: NodeKindName,
         attempt: u32,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        fanout_parent: Option<FanoutParentRef>,
+        parent: Option<ExecutionParentRef>,
         timestamp: f64,
     },
     SessionAttached {
@@ -306,7 +306,7 @@ impl From<&WorkflowEvent> for StoredWorkflowEventV1 {
                 node_name,
                 kind,
                 attempt,
-                fanout_parent,
+                parent,
                 timestamp,
             } => Self::NodeStarted {
                 execution_id: execution_id.clone(),
@@ -314,7 +314,7 @@ impl From<&WorkflowEvent> for StoredWorkflowEventV1 {
                 node_name: node_name.clone(),
                 kind: *kind,
                 attempt: *attempt,
-                fanout_parent: fanout_parent.clone(),
+                parent: parent.clone(),
                 timestamp: *timestamp,
             },
             WorkflowEvent::SessionAttached {
@@ -580,7 +580,7 @@ impl From<StoredWorkflowEventV1> for WorkflowEvent {
                 node_name,
                 kind,
                 attempt,
-                fanout_parent,
+                parent,
                 timestamp,
             } => Self::NodeStarted {
                 execution_id,
@@ -588,7 +588,7 @@ impl From<StoredWorkflowEventV1> for WorkflowEvent {
                 node_name,
                 kind,
                 attempt,
-                fanout_parent,
+                parent,
                 timestamp,
             },
             StoredWorkflowEventV1::SessionAttached {
@@ -1006,21 +1006,14 @@ pub(crate) fn to_domain_event(
     event: &WorkflowEvent,
 ) -> Result<crate::domain::workflow::WorkflowDomainEvent, crate::domain::workflow::WorkflowError> {
     use crate::domain::workflow::{
-        FanoutParentRef as DomainFanoutParentRef, NodeKindName as DomainNodeKindName,
-        TokenUsage as DomainTokenUsage, WorkflowContractViolation, WorkflowDomainEvent as Domain,
-        WorkflowJsonPayload,
+        NodeKindName as DomainNodeKindName, TokenUsage as DomainTokenUsage,
+        WorkflowContractViolation, WorkflowDomainEvent as Domain, WorkflowJsonPayload,
     };
     use WorkflowEvent as Stored;
 
     let token_usage = |usage: &TokenUsage| DomainTokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
-    };
-    let fanout_parent = |parent: &FanoutParentRef| DomainFanoutParentRef {
-        parent_node: parent.parent_node.clone(),
-        parent_attempt: parent.parent_attempt,
-        item_index: parent.item_index,
-        child_index: parent.child_index,
     };
     let kind = |kind: NodeKindName| match kind {
         NodeKindName::Command => DomainNodeKindName::Command,
@@ -1055,7 +1048,7 @@ pub(crate) fn to_domain_event(
             node_name,
             kind: node_kind,
             attempt,
-            fanout_parent: parent,
+            parent,
             timestamp,
         } => Domain::NodeExecutionStarted {
             execution_id: execution_id.clone(),
@@ -1063,7 +1056,7 @@ pub(crate) fn to_domain_event(
             node_name: node_name.clone(),
             kind: kind(*node_kind),
             attempt: *attempt,
-            fanout_parent: parent.as_ref().map(fanout_parent),
+            parent: parent.clone(),
             timestamp: *timestamp,
         },
         Stored::SessionAttached {
@@ -1321,12 +1314,6 @@ pub(crate) fn from_domain_event(
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
     };
-    let fanout_parent = |parent: &crate::domain::workflow::FanoutParentRef| FanoutParentRef {
-        parent_node: parent.parent_node.clone(),
-        parent_attempt: parent.parent_attempt,
-        item_index: parent.item_index,
-        child_index: parent.child_index,
-    };
     let node_kind = |kind: DomainNodeKindName| match kind {
         DomainNodeKindName::Command => NodeKindName::Command,
         DomainNodeKindName::Session => NodeKindName::Session,
@@ -1360,7 +1347,7 @@ pub(crate) fn from_domain_event(
             node_name,
             kind,
             attempt,
-            fanout_parent: parent,
+            parent,
             timestamp,
         } => WorkflowEvent::NodeStarted {
             execution_id: execution_id.clone(),
@@ -1368,7 +1355,7 @@ pub(crate) fn from_domain_event(
             node_name: node_name.clone(),
             kind: node_kind(*kind),
             attempt: *attempt,
-            fanout_parent: parent.as_ref().map(fanout_parent),
+            parent: parent.clone(),
             timestamp: *timestamp,
         },
         D::NodeExecutionAgentBound {
@@ -1715,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_started_round_trips_loop_guard_reset_on() {
+    fn execution_started_round_trips_loop_guard() {
         let mut definition = minimal_workflow();
         definition.nodes[0].name = "fix".to_string();
         definition.nodes.push(NodeDefinition {
@@ -1730,7 +1717,6 @@ mod tests {
                         crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
                             max_iterations: 2,
                             on_exhausted: "fix".to_string(),
-                            reset_on: Some("fix".to_string()),
                         },
                     ]),
                 }],
@@ -1750,8 +1736,8 @@ mod tests {
         let serialized = serde_json::to_value(event).unwrap();
         assert_eq!(
             serialized["definition"]["nodes"]["main"]["sequence"]["children"][0]["fix"]["rules"][0]
-                ["loop_guard"]["reset_on"],
-            "fix"
+                ["loop_guard"]["max_iterations"],
+            2
         );
 
         let restored = serde_json::from_value::<WorkflowEvent>(serialized).unwrap();
@@ -1766,10 +1752,12 @@ mod tests {
             .expect("main sequence survives the round trip");
         assert!(matches!(
             sequence.children[0].rules.as_deref(),
-            Some([crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
-                reset_on: Some(reset_on),
-                ..
-            }]) if reset_on == "fix"
+            Some(
+                [crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+                    max_iterations: 2,
+                    ..
+                }]
+            )
         ));
     }
 

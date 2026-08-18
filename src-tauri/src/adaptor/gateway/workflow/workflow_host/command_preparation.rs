@@ -12,7 +12,6 @@ pub(super) struct CommandExecutionInput {
     pub(super) raw_command: Option<String>,
     pub(super) contract: Option<String>,
     pub(super) schemas: BTreeMap<String, DomainSchemaDef>,
-    pub(super) fanout_parent: Option<String>,
     pub(super) session_id: Option<String>,
 }
 
@@ -20,21 +19,10 @@ pub(super) fn command_execution_input_is_current(
     execution: &DomainWorkflowExecution,
     input: &CommandExecutionInput,
 ) -> bool {
-    let node_execution_is_active = execution.node_executions.iter().any(|node_execution| {
-        node_execution.id == input.node_execution_id && node_execution.status.is_active()
-    });
-    if input.fanout_parent.is_some() {
-        node_execution_is_active
-            && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
-                fanout.children.iter().any(|child| {
-                    child.node_execution_id == input.node_execution_id
-                        && child.state == FanoutChildRuntimeState::Running
-                })
-            })
-    } else {
-        node_execution_is_active
-            && is_still_current_execution(execution, &input.node_name, input.attempt)
-    }
+    execution.is_active()
+        && execution.node_executions.iter().any(|node_execution| {
+            node_execution.id == input.node_execution_id && node_execution.status.is_active()
+        })
 }
 
 impl WorkflowRuntimeHost {

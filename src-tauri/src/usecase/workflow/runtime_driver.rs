@@ -12,66 +12,25 @@
 //! Concrete event stores, agent runtimes, process handles, and notification
 //! transports implement the closures/ports consumed here.
 
-use crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision;
-use crate::domain::workflow::entities::workflow_execution::{TransitionOutcome, WorkflowExecution};
+use crate::domain::workflow::entities::workflow_execution::{
+    ExecutionAdvanceDecision, LeafStart, TransitionOutcome, WorkflowExecution,
+};
 use crate::domain::workflow::WorkflowEvent;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) enum NodeOutcome {
+    /// 起動すべき runtime は無い（完了・承認待ち・並走子待ち）。
     Persist(RuntimeCommitSnapshot),
-    RetryCurrentNode(RuntimeCommitSnapshot),
-    TransitionAndStart(RuntimeCommitSnapshot),
-    StartFanout(RuntimeCommitSnapshot),
+    /// 起動すべき leaf 群。
+    StartLeaves(RuntimeCommitSnapshot, Vec<LeafStart>),
 }
 
 impl NodeOutcome {
     pub(crate) fn snapshot(&self) -> &RuntimeCommitSnapshot {
         match self {
-            Self::Persist(snapshot)
-            | Self::RetryCurrentNode(snapshot)
-            | Self::TransitionAndStart(snapshot)
-            | Self::StartFanout(snapshot) => snapshot,
+            Self::Persist(snapshot) | Self::StartLeaves(snapshot, _) => snapshot,
         }
     }
-
-    pub(crate) fn snapshot_mut(&mut self) -> &mut RuntimeCommitSnapshot {
-        match self {
-            Self::Persist(snapshot)
-            | Self::RetryCurrentNode(snapshot)
-            | Self::TransitionAndStart(snapshot)
-            | Self::StartFanout(snapshot) => snapshot,
-        }
-    }
-}
-
-pub(crate) fn make_node_history_entry(
-    execution: &mut WorkflowExecution,
-    result: Option<String>,
-    artifact: Option<serde_json::Value>,
-    contract: Option<String>,
-    timestamp: f64,
-) -> crate::domain::workflow::NodeHistoryEntry {
-    execution.make_node_history_entry_at(result, artifact, contract, timestamp)
-}
-
-pub(crate) fn apply_advance(
-    execution: &mut WorkflowExecution,
-    next_node_execution_id: String,
-    timestamp: f64,
-) -> Result<NodeOutcome, crate::usecase::workflow::runtime_error::WorkflowRuntimeError> {
-    let decision = execution
-        .apply_advance_at(next_node_execution_id, timestamp)
-        .map_err(|error| {
-            crate::usecase::workflow::runtime_error::WorkflowRuntimeError::InvalidState(
-                error.to_string(),
-            )
-        })?;
-    let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
-    Ok(match decision {
-        ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
-        ExecutionAdvanceDecision::TransitionAndStart => NodeOutcome::TransitionAndStart(snapshot),
-        ExecutionAdvanceDecision::StartFanout => NodeOutcome::StartFanout(snapshot),
-    })
 }
 
 pub(crate) fn node_outcome_from_advance(
@@ -81,8 +40,7 @@ pub(crate) fn node_outcome_from_advance(
     let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
     Ok(match decision {
         ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
-        ExecutionAdvanceDecision::TransitionAndStart => NodeOutcome::TransitionAndStart(snapshot),
-        ExecutionAdvanceDecision::StartFanout => NodeOutcome::StartFanout(snapshot),
+        ExecutionAdvanceDecision::StartLeaves(leaves) => NodeOutcome::StartLeaves(snapshot, leaves),
     })
 }
 

@@ -115,14 +115,14 @@ pub struct ArtifactView {
     pub produced_at: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct FanoutParentRefView {
-    pub parent_node: String,
-    pub parent_attempt: u32,
+pub struct ExecutionParentRefView {
+    pub parent_id: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub item_index: Option<usize>,
-    pub child_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub child_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -161,7 +161,7 @@ pub struct NodeExecutionView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub failure: Option<NodeExecutionFailureView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub fanout_parent: Option<FanoutParentRefView>,
+    pub parent: Option<ExecutionParentRefView>,
     pub started_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub completed_at: Option<f64>,

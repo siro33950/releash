@@ -21,15 +21,6 @@ pub(crate) fn find_by_worktree<'a>(
         .find(|(_, e)| e.worktree_path == worktree_path && e.is_active())
 }
 
-pub(crate) fn find_by_worktree_mut<'a>(
-    execs: &'a mut HashMap<String, DomainWorkflowExecution>,
-    worktree_path: &str,
-) -> Option<&'a mut DomainWorkflowExecution> {
-    execs
-        .values_mut()
-        .find(|e| e.worktree_path == worktree_path && e.is_active())
-}
-
 /// validate_start 用に「active/terminal を問わず worktree_path が一致する exec」を引く。
 /// 重複起動拒否（is_active な existing がある場合に限り Err）の判定で必要なため、
 /// active filter を適用しない（terminal な過去 execution は通過させて Ok 判定にする）。

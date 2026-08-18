@@ -4,7 +4,7 @@ use crate::domain::workflow::{
     is_reserved_node_name, InputParam, ItemsSource, NodeDefinition, NodeKind, NodeKindName,
     SchemaDef, WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
 };
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,28 +148,19 @@ pub enum ValidationError {
         node: String,
         parameter: String,
     },
-    /// ネストした合成子参照は W2 では未対応（解禁は W3 #1463）。
-    UnsupportedNestedComposite {
-        node: String,
-        child: String,
-    },
     /// `worktree` フィールドは未対応（#85 で導入）。
     UnsupportedWorktreeField {
         node: String,
     },
-    /// root sequence の `completion: approval` は未対応（W3 #1463 の実行木で解禁）。
-    UnsupportedRootSequenceApproval {
+    /// 合成子の包含循環（children を辿ると自分自身へ戻る）。
+    CompositeInclusionCycle {
         node: String,
+        cycle: String,
     },
     /// rules の遷移先が存在しない node を参照
     UnknownRuleTarget {
         node: String,
         target: String,
-    },
-    /// loop_guard.reset_on が存在しない node を参照
-    UnknownLoopGuardResetNode {
-        node: String,
-        reset_on: String,
     },
     /// rules の順序非依存性・網羅性・型付き参照・loop guard が不正
     InvalidRules {
@@ -338,31 +329,21 @@ impl fmt::Display for ValidationError {
                     "node '{node}' input parameter '{parameter}' is a reserved source name and cannot be declared"
                 )
             }
-            Self::UnsupportedNestedComposite { node, child } => {
-                write!(
-                    f,
-                    "composite node '{node}' child '{child}' references a nested composite, which is not supported yet (W3 #1463)"
-                )
-            }
             Self::UnsupportedWorktreeField { node } => {
                 write!(
                     f,
                     "node '{node}' declares `worktree`, which is not supported yet (#85)"
                 )
             }
-            Self::UnsupportedRootSequenceApproval { node } => {
+            Self::CompositeInclusionCycle { node, cycle } => {
                 write!(
                     f,
-                    "root sequence '{node}' cannot declare `completion: approval` yet (W3 #1463)"
+                    "composite node '{node}' contains itself through its children ({cycle})"
                 )
             }
             Self::UnknownRuleTarget { node, target } => write!(
                 f,
                 "node '{node}' のrulesが存在しないnode '{target}' を参照しています"
-            ),
-            Self::UnknownLoopGuardResetNode { node, reset_on } => write!(
-                f,
-                "node '{node}' のloop_guard.reset_onが存在しないnode '{reset_on}' を参照しています"
             ),
             Self::InvalidRules { node, reason, .. } => {
                 write!(f, "node '{node}' のrulesが不正です: {reason}")
@@ -511,9 +492,6 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
         },
         routing::RoutingValidationError::UnknownRuleTarget { node, target } => {
             ValidationError::UnknownRuleTarget { node, target }
-        }
-        routing::RoutingValidationError::UnknownLoopGuardResetNode { node, reset_on } => {
-            ValidationError::UnknownLoopGuardResetNode { node, reset_on }
         }
         routing::RoutingValidationError::MultipleDiscriminators { node } => {
             ValidationError::InvalidRules {
@@ -976,67 +954,87 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
     errors
 }
 
-/// W2 で未解禁の構文（ネスト合成子・worktree・root sequence の approval）を検出する。
+/// 未解禁の構文（worktree・#85 で導入）を検出する。
 fn collect_unsupported_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
-    let mut errors = Vec::new();
+    workflow
+        .nodes
+        .iter()
+        .filter(|node| node.worktree.is_some())
+        .map(|node| ValidationError::UnsupportedWorktreeField {
+            node: node.name.clone(),
+        })
+        .collect()
+}
 
-    for owner in &workflow.nodes {
-        let (children, owner_is_fanout) = match &owner.kind {
-            NodeKind::Sequence(sequence) => (&sequence.children, false),
-            NodeKind::Fanout(fanout) => (&fanout.children, true),
-            _ => continue,
-        };
-        let child_names: BTreeSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
-        for entry in children {
-            if let Some(child) = workflow.node_by_name(&entry.name) {
-                // sequence 参照は常に未対応。fanout の子に合成子を置くのも未対応。
-                if child.is_sequence() || (owner_is_fanout && child.is_composite()) {
-                    errors.push(ValidationError::UnsupportedNestedComposite {
-                        node: owner.name.clone(),
-                        child: entry.name.clone(),
-                    });
+/// 合成子の包含循環（children に置かれた合成子を辿ると自分自身へ戻る）を検出する。
+/// 深さの総量は `MAX_NODES_PER_WORKFLOW` が縛るため、循環だけが非有界の芽になる。
+fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+    let composite_children: BTreeMap<&str, Vec<&str>> = workflow
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let children = match &node.kind {
+                NodeKind::Sequence(sequence) => &sequence.children,
+                NodeKind::Fanout(fanout) => &fanout.children,
+                _ => return None,
+            };
+            Some((
+                node.name.as_str(),
+                children
+                    .iter()
+                    .filter(|entry| {
+                        workflow
+                            .node_by_name(&entry.name)
+                            .is_some_and(NodeDefinition::is_composite)
+                    })
+                    .map(|entry| entry.name.as_str())
+                    .collect(),
+            ))
+        })
+        .collect();
+    composite_children
+        .keys()
+        .filter_map(|start| {
+            inclusion_cycle_from(start, &composite_children).map(|cycle| {
+                ValidationError::CompositeInclusionCycle {
+                    node: (*start).to_string(),
+                    cycle: cycle.join(" -> "),
                 }
+            })
+        })
+        .collect()
+}
+
+/// `start` から包含グラフを辿って `start` 自身へ戻る最初のパスを返す。
+fn inclusion_cycle_from<'a>(
+    start: &'a str,
+    graph: &BTreeMap<&'a str, Vec<&'a str>>,
+) -> Option<Vec<&'a str>> {
+    fn dfs<'a>(
+        current: &'a str,
+        start: &'a str,
+        graph: &BTreeMap<&'a str, Vec<&'a str>>,
+        path: &mut Vec<&'a str>,
+        visited: &mut BTreeSet<&'a str>,
+    ) -> bool {
+        for next in graph.get(current).into_iter().flatten() {
+            if *next == start {
+                path.push(next);
+                return true;
+            }
+            if visited.insert(next) {
+                path.push(next);
+                if dfs(next, start, graph, path, visited) {
+                    return true;
+                }
+                path.pop();
             }
         }
-        // rules の遷移ターゲットが children 外の sequence を指す形も未対応
-        // （children 内は上の子参照として報告済み）。fanout ターゲットは合法。
-        let mut sequence_targets: BTreeSet<&str> = BTreeSet::new();
-        for entry in children {
-            for target in entry.rules.iter().flatten().flat_map(routing::rule_targets) {
-                if !child_names.contains(target)
-                    && workflow
-                        .node_by_name(target)
-                        .is_some_and(NodeDefinition::is_sequence)
-                {
-                    sequence_targets.insert(target);
-                }
-            }
-        }
-        for target in sequence_targets {
-            errors.push(ValidationError::UnsupportedNestedComposite {
-                node: owner.name.clone(),
-                child: target.to_string(),
-            });
-        }
+        false
     }
-
-    for node in &workflow.nodes {
-        if node.worktree.is_some() {
-            errors.push(ValidationError::UnsupportedWorktreeField {
-                node: node.name.clone(),
-            });
-        }
-    }
-
-    if let Some(root) = workflow.entry_node() {
-        if root.is_sequence() && root.requires_approval_completion() {
-            errors.push(ValidationError::UnsupportedRootSequenceApproval {
-                node: root.name.clone(),
-            });
-        }
-    }
-
-    errors
+    let mut path = vec![start];
+    let mut visited = BTreeSet::new();
+    dfs(start, start, graph, &mut path, &mut visited).then_some(path)
 }
 
 /// artifact を宣言した sequence には output（返す子の名指し）を要求する。
@@ -1113,6 +1111,9 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     }
     if let Some(err) = routing::validate_rules(workflow).into_iter().next() {
         return Err(routing_error_to_validation_error(err));
+    }
+    if let Some(err) = collect_inclusion_cycle_errors(workflow).into_iter().next() {
+        return Err(err);
     }
     if let Some(err) = collect_children_wiring_errors(workflow).into_iter().next() {
         return Err(err);
@@ -1463,6 +1464,7 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
             .into_iter()
             .map(routing_error_to_validation_error),
     );
+    errors.extend(collect_inclusion_cycle_errors(workflow));
     errors.extend(collect_children_wiring_errors(workflow));
     errors.extend(collect_fanout_items_errors(workflow));
     errors.extend(collect_reserved_parameter_errors(workflow));
@@ -1807,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未対応_rulesターゲットのsequence参照を検出する() {
+    fn test_ネスト_rulesターゲットのsequence参照が通る() {
         let wf = workflow(vec![
             sequence_node(
                 "main",
@@ -1822,11 +1824,8 @@ mod tests {
             command_node("leaf", "echo hi"),
         ]);
 
-        assert!(validate_all(&wf).iter().any(|error| matches!(
-            error,
-            ValidationError::UnsupportedNestedComposite { node, child }
-                if node == "main" && child == "part"
-        )));
+        assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
+        assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
     }
 
     #[test]
@@ -1844,46 +1843,65 @@ mod tests {
     }
 
     #[test]
-    fn test_未対応_ネストsequence参照を検出する() {
+    fn test_ネスト_sequenceの子のsequenceが通る() {
         let wf = workflow(vec![
             sequence_node("main", vec![ChildEntry::reference("part")]),
             sequence_node("part", vec![ChildEntry::reference("leaf")]),
             command_node("leaf", "echo hi"),
         ]);
 
-        assert!(validate_all(&wf).iter().any(|error| matches!(
-            error,
-            ValidationError::UnsupportedNestedComposite { node, child }
-                if node == "main" && child == "part"
-        )));
+        assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
+        assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
     }
 
     #[test]
-    fn test_未対応_rootのsequenceにfanout子は許可される() {
+    fn test_ネスト_fanoutの子のsequenceが通る() {
         let wf = workflow(vec![
             sequence_node("main", vec![ChildEntry::reference("fan")]),
-            fanout_node("fan", vec![ChildEntry::reference("worker")], None),
+            fanout_node("fan", vec![ChildEntry::reference("part")], None),
+            sequence_node("part", vec![ChildEntry::reference("worker")]),
             command_node("worker", "echo hi"),
         ]);
 
-        assert!(!validate_all(&wf)
-            .iter()
-            .any(|error| matches!(error, ValidationError::UnsupportedNestedComposite { .. })));
+        assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
+        assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
     }
 
     #[test]
-    fn test_未対応_fanoutの子の合成子を検出する() {
+    fn test_包含循環_相互包含のsequenceを検出する() {
         let wf = workflow(vec![
-            sequence_node("main", vec![ChildEntry::reference("fan")]),
-            fanout_node("fan", vec![ChildEntry::reference("inner")], None),
-            fanout_node("inner", vec![ChildEntry::reference("worker")], None),
-            command_node("worker", "echo hi"),
+            sequence_node("main", vec![ChildEntry::reference("outer")]),
+            sequence_node("outer", vec![ChildEntry::reference("inner")]),
+            sequence_node("inner", vec![ChildEntry::reference("outer")]),
+        ]);
+
+        let errors = validate_all(&wf);
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::CompositeInclusionCycle { node, cycle }
+                    if node == "outer" && cycle == "outer -> inner -> outer"
+            )),
+            "{errors:?}"
+        );
+        assert!(matches!(
+            validate(&wf),
+            Err(ValidationError::CompositeInclusionCycle { .. }
+                | ValidationError::ChildReferenceViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_包含循環_自己参照のsequenceを検出する() {
+        let wf = workflow(vec![
+            sequence_node("main", vec![ChildEntry::reference("part")]),
+            sequence_node("part", vec![ChildEntry::reference("part")]),
         ]);
 
         assert!(validate_all(&wf).iter().any(|error| matches!(
             error,
-            ValidationError::UnsupportedNestedComposite { node, child }
-                if node == "fan" && child == "inner"
+            ValidationError::CompositeInclusionCycle { node, cycle }
+                if node == "part" && cycle == "part -> part"
         )));
     }
 
@@ -1900,15 +1918,13 @@ mod tests {
     }
 
     #[test]
-    fn test_未対応_root_sequenceのapprovalを検出する() {
+    fn test_root_sequenceのapprovalが通る() {
         let mut root = sequence_node("main", vec![ChildEntry::reference("leaf")]);
         root.completion = NodeCompletion::Approval;
         let wf = workflow(vec![root, command_node("leaf", "echo hi")]);
 
-        assert!(validate_all(&wf).iter().any(|error| matches!(
-            error,
-            ValidationError::UnsupportedRootSequenceApproval { .. }
-        )));
+        assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
+        assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
     }
 
     #[test]
@@ -2083,7 +2099,6 @@ mod tests {
                             Rule::LoopGuard {
                                 max_iterations: 2,
                                 on_exhausted: "finish".to_string(),
-                                reset_on: None,
                             },
                             Rule::Next("check".to_string()),
                         ]),

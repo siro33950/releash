@@ -12,7 +12,8 @@ use releash_lib::terminal_surface::{
     TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1, TerminalSurfaceWireAttachment,
 };
 use releash_lib::workflow_control_plane_acceptance::{
-    AcceptanceNodeExecutionStatus, AcceptanceWorkflowExecutionStatus,
+    AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
+    AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus,
     WorkflowControlPlaneAcceptanceHost,
 };
 
@@ -207,7 +208,7 @@ async fn wait_for_node_count(
     execution_id: &str,
     count: usize,
 ) -> releash_lib::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let execution = host.execution(execution_id).await.unwrap().unwrap();
             if execution.node_executions.len() == count {
@@ -216,8 +217,28 @@ async fn wait_for_node_count(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("Workflow execution must project the expected Node count")
+    .await;
+    match result {
+        Ok(execution) => execution,
+        Err(_) => panic!(
+            "Workflow execution must project the expected Node count ({count}): {:?}",
+            host.execution(execution_id).await
+        ),
+    }
+}
+
+fn leaf_nodes(execution: &AcceptanceWorkflowExecution) -> Vec<AcceptanceNodeExecution> {
+    execution
+        .node_executions
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind,
+                AcceptanceNodeKind::Session | AcceptanceNodeKind::Command
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -237,8 +258,8 @@ async fn test_atui_040_同時submit_stopは競合を利用者へ返さず一度�
         .start_auto_chain_workflow(&worktree, AcceptanceProvider::Claude)
         .await
         .unwrap();
-    let initial = wait_for_node_count(&host, &execution_id, 1).await;
-    let first = initial.node_executions[0].clone();
+    let initial = wait_for_node_count(&host, &execution_id, 2).await;
+    let first = leaf_nodes(&initial)[0].clone();
     let session_id = first.agent_session_id.clone().unwrap();
     let terminal_owner = owner(&worktree, &session_id);
     let mut terminal = host
@@ -254,15 +275,10 @@ async fn test_atui_040_同時submit_stopは競合を利用者へ返さず一度�
     );
     submit.unwrap();
 
-    let advanced = wait_for_node_count(&host, &execution_id, 2).await;
-    assert_eq!(
-        advanced.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Succeeded
-    );
-    assert_eq!(
-        advanced.node_executions[1].status,
-        AcceptanceNodeExecutionStatus::Running
-    );
+    let advanced = wait_for_node_count(&host, &execution_id, 3).await;
+    let leaves = leaf_nodes(&advanced);
+    assert_eq!(leaves[0].status, AcceptanceNodeExecutionStatus::Succeeded);
+    assert_eq!(leaves[1].status, AcceptanceNodeExecutionStatus::Running);
     host.shutdown().await.unwrap();
 }
 
@@ -281,8 +297,8 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             .start_auto_chain_workflow(&worktree, AcceptanceProvider::Claude)
             .await
             .unwrap();
-        let initial = wait_for_node_count(&host, &execution_id, 1).await;
-        let first = initial.node_executions[0].clone();
+        let initial = wait_for_node_count(&host, &execution_id, 2).await;
+        let first = leaf_nodes(&initial)[0].clone();
         let first_session_id = first.agent_session_id.clone().unwrap();
         let first_owner = owner(&worktree, &first_session_id);
         let mut first_terminal = host
@@ -322,14 +338,15 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
         }
 
         let partial = host.execution(&execution_id).await.unwrap().unwrap();
-        assert_eq!(partial.node_executions.len(), 1);
+        let partial_leaves = leaf_nodes(&partial);
+        assert_eq!(partial_leaves.len(), 1);
         assert_eq!(
-            partial.node_executions[0].status,
+            partial_leaves[0].status,
             AcceptanceNodeExecutionStatus::Running
         );
         assert_ne!(
-            partial.node_executions[0].submit_received,
-            partial.node_executions[0].stop_received
+            partial_leaves[0].submit_received,
+            partial_leaves[0].stop_received
         );
 
         match order {
@@ -347,18 +364,19 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             }
         }
 
-        let advanced = wait_for_node_count(&host, &execution_id, 2).await;
+        let advanced = wait_for_node_count(&host, &execution_id, 3).await;
+        let advanced_leaves = leaf_nodes(&advanced);
         assert_eq!(
-            advanced.node_executions[0].status,
+            advanced_leaves[0].status,
             AcceptanceNodeExecutionStatus::Succeeded
         );
         assert_eq!(
-            advanced.node_executions[1].status,
+            advanced_leaves[1].status,
             AcceptanceNodeExecutionStatus::Running
         );
         assert_ne!(
-            advanced.node_executions[0].agent_session_id,
-            advanced.node_executions[1].agent_session_id
+            advanced_leaves[0].agent_session_id,
+            advanced_leaves[1].agent_session_id
         );
 
         assert!(host.submit(&first.id).await.is_err());
@@ -370,11 +388,9 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
         )
         .await;
         let after_duplicates = host.execution(&execution_id).await.unwrap().unwrap();
-        assert_eq!(after_duplicates.node_executions.len(), 2);
-        assert_eq!(
-            after_duplicates.node_executions[1].id,
-            advanced.node_executions[1].id
-        );
+        let after_duplicate_leaves = leaf_nodes(&after_duplicates);
+        assert_eq!(after_duplicate_leaves.len(), 2);
+        assert_eq!(after_duplicate_leaves[1].id, advanced_leaves[1].id);
         host.shutdown().await.unwrap();
     }
 }

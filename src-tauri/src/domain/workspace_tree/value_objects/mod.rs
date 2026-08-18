@@ -1,5 +1,5 @@
 use crate::domain::workflow::{
-    ExecutionStatus, FanoutParentRef, NodeCompletionSignalState, NodeExecutionFailureKind,
+    ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState, NodeExecutionFailureKind,
     NodeKindName, WorkflowDefinition,
 };
 
@@ -25,6 +25,8 @@ impl WorkspaceIdentity {
 pub enum WorkspaceNodeKind {
     Workflow,
     Fanout,
+    /// 部品 sequence の実行インスタンス（実行木の branch）。
+    Sequence,
     WorkflowSession,
     WorkflowCommand,
 }
@@ -147,7 +149,7 @@ pub enum WorkspaceStructureFact {
         node_name: String,
         kind: NodeKindName,
         attempt: u32,
-        fanout_parent: Option<FanoutParentRef>,
+        parent: Option<ExecutionParentRef>,
         timestamp: f64,
     },
     NodeAgentBound {

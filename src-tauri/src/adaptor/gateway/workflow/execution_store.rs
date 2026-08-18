@@ -2213,7 +2213,7 @@ impl ExecutionStore {
                     workflow_name: snapshot.workflow_name.clone(),
                     status: crate::domain::workflow::ExecutionStatus::Running,
                     worktree_path: snapshot.worktree_path.clone(),
-                    current_node: Some(snapshot.current_node_name.clone()),
+                    current_node: snapshot.current_node_name.clone(),
                     created_from: snapshot.created_from,
                     started_at: snapshot.started_at,
                     updated_at: snapshot.updated_at,
@@ -2275,7 +2275,7 @@ impl ExecutionStore {
             RuntimeExecutionState::Completed => crate::domain::workflow::ExecutionStatus::Completed,
             RuntimeExecutionState::Aborted => crate::domain::workflow::ExecutionStatus::Aborted,
         };
-        execution.current_node = Some(snapshot.current_node_name.clone());
+        execution.current_node = snapshot.current_node_name.clone();
         execution.updated_at = snapshot.updated_at;
         execution.completed_at = execution
             .status
@@ -3010,11 +3010,9 @@ mod tests {
             request: String::new(),
             error_reason: None,
             state: RuntimeExecutionState::Running,
-            current_node_index: 0,
-            current_node_name: "node-1".to_string(),
+            current_node_name: Some("node-1".to_string()),
             current_session_id: None,
             node_history: Vec::new(),
-            node_execution_counts: HashMap::new(),
             workflow_definition: crate::domain::workflow::WorkflowDefinition::default(),
             total_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
@@ -3044,9 +3042,6 @@ mod tests {
             }],
             entry: "node-1".to_string(),
         };
-        snapshot
-            .node_execution_counts
-            .insert("node-1".to_string(), 1);
         snapshot.node_executions = vec![
             crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution {
                 id: "node-execution-1".to_string(),
@@ -3061,7 +3056,7 @@ mod tests {
                 artifact: None,
                 token_usage: None,
                 failure: None,
-                fanout_parent: None,
+                parent: None,
                 completion_signals: crate::domain::workflow::NodeCompletionSignalState::Pending,
                 started_at: 101.0,
                 completed_at: None,

@@ -877,7 +877,6 @@ fn validation_error_code_stage(
         ValidationError::MissingEntryNode { .. } => "WFR006",
         ValidationError::ReservedNodeName { .. } => "WFR004",
         ValidationError::UnknownRuleTarget { .. }
-        | ValidationError::UnknownLoopGuardResetNode { .. }
         | ValidationError::UnknownChildNode { .. }
         | ValidationError::SequenceEntryNotChild { .. }
         | ValidationError::SequenceOutputNotChild { .. } => "WFR001",
@@ -886,14 +885,13 @@ fn validation_error_code_stage(
         ValidationError::ChildReferenceViolation { .. } => "WFC006",
         ValidationError::DuplicateChildReference { .. }
         | ValidationError::RulesOnFanoutChildEntry { .. } => "WFC007",
+        ValidationError::CompositeInclusionCycle { .. } => "WFC008",
         ValidationError::InvalidInputWiring(violation) => match violation.kind {
             validation::InputWiringKind::AmbiguousSource => "WFR008",
             _ => "WFR007",
         },
         ValidationError::ReservedInputParameterName { .. } => "WFR008",
-        ValidationError::UnsupportedNestedComposite { .. } => "WFU001",
         ValidationError::UnsupportedWorktreeField { .. } => "WFU002",
-        ValidationError::UnsupportedRootSequenceApproval { .. } => "WFU003",
         ValidationError::UnknownSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchema { kind, .. } => match kind {
@@ -956,13 +954,6 @@ fn span_for_validation_error(
         ValidationError::InvalidRules { node, kind, .. } => {
             entry_rule_span(wf, node, span_map, invalid_rule_suffix(wf, node, *kind))
         }
-        ValidationError::UnknownLoopGuardResetNode { node, .. } => entry_rule_span(
-            wf,
-            node,
-            span_map,
-            entry_rule_index(wf, node, |rule| matches!(rule, Rule::LoopGuard { .. }))
-                .map(|index| format!("rules[{index}].loop_guard.reset_on")),
-        ),
         ValidationError::UnreachableNode { node } => {
             node_base_path(wf, node).and_then(|path| span_map.nearest_span(&path))
         }
@@ -1419,7 +1410,7 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         | ValidationError::DuplicateChildReference { node, .. }
         | ValidationError::RulesOnFanoutChildEntry { node, .. }
         | ValidationError::ChildReferenceViolation { node, .. }
-        | ValidationError::UnsupportedNestedComposite { node, .. } => {
+        | ValidationError::CompositeInclusionCycle { node, .. } => {
             (Some(node.clone()), Some("children".to_string()))
         }
         ValidationError::SequenceEntryNotChild { node, .. } => {
@@ -1442,16 +1433,9 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::UnsupportedWorktreeField { node } => {
             (Some(node.clone()), Some("worktree".to_string()))
         }
-        ValidationError::UnsupportedRootSequenceApproval { node } => {
-            (Some(node.clone()), Some("completion".to_string()))
-        }
         ValidationError::UnknownRuleTarget { node, .. } => {
             (Some(node.clone()), Some("rules.next".to_string()))
         }
-        ValidationError::UnknownLoopGuardResetNode { node, .. } => (
-            Some(node.clone()),
-            Some("rules.loop_guard.reset_on".to_string()),
-        ),
         ValidationError::InvalidRules { node, kind, .. } => (
             Some(node.clone()),
             Some(invalid_rule_field_name(*kind).to_string()),
@@ -1961,9 +1945,9 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/full-pipeline.yml")
     }
 
-    /// 受け入れ基準1: 正本 spec の単一定義例を load したとき、W2 解禁対象への
-    /// Diagnostic はゼロで、残るのは未解禁分（ネスト合成子 = W3 #1463、
-    /// worktree = #85）のみ。
+    /// 受け入れ基準: 正本 spec の単一定義例を load したとき、ネスト合成子
+    /// （W3 #1463 で解禁済み）への Diagnostic はゼロで、残るのは未解禁分
+    /// （worktree = #85）のみ。
     #[test]
     fn full_cycle_development_spec_example_leaves_only_unsupported_diagnostics() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1971,41 +1955,8 @@ mod tests {
         let source = fs::read_to_string(path).unwrap();
         let diagnosis = diagnose_workflow_source(&source, Some("full-cycle-development"));
 
-        let expected_nested: [(&str, &str); 9] = [
-            ("main", "authoring"),
-            ("main", "implementation"),
-            ("main", "review"),
-            ("authoring", "authoring_behavior"),
-            ("authoring", "authoring_design"),
-            ("implement_all", "implement_and_verify"),
-            ("review", "review_scan"),
-            ("review", "fix_round"),
-            ("fix_all", "fix_and_verify"),
-        ];
         let expected_worktree = ["implement_all", "fix_all"];
 
-        for (composite, child) in expected_nested {
-            assert!(
-                diagnosis
-                    .diagnostics
-                    .iter()
-                    .any(|item| item.code == "WFU001"
-                        && item.node_name.as_deref() == Some(composite)
-                        && item.message.contains(child)),
-                "expected WFU001 for {composite} -> {child}, got: {:?}",
-                diagnosis.diagnostics
-            );
-        }
-        for node in expected_worktree {
-            assert!(
-                diagnosis
-                    .diagnostics
-                    .iter()
-                    .any(|item| item.code == "WFU002" && item.node_name.as_deref() == Some(node)),
-                "expected WFU002 for {node}, got: {:?}",
-                diagnosis.diagnostics
-            );
-        }
         let mut actual: Vec<(&str, &str)> = diagnosis
             .diagnostics
             .iter()
@@ -2017,15 +1968,14 @@ mod tests {
             })
             .collect();
         actual.sort_unstable();
-        let mut expected: Vec<(&str, &str)> = expected_nested
+        let mut expected: Vec<(&str, &str)> = expected_worktree
             .iter()
-            .map(|(composite, _)| ("WFU001", *composite))
-            .chain(expected_worktree.iter().map(|node| ("WFU002", *node)))
+            .map(|node| ("WFU002", *node))
             .collect();
         expected.sort_unstable();
         assert_eq!(
             actual, expected,
-            "W2 解禁対象に Diagnostic が出てはならない: {:?}",
+            "worktree（#85）以外の Diagnostic が出てはならない: {:?}",
             diagnosis.diagnostics
         );
     }
@@ -2312,33 +2262,6 @@ nodes:
     }
 
     #[test]
-    fn unknown_loop_guard_reset_node_diagnostic_identifies_reference() {
-        let source = fs::read_to_string(
-            fixture_dir("invalid").join("WFR001_unknown-loop-guard-reset-node.yml"),
-        )
-        .unwrap();
-
-        let diagnosis = diagnose_workflow_source(&source, Some("unknown-loop-guard-reset-node"));
-        let diagnostic = diagnosis
-            .diagnostics
-            .iter()
-            .find(|item| item.code == "WFR001")
-            .expect("unknown reset_on node must produce WFR001");
-
-        assert_eq!(diagnostic.node_name.as_deref(), Some("implement"));
-        assert_eq!(
-            diagnostic.field.as_deref(),
-            Some("rules.loop_guard.reset_on")
-        );
-        assert!(diagnostic.message.contains("missing-boundary"));
-        let span_map = YamlSpanMap::parse(&source).unwrap();
-        let expected = span_map
-            .field_span("nodes.main.sequence.children[0].implement.rules[0].loop_guard.reset_on")
-            .expect("fixture must have reset_on span");
-        assert_eq!(diagnostic.span, Some(expected));
-    }
-
-    #[test]
     fn invalid_source_diagnostics_use_file_stem_workflow_key() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -2503,12 +2426,12 @@ nodes:
                 DiagnosticStage::Resolve,
             ),
             (
-                validation::ValidationError::UnsupportedNestedComposite {
-                    node: "main".to_string(),
-                    child: "part".to_string(),
+                validation::ValidationError::CompositeInclusionCycle {
+                    node: "part".to_string(),
+                    cycle: "part -> part".to_string(),
                 },
-                "WFU001",
-                DiagnosticStage::Resolve,
+                "WFC008",
+                DiagnosticStage::ControlFlow,
             ),
             (
                 validation::ValidationError::UnsupportedWorktreeField {

@@ -1,0 +1,21 @@
+name: reset-on-probe
+description: probe
+nodes:
+  main:
+    sequence:
+      children:
+      - check
+      - fix:
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: give-up
+              reset_on: check
+          - next: check
+      - give-up
+  check:
+    command: test -f Cargo.toml
+  fix:
+    command: printf fix
+  give-up:
+    command: printf give-up

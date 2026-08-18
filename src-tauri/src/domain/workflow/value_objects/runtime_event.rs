@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ExecutionInterruptionReason, ExecutionOrigin, FanoutParentRef, NodeExecutionFailureKind,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind,
     NodeKindName, TokenUsage, WorkflowDefinition,
 };
 
@@ -38,7 +38,7 @@ pub enum WorkflowEvent {
         kind: NodeKindName,
         attempt: u32,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        fanout_parent: Option<FanoutParentRef>,
+        parent: Option<ExecutionParentRef>,
         timestamp: f64,
     },
     SessionAttached {

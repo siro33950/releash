@@ -13,7 +13,7 @@ use super::value_objects::{
     WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
 };
 use crate::domain::workflow::{
-    ExecutionStatus, FanoutParentRef, ItemsSource, NodeCompletionSignalState,
+    ExecutionParentRef, ExecutionStatus, ItemsSource, NodeCompletionSignalState,
     NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
 };
 
@@ -148,7 +148,9 @@ impl WorkspaceTree {
                 };
                 if !matches!(
                     parent_node.kind,
-                    WorkspaceNodeKind::Workflow | WorkspaceNodeKind::Fanout
+                    WorkspaceNodeKind::Workflow
+                        | WorkspaceNodeKind::Fanout
+                        | WorkspaceNodeKind::Sequence
                 ) {
                     return Err(WorkspaceTreeError::InvalidParent(parent.clone()));
                 }
@@ -361,9 +363,10 @@ impl WorkspaceTree {
         node_name: String,
         kind: NodeKindName,
         attempt: u32,
-        fanout_parent: Option<FanoutParentRef>,
+        parent: Option<ExecutionParentRef>,
         timestamp: f64,
     ) -> Result<(), WorkspaceTreeError> {
+        let _ = attempt;
         if self
             .execution_node_mut(&execution_id, &node_execution_id)
             .is_some()
@@ -375,45 +378,49 @@ impl WorkspaceTree {
             .map(|node| node.id.clone())
             .ok_or_else(|| WorkspaceTreeError::MissingWorkflow(execution_id.clone()))?;
 
-        let (parent_id, semantic_key, dynamic_fanout) = if let Some(parent) = fanout_parent {
-            let fanout = self
+        let (parent_id, semantic_key, dynamic_fanout) = if let Some(parent) = parent {
+            // 実行木の親（合成子インスタンス）の tree node へぶら下げる。
+            let parent_node = self
                 .nodes
                 .iter()
                 .find(|node| {
-                    node.kind == WorkspaceNodeKind::Fanout
-                        && !node.is_internal_rule_record()
-                        && node.execution_id.as_deref() == Some(execution_id.as_str())
-                        && node.node_name.as_deref() == Some(parent.parent_node.as_str())
-                        && node.attempt == Some(parent.parent_attempt)
+                    node.execution_id.as_deref() == Some(execution_id.as_str())
+                        && node.node_execution_id.as_deref() == Some(parent.parent_id.as_str())
                 })
-                .ok_or_else(|| WorkspaceTreeError::MissingParent(parent.parent_node.clone()))?;
+                .ok_or_else(|| WorkspaceTreeError::MissingParent(parent.parent_id.clone()))?;
+            let parent_tree_id = parent_node.id.clone();
+            let parent_name = parent_node
+                .node_name
+                .clone()
+                .unwrap_or_else(|| parent.parent_id.clone());
+            let parent_dynamic = parent_node.dynamic_fanout;
             let prior = self
                 .nodes
                 .iter()
                 .filter(|node| {
-                    node.parent_id.as_deref() == Some(fanout.id.as_str())
+                    node.parent_id.as_deref() == Some(parent_tree_id.as_str())
                         && node.node_name.as_deref() == Some(node_name.as_str())
                 })
                 .count();
-            let semantic_key = if fanout.dynamic_fanout {
-                fanout_dynamic_child_occurrence_key(
-                    &parent.parent_node,
-                    workflow_occurrence(&self.nodes, &fanout.id),
-                    parent.child_index,
+            let semantic_key = match parent.fanout_slot {
+                Some(slot) if parent_dynamic => fanout_dynamic_child_occurrence_key(
+                    &parent_name,
+                    workflow_occurrence(&self.nodes, &parent_tree_id),
+                    slot.child_index,
                     &node_name,
                     prior,
-                )
-            } else {
-                fanout_child_occurrence_key(
-                    &parent.parent_node,
-                    workflow_occurrence(&self.nodes, &fanout.id),
-                    parent.item_index,
-                    parent.child_index,
+                ),
+                Some(slot) => fanout_child_occurrence_key(
+                    &parent_name,
+                    workflow_occurrence(&self.nodes, &parent_tree_id),
+                    slot.item_index,
+                    slot.child_index,
                     &node_name,
                     prior,
-                )
+                ),
+                None => sequence_child_occurrence_key(&parent.parent_id, &node_name, prior),
             };
-            (fanout.id.clone(), semantic_key, fanout.dynamic_fanout)
+            (parent_tree_id, semantic_key, false)
         } else {
             let occurrence = self
                 .nodes
@@ -428,7 +435,10 @@ impl WorkspaceTree {
                 NodeKindName::Fanout => {
                     fanout_branch_occurrence_key(&execution_id, &node_name, occurrence)
                 }
-                NodeKindName::Session | NodeKindName::Command | NodeKindName::Sequence => {
+                NodeKindName::Sequence => {
+                    sequence_branch_occurrence_key(&execution_id, &node_name, occurrence)
+                }
+                NodeKindName::Session | NodeKindName::Command => {
                     workflow_node_occurrence_key(&node_name, occurrence)
                 }
             };
@@ -439,10 +449,16 @@ impl WorkspaceTree {
                     .any(|node| node.id == dynamic_fanout_sentinel_id(&execution_id, &node_name));
             (workflow_id, semantic_key, dynamic)
         };
+        let dynamic_fanout = dynamic_fanout
+            || (kind == NodeKindName::Fanout
+                && self
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == dynamic_fanout_sentinel_id(&execution_id, &node_name)));
         let sibling_order = self.next_sibling_order(Some(&parent_id));
         let id = match kind {
-            NodeKindName::Fanout => opaque_branch_id(&semantic_key),
-            NodeKindName::Session | NodeKindName::Command | NodeKindName::Sequence => {
+            NodeKindName::Fanout | NodeKindName::Sequence => opaque_branch_id(&semantic_key),
+            NodeKindName::Session | NodeKindName::Command => {
                 opaque_workflow_node_id(&execution_id, &semantic_key)?
             }
         };
@@ -454,7 +470,7 @@ impl WorkspaceTree {
                 NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
                 NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
                 NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
-                NodeKindName::Sequence => WorkspaceNodeKind::Workflow,
+                NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
             },
             title: node_name.clone(),
             status: WorkspaceNodeStatus::Running,
@@ -498,7 +514,9 @@ impl WorkspaceTree {
             .filter(|node| {
                 matches!(
                     node.kind,
-                    WorkspaceNodeKind::Fanout | WorkspaceNodeKind::Workflow
+                    WorkspaceNodeKind::Fanout
+                        | WorkspaceNodeKind::Workflow
+                        | WorkspaceNodeKind::Sequence
                 ) && !node.is_internal_rule_record()
             })
             .map(|node| node.id.clone())
@@ -521,6 +539,9 @@ impl WorkspaceTree {
                 .max_by_key(|index| self.nodes[**index].sibling_order)
                 .map(|index| self.nodes[*index].status);
             if let Some(branch) = self.nodes.iter_mut().find(|node| node.id == branch_id) {
+                // Sequence branch の status は合成子インスタンス自身の Node イベント
+                // （NodeCompleted / NodeFailed / ApprovalRequested）が正であり、
+                // ここでは子の updated_at 伝播だけを行う。
                 if branch.kind == WorkspaceNodeKind::Fanout {
                     branch.status = aggregate_status(&child_status, branch.status);
                 } else if branch.kind == WorkspaceNodeKind::Workflow
@@ -689,7 +710,7 @@ impl WorkspaceTreeProjector {
                     node_name,
                     kind,
                     attempt,
-                    fanout_parent,
+                    parent,
                     timestamp,
                 } => tree.apply_node_started(
                     execution_id,
@@ -697,7 +718,7 @@ impl WorkspaceTreeProjector {
                     node_name,
                     kind,
                     attempt,
-                    fanout_parent,
+                    parent,
                     timestamp,
                 )?,
                 WorkspaceStructureFact::NodeAgentBound {
@@ -963,6 +984,18 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.display_command.is_none()
                 && node.command_result.is_none()
         }
+        WorkspaceNodeKind::Sequence => {
+            node.parent_id.is_some()
+                && has_execution
+                && has_node_execution
+                && has_node_name
+                && node.attempt.is_some()
+                && !node.dynamic_fanout
+                && node.session_id.is_none()
+                && node.recovery_owner_reason.is_none()
+                && node.display_command.is_none()
+                && node.command_result.is_none()
+        }
         WorkspaceNodeKind::WorkflowSession => {
             node.parent_id.is_some()
                 && has_execution
@@ -1037,6 +1070,14 @@ pub(super) fn max_f64_bits(left: u64, right: u64) -> u64 {
     }
 }
 
+fn sequence_child_occurrence_key(
+    parent_node_execution_id: &str,
+    node_name: &str,
+    occurrence: usize,
+) -> String {
+    format!("scope:{parent_node_execution_id}:node:{node_name}:occurrence:{occurrence}")
+}
+
 fn workflow_node_occurrence_key(node_name: &str, occurrence: usize) -> String {
     if occurrence == 0 {
         format!("node\0{node_name}")
@@ -1054,6 +1095,18 @@ fn fanout_branch_occurrence_key(
         format!("workflow\0{execution_id}\0fanout\0{fanout_name}")
     } else {
         format!("workflow\0{execution_id}\0fanout\0{fanout_name}\0occurrence\0{occurrence}")
+    }
+}
+
+fn sequence_branch_occurrence_key(
+    execution_id: &str,
+    sequence_name: &str,
+    occurrence: usize,
+) -> String {
+    if occurrence == 0 {
+        format!("workflow\0{execution_id}\0sequence\0{sequence_name}")
+    } else {
+        format!("workflow\0{execution_id}\0sequence\0{sequence_name}\0occurrence\0{occurrence}")
     }
 }
 
@@ -1189,6 +1242,101 @@ mod tests {
     }
 
     #[test]
+    fn root_sequence_tree_nodes_get_distinct_ids_per_execution() {
+        let mut tree = WorkspaceTree::empty("/repo");
+        for (execution_id, node_execution_id) in [
+            ("00000000-0000-4000-8000-00000000000a", "seq-a"),
+            ("00000000-0000-4000-8000-00000000000b", "seq-b"),
+        ] {
+            WorkspaceTreeProjector::project(
+                &mut tree,
+                [
+                    WorkspaceStructureFact::WorkflowStarted {
+                        execution_id: execution_id.to_string(),
+                        workflow_name: "review".to_string(),
+                        worktree_path: "/repo".to_string(),
+                        definition: definition(),
+                        timestamp: 1.0,
+                    },
+                    WorkspaceStructureFact::NodeStarted {
+                        execution_id: execution_id.to_string(),
+                        node_execution_id: node_execution_id.to_string(),
+                        node_name: "main".to_string(),
+                        kind: NodeKindName::Sequence,
+                        attempt: 1,
+                        parent: None,
+                        timestamp: 2.0,
+                    },
+                ],
+            )
+            .unwrap();
+        }
+
+        let ids: Vec<&str> = tree
+            .nodes()
+            .iter()
+            .filter(|node| node.kind == WorkspaceNodeKind::Sequence)
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(
+            ids[0], ids[1],
+            "root sequence tree node ids must not collide across executions"
+        );
+    }
+
+    #[test]
+    fn sequence_branch_propagates_child_updated_at_to_workflow_root() {
+        let execution_id = "00000000-0000-4000-8000-000000000001";
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "review".to_string(),
+                    worktree_path: "/repo".to_string(),
+                    definition: definition(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "seq-main".to_string(),
+                    node_name: "main".to_string(),
+                    kind: NodeKindName::Sequence,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "leaf-1".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: Some(ExecutionParentRef::sequence_child("seq-main")),
+                    timestamp: 9.0,
+                },
+            ],
+        )
+        .unwrap();
+
+        let sequence = tree
+            .nodes()
+            .iter()
+            .find(|node| node.kind == WorkspaceNodeKind::Sequence)
+            .unwrap();
+        assert_eq!(sequence.status, WorkspaceNodeStatus::Running);
+        assert_eq!(sequence.updated_at_bits, 9.0f64.to_bits());
+        let workflow = tree.workflow_node(execution_id).unwrap();
+        assert_eq!(
+            workflow.updated_at_bits,
+            9.0f64.to_bits(),
+            "a leaf update inside a sequence branch must reach the workflow root"
+        );
+    }
+
+    #[test]
     fn workspace_tree_projector_owns_parentage_identity_and_occurrence_order() {
         let execution_id = "00000000-0000-4000-8000-000000000001";
         let mut tree = WorkspaceTree::empty("/repo");
@@ -1208,7 +1356,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 0,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1217,7 +1365,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 3.0,
                 },
             ],
@@ -1281,7 +1429,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1290,7 +1438,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 2,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -1335,7 +1483,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::WorkflowStarted {
@@ -1351,7 +1499,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 4.0,
                 },
             ],
@@ -1476,7 +1624,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 0,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -1538,7 +1686,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 0,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -1553,7 +1701,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -1659,7 +1807,7 @@ mod tests {
                     node_name: "fanout".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1668,12 +1816,11 @@ mod tests {
                     node_name: "child-b".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "fanout".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(0),
-                        child_index: 1,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child(
+                        "fanout-execution",
+                        Some(0),
+                        1,
+                    )),
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1682,12 +1829,11 @@ mod tests {
                     node_name: "child-a".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "fanout".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(0),
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child(
+                        "fanout-execution",
+                        Some(0),
+                        0,
+                    )),
                     timestamp: 4.0,
                 },
             ],
@@ -1746,7 +1892,7 @@ mod tests {
                     node_name: "matrix".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
             ],
@@ -1773,12 +1919,11 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "matrix".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(0),
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child(
+                        "matrix-parent",
+                        Some(0),
+                        0,
+                    )),
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1787,12 +1932,11 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "matrix".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(1),
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child(
+                        "matrix-parent",
+                        Some(1),
+                        0,
+                    )),
                     timestamp: 4.0,
                 },
             ],
@@ -1836,7 +1980,7 @@ mod tests {
                     node_name: "reviews".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1845,12 +1989,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "reviews".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child("fanout-1", None, 0)),
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1859,12 +1998,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 2,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "reviews".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child("fanout-1", None, 0)),
                     timestamp: 4.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1873,7 +2007,7 @@ mod tests {
                     node_name: "reviews".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 2,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 5.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -1882,12 +2016,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 3,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "reviews".to_string(),
-                        parent_attempt: 2,
-                        item_index: None,
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child("fanout-2", None, 0)),
                     timestamp: 6.0,
                 },
             ],
@@ -1959,7 +2088,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -1979,7 +2108,7 @@ mod tests {
                     node_name: "checks".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 4.0,
                 },
                 WorkspaceStructureFact::NodeCompleted {
@@ -1993,12 +2122,7 @@ mod tests {
                     node_name: "lint".to_string(),
                     kind: NodeKindName::Command,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "checks".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 0,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child("checks", None, 0)),
                     timestamp: 6.0,
                 },
                 WorkspaceStructureFact::NodeFailed {
@@ -2014,12 +2138,7 @@ mod tests {
                     node_name: "test".to_string(),
                     kind: NodeKindName::Command,
                     attempt: 1,
-                    fanout_parent: Some(FanoutParentRef {
-                        parent_node: "checks".to_string(),
-                        parent_attempt: 1,
-                        item_index: None,
-                        child_index: 1,
-                    }),
+                    parent: Some(ExecutionParentRef::fanout_child("checks", None, 1)),
                     timestamp: 8.0,
                 },
                 WorkspaceStructureFact::NodeApprovalRequested {
@@ -2082,7 +2201,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodePaused {
@@ -2215,7 +2334,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Command,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeCommandPrepared {
@@ -2235,7 +2354,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Command,
                     attempt: 2,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 5.0,
                 },
                 WorkspaceStructureFact::NodeCommandPrepared {
@@ -2314,7 +2433,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -2334,7 +2453,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 2,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 4.0,
                 },
                 WorkspaceStructureFact::NodeAgentBound {
@@ -2376,7 +2495,7 @@ mod tests {
                     node_name: "plan".to_string(),
                     kind: NodeKindName::Session,
                     attempt: 1,
-                    fanout_parent: None,
+                    parent: None,
                     timestamp: 2.0,
                 },
             ],

@@ -1,5 +1,5 @@
 name: nested-fanout-child
-description: fanout cannot reference another fanout as its child
+description: fanout can reference a composite as its child
 nodes:
   main:
     fanout:

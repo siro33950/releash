@@ -402,23 +402,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }
-
-    async fn finish_retried_fanout_commit(
-        &self,
-        worktree_path: &str,
-        snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowError> {
-        self.driver
-            .finish_retried_fanout_control_plane_commit(
-                &self.app,
-                worktree_path,
-                snapshot,
-                node_execution_id,
-            )
-            .await
-            .map_err(workflow_runtime_error_to_workflow_error)
-    }
 }
 
 #[async_trait::async_trait]
