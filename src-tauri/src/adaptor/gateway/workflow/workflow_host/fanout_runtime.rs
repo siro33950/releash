@@ -844,17 +844,4 @@ mod tests {
                 if message == "StartFanout requires child references for node 'fanout-review'"
         ));
     }
-
-    fn make_node_output(node_name: &str, text: &str, result: Option<&str>) -> RuntimeArtifact {
-        RuntimeArtifact {
-            node_name: node_name.to_string(),
-            attempt: 0,
-            session_id: Some(format!("session-{node_name}")),
-            result: result.map(str::to_string),
-            artifact: Some(serde_json::json!({ "text": text })),
-            contract: None,
-            token_usage: None,
-            completed_at: 1000.0,
-        }
-    }
 }

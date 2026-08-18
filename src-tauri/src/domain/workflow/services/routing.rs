@@ -199,14 +199,15 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
     let scopes = composite_scopes(workflow);
     let mut errors = Vec::new();
 
-    // 子参照の帰属表（cross-composite 制約用）。
+    // 子参照の帰属表（cross-composite 制約用）。同一合成子内の重複参照は
+    // DuplicateChildReference が報告するため、ここでは所有者を一意に保つ。
     let mut composites_by_child: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for scope in &scopes {
         for entry in scope.children {
-            composites_by_child
-                .entry(entry.name.as_str())
-                .or_default()
-                .push(scope.owner.name.as_str());
+            let owners = composites_by_child.entry(entry.name.as_str()).or_default();
+            if !owners.contains(&scope.owner.name.as_str()) {
+                owners.push(scope.owner.name.as_str());
+            }
         }
     }
 
@@ -1162,10 +1163,18 @@ mod routing_tests {
             command_node("first"),
         ]);
 
-        assert!(validate_rules(&wf).iter().any(|error| matches!(
+        let errors = validate_rules(&wf);
+        assert!(errors.iter().any(|error| matches!(
             error,
             RoutingValidationError::DuplicateChildReference { child, .. } if child == "first"
         )));
+        assert!(
+            !errors.iter().any(|error| matches!(
+                error,
+                RoutingValidationError::ChildReferenceViolation { .. }
+            )),
+            "同一合成子内の重複は DuplicateChildReference のみで報告する: {errors:?}"
+        );
     }
 
     #[test]
