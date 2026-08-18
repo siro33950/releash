@@ -656,6 +656,11 @@ struct RawChildBody {
     node: RawNodeBody,
     inputs: Option<Vec<(String, InputSourceRef)>>,
     rules: Option<Vec<Rule>>,
+    // input / completion は RawNodeBody 側の既定値と区別できないため、
+    // 重複キー検出は観測フラグで行う（serde_json 直接経路では上流に
+    // 重複キー拒否が無く、この関数が唯一の防御になる）。
+    input_seen: bool,
+    completion_seen: bool,
 }
 
 impl RawChildBody {
@@ -702,13 +707,18 @@ where
         "artifact" => set_once(map, &mut body.node.artifact, key),
         "worktree" => set_once(map, &mut body.node.worktree, key),
         "input" => {
-            if !body.node.input.is_empty() {
+            if body.input_seen {
                 return Err(de::Error::custom("duplicate field `input`"));
             }
+            body.input_seen = true;
             body.node.input = map.next_value()?;
             Ok(())
         }
         "completion" => {
+            if body.completion_seen {
+                return Err(de::Error::custom("duplicate field `completion`"));
+            }
+            body.completion_seen = true;
             body.node.completion = map.next_value()?;
             Ok(())
         }
@@ -898,14 +908,14 @@ impl CatalogNormalizer {
                         node,
                         inputs,
                         rules,
+                        ..
                     } = *body;
                     let entry_name = match (&name, has_kind) {
                         // ② 参照 + 扱い: node 系フィールドは書けない。
                         (Some(reference_name), false) => {
                             let placeholder = RawChildBody {
                                 node: node.clone(),
-                                inputs: None,
-                                rules: None,
+                                ..RawChildBody::default()
                             };
                             if placeholder.has_node_fields() {
                                 return Err(E::custom(format!(
@@ -1318,6 +1328,27 @@ pub struct WorkflowSummary {
 #[cfg(test)]
 mod definition_tests {
     use super::*;
+
+    // serde_json の直接デシリアライズ（イベント payload 復元経路）は上流に
+    // 重複キー拒否が無いため、children エントリ本体の全フィールドが
+    // 自前の重複検出で守られていることを検証する。
+    #[test]
+    fn test_子エントリ本体は重複completionキーを拒否する() {
+        let error = serde_json::from_str::<RawChildBody>(
+            r#"{"command":"echo hi","completion":"auto","completion":"approval"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field `completion`"));
+    }
+
+    #[test]
+    fn test_子エントリ本体は空リスト後の重複inputキーを拒否する() {
+        let error = serde_json::from_str::<RawChildBody>(
+            r#"{"command":"echo hi","input":[],"input":["spec"]}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field `input`"));
+    }
 
     #[test]
     fn test_node_definition_facet参照を検出する() {
