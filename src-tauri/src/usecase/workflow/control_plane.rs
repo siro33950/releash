@@ -72,6 +72,11 @@ pub(crate) struct WorkflowControlPlaneUsecase {
 }
 
 impl WorkflowControlPlaneUsecase {
+    fn node_execution_id_source(&self) -> impl FnMut() -> String {
+        let runtime = Arc::clone(&self.runtime);
+        move || runtime.new_node_execution_id()
+    }
+
     pub(crate) fn new(runtime: Arc<dyn WorkflowControlPlaneGateway>) -> Self {
         Self { runtime }
     }
@@ -126,8 +131,7 @@ impl WorkflowControlPlaneUsecase {
             )
         });
         let mut candidate = current.clone();
-        let runtime = Arc::clone(&self.runtime);
-        let mut new_id = move || runtime.new_node_execution_id();
+        let mut new_id = self.node_execution_id_source();
         let applied =
             candidate.apply_approval(&target.node_execution_id, &mut new_id, timestamp)?;
         let mut workflow_events = vec![WorkflowEvent::ApprovalResolved {
@@ -299,8 +303,7 @@ impl WorkflowControlPlaneUsecase {
             ));
         }
         let outcome = if submit_signal_applied {
-            let runtime = Arc::clone(&self.runtime);
-            let mut new_id = move || runtime.new_node_execution_id();
+            let mut new_id = self.node_execution_id_source();
             let (outcome, handshake_events) = apply_completion_handshake(
                 &mut candidate,
                 &command.node_execution_id,
@@ -481,8 +484,7 @@ impl WorkflowControlPlaneUsecase {
         let outcome = if workflow_events.is_empty() {
             None
         } else {
-            let runtime = Arc::clone(&self.runtime);
-            let mut new_id = move || runtime.new_node_execution_id();
+            let mut new_id = self.node_execution_id_source();
             let (outcome, events) = apply_completion_handshake(
                 &mut candidate,
                 &command.node_execution_id,

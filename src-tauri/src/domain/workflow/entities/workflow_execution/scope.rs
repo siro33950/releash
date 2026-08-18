@@ -83,26 +83,63 @@ impl ScopeRuntime {
         }
     }
 
-    /// 子の開始を記録し、その attempt（スコープ内 1 始まり）を返す。
-    pub fn record_child_start(&mut self, child_name: &str) -> u32 {
-        let counts = match &mut self.kind {
+    fn child_counts_mut(&mut self) -> &mut HashMap<String, u32> {
+        match &mut self.kind {
             ScopeRuntimeKind::Sequence(scope) => &mut scope.child_counts,
             ScopeRuntimeKind::Fanout(scope) => &mut scope.child_counts,
-        };
-        let count = counts.entry(child_name.to_string()).or_insert(0);
+        }
+    }
+
+    /// 子の開始を記録し、その attempt（スコープ内 1 始まり）を返す。
+    pub fn record_child_start(&mut self, child_name: &str) -> u32 {
+        let count = self
+            .child_counts_mut()
+            .entry(child_name.to_string())
+            .or_insert(0);
         *count += 1;
         *count
     }
 
     /// 子の attempt カウントを少なくとも `attempt` まで進める（retry / replay 用）。
     pub fn raise_child_count_to(&mut self, child_name: &str, attempt: u32) {
-        let counts = match &mut self.kind {
-            ScopeRuntimeKind::Sequence(scope) => &mut scope.child_counts,
-            ScopeRuntimeKind::Fanout(scope) => &mut scope.child_counts,
-        };
-        counts
+        self.child_counts_mut()
             .entry(child_name.to_string())
             .and_modify(|current| *current = (*current).max(attempt))
             .or_insert(attempt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sequence_scope() -> ScopeRuntime {
+        ScopeRuntime {
+            node_execution_id: "scope-1".to_string(),
+            node_name: "part".to_string(),
+            parent_scope_id: None,
+            parameters: Vec::new(),
+            kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime::default()),
+        }
+    }
+
+    #[test]
+    fn record_child_start_counts_from_one_and_increases_monotonically() {
+        let mut scope = sequence_scope();
+
+        assert_eq!(scope.record_child_start("fix"), 1);
+        assert_eq!(scope.record_child_start("fix"), 2);
+        assert_eq!(scope.record_child_start("exit"), 1);
+        assert_eq!(scope.record_child_start("fix"), 3);
+    }
+
+    #[test]
+    fn raise_child_count_to_never_lowers_the_count() {
+        let mut scope = sequence_scope();
+        scope.raise_child_count_to("fix", 3);
+        assert_eq!(scope.record_child_start("fix"), 4);
+
+        scope.raise_child_count_to("fix", 2);
+        assert_eq!(scope.record_child_start("fix"), 5);
     }
 }

@@ -391,6 +391,30 @@ mod tests {
     }
 
     #[test]
+    fn same_retry_target_requires_matching_name_and_parent_scope() {
+        use crate::domain::workflow::ExecutionParentRef;
+
+        let base = node("left", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        let mut same_lane = node("right", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        assert!(same_retry_target(&base, &same_lane));
+
+        // 別名は別ターゲット。
+        let mut other_name = same_lane.clone();
+        other_name.node_name = "other".to_string();
+        assert!(!same_retry_target(&base, &other_name));
+
+        // 同名でも親スコープ（lane）が違えば別ターゲット。
+        same_lane.parent = Some(ExecutionParentRef::sequence_child("part-lane-1"));
+        let mut other_lane = same_lane.clone();
+        other_lane.parent = Some(ExecutionParentRef::sequence_child("part-lane-2"));
+        assert!(!same_retry_target(&same_lane, &other_lane));
+
+        let mut peer = same_lane.clone();
+        peer.parent = Some(ExecutionParentRef::sequence_child("part-lane-1"));
+        assert!(same_retry_target(&same_lane, &peer));
+    }
+
+    #[test]
     fn runtime_snapshot_nodes_uses_bounded_defaults_and_filters_other_executions() {
         let mut failed = node("failed", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
         failed.artifact = Some(serde_json::json!({"unexpected": true}));

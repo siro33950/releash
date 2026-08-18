@@ -560,7 +560,7 @@ impl WorkflowRuntimeHost {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await?;
-        let (current_node_session_id, fanout_session_ids) = match lookup {
+        let (current_node_session_id, active_node_session_ids) = match lookup {
             AbortTargetLookup::NotFound => {
                 return Ok(AbortCommit::NotFound);
             }
@@ -569,11 +569,11 @@ impl WorkflowRuntimeHost {
             }
             AbortTargetLookup::Active {
                 current_node_session_id,
-                fanout_session_ids,
-            } => (current_node_session_id, fanout_session_ids),
+                active_node_session_ids,
+            } => (current_node_session_id, active_node_session_ids),
         };
         let mut session_ids = current_node_session_id.into_iter().collect::<Vec<_>>();
-        session_ids.extend(fanout_session_ids.into_iter().flatten());
+        session_ids.extend(active_node_session_ids.into_iter().flatten());
         session_ids.sort();
         session_ids.dedup();
         // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
@@ -611,36 +611,7 @@ impl WorkflowRuntimeHost {
             // spec issues-1023: state を Aborted にする前に、中断時のアクティブ leaf を
             // `node_history` に "aborted" entry として記録する。UI 側は既存 history
             // 描画経路 + session_id で中断 node の session log にアクセスできる。
-            let active_leaves: Vec<_> = exec
-                .node_executions
-                .iter()
-                .filter(|node| node.status.is_active() && !node.kind.is_composite_kind())
-                .map(|node| {
-                    (
-                        node.node_name.clone(),
-                        node.attempt,
-                        node.session_id.clone(),
-                        node.token_usage.clone().unwrap_or_default(),
-                    )
-                })
-                .collect();
-            for (node_name, attempt, session_id, token_usage) in active_leaves {
-                let already_in_history = exec
-                    .node_history
-                    .iter()
-                    .any(|entry| entry.node_name == node_name && entry.attempt == attempt);
-                if !already_in_history {
-                    let entry =
-                        crate::domain::workflow::services::history::aborted_node_history_entry(
-                            node_name,
-                            attempt,
-                            session_id,
-                            token_usage,
-                            timestamp,
-                        );
-                    exec.record_history_entry(entry, timestamp);
-                }
-            }
+            exec.record_aborted_history_for_active_leaves(timestamp);
 
             let _ = exec.transition_aborted();
             exec.clear_node_stalls(timestamp);
@@ -775,7 +746,7 @@ impl WorkflowRuntimeHost {
                     return Ok(AbortTargetLookup::AlreadyTerminal);
                 }
                 let current_node_session_id = exec.current_session_id.clone();
-                let fanout_session_ids = Some(
+                let active_node_session_ids = Some(
                     exec.node_executions
                         .iter()
                         .filter(|node| node.status.is_active())
@@ -784,7 +755,7 @@ impl WorkflowRuntimeHost {
                 );
                 return Ok(AbortTargetLookup::Active {
                     current_node_session_id,
-                    fanout_session_ids,
+                    active_node_session_ids,
                 });
             }
         }

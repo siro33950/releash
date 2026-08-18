@@ -139,6 +139,8 @@ pub(crate) fn append_completion_action(
 }
 
 /// leaf の束縛済みパラメータからプロンプトを構築する。
+/// Session leaf 専用: facet 群と束縛済みパラメータから起動プロンプトを組む
+/// （Command leaf の本文描画は `render_parameter_references` が担う）。
 /// 束縛の解決規則は domain（実行木スコープ）が所有し、ここでは描画のみを行う。
 pub(crate) fn build_leaf_prompt(
     node: &NodeDefinition,

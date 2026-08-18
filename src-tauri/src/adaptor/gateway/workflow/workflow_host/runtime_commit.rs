@@ -19,7 +19,7 @@ pub(crate) enum AbortTargetLookup {
     AlreadyTerminal,
     Active {
         current_node_session_id: Option<String>,
-        fanout_session_ids: Option<Vec<String>>,
+        active_node_session_ids: Option<Vec<String>>,
     },
 }
 

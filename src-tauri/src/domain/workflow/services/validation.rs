@@ -1884,10 +1884,12 @@ mod tests {
             )),
             "{errors:?}"
         );
+        // 相互包含は W2 の子参照一意性にも触れるため、validate() の最初の
+        // エラーは ChildReferenceViolation で安定する（循環自体は上の
+        // collect_inclusion_cycle_errors の assert が固定する）。
         assert!(matches!(
             validate(&wf),
-            Err(ValidationError::CompositeInclusionCycle { .. }
-                | ValidationError::ChildReferenceViolation { .. })
+            Err(ValidationError::ChildReferenceViolation { .. })
         ));
     }
 

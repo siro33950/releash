@@ -366,7 +366,6 @@ impl WorkspaceTree {
         parent: Option<ExecutionParentRef>,
         timestamp: f64,
     ) -> Result<(), WorkspaceTreeError> {
-        let _ = attempt;
         if self
             .execution_node_mut(&execution_id, &node_execution_id)
             .is_some()

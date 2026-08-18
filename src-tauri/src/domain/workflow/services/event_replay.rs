@@ -612,7 +612,7 @@ fn apply_event_to_aggregate(
                 reason.clone(),
                 *failure_kind,
                 *timestamp,
-            );
+            )?;
         }
         WorkflowEvent::ApprovalRequested {
             node_execution_id,
@@ -941,6 +941,9 @@ fn derive_active_fields(
         .rev()
         .find(|node| node.status.is_active() && !node.kind.is_composite_kind())
         .or_else(|| nodes.iter().rev().find(|node| node.status.is_active()))
+        // アクティブが無い（失敗停止した Running など）場合も「現在の node」
+        // は空にしない: 最後に開始された node（失敗した node）を指す。
+        .or_else(|| nodes.last())
         .map(|node| node.node_name.clone());
     (ExecutionStatus::Running, current_node, None)
 }
@@ -1065,6 +1068,32 @@ mod tests {
             ));
         }
         event
+    }
+
+    #[test]
+    fn failed_running_execution_keeps_the_failed_node_as_current_node() {
+        let events = vec![
+            started(),
+            node_started("node-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::NodeFailed {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                node_name: "review".to_string(),
+                attempt: 1,
+                reason: "exit 1".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                retry_count: None,
+                timestamp: 3.0,
+            },
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        // 失敗停止した Running でも current_node は空にならない（Running の
+        // metadata reconciliation は current_node を要求する）。
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.current_node.as_deref(), Some("review"));
     }
 
     #[test]

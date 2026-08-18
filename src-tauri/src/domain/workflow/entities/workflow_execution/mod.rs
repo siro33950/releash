@@ -2635,19 +2635,28 @@ impl WorkflowExecution {
     }
 
     /// replay: NodeFailed の適用。
+    ///
+    /// 遷移結果は検証しない（abort 済み node への遅延 NodeFailed など、
+    /// 適用されない事実列は正当）。未知の node_execution_id だけを
+    /// ログ破損としてエラーにする。
     pub fn replay_node_failed(
         &mut self,
         node_execution_id: &str,
         reason: String,
         kind: NodeExecutionFailureKind,
         timestamp: f64,
-    ) {
+    ) -> Result<(), String> {
+        if self.node_execution(node_execution_id).is_none() {
+            return Err(format!(
+                "node_failed references unknown node_execution_id {node_execution_id}"
+            ));
+        }
         let decision = self.apply_turn_completion(CanonicalNodeFact::Failed {
             reason: reason.clone(),
             kind,
         });
         if decision.application == TurnCompletionApplication::Superseded {
-            return;
+            return Ok(());
         }
         let _ = self.fail_leaf_execution(
             node_execution_id,
@@ -2656,6 +2665,7 @@ impl WorkflowExecution {
             FailureDisposition::Terminal,
             timestamp,
         );
+        Ok(())
     }
 
     pub fn fail_node_execution(
@@ -2966,6 +2976,9 @@ impl WorkflowExecution {
                     .rev()
                     .find(|execution| execution.status.is_active())
             })
+            // アクティブが無い（失敗停止した Running など）場合も「現在の node」
+            // は空にしない: 最後に開始された node（失敗した node）を指す。
+            .or_else(|| self.runtime.node_executions.last())
             .map(|execution| execution.node_name.clone())
     }
 
@@ -3021,6 +3034,38 @@ impl WorkflowExecution {
     pub fn record_history_entry(&mut self, entry: NodeHistoryEntry, timestamp: f64) {
         self.runtime.node_history.push(entry);
         self.runtime.updated_at = timestamp;
+    }
+
+    /// abort 時: アクティブな leaf 全件を "aborted" として node_history へ記録する。
+    ///
+    /// attempt はスコープごとに採番されるため、並走 lane の同名 node は同じ
+    /// (node_name, attempt) を持ちうる。アクティブな leaf は定義上まだ history に
+    /// 記録されていないので、重複判定は行わず全件を記録する。
+    pub fn record_aborted_history_for_active_leaves(&mut self, timestamp: f64) {
+        let active_leaves: Vec<_> = self
+            .runtime
+            .node_executions
+            .iter()
+            .filter(|node| node.status.is_active() && !node.kind.is_composite_kind())
+            .map(|node| {
+                (
+                    node.node_name.clone(),
+                    node.attempt,
+                    node.session_id.clone(),
+                    node.token_usage.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        for (node_name, attempt, session_id, token_usage) in active_leaves {
+            let entry = crate::domain::workflow::services::history::aborted_node_history_entry(
+                node_name,
+                attempt,
+                session_id,
+                token_usage,
+                timestamp,
+            );
+            self.record_history_entry(entry, timestamp);
+        }
     }
 
     pub fn clear_stalls_for_session(&mut self, session_id: &str, timestamp: f64) -> bool {
@@ -4354,12 +4399,14 @@ mod tests {
             TransitionOutcome::Applied
         );
 
-        execution.replay_node_failed(
-            &node_execution_id,
-            "exit 1".to_string(),
-            NodeExecutionFailureKind::ValidationFailure,
-            12.0,
-        );
+        execution
+            .replay_node_failed(
+                &node_execution_id,
+                "exit 1".to_string(),
+                NodeExecutionFailureKind::ValidationFailure,
+                12.0,
+            )
+            .unwrap();
 
         assert_eq!(execution.state(), &RuntimeExecutionState::Interrupted);
         assert_eq!(
@@ -5359,6 +5406,61 @@ mod tests {
                 .scope(&part_id)
                 .map(|scope| scope.parameters.clone()),
             Some(vec![("target".to_string(), prepared_value)])
+        );
+    }
+
+    #[test]
+    fn abort_records_every_active_lane_leaf_even_with_equal_name_and_attempt() {
+        // fanout の並走 lane は同じ部品 sequence を走らせるため、同名 node が
+        // 同一 attempt（スコープ採番）でアクティブになる。abort は全 lane の
+        // leaf を記録する。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("part")],
+                    items: Some(crate::domain::workflow::ItemsSource::Literal(vec![
+                        serde_json::json!("a"),
+                        serde_json::json!("b"),
+                    ])),
+                }),
+                ..Default::default()
+            },
+            tree_sequence_node("part", None, vec![ChildEntry::reference("fix")]),
+            tree_command_node("fix"),
+        ]);
+        let mut new_id = tree_id_source();
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("start must yield one fix leaf per lane");
+        };
+        assert_eq!(leaves.len(), 2);
+        let fixes: Vec<_> = execution
+            .node_executions()
+            .iter()
+            .filter(|node| node.node_name == "fix")
+            .collect();
+        assert_eq!(
+            (fixes[0].attempt, fixes[1].attempt),
+            (1, 1),
+            "both lanes must carry the same scope-local attempt"
+        );
+
+        execution.record_aborted_history_for_active_leaves(2.0);
+
+        let aborted: Vec<_> = execution
+            .node_history
+            .iter()
+            .filter(|entry| {
+                entry.node_name == "fix"
+                    && entry.state == crate::domain::workflow::value_objects::NODE_STATUS_ABORTED
+            })
+            .collect();
+        assert_eq!(
+            aborted.len(),
+            2,
+            "every active lane leaf must get its own aborted entry"
         );
     }
 

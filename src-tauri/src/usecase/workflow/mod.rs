@@ -17,7 +17,6 @@ pub(crate) mod query_service;
 pub(crate) mod runtime_command;
 pub(crate) mod runtime_driver;
 pub(crate) mod runtime_error;
-pub(crate) mod runtime_events;
 pub(crate) mod runtime_resolver;
 pub(crate) mod runtime_snapshot;
 pub(crate) mod runtime_start_guard;

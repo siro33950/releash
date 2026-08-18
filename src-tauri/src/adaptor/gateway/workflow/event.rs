@@ -1884,6 +1884,47 @@ mod tests {
     }
 
     #[test]
+    fn node_started_parent_round_trips_the_durable_contract() {
+        use crate::domain::workflow::ExecutionParentRef;
+
+        // root / sequence の子 / fanout の子（展開座標つき）の3形すべてで、
+        // durable encode/decode と domain 変換の往復が親参照を保持する。
+        for parent in [
+            None,
+            Some(ExecutionParentRef::sequence_child("seq-1")),
+            Some(ExecutionParentRef::fanout_child("fan-1", Some(2), 1)),
+        ] {
+            let event = WorkflowEvent::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+                node_execution_id: "00000000-0000-4000-8000-000000000002".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: parent.clone(),
+                timestamp: 2.0,
+            };
+
+            let encoded = encode_stored_workflow_event_v1(&event).unwrap();
+            let decoded = decode_stored_workflow_event_v1(
+                &encoded,
+                1,
+                StoredWorkflowPayloadSource {
+                    source_id: "test".to_string(),
+                    record_ordinal: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(decoded.event, event, "durable round-trip for {parent:?}");
+            let domain = to_domain_event(&event).unwrap();
+            assert_eq!(
+                from_domain_event(&domain).unwrap(),
+                event,
+                "domain round-trip for {parent:?}"
+            );
+        }
+    }
+
+    #[test]
     fn node_retry_requested_is_part_of_the_durable_contract() {
         let value = serde_json::json!({
             "event": "node_retry_requested",
