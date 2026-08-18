@@ -1,0 +1,10 @@
+name: duplicate-child-reference
+description: a composite cannot reference the same child twice
+nodes:
+  main:
+    sequence:
+      children:
+      - worker
+      - worker
+  worker:
+    command: echo work

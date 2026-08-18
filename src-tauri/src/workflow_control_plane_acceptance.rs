@@ -14,8 +14,8 @@ use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
-    FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind, Rule, SchemaDef, SessionSpec,
-    WorkflowDefinition,
+    ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind, SchemaDef,
+    SequenceSpec, SessionSpec, WorkflowDefinition,
 };
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::terminal_surface::TerminalSurfaceRuntime;
@@ -157,7 +157,6 @@ fn acceptance_session_node(
     name: &str,
     provider: ProviderKind,
     completion: NodeCompletion,
-    rules: Vec<Rule>,
 ) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
@@ -172,9 +171,8 @@ fn acceptance_session_node(
         }),
         artifact: None,
         input: Vec::new(),
-        inputs: Vec::new(),
-        rules,
         completion,
+        worktree: None,
     }
 }
 
@@ -199,27 +197,19 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                     NodeDefinition {
                         name: "fanout".to_string(),
                         kind: NodeKind::Fanout(FanoutSpec {
-                            child: vec!["review-a".to_string(), "review-b".to_string()],
+                            children: vec![
+                                ChildEntry::reference("review-a"),
+                                ChildEntry::reference("review-b"),
+                            ],
                             items: None,
                         }),
                         artifact: None,
                         input: Vec::new(),
-                        inputs: Vec::new(),
-                        rules: Vec::new(),
                         completion: NodeCompletion::Auto,
+                        worktree: None,
                     },
-                    acceptance_session_node(
-                        "review-a",
-                        provider,
-                        NodeCompletion::Approval,
-                        Vec::new(),
-                    ),
-                    acceptance_session_node(
-                        "review-b",
-                        provider,
-                        NodeCompletion::Approval,
-                        Vec::new(),
-                    ),
+                    acceptance_session_node("review-a", provider, NodeCompletion::Approval),
+                    acceptance_session_node("review-b", provider, NodeCompletion::Approval),
                 ],
                 entry: "fanout".to_string(),
             });
@@ -240,7 +230,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             } else {
                 NodeCompletion::Auto
             };
-            let mut node = acceptance_session_node("agent", provider, completion, Vec::new());
+            let mut node = acceptance_session_node("agent", provider, completion);
             node.artifact = Some("acceptance-result".to_string());
             return Ok(WorkflowDefinition {
                 name: workflow_name.to_string(),
@@ -274,23 +264,29 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                 )))
             }
         };
+        // 直列は root sequence の隣接辺（rules 無し = リストの次へ）で表現する。
         let nodes = if chained {
             vec![
-                acceptance_session_node(
-                    "agent-first",
-                    provider,
-                    completion,
-                    vec![Rule::Next("agent-second".to_string())],
-                ),
-                acceptance_session_node("agent-second", provider, completion, Vec::new()),
+                NodeDefinition {
+                    name: "main".to_string(),
+                    kind: NodeKind::Sequence(SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![
+                            ChildEntry::reference("agent-first"),
+                            ChildEntry::reference("agent-second"),
+                        ],
+                    }),
+                    artifact: None,
+                    input: Vec::new(),
+                    completion: NodeCompletion::Auto,
+                    worktree: None,
+                },
+                acceptance_session_node("agent-first", provider, completion),
+                acceptance_session_node("agent-second", provider, completion),
             ]
         } else {
-            vec![acceptance_session_node(
-                "agent",
-                provider,
-                completion,
-                Vec::new(),
-            )]
+            vec![acceptance_session_node("agent", provider, completion)]
         };
         let entry = nodes[0].name.clone();
         Ok(WorkflowDefinition {

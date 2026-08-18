@@ -8,16 +8,22 @@ schemas:
         type: boolean
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - when:
+              on: passed
+              then: done
+            next: fix
+      - done
+      - fix
+  judge:
     artifact: verdict
     session:
       provider: claude
       facets:
         instruction: judge
-    rules:
-      - when:
-          on: passed
-          then: done
-        next: fix
   done:
     command: printf done
   fix:

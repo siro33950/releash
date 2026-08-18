@@ -19,7 +19,6 @@ const sessionNode = {
 		provider: "claude" as const,
 		facets: { instruction: "implement" },
 	},
-	rules: [],
 };
 
 describe("useAutomation", () => {

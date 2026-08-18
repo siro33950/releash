@@ -6,7 +6,7 @@
 
 ## 入力
 
-- `main` Artifactの全Thread ID
+- `import_pr_review` Artifactの全Thread ID
 - `create_pr_review_fix_plan` Artifact
 - `verify_pr_review_fixes` Artifactの`issues`と`unverifiable`
 - 各Threadの本文と全履歴

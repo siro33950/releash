@@ -1,15 +1,16 @@
 name: reserved-artifact-name
-description: request is reserved
+description: request is a reserved artifact name and cannot be declared in schemas
+schemas:
+  request:
+    type: object
+    properties:
+      spec_dir:
+        type: string
+    required:
+    - spec_dir
 nodes:
   main:
     session:
       provider: claude
       facets:
-        instruction: entry
-    rules:
-      - next: request
-  request:
-    session:
-      provider: claude
-      facets:
-        instruction: request
+        instruction: implement

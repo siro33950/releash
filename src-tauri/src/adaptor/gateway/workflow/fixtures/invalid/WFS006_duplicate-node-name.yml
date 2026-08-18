@@ -2,9 +2,9 @@ name: duplicate-node-name
 description: two nodes must not share the same name
 nodes:
   main:
-    command: cargo build
-    rules:
-      - next: build
+    sequence:
+      children:
+      - build
   build:
     command: cargo build
   build:

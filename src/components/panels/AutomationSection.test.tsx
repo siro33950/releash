@@ -51,7 +51,6 @@ const SESSION_NODE = {
 		provider: "claude" as const,
 		facets: { instruction: "implement" },
 	},
-	rules: [],
 };
 
 function createMockAutomation(
@@ -590,20 +589,26 @@ describe("AutomationSection", () => {
 						name: "complex-step",
 						kind: "fanout" as const,
 						fanout: {
-							child: ["child-1", "child-2"],
+							children: [
+								{
+									name: "child-1",
+									inputs: [{ parameter: "topic", source: "scan.topic" }],
+									rules: [
+										{ type: "next", next: "next-step" },
+										{
+											type: "loop_guard",
+											max_iterations: 3,
+											on_exhausted: "fallback-step",
+											reset_on: "review-round",
+										},
+									],
+								},
+								{ name: "child-2" },
+							],
 							items: "scan.items",
 						},
 						artifact: "json-schema",
-						inputs: ["step-0"],
-						rules: [
-							{ type: "next", next: "next-step" },
-							{
-								type: "loop_guard",
-								max_iterations: 3,
-								on_exhausted: "fallback-step",
-								reset_on: "review-round",
-							},
-						],
+						input: [{ name: "step-0" }],
 					},
 				],
 			},
@@ -618,17 +623,18 @@ describe("AutomationSection", () => {
 		});
 		expect(screen.getByText(/^Artifact:/)).toBeInTheDocument();
 		expect(screen.getByText("json-schema")).toBeInTheDocument();
-		expect(screen.getByText("Transition Rules")).toBeInTheDocument();
+		expect(screen.getByText(/^Input:/)).toBeInTheDocument();
+		expect(screen.getByText("step-0")).toBeInTheDocument();
+		expect(screen.getByText("Fanout Children")).toBeInTheDocument();
+		expect(screen.getByText(/child-1/)).toBeInTheDocument();
+		expect(screen.getByText(/child-2/)).toBeInTheDocument();
+		expect(screen.getByText(/^Inputs:/)).toBeInTheDocument();
+		expect(screen.getByText("topic <- scan.topic")).toBeInTheDocument();
 		expect(
 			screen.getByText(
 				"loop_guard max 3 -> fallback-step, reset on review-round",
 			),
 		).toBeInTheDocument();
-		expect(screen.getByText(/^Inputs:/)).toBeInTheDocument();
-		expect(screen.getByText("step-0")).toBeInTheDocument();
-		expect(screen.getByText("Fanout Children")).toBeInTheDocument();
-		expect(screen.getByText(/child-1/)).toBeInTheDocument();
-		expect(screen.getByText(/child-2/)).toBeInTheDocument();
 		expect(screen.getByText(/^Items:/)).toBeInTheDocument();
 		expect(screen.getByText("scan.items")).toBeInTheDocument();
 	});
@@ -643,14 +649,21 @@ describe("AutomationSection", () => {
 				nodes: [
 					{
 						name: "review",
-						kind: "session" as const,
-						rules: [
-							{
-								type: "loop_guard",
-								max_iterations: 3,
-								on_exhausted: "fallback-step",
-							},
-						],
+						kind: "sequence" as const,
+						sequence: {
+							children: [
+								{
+									name: "fix",
+									rules: [
+										{
+											type: "loop_guard",
+											max_iterations: 3,
+											on_exhausted: "fallback-step",
+										},
+									],
+								},
+							],
+						},
 					},
 				],
 			},

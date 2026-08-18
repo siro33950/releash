@@ -125,9 +125,8 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         kind: node_kind_to_domain(&node.kind),
         artifact: node.artifact.clone(),
         input: node.input.clone(),
-        inputs: node.inputs.clone(),
-        rules: node.rules.iter().map(rule_to_domain).collect(),
         completion: node_completion_to_domain(node.completion),
+        worktree: node.worktree.clone(),
     }
 }
 
@@ -143,8 +142,13 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
             facets: facet_refs_to_domain(&spec.facets),
         }),
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
-            child: spec.child.clone(),
+            children: spec.children.clone(),
             items: spec.items.as_ref().map(items_source_to_domain),
+        }),
+        schema::NodeKind::Sequence(spec) => domain::NodeKind::Sequence(domain::SequenceSpec {
+            entry: spec.entry.clone(),
+            output: spec.output.clone(),
+            children: spec.children.clone(),
         }),
     }
 }
@@ -171,31 +175,6 @@ fn items_source_to_domain(items: &schema::ItemsSource) -> domain::ItemsSource {
             node: node.clone(),
             field: field.clone(),
         },
-    }
-}
-
-pub(crate) fn rule_to_domain(rule: &schema::Rule) -> domain::Rule {
-    match rule {
-        schema::Rule::When { on, then, next } => domain::Rule::When {
-            on: on.clone(),
-            then: then.clone(),
-            next: next.clone(),
-        },
-        schema::Rule::Switch { on, cases, next } => domain::Rule::Switch {
-            on: on.clone(),
-            cases: cases.clone(),
-            next: next.clone(),
-        },
-        schema::Rule::LoopGuard {
-            max_iterations,
-            on_exhausted,
-            reset_on,
-        } => domain::Rule::LoopGuard {
-            max_iterations: *max_iterations,
-            on_exhausted: on_exhausted.clone(),
-            reset_on: reset_on.clone(),
-        },
-        schema::Rule::Next(next) => domain::Rule::Next(next.clone()),
     }
 }
 
@@ -276,7 +255,10 @@ mod tests {
             nodes: vec![schema::NodeDefinition {
                 name: "main".to_string(),
                 kind: schema::NodeKind::Fanout(schema::FanoutSpec {
-                    child: vec!["lint".to_string(), "test".to_string()],
+                    children: vec![
+                        domain::ChildEntry::reference("lint"),
+                        domain::ChildEntry::reference("test"),
+                    ],
                     items: Some(schema::ItemsSource::ArtifactField {
                         node: "plan".to_string(),
                         field: "targets".to_string(),
@@ -290,7 +272,13 @@ mod tests {
         let mapped = workflow_definition_to_domain(&workflow);
         let fanout = mapped.nodes[0].fanout().unwrap();
 
-        assert_eq!(fanout.child, vec!["lint".to_string(), "test".to_string()]);
+        assert_eq!(
+            fanout.children,
+            vec![
+                domain::ChildEntry::reference("lint"),
+                domain::ChildEntry::reference("test"),
+            ]
+        );
         assert_eq!(
             fanout.items,
             Some(domain::ItemsSource::ArtifactField {

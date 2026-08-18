@@ -31,7 +31,10 @@ mod submission_tests {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: children.into_iter().map(str::to_string).collect(),
+                children: children
+                    .into_iter()
+                    .map(crate::domain::workflow::ChildEntry::reference)
+                    .collect(),
                 items: None,
             }),
             ..Default::default()

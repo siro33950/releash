@@ -6,10 +6,10 @@
 
 ## 入力
 
-- `main` Artifactの`spec_dir`と`directives`
+- `resolve_request` Artifactの`spec_dir`と`directives`
 - 担当Task: `{{ item }}`
 
-`{{ main.spec_dir }}/requirements.md`、`{{ main.spec_dir }}/behavior.md`、`{{ main.spec_dir }}/design.md`を全文読む。担当Taskの`files`に記載された既存実装を実際に読む。`directives`を原文どおり遵守する。
+`{{ spec }}/requirements.md`、`{{ spec }}/behavior.md`、`{{ spec }}/design.md`を全文読む。担当Taskの`files`に記載された既存実装を実際に読む。`directives`を原文どおり遵守する。
 
 Taskの意味と各項目の扱いは`implement-task` Knowledgeに従う。
 

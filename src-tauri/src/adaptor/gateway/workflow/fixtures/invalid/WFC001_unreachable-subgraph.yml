@@ -2,17 +2,24 @@ name: unreachable-subgraph
 description: unreachable subgraph edges do not make targets reachable
 nodes:
   main:
+    sequence:
+      children:
+      - start:
+          rules: []
+      - orphan:
+          rules:
+          - next: target
+      - target
+  start:
     session:
       provider: claude
       facets:
-        instruction: entry
+        instruction: start
   orphan:
     session:
       provider: claude
       facets:
         instruction: orphan
-    rules:
-      - next: target
   target:
     session:
       provider: claude

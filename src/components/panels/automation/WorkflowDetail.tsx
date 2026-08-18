@@ -3,15 +3,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type {
+	ChildEntry,
 	DiagnosticReport,
 	DiagnosticView,
 	FanoutItemsSource,
 	NodeDefinition,
+	Rule,
 	WorkflowDefinition,
 } from "@/types/workflow";
 import { DiagnosticsPanel } from "./DiagnosticBadge";
-
-type WorkflowRule = NonNullable<NodeDefinition["rules"]>[number];
 
 type WorkflowSaveResult =
 	| { ok: true; workflow?: WorkflowDefinition }
@@ -317,7 +317,8 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 	const session = node.session;
 	const facets = session?.facets;
 	const fanout = node.fanout;
-	const childCount = fanout?.child.length ?? 0;
+	const sequence = node.sequence;
+	const childCount = fanout?.children.length ?? 0;
 	const knowledgeRefs = facets?.knowledge ?? [];
 	const hasKnowledgeRefs = knowledgeRefs.length > 0;
 
@@ -382,7 +383,6 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 						hasKnowledgeRefs ||
 						facets?.instruction ||
 						node.artifact ||
-						(node.inputs && node.inputs.length > 0) ||
 						(node.input && node.input.length > 0)) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
@@ -403,9 +403,6 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 							{node.artifact && (
 								<FacetRefRow label="Artifact" value={node.artifact} />
 							)}
-							{node.inputs && node.inputs.length > 0 && (
-								<FacetRefRow label="Inputs" value={node.inputs.join(", ")} />
-							)}
 							{node.input && node.input.length > 0 && (
 								<FacetRefRow
 									label="Input"
@@ -421,19 +418,24 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 						</div>
 					)}
 
-					{/* Rules */}
-					{node.rules && node.rules.length > 0 && (
+					{/* Sequence children */}
+					{sequence && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
-								Transition Rules
+								Sequence
 							</span>
-							{node.rules.map((r) => (
-								<div
-									key={`${node.name}-rule-${ruleKey(r)}`}
-									className="text-muted-foreground"
-								>
-									<span className="font-mono">{formatRule(r)}</span>
-								</div>
+							{sequence.entry && (
+								<FacetRefRow label="Entry" value={sequence.entry} />
+							)}
+							{sequence.output && (
+								<FacetRefRow label="Output" value={sequence.output} />
+							)}
+							{sequence.children.map((entry) => (
+								<ChildEntryRow
+									key={entry.name}
+									nodeName={node.name}
+									entry={entry}
+								/>
 							))}
 						</div>
 					)}
@@ -444,10 +446,12 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 							<span className="font-medium text-muted-foreground">
 								Fanout Children
 							</span>
-							{fanout.child.map((childName) => (
-								<div key={childName} className="ml-2 text-muted-foreground">
-									• {childName}
-								</div>
+							{fanout.children.map((entry) => (
+								<ChildEntryRow
+									key={entry.name}
+									nodeName={node.name}
+									entry={entry}
+								/>
 							))}
 							{fanout.items !== undefined && (
 								<FacetRefRow
@@ -463,7 +467,44 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 	);
 }
 
-function formatRule(rule: WorkflowRule): string {
+function ChildEntryRow({
+	nodeName,
+	entry,
+}: {
+	nodeName: string;
+	entry: ChildEntry;
+}) {
+	return (
+		<div className="ml-2 flex flex-col gap-0.5">
+			<span className="text-muted-foreground">• {entry.name}</span>
+			{entry.inputs && entry.inputs.length > 0 && (
+				<div className="ml-3 text-muted-foreground">
+					<span className="text-foreground">Inputs:</span>{" "}
+					{entry.inputs
+						.map((input) => `${input.parameter} <- ${input.source}`)
+						.join(", ")}
+				</div>
+			)}
+			{entry.rules && entry.rules.length > 0 && (
+				<div className="ml-3 flex flex-col gap-0.5 text-muted-foreground">
+					{entry.rules.map((r) => (
+						<span
+							key={`${nodeName}-${entry.name}-rule-${ruleKey(r)}`}
+							className="font-mono"
+						>
+							{formatRule(r)}
+						</span>
+					))}
+				</div>
+			)}
+			{entry.rules && entry.rules.length === 0 && (
+				<div className="ml-3 text-muted-foreground">Rules: (terminal)</div>
+			)}
+		</div>
+	);
+}
+
+function formatRule(rule: Rule): string {
 	switch (rule.type) {
 		case "when":
 			return `when ${rule.on} then ${rule.then} else ${rule.next}`;
@@ -482,7 +523,7 @@ function formatRule(rule: WorkflowRule): string {
 	}
 }
 
-function ruleKey(rule: WorkflowRule): string {
+function ruleKey(rule: Rule): string {
 	switch (rule.type) {
 		case "when":
 			return `when:${rule.on}:${rule.then}:${rule.next}`;

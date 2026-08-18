@@ -7,20 +7,24 @@ schemas:
       values:
         type: string
     required:
-      - values
+    - values
   target:
     type: string
 nodes:
   main:
-    artifact: source-output
+    sequence:
+      children:
+      - source
+      - dispatch
+  source:
     command: echo source
-    rules:
-      - next: dispatch
+    artifact: source-output
   dispatch:
     fanout:
-      child: worker
-      items: main.missing
+      children:
+      - worker
+      items: source.missing
   worker:
     input:
-      - item: target
+    - item: target
     command: echo {{ item }}

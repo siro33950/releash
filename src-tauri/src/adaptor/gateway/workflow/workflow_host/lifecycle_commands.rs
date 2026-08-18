@@ -199,7 +199,7 @@ impl WorkflowRuntimeHost {
                         }
                     }
                     NodeKindName::Command => command_ids.push(node_execution_id),
-                    NodeKindName::Fanout => {}
+                    NodeKindName::Fanout | NodeKindName::Sequence => {}
                 }
             }
             let worktree_path = candidate.worktree_path.clone();

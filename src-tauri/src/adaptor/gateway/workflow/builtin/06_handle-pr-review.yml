@@ -119,6 +119,63 @@ schemas:
 
 nodes:
   main:
+    sequence:
+      children:
+      - import_pr_review
+      - check_imported_threads:
+          rules:
+          - when:
+              on: has_open_threads
+              then: decide_pr_review_fix_policies
+            next: report_no_pr_review_comments
+      - report_no_pr_review_comments:
+          inputs:
+            import_pr_review: import_pr_review
+          rules: []
+      - decide_pr_review_fix_policies:
+          inputs:
+            import_pr_review: import_pr_review
+      - create_pr_review_fix_plan:
+          inputs:
+            import_pr_review: import_pr_review
+      - implement_pr_review_fix_plan:
+          inputs:
+            create_pr_review_fix_plan: create_pr_review_fix_plan
+            verify_pr_review_fixes: verify_pr_review_fixes
+          rules:
+          - loop_guard:
+              max_iterations: 3
+              on_exhausted: pr_review_confirmation
+          - next: verify_pr_review_fixes
+      - verify_pr_review_fixes:
+          inputs:
+            create_pr_review_fix_plan: create_pr_review_fix_plan
+      - check_pr_review_verification:
+          rules:
+          - when:
+              on: has_issues
+              then: implement_pr_review_fix_plan
+            next: pr_review_confirmation
+      - pr_review_confirmation:
+          inputs:
+            import_pr_review: import_pr_review
+            create_pr_review_fix_plan: create_pr_review_fix_plan
+            verify_pr_review_fixes: verify_pr_review_fixes
+      - check_finalization:
+          rules:
+          - when:
+              on: ready
+              then: finalize_pr_review
+            next: report_incomplete_pr_review
+      - report_incomplete_pr_review:
+          inputs:
+            pr_review_confirmation: pr_review_confirmation
+          rules: []
+      - finalize_pr_review:
+          inputs:
+            pr_review_confirmation: pr_review_confirmation
+
+  import_pr_review:
     session:
       provider: codex
       model: gpt-5.6-sol
@@ -128,20 +185,13 @@ nodes:
         knowledge: releash-thread-cli
         instruction: import_pr_review_comments
     artifact: thread-scan
-    rules:
-    - next: check_imported_threads
 
   check_imported_threads:
     command: >-
       releash workflow output get "$RELEASH_WORKFLOW_EXECUTION_ID"
-      --node main --json |
+      --node import_pr_review --json |
       jq '{has_open_threads: (.artifact.threads | length > 0)}'
     artifact: import-scan
-    rules:
-    - when:
-        on: has_open_threads
-        then: decide_pr_review_fix_policies
-      next: report_no_pr_review_comments
 
   report_no_pr_review_comments:
     session:
@@ -151,8 +201,8 @@ nodes:
       facets:
         policy: reporting
         instruction: report_no_pr_review_comments
-    inputs:
-    - main
+    input:
+    - import_pr_review
 
   decide_pr_review_fix_policies:
     session:
@@ -163,10 +213,8 @@ nodes:
         policy: triage
         knowledge: releash-thread-cli
         instruction: decide_pr_review_fix_policy
-    inputs:
-    - main
-    rules:
-    - next: create_pr_review_fix_plan
+    input:
+    - import_pr_review
 
   create_pr_review_fix_plan:
     session:
@@ -178,10 +226,8 @@ nodes:
         knowledge: releash-thread-cli
         instruction: create_pr_review_fix_plan
     artifact: fix-plan
-    inputs:
-    - main
-    rules:
-    - next: implement_pr_review_fix_plan
+    input:
+    - import_pr_review
 
   implement_pr_review_fix_plan:
     session:
@@ -192,14 +238,9 @@ nodes:
         policy: coding
         knowledge: releash-thread-cli
         instruction: implement_pr_review_fix_plan
-    inputs:
+    input:
     - create_pr_review_fix_plan
     - verify_pr_review_fixes
-    rules:
-    - loop_guard:
-        max_iterations: 3
-        on_exhausted: pr_review_confirmation
-    - next: verify_pr_review_fixes
 
   verify_pr_review_fixes:
     session:
@@ -211,10 +252,8 @@ nodes:
         knowledge: releash-thread-cli
         instruction: verify_pr_review_fixes
     artifact: fix-verification
-    inputs:
+    input:
     - create_pr_review_fix_plan
-    rules:
-    - next: check_pr_review_verification
 
   check_pr_review_verification:
     command: >-
@@ -222,11 +261,6 @@ nodes:
       --node verify_pr_review_fixes --json |
       jq '{has_issues: (.artifact.issues | length > 0)}'
     artifact: fix-verification-scan
-    rules:
-    - when:
-        on: has_issues
-        then: implement_pr_review_fix_plan
-      next: pr_review_confirmation
 
   pr_review_confirmation:
     session:
@@ -239,12 +273,10 @@ nodes:
         instruction: pr_review_confirmation
     completion: approval
     artifact: pr-review-finalization
-    inputs:
-    - main
+    input:
+    - import_pr_review
     - create_pr_review_fix_plan
     - verify_pr_review_fixes
-    rules:
-    - next: check_finalization
 
   check_finalization:
     command: >-
@@ -252,11 +284,6 @@ nodes:
       --node pr_review_confirmation --json |
       jq '{ready: (.artifact.replies | length > 0)}'
     artifact: finalization-scan
-    rules:
-    - when:
-        on: ready
-        then: finalize_pr_review
-      next: report_incomplete_pr_review
 
   report_incomplete_pr_review:
     session:
@@ -266,7 +293,7 @@ nodes:
       facets:
         policy: reporting
         instruction: report_incomplete_pr_review
-    inputs:
+    input:
     - pr_review_confirmation
 
   finalize_pr_review:
@@ -278,5 +305,5 @@ nodes:
         policy: coding
         knowledge: releash-thread-cli
         instruction: finalize_pr_review
-    inputs:
+    input:
     - pr_review_confirmation

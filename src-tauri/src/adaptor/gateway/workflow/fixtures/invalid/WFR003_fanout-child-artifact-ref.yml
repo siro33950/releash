@@ -1,21 +1,34 @@
 name: fanout-child-artifact-ref
 description: child artifacts are available only through the parent array
 schemas:
+  text: string
   result:
     type: object
     properties:
-      verdict:
-        type: string
+      targets:
+        type: array
+        items: text
     required:
-      - verdict
+    - targets
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - relay
+  dispatch:
     fanout:
-      child: worker
-    rules:
-      - next: consume
+      children:
+      - worker
   worker:
     artifact: result
     command: echo work
-  consume:
-    command: echo {{ worker.verdict }}
+  relay:
+    fanout:
+      children:
+      - leaf
+      items: worker.targets
+  leaf:
+    input:
+    - item: text
+    command: echo {{ item }}

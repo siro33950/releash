@@ -3,7 +3,5 @@ description: nodes must declare a main root node
 nodes:
   prepare:
     command: printf prepare
-    rules:
-      - next: finish
   finish:
     command: printf finish

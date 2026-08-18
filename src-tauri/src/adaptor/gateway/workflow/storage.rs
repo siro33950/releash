@@ -355,10 +355,9 @@ fn validate_resolved_facet_references(
 ) -> Result<(), ValidationError> {
     let domain_workflow = workflow_definition_to_domain(workflow);
     for (node_name, contents) in facet_contents.iter_node_contents() {
-        let allow_item = workflow.nodes.iter().any(|node| {
-            node.fanout()
-                .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
-        });
+        let Some(node) = domain_workflow.node_by_name(node_name) else {
+            continue;
+        };
         for content in contents
             .policy
             .iter()
@@ -366,7 +365,7 @@ fn validate_resolved_facet_references(
             .chain(contents.instruction.iter())
         {
             if let Some(err) =
-                validation::validate_template_references(&domain_workflow, content, allow_item)
+                validation::validate_template_references_for_node(&domain_workflow, node, content)
                     .into_iter()
                     .next()
             {
@@ -458,6 +457,13 @@ mod tests {
     fn save_and_load_workflow() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
 
         let wf = sample_workflow("my-workflow", false);
         save_workflow(dir, &wf).unwrap();
@@ -891,17 +897,24 @@ name: facet-all
 description: all three facets per node
 nodes:
   main:
+    sequence:
+      children:
+      - lead
+      - par
+  lead:
     session:
       provider: claude
       facets:
         policy: p
-        knowledge: [k1, k2]
+        knowledge:
+        - k1
+        - k2
         instruction: i
-    rules:
-      - next: par
   par:
     fanout:
-      child: [c1, c2]
+      children:
+      - c1
+      - c2
   c1:
     session:
       provider: claude
@@ -922,7 +935,7 @@ nodes:
         let wf = load_workflow(&file_path, dir).unwrap();
         let resolved = resolve_and_validate_workflow_facets(&wf, dir).unwrap();
 
-        let lead_contents = resolved.for_node("main").unwrap();
+        let lead_contents = resolved.for_node("lead").unwrap();
         assert_eq!(lead_contents.policy.as_deref(), Some("POLICY"));
         assert_eq!(
             lead_contents.knowledge,
@@ -1032,17 +1045,19 @@ nodes:
         let dir = tmp.path();
         let instructions = dir.join("instructions");
         std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(instructions.join("impl.md"), "Request: {{ request }}").unwrap();
+        std::fs::write(instructions.join("impl.md"), "Request: {{ goal }}").unwrap();
 
         let yaml = r#"
 name: request-ref
-description: request reference test
+description: parameter reference test
 nodes:
   main:
     session:
       provider: claude
       facets:
         instruction: impl
+    input:
+    - goal
 "#;
         let file_path = dir.join("request-ref.yml");
         std::fs::write(&file_path, yaml).unwrap();

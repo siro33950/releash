@@ -11,10 +11,13 @@ mod runtime_projection;
 mod state;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
+#[cfg(test)]
+pub use definition::InputSourceRef;
 pub use definition::{
-    is_reserved_node_name, CommandSpec, FacetRefs, FanoutSpec, InputParam, ItemsSource,
-    NodeCompletion, NodeDefinition, NodeKind, NodeKindName, Rule, SchemaDef, SessionSpec,
-    WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
+    is_reserved_node_name, ChildEntry, CommandSpec, EffectiveRules, FacetRefs, FanoutSpec,
+    InputParam, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, NodeKindName, Rule,
+    SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN,
+    MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,

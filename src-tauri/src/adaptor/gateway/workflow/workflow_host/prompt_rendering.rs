@@ -1,4 +1,8 @@
 //! Workflow prompt construction.
+//!
+//! 本文（command / facet）はパラメータ名だけを参照する。値の解決規則
+//! （children エントリの inputs 束縛・items 自動束縛）は domain の
+//! `reference::resolve_entry_bindings` が所有し、ここでは描画のみを行う。
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -6,14 +10,12 @@ use serde_json::Value;
 
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::prompt_composition;
-use crate::domain::workflow::services::reference::{
-    self, resolve_runtime_reference, REQUEST_ARTIFACT,
-};
+use crate::domain::workflow::services::reference::{self, REQUEST_ARTIFACT};
 #[cfg(test)]
 use crate::domain::workflow::services::template_preview;
 use crate::domain::workflow::FacetContents;
 use crate::domain::workflow::RuntimeArtifact;
-use crate::domain::workflow::{NodeDefinition, SchemaDef};
+use crate::domain::workflow::{ChildEntry, NodeDefinition, SchemaDef};
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 pub(crate) fn artifact_values(
@@ -33,18 +35,52 @@ pub(crate) fn artifact_values(
     artifacts
 }
 
-fn render_prompt_content(
-    content: &str,
-    artifacts: &HashMap<String, Value>,
+/// root スコープ（sequence の子・単独 node）のパラメータ束縛（YAML の配線順を保持）。
+pub(crate) fn parameter_bindings(
+    entry: Option<&ChildEntry>,
+    runtime_artifacts: &HashMap<String, RuntimeArtifact>,
+    request: Option<&str>,
+) -> Vec<(String, Value)> {
+    let artifacts = artifact_values(runtime_artifacts, request);
+    reference::resolve_entry_bindings(entry, &artifacts)
+}
+
+/// fanout 自身の束縛済みパラメータ（root スコープのエントリ配線から解決）。
+/// 子への供給元はこのパラメータ + `request` + `items` に閉じる。
+pub(crate) fn fanout_parent_parameters(
+    workflow: &crate::domain::workflow::WorkflowDefinition,
+    parent_node_name: &str,
+    runtime_artifacts: &HashMap<String, RuntimeArtifact>,
+    request: Option<&str>,
+) -> HashMap<String, Value> {
+    let entry = workflow
+        .root_sequence()
+        .and_then(|sequence| sequence.child_entry(parent_node_name));
+    parameter_bindings(entry, runtime_artifacts, request)
+        .into_iter()
+        .collect()
+}
+
+/// fanout の子のパラメータ束縛（親パラメータ + request + items）。
+pub(crate) fn fanout_child_bindings(
+    node: &NodeDefinition,
+    entry: Option<&ChildEntry>,
+    parent_parameters: &HashMap<String, Value>,
+    request: Option<&str>,
     item: Option<&Value>,
-) -> String {
-    render_artifact_references(content, artifacts, item)
+) -> Vec<(String, Value)> {
+    let request = request.map(|value| Value::String(value.to_string()));
+    reference::resolve_fanout_child_bindings(entry, node, parent_parameters, request.as_ref(), item)
+}
+
+fn binding_values(bindings: &[(String, Value)]) -> HashMap<String, Value> {
+    bindings.iter().cloned().collect()
 }
 
 pub(crate) fn find_undefined_template_variables(content: &str) -> Vec<String> {
     reference::extract_template_references(content)
         .into_iter()
-        .filter(|value| reference::parse_reference(value).is_err())
+        .filter(|value| reference::split_reference(value).is_none())
         .collect()
 }
 
@@ -53,55 +89,42 @@ pub(crate) fn render_template_variables(content: &str, values: &HashMap<String, 
     template_preview::render_template_variables(content, values)
 }
 
-pub(crate) fn render_artifact_references(
-    content: &str,
-    artifacts: &HashMap<String, Value>,
-    item: Option<&Value>,
-) -> String {
+/// `{{ <パラメータ>(.field) }}` を束縛済みパラメータ値で置換する。
+/// 解決できない参照はそのまま残す。
+pub(crate) fn render_parameter_references(content: &str, bindings: &[(String, Value)]) -> String {
+    let values = binding_values(bindings);
     replace_template_refs(content, |inner| {
-        let parsed = reference::parse_reference(inner).ok()?;
-        resolve_runtime_reference(&parsed, artifacts, item).map(value_to_template_string)
+        let (root, field) = reference::split_reference(inner)?;
+        reference::resolve_template_value(root, field, &values).map(value_to_template_string)
     })
 }
 
-pub(crate) fn inject_input_artifacts(
+/// 束縛済みパラメータを `## input: <パラメータ>` ブロックとして本文末尾へ注入する。
+/// 型あり（Contract 付き）パラメータは Contract 名を併記する。
+pub(crate) fn inject_input_parameters(
     prompt: &str,
-    inputs: &[String],
-    artifacts: &HashMap<String, Value>,
+    node: &NodeDefinition,
+    bindings: &[(String, Value)],
 ) -> String {
-    let mut result = prompt.to_string();
-    if let Some(block) = input_artifacts_block(inputs, artifacts) {
-        result.push_str(&block);
-    }
-    result
-}
-
-fn input_artifacts_block(inputs: &[String], artifacts: &HashMap<String, Value>) -> Option<String> {
     let mut blocks = Vec::new();
-    for input in inputs {
-        let Ok(parsed) = reference::parse_reference(input) else {
-            continue;
+    for (parameter, value) in bindings {
+        let json = serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".to_string());
+        let heading = match node
+            .input_parameter(parameter)
+            .and_then(|param| param.contract.as_deref())
+        {
+            Some(contract) => format!("## input: {parameter} ({contract})"),
+            None => format!("## input: {parameter}"),
         };
-        let name = input.trim();
-        let Some(value) = resolve_runtime_reference(&parsed, artifacts, None) else {
-            continue;
-        };
-        let json = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".to_string());
-        blocks.push(format!("## input: {name}\n```json\n{json}\n```"));
+        blocks.push(format!("{heading}\n```json\n{json}\n```"));
     }
-    (!blocks.is_empty()).then(|| format!("\n\n{}", blocks.join("\n\n")))
-}
-
-fn inject_fanout_item(prompt: &str, input_contract: Option<&str>, item: Option<&Value>) -> String {
-    let (Some(input_contract), Some(item)) = (input_contract, item) else {
+    if blocks.is_empty() {
         return prompt.to_string();
-    };
-    let json = serde_json::to_string_pretty(item).unwrap_or_else(|_| "null".to_string());
-    let block = format!("## input: item ({input_contract})\n```json\n{json}\n```");
+    }
     if prompt.is_empty() {
-        block
+        blocks.join("\n\n")
     } else {
-        format!("{prompt}\n\n{block}")
+        format!("{prompt}\n\n{}", blocks.join("\n\n"))
     }
 }
 
@@ -175,6 +198,7 @@ pub(crate) fn build_node_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     node_execution_id: &str,
+    entry: Option<&ChildEntry>,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
     schemas: &BTreeMap<String, SchemaDef>,
@@ -193,13 +217,13 @@ pub(crate) fn build_node_prompt(
         )));
     }
 
-    let artifacts = artifact_values(artifacts, request);
+    let bindings = parameter_bindings(entry, artifacts, request);
     let composed = prompt_composition::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
-        .map(|content| render_prompt_content(&content, &artifacts, None));
-    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, None);
-    let mut prompt = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
+        .map(|content| render_parameter_references(&content, &bindings));
+    let rendered_user = render_parameter_references(&composed.user_message, &bindings);
+    let mut prompt = inject_input_parameters(&rendered_user, node, &bindings);
     append_completion_action(
         &mut prompt,
         node.artifact.as_deref(),
@@ -227,8 +251,9 @@ impl<'a> FanoutChildPromptContext<'a> {
 pub(crate) fn build_fanout_child_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
+    entry: Option<&ChildEntry>,
     request: Option<&str>,
-    artifacts: &HashMap<String, RuntimeArtifact>,
+    parent_parameters: &HashMap<String, Value>,
     context: FanoutChildPromptContext<'_>,
     schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<(Option<String>, String), WorkflowRuntimeError> {
@@ -239,18 +264,13 @@ pub(crate) fn build_fanout_child_prompt(
         )));
     }
 
-    let artifacts = artifact_values(artifacts, request);
+    let bindings = fanout_child_bindings(node, entry, parent_parameters, request, context.item);
     let composed = prompt_composition::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
-        .map(|content| render_prompt_content(&content, &artifacts, context.item));
-    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, context.item);
-    let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
-    let mut user_message = inject_fanout_item(
-        &rendered_user,
-        node.sole_typed_input_contract(),
-        context.item,
-    );
+        .map(|content| render_parameter_references(&content, &bindings));
+    let rendered_user = render_parameter_references(&composed.user_message, &bindings);
+    let mut user_message = inject_input_parameters(&rendered_user, node, &bindings);
     append_completion_action(
         &mut user_message,
         node.artifact.as_deref(),
@@ -277,6 +297,7 @@ pub(crate) fn request_node_artifact(request: &str, timestamp: f64) -> RuntimeArt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::workflow::value_objects::InputSourceRef;
     use crate::domain::workflow::{FacetRefs, InputParam, NodeKind, SessionSpec};
 
     fn make_test_node(name: &str, instruction: &str) -> NodeDefinition {
@@ -293,11 +314,45 @@ mod tests {
         }
     }
 
+    fn untyped_param(name: &str) -> InputParam {
+        InputParam {
+            name: name.to_string(),
+            contract: None,
+        }
+    }
+
+    fn entry_with_inputs(name: &str, inputs: Vec<(&str, &str)>) -> ChildEntry {
+        ChildEntry {
+            name: name.to_string(),
+            inputs: inputs
+                .into_iter()
+                .map(|(parameter, source)| (parameter.to_string(), InputSourceRef::new(source)))
+                .collect(),
+            rules: None,
+        }
+    }
+
     fn instruction_contents(instruction: &str) -> FacetContents {
         FacetContents {
             instruction: Some(instruction.to_string()),
             ..Default::default()
         }
+    }
+
+    fn plan_artifact() -> (String, RuntimeArtifact) {
+        (
+            "plan".to_string(),
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
+                session_id: None,
+                result: None,
+                artifact: Some(serde_json::json!({"summary": "ready"})),
+                contract: Some("plan".to_string()),
+                token_usage: None,
+                completed_at: 1.0,
+            },
+        )
     }
 
     #[test]
@@ -312,6 +367,7 @@ mod tests {
             None,
             "node-execution-1",
             None,
+            None,
             &HashMap::new(),
             &BTreeMap::new(),
         )
@@ -325,28 +381,18 @@ mod tests {
     }
 
     #[test]
-    fn build_node_prompt_injects_inputs_as_json() {
-        let mut node = make_test_node("implement", "Implement {{ request }}");
-        node.inputs = vec!["request".to_string(), "plan".to_string()];
-        let resolved = instruction_contents("Implement {{ request }}");
-        let outputs = HashMap::from([(
-            "plan".to_string(),
-            RuntimeArtifact {
-                node_name: "plan".to_string(),
-                attempt: 1,
-                session_id: None,
-                result: None,
-                artifact: Some(serde_json::json!({"summary": "ready"})),
-                contract: Some("plan".to_string()),
-                token_usage: None,
-                completed_at: 1.0,
-            },
-        )]);
+    fn build_node_prompt_injects_bound_parameters_as_json() {
+        let mut node = make_test_node("implement", "Implement {{ goal }}");
+        node.input = vec![untyped_param("goal"), untyped_param("plan_doc")];
+        let entry = entry_with_inputs("implement", vec![("goal", "request"), ("plan_doc", "plan")]);
+        let resolved = instruction_contents("Implement {{ goal }}");
+        let outputs = HashMap::from([plan_artifact()]);
 
         let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
             "node-execution-1",
+            Some(&entry),
             Some("ship"),
             &outputs,
             &BTreeMap::new(),
@@ -354,16 +400,18 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("Implement ship"));
-        assert!(prompt.contains("## input: request"));
+        assert!(prompt.contains("## input: goal"));
         assert!(prompt.contains("\"ship\""));
-        assert!(prompt.contains("## input: plan"));
+        assert!(prompt.contains("## input: plan_doc"));
         assert!(prompt.contains("\"summary\": \"ready\""));
     }
 
     #[test]
-    fn build_node_prompt_renders_node_field() {
-        let node = make_test_node("fix", "Spec dir: {{ authoring.spec_dir }}");
-        let resolved = instruction_contents("Spec dir: {{ authoring.spec_dir }}");
+    fn build_node_prompt_renders_parameter_field_path() {
+        let mut node = make_test_node("fix", "Spec dir: {{ spec.spec_dir }}");
+        node.input = vec![untyped_param("spec")];
+        let entry = entry_with_inputs("fix", vec![("spec", "authoring")]);
+        let resolved = instruction_contents("Spec dir: {{ spec.spec_dir }}");
         let outputs = HashMap::from([(
             "authoring".to_string(),
             RuntimeArtifact {
@@ -382,6 +430,7 @@ mod tests {
             &node,
             Some(&resolved),
             "node-execution-1",
+            Some(&entry),
             Some(""),
             &outputs,
             &BTreeMap::new(),
@@ -392,18 +441,19 @@ mod tests {
     }
 
     #[test]
-    fn build_fanout_child_prompt_binds_item_as_declared_input() {
-        let mut node = make_test_node("worker", "Review {{ item.path }}");
+    fn build_fanout_child_prompt_auto_binds_item_to_sole_parameter() {
+        let mut node = make_test_node("worker", "Review {{ task.path }}");
         node.input = vec![InputParam {
-            name: "item".to_string(),
+            name: "task".to_string(),
             contract: Some("work-item".to_string()),
         }];
-        let resolved = instruction_contents("Review {{ item.path }}");
+        let resolved = instruction_contents("Review {{ task.path }}");
         let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
 
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
+            None,
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
@@ -412,51 +462,49 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("Review src/lib.rs"));
-        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("## input: task (work-item)"));
         assert!(prompt.contains("\"priority\": 2"));
     }
 
     #[test]
-    fn build_fanout_child_prompt_injects_ordinary_inputs_and_binds_item() {
-        let mut node = make_test_node("worker", "Review {{ item.path }} for {{ request }}");
-        node.inputs = vec!["request".to_string(), "plan".to_string()];
-        node.input = vec![InputParam {
-            name: "item".to_string(),
-            contract: Some("work-item".to_string()),
-        }];
-        let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
-        let outputs = HashMap::from([(
-            "plan".to_string(),
-            RuntimeArtifact {
-                node_name: "plan".to_string(),
-                attempt: 1,
-                session_id: None,
-                result: None,
-                artifact: Some(serde_json::json!({"summary": "ready"})),
-                contract: Some("plan".to_string()),
-                token_usage: None,
-                completed_at: 1.0,
+    fn build_fanout_child_prompt_binds_explicit_inputs_and_items() {
+        let mut node = make_test_node("worker", "Review {{ task.path }} for {{ goal }}");
+        node.input = vec![
+            InputParam {
+                name: "task".to_string(),
+                contract: Some("work-item".to_string()),
             },
-        )]);
+            untyped_param("goal"),
+            untyped_param("plan_doc"),
+        ];
+        let entry = entry_with_inputs(
+            "worker",
+            vec![("task", "items"), ("goal", "request"), ("plan_doc", "plan")],
+        );
+        let resolved = instruction_contents("Review {{ task.path }} for {{ goal }}");
+        // fanout の子への供給は親 fanout の束縛済みパラメータから解決する。
+        let parent_parameters =
+            HashMap::from([("plan".to_string(), serde_json::json!({"summary": "ready"}))]);
         let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
 
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
+            Some(&entry),
             Some("ship"),
-            &outputs,
+            &parent_parameters,
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
             &BTreeMap::new(),
         )
         .unwrap();
 
         assert!(prompt.contains("Review src/lib.rs for ship"));
-        assert!(prompt.contains("## input: request"));
-        assert!(prompt.contains("\"ship\""));
-        assert!(prompt.contains("## input: plan"));
-        assert!(prompt.contains("\"summary\": \"ready\""));
-        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("## input: task (work-item)"));
         assert!(prompt.contains("\"priority\": 2"));
+        assert!(prompt.contains("## input: goal"));
+        assert!(prompt.contains("\"ship\""));
+        assert!(prompt.contains("## input: plan_doc"));
+        assert!(prompt.contains("\"summary\": \"ready\""));
     }
 
     #[test]
@@ -468,6 +516,7 @@ mod tests {
             &node,
             Some(&resolved),
             "node-execution-1",
+            None,
             None,
             &HashMap::new(),
             &BTreeMap::new(),
@@ -501,6 +550,7 @@ mod tests {
             Some(&resolved),
             "node-execution-1",
             None,
+            None,
             &HashMap::new(),
             &schemas,
         )
@@ -523,6 +573,7 @@ mod tests {
             &node,
             Some(&resolved),
             None,
+            None,
             &HashMap::new(),
             FanoutChildPromptContext::new(None, "node-execution-1"),
             &BTreeMap::new(),
@@ -537,18 +588,19 @@ mod tests {
 
     #[test]
     fn build_fanout_child_prompt_addresses_the_node_execution() {
-        let mut node = make_test_node("review", "Review {{ item.path }}.");
+        let mut node = make_test_node("review", "Review {{ task.path }}.");
         node.input = vec![InputParam {
-            name: "item".to_string(),
+            name: "task".to_string(),
             contract: Some("work-item".to_string()),
         }];
         node.artifact = Some("review-result".to_string());
-        let resolved = instruction_contents("Review {{ item.path }}.");
+        let resolved = instruction_contents("Review {{ task.path }}.");
         let item = serde_json::json!({"path": "src/lib.rs"});
 
         let (_system, prompt) = build_fanout_child_prompt(
             &node,
             Some(&resolved),
+            None,
             None,
             &HashMap::new(),
             FanoutChildPromptContext::new(Some(&item), "node-execution-1"),

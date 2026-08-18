@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use crate::adaptor::gateway::workflow::workflow_host::execution_registry::find_by_worktree;
 use crate::adaptor::gateway::workflow::workflow_host::execution_state::DomainWorkflowExecution;
 use crate::adaptor::gateway::workflow::workflow_host::fanout_runtime::{
-    self as workflow_fanout_runtime, FanoutPromptInputs, FanoutStartContext,
+    self as workflow_fanout_runtime, FanoutStartContext,
 };
 use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering as workflow_prompt;
 use crate::domain::workflow::SchemaDef;
@@ -16,7 +16,6 @@ use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) struct FanoutStartRuntimeInputs {
     pub(crate) fanout_start: FanoutStartContext,
-    pub(crate) prompt_inputs: FanoutPromptInputs,
 }
 
 pub(crate) async fn load_fanout_start_runtime_inputs(
@@ -28,7 +27,6 @@ pub(crate) async fn load_fanout_start_runtime_inputs(
         .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string()))?;
     Ok(FanoutStartRuntimeInputs {
         fanout_start: workflow_fanout_runtime::prepare_fanout_start_context(exec)?,
-        prompt_inputs: workflow_fanout_runtime::fanout_prompt_inputs(exec),
     })
 }
 
@@ -58,12 +56,10 @@ pub(crate) struct FanoutChildSessionPlan {
 
 pub(crate) fn prepare_fanout_child_session_plans(
     fanout_start: &FanoutStartContext,
-    prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
     schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<Vec<FanoutChildSessionPlan>, WorkflowRuntimeError> {
-    let prompt_plans =
-        prepare_fanout_child_prompt_plans(fanout_start, prompt_inputs, facet_contents, schemas)?;
+    let prompt_plans = prepare_fanout_child_prompt_plans(fanout_start, facet_contents, schemas)?;
     prompt_plans
         .into_iter()
         .map(|prompt_plan| {
@@ -101,7 +97,6 @@ struct FanoutChildPromptPlan {
 
 fn prepare_fanout_child_prompt_plans(
     fanout_start: &FanoutStartContext,
-    prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
     schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<Vec<FanoutChildPromptPlan>, WorkflowRuntimeError> {
@@ -114,8 +109,9 @@ fn prepare_fanout_child_prompt_plans(
             let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
                 &child.node,
                 facet_contents.for_node(&child.node.name),
+                Some(&child.entry),
                 fanout_start.request.as_deref(),
-                &prompt_inputs.artifacts,
+                &fanout_start.parent_parameters,
                 workflow_prompt::FanoutChildPromptContext::new(
                     child.item.as_ref(),
                     &child.node_execution_id,
@@ -179,12 +175,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_fanout_start_runtime_inputs_reads_context_and_prompt_inputs() {
+    async fn load_fanout_start_runtime_inputs_reads_context() {
         let mut exec = workflow_execution_fixture("execution-1", "/tmp/repo");
         exec.workflow.nodes[0] = NodeDefinition {
             name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: vec!["review-a".to_string()],
+                children: vec![crate::domain::workflow::ChildEntry::reference("review-a")],
                 items: None,
             }),
             ..Default::default()
@@ -217,10 +213,6 @@ mod tests {
             inputs.fanout_start.child_node_names(),
             vec!["review-a".to_string()]
         );
-        assert_eq!(
-            inputs.prompt_inputs.artifacts["plan"].artifact,
-            Some(serde_json::json!({ "status": "ok" }))
-        );
     }
 
     #[test]
@@ -231,7 +223,10 @@ mod tests {
             NodeDefinition {
                 name: "fanout-review".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
-                    child: vec!["review-reused".to_string(), "review-pending".to_string()],
+                    children: vec![
+                        crate::domain::workflow::ChildEntry::reference("review-reused"),
+                        crate::domain::workflow::ChildEntry::reference("review-pending"),
+                    ],
                     items: None,
                 }),
                 ..Default::default()
@@ -250,7 +245,6 @@ mod tests {
             },
         ];
 
-        let prompt_inputs = workflow_fanout_runtime::fanout_prompt_inputs(&exec);
         let mut fanout_start =
             workflow_fanout_runtime::prepare_fanout_start_context(&exec).unwrap();
         let reused_node_execution_id = fanout_start.children[0].node_execution_id.clone();
@@ -269,7 +263,6 @@ mod tests {
 
         let prompt_plans = prepare_fanout_child_prompt_plans(
             &fanout_start,
-            &prompt_inputs,
             &WorkflowFacetContents::default(),
             &exec.workflow.schemas,
         )
@@ -286,7 +279,6 @@ mod tests {
 
         let session_plans = prepare_fanout_child_session_plans(
             &fanout_start,
-            &prompt_inputs,
             &WorkflowFacetContents::default(),
             &exec.workflow.schemas,
         )

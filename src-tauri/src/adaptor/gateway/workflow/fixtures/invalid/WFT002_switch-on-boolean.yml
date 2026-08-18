@@ -7,20 +7,25 @@ schemas:
       passed:
         type: boolean
     required:
-      - passed
+    - passed
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - switch:
+              on: passed
+              cases:
+                "true": done
+            next: done
+      - done
+  judge:
     artifact: verdict
     session:
       provider: claude
       facets:
         instruction: judge
-    rules:
-      - switch:
-          on: passed
-          cases:
-            "true": done
-        next: done
   done:
     session:
       provider: claude

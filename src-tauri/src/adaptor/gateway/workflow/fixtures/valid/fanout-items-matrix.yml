@@ -7,25 +7,28 @@ schemas:
       path:
         type: string
     required:
-      - path
+    - path
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - done
+  dispatch:
     fanout:
-      child:
-        - lint
-        - test
+      children:
+      - lint
+      - test
       items:
-        - path: src/lib.rs
-        - path: src/main.rs
-    rules:
-      - next: done
+      - path: src/lib.rs
+      - path: src/main.rs
   lint:
     input:
-      - item: target
+    - item: target
     command: echo {{ item.path }}
   test:
     input:
-      - item: target
+    - item: target
     command: echo {{ item.path }}
   done:
     command: echo done

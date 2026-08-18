@@ -52,12 +52,63 @@ schemas:
 
 nodes:
   main:
+    sequence:
+      children:
+        - run_tests:
+            rules:
+              - when:
+                  on: ok
+                  then: review
+                next: fix_tests
+        - fix_tests:
+            inputs:
+              run_tests: run_tests
+            rules:
+              - loop_guard:
+                  max_iterations: 3
+                  on_exhausted: give_up
+              - next: run_tests
+        - review
+        - judge:
+            inputs:
+              review: review
+            rules:
+              - when:
+                  on: all_lgtm
+                  then: list_threads
+                next: apply_fixes
+        - apply_fixes:
+            rules:
+              - loop_guard:
+                  max_iterations: 3
+                  on_exhausted: give_up
+              - next: review
+        - list_threads:
+            rules:
+              - when:
+                  on: has_open
+                  then: fix_each
+                next: done
+        - fix_each
+        - triage:
+            rules:
+              - loop_guard:
+                  max_iterations: 2
+                  on_exhausted: escalate
+              - switch:
+                  on: verdict
+                  cases:
+                    SHIP: done
+                    HOLD: list_threads
+                    ESCALATE: escalate
+        - done:
+            rules: []
+        - give_up:
+            rules: []
+        - escalate
+
+  run_tests:
     command: "cargo test"
-    rules:
-      - when:
-          on: ok
-          then: review
-        next: fix_tests
 
   fix_tests:
     session:
@@ -67,21 +118,14 @@ nodes:
       facets:
         policy: implementing
         instruction: fix-failing-tests
-    inputs:
-      - main
-    rules:
-      - loop_guard:
-          max_iterations: 3
-          on_exhausted: give_up
-      - next: main
+    input:
+      - run_tests
 
   review:
     fanout:
-      child:
+      children:
         - review_opus
         - review_gpt
-    rules:
-      - next: judge
 
   review_opus:
     session:
@@ -106,14 +150,9 @@ nodes:
 
   judge:
     command: "echo '{{ review }}' | jq '{all_lgtm: all(.[]; .lgtm)}'"   # review = 子 artifact の配列
-    inputs:
+    input:
       - review
     artifact: judge_result
-    rules:
-      - when:
-          on: all_lgtm
-          then: list_threads
-        next: apply_fixes
 
   apply_fixes:
     session:
@@ -123,29 +162,18 @@ nodes:
       facets:
         policy: implementing
         instruction: apply-review-fixes
-    rules:
-      - loop_guard:
-          max_iterations: 3
-          on_exhausted: give_up
-      - next: review
 
   list_threads:
     command: >-
       releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
       jq '{threads: map({thread_id: .id}), has_open: (length > 0)}'
     artifact: thread_scan
-    rules:
-      - when:
-          on: has_open
-          then: fix_each
-        next: done
 
   fix_each:
     fanout:
-      child: fix_one
+      children:
+        - fix_one
       items: list_threads.threads
-    rules:
-      - next: triage
 
   fix_one:
     session:
@@ -172,16 +200,6 @@ nodes:
         policy: reviewing
         instruction: triage-ship-decision
     artifact: ship_decision
-    rules:
-      - loop_guard:
-          max_iterations: 2
-          on_exhausted: escalate
-      - switch:
-          on: verdict
-          cases:
-            SHIP: done
-            HOLD: list_threads
-            ESCALATE: escalate
 
   done:
     session:

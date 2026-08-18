@@ -54,7 +54,6 @@ function makeWorkflow(overrides?: {
 				},
 				artifact: "plan-doc",
 				input: overrides?.input,
-				rules: [],
 			},
 		],
 	};

@@ -1,0 +1,13 @@
+name: unknown-input-source
+description: an inputs source that resolves to nothing is rejected
+nodes:
+  main:
+    sequence:
+      children:
+      - implement:
+          inputs:
+            spec: missing_source
+  implement:
+    command: "printf '%s' '{{ spec }}'"
+    input:
+    - spec

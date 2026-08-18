@@ -173,7 +173,7 @@ mod contract_service_tests {
                 NodeDefinition {
                     name: "fanout".to_string(),
                     kind: NodeKind::Fanout(FanoutSpec {
-                        child: vec!["child".to_string()],
+                        children: vec![crate::domain::workflow::ChildEntry::reference("child")],
                         items: None,
                     }),
                     ..Default::default()

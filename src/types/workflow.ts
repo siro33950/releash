@@ -29,7 +29,7 @@ export type WorkflowExecutionStatus =
 
 export type ExecutionInterruptionReason = "crash" | "stale" | "stop" | "orphan";
 
-type Rule =
+export type Rule =
 	| {
 			type: "when";
 			on: string;
@@ -53,7 +53,7 @@ type Rule =
 			next: string;
 	  };
 
-export type NodeKind = "command" | "session" | "fanout";
+export type NodeKind = "command" | "session" | "fanout" | "sequence";
 export type NodeCompletion = "auto" | "approval";
 
 export interface FacetRefs {
@@ -78,9 +78,27 @@ export type SchemaDefView = JsonValue;
 
 export type FanoutItemsSource = JsonValue[] | string;
 
-interface FanoutSpec {
-	child: string[];
+export interface ChildInput {
+	parameter: string;
+	source: string;
+}
+
+export interface ChildEntry {
+	name: string;
+	inputs?: ChildInput[];
+	// 省略 = 隣接辺 auto（リストの次へ）、空配列 = 明示終端
+	rules?: Rule[];
+}
+
+export interface FanoutSpec {
+	children: ChildEntry[];
 	items?: FanoutItemsSource;
+}
+
+export interface SequenceSpec {
+	entry?: string;
+	output?: string;
+	children: ChildEntry[];
 }
 
 export interface NodeDefinition {
@@ -89,13 +107,11 @@ export interface NodeDefinition {
 	command?: string;
 	session?: SessionSpec;
 	fanout?: FanoutSpec;
+	sequence?: SequenceSpec;
 	artifact?: string;
 	input?: InputParam[];
-	inputs?: string[];
-	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
-	// fixture では空配列を毎回書かなくて済むよう optional とする）
-	rules?: Rule[];
 	completion?: NodeCompletion;
+	worktree?: string;
 }
 
 export interface WorkflowDefinition {

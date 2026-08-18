@@ -4,6 +4,9 @@ nodes:
   finish:
     command: printf finish
   main:
+    sequence:
+      children:
+      - start
+      - finish
+  start:
     command: printf start
-    rules:
-      - next: finish

@@ -7,6 +7,7 @@ fn runtime_node_kind_name(kind: crate::domain::workflow::NodeKindName) -> NodeKi
         crate::domain::workflow::NodeKindName::Session => NodeKindName::Session,
         crate::domain::workflow::NodeKindName::Fanout => NodeKindName::Fanout,
         crate::domain::workflow::NodeKindName::Command => NodeKindName::Command,
+        crate::domain::workflow::NodeKindName::Sequence => NodeKindName::Sequence,
     }
 }
 

@@ -2,12 +2,15 @@ name: fanout-children
 description: valid fanout with multiple top-level children
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - done
+  dispatch:
     fanout:
-      child:
-        - lint
-        - test
-    rules:
-      - next: done
+      children:
+      - lint
+      - test
   lint:
     command: cargo clippy
   test:

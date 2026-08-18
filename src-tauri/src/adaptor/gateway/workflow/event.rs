@@ -1026,6 +1026,7 @@ pub(crate) fn to_domain_event(
         NodeKindName::Command => DomainNodeKindName::Command,
         NodeKindName::Session => DomainNodeKindName::Session,
         NodeKindName::Fanout => DomainNodeKindName::Fanout,
+        NodeKindName::Sequence => DomainNodeKindName::Sequence,
     };
 
     Ok(match event {
@@ -1330,6 +1331,7 @@ pub(crate) fn from_domain_event(
         DomainNodeKindName::Command => NodeKindName::Command,
         DomainNodeKindName::Session => NodeKindName::Session,
         DomainNodeKindName::Fanout => NodeKindName::Fanout,
+        DomainNodeKindName::Sequence => NodeKindName::Sequence,
     };
 
     Ok(match event {
@@ -1715,12 +1717,26 @@ mod tests {
     #[test]
     fn execution_started_round_trips_loop_guard_reset_on() {
         let mut definition = minimal_workflow();
-        definition.nodes[0].rules =
-            vec![crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
-                max_iterations: 2,
-                on_exhausted: "main".to_string(),
-                reset_on: Some("main".to_string()),
-            }];
+        definition.nodes[0].name = "fix".to_string();
+        definition.nodes.push(NodeDefinition {
+            name: "main".to_string(),
+            kind: NodeKind::Sequence(crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                entry: None,
+                output: None,
+                children: vec![crate::domain::workflow::ChildEntry {
+                    name: "fix".to_string(),
+                    inputs: Vec::new(),
+                    rules: Some(vec![
+                        crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+                            max_iterations: 2,
+                            on_exhausted: "fix".to_string(),
+                            reset_on: Some("fix".to_string()),
+                        },
+                    ]),
+                }],
+            }),
+            ..NodeDefinition::default()
+        });
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
             workflow_name: "wf".to_string(),
@@ -1733,20 +1749,27 @@ mod tests {
 
         let serialized = serde_json::to_value(event).unwrap();
         assert_eq!(
-            serialized["definition"]["nodes"]["main"]["rules"][0]["loop_guard"]["reset_on"],
-            "main"
+            serialized["definition"]["nodes"]["main"]["sequence"]["children"][0]["fix"]["rules"][0]
+                ["loop_guard"]["reset_on"],
+            "fix"
         );
 
         let restored = serde_json::from_value::<WorkflowEvent>(serialized).unwrap();
         let WorkflowEvent::ExecutionStarted { definition, .. } = restored else {
             panic!("expected execution_started event");
         };
+        let sequence = definition
+            .nodes
+            .iter()
+            .find(|node| node.name == "main")
+            .and_then(|node| node.sequence())
+            .expect("main sequence survives the round trip");
         assert!(matches!(
-            &definition.nodes[0].rules[0],
-            crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+            sequence.children[0].rules.as_deref(),
+            Some([crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
                 reset_on: Some(reset_on),
                 ..
-            } if reset_on == "main"
+            }]) if reset_on == "fix"
         ));
     }
 

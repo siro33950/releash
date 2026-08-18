@@ -1,0 +1,9 @@
+name: node-rules
+description: node definitions cannot declare rules directly
+nodes:
+  main:
+    command: printf done
+    rules:
+    - next: done
+  done:
+    command: printf finished

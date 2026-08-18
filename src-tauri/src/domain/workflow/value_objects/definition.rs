@@ -81,6 +81,34 @@ impl WorkflowDefinition {
     pub fn entry_index(&self) -> Option<usize> {
         self.nodes.iter().position(|node| node.name == self.entry)
     }
+
+    pub fn node_by_name(&self, name: &str) -> Option<&NodeDefinition> {
+        self.nodes.iter().find(|node| node.name == name)
+    }
+
+    /// 実行スコープ（W2 では root の sequence 1 段のみ）の children。
+    /// root が leaf / fanout の場合は None（単独実行）。
+    pub fn root_sequence(&self) -> Option<&SequenceSpec> {
+        self.entry_node().and_then(NodeDefinition::sequence)
+    }
+
+    /// 実行開始 node。root が sequence なら実効 entry（entry 指定 or children
+    /// 先頭）の子、それ以外は root 自身。
+    pub fn initial_execution_node_index(&self) -> Option<usize> {
+        let entry_index = self.entry_index()?;
+        match self.nodes[entry_index].sequence() {
+            Some(sequence) => {
+                let name = sequence.entry_child_name()?;
+                self.nodes.iter().position(|node| node.name == name)
+            }
+            None => Some(entry_index),
+        }
+    }
+
+    pub fn initial_execution_node(&self) -> Option<&NodeDefinition> {
+        self.initial_execution_node_index()
+            .map(|index| &self.nodes[index])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +156,7 @@ pub enum NodeKindName {
     #[default]
     Session,
     Fanout,
+    Sequence,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +164,7 @@ pub enum NodeKind {
     Command(CommandSpec),
     Session(SessionSpec),
     Fanout(FanoutSpec),
+    Sequence(SequenceSpec),
 }
 
 #[cfg(test)]
@@ -150,6 +180,7 @@ impl NodeKind {
             Self::Command(_) => NodeKindName::Command,
             Self::Session(_) => NodeKindName::Session,
             Self::Fanout(_) => NodeKindName::Fanout,
+            Self::Sequence(_) => NodeKindName::Sequence,
         }
     }
 }
@@ -248,16 +279,182 @@ where
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
+/// fanout 合成子。children は sequence と同形式の children エントリのリスト。
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct FanoutSpec {
-    #[serde(
-        deserialize_with = "deserialize_one_or_many_strings",
-        serialize_with = "serialize_one_or_many_strings"
-    )]
-    pub child: Vec<String>,
+    pub children: Vec<ChildEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<ItemsSource>,
+}
+
+/// sequence 合成子。children エントリの並びが隣接辺（rules 省略時の既定辺）を定める。
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct SequenceSpec {
+    /// 開始 node（children のエントリ名）。省略時はリスト先頭。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// artifact 宣言時にどの子の Artifact を返すか（children のエントリ名）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub children: Vec<ChildEntry>,
+}
+
+/// children エントリの実効辺。
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffectiveRules<'a> {
+    /// エントリに明示された rules（空スライス = 明示終端）。
+    Rules(&'a [Rule]),
+    /// rules 省略時の隣接辺（リストの次のエントリへ）。
+    AdjacentNext(&'a str),
+    /// リスト末尾（隣接辺なし）、または children に載らない node。
+    Terminal,
+}
+
+impl SequenceSpec {
+    /// 実効 entry（entry 指定 or children 先頭）。
+    pub fn entry_child_name(&self) -> Option<&str> {
+        self.entry
+            .as_deref()
+            .or_else(|| self.children.first().map(|child| child.name.as_str()))
+    }
+
+    pub fn child_entry(&self, name: &str) -> Option<&ChildEntry> {
+        self.children.iter().find(|child| child.name == name)
+    }
+
+    /// エントリの実効辺。rules 明示があればそれ（空 = 終端）、無ければ隣接辺、
+    /// 末尾・children 外は終端。
+    pub fn effective_rules(&self, name: &str) -> EffectiveRules<'_> {
+        let Some(index) = self.children.iter().position(|child| child.name == name) else {
+            return EffectiveRules::Terminal;
+        };
+        match &self.children[index].rules {
+            Some(rules) => EffectiveRules::Rules(rules),
+            None => match self.children.get(index + 1) {
+                Some(next) => EffectiveRules::AdjacentNext(next.name.as_str()),
+                None => EffectiveRules::Terminal,
+            },
+        }
+    }
+}
+
+/// 合成子（sequence / fanout）の children エントリ（正規化後）。
+/// インライン宣言・無名エントリは load 時にカタログへ登録され、エントリは常に
+/// カタログ参照名を持つ。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildEntry {
+    /// カタログ参照名。無名エントリは合成内部名（`<合成子名>#<index>`）。
+    pub name: String,
+    /// `<パラメータ名>: <供給元>`。YAML の記述順を保持する。
+    pub inputs: Vec<(String, InputSourceRef)>,
+    /// None = 隣接辺 auto（リストの次へ、末尾は終端）。Some(空) = 明示終端。
+    pub rules: Option<Vec<Rule>>,
+}
+
+impl ChildEntry {
+    pub fn reference(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            inputs: Vec::new(),
+            rules: None,
+        }
+    }
+
+    fn has_treatment(&self) -> bool {
+        !self.inputs.is_empty() || self.rules.is_some()
+    }
+}
+
+impl Serialize for ChildEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if !self.has_treatment() {
+            return serializer.serialize_str(&self.name);
+        }
+        struct Treatment<'a>(&'a ChildEntry);
+        impl Serialize for Treatment<'_> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut map = serializer.serialize_map(None)?;
+                if !self.0.inputs.is_empty() {
+                    map.serialize_entry("inputs", &InputsMap(&self.0.inputs))?;
+                }
+                if let Some(rules) = &self.0.rules {
+                    map.serialize_entry("rules", rules)?;
+                }
+                map.end()
+            }
+        }
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(&self.name, &Treatment(self))?;
+        map.end()
+    }
+}
+
+struct InputsMap<'a>(&'a [(String, InputSourceRef)]);
+
+impl Serialize for InputsMap<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (parameter, source) in self.0 {
+            map.serialize_entry(parameter, source)?;
+        }
+        map.end()
+    }
+}
+
+/// children エントリの inputs 供給元。分類（request / items / 兄弟 / 自パラメータ）
+/// はスコープ文脈が要るため検証・束縛時に行い、ここでは記述そのものを保持する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputSourceRef(String);
+
+impl InputSourceRef {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub fn raw(&self) -> &str {
+        &self.0
+    }
+
+    /// 最初の `.` より前（field パスなしなら全体）。
+    pub fn root(&self) -> &str {
+        self.0.split('.').next().unwrap_or(&self.0)
+    }
+
+    /// 最初の `.` より後の field パス。
+    pub fn field(&self) -> Option<&str> {
+        self.0.split_once('.').map(|(_, field)| field)
+    }
+}
+
+impl Serialize for InputSourceRef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for InputSourceRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        if raw.trim().is_empty() {
+            return Err(de::Error::custom("inputs source must not be empty"));
+        }
+        Ok(Self::new(raw))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -397,13 +594,13 @@ pub struct NodeDefinition {
     pub kind: NodeKind,
     pub artifact: Option<String>,
     pub input: Vec<InputParam>,
-    pub inputs: Vec<String>,
-    pub rules: Vec<Rule>,
     pub completion: NodeCompletion,
+    /// 未対応（#85 まで）。受理して保持し、load 時に Diagnostic を出す。
+    pub worktree: Option<String>,
 }
 
-/// nodes マップの値（node 名は親マップのキー）。
-#[derive(Debug, Clone, Deserialize)]
+/// nodes マップの値（node 名は親マップのキー）。配線（inputs / rules）は持たない。
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawNodeBody {
     #[serde(default)]
@@ -411,49 +608,394 @@ struct RawNodeBody {
     #[serde(default)]
     session: Option<SessionSpec>,
     #[serde(default)]
-    fanout: Option<FanoutSpec>,
+    fanout: Option<RawFanoutSpec>,
+    #[serde(default)]
+    sequence: Option<RawSequenceSpec>,
     #[serde(default)]
     artifact: Option<String>,
     #[serde(default)]
     input: Vec<InputParam>,
     #[serde(default)]
-    inputs: Vec<String>,
-    #[serde(default)]
-    rules: Vec<Rule>,
-    #[serde(default)]
     completion: NodeCompletion,
+    #[serde(default)]
+    worktree: Option<String>,
 }
 
-impl RawNodeBody {
-    fn into_node_definition<E>(self, name: String) -> Result<NodeDefinition, E>
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFanoutSpec {
+    children: Vec<RawChildElement>,
+    #[serde(default)]
+    items: Option<ItemsSource>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSequenceSpec {
+    #[serde(default)]
+    entry: Option<String>,
+    #[serde(default)]
+    output: Option<String>,
+    children: Vec<RawChildElement>,
+}
+
+/// children リスト要素の4形式（①文字列参照 / ②名前+扱い / ③インライン宣言 / ④無名）。
+#[derive(Debug, Clone)]
+enum RawChildElement {
+    Reference(String),
+    Entry {
+        name: Option<String>,
+        body: Box<RawChildBody>,
+    },
+}
+
+/// children エントリの本体。node 系フィールド（カタログへ分配）と
+/// 扱い系フィールド（inputs / rules。エントリに残る）を併せて受ける。
+#[derive(Debug, Clone, Default)]
+struct RawChildBody {
+    node: RawNodeBody,
+    inputs: Option<Vec<(String, InputSourceRef)>>,
+    rules: Option<Vec<Rule>>,
+    // input / completion は RawNodeBody 側の既定値と区別できないため、
+    // 重複キー検出は観測フラグで行う（serde_json 直接経路では上流に
+    // 重複キー拒否が無く、この関数が唯一の防御になる）。
+    input_seen: bool,
+    completion_seen: bool,
+}
+
+impl RawChildBody {
+    fn has_kind(&self) -> bool {
+        self.node.command.is_some()
+            || self.node.session.is_some()
+            || self.node.fanout.is_some()
+            || self.node.sequence.is_some()
+    }
+
+    fn has_node_fields(&self) -> bool {
+        self.node.artifact.is_some()
+            || !self.node.input.is_empty()
+            || self.node.completion != NodeCompletion::default()
+            || self.node.worktree.is_some()
+    }
+}
+
+fn apply_child_body_field<'de, A>(
+    body: &mut RawChildBody,
+    key: &str,
+    map: &mut A,
+) -> Result<(), A::Error>
+where
+    A: de::MapAccess<'de>,
+{
+    fn set_once<'de, A, T>(map: &mut A, slot: &mut Option<T>, key: &str) -> Result<(), A::Error>
+    where
+        A: de::MapAccess<'de>,
+        T: Deserialize<'de>,
+    {
+        if slot.is_some() {
+            return Err(de::Error::custom(format!("duplicate field `{key}`")));
+        }
+        *slot = Some(map.next_value()?);
+        Ok(())
+    }
+
+    match key {
+        "command" => set_once(map, &mut body.node.command, key),
+        "session" => set_once(map, &mut body.node.session, key),
+        "fanout" => set_once(map, &mut body.node.fanout, key),
+        "sequence" => set_once(map, &mut body.node.sequence, key),
+        "artifact" => set_once(map, &mut body.node.artifact, key),
+        "worktree" => set_once(map, &mut body.node.worktree, key),
+        "input" => {
+            if body.input_seen {
+                return Err(de::Error::custom("duplicate field `input`"));
+            }
+            body.input_seen = true;
+            body.node.input = map.next_value()?;
+            Ok(())
+        }
+        "completion" => {
+            if body.completion_seen {
+                return Err(de::Error::custom("duplicate field `completion`"));
+            }
+            body.completion_seen = true;
+            body.node.completion = map.next_value()?;
+            Ok(())
+        }
+        "inputs" => {
+            if body.inputs.is_some() {
+                return Err(de::Error::custom("duplicate field `inputs`"));
+            }
+            body.inputs = Some(map.next_value_seed(InputsMapSeed)?);
+            Ok(())
+        }
+        "rules" => set_once(map, &mut body.rules, key),
+        unknown => Err(de::Error::custom(format!(
+            "unknown field `{unknown}` in children entry"
+        ))),
+    }
+}
+
+struct InputsMapSeed;
+
+impl<'de> de::DeserializeSeed<'de> for InputsMapSeed {
+    type Value = Vec<(String, InputSourceRef)>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct InputsVisitor;
+
+        impl<'de> de::Visitor<'de> for InputsVisitor {
+            type Value = Vec<(String, InputSourceRef)>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a mapping of parameter name to input source")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut entries: Vec<(String, InputSourceRef)> = Vec::new();
+                while let Some((parameter, source)) =
+                    access.next_entry::<String, InputSourceRef>()?
+                {
+                    if entries.iter().any(|(existing, _)| *existing == parameter) {
+                        return Err(de::Error::custom(format!(
+                            "inputs parameter '{parameter}' is duplicated"
+                        )));
+                    }
+                    entries.push((parameter, source));
+                }
+                Ok(entries)
+            }
+        }
+
+        deserializer.deserialize_map(InputsVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawChildBody {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BodyVisitor;
+
+        impl<'de> de::Visitor<'de> for BodyVisitor {
+            type Value = RawChildBody;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a children entry body mapping")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut body = RawChildBody::default();
+                while let Some(key) = access.next_key::<String>()? {
+                    apply_child_body_field(&mut body, &key, &mut access)?;
+                }
+                Ok(body)
+            }
+        }
+
+        deserializer.deserialize_map(BodyVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawChildElement {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ElementVisitor;
+
+        impl<'de> de::Visitor<'de> for ElementVisitor {
+            type Value = RawChildElement;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a node name or a children entry mapping")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(RawChildElement::Reference(value.to_string()))
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let Some(first_key) = access.next_key::<String>()? else {
+                    return Err(de::Error::custom("children entry must not be empty"));
+                };
+                if is_reserved_node_name(&first_key) {
+                    // ④ 無名エントリ: 予約語キー始まりのマップ全体が本体。
+                    let mut body = RawChildBody::default();
+                    apply_child_body_field(&mut body, &first_key, &mut access)?;
+                    while let Some(key) = access.next_key::<String>()? {
+                        apply_child_body_field(&mut body, &key, &mut access)?;
+                    }
+                    Ok(RawChildElement::Entry {
+                        name: None,
+                        body: Box::new(body),
+                    })
+                } else {
+                    // ②③ 名前付きエントリ: 単一の名前キーの値が本体。
+                    let body = access.next_value::<RawChildBody>()?;
+                    if access.next_key::<de::IgnoredAny>()?.is_some() {
+                        return Err(de::Error::custom(format!(
+                            "children entry '{first_key}' must be the only key in its mapping"
+                        )));
+                    }
+                    Ok(RawChildElement::Entry {
+                        name: Some(first_key),
+                        body: Box::new(body),
+                    })
+                }
+            }
+        }
+
+        deserializer.deserialize_any(ElementVisitor)
+    }
+}
+
+/// 正規化の作業状態。単一名前空間の登録簿と、カタログへ追記するインライン宣言。
+struct CatalogNormalizer {
+    names: BTreeSet<String>,
+    inline_nodes: Vec<NodeDefinition>,
+}
+
+impl CatalogNormalizer {
+    fn new(top_level_names: BTreeSet<String>) -> Self {
+        Self {
+            names: top_level_names,
+            inline_nodes: Vec::new(),
+        }
+    }
+
+    fn register<E>(&mut self, name: &str) -> Result<(), E>
     where
         E: de::Error,
     {
-        let kind_count = self.command.is_some() as usize
-            + self.session.is_some() as usize
-            + self.fanout.is_some() as usize;
+        if !self.names.insert(name.to_string()) {
+            return Err(E::custom(format!("node name '{name}' is duplicated")));
+        }
+        Ok(())
+    }
+
+    fn normalize_children<E>(
+        &mut self,
+        owner: &str,
+        elements: Vec<RawChildElement>,
+    ) -> Result<Vec<ChildEntry>, E>
+    where
+        E: de::Error,
+    {
+        let mut children = Vec::with_capacity(elements.len());
+        for (index, element) in elements.into_iter().enumerate() {
+            match element {
+                RawChildElement::Reference(name) => children.push(ChildEntry::reference(name)),
+                RawChildElement::Entry { name, body } => {
+                    let has_kind = body.has_kind();
+                    let RawChildBody {
+                        node,
+                        inputs,
+                        rules,
+                        ..
+                    } = *body;
+                    let entry_name = match (&name, has_kind) {
+                        // ② 参照 + 扱い: node 系フィールドは書けない。
+                        (Some(reference_name), false) => {
+                            let placeholder = RawChildBody {
+                                node: node.clone(),
+                                ..RawChildBody::default()
+                            };
+                            if placeholder.has_node_fields() {
+                                return Err(E::custom(format!(
+                                    "children entry '{reference_name}' without a kind block can only declare inputs and rules"
+                                )));
+                            }
+                            reference_name.clone()
+                        }
+                        // ③ インライン宣言: 単一名前空間へ登録し参照へ正規化。
+                        (Some(inline_name), true) => {
+                            self.register(inline_name)?;
+                            let node_definition =
+                                self.raw_body_to_node(inline_name.clone(), node)?;
+                            self.inline_nodes.push(node_definition);
+                            inline_name.clone()
+                        }
+                        // ④ 無名エントリ: 合成内部名を生成して登録。
+                        (None, true) => {
+                            let synthesized = format!("{owner}#{index}");
+                            self.register(&synthesized)?;
+                            let node_definition =
+                                self.raw_body_to_node(synthesized.clone(), node)?;
+                            self.inline_nodes.push(node_definition);
+                            synthesized
+                        }
+                        (None, false) => {
+                            return Err(E::custom(format!(
+                                "children entry of '{owner}' must contain a kind block or reference a catalog node by name"
+                            )));
+                        }
+                    };
+                    children.push(ChildEntry {
+                        name: entry_name,
+                        inputs: inputs.unwrap_or_default(),
+                        rules,
+                    });
+                }
+            }
+        }
+        Ok(children)
+    }
+
+    fn raw_body_to_node<E>(&mut self, name: String, body: RawNodeBody) -> Result<NodeDefinition, E>
+    where
+        E: de::Error,
+    {
+        let kind_count = body.command.is_some() as usize
+            + body.session.is_some() as usize
+            + body.fanout.is_some() as usize
+            + body.sequence.is_some() as usize;
         if kind_count != 1 {
             return Err(E::custom(format!(
-                "node '{name}' must contain exactly one kind block: command, session, or fanout"
+                "node '{name}' must contain exactly one kind block: command, session, fanout, or sequence"
             )));
         }
-        let kind = if let Some(command) = self.command {
+        let kind = if let Some(command) = body.command {
             NodeKind::Command(CommandSpec { command })
-        } else if let Some(session) = self.session {
+        } else if let Some(session) = body.session {
             NodeKind::Session(session)
-        } else if let Some(fanout) = self.fanout {
-            NodeKind::Fanout(fanout)
+        } else if let Some(fanout) = body.fanout {
+            NodeKind::Fanout(FanoutSpec {
+                children: self.normalize_children(&name, fanout.children)?,
+                items: fanout.items,
+            })
+        } else if let Some(sequence) = body.sequence {
+            NodeKind::Sequence(SequenceSpec {
+                entry: sequence.entry,
+                output: sequence.output,
+                children: self.normalize_children(&name, sequence.children)?,
+            })
         } else {
             unreachable!("kind_count checked above")
         };
         Ok(NodeDefinition {
             name,
             kind,
-            artifact: self.artifact,
-            input: self.input,
-            inputs: self.inputs,
-            rules: self.rules,
-            completion: self.completion,
+            artifact: body.artifact,
+            input: body.input,
+            completion: body.completion,
+            worktree: body.worktree,
         })
     }
 }
@@ -475,7 +1017,7 @@ where
         where
             A: de::MapAccess<'de>,
         {
-            let mut nodes: Vec<NodeDefinition> = Vec::new();
+            let mut raw_nodes: Vec<(String, RawNodeBody)> = Vec::new();
             let mut seen = BTreeSet::new();
             while let Some((name, body)) = access.next_entry::<String, RawNodeBody>()? {
                 if !seen.insert(name.clone()) {
@@ -483,8 +1025,17 @@ where
                         "node name '{name}' is duplicated"
                     )));
                 }
-                nodes.push(body.into_node_definition(name)?);
+                raw_nodes.push((name, body));
             }
+
+            // 正規化: カタログ + 参照へ。インライン宣言・無名エントリは
+            // 単一名前空間へ登録され、宣言順にカタログ末尾へ並ぶ。
+            let mut normalizer = CatalogNormalizer::new(seen);
+            let mut nodes = Vec::with_capacity(raw_nodes.len());
+            for (name, body) in raw_nodes {
+                nodes.push(normalizer.raw_body_to_node(name, body)?);
+            }
+            nodes.extend(normalizer.inline_nodes);
             Ok(nodes)
         }
     }
@@ -513,6 +1064,7 @@ impl Serialize for NodeDefinition {
             NodeKind::Command(spec) => map.serialize_entry("command", &spec.command)?,
             NodeKind::Session(spec) => map.serialize_entry("session", spec)?,
             NodeKind::Fanout(spec) => map.serialize_entry("fanout", spec)?,
+            NodeKind::Sequence(spec) => map.serialize_entry("sequence", spec)?,
         }
         if !self.input.is_empty() {
             map.serialize_entry("input", &self.input)?;
@@ -521,12 +1073,7 @@ impl Serialize for NodeDefinition {
         if !self.completion.is_auto() {
             map.serialize_entry("completion", &self.completion)?;
         }
-        if !self.inputs.is_empty() {
-            map.serialize_entry("inputs", &self.inputs)?;
-        }
-        if !self.rules.is_empty() {
-            map.serialize_entry("rules", &self.rules)?;
-        }
+        serialize_option(&mut map, "worktree", &self.worktree)?;
         map.end()
     }
 }
@@ -564,17 +1111,16 @@ impl NodeDefinition {
         self.completion == NodeCompletion::Approval
     }
 
-    /// 配線（children の inputs）が未導入のため、fanout items の要素型は
-    /// `input` が単一の型付きパラメータの場合にのみ確定する。
-    pub fn sole_typed_input_contract(&self) -> Option<&str> {
-        match self.input.as_slice() {
-            [param] => param.contract.as_deref(),
-            _ => None,
-        }
-    }
-
     pub fn is_fanout(&self) -> bool {
         matches!(self.kind, NodeKind::Fanout(_))
+    }
+
+    pub fn is_sequence(&self) -> bool {
+        matches!(self.kind, NodeKind::Sequence(_))
+    }
+
+    pub fn is_composite(&self) -> bool {
+        self.is_fanout() || self.is_sequence()
     }
 
     pub fn command(&self) -> Option<&str> {
@@ -604,6 +1150,22 @@ impl NodeDefinition {
             NodeKind::Fanout(spec) => Some(spec),
             _ => None,
         }
+    }
+
+    pub fn sequence(&self) -> Option<&SequenceSpec> {
+        match &self.kind {
+            NodeKind::Sequence(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    /// 宣言済み input パラメータ名の一覧。
+    pub fn input_parameter_names(&self) -> impl Iterator<Item = &str> {
+        self.input.iter().map(|param| param.name.as_str())
+    }
+
+    pub fn input_parameter(&self, name: &str) -> Option<&InputParam> {
+        self.input.iter().find(|param| param.name == name)
     }
 }
 
@@ -767,6 +1329,27 @@ pub struct WorkflowSummary {
 mod definition_tests {
     use super::*;
 
+    // serde_json の直接デシリアライズ（イベント payload 復元経路）は上流に
+    // 重複キー拒否が無いため、children エントリ本体の全フィールドが
+    // 自前の重複検出で守られていることを検証する。
+    #[test]
+    fn test_子エントリ本体は重複completionキーを拒否する() {
+        let error = serde_json::from_str::<RawChildBody>(
+            r#"{"command":"echo hi","completion":"auto","completion":"approval"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field `completion`"));
+    }
+
+    #[test]
+    fn test_子エントリ本体は空リスト後の重複inputキーを拒否する() {
+        let error = serde_json::from_str::<RawChildBody>(
+            r#"{"command":"echo hi","input":[],"input":["spec"]}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field `input`"));
+    }
+
     #[test]
     fn test_node_definition_facet参照を検出する() {
         let mut node = NodeDefinition::default();
@@ -804,5 +1387,76 @@ mod definition_tests {
 
         assert_eq!(workflow.entry_index(), None);
         assert!(workflow.entry_node().is_none());
+    }
+
+    #[test]
+    fn test_実効辺_rules省略は隣接辺で末尾は終端() {
+        let sequence = SequenceSpec {
+            entry: None,
+            output: None,
+            children: vec![
+                ChildEntry::reference("first"),
+                ChildEntry::reference("second"),
+            ],
+        };
+
+        assert_eq!(
+            sequence.effective_rules("first"),
+            EffectiveRules::AdjacentNext("second")
+        );
+        assert_eq!(sequence.effective_rules("second"), EffectiveRules::Terminal);
+        assert_eq!(
+            sequence.effective_rules("unlisted"),
+            EffectiveRules::Terminal
+        );
+    }
+
+    #[test]
+    fn test_実効辺_明示rulesが隣接辺より優先され空rulesは終端() {
+        let sequence = SequenceSpec {
+            entry: None,
+            output: None,
+            children: vec![
+                ChildEntry {
+                    name: "first".to_string(),
+                    inputs: Vec::new(),
+                    rules: Some(vec![Rule::Next("third".to_string())]),
+                },
+                ChildEntry {
+                    name: "second".to_string(),
+                    inputs: Vec::new(),
+                    rules: Some(Vec::new()),
+                },
+                ChildEntry::reference("third"),
+            ],
+        };
+
+        assert_eq!(
+            sequence.effective_rules("first"),
+            EffectiveRules::Rules(&[Rule::Next("third".to_string())][..])
+        );
+        assert_eq!(
+            sequence.effective_rules("second"),
+            EffectiveRules::Rules(&[][..])
+        );
+    }
+
+    #[test]
+    fn test_entry解決_sequenceのentry省略時はリスト先頭() {
+        let sequence = SequenceSpec {
+            entry: None,
+            output: None,
+            children: vec![
+                ChildEntry::reference("first"),
+                ChildEntry::reference("second"),
+            ],
+        };
+        assert_eq!(sequence.entry_child_name(), Some("first"));
+
+        let explicit = SequenceSpec {
+            entry: Some("second".to_string()),
+            ..sequence
+        };
+        assert_eq!(explicit.entry_child_name(), Some("second"));
     }
 }

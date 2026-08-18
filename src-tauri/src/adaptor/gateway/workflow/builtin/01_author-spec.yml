@@ -107,8 +107,56 @@ schemas:
     - summary
 
 nodes:
-  # IntakeSequence: Requestを入力参照と配置先へ整理する。
+  # main: IntakeSequence（Request整理）→AuthoringSequence（3文書作成）→
+  # SpecSequence（検証・検討・修正）→FinalReviewSequence（人間レビュー）の順に進む。
   main:
+    sequence:
+      children:
+      - intake:
+          inputs:
+            goal: request
+      - requirements_author:
+          inputs:
+            intake: intake
+      - behavior_author:
+          inputs:
+            intake: intake
+      - design_author:
+          inputs:
+            intake: intake
+      - spec_validate:
+          inputs:
+            intake: intake
+      - check_validation:
+          rules:
+          - when:
+              on: has_findings
+              then: spec_consider
+            next: final_review
+      - spec_consider:
+          inputs:
+            intake: intake
+            spec_validate: spec_validate
+      - check_consideration:
+          rules:
+          - when:
+              on: has_accepted
+              then: spec_repair
+            next: final_review
+      - spec_repair:
+          inputs:
+            intake: intake
+            spec_validate: spec_validate
+            spec_consider: spec_consider
+      - final_review:
+          inputs:
+            intake: intake
+            spec_validate: spec_validate
+            spec_consider: spec_consider
+            spec_repair: spec_repair
+
+  # IntakeSequence: Requestを入力参照と配置先へ整理する。
+  intake:
     session:
       provider: claude
       model: claude-opus-5
@@ -117,10 +165,8 @@ nodes:
         policy: author-spec-governance
         instruction: author-spec-intake
     artifact: spec-input
-    inputs:
-    - request
-    rules:
-    - next: requirements_author
+    input:
+    - goal
 
   # AuthoringSequence: 3文書を上流から順に作成する。検証は行わない。
   requirements_author:
@@ -132,10 +178,8 @@ nodes:
         policy: author-spec-governance
         knowledge: spec-requirements
         instruction: author-spec-write-requirements
-    inputs:
-    - main
-    rules:
-    - next: behavior_author
+    input:
+    - intake
 
   behavior_author:
     session:
@@ -148,10 +192,8 @@ nodes:
         - spec-requirements
         - spec-behavior
         instruction: author-spec-write-behavior
-    inputs:
-    - main
-    rules:
-    - next: design_author
+    input:
+    - intake
 
   design_author:
     session:
@@ -165,10 +207,8 @@ nodes:
         - spec-behavior
         - spec-design
         instruction: author-spec-write-design
-    inputs:
-    - main
-    rules:
-    - next: spec_validate
+    input:
+    - intake
 
   # SpecSequence: 3文書を1単位として検証・検討・修正を一度だけ行う。
   # 修正の確認と残る問題の裁定はFinalReviewの人間が行う。
@@ -185,10 +225,8 @@ nodes:
         - spec-design
         instruction: author-spec-validate-spec
     artifact: validation-result
-    inputs:
-    - main
-    rules:
-    - next: check_validation
+    input:
+    - intake
 
   check_validation:
     command: >-
@@ -196,11 +234,6 @@ nodes:
       --node spec_validate --json |
       jq '{has_findings: (.artifact.findings | length > 0)}'
     artifact: validation-scan
-    rules:
-    - when:
-        on: has_findings
-        then: spec_consider
-      next: final_review
 
   spec_consider:
     session:
@@ -215,11 +248,9 @@ nodes:
         - spec-design
         instruction: author-spec-consider-spec
     artifact: consideration-result
-    inputs:
-    - main
+    input:
+    - intake
     - spec_validate
-    rules:
-    - next: check_consideration
 
   check_consideration:
     command: >-
@@ -227,11 +258,6 @@ nodes:
       --node spec_consider --json |
       jq '{has_accepted: (.artifact.accepted_finding_ids | length > 0)}'
     artifact: consideration-scan
-    rules:
-    - when:
-        on: has_accepted
-        then: spec_repair
-      next: final_review
 
   spec_repair:
     session:
@@ -246,12 +272,10 @@ nodes:
         - spec-design
         instruction: author-spec-repair-spec
     artifact: repair-result
-    inputs:
-    - main
+    input:
+    - intake
     - spec_validate
     - spec_consider
-    rules:
-    - next: final_review
 
   # FinalReviewSequence: 通常経路で唯一の人間による文書レビュー。承認をもって完了する。
   final_review:
@@ -267,8 +291,8 @@ nodes:
         - spec-design
         instruction: author-spec-final-review
     completion: approval
-    inputs:
-    - main
+    input:
+    - intake
     - spec_validate
     - spec_consider
     - spec_repair

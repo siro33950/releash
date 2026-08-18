@@ -1,7 +1,9 @@
 use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
-use crate::adaptor::gateway::workflow::schema::{NodeDefinition, Rule, WorkflowDefinitionYaml};
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::schema::NodeDefinition;
+use crate::adaptor::gateway::workflow::schema::{NodeKind, Rule, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::span_map::{DiagnosticSpan, YamlSpanMap};
 use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 use crate::domain::workflow::validation;
@@ -324,9 +326,12 @@ fn parse_shape_diagnostics(
                 "command",
                 "session",
                 "fanout",
+                "sequence",
                 "artifact",
                 "input",
                 "completion",
+                "worktree",
+                // rules / inputs は下の WFS007（移設案内）で報告する。
                 "inputs",
                 "rules",
             ],
@@ -335,7 +340,25 @@ fn parse_shape_diagnostics(
             Some(node_name),
             &mut diagnostics,
         );
-        let kind_count = ["command", "session", "fanout"]
+        for moved_field in ["rules", "inputs"] {
+            if node_obj.contains_key(moved_field) {
+                diagnostics.push(
+                    DiagnosticItem::new(
+                        "WFS007",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        span_map.field_span(&format!("{node_path}.{moved_field}")),
+                        format!(
+                            "node '{node_name}' cannot declare '{moved_field}': wiring moved to the children entries of the owning composite (sequence / fanout)"
+                        ),
+                    )
+                    .workflow(workflow_name)
+                    .node(node_name)
+                    .field(moved_field),
+                );
+            }
+        }
+        let kind_count = ["command", "session", "fanout", "sequence"]
             .iter()
             .filter(|key| node_obj.contains_key(**key))
             .count();
@@ -347,7 +370,7 @@ fn parse_shape_diagnostics(
                     DiagnosticStage::ParseShape,
                     span_map.nearest_span(&node_path),
                     format!(
-                        "node '{node_name}' must contain exactly one kind block: command, session, or fanout"
+                        "node '{node_name}' must contain exactly one kind block: command, session, fanout, or sequence"
                     ),
                 )
                 .workflow(workflow_name)
@@ -355,10 +378,7 @@ fn parse_shape_diagnostics(
                 .field("kind"),
             );
         }
-        if node_name == "request"
-            || node_name == "item"
-            || crate::domain::workflow::is_reserved_node_name(node_name)
-        {
+        if node_name == "request" || crate::domain::workflow::is_reserved_node_name(node_name) {
             diagnostics.push(
                 DiagnosticItem::new(
                     "WFR004",
@@ -402,15 +422,6 @@ fn parse_shape_diagnostics(
                 );
             }
         }
-        if node_obj.contains_key("fanout") && node_obj.contains_key("inputs") {
-            diagnostics.push(kind_disallowed_diagnostic(
-                workflow_name,
-                node_name,
-                "fanout",
-                "inputs",
-                span_map.field_span(&format!("{node_path}.inputs")),
-            ));
-        }
         if let Some(session) = node_obj
             .get("session")
             .and_then(serde_json::Value::as_object)
@@ -436,58 +447,327 @@ fn parse_shape_diagnostics(
                 );
             }
         }
-        if let Some(fanout) = node_obj
-            .get("fanout")
-            .and_then(serde_json::Value::as_object)
-        {
-            check_allowed_fields(
-                fanout,
-                &format!("{node_path}.fanout"),
-                &["child", "items"],
-                span_map,
-                workflow_name,
-                Some(node_name),
-                &mut diagnostics,
-            );
-        }
-        if let Some(rules) = node_obj.get("rules").and_then(serde_json::Value::as_array) {
-            for (rule_index, rule) in rules.iter().enumerate() {
-                let rule_path = format!("{node_path}.rules[{rule_index}]");
-                let Some(rule_obj) = rule.as_object() else {
-                    continue;
-                };
-                check_allowed_fields(
-                    rule_obj,
-                    &rule_path,
-                    &["when", "switch", "loop_guard", "next"],
-                    span_map,
-                    workflow_name,
-                    Some(node_name),
-                    &mut diagnostics,
-                );
-                let discriminator_count = ["when", "switch", "loop_guard"]
-                    .iter()
-                    .filter(|key| rule_obj.contains_key(**key))
-                    .count();
-                if discriminator_count > 1 {
-                    diagnostics.push(
-                        DiagnosticItem::new(
-                            "WFS003",
-                            Severity::Error,
-                            DiagnosticStage::ParseShape,
-                            span_map.nearest_span(&rule_path),
-                            "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
-                        )
-                        .workflow(workflow_name)
-                        .node(node_name)
-                        .field("rules"),
-                    );
-                }
-            }
-        }
+        check_composite_shape(
+            node_obj,
+            &node_path,
+            span_map,
+            workflow_name,
+            node_name,
+            &mut diagnostics,
+        );
     }
 
     diagnostics
+}
+
+/// 合成子（sequence / fanout）ブロックと children エントリ（4形式）の形状を
+/// span 付き多エラーで検査する。意味判定（供給元解決・ネスト検出等）は
+/// domain の validate_all が担う。
+fn check_composite_shape(
+    node_obj: &serde_json::Map<String, serde_json::Value>,
+    node_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    if let Some(sequence) = node_obj
+        .get("sequence")
+        .and_then(serde_json::Value::as_object)
+    {
+        let sequence_path = format!("{node_path}.sequence");
+        check_allowed_fields(
+            sequence,
+            &sequence_path,
+            &["entry", "output", "children"],
+            span_map,
+            workflow_name,
+            Some(node_name),
+            diagnostics,
+        );
+        check_children_shape(
+            sequence.get("children"),
+            &sequence_path,
+            span_map,
+            workflow_name,
+            node_name,
+            diagnostics,
+        );
+    }
+    if let Some(fanout) = node_obj
+        .get("fanout")
+        .and_then(serde_json::Value::as_object)
+    {
+        let fanout_path = format!("{node_path}.fanout");
+        check_allowed_fields(
+            fanout,
+            &fanout_path,
+            &["children", "items"],
+            span_map,
+            workflow_name,
+            Some(node_name),
+            diagnostics,
+        );
+        check_children_shape(
+            fanout.get("children"),
+            &fanout_path,
+            span_map,
+            workflow_name,
+            node_name,
+            diagnostics,
+        );
+    }
+}
+
+const CHILD_ENTRY_BODY_FIELDS: &[&str] = &[
+    "command",
+    "session",
+    "fanout",
+    "sequence",
+    "artifact",
+    "input",
+    "completion",
+    "worktree",
+    "inputs",
+    "rules",
+];
+
+fn check_children_shape(
+    children: Option<&serde_json::Value>,
+    owner_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    let Some(children) = children else {
+        return;
+    };
+    let Some(elements) = children.as_array() else {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS008",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span(&format!("{owner_path}.children")),
+                "children must be a list of entries",
+            )
+            .workflow(workflow_name)
+            .node(node_name)
+            .field("children"),
+        );
+        return;
+    };
+    for (index, element) in elements.iter().enumerate() {
+        let element_path = format!("{owner_path}.children[{index}]");
+        if element.is_string() {
+            continue;
+        }
+        let Some(element_obj) = element.as_object() else {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&element_path),
+                    "children entry must be a node name or a mapping",
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("children"),
+            );
+            continue;
+        };
+        if element_obj.is_empty() {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&element_path),
+                    "children entry must not be empty",
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("children"),
+            );
+            continue;
+        }
+        // 4形式の判別はキー集合で行う: 全キーが予約語なら④（無名エントリ）、
+        // 非予約語キーがちょうど1つだけならそれが名前（②③）。
+        let non_reserved: Vec<&String> = element_obj
+            .keys()
+            .filter(|key| !crate::domain::workflow::is_reserved_node_name(key))
+            .collect();
+        if non_reserved.is_empty() {
+            // ④ 無名エントリ: 要素マップ全体が本体。
+            check_child_body_shape(
+                element_obj,
+                &element_path,
+                span_map,
+                workflow_name,
+                node_name,
+                diagnostics,
+            );
+            continue;
+        }
+        let [first_key] = non_reserved.as_slice() else {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&element_path),
+                    "children entry must be a single named key or an unnamed entry of reserved fields",
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("children"),
+            );
+            continue;
+        };
+        let first_key = first_key.as_str();
+        // ②③ 名前付きエントリ: 単一の名前キーの値が本体。
+        if element_obj.len() != 1 {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&element_path),
+                    format!("children entry '{first_key}' must be the only key in its mapping"),
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("children"),
+            );
+            continue;
+        }
+        let entry_path = format!("{element_path}.{first_key}");
+        let Some(body) = element_obj
+            .get(first_key)
+            .and_then(serde_json::Value::as_object)
+        else {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&entry_path),
+                    format!("children entry '{first_key}' must map to an entry body"),
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("children"),
+            );
+            continue;
+        };
+        check_child_body_shape(
+            body,
+            &entry_path,
+            span_map,
+            workflow_name,
+            node_name,
+            diagnostics,
+        );
+    }
+}
+
+fn check_child_body_shape(
+    body: &serde_json::Map<String, serde_json::Value>,
+    body_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    check_allowed_fields(
+        body,
+        body_path,
+        CHILD_ENTRY_BODY_FIELDS,
+        span_map,
+        workflow_name,
+        Some(node_name),
+        diagnostics,
+    );
+    if let Some(rules) = body.get("rules").and_then(serde_json::Value::as_array) {
+        check_rules_shape(
+            rules,
+            body_path,
+            span_map,
+            workflow_name,
+            node_name,
+            diagnostics,
+        );
+    }
+    if let Some(inputs) = body.get("inputs") {
+        if !inputs.is_object() {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS008",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.field_span(&format!("{body_path}.inputs")),
+                    "inputs must be a mapping of parameter name to source",
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("inputs"),
+            );
+        }
+    }
+    // インライン宣言（③④）の合成子はネストした children も形状検査する。
+    check_composite_shape(
+        body,
+        body_path,
+        span_map,
+        workflow_name,
+        node_name,
+        diagnostics,
+    );
+}
+
+fn check_rules_shape(
+    rules: &[serde_json::Value],
+    base_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    for (rule_index, rule) in rules.iter().enumerate() {
+        let rule_path = format!("{base_path}.rules[{rule_index}]");
+        let Some(rule_obj) = rule.as_object() else {
+            continue;
+        };
+        check_allowed_fields(
+            rule_obj,
+            &rule_path,
+            &["when", "switch", "loop_guard", "next"],
+            span_map,
+            workflow_name,
+            Some(node_name),
+            diagnostics,
+        );
+        let discriminator_count = ["when", "switch", "loop_guard"]
+            .iter()
+            .filter(|key| rule_obj.contains_key(**key))
+            .count();
+        if discriminator_count > 1 {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS003",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.nearest_span(&rule_path),
+                    "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("rules"),
+            );
+        }
+    }
 }
 
 fn check_allowed_fields(
@@ -524,25 +804,6 @@ fn check_allowed_fields(
     }
 }
 
-fn kind_disallowed_diagnostic(
-    workflow_name: &str,
-    node_name: &str,
-    kind: &str,
-    field: &str,
-    span: Option<DiagnosticSpan>,
-) -> DiagnosticItem {
-    DiagnosticItem::new(
-        "WFS004",
-        Severity::Error,
-        DiagnosticStage::ParseShape,
-        span,
-        format!("node '{node_name}' ({kind}) cannot declare '{field}'"),
-    )
-    .workflow(workflow_name)
-    .node(node_name)
-    .field(field)
-}
-
 fn deserialize_error_diagnostic(
     error: &serde_saphyr::Error,
     span_map: &YamlSpanMap,
@@ -551,6 +812,8 @@ fn deserialize_error_diagnostic(
     let message = error.to_string();
     let code = if message.contains("duplicate") || message.contains("is duplicated") {
         "WFS006"
+    } else if message.contains("children entry") || message.contains("inputs source") {
+        "WFS008"
     } else if message.contains("unknown field") || message.contains("unknown variant") {
         "WFS002"
     } else if message.contains("kind block")
@@ -606,18 +869,31 @@ fn validation_error_code_stage(
         | ValidationError::InvalidChars { .. }
         | ValidationError::EmptyNodes
         | ValidationError::DuplicateNode { .. }
-        | ValidationError::EmptyFanoutChildren { .. }
         | ValidationError::EmptyCommand { .. }
         | ValidationError::TooManyNodes { .. }
         | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
+        ValidationError::EmptyChildren { .. }
+        | ValidationError::SequenceArtifactRequiresOutput { .. } => "WFS008",
         ValidationError::MissingEntryNode { .. } => "WFR006",
         ValidationError::ReservedNodeName { .. } => "WFR004",
         ValidationError::UnknownRuleTarget { .. }
         | ValidationError::UnknownLoopGuardResetNode { .. }
-        | ValidationError::UnknownFanoutChild { .. } => "WFR001",
+        | ValidationError::UnknownChildNode { .. }
+        | ValidationError::SequenceEntryNotChild { .. }
+        | ValidationError::SequenceOutputNotChild { .. } => "WFR001",
         ValidationError::InvalidFanoutItemsReference { .. } => "WFR003",
         ValidationError::FanoutInputMismatch { .. } => "WFT003",
-        ValidationError::FanoutChildLeafViolation { .. } => "WFC006",
+        ValidationError::ChildReferenceViolation { .. } => "WFC006",
+        ValidationError::DuplicateChildReference { .. }
+        | ValidationError::RulesOnFanoutChildEntry { .. } => "WFC007",
+        ValidationError::InvalidInputWiring(violation) => match violation.kind {
+            validation::InputWiringKind::AmbiguousSource => "WFR008",
+            _ => "WFR007",
+        },
+        ValidationError::ReservedInputParameterName { .. } => "WFR008",
+        ValidationError::UnsupportedNestedComposite { .. } => "WFU001",
+        ValidationError::UnsupportedWorktreeField { .. } => "WFU002",
+        ValidationError::UnsupportedRootSequenceApproval { .. } => "WFU003",
         ValidationError::UnknownSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchema { kind, .. } => match kind {
@@ -626,10 +902,7 @@ fn validation_error_code_stage(
         },
         ValidationError::InvalidArtifactReference { kind, .. } => match kind {
             InvalidArtifactReferenceKind::ReservedArtifactName => "WFR004",
-            InvalidArtifactReferenceKind::ItemOutOfScope => "WFR005",
-            InvalidArtifactReferenceKind::InputsNotAllowedOnFanout => "WFS004",
-            InvalidArtifactReferenceKind::UnknownNode
-            | InvalidArtifactReferenceKind::UnavailableArtifact
+            InvalidArtifactReferenceKind::UnknownParameter
             | InvalidArtifactReferenceKind::UnknownField
             | InvalidArtifactReferenceKind::InvalidInputRef => "WFR003",
         },
@@ -658,7 +931,7 @@ fn validation_error_code_stage(
 }
 
 fn stage_for_code(code: &str) -> DiagnosticStage {
-    if code.starts_with("WFR") {
+    if code.starts_with("WFR") || code.starts_with("WFU") {
         DiagnosticStage::Resolve
     } else if code.starts_with("WFT") {
         DiagnosticStage::Typecheck
@@ -679,25 +952,17 @@ fn span_for_validation_error(
         ValidationError::InvalidSchema { schema, .. } => span_map
             .field_span(&format!("schemas.{schema}"))
             .or_else(|| span_map.field_span("schemas")),
-        ValidationError::InvalidArtifactReference { reference, .. } => {
-            input_reference_path(wf, reference)
-                .and_then(|path| span_map.field_span(&path))
-                .or_else(|| span_map.field_span("nodes"))
+        ValidationError::InvalidArtifactReference { .. } => span_map.field_span("nodes"),
+        ValidationError::InvalidRules { node, kind, .. } => {
+            entry_rule_span(wf, node, span_map, invalid_rule_suffix(wf, node, *kind))
         }
-        ValidationError::InvalidRules { node, kind, .. } => invalid_rule_path(wf, node, *kind)
-            .and_then(|path| span_map.field_span(&path))
-            .or_else(|| {
-                node_base_path(wf, node)
-                    .and_then(|path| span_map.field_span(&format!("{path}.rules")))
-            }),
-        ValidationError::UnknownLoopGuardResetNode { node, .. } => {
-            loop_guard_reset_on_path(wf, node)
-                .and_then(|path| span_map.field_span(&path))
-                .or_else(|| {
-                    node_base_path(wf, node)
-                        .and_then(|path| span_map.field_span(&format!("{path}.rules")))
-                })
-        }
+        ValidationError::UnknownLoopGuardResetNode { node, .. } => entry_rule_span(
+            wf,
+            node,
+            span_map,
+            entry_rule_index(wf, node, |rule| matches!(rule, Rule::LoopGuard { .. }))
+                .map(|index| format!("rules[{index}].loop_guard.reset_on")),
+        ),
         ValidationError::UnreachableNode { node } => {
             node_base_path(wf, node).and_then(|path| span_map.nearest_span(&path))
         }
@@ -719,44 +984,79 @@ fn span_for_validation_error(
     }
 }
 
-fn input_reference_path(wf: &WorkflowDefinitionYaml, reference: &str) -> Option<String> {
+/// children エントリ（entry_name はエントリの参照名）の YAML パス。
+/// base = `nodes.<合成子>.<kind>.children[<index>]`。名前付き（②③）は
+/// `<base>.<名前>` が本体のパスになる。
+fn child_entry_base_paths(wf: &WorkflowDefinitionYaml, entry_name: &str) -> Vec<String> {
+    let mut bases = Vec::new();
     for node in &wf.nodes {
-        for (input_index, input) in node.inputs.iter().enumerate() {
-            if input == reference {
-                return Some(format!("nodes.{}.inputs[{input_index}]", node.name));
+        let (kind_key, children) = match &node.kind {
+            NodeKind::Sequence(sequence) => ("sequence", &sequence.children),
+            NodeKind::Fanout(fanout) => ("fanout", &fanout.children),
+            _ => continue,
+        };
+        for (index, entry) in children.iter().enumerate() {
+            if entry.name == entry_name {
+                let element = format!("nodes.{}.{kind_key}.children[{index}]", node.name);
+                bases.push(format!("{element}.{entry_name}"));
+                bases.push(element);
             }
         }
     }
-    None
+    bases
 }
 
-fn invalid_rule_path(
+fn entry_rule_span(
     wf: &WorkflowDefinitionYaml,
-    node_name: &str,
+    entry_name: &str,
+    span_map: &YamlSpanMap,
+    suffix: Option<String>,
+) -> Option<DiagnosticSpan> {
+    let bases = child_entry_base_paths(wf, entry_name);
+    if let Some(suffix) = &suffix {
+        for base in &bases {
+            if let Some(span) = span_map.field_span(&format!("{base}.{suffix}")) {
+                return Some(span);
+            }
+        }
+    }
+    for base in &bases {
+        if let Some(span) = span_map.field_span(&format!("{base}.rules")) {
+            return Some(span);
+        }
+    }
+    bases
+        .first()
+        .and_then(|base| span_map.nearest_span(base))
+        .or_else(|| node_base_path(wf, entry_name).and_then(|path| span_map.nearest_span(&path)))
+}
+
+fn invalid_rule_suffix(
+    wf: &WorkflowDefinitionYaml,
+    entry_name: &str,
     kind: InvalidRuleKind,
 ) -> Option<String> {
-    let (base, node) = node_base_path_with_node(wf, node_name)?;
-    let suffix = match kind {
+    match kind {
         InvalidRuleKind::WhenFieldNotBoolean => {
-            rule_index(node, |rule| matches!(rule, Rule::When { .. }))
+            entry_rule_index(wf, entry_name, |rule| matches!(rule, Rule::When { .. }))
                 .map(|index| format!("rules[{index}].when.on"))
         }
         InvalidRuleKind::SwitchFieldNotEnum
         | InvalidRuleKind::SwitchUnknownCase
         | InvalidRuleKind::SwitchMissingCases => {
-            rule_index(node, |rule| matches!(rule, Rule::Switch { .. }))
+            entry_rule_index(wf, entry_name, |rule| matches!(rule, Rule::Switch { .. }))
                 .map(|index| format!("rules[{index}].switch.on"))
         }
         InvalidRuleKind::SwitchExhaustiveHasNext | InvalidRuleKind::SwitchRequiresNext => {
-            rule_index(node, |rule| matches!(rule, Rule::Switch { .. }))
+            entry_rule_index(wf, entry_name, |rule| matches!(rule, Rule::Switch { .. }))
                 .map(|index| format!("rules[{index}].next"))
         }
-        InvalidRuleKind::LoopGuardMaxIterations => {
-            rule_index(node, |rule| matches!(rule, Rule::LoopGuard { .. }))
-                .map(|index| format!("rules[{index}].loop_guard.max_iterations"))
-        }
+        InvalidRuleKind::LoopGuardMaxIterations => entry_rule_index(wf, entry_name, |rule| {
+            matches!(rule, Rule::LoopGuard { .. })
+        })
+        .map(|index| format!("rules[{index}].loop_guard.max_iterations")),
         InvalidRuleKind::DiscriminatorOnFanout | InvalidRuleKind::DiscriminatorWithoutArtifact => {
-            rule_index(node, |rule| {
+            entry_rule_index(wf, entry_name, |rule| {
                 matches!(rule, Rule::When { .. } | Rule::Switch { .. })
             })
             .map(|index| format!("rules[{index}]"))
@@ -766,28 +1066,34 @@ fn invalid_rule_path(
         | InvalidRuleKind::MultipleNextCatchAll
         | InvalidRuleKind::StandaloneNextWithDiscriminator
         | InvalidRuleKind::CycleWithoutLoopGuard => Some("rules".to_string()),
-    }?;
-    Some(format!("{base}.{suffix}"))
+    }
 }
 
-fn loop_guard_reset_on_path(wf: &WorkflowDefinitionYaml, node_name: &str) -> Option<String> {
-    let (base, node) = node_base_path_with_node(wf, node_name)?;
-    rule_index(node, |rule| matches!(rule, Rule::LoopGuard { .. }))
-        .map(|index| format!("{base}.rules[{index}].loop_guard.reset_on"))
-}
-
-fn node_base_path_with_node<'a>(
-    wf: &'a WorkflowDefinitionYaml,
-    node_name: &str,
-) -> Option<(String, &'a NodeDefinition)> {
-    wf.nodes
-        .iter()
-        .find(|node| node.name == node_name)
-        .map(|node| (format!("nodes.{}", node.name), node))
-}
-
-fn rule_index(node: &NodeDefinition, matches_rule: impl Fn(&Rule) -> bool) -> Option<usize> {
-    node.rules.iter().position(matches_rule)
+fn entry_rule_index(
+    wf: &WorkflowDefinitionYaml,
+    entry_name: &str,
+    matches_rule: impl Fn(&Rule) -> bool,
+) -> Option<usize> {
+    for node in &wf.nodes {
+        let children = match &node.kind {
+            NodeKind::Sequence(sequence) => &sequence.children,
+            NodeKind::Fanout(fanout) => &fanout.children,
+            _ => continue,
+        };
+        for entry in children {
+            if entry.name != entry_name {
+                continue;
+            }
+            if let Some(index) = entry
+                .rules
+                .as_ref()
+                .and_then(|rules| rules.iter().position(&matches_rule))
+            {
+                return Some(index);
+            }
+        }
+    }
+    None
 }
 
 fn node_base_path(wf: &WorkflowDefinitionYaml, node_name: &str) -> Option<String> {
@@ -1106,18 +1412,38 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(name.clone()), Some("nodes".to_string()))
         }
         ValidationError::DuplicateNode { name } => (Some(name.clone()), Some("name".to_string())),
-        ValidationError::EmptyFanoutChildren { node } => {
-            (Some(node.clone()), Some("fanout.child".to_string()))
+        ValidationError::EmptyChildren { node } => {
+            (Some(node.clone()), Some("children".to_string()))
         }
-        ValidationError::UnknownFanoutChild { node, .. } => {
-            (Some(node.clone()), Some("fanout.child".to_string()))
+        ValidationError::UnknownChildNode { node, .. }
+        | ValidationError::DuplicateChildReference { node, .. }
+        | ValidationError::RulesOnFanoutChildEntry { node, .. }
+        | ValidationError::ChildReferenceViolation { node, .. }
+        | ValidationError::UnsupportedNestedComposite { node, .. } => {
+            (Some(node.clone()), Some("children".to_string()))
+        }
+        ValidationError::SequenceEntryNotChild { node, .. } => {
+            (Some(node.clone()), Some("sequence.entry".to_string()))
+        }
+        ValidationError::SequenceOutputNotChild { node, .. }
+        | ValidationError::SequenceArtifactRequiresOutput { node } => {
+            (Some(node.clone()), Some("sequence.output".to_string()))
         }
         ValidationError::InvalidFanoutItemsReference { node, .. }
         | ValidationError::FanoutInputMismatch { node, .. } => {
             (Some(node.clone()), Some("fanout.items".to_string()))
         }
-        ValidationError::FanoutChildLeafViolation { node, .. } => {
-            (Some(node.clone()), Some("fanout.child".to_string()))
+        ValidationError::InvalidInputWiring(violation) => {
+            (Some(violation.node.clone()), Some("inputs".to_string()))
+        }
+        ValidationError::ReservedInputParameterName { node, .. } => {
+            (Some(node.clone()), Some("input".to_string()))
+        }
+        ValidationError::UnsupportedWorktreeField { node } => {
+            (Some(node.clone()), Some("worktree".to_string()))
+        }
+        ValidationError::UnsupportedRootSequenceApproval { node } => {
+            (Some(node.clone()), Some("completion".to_string()))
         }
         ValidationError::UnknownRuleTarget { node, .. } => {
             (Some(node.clone()), Some("rules.next".to_string()))
@@ -1134,11 +1460,11 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(node.clone()), Some("nodes".to_string()))
         }
         ValidationError::MissingFacet { node } => (Some(node.clone()), Some("facets".to_string())),
-        ValidationError::InvalidArtifactReference { .. } => (None, Some("inputs".to_string())),
+        ValidationError::InvalidArtifactReference { .. } => (None, Some("nodes".to_string())),
         ValidationError::EmptyCommand { node } => (Some(node.clone()), Some("command".to_string())),
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
         ValidationError::TooManyFanoutChildren { node, .. } => {
-            (Some(node.clone()), Some("fanout.child".to_string()))
+            (Some(node.clone()), Some("children".to_string()))
         }
         ValidationError::UnknownSchemaRef { node, slot, .. }
         | ValidationError::InvalidSchemaRef { node, slot, .. } => {
@@ -1360,8 +1686,11 @@ fn check_facet_template_references(
             continue;
         };
         let domain_workflow = workflow_definition_to_domain(workflow);
-        let allow_item = facet_usage_allows_item(workflow, &usage.node_name);
-        for error in validation::validate_template_references(&domain_workflow, content, allow_item)
+        let Some(usage_node) = domain_workflow.node_by_name(&usage.node_name) else {
+            continue;
+        };
+        for error in
+            validation::validate_template_references_for_node(&domain_workflow, usage_node, content)
         {
             let span = facet_template_error_span(content, &error);
             let mut item = validation_error_to_diagnostic(workflow, &error, None)
@@ -1379,13 +1708,6 @@ fn check_facet_template_references(
             );
         }
     }
-}
-
-fn facet_usage_allows_item(workflow: &WorkflowDefinitionYaml, node_name: &str) -> bool {
-    workflow.nodes.iter().any(|node| {
-        node.fanout()
-            .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
-    })
 }
 
 fn facet_template_error_span(
@@ -1507,7 +1829,10 @@ mod tests {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: children.into_iter().map(str::to_string).collect(),
+                children: children
+                    .into_iter()
+                    .map(crate::domain::workflow::ChildEntry::reference)
+                    .collect(),
                 items: None,
             }),
             ..NodeDefinition::default()
@@ -1636,9 +1961,78 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/full-pipeline.yml")
     }
 
+    /// 受け入れ基準1: 正本 spec の単一定義例を load したとき、W2 解禁対象への
+    /// Diagnostic はゼロで、残るのは未解禁分（ネスト合成子 = W3 #1463、
+    /// worktree = #85）のみ。
+    #[test]
+    fn full_cycle_development_spec_example_leaves_only_unsupported_diagnostics() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../specs/unified-node-model/examples/full-cycle-development.yml");
+        let source = fs::read_to_string(path).unwrap();
+        let diagnosis = diagnose_workflow_source(&source, Some("full-cycle-development"));
+
+        let expected_nested: [(&str, &str); 9] = [
+            ("main", "authoring"),
+            ("main", "implementation"),
+            ("main", "review"),
+            ("authoring", "authoring_behavior"),
+            ("authoring", "authoring_design"),
+            ("implement_all", "implement_and_verify"),
+            ("review", "review_scan"),
+            ("review", "fix_round"),
+            ("fix_all", "fix_and_verify"),
+        ];
+        let expected_worktree = ["implement_all", "fix_all"];
+
+        for (composite, child) in expected_nested {
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFU001"
+                        && item.node_name.as_deref() == Some(composite)
+                        && item.message.contains(child)),
+                "expected WFU001 for {composite} -> {child}, got: {:?}",
+                diagnosis.diagnostics
+            );
+        }
+        for node in expected_worktree {
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFU002" && item.node_name.as_deref() == Some(node)),
+                "expected WFU002 for {node}, got: {:?}",
+                diagnosis.diagnostics
+            );
+        }
+        let mut actual: Vec<(&str, &str)> = diagnosis
+            .diagnostics
+            .iter()
+            .map(|item| {
+                (
+                    item.code.as_str(),
+                    item.node_name.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
+        actual.sort_unstable();
+        let mut expected: Vec<(&str, &str)> = expected_nested
+            .iter()
+            .map(|(composite, _)| ("WFU001", *composite))
+            .chain(expected_worktree.iter().map(|node| ("WFU002", *node)))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "W2 解禁対象に Diagnostic が出てはならない: {:?}",
+            diagnosis.diagnostics
+        );
+    }
+
     fn expected_stage_for_code(code: &str) -> DiagnosticStage {
         match &code[..3] {
-            "WFR" => DiagnosticStage::Resolve,
+            "WFR" | "WFU" => DiagnosticStage::Resolve,
             "WFT" => DiagnosticStage::Typecheck,
             "WFC" => DiagnosticStage::ControlFlow,
             _ => DiagnosticStage::ParseShape,
@@ -1709,7 +2103,7 @@ mod tests {
             crate::adaptor::gateway::workflow::storage::load_workflow(&workflow_path, tmp.path())
                 .expect("canonical full-pipeline example must pass the real loader");
         assert_eq!(workflow.name, "full-pipeline");
-        assert_eq!(workflow.nodes.len(), 14);
+        assert_eq!(workflow.nodes.len(), 15);
     }
 
     #[test]
@@ -1831,7 +2225,8 @@ description: unknown fanout field
 nodes:
   main:
     fanout:
-      child: worker
+      children:
+      - worker
       future_field: ignored
   worker:
     session:
@@ -1847,13 +2242,18 @@ name: unknown-rule-field
 description: unknown rule field
 nodes:
   main:
+    sequence:
+      children:
+      - work:
+          rules:
+          - next: review
+            future_field: ignored
+      - review
+  work:
     session:
       provider: claude
       facets:
         instruction: implement
-    rules:
-      - next: review
-        future_field: ignored
   review:
     session:
       provider: claude
@@ -1925,13 +2325,17 @@ nodes:
             .find(|item| item.code == "WFR001")
             .expect("unknown reset_on node must produce WFR001");
 
-        assert_eq!(diagnostic.node_name.as_deref(), Some("main"));
+        assert_eq!(diagnostic.node_name.as_deref(), Some("implement"));
         assert_eq!(
             diagnostic.field.as_deref(),
             Some("rules.loop_guard.reset_on")
         );
         assert!(diagnostic.message.contains("missing-boundary"));
-        assert!(diagnostic.span.is_some());
+        let span_map = YamlSpanMap::parse(&source).unwrap();
+        let expected = span_map
+            .field_span("nodes.main.sequence.children[0].implement.rules[0].loop_guard.reset_on")
+            .expect("fixture must have reset_on span");
+        assert_eq!(diagnostic.span, Some(expected));
     }
 
     #[test]
@@ -1996,15 +2400,16 @@ nodes:
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        for code in ["WFR003", "WFR005"] {
+        for reference in ["missing_node", "item"] {
             assert!(
-                report.items.iter().any(|item| item.code == code
+                report.items.iter().any(|item| item.code == "WFR003"
                     && item.workflow_name.as_deref() == Some("semantic-template")
                     && item.node_name.as_deref() == Some("main")
                     && item.facet_key.as_deref() == Some("bad")
                     && item.field.as_deref() == Some("content")
+                    && item.message.contains(reference)
                     && item.span.is_some()),
-                "expected semantic facet diagnostic {code}, got: {:?}",
+                "expected semantic facet diagnostic for '{reference}', got: {:?}",
                 report.items
             );
         }
@@ -2026,7 +2431,7 @@ nodes:
             fs::read_to_string(fixture_dir("invalid").join("WFT001_when-on-enum.yml")).unwrap();
         let span_map = YamlSpanMap::parse(&source).unwrap();
         let expected = span_map
-            .field_span("nodes.main.rules[0].when.on")
+            .field_span("nodes.main.sequence.children[0].judge.rules[0].when.on")
             .expect("fixture must have when.on span");
         let diagnosis = diagnose_workflow_source(&source, Some("WFT001_when-on-enum"));
         let item = diagnosis
@@ -2091,37 +2496,39 @@ nodes:
             (
                 validation::ValidationError::InvalidArtifactReference {
                     reference: "item".to_string(),
-                    kind: InvalidArtifactReferenceKind::ItemOutOfScope,
-                    reason: "renamed wording".to_string(),
-                },
-                "WFR005",
-                DiagnosticStage::Resolve,
-            ),
-            (
-                validation::ValidationError::InvalidArtifactReference {
-                    reference: "fanout".to_string(),
-                    kind: InvalidArtifactReferenceKind::InputsNotAllowedOnFanout,
-                    reason: "renamed wording".to_string(),
-                },
-                "WFS004",
-                DiagnosticStage::ParseShape,
-            ),
-            (
-                validation::ValidationError::InvalidArtifactReference {
-                    reference: "missing".to_string(),
-                    kind: InvalidArtifactReferenceKind::UnknownNode,
+                    kind: InvalidArtifactReferenceKind::UnknownParameter,
                     reason: "renamed wording".to_string(),
                 },
                 "WFR003",
                 DiagnosticStage::Resolve,
             ),
             (
-                validation::ValidationError::InvalidArtifactReference {
-                    reference: "plan".to_string(),
-                    kind: InvalidArtifactReferenceKind::UnavailableArtifact,
-                    reason: "renamed wording".to_string(),
+                validation::ValidationError::UnsupportedNestedComposite {
+                    node: "main".to_string(),
+                    child: "part".to_string(),
                 },
-                "WFR003",
+                "WFU001",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::UnsupportedWorktreeField {
+                    node: "fanout".to_string(),
+                },
+                "WFU002",
+                DiagnosticStage::Resolve,
+            ),
+            (
+                validation::ValidationError::InvalidInputWiring(Box::new(
+                    validation::InputWiringViolation {
+                        node: "main".to_string(),
+                        child: "consume".to_string(),
+                        parameter: "spec".to_string(),
+                        source: "ghost".to_string(),
+                        kind: validation::InputWiringKind::UnknownSource,
+                        reason: "renamed wording".to_string(),
+                    },
+                )),
+                "WFR007",
                 DiagnosticStage::Resolve,
             ),
             (
@@ -2568,10 +2975,23 @@ nodes:
             builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
-            nodes: vec![NodeDefinition {
-                rules: vec![Rule::Next("nonexistent".to_string())],
-                ..make_node("main", Some("impl"))
-            }],
+            nodes: vec![
+                NodeDefinition {
+                    kind: NodeKind::Sequence(
+                        crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                            entry: None,
+                            output: None,
+                            children: vec![crate::domain::workflow::ChildEntry {
+                                name: "work".to_string(),
+                                inputs: Vec::new(),
+                                rules: Some(vec![Rule::Next("nonexistent".to_string())]),
+                            }],
+                        },
+                    ),
+                    ..make_node("main", None)
+                },
+                make_node("work", Some("impl")),
+            ],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2581,7 +3001,7 @@ nodes:
             .iter()
             .filter(|i| {
                 i.severity == Severity::Error
-                    && i.node_name.as_deref() == Some("main")
+                    && i.node_name.as_deref() == Some("work")
                     && i.field.as_deref() == Some("rules.next")
                     && i.message.contains("存在しないnode")
             })
@@ -2599,7 +3019,7 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "impl", "content");
 
-        // main が Auto + rules で node3 へ遷移 → orphan は到達不能
+        // main sequence は start → node3 の隣接辺のみ → orphan は到達不能
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
@@ -2608,9 +3028,19 @@ nodes:
             schemas: Default::default(),
             nodes: vec![
                 NodeDefinition {
-                    rules: vec![Rule::Next("node3".to_string())],
-                    ..make_node("main", Some("impl"))
+                    kind: NodeKind::Sequence(
+                        crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                            entry: None,
+                            output: None,
+                            children: vec![
+                                crate::domain::workflow::ChildEntry::reference("start"),
+                                crate::domain::workflow::ChildEntry::reference("node3"),
+                            ],
+                        },
+                    ),
+                    ..make_node("main", None)
                 },
+                make_node("start", Some("impl")),
                 make_node("orphan", Some("impl")),
                 make_node("node3", Some("impl")),
             ],
@@ -2707,7 +3137,7 @@ nodes:
     fn diagnose_template_variable_error() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "bad", "Use {{request.field}} here");
+        setup_facet(wf_dir, "instructions", "bad", "Use {{spec.a.b}} here");
         let wf = WorkflowDefinitionYaml {
             name: "bad-template".to_string(),
             description: "test".to_string(),
@@ -2722,7 +3152,7 @@ nodes:
         assert!(report.items.iter().any(|i| i.severity == Severity::Error
             && i.facet_key.as_deref() == Some("bad")
             && i.message
-                .contains("未定義のテンプレート変数 '{{request.field}}'")));
+                .contains("未定義のテンプレート変数 '{{spec.a.b}}'")));
     }
 
     #[test]
@@ -3124,13 +3554,38 @@ nodes:
             .collect(),
             nodes: vec![
                 NodeDefinition {
-                    artifact: Some("artifact".to_string()),
-                    ..make_node("main", Some("task"))
+                    kind: NodeKind::Sequence(
+                        crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                            entry: None,
+                            output: None,
+                            children: vec![
+                                crate::domain::workflow::ChildEntry::reference("produce"),
+                                crate::domain::workflow::ChildEntry {
+                                    name: "consume".to_string(),
+                                    inputs: vec![(
+                                        "doc".to_string(),
+                                        crate::domain::workflow::value_objects::InputSourceRef::new(
+                                            "produce",
+                                        ),
+                                    )],
+                                    rules: None,
+                                },
+                            ],
+                        },
+                    ),
+                    ..make_node("main", None)
                 },
                 NodeDefinition {
-                    inputs: vec!["main".to_string()],
                     artifact: Some("artifact".to_string()),
-                    ..make_node("node2", Some("task"))
+                    ..make_node("produce", Some("task"))
+                },
+                NodeDefinition {
+                    input: vec![InputParam {
+                        name: "doc".to_string(),
+                        contract: None,
+                    }],
+                    artifact: Some("artifact".to_string()),
+                    ..make_node("consume", Some("task"))
                 },
             ],
         };
@@ -3142,7 +3597,7 @@ nodes:
                 .items
                 .iter()
                 .any(|i| i.severity == Severity::Error && i.field.as_deref() == Some("inputs")),
-            "Artifact input reference should not be an error, got: {:?}",
+            "children inputs wiring should not be an error, got: {:?}",
             report.items
         );
     }
@@ -3200,35 +3655,31 @@ nodes:
     }
 
     #[test]
-    fn diagnose_fanout_inputs_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "task", "content");
+    fn diagnose_node_level_wiring_is_rejected_with_migration_guidance() {
+        let yaml = r#"
+name: node-level-wiring
+description: test
+nodes:
+  main:
+    session:
+      provider: claude
+      facets:
+        instruction: task
+    inputs:
+      spec: request
+    rules:
+    - next: main
+"#;
 
-        let mut fanout = make_fanout("main", vec!["child1", "child2"]);
-        fanout.inputs = vec!["request".to_string()];
-        let wf = WorkflowDefinitionYaml {
-            name: "fanout-inputs".to_string(),
-            description: "test".to_string(),
-            builtin: false,
-            entry: "main".to_string(),
-            schemas: Default::default(),
-            nodes: vec![
-                fanout,
-                make_child("child1", Some("task")),
-                make_child("child2", Some("task")),
-            ],
-        };
-        save_workflow_yaml(wf_dir, &wf);
-
-        let report = diagnose_all(wf_dir, wf_dir);
-        assert!(
-            report.items.iter().any(|i| i.severity == Severity::Error
-                && i.workflow_name.as_deref() == Some("fanout-inputs")
-                && i.field.as_deref() == Some("inputs")
-                && i.message.contains("fanout")),
-            "Expected fanout inputs error, got: {:?}",
-            report.items
-        );
+        let diagnosis = diagnose_workflow_source(yaml, None);
+        for field in ["inputs", "rules"] {
+            assert!(
+                diagnosis.diagnostics.iter().any(|i| i.code == "WFS007"
+                    && i.severity == Severity::Error
+                    && i.field.as_deref() == Some(field)),
+                "expected WFS007 for node-level '{field}', got: {:?}",
+                diagnosis.diagnostics
+            );
+        }
     }
 }

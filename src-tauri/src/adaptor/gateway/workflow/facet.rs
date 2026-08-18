@@ -570,11 +570,11 @@ mod tests {
 
     #[test]
     fn find_undefined_template_variables_returns_only_invalid_reference_syntax() {
-        let content = "{{ request }} {{ plan.summary }} {{ request.more }} {{ bad ref }}";
+        let content = "{{ goal }} {{ plan.summary }} {{ plan.a.b }} {{ bad ref }}";
         let undefined = prompt_rendering::find_undefined_template_variables(content);
         assert_eq!(
             undefined,
-            vec!["request.more".to_string(), "bad ref".to_string()]
+            vec!["plan.a.b".to_string(), "bad ref".to_string()]
         );
     }
 

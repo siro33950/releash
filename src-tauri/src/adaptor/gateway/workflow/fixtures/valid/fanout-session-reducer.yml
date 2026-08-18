@@ -7,25 +7,39 @@ schemas:
       lgtm:
         type: boolean
     required:
-      - lgtm
+    - lgtm
   review-decision:
     type: object
     properties:
       verdict:
         type: string
         enum:
-          - READY
-          - NEEDS_FIX
+        - READY
+        - NEEDS_FIX
     required:
-      - verdict
+    - verdict
 nodes:
   main:
+    sequence:
+      children:
+      - dispatch
+      - judge:
+          inputs:
+            reviews: dispatch
+          rules:
+          - switch:
+              on: verdict
+              cases:
+                READY: ready
+                NEEDS_FIX: fix
+      - ready:
+          rules: []
+      - fix
+  dispatch:
     fanout:
-      child:
-        - review-a
-        - review-b
-    rules:
-      - next: judge
+      children:
+      - review-a
+      - review-b
   review-a:
     command: >-
       printf '{"lgtm":true}'
@@ -39,15 +53,9 @@ nodes:
       provider: claude
       facets:
         instruction: reduce-review-verdicts
-    inputs:
-      - main
+    input:
+    - reviews
     artifact: review-decision
-    rules:
-      - switch:
-          on: verdict
-          cases:
-            READY: ready
-            NEEDS_FIX: fix
   ready:
     command: printf ready
   fix:

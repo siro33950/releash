@@ -1,17 +1,19 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
-use crate::domain::workflow::{NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition};
+use crate::domain::workflow::{
+    ChildEntry, NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition,
+};
 
 pub const REQUEST_ARTIFACT: &str = "request";
-pub const ITEM_ARTIFACT: &str = "item";
+/// fanout の展開要素を子パラメータへ配線する予約供給元名。
+pub const ITEMS_SOURCE: &str = "items";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactReference {
     Request,
     Node { node: String, field: Option<String> },
-    Item { field: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,31 +24,20 @@ pub enum ReferenceParseError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReferenceResolveError {
-    ReservedNodeName { name: String },
-    UnknownNode { name: String },
-    UnavailableArtifact { name: String },
-    UnknownField { reference: String, field: String },
-    ItemOutOfScope,
-    InvalidInputRef { value: String },
-    InputsNotAllowedOnFanout { node: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReferenceResolveContext {
-    Inputs,
-    Template,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReferenceResolveDiagnostic {
-    pub(crate) error: ReferenceResolveError,
-    pub(crate) context: ReferenceResolveContext,
-}
-
-impl ReferenceResolveDiagnostic {
-    fn new(error: ReferenceResolveError, context: ReferenceResolveContext) -> Self {
-        Self { error, context }
-    }
+    ReservedNodeName {
+        name: String,
+    },
+    /// 本文（command / facet）の `{{ ... }}` が宣言済み input パラメータ名でない。
+    UnknownParameter {
+        name: String,
+    },
+    UnknownField {
+        reference: String,
+        field: String,
+    },
+    InvalidInputRef {
+        value: String,
+    },
 }
 
 pub fn parse_reference(input: &str) -> Result<ArtifactReference, ReferenceParseError> {
@@ -69,9 +60,6 @@ pub fn parse_reference(input: &str) -> Result<ArtifactReference, ReferenceParseE
     match (root, field) {
         (REQUEST_ARTIFACT, None) => Ok(ArtifactReference::Request),
         (REQUEST_ARTIFACT, Some(_)) => Err(ReferenceParseError::InvalidFormat(trimmed.to_string())),
-        (ITEM_ARTIFACT, field) => Ok(ArtifactReference::Item {
-            field: field.map(ToOwned::to_owned),
-        }),
         (node, field) => Ok(ArtifactReference::Node {
             node: node.to_string(),
             field: field.map(ToOwned::to_owned),
@@ -99,179 +87,110 @@ pub fn extract_template_references(content: &str) -> Vec<String> {
 
 pub(crate) fn validate_workflow_reference_diagnostics(
     workflow: &WorkflowDefinition,
-) -> Vec<ReferenceResolveDiagnostic> {
+) -> Vec<ReferenceResolveError> {
     let mut errors = Vec::new();
-    let context = ReferenceValidationContext::new(workflow);
 
     for node in &workflow.nodes {
         if is_reserved_artifact_name(&node.name) {
-            errors.push(ReferenceResolveDiagnostic::new(
-                ReferenceResolveError::ReservedNodeName {
-                    name: node.name.clone(),
-                },
-                ReferenceResolveContext::Inputs,
-            ));
+            errors.push(ReferenceResolveError::ReservedNodeName {
+                name: node.name.clone(),
+            });
         }
-        if node.is_fanout() && !node.inputs.is_empty() {
-            errors.push(ReferenceResolveDiagnostic::new(
-                ReferenceResolveError::InputsNotAllowedOnFanout {
-                    node: node.name.clone(),
-                },
-                ReferenceResolveContext::Inputs,
-            ));
+        if let Some(command) = node.command() {
+            validate_node_template_content(node, &workflow.schemas, command, &mut errors);
         }
-        for input in &node.inputs {
-            match parse_reference(input) {
-                Ok(ArtifactReference::Request)
-                | Ok(ArtifactReference::Node { field: None, .. }) => {
-                    let mut input_errors = Vec::new();
-                    validate_reference(input, &context, false, &mut input_errors);
-                    errors.extend(input_errors.into_iter().map(|error| {
-                        ReferenceResolveDiagnostic::new(error, ReferenceResolveContext::Inputs)
-                    }));
-                }
-                Ok(_) | Err(_) => errors.push(ReferenceResolveDiagnostic::new(
-                    ReferenceResolveError::InvalidInputRef {
-                        value: input.clone(),
-                    },
-                    ReferenceResolveContext::Inputs,
-                )),
-            }
-        }
-        let mut template_errors = Vec::new();
-        validate_node_templates(
-            node,
-            &context,
-            context.fanout_child_names.contains(node.name.as_str()),
-            &mut template_errors,
-        );
-        errors.extend(template_errors.into_iter().map(|error| {
-            ReferenceResolveDiagnostic::new(error, ReferenceResolveContext::Template)
-        }));
     }
 
     errors
 }
 
-pub fn validate_template_references(
-    workflow: &WorkflowDefinition,
-    content: &str,
-    allow_item: bool,
-) -> Vec<ReferenceResolveError> {
-    let context = ReferenceValidationContext::new(workflow);
-    let mut errors = Vec::new();
-    validate_template_content(content, &context, allow_item, &mut errors);
-    errors
-}
-
-struct ReferenceValidationContext<'a> {
-    top_level_nodes: HashMap<&'a str, &'a NodeDefinition>,
-    fanout_child_names: HashSet<&'a str>,
-    schemas: &'a BTreeMap<String, SchemaDef>,
-}
-
-impl<'a> ReferenceValidationContext<'a> {
-    fn new(workflow: &'a WorkflowDefinition) -> Self {
-        Self {
-            top_level_nodes: workflow
-                .nodes
-                .iter()
-                .map(|node| (node.name.as_str(), node))
-                .collect(),
-            fanout_child_names: workflow
-                .nodes
-                .iter()
-                .filter_map(NodeDefinition::fanout)
-                .flat_map(|fanout| fanout.child.iter().map(String::as_str))
-                .collect(),
-            schemas: &workflow.schemas,
-        }
-    }
-}
-
-fn validate_node_templates(
+/// 本文（command / facet）の `{{ ... }}` を、その node の input パラメータ宣言と
+/// 突合して検証する。参照できるのはパラメータ名（+ field パス）のみ。
+pub fn validate_template_references_for_node(
     node: &NodeDefinition,
-    context: &ReferenceValidationContext<'_>,
-    allow_item: bool,
-    errors: &mut Vec<ReferenceResolveError>,
-) {
-    if let Some(command) = node.command() {
-        validate_template_content(command, context, allow_item, errors);
-    }
+    schemas: &BTreeMap<String, SchemaDef>,
+    content: &str,
+) -> Vec<ReferenceResolveError> {
+    let mut errors = Vec::new();
+    validate_node_template_content(node, schemas, content, &mut errors);
+    errors
 }
 
-fn validate_template_content(
+fn validate_node_template_content(
+    node: &NodeDefinition,
+    schemas: &BTreeMap<String, SchemaDef>,
     content: &str,
-    context: &ReferenceValidationContext<'_>,
-    allow_item: bool,
     errors: &mut Vec<ReferenceResolveError>,
 ) {
     for reference in extract_template_references(content) {
-        match parse_reference(&reference) {
-            Ok(_) => validate_reference(&reference, context, allow_item, errors),
-            Err(_) => errors.push(ReferenceResolveError::InvalidInputRef { value: reference }),
+        let Some((root, field)) = split_reference(&reference) else {
+            errors.push(ReferenceResolveError::InvalidInputRef { value: reference });
+            continue;
+        };
+        let Some(parameter) = node.input_parameter(root) else {
+            errors.push(ReferenceResolveError::UnknownParameter {
+                name: root.to_string(),
+            });
+            continue;
+        };
+        let Some(field) = field else {
+            continue;
+        };
+        // 型あり（Contract 付き）パラメータの field パスは Contract に対して検証する。
+        // 型なしパラメータは供給元の形が実行時に決まるため検証しない。
+        if let Some(contract) = parameter.contract.as_deref() {
+            if !contract_field_available(contract, field, schemas) {
+                errors.push(ReferenceResolveError::UnknownField {
+                    reference: root.to_string(),
+                    field: field.to_string(),
+                });
+            }
         }
     }
 }
 
-fn validate_reference(
-    raw: &str,
-    context: &ReferenceValidationContext<'_>,
-    allow_item: bool,
-    errors: &mut Vec<ReferenceResolveError>,
-) {
-    match parse_reference(raw) {
-        Ok(ArtifactReference::Request) => {}
-        Ok(ArtifactReference::Item { .. }) if allow_item => {}
-        Ok(ArtifactReference::Item { .. }) => errors.push(ReferenceResolveError::ItemOutOfScope),
-        Ok(ArtifactReference::Node { node, field }) => {
-            if context.fanout_child_names.contains(node.as_str()) {
-                errors.push(ReferenceResolveError::UnavailableArtifact { name: node });
-                return;
-            }
-            let Some(definition) = context.top_level_nodes.get(node.as_str()) else {
-                errors.push(ReferenceResolveError::UnknownNode { name: node });
-                return;
-            };
-            if !node_has_artifact(definition) {
-                errors.push(ReferenceResolveError::UnavailableArtifact { name: node });
-                return;
-            }
-            if let Some(field) = field {
-                if !node_field_available(definition, &field, context.schemas) {
-                    errors.push(ReferenceResolveError::UnknownField {
-                        reference: node,
-                        field,
-                    });
-                }
-            }
-        }
-        Err(_) => errors.push(ReferenceResolveError::InvalidInputRef {
-            value: raw.to_string(),
-        }),
+/// `root` / `root.field` の分解。形式不正（空・空白・2 段以上の field）は None。
+pub(crate) fn split_reference(value: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+        return None;
     }
+    let mut parts = trimmed.split('.');
+    let root = parts.next()?;
+    let field = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+    if !is_reference_segment(root) || field.is_some_and(|value| !is_reference_segment(value)) {
+        return None;
+    }
+    Some((root, field))
 }
 
+/// fanout items（`<node>.<field>`）の要素 schema を解決する。
+/// 参照先は Artifact を産出するカタログ node（fanout の子は親の配列へ集約される
+/// ため参照不可）。
 pub(crate) fn artifact_field_schema<'a>(
     workflow: &'a WorkflowDefinition,
     node_name: &str,
     field: &str,
-) -> Result<Option<&'a SchemaDef>, ReferenceResolveError> {
-    let context = ReferenceValidationContext::new(workflow);
-    if context.fanout_child_names.contains(node_name) {
-        return Err(ReferenceResolveError::UnavailableArtifact {
-            name: node_name.to_string(),
-        });
+) -> Result<Option<&'a SchemaDef>, String> {
+    if workflow
+        .nodes
+        .iter()
+        .filter_map(NodeDefinition::fanout)
+        .flat_map(|fanout| fanout.children.iter())
+        .any(|entry| entry.name == node_name)
+    {
+        return Err(format!(
+            "node '{node_name}' is a fanout child and its Artifact is not referenceable"
+        ));
     }
-    let Some(node) = context.top_level_nodes.get(node_name).copied() else {
-        return Err(ReferenceResolveError::UnknownNode {
-            name: node_name.to_string(),
-        });
+    let Some(node) = workflow.node_by_name(node_name) else {
+        return Err(format!("unknown Artifact-producing node '{node_name}'"));
     };
     if !node_has_artifact(node) {
-        return Err(ReferenceResolveError::UnavailableArtifact {
-            name: node_name.to_string(),
-        });
+        return Err(format!("node '{node_name}' does not produce an Artifact"));
     }
     if node.kind_name() == NodeKindName::Command
         && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
@@ -280,42 +199,114 @@ pub(crate) fn artifact_field_schema<'a>(
         return Ok(None);
     }
     let Some(contract) = node.artifact.as_deref() else {
-        return Err(ReferenceResolveError::UnknownField {
-            reference: node_name.to_string(),
-            field: field.to_string(),
-        });
+        return Err(format!(
+            "node '{node_name}' has no Artifact field '{field}'"
+        ));
     };
-    let Some(SchemaDef::Object { properties, .. }) = context.schemas.get(contract) else {
-        return Err(ReferenceResolveError::UnknownField {
-            reference: node_name.to_string(),
-            field: field.to_string(),
-        });
+    let Some(SchemaDef::Object { properties, .. }) = workflow.schemas.get(contract) else {
+        return Err(format!(
+            "node '{node_name}' has no Artifact field '{field}'"
+        ));
     };
     properties
         .get(field)
         .map(Some)
-        .ok_or_else(|| ReferenceResolveError::UnknownField {
-            reference: node_name.to_string(),
-            field: field.to_string(),
-        })
+        .ok_or_else(|| format!("node '{node_name}' has no Artifact field '{field}'"))
 }
 
-pub(crate) fn resolve_runtime_reference(
-    reference: &ArtifactReference,
+/// sequence（root スコープ）の children エントリの inputs から、node 起動時の
+/// パラメータ束縛を解決する。
+///
+/// 供給元: 兄弟 node の Artifact（`artifacts` は node 名キー）/ `request`。
+/// 解決できない供給元は束縛から除かれる（テンプレートは未解決のまま残る）。
+pub fn resolve_entry_bindings(
+    entry: Option<&ChildEntry>,
     artifacts: &HashMap<String, Value>,
+) -> Vec<(String, Value)> {
+    let Some(entry) = entry else {
+        return Vec::new();
+    };
+    entry
+        .inputs
+        .iter()
+        .filter_map(|(parameter, source)| {
+            artifacts
+                .get(source.root())
+                .and_then(|value| field_value(value, source.field()))
+                .map(|value| (parameter.clone(), value.clone()))
+        })
+        .collect()
+}
+
+/// fanout の children エントリの inputs から、子 node 起動時のパラメータ束縛を
+/// 解決する。
+///
+/// 供給元は自 fanout の input パラメータ（`parent_parameters`）/ `request` /
+/// `items`（展開の各要素 = `item` 引数）に閉じる。兄弟や他 node の直接参照は
+/// 存在しない（fanout の子は並走し、Artifact は親配列へ集約されるため）。
+///
+/// 自動束縛: entry が items を明示配線せず、node のパラメータがちょうど1つで
+/// 未配線なら、そのパラメータへ item を束縛する。
+pub fn resolve_fanout_child_bindings(
+    entry: Option<&ChildEntry>,
+    node: &NodeDefinition,
+    parent_parameters: &HashMap<String, Value>,
+    request: Option<&Value>,
     item: Option<&Value>,
-) -> Option<Value> {
-    match reference {
-        ArtifactReference::Request => artifacts.get(REQUEST_ARTIFACT).cloned(),
-        ArtifactReference::Node { node, field } => {
-            let value = artifacts.get(node)?;
-            field_value(value, field.as_deref()).cloned()
-        }
-        ArtifactReference::Item { field } => {
-            let value = item?;
-            field_value(value, field.as_deref()).cloned()
+) -> Vec<(String, Value)> {
+    let mut bindings: Vec<(String, Value)> = Vec::new();
+    let mut items_bound = false;
+
+    if let Some(entry) = entry {
+        for (parameter, source) in &entry.inputs {
+            let root = source.root();
+            let value = if root == ITEMS_SOURCE {
+                items_bound = true;
+                item.cloned()
+            } else if root == REQUEST_ARTIFACT {
+                request.cloned()
+            } else {
+                parent_parameters
+                    .get(root)
+                    .and_then(|value| field_value(value, source.field()))
+                    .cloned()
+            };
+            if let Some(value) = value {
+                bindings.push((parameter.clone(), value));
+            }
         }
     }
+
+    if let Some(item) = item {
+        if !items_bound {
+            let unbound: Vec<_> = node
+                .input
+                .iter()
+                .filter(|param| {
+                    !bindings
+                        .iter()
+                        .any(|(bound, _)| bound == param.name.as_str())
+                })
+                .collect();
+            if node.input.len() == 1 {
+                if let [sole] = unbound.as_slice() {
+                    bindings.push((sole.name.clone(), item.clone()));
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
+/// 束縛済みパラメータ値から `{{ root(.field) }}` を解決する。
+pub fn resolve_template_value(
+    root: &str,
+    field: Option<&str>,
+    values: &HashMap<String, Value>,
+) -> Option<Value> {
+    let value = values.get(root)?;
+    field_value(value, field).cloned()
 }
 
 fn field_value<'a>(value: &'a Value, field: Option<&str>) -> Option<&'a Value> {
@@ -325,7 +316,7 @@ fn field_value<'a>(value: &'a Value, field: Option<&str>) -> Option<&'a Value> {
     }
 }
 
-fn is_reference_segment(value: &str) -> bool {
+pub(crate) fn is_reference_segment(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -334,18 +325,32 @@ fn is_reference_segment(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn is_reserved_artifact_name(value: &str) -> bool {
-    matches!(value, REQUEST_ARTIFACT | ITEM_ARTIFACT)
+pub(crate) fn is_reserved_artifact_name(value: &str) -> bool {
+    value == REQUEST_ARTIFACT
 }
 
-fn node_has_artifact(node: &NodeDefinition) -> bool {
+pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
     match node.kind_name() {
         NodeKindName::Command | NodeKindName::Fanout => true,
         NodeKindName::Session => node.artifact.is_some(),
+        // sequence の Artifact は output の子から委譲される（宣言があるときのみ）。
+        NodeKindName::Sequence => node.artifact.is_some(),
     }
 }
 
-fn node_field_available(
+pub(crate) fn contract_field_available(
+    contract: &str,
+    field: &str,
+    schemas: &BTreeMap<String, SchemaDef>,
+) -> bool {
+    let Some(SchemaDef::Object { properties, .. }) = schemas.get(contract) else {
+        return false;
+    };
+    properties.contains_key(field)
+}
+
+/// 兄弟 node の Artifact field が参照可能か（field パス付き inputs 配線の検証）。
+pub(crate) fn node_field_available(
     node: &NodeDefinition,
     field: &str,
     schemas: &BTreeMap<String, SchemaDef>,
@@ -359,48 +364,41 @@ fn node_field_available(
     let Some(contract) = node.artifact.as_deref() else {
         return false;
     };
-    let Some(SchemaDef::Object { properties, .. }) = schemas.get(contract) else {
-        return false;
-    };
-    properties.contains_key(field)
+    contract_field_available(contract, field, schemas)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{CommandSpec, FanoutSpec, NodeKind};
+    use crate::domain::workflow::value_objects::InputSourceRef;
+    use crate::domain::workflow::{CommandSpec, InputParam, NodeKind};
 
-    fn command_node(name: &str, command: &str) -> NodeDefinition {
+    fn command_node_with_params(
+        name: &str,
+        command: &str,
+        params: Vec<InputParam>,
+    ) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: command.to_string(),
             }),
-            ..Default::default()
+            artifact: None,
+            input: params,
+            completion: Default::default(),
+            worktree: None,
         }
     }
 
-    fn fanout_node(name: &str, child: &str) -> NodeDefinition {
-        NodeDefinition {
+    fn untyped(name: &str) -> InputParam {
+        InputParam {
             name: name.to_string(),
-            kind: NodeKind::Fanout(FanoutSpec {
-                child: vec![child.to_string()],
-                items: None,
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
-        WorkflowDefinition {
-            name: "wf".to_string(),
-            nodes,
-            ..Default::default()
+            contract: None,
         }
     }
 
     #[test]
-    fn test_reference_parse_request_node_and_item() {
+    fn test_reference_parse_requestとnode参照() {
         assert_eq!(parse_reference("request"), Ok(ArtifactReference::Request));
         assert_eq!(
             parse_reference("plan.summary"),
@@ -409,41 +407,141 @@ mod tests {
                 field: Some("summary".to_string())
             })
         );
-        assert_eq!(
-            parse_reference("item.path"),
-            Ok(ArtifactReference::Item {
-                field: Some("path".to_string())
-            })
-        );
+        assert!(parse_reference("request.field").is_err());
     }
 
     #[test]
-    fn fanout_child_artifact_is_not_globally_referenceable() {
-        let workflow = workflow(vec![
-            fanout_node("fanout", "worker"),
-            command_node("worker", "echo work"),
-            command_node("consume", "echo {{ worker.stdout }}"),
-        ]);
+    fn test_本文検証_宣言済みパラメータ名のみ参照できる() {
+        let node = command_node_with_params(
+            "delete",
+            "rm -f -- '{{ spec }}/behavior.md'",
+            vec![untyped("spec")],
+        );
+        let errors =
+            validate_template_references_for_node(&node, &BTreeMap::new(), node.command().unwrap());
+        assert!(errors.is_empty());
+    }
 
-        let diagnostics = validate_workflow_reference_diagnostics(&workflow);
-
-        assert!(diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.error,
-            ReferenceResolveError::UnavailableArtifact { name } if name == "worker"
+    #[test]
+    fn test_本文検証_未宣言の参照を拒否する() {
+        let node = command_node_with_params("echo", "echo '{{ item }}'", vec![untyped("task")]);
+        let errors =
+            validate_template_references_for_node(&node, &BTreeMap::new(), node.command().unwrap());
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            ReferenceResolveError::UnknownParameter { name } if name == "item"
         )));
     }
 
     #[test]
-    fn item_template_reference_is_available_on_top_level_fanout_child() {
-        let workflow = workflow(vec![
-            fanout_node("fanout", "worker"),
-            command_node("worker", "echo {{ item.path }}"),
-        ]);
+    fn test_束縛解決_sequenceは兄弟とrequestを解決する() {
+        let entry = ChildEntry {
+            name: "consume".to_string(),
+            inputs: vec![
+                ("spec".to_string(), InputSourceRef::new("collect.spec_dir")),
+                ("goal".to_string(), InputSourceRef::new("request")),
+            ],
+            rules: None,
+        };
+        let mut artifacts = HashMap::new();
+        artifacts.insert(
+            "collect".to_string(),
+            serde_json::json!({"spec_dir": "specs/x"}),
+        );
+        artifacts.insert(
+            REQUEST_ARTIFACT.to_string(),
+            Value::String("build it".to_string()),
+        );
 
-        let diagnostics = validate_workflow_reference_diagnostics(&workflow);
+        let bindings = resolve_entry_bindings(Some(&entry), &artifacts);
 
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| matches!(&diagnostic.error, ReferenceResolveError::ItemOutOfScope)));
+        assert_eq!(
+            bindings,
+            vec![
+                ("spec".to_string(), Value::String("specs/x".to_string())),
+                ("goal".to_string(), Value::String("build it".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_束縛解決_fanout子は親パラメータとrequestとitemsを解決する() {
+        let node = command_node_with_params(
+            "worker",
+            "echo",
+            vec![untyped("thread"), untyped("spec"), untyped("goal")],
+        );
+        let entry = ChildEntry {
+            name: "worker".to_string(),
+            inputs: vec![
+                ("thread".to_string(), InputSourceRef::new("items")),
+                ("spec".to_string(), InputSourceRef::new("context.spec_dir")),
+                ("goal".to_string(), InputSourceRef::new("request")),
+            ],
+            rules: None,
+        };
+        let mut parent_parameters = HashMap::new();
+        parent_parameters.insert(
+            "context".to_string(),
+            serde_json::json!({"spec_dir": "specs/x"}),
+        );
+        let request = Value::String("build it".to_string());
+        let item = serde_json::json!({"thread_id": "t-1"});
+
+        let bindings = resolve_fanout_child_bindings(
+            Some(&entry),
+            &node,
+            &parent_parameters,
+            Some(&request),
+            Some(&item),
+        );
+
+        assert_eq!(
+            bindings,
+            vec![
+                ("thread".to_string(), item.clone()),
+                ("spec".to_string(), Value::String("specs/x".to_string())),
+                ("goal".to_string(), Value::String("build it".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_束縛解決_fanout子は兄弟nodeを直接参照できない() {
+        let node = command_node_with_params("worker", "echo", vec![untyped("spec")]);
+        let entry = ChildEntry {
+            name: "worker".to_string(),
+            inputs: vec![("spec".to_string(), InputSourceRef::new("collect"))],
+            rules: None,
+        };
+
+        let bindings =
+            resolve_fanout_child_bindings(Some(&entry), &node, &HashMap::new(), None, None);
+
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn test_束縛解決_単一パラメータへのitems自動束縛() {
+        let node = command_node_with_params("worker", "echo", vec![untyped("task")]);
+        let item = serde_json::json!({"task_id": "T1"});
+
+        let bindings =
+            resolve_fanout_child_bindings(None, &node, &HashMap::new(), None, Some(&item));
+
+        assert_eq!(bindings, vec![("task".to_string(), item)]);
+    }
+
+    #[test]
+    fn test_束縛解決_解決できない供給元は束縛から除かれる() {
+        let entry = ChildEntry {
+            name: "consume".to_string(),
+            inputs: vec![("spec".to_string(), InputSourceRef::new("missing_node"))],
+            rules: None,
+        };
+
+        let bindings = resolve_entry_bindings(Some(&entry), &HashMap::new());
+
+        assert!(bindings.is_empty());
     }
 }

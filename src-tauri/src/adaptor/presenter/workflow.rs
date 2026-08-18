@@ -210,6 +210,7 @@ fn node_kind_to_view(kind: workflow::NodeKindName) -> workflow_wire::NodeKindVie
         workflow::NodeKindName::Command => workflow_wire::NodeKindView::Command,
         workflow::NodeKindName::Session => workflow_wire::NodeKindView::Session,
         workflow::NodeKindName::Fanout => workflow_wire::NodeKindView::Fanout,
+        workflow::NodeKindName::Sequence => workflow_wire::NodeKindView::Sequence,
     }
 }
 

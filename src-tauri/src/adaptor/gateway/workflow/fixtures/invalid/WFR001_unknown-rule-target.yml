@@ -2,9 +2,13 @@ name: unknown-rule-target
 description: next points to a missing node
 nodes:
   main:
+    sequence:
+      children:
+      - implement:
+          rules:
+          - next: missing
+  implement:
     session:
       provider: claude
       facets:
         instruction: implement
-    rules:
-      - next: missing

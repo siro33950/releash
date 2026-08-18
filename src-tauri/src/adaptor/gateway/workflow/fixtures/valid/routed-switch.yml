@@ -7,23 +7,29 @@ schemas:
       decision:
         type: string
         enum:
-          - done
-          - retry
+        - done
+        - retry
     required:
-      - decision
+    - decision
 nodes:
   main:
+    sequence:
+      children:
+      - judge:
+          rules:
+          - switch:
+              on: decision
+              cases:
+                done: done
+                retry: retry
+      - done
+      - retry
+  judge:
     artifact: verdict
     session:
       provider: claude
       facets:
         instruction: judge
-    rules:
-      - switch:
-          on: decision
-          cases:
-            done: done
-            retry: retry
   done:
     session:
       provider: claude

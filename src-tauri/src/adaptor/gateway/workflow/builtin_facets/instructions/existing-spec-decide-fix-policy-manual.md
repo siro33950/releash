@@ -7,9 +7,9 @@ open ThreadのFullReview指摘をSpecと現在の実装に照らして検証し�
 ## 入力
 
 - `check_open_threads` Artifactの`threads`（対象Thread一覧）
-- `{{ main.spec_dir }}/requirements.md`
-- `{{ main.spec_dir }}/behavior.md`
-- `{{ main.spec_dir }}/design.md`
+- `{{ spec }}/requirements.md`
+- `{{ spec }}/behavior.md`
+- `{{ spec }}/design.md`
 - 各Threadの本文と全履歴
 - 現在の実装と差分
 

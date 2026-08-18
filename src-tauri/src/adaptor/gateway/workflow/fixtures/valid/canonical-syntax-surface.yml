@@ -1,5 +1,5 @@
 name: canonical-syntax-surface
-description: canonical Contract, reference, permission, facet, completion, fanout, and routing surface
+description: canonical Contract, reference, permission, facet, completion, sequence, fanout, and routing surface
 schemas:
   text: string
   target:
@@ -16,11 +16,11 @@ schemas:
         type: array
         items: text
     required:
-      - path
-      - enabled
-      - count
-      - ratio
-      - labels
+    - path
+    - enabled
+    - count
+    - ratio
+    - labels
   target-list:
     type: object
     properties:
@@ -28,35 +28,61 @@ schemas:
         type: array
         items: target
     required:
-      - targets
+    - targets
   route:
     type: object
     properties:
       verdict:
         type: string
         enum:
-          - SHIP
-          - HOLD
+        - SHIP
+        - HOLD
     required:
-      - verdict
+    - verdict
 nodes:
   main:
-    command: "printf '%s' '{{ request }}'"
+    sequence:
+      children:
+      - collect:
+          inputs:
+            goal: request
+      - dispatch
+      - judge:
+          inputs:
+            results: dispatch
+          rules:
+          - switch:
+              on: verdict
+              cases:
+                SHIP: approved
+            next: review
+      - approved:
+          rules: []
+      - review:
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: done
+          - next: judge
+      - done:
+          inputs:
+            outcome: judge
+  collect:
+    command: "printf '%s' '{{ goal }}'"
+    input:
+    - goal
     artifact: target-list
-    inputs:
-      - request
-    rules:
-      - next: dispatch
   dispatch:
     fanout:
-      child: worker
-      items: main.targets
-    rules:
-      - next: judge
+      children:
+      - worker:
+          inputs:
+            target: items
+      items: collect.targets
   worker:
-    command: "printf '%s' '{{ item }} {{ item.path }}'"
+    command: "printf '%s' '{{ target }} {{ target.path }}'"
     input:
-      - item: target
+    - target: target
   judge:
     session:
       provider: claude
@@ -66,15 +92,9 @@ nodes:
         policy: reviewing
         knowledge: releash-thread
         instruction: choose-route
+    input:
+    - results
     artifact: route
-    inputs:
-      - dispatch
-    rules:
-      - switch:
-          on: verdict
-          cases:
-            SHIP: approved
-        next: review
   approved:
     session:
       provider: claude
@@ -86,11 +106,7 @@ nodes:
       facets:
         instruction: review
     completion: approval
-    inputs:
-      - judge
-    rules:
-      - next: done
   done:
-    command: "printf '%s' '{{ judge.verdict }}'"
-    inputs:
-      - judge
+    command: "printf '%s' '{{ outcome.verdict }}'"
+    input:
+    - outcome: route

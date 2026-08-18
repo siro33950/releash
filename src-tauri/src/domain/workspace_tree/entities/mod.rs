@@ -428,7 +428,7 @@ impl WorkspaceTree {
                 NodeKindName::Fanout => {
                     fanout_branch_occurrence_key(&execution_id, &node_name, occurrence)
                 }
-                NodeKindName::Session | NodeKindName::Command => {
+                NodeKindName::Session | NodeKindName::Command | NodeKindName::Sequence => {
                     workflow_node_occurrence_key(&node_name, occurrence)
                 }
             };
@@ -442,7 +442,7 @@ impl WorkspaceTree {
         let sibling_order = self.next_sibling_order(Some(&parent_id));
         let id = match kind {
             NodeKindName::Fanout => opaque_branch_id(&semantic_key),
-            NodeKindName::Session | NodeKindName::Command => {
+            NodeKindName::Session | NodeKindName::Command | NodeKindName::Sequence => {
                 opaque_workflow_node_id(&execution_id, &semantic_key)?
             }
         };
@@ -454,6 +454,7 @@ impl WorkspaceTree {
                 NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
                 NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
                 NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
+                NodeKindName::Sequence => WorkspaceNodeKind::Workflow,
             },
             title: node_name.clone(),
             status: WorkspaceNodeStatus::Running,
@@ -1180,9 +1181,8 @@ mod tests {
                 }),
                 artifact: None,
                 input: Vec::new(),
-                inputs: Vec::new(),
-                rules: Vec::new(),
                 completion: NodeCompletion::Auto,
+                worktree: None,
             }],
             entry: "plan".to_string(),
         }
@@ -1633,7 +1633,10 @@ mod tests {
         definition.nodes.push(NodeDefinition {
             name: "fanout".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: vec!["child-a".to_string(), "child-b".to_string()],
+                children: vec![
+                    crate::domain::workflow::ChildEntry::reference("child-a"),
+                    crate::domain::workflow::ChildEntry::reference("child-b"),
+                ],
                 items: Some(ItemsSource::Literal(vec![serde_json::json!("only")])),
             }),
             ..NodeDefinition::default()
@@ -1718,7 +1721,7 @@ mod tests {
         workflow.nodes.push(NodeDefinition {
             name: "matrix".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: vec!["plan".to_string()],
+                children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
                 items: Some(ItemsSource::ArtifactField {
                     node: "source".to_string(),
                     field: "items".to_string(),
@@ -1811,7 +1814,7 @@ mod tests {
         workflow.nodes.push(NodeDefinition {
             name: "reviews".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: vec!["plan".to_string()],
+                children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
                 items: None,
             }),
             ..NodeDefinition::default()
@@ -1922,7 +1925,10 @@ mod tests {
             NodeDefinition {
                 name: "checks".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
-                    child: vec!["lint".to_string(), "test".to_string()],
+                    children: vec![
+                        crate::domain::workflow::ChildEntry::reference("lint"),
+                        crate::domain::workflow::ChildEntry::reference("test"),
+                    ],
                     items: None,
                 }),
                 ..NodeDefinition::default()
@@ -2107,7 +2113,7 @@ mod tests {
         workflow.nodes.push(NodeDefinition {
             name: "dynamic".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                child: vec!["plan".to_string()],
+                children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
                 items: Some(ItemsSource::ArtifactField {
                     node: "source".to_string(),
                     field: "items".to_string(),
