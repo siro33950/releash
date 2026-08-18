@@ -747,16 +747,18 @@ impl WorkflowExecution {
             })?;
         let attempt = match parent_scope_id {
             Some(scope_id) => {
-                let scope = self.scope_mut(scope_id).ok_or_else(|| {
-                    crate::domain::workflow::WorkflowError::invalid_state(format!(
-                        "scope '{scope_id}' is not active"
-                    ))
-                })?;
-                if let Some(sequence) = scope.sequence_mut() {
-                    sequence.current_child = Some(node_name.to_string());
-                    sequence.artifacts.remove(node_name);
-                }
-                scope.record_child_start(node_name)
+                // sequence の子起動専用（fanout の子は start_fanout_child_instance）。
+                let sequence = self
+                    .scope_mut(scope_id)
+                    .and_then(ScopeRuntime::sequence_mut)
+                    .ok_or_else(|| {
+                        crate::domain::workflow::WorkflowError::invalid_state(format!(
+                            "sequence scope '{scope_id}' is not active"
+                        ))
+                    })?;
+                sequence.current_child = Some(node_name.to_string());
+                sequence.artifacts.remove(node_name);
+                sequence.record_child_start(node_name)
             }
             None => 1,
         };
@@ -935,7 +937,8 @@ impl WorkflowExecution {
                 "fanout scope '{scope_id}' is not active"
             ))
         })?;
-        let attempt = scope.record_child_start(child_name);
+        // attempt は slot（lane）ごとに 1 始まり。再試行は slot 差し替え時に採番する。
+        let attempt = 1;
         let id = new_id();
         let fanout = scope.fanout_mut().ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1719,10 +1722,11 @@ impl WorkflowExecution {
             .as_ref()
             .map(|parent| parent.parent_id.clone());
         let new_attempt = match parent_scope_id.as_deref() {
-            Some(scope_id) => {
-                let scope = self.scope_mut(scope_id)?;
-                scope.record_child_start(&target.node_name)
-            }
+            Some(scope_id) => match self.scope_mut(scope_id)?.sequence_mut() {
+                Some(sequence) => sequence.record_child_start(&target.node_name),
+                // fanout: attempt は slot（lane）が所有する。
+                None => target.attempt.saturating_add(1),
+            },
             None => target.attempt.saturating_add(1),
         };
         let fanout_child = target.is_fanout_child();
@@ -2738,9 +2742,9 @@ impl WorkflowExecution {
             let scope = self
                 .scope_mut(&scope_id)
                 .ok_or_else(|| format!("parent scope '{scope_id}' is not active"))?;
-            scope.raise_child_count_to(node_name, attempt);
             match (&mut scope.kind, parent_ref.fanout_slot) {
                 (ScopeRuntimeKind::Sequence(sequence), _) => {
+                    sequence.raise_child_count_to(node_name, attempt);
                     sequence.current_child = Some(node_name.to_string());
                     sequence.artifacts.remove(node_name);
                 }
@@ -5461,6 +5465,77 @@ mod tests {
             aborted.len(),
             2,
             "every active lane leaf must get its own aborted entry"
+        );
+    }
+
+    #[test]
+    fn direct_fanout_child_lanes_each_start_at_attempt_one_and_retry_independently() {
+        // items 2 件の直接 fanout 子（leaf）は lane ごとに attempt 1 で始まり、
+        // 片方の retry だけがその lane の attempt 2 になる。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("worker")],
+                    items: Some(crate::domain::workflow::ItemsSource::Literal(vec![
+                        serde_json::json!("a"),
+                        serde_json::json!("b"),
+                    ])),
+                }),
+                ..Default::default()
+            },
+            tree_command_node("worker"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("start must yield one worker leaf per lane");
+        };
+        let attempts: Vec<u32> = leaves
+            .iter()
+            .map(|leaf| {
+                execution
+                    .node_executions()
+                    .iter()
+                    .find(|node| node.id == leaf.node_execution_id)
+                    .unwrap()
+                    .attempt
+            })
+            .collect();
+        assert_eq!(attempts, [1, 1], "each lane must start at attempt 1");
+
+        // lane 0 を失敗させて retry すると、その lane だけ attempt 2 になる。
+        let lane0 = leaves[0].node_execution_id.clone();
+        assert_eq!(
+            execution.fail_leaf_execution(
+                &lane0,
+                "exit 1".to_string(),
+                NodeExecutionFailureKind::ValidationFailure,
+                FailureDisposition::Terminal,
+                2.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        let restarted = execution
+            .restart_node_attempt_at(
+                &lane0,
+                "retry-1".to_string(),
+                3.0,
+                NodeRestartMode::ExplicitRetry,
+            )
+            .expect("a failed lane leaf must be retryable");
+        assert_eq!(restarted.attempt.attempt, 2);
+        // lane 1 は attempt 1 のまま。
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.id == leaves[1].node_execution_id)
+                .unwrap()
+                .attempt,
+            1
         );
     }
 

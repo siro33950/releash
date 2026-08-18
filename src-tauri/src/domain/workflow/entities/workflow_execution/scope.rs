@@ -49,9 +49,8 @@ pub struct FanoutScopeRuntime {
     /// 展開に使った items（スコープ生成時に確定。slot の item 復元に使う）。
     pub items: Option<Vec<serde_json::Value>>,
     /// 展開された子スロット（宣言順 = items 行 × children 列）。
+    /// attempt は slot が所有する（lane ごとに 1 始まり）。
     pub children: Vec<FanoutChildRuntime>,
-    /// スコープ内の子ごとの開始回数（retry の attempt 採番）。
-    pub child_counts: HashMap<String, u32>,
 }
 
 impl ScopeRuntime {
@@ -82,27 +81,21 @@ impl ScopeRuntime {
             ScopeRuntimeKind::Sequence(_) => None,
         }
     }
+}
 
-    fn child_counts_mut(&mut self) -> &mut HashMap<String, u32> {
-        match &mut self.kind {
-            ScopeRuntimeKind::Sequence(scope) => &mut scope.child_counts,
-            ScopeRuntimeKind::Fanout(scope) => &mut scope.child_counts,
-        }
-    }
-
+impl SequenceScopeRuntime {
     /// 子の開始を記録し、その attempt（スコープ内 1 始まり）を返す。
+    /// loop_guard のカウント範囲もこの値で決まる。fanout の子の attempt は
+    /// slot が所有するため、このカウントは sequence スコープ専用。
     pub fn record_child_start(&mut self, child_name: &str) -> u32 {
-        let count = self
-            .child_counts_mut()
-            .entry(child_name.to_string())
-            .or_insert(0);
+        let count = self.child_counts.entry(child_name.to_string()).or_insert(0);
         *count += 1;
         *count
     }
 
     /// 子の attempt カウントを少なくとも `attempt` まで進める（retry / replay 用）。
     pub fn raise_child_count_to(&mut self, child_name: &str, attempt: u32) {
-        self.child_counts_mut()
+        self.child_counts
             .entry(child_name.to_string())
             .and_modify(|current| *current = (*current).max(attempt))
             .or_insert(attempt);
@@ -113,14 +106,8 @@ impl ScopeRuntime {
 mod tests {
     use super::*;
 
-    fn sequence_scope() -> ScopeRuntime {
-        ScopeRuntime {
-            node_execution_id: "scope-1".to_string(),
-            node_name: "part".to_string(),
-            parent_scope_id: None,
-            parameters: Vec::new(),
-            kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime::default()),
-        }
+    fn sequence_scope() -> SequenceScopeRuntime {
+        SequenceScopeRuntime::default()
     }
 
     #[test]
