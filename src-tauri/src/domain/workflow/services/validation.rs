@@ -1,7 +1,7 @@
 use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW};
 use crate::domain::workflow::{
-    is_reserved_node_name, InputParam, ItemsSource, NodeDefinition, NodeKind, NodeKindName,
+    is_reserved_node_name, InputParam, ItemsSource, NodeDefinition, NodeKind, NodeKindName, Rule,
     SchemaDef, WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -56,6 +56,22 @@ pub enum InputWiringKind {
     UnknownSourceField,
     /// 供給元名が兄弟 node 名と自合成子のパラメータ名の両方に一致して曖昧。
     AmbiguousSource,
+}
+
+/// `on_failure: ignore` を宣言した children エントリの artifact に依存する下流の種別。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IgnoredChildDependencyKind {
+    /// 同一 sequence の兄弟エントリが inputs の供給元として参照している。
+    InputsSource {
+        dependent: String,
+        parameter: String,
+    },
+    /// その entry 自身の rules（when / switch）が artifact を評価する。
+    RulesEvaluation,
+    /// sequence の output がこの child を名指ししている。
+    SequenceOutput,
+    /// 兄弟 fanout の items がこの child の artifact を参照している。
+    FanoutItems { dependent: String },
 }
 
 /// children エントリの inputs 配線違反の詳細。
@@ -143,6 +159,19 @@ pub enum ValidationError {
     },
     /// children エントリの inputs 配線が不正。
     InvalidInputWiring(Box<InputWiringViolation>),
+    /// `on_failure: ignore` の child の artifact に依存する下流がある
+    /// （失敗を無視して続行すると依存が満たせない）。
+    IgnoredChildDependency {
+        node: String,
+        child: String,
+        kind: IgnoredChildDependencyKind,
+    },
+    /// `on_failure: retry` は手動 Retry と同じ attempt 機構を使うため、
+    /// 同機構が対象外とする合成子 child には宣言できない。
+    RetryOnCompositeChild {
+        node: String,
+        child: String,
+    },
     /// input パラメータ名が予約供給元名（request / items）を使用している。
     ReservedInputParameterName {
         node: String,
@@ -310,6 +339,33 @@ impl fmt::Display for ValidationError {
                 write!(
                     f,
                     "composite node '{node}' child '{child}' violates child reference constraints: {reason}"
+                )
+            }
+            Self::IgnoredChildDependency { node, child, kind } => match kind {
+                IgnoredChildDependencyKind::InputsSource {
+                    dependent,
+                    parameter,
+                } => write!(
+                    f,
+                    "composite node '{node}' child '{child}' declares `on_failure: ignore` but sibling '{dependent}' wires its artifact into input parameter '{parameter}'"
+                ),
+                IgnoredChildDependencyKind::RulesEvaluation => write!(
+                    f,
+                    "composite node '{node}' child '{child}' declares `on_failure: ignore` but its rules evaluate the child's artifact (when / switch)"
+                ),
+                IgnoredChildDependencyKind::SequenceOutput => write!(
+                    f,
+                    "sequence node '{node}' names child '{child}' as `output` but the child declares `on_failure: ignore`"
+                ),
+                IgnoredChildDependencyKind::FanoutItems { dependent } => write!(
+                    f,
+                    "composite node '{node}' child '{child}' declares `on_failure: ignore` but sibling fanout '{dependent}' expands its artifact via `items`"
+                ),
+            },
+            Self::RetryOnCompositeChild { node, child } => {
+                write!(
+                    f,
+                    "composite node '{node}' child '{child}' cannot declare `on_failure: retry`: the attempt mechanism does not retry composite nodes"
                 )
             }
             Self::InvalidInputWiring(violation) => {
@@ -954,6 +1010,107 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
     errors
 }
 
+/// children エントリの on_failure を検証する。
+///
+/// - `ignore`: 失敗しても続行するため、その child の artifact に依存する下流
+///   （同一 sequence スコープの inputs 供給元・その entry 自身の when / switch・
+///   sequence の output 名指し・兄弟 fanout の items 参照）は満たせない。load 時に拒否する。
+///   依存の解決はスコープ（同一 children リスト）に閉じる。
+/// - `retry`: 手動の Node 単位 Retry と同じ attempt 機構を使うため、同機構が
+///   対象外とする合成子 child への宣言を拒否する。
+fn collect_on_failure_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+    use crate::domain::workflow::OnFailure;
+
+    let mut errors = Vec::new();
+    for owner in &workflow.nodes {
+        let (children, is_sequence) = match &owner.kind {
+            NodeKind::Sequence(sequence) => (&sequence.children, true),
+            NodeKind::Fanout(fanout) => (&fanout.children, false),
+            _ => continue,
+        };
+
+        for entry in children {
+            if matches!(entry.on_failure, Some(OnFailure::Retry(_)))
+                && workflow
+                    .node_by_name(&entry.name)
+                    .is_some_and(NodeDefinition::is_composite)
+            {
+                errors.push(ValidationError::RetryOnCompositeChild {
+                    node: owner.name.clone(),
+                    child: entry.name.clone(),
+                });
+            }
+        }
+
+        // 依存下流の検査は sequence スコープのみ。fanout の子は兄弟参照を持たず、
+        // rules も書けない（別 Diagnostic で拒否済み）。
+        if !is_sequence {
+            continue;
+        }
+        let ignored: BTreeSet<&str> = children
+            .iter()
+            .filter(|entry| entry.on_failure == Some(OnFailure::Ignore))
+            .map(|entry| entry.name.as_str())
+            .collect();
+
+        for entry in children {
+            if entry.on_failure == Some(OnFailure::Ignore)
+                && entry
+                    .rules
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|rule| matches!(rule, Rule::When { .. } | Rule::Switch { .. }))
+            {
+                errors.push(ValidationError::IgnoredChildDependency {
+                    node: owner.name.clone(),
+                    child: entry.name.clone(),
+                    kind: IgnoredChildDependencyKind::RulesEvaluation,
+                });
+            }
+            for (parameter, source) in &entry.inputs {
+                if source.root() != entry.name && ignored.contains(source.root()) {
+                    errors.push(ValidationError::IgnoredChildDependency {
+                        node: owner.name.clone(),
+                        child: source.root().to_string(),
+                        kind: IgnoredChildDependencyKind::InputsSource {
+                            dependent: entry.name.clone(),
+                            parameter: parameter.clone(),
+                        },
+                    });
+                }
+            }
+            if let Some(NodeKind::Fanout(fanout)) =
+                workflow.node_by_name(&entry.name).map(|node| &node.kind)
+            {
+                if let Some(ItemsSource::ArtifactField { node, .. }) = &fanout.items {
+                    if ignored.contains(node.as_str()) {
+                        errors.push(ValidationError::IgnoredChildDependency {
+                            node: owner.name.clone(),
+                            child: node.clone(),
+                            kind: IgnoredChildDependencyKind::FanoutItems {
+                                dependent: entry.name.clone(),
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        if let NodeKind::Sequence(sequence) = &owner.kind {
+            if let Some(output) = &sequence.output {
+                if ignored.contains(output.as_str()) {
+                    errors.push(ValidationError::IgnoredChildDependency {
+                        node: owner.name.clone(),
+                        child: output.clone(),
+                        kind: IgnoredChildDependencyKind::SequenceOutput,
+                    });
+                }
+            }
+        }
+    }
+    errors
+}
+
 /// 未解禁の構文（worktree・#85 で導入）を検出する。
 fn collect_unsupported_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     workflow
@@ -1128,6 +1285,9 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
         return Err(err);
     }
     if let Some(err) = collect_sequence_output_errors(workflow).into_iter().next() {
+        return Err(err);
+    }
+    if let Some(err) = collect_on_failure_errors(workflow).into_iter().next() {
         return Err(err);
     }
     if let Some(err) = collect_unsupported_errors(workflow).into_iter().next() {
@@ -1469,6 +1629,7 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     errors.extend(collect_fanout_items_errors(workflow));
     errors.extend(collect_reserved_parameter_errors(workflow));
     errors.extend(collect_sequence_output_errors(workflow));
+    errors.extend(collect_on_failure_errors(workflow));
     errors.extend(collect_unsupported_errors(workflow));
 
     for node in &workflow.nodes {
@@ -1558,6 +1719,7 @@ mod tests {
 
     fn entry(name: &str, inputs: Vec<(&str, &str)>) -> ChildEntry {
         ChildEntry {
+            on_failure: None,
             name: name.to_string(),
             inputs: inputs
                 .into_iter()
@@ -1814,6 +1976,7 @@ mod tests {
             sequence_node(
                 "main",
                 vec![ChildEntry {
+                    on_failure: None,
                     name: "work".to_string(),
                     inputs: Vec::new(),
                     rules: Some(vec![Rule::Next("part".to_string())]),
@@ -2086,6 +2249,7 @@ mod tests {
                 "main",
                 vec![
                     ChildEntry {
+                        on_failure: None,
                         name: "check".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![Rule::When {
@@ -2095,6 +2259,7 @@ mod tests {
                         }]),
                     },
                     ChildEntry {
+                        on_failure: None,
                         name: "fix".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![
@@ -2121,6 +2286,196 @@ mod tests {
                 required: ["done".to_string()].into_iter().collect(),
             },
         );
+
+        assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
+        assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
+    }
+
+    // --- children エントリの on_failure（#1465） -----------------------------
+
+    fn ignore_entry(name: &str) -> ChildEntry {
+        ChildEntry {
+            on_failure: Some(crate::domain::workflow::OnFailure::Ignore),
+            ..ChildEntry::reference(name)
+        }
+    }
+
+    fn command_node_with_artifact(name: &str, contract: &str) -> NodeDefinition {
+        NodeDefinition {
+            artifact: Some(contract.to_string()),
+            ..command_node(name, "printf data")
+        }
+    }
+
+    #[test]
+    fn test_onfailure_ignoreのartifactを兄弟inputsが参照すると拒否される() {
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ignore_entry("collect"),
+                    entry("consume", vec![("spec", "collect")]),
+                ],
+            ),
+            command_node_with_artifact("collect", "data"),
+            NodeDefinition {
+                input: vec![typed_param("spec", "data")],
+                ..command_node("consume", "printf {{ spec.note }}")
+            },
+        ]);
+        wf.schemas
+            .insert("data".to_string(), object_schema(&["note"]));
+
+        assert!(validate_all(&wf).iter().any(|error| matches!(
+            error,
+            ValidationError::IgnoredChildDependency {
+                node,
+                child,
+                kind: IgnoredChildDependencyKind::InputsSource { dependent, parameter },
+            } if node == "main"
+                && child == "collect"
+                && dependent == "consume"
+                && parameter == "spec"
+        )));
+        assert!(validate(&wf).is_err());
+    }
+
+    #[test]
+    fn test_onfailure_ignoreエントリ自身のwhen_switchは拒否される() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry {
+                        on_failure: Some(crate::domain::workflow::OnFailure::Ignore),
+                        name: "check".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![Rule::When {
+                            on: "ok".to_string(),
+                            then: "finish".to_string(),
+                            next: "finish".to_string(),
+                        }]),
+                    },
+                    ChildEntry::reference("finish"),
+                ],
+            ),
+            command_node("check", "test -f Cargo.toml"),
+            command_node("finish", "echo done"),
+        ]);
+
+        assert!(validate_all(&wf).iter().any(|error| matches!(
+            error,
+            ValidationError::IgnoredChildDependency {
+                node,
+                child,
+                kind: IgnoredChildDependencyKind::RulesEvaluation,
+            } if node == "main" && child == "check"
+        )));
+    }
+
+    #[test]
+    fn test_onfailure_ignoreをsequenceのoutputが名指しすると拒否される() {
+        let mut wf = workflow(vec![
+            sequence_node("main", vec![ChildEntry::reference("part")]),
+            NodeDefinition {
+                artifact: Some("data".to_string()),
+                kind: NodeKind::Sequence(SequenceSpec {
+                    entry: None,
+                    output: Some("collect".to_string()),
+                    children: vec![ignore_entry("collect")],
+                }),
+                ..command_node("part", "unused")
+            },
+            command_node_with_artifact("collect", "data"),
+        ]);
+        wf.schemas
+            .insert("data".to_string(), object_schema(&["note"]));
+
+        assert!(validate_all(&wf).iter().any(|error| matches!(
+            error,
+            ValidationError::IgnoredChildDependency {
+                node,
+                child,
+                kind: IgnoredChildDependencyKind::SequenceOutput,
+            } if node == "part" && child == "collect"
+        )));
+    }
+
+    #[test]
+    fn test_onfailure_ignoreのartifactを兄弟fanoutのitemsが参照すると拒否される() {
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![ignore_entry("collect"), ChildEntry::reference("fan")],
+            ),
+            command_node_with_artifact("collect", "data"),
+            fanout_node(
+                "fan",
+                vec![entry("worker", vec![])],
+                Some(ItemsSource::ArtifactField {
+                    node: "collect".to_string(),
+                    field: "note".to_string(),
+                }),
+            ),
+            NodeDefinition {
+                input: vec![untyped_param("thread")],
+                ..command_node("worker", "printf {{ thread }}")
+            },
+        ]);
+        wf.schemas
+            .insert("data".to_string(), object_schema(&["note"]));
+
+        assert!(validate_all(&wf).iter().any(|error| matches!(
+            error,
+            ValidationError::IgnoredChildDependency {
+                node,
+                child,
+                kind: IgnoredChildDependencyKind::FanoutItems { dependent },
+            } if node == "main" && child == "collect" && dependent == "fan"
+        )));
+    }
+
+    #[test]
+    fn test_onfailure_retryを合成子childに宣言すると拒否される() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![ChildEntry {
+                    on_failure: Some(crate::domain::workflow::OnFailure::Retry(2)),
+                    ..ChildEntry::reference("part")
+                }],
+            ),
+            sequence_node("part", vec![ChildEntry::reference("step")]),
+            command_node("step", "printf step"),
+        ]);
+
+        assert!(validate_all(&wf).iter().any(|error| matches!(
+            error,
+            ValidationError::RetryOnCompositeChild { node, child }
+                if node == "main" && child == "part"
+        )));
+        assert!(validate(&wf).is_err());
+    }
+
+    #[test]
+    fn test_onfailure_依存のないretryとignoreは通る() {
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry {
+                        on_failure: Some(crate::domain::workflow::OnFailure::Retry(2)),
+                        ..ChildEntry::reference("flaky")
+                    },
+                    ignore_entry("optional"),
+                    ChildEntry::reference("fan"),
+                ],
+            ),
+            command_node("flaky", "printf flaky"),
+            command_node("optional", "printf optional"),
+            fanout_node("fan", vec![ignore_entry("probe")], None),
+            command_node("probe", "printf probe"),
+        ]);
 
         assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));
         assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));

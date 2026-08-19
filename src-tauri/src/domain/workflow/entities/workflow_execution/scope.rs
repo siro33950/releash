@@ -40,6 +40,10 @@ pub struct SequenceScopeRuntime {
     pub current_child: Option<String>,
     /// スコープ内の子ごとの開始回数（attempt 採番と loop_guard 判定）。
     pub child_counts: HashMap<String, u32>,
+    /// 現在の visit（辺の評価による突入）開始直前の child_counts 値。
+    /// retry（自動・手動とも）では更新されず、`child_counts - visit_bases` が
+    /// この visit で消化した attempt 数 = on_failure retry の予算消化になる。
+    pub visit_bases: HashMap<String, u32>,
     /// スコープ内で子が確定させた Artifact（兄弟参照・output の解決空間）。
     pub artifacts: HashMap<String, RuntimeArtifact>,
 }

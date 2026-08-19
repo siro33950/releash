@@ -1,0 +1,15 @@
+name: retry-on-composite-child
+description: declarative retry cannot target a composite child because the attempt mechanism only retries leaves
+nodes:
+  main:
+    sequence:
+      children:
+      - part:
+          on_failure:
+            retry: 2
+  part:
+    sequence:
+      children:
+      - step
+  step:
+    command: printf step

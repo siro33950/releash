@@ -1,0 +1,26 @@
+name: ignored-child-artifact-dependency
+description: a sibling must not wire the artifact of an ignorable child into its inputs
+schemas:
+  collected:
+    type: object
+    properties:
+      note:
+        type: string
+    required:
+    - note
+nodes:
+  main:
+    sequence:
+      children:
+      - collect:
+          on_failure: ignore
+      - consume:
+          inputs:
+            spec: collect
+  collect:
+    command: "printf collect"
+    artifact: collected
+  consume:
+    command: "printf '%s' '{{ spec.note }}'"
+    input:
+    - spec: collected

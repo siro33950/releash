@@ -438,6 +438,7 @@ mod tests {
                         entry: None,
                         output: None,
                         children: vec![domain::ChildEntry {
+                            on_failure: None,
                             name: "fix".to_string(),
                             inputs: Vec::new(),
                             rules: Some(vec![domain::Rule::LoopGuard {

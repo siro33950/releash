@@ -15,9 +15,9 @@ pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::InputSourceRef;
 pub use definition::{
     is_reserved_node_name, ChildEntry, CommandSpec, EffectiveRules, FacetRefs, FanoutSpec,
-    InputParam, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, NodeKindName, Rule,
-    SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN,
-    MAX_NODES_PER_WORKFLOW,
+    InputParam, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, NodeKindName, OnFailure,
+    Rule, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowSummary,
+    MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,

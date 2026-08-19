@@ -1,0 +1,11 @@
+name: on-failure-shape
+description: on_failure must be ignore or a retry mapping with a positive count
+nodes:
+  main:
+    sequence:
+      children:
+      - flaky:
+          on_failure:
+            retry: 0
+  flaky:
+    command: printf flaky

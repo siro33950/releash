@@ -18,7 +18,8 @@ use crate::domain::workflow::services::{
 use crate::domain::workflow::value_objects::{
     ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, NodeCompletionSignal,
     NodeCompletionSignalState, NodeDefinition, NodeExecutionFailureKind, NodeHistoryEntry,
-    NodeKindName, RuntimeArtifact, RuntimeExecutionState, TokenUsage, WorkflowDefinition,
+    NodeKindName, OnFailure, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
+    WorkflowDefinition,
 };
 use crate::domain::workflow::FailureDisposition;
 use crate::domain::workflow::WorkflowEvent;
@@ -553,12 +554,30 @@ pub struct AppliedAdvance {
     pub events: Vec<WorkflowEvent>,
 }
 
+/// children エントリの on_failure 処遇の適用結果: 追記すべきイベント列と
+/// 起動すべき leaf（自動 retry の新 attempt / ignore 前進で始まる leaf）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FailureTreatmentOutcome {
+    pub events: Vec<WorkflowEvent>,
+    pub leaves: Vec<LeafStart>,
+}
+
+/// replay 中の NodeRetryRequested → 直後の NodeStarted の対応付け。
+/// restart の start と fresh visit の start を判別し、visit_bases の更新可否を
+/// 決める（live 経路では使わない）。
+#[derive(Debug, Clone, PartialEq)]
+struct PendingRestart {
+    node_name: String,
+    parent_scope_id: Option<String>,
+}
+
 /// Aggregate that owns the workflow execution lifecycle state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecution {
     state: RuntimeExecutionState,
     interruption_reason: Option<ExecutionInterruptionReason>,
     runtime: WorkflowExecutionView,
+    pending_restart: Option<PendingRestart>,
 }
 
 /// Read-only runtime view exposed by the aggregate.
@@ -633,6 +652,7 @@ impl WorkflowExecution {
         Self {
             state: restore.lifecycle.state,
             interruption_reason: restore.lifecycle.interruption_reason,
+            pending_restart: None,
             runtime: WorkflowExecutionView {
                 id: restore.id,
                 workflow: restore.workflow,
@@ -758,7 +778,12 @@ impl WorkflowExecution {
                     })?;
                 sequence.current_child = Some(node_name.to_string());
                 sequence.artifacts.remove(node_name);
-                sequence.record_child_start(node_name)
+                let attempt = sequence.record_child_start(node_name);
+                // 辺の評価による突入 = 新しい visit。retry の予算基点を張り直す。
+                sequence
+                    .visit_bases
+                    .insert(node_name.to_string(), attempt - 1);
+                attempt
             }
             None => 1,
         };
@@ -1318,6 +1343,27 @@ impl WorkflowExecution {
                                 .scopes
                                 .retain(|active| active.node_execution_id != scope_id);
                             self.record_child_failure_in_parent(&scope, timestamp);
+                            // `on_failure: ignore` の合成子 child は失敗のまま親を
+                            // 前進させる（retry は load 時に拒否済み）。
+                            if let Some(parent_scope_id) = scope.parent_scope_id.clone() {
+                                let ignored = self
+                                    .node_execution(scope_id)
+                                    .and_then(|target| self.on_failure_treatment_for(target))
+                                    == Some(OnFailure::Ignore);
+                                if ignored
+                                    && !self
+                                        .ignore_advance_blocked_by_halted_sibling(&parent_scope_id)
+                                {
+                                    self.advance_scope_after_child(
+                                        &parent_scope_id,
+                                        &scope.node_name,
+                                        new_id,
+                                        timestamp,
+                                        events,
+                                        leaves,
+                                    )?;
+                                }
+                            }
                             return Ok(());
                         }
                     },
@@ -1329,10 +1375,13 @@ impl WorkflowExecution {
                 for child in &fanout.children {
                     combined.add(&child.token_usage);
                 }
+                // `on_failure: ignore` 宣言 child の失敗 slot は結果配列から除く。
+                // 宣言なしの失敗 slot は現行のまま null で残る。
                 let aggregated = serde_json::Value::Array(
                     fanout
                         .children
                         .iter()
+                        .filter(|child| !self.is_ignored_failed_fanout_slot(&node, child))
                         .map(|child| child.artifact.clone().unwrap_or(serde_json::Value::Null))
                         .collect(),
                 );
@@ -2272,6 +2321,18 @@ impl WorkflowExecution {
         node_execution_id: &str,
         timestamp: f64,
     ) -> TransitionOutcome {
+        // replay 用の restart 対応付け: 直後の NodeStarted を fresh visit ではなく
+        // restart として適用させる（NodeRetryRequested と NodeStarted は同一
+        // バッチで追記されるため、対応は常に直後の 1 件）。
+        self.pending_restart =
+            self.node_execution(node_execution_id)
+                .map(|target| PendingRestart {
+                    node_name: target.node_name.clone(),
+                    parent_scope_id: target
+                        .parent
+                        .as_ref()
+                        .map(|parent| parent.parent_id.clone()),
+                });
         self.request_node_restart_with(
             node_execution_id,
             timestamp,
@@ -2638,6 +2699,163 @@ impl WorkflowExecution {
         outcome
     }
 
+    /// node の children エントリの on_failure 宣言（親スコープの定義から解決）。
+    fn on_failure_treatment_for(&self, target: &RuntimeNodeExecution) -> Option<OnFailure> {
+        let parent = target.parent.as_ref()?;
+        let scope = self.scope(&parent.parent_id)?;
+        let owner = self.runtime.workflow.node_by_name(&scope.node_name)?;
+        match parent.fanout_slot {
+            Some(slot) => owner
+                .fanout()?
+                .children
+                .get(slot.child_index)
+                .and_then(|entry| entry.on_failure),
+            None => owner
+                .sequence()?
+                .child_entry(&target.node_name)
+                .and_then(|entry| entry.on_failure),
+        }
+    }
+
+    /// fanout 集約時に結果配列から除外する slot（`on_failure: ignore` 宣言 child の失敗）。
+    fn is_ignored_failed_fanout_slot(
+        &self,
+        owner: &NodeDefinition,
+        slot: &FanoutChildRuntime,
+    ) -> bool {
+        if slot.state != FanoutChildRuntimeState::Failed {
+            return false;
+        }
+        let Some(spec) = owner.fanout() else {
+            return false;
+        };
+        self.node_execution(&slot.node_execution_id)
+            .and_then(|execution| execution.parent.as_ref())
+            .and_then(|parent| parent.fanout_slot)
+            .and_then(|coords| spec.children.get(coords.child_index))
+            .and_then(|entry| entry.on_failure)
+            == Some(OnFailure::Ignore)
+    }
+
+    /// ignore の前進を親 fanout に適用してよいか。`on_failure` 宣言なしで失敗した
+    /// slot が残っている場合は既定（中断・Retry 待ち）を優先し、前進させない。
+    fn ignore_advance_blocked_by_halted_sibling(&self, parent_scope_id: &str) -> bool {
+        let Some(scope) = self.scope(parent_scope_id) else {
+            return false;
+        };
+        let Some(fanout) = scope.fanout() else {
+            return false;
+        };
+        let Some(owner) = self.runtime.workflow.node_by_name(&scope.node_name) else {
+            return false;
+        };
+        fanout.children.iter().any(|slot| {
+            slot.state == FanoutChildRuntimeState::Failed
+                && !self.is_ignored_failed_fanout_slot(owner, slot)
+        })
+    }
+
+    /// `retry: n` の予算判定: 失敗した attempt が同一 visit 内で n 番目以内なら
+    /// 自動再実行できる。fanout の子は lane（slot）が visit（attempt は 1 始まり・
+    /// 再訪なし）、sequence の子は visit_bases が基点（手動 Retry でも予算は
+    /// 消化され、復活しない）。
+    fn auto_retry_budget_left(&self, target: &RuntimeNodeExecution, max_retries: u32) -> bool {
+        let attempts_in_visit = match target.parent.as_ref() {
+            Some(parent) if parent.fanout_slot.is_none() => {
+                let base = self
+                    .scope(&parent.parent_id)
+                    .and_then(ScopeRuntime::sequence)
+                    .and_then(|sequence| sequence.visit_bases.get(&target.node_name).copied())
+                    .unwrap_or(0);
+                target.attempt.saturating_sub(base)
+            }
+            _ => target.attempt,
+        };
+        attempts_in_visit <= max_retries
+    }
+
+    /// 失敗確定済み node への on_failure 処遇の適用。
+    ///
+    /// - `retry: n`: 予算が残っていれば、手動の Node 単位 Retry と同じ attempt
+    ///   機構・同じ記録形式（NodeRetryRequested + NodeStarted）で自動再実行する。
+    /// - `ignore`: 失敗のまま親スコープを前進させる（sequence は artifact なしの
+    ///   辺評価、fanout は全子決着判定へ）。
+    /// - 宣言なし・予算切れ: None（現行既定 = 中断して resume / Retry 待ち）。
+    pub fn apply_on_failure_treatment(
+        &mut self,
+        node_execution_id: &str,
+        new_id: &mut dyn FnMut() -> String,
+        timestamp: f64,
+    ) -> Result<Option<FailureTreatmentOutcome>, crate::domain::workflow::WorkflowError> {
+        let Some(target) = self.node_execution(node_execution_id).cloned() else {
+            return Ok(None);
+        };
+        if target.status != RuntimeNodeExecutionStatus::Failed {
+            return Ok(None);
+        }
+        let Some(treatment) = self.on_failure_treatment_for(&target) else {
+            return Ok(None);
+        };
+        match treatment {
+            OnFailure::Retry(max_retries) => {
+                if !self.auto_retry_budget_left(&target, max_retries) {
+                    return Ok(None);
+                }
+                let Some(restarted) = self.restart_node_attempt_at(
+                    node_execution_id,
+                    new_id(),
+                    timestamp,
+                    NodeRestartMode::ExplicitRetry,
+                ) else {
+                    return Ok(None);
+                };
+                let events = vec![
+                    WorkflowEvent::NodeRetryRequested {
+                        execution_id: self.runtime.id.clone(),
+                        node_execution_id: node_execution_id.to_string(),
+                        timestamp,
+                    },
+                    WorkflowEvent::NodeStarted {
+                        execution_id: self.runtime.id.clone(),
+                        node_execution_id: restarted.attempt.id.clone(),
+                        node_name: restarted.attempt.node_name.clone(),
+                        kind: restarted.attempt.kind,
+                        attempt: restarted.attempt.attempt,
+                        parent: restarted.attempt.parent.clone(),
+                        timestamp,
+                    },
+                ];
+                Ok(Some(FailureTreatmentOutcome {
+                    events,
+                    leaves: vec![restarted.leaf],
+                }))
+            }
+            OnFailure::Ignore => {
+                let Some(parent_scope_id) = target
+                    .parent
+                    .as_ref()
+                    .map(|parent| parent.parent_id.clone())
+                else {
+                    return Ok(None);
+                };
+                if self.ignore_advance_blocked_by_halted_sibling(&parent_scope_id) {
+                    return Ok(None);
+                }
+                let mut events = Vec::new();
+                let mut leaves = Vec::new();
+                self.advance_scope_after_child(
+                    &parent_scope_id,
+                    &target.node_name,
+                    new_id,
+                    timestamp,
+                    &mut events,
+                    &mut leaves,
+                )?;
+                Ok(Some(FailureTreatmentOutcome { events, leaves }))
+            }
+        }
+    }
+
     /// replay: NodeFailed の適用。
     ///
     /// 遷移結果は検証しない（abort 済み node への遅延 NodeFailed など、
@@ -2713,6 +2931,12 @@ impl WorkflowExecution {
             .node_by_name(node_name)
             .cloned()
             .ok_or_else(|| format!("node '{node_name}' is undefined"))?;
+        // 直前の NodeRetryRequested に対応する restart の start か。
+        let is_restart = self.pending_restart.take().is_some_and(|pending| {
+            pending.node_name == node_name
+                && pending.parent_scope_id.as_deref()
+                    == parent.as_ref().map(|parent| parent.parent_id.as_str())
+        });
         // 親スコープの進行を再現する。
         if let Some(parent_ref) = &parent {
             let scope_id = parent_ref.parent_id.clone();
@@ -2745,6 +2969,12 @@ impl WorkflowExecution {
             match (&mut scope.kind, parent_ref.fanout_slot) {
                 (ScopeRuntimeKind::Sequence(sequence), _) => {
                     sequence.raise_child_count_to(node_name, attempt);
+                    if !is_restart {
+                        // fresh visit: retry 予算の基点を live 経路と同じ規則で張る。
+                        sequence
+                            .visit_bases
+                            .insert(node_name.to_string(), attempt.saturating_sub(1));
+                    }
                     sequence.current_child = Some(node_name.to_string());
                     sequence.artifacts.remove(node_name);
                 }
@@ -3687,6 +3917,7 @@ mod tests {
                         entry: None,
                         output: None,
                         children: vec![crate::domain::workflow::ChildEntry {
+                            on_failure: None,
                             name: "implement".to_string(),
                             inputs: Vec::new(),
                             rules: Some(vec![crate::domain::workflow::Rule::Next(
@@ -5226,6 +5457,7 @@ mod tests {
                 None,
                 vec![
                     ChildEntry {
+                        on_failure: None,
                         name: "fix".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![
@@ -5343,6 +5575,7 @@ mod tests {
                 vec![
                     ChildEntry::reference("prepare"),
                     ChildEntry {
+                        on_failure: None,
                         name: "part".to_string(),
                         inputs: vec![(
                             "target".to_string(),
@@ -5361,6 +5594,7 @@ mod tests {
                     "part",
                     None,
                     vec![ChildEntry {
+                        on_failure: None,
                         name: "worker".to_string(),
                         inputs: vec![(
                             "data".to_string(),
@@ -5550,6 +5784,7 @@ mod tests {
                 None,
                 vec![
                     ChildEntry {
+                        on_failure: None,
                         name: "part".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![
@@ -5568,6 +5803,7 @@ mod tests {
                 None,
                 vec![
                     ChildEntry {
+                        on_failure: None,
                         name: "fix".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![
@@ -5612,5 +5848,586 @@ mod tests {
             2,
             "part must have one execution instance per visit"
         );
+    }
+
+    // --- children エントリの on_failure（#1465） -----------------------------
+
+    use crate::domain::workflow::OnFailure;
+
+    fn entry_with_on_failure(name: &str, on_failure: OnFailure) -> ChildEntry {
+        ChildEntry {
+            on_failure: Some(on_failure),
+            ..ChildEntry::reference(name)
+        }
+    }
+
+    fn fail_leaf(execution: &mut WorkflowExecution, node_execution_id: &str, timestamp: f64) {
+        assert_eq!(
+            execution.fail_leaf_execution(
+                node_execution_id,
+                "exit 1".to_string(),
+                NodeExecutionFailureKind::ValidationFailure,
+                FailureDisposition::Terminal,
+                timestamp,
+            ),
+            TransitionOutcome::Applied
+        );
+    }
+
+    fn start_single_leaf(
+        execution: &mut WorkflowExecution,
+        new_id: &mut dyn FnMut() -> String,
+    ) -> String {
+        let applied = execution.start_root(new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("start must yield a leaf");
+        };
+        assert_eq!(leaves.len(), 1);
+        leaves[0].node_execution_id.clone()
+    }
+
+    #[test]
+    fn sequence_child_auto_retry_consumes_budget_then_falls_back_to_halt() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    entry_with_on_failure("flaky", OnFailure::Retry(2)),
+                    ChildEntry::reference("after"),
+                ],
+            ),
+            tree_command_node("flaky"),
+            tree_command_node("after"),
+        ]);
+        let mut new_id = tree_id_source();
+        let mut current = start_single_leaf(&mut execution, &mut new_id);
+
+        // 自動 retry は手動 Retry と同じ記録形式（NodeRetryRequested + NodeStarted）
+        // で attempt を進める。retry: 2 は2回まで。
+        for expected_attempt in [2u32, 3u32] {
+            fail_leaf(&mut execution, &current, 2.0);
+            let outcome = execution
+                .apply_on_failure_treatment(&current, &mut new_id, 3.0)
+                .unwrap()
+                .expect("budget must allow an automatic retry");
+            assert!(matches!(
+                &outcome.events[0],
+                WorkflowEvent::NodeRetryRequested { node_execution_id, .. }
+                    if *node_execution_id == current
+            ));
+            let WorkflowEvent::NodeStarted {
+                node_execution_id,
+                node_name,
+                attempt,
+                ..
+            } = &outcome.events[1]
+            else {
+                panic!("automatic retry must record NodeStarted");
+            };
+            assert_eq!(node_name, "flaky");
+            assert_eq!(*attempt, expected_attempt);
+            assert_eq!(outcome.leaves.len(), 1);
+            assert_eq!(outcome.leaves[0].node_execution_id, *node_execution_id);
+            current = node_execution_id.clone();
+        }
+
+        // 2回の自動再実行後の失敗は既定（中断・Retry 待ち）へ落ちる。
+        fail_leaf(&mut execution, &current, 8.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&current, &mut new_id, 9.0)
+                .unwrap(),
+            None
+        );
+        assert_eq!(*execution.state(), RuntimeExecutionState::Running);
+
+        // 手動 Retry でも予算は復活しない。
+        let restarted = execution
+            .restart_node_attempt_at(&current, new_id(), 10.0, NodeRestartMode::ExplicitRetry)
+            .expect("failed attempt must accept a manual retry");
+        assert_eq!(restarted.attempt.attempt, 4);
+        let manual = restarted.attempt.id.clone();
+        fail_leaf(&mut execution, &manual, 11.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&manual, &mut new_id, 12.0)
+                .unwrap(),
+            None,
+            "manual retries must not refill the automatic budget"
+        );
+    }
+
+    #[test]
+    fn sequence_revisit_restores_the_auto_retry_budget() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    ChildEntry {
+                        on_failure: Some(OnFailure::Retry(1)),
+                        name: "flaky".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![Rule::Next("back".to_string())]),
+                    },
+                    ChildEntry {
+                        on_failure: None,
+                        name: "back".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![Rule::Next("flaky".to_string())]),
+                    },
+                ],
+            ),
+            tree_command_node("flaky"),
+            tree_command_node("back"),
+        ]);
+        let mut new_id = tree_id_source();
+        let first = start_single_leaf(&mut execution, &mut new_id);
+
+        // visit 1: 自動 retry 1回で予算切れ。
+        fail_leaf(&mut execution, &first, 2.0);
+        let auto = execution
+            .apply_on_failure_treatment(&first, &mut new_id, 3.0)
+            .unwrap()
+            .expect("first failure must auto-retry");
+        let second = auto.leaves[0].node_execution_id.clone();
+        fail_leaf(&mut execution, &second, 4.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&second, &mut new_id, 5.0)
+                .unwrap(),
+            None
+        );
+
+        // 手動 Retry で成功し、back を経由して flaky を再訪する。
+        let restarted = execution
+            .restart_node_attempt_at(&second, new_id(), 6.0, NodeRestartMode::ExplicitRetry)
+            .unwrap();
+        let third = restarted.attempt.id.clone();
+        let applied = execution
+            .complete_leaf_and_advance(&third, &mut new_id, 7.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("flaky completion must start back");
+        };
+        assert_eq!(leaves[0].node_name, "back");
+        let applied = execution
+            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 8.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("back completion must revisit flaky");
+        };
+        let revisit = leaves[0].node_execution_id.clone();
+        assert_eq!(
+            execution.node_execution(&revisit).unwrap().attempt,
+            4,
+            "revisit must continue the scope-wide attempt numbering"
+        );
+
+        // 再訪 = 新しい visit なので予算はフレッシュ。
+        fail_leaf(&mut execution, &revisit, 9.0);
+        let outcome = execution
+            .apply_on_failure_treatment(&revisit, &mut new_id, 10.0)
+            .unwrap()
+            .expect("a fresh visit must restore the auto-retry budget");
+        assert_eq!(outcome.leaves.len(), 1);
+        assert_eq!(
+            execution
+                .node_execution(&outcome.leaves[0].node_execution_id)
+                .unwrap()
+                .attempt,
+            5
+        );
+    }
+
+    #[test]
+    fn sequence_ignored_child_failure_advances_to_the_next_entry() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    entry_with_on_failure("optional", OnFailure::Ignore),
+                    ChildEntry::reference("after"),
+                ],
+            ),
+            tree_command_node("optional"),
+            tree_command_node("after"),
+        ]);
+        let mut new_id = tree_id_source();
+        let optional = start_single_leaf(&mut execution, &mut new_id);
+
+        fail_leaf(&mut execution, &optional, 2.0);
+        let outcome = execution
+            .apply_on_failure_treatment(&optional, &mut new_id, 3.0)
+            .unwrap()
+            .expect("ignored failure must continue the sequence");
+        assert_eq!(started_names(&outcome.events), ["after"]);
+        assert_eq!(outcome.leaves.len(), 1);
+        assert_eq!(outcome.leaves[0].node_name, "after");
+        let main_id = execution_id_of(&execution, "main");
+        let sequence = execution.scope(&main_id).unwrap().sequence().unwrap();
+        assert_eq!(sequence.current_child.as_deref(), Some("after"));
+        assert!(!sequence.artifacts.contains_key("optional"));
+    }
+
+    #[test]
+    fn sequence_ignored_child_failure_at_the_terminal_completes_the_scope() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    ChildEntry::reference("work"),
+                    entry_with_on_failure("optional", OnFailure::Ignore),
+                ],
+            ),
+            tree_command_node("work"),
+            tree_command_node("optional"),
+        ]);
+        let mut new_id = tree_id_source();
+        let work = start_single_leaf(&mut execution, &mut new_id);
+        let applied = execution
+            .complete_leaf_and_advance(&work, &mut new_id, 2.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("work completion must start optional");
+        };
+        let optional = leaves[0].node_execution_id.clone();
+
+        fail_leaf(&mut execution, &optional, 3.0);
+        let outcome = execution
+            .apply_on_failure_treatment(&optional, &mut new_id, 4.0)
+            .unwrap()
+            .expect("ignored terminal failure must complete the sequence");
+        assert!(outcome.leaves.is_empty());
+        assert!(outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. })));
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+    fn fanout_ignored_failed_child_is_excluded_from_the_aggregate_array() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![ChildEntry::reference("fan"), ChildEntry::reference("after")],
+            ),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![
+                        ChildEntry::reference("steady"),
+                        entry_with_on_failure("flaky", OnFailure::Ignore),
+                    ],
+                    items: None,
+                }),
+                ..Default::default()
+            },
+            tree_command_node("steady"),
+            tree_command_node("flaky"),
+            tree_command_node("after"),
+        ]);
+        let mut new_id = tree_id_source();
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("start must yield both fanout children");
+        };
+        let steady = leaves[0].node_execution_id.clone();
+        let flaky = leaves[1].node_execution_id.clone();
+
+        // ignore の失敗が先に決着しても、残りの子が走っている間は前進しない。
+        fail_leaf(&mut execution, &flaky, 2.0);
+        let outcome = execution
+            .apply_on_failure_treatment(&flaky, &mut new_id, 3.0)
+            .unwrap()
+            .expect("ignored fanout failure must be treated");
+        assert!(outcome.events.is_empty());
+        assert!(outcome.leaves.is_empty());
+
+        // 最後の子の完了で fanout が完了し、失敗子は結果配列から除かれる。
+        let applied = execution
+            .complete_leaf_and_advance(&steady, &mut new_id, 4.0)
+            .unwrap();
+        let fan_id = execution_id_of(&execution, "fan");
+        let aggregated = applied
+            .events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_execution_id,
+                    value,
+                    ..
+                } if *node_execution_id == fan_id => Some(value.clone()),
+                _ => None,
+            })
+            .expect("fanout completion must aggregate an array");
+        let serde_json::Value::Array(values) = aggregated else {
+            panic!("fanout aggregate must be an array");
+        };
+        assert_eq!(
+            values.len(),
+            1,
+            "the ignored failed child must be excluded from the aggregate"
+        );
+        assert!(started_names(&applied.events).contains(&"after".to_string()));
+    }
+
+    #[test]
+    fn fanout_ignore_advance_is_blocked_while_an_undeclared_failure_halts() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![
+                        ChildEntry::reference("steady"),
+                        entry_with_on_failure("flaky", OnFailure::Ignore),
+                    ],
+                    items: None,
+                }),
+                ..Default::default()
+            },
+            tree_command_node("steady"),
+            tree_command_node("flaky"),
+        ]);
+        let mut new_id = tree_id_source();
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+            panic!("start must yield both fanout children");
+        };
+        let steady = leaves[0].node_execution_id.clone();
+        let flaky = leaves[1].node_execution_id.clone();
+
+        // 宣言なしの失敗は現行どおり中断（treatment なし）。
+        fail_leaf(&mut execution, &steady, 2.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&steady, &mut new_id, 3.0)
+                .unwrap(),
+            None
+        );
+
+        // ignore の失敗決着でも、中断待ちの失敗 slot がある間は完了させない。
+        fail_leaf(&mut execution, &flaky, 4.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&flaky, &mut new_id, 5.0)
+                .unwrap(),
+            None
+        );
+        let fan_id = execution_id_of(&execution, "fan");
+        assert!(execution.scope(&fan_id).is_some(), "fanout must stay open");
+        assert_eq!(*execution.state(), RuntimeExecutionState::Running);
+    }
+
+    #[test]
+    fn fanout_child_auto_retry_uses_lane_attempt_numbering() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![entry_with_on_failure("flaky", OnFailure::Retry(1))],
+                    items: None,
+                }),
+                ..Default::default()
+            },
+            tree_command_node("flaky"),
+        ]);
+        let mut new_id = tree_id_source();
+        let first = start_single_leaf(&mut execution, &mut new_id);
+
+        fail_leaf(&mut execution, &first, 2.0);
+        let outcome = execution
+            .apply_on_failure_treatment(&first, &mut new_id, 3.0)
+            .unwrap()
+            .expect("lane failure must auto-retry once");
+        let second = outcome.leaves[0].node_execution_id.clone();
+        assert_eq!(execution.node_execution(&second).unwrap().attempt, 2);
+        let fan_id = execution_id_of(&execution, "fan");
+        let slot = &execution.scope(&fan_id).unwrap().fanout().unwrap().children[0];
+        assert_eq!(slot.attempt, 2);
+        assert_eq!(slot.node_execution_id, second);
+
+        fail_leaf(&mut execution, &second, 4.0);
+        assert_eq!(
+            execution
+                .apply_on_failure_treatment(&second, &mut new_id, 5.0)
+                .unwrap(),
+            None,
+            "the lane budget must be exhausted after one automatic retry"
+        );
+    }
+
+    #[test]
+    fn replayed_events_restore_the_same_visit_budget_as_the_live_run() {
+        let nodes = vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    entry_with_on_failure("flaky", OnFailure::Retry(2)),
+                    ChildEntry::reference("after"),
+                ],
+            ),
+            tree_command_node("flaky"),
+            tree_command_node("after"),
+        ];
+
+        // live: 開始 → 失敗 → 自動 retry。
+        let mut live = tree_execution(nodes.clone());
+        let mut new_id = tree_id_source();
+        let first = start_single_leaf(&mut live, &mut new_id);
+        fail_leaf(&mut live, &first, 2.0);
+        let outcome = live
+            .apply_on_failure_treatment(&first, &mut new_id, 3.0)
+            .unwrap()
+            .unwrap();
+        let second = outcome.leaves[0].node_execution_id.clone();
+
+        // replay: 同じ事実列（NodeStarted×2 → NodeFailed → NodeRetryRequested →
+        // NodeStarted）の適用。
+        let mut replayed = tree_execution(nodes);
+        let main_id = execution_id_of(&live, "main");
+        replayed
+            .replay_node_started(&main_id, "main", NodeKindName::Sequence, 1, None, 1.0)
+            .unwrap();
+        replayed
+            .replay_node_started(
+                &first,
+                "flaky",
+                NodeKindName::Command,
+                1,
+                Some(ExecutionParentRef::sequence_child(&main_id)),
+                1.0,
+            )
+            .unwrap();
+        replayed
+            .replay_node_failed(
+                &first,
+                "exit 1".to_string(),
+                NodeExecutionFailureKind::ValidationFailure,
+                2.0,
+            )
+            .unwrap();
+        assert_eq!(
+            replayed.request_node_retry(&first, 3.0),
+            TransitionOutcome::Applied
+        );
+        replayed
+            .replay_node_started(
+                &second,
+                "flaky",
+                NodeKindName::Command,
+                2,
+                Some(ExecutionParentRef::sequence_child(&main_id)),
+                3.0,
+            )
+            .unwrap();
+
+        // スコープの visit 予算が live と一致する。
+        let live_sequence = live.scope(&main_id).unwrap().sequence().unwrap().clone();
+        let replayed_sequence = replayed
+            .scope(&main_id)
+            .unwrap()
+            .sequence()
+            .unwrap()
+            .clone();
+        assert_eq!(live_sequence, replayed_sequence);
+        assert_eq!(replayed_sequence.child_counts.get("flaky"), Some(&2));
+        assert_eq!(replayed_sequence.visit_bases.get("flaky"), Some(&0));
+
+        // 予算判定の導出も一致する: 次の失敗はどちらも自動 retry できる。
+        let mut next_attempt_id = || "next-attempt".to_string();
+        fail_leaf(&mut live, &second, 4.0);
+        fail_leaf(&mut replayed, &second, 4.0);
+        let live_next = live
+            .apply_on_failure_treatment(&second, &mut next_attempt_id, 5.0)
+            .unwrap();
+        let replayed_next = replayed
+            .apply_on_failure_treatment(&second, &mut next_attempt_id, 5.0)
+            .unwrap();
+        assert!(live_next.is_some());
+        assert_eq!(live_next, replayed_next);
+    }
+
+    #[test]
+    fn replayed_ignore_advancement_facts_restore_the_same_tree_as_the_live_run() {
+        let nodes = vec![
+            tree_sequence_node(
+                "main",
+                None,
+                vec![
+                    entry_with_on_failure("optional", OnFailure::Ignore),
+                    ChildEntry::reference("after"),
+                ],
+            ),
+            tree_command_node("optional"),
+            tree_command_node("after"),
+        ];
+
+        // live: 開始 → 失敗 → ignore 前進（次エントリの NodeStarted が事実として残る）。
+        let mut live = tree_execution(nodes.clone());
+        let mut new_id = tree_id_source();
+        let optional = start_single_leaf(&mut live, &mut new_id);
+        fail_leaf(&mut live, &optional, 2.0);
+        let outcome = live
+            .apply_on_failure_treatment(&optional, &mut new_id, 3.0)
+            .unwrap()
+            .unwrap();
+        let after = outcome.leaves[0].node_execution_id.clone();
+
+        // replay: NodeStarted×2 → NodeFailed → NodeStarted（前進の事実）。
+        let mut replayed = tree_execution(nodes);
+        let main_id = execution_id_of(&live, "main");
+        replayed
+            .replay_node_started(&main_id, "main", NodeKindName::Sequence, 1, None, 1.0)
+            .unwrap();
+        replayed
+            .replay_node_started(
+                &optional,
+                "optional",
+                NodeKindName::Command,
+                1,
+                Some(ExecutionParentRef::sequence_child(&main_id)),
+                1.0,
+            )
+            .unwrap();
+        replayed
+            .replay_node_failed(
+                &optional,
+                "exit 1".to_string(),
+                NodeExecutionFailureKind::ValidationFailure,
+                2.0,
+            )
+            .unwrap();
+        replayed
+            .replay_node_started(
+                &after,
+                "after",
+                NodeKindName::Command,
+                1,
+                Some(ExecutionParentRef::sequence_child(&main_id)),
+                3.0,
+            )
+            .unwrap();
+
+        // スコープ状態（カーソル・カウント・visit 基点）が live と一致する。
+        assert_eq!(
+            live.scope(&main_id).unwrap().sequence().unwrap(),
+            replayed.scope(&main_id).unwrap().sequence().unwrap()
+        );
+        // 実行木の node 状態も一致する（optional は Failed のまま、after が実行中）。
+        for id in [&optional, &after] {
+            assert_eq!(
+                live.node_execution(id).unwrap().status,
+                replayed.node_execution(id).unwrap().status
+            );
+        }
     }
 }

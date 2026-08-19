@@ -436,6 +436,7 @@ mod tests {
     #[test]
     fn test_束縛解決_sequenceは兄弟とrequestを解決する() {
         let entry = ChildEntry {
+            on_failure: None,
             name: "consume".to_string(),
             inputs: vec![
                 ("spec".to_string(), InputSourceRef::new("collect.spec_dir")),
@@ -472,6 +473,7 @@ mod tests {
             vec![untyped("thread"), untyped("spec"), untyped("goal")],
         );
         let entry = ChildEntry {
+            on_failure: None,
             name: "worker".to_string(),
             inputs: vec![
                 ("thread".to_string(), InputSourceRef::new("items")),
@@ -510,6 +512,7 @@ mod tests {
     fn test_束縛解決_fanout子は兄弟nodeを直接参照できない() {
         let node = command_node_with_params("worker", "echo", vec![untyped("spec")]);
         let entry = ChildEntry {
+            on_failure: None,
             name: "worker".to_string(),
             inputs: vec![("spec".to_string(), InputSourceRef::new("collect"))],
             rules: None,
@@ -535,6 +538,7 @@ mod tests {
     #[test]
     fn test_束縛解決_解決できない供給元は束縛から除かれる() {
         let entry = ChildEntry {
+            on_failure: None,
             name: "consume".to_string(),
             inputs: vec![("spec".to_string(), InputSourceRef::new("missing_node"))],
             rules: None,

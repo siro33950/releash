@@ -898,6 +898,7 @@ mod routing_tests {
 
     fn entry_with_rules(name: &str, rules: Vec<Rule>) -> ChildEntry {
         ChildEntry {
+            on_failure: None,
             name: name.to_string(),
             inputs: Vec::new(),
             rules: Some(rules),
