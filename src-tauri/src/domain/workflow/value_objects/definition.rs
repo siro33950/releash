@@ -344,6 +344,91 @@ impl SequenceSpec {
     }
 }
 
+/// children エントリの on_failure（この子が失敗したときの扱い）。
+/// 宣言なし（`ChildEntry.on_failure = None`）は中断（resume / 手動 Retry 待ち）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnFailure {
+    /// 失敗しても続行する。fanout では失敗子を結果の配列から除く。
+    Ignore,
+    /// 新しい attempt で最大 n 回自動再実行し、尽きたら既定（中断）へ。
+    Retry(u32),
+}
+
+impl Serialize for OnFailure {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Ignore => serializer.serialize_str("ignore"),
+            Self::Retry(count) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("retry", count)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OnFailure {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OnFailureVisitor;
+
+        impl<'de> de::Visitor<'de> for OnFailureVisitor {
+            type Value = OnFailure;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("\"ignore\" or a mapping with a single `retry: <n>` field")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "ignore" => Ok(OnFailure::Ignore),
+                    other => Err(de::Error::custom(format!(
+                        "on_failure must be `ignore` or `retry: <n>`, got `{other}`"
+                    ))),
+                }
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let Some(key) = access.next_key::<String>()? else {
+                    return Err(de::Error::custom(
+                        "on_failure must be `ignore` or `retry: <n>`",
+                    ));
+                };
+                if key != "retry" {
+                    return Err(de::Error::custom(format!(
+                        "on_failure must be `ignore` or `retry: <n>`, got field `{key}`"
+                    )));
+                }
+                let count = access.next_value::<u32>()?;
+                if count == 0 {
+                    return Err(de::Error::custom(
+                        "on_failure retry count must be at least 1",
+                    ));
+                }
+                if access.next_key::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom(
+                        "on_failure retry must be the only field in its mapping",
+                    ));
+                }
+                Ok(OnFailure::Retry(count))
+            }
+        }
+
+        deserializer.deserialize_any(OnFailureVisitor)
+    }
+}
+
 /// 合成子（sequence / fanout）の children エントリ（正規化後）。
 /// インライン宣言・無名エントリは load 時にカタログへ登録され、エントリは常に
 /// カタログ参照名を持つ。
@@ -355,6 +440,8 @@ pub struct ChildEntry {
     pub inputs: Vec<(String, InputSourceRef)>,
     /// None = 隣接辺 auto（リストの次へ、末尾は終端）。Some(空) = 明示終端。
     pub rules: Option<Vec<Rule>>,
+    /// None = 既定（中断して resume / 手動 Retry 待ち）。
+    pub on_failure: Option<OnFailure>,
 }
 
 impl ChildEntry {
@@ -363,11 +450,12 @@ impl ChildEntry {
             name: name.into(),
             inputs: Vec::new(),
             rules: None,
+            on_failure: None,
         }
     }
 
     fn has_treatment(&self) -> bool {
-        !self.inputs.is_empty() || self.rules.is_some()
+        !self.inputs.is_empty() || self.rules.is_some() || self.on_failure.is_some()
     }
 }
 
@@ -391,6 +479,9 @@ impl Serialize for ChildEntry {
                 }
                 if let Some(rules) = &self.0.rules {
                     map.serialize_entry("rules", rules)?;
+                }
+                if let Some(on_failure) = &self.0.on_failure {
+                    map.serialize_entry("on_failure", on_failure)?;
                 }
                 map.end()
             }
@@ -656,12 +747,13 @@ enum RawChildElement {
 }
 
 /// children エントリの本体。node 系フィールド（カタログへ分配）と
-/// 扱い系フィールド（inputs / rules。エントリに残る）を併せて受ける。
+/// 扱い系フィールド（inputs / rules / on_failure。エントリに残る）を併せて受ける。
 #[derive(Debug, Clone, Default)]
 struct RawChildBody {
     node: RawNodeBody,
     inputs: Option<Vec<(String, InputSourceRef)>>,
     rules: Option<Vec<Rule>>,
+    on_failure: Option<OnFailure>,
     // input / completion は RawNodeBody 側の既定値と区別できないため、
     // 重複キー検出は観測フラグで行う（serde_json 直接経路では上流に
     // 重複キー拒否が無く、この関数が唯一の防御になる）。
@@ -736,6 +828,7 @@ where
             Ok(())
         }
         "rules" => set_once(map, &mut body.rules, key),
+        "on_failure" => set_once(map, &mut body.on_failure, key),
         unknown => Err(de::Error::custom(format!(
             "unknown field `{unknown}` in children entry"
         ))),
@@ -914,6 +1007,7 @@ impl CatalogNormalizer {
                         node,
                         inputs,
                         rules,
+                        on_failure,
                         ..
                     } = *body;
                     let entry_name = match (&name, has_kind) {
@@ -957,6 +1051,7 @@ impl CatalogNormalizer {
                         name: entry_name,
                         inputs: inputs.unwrap_or_default(),
                         rules,
+                        on_failure,
                     });
                 }
             }
@@ -1351,6 +1446,60 @@ mod definition_tests {
     }
 
     #[test]
+    fn test_onfailure_ignoreとretryが子エントリの扱いとしてパースされる() {
+        let body = serde_json::from_str::<RawChildBody>(r#"{"on_failure":"ignore"}"#).unwrap();
+        assert_eq!(body.on_failure, Some(OnFailure::Ignore));
+
+        let body = serde_json::from_str::<RawChildBody>(r#"{"on_failure":{"retry":3}}"#).unwrap();
+        assert_eq!(body.on_failure, Some(OnFailure::Retry(3)));
+    }
+
+    #[test]
+    fn test_onfailure_不正な値を拒否する() {
+        let error = serde_json::from_str::<OnFailure>(r#""abort""#).unwrap_err();
+        assert!(error.to_string().contains("on_failure must be"));
+
+        let error = serde_json::from_str::<OnFailure>(r#"{"retry":0}"#).unwrap_err();
+        assert!(error.to_string().contains("at least 1"));
+
+        let error = serde_json::from_str::<OnFailure>(r#"{"retry":1,"backoff":true}"#).unwrap_err();
+        assert!(error.to_string().contains("only field"));
+
+        let error = serde_json::from_str::<RawChildBody>(
+            r#"{"on_failure":"ignore","on_failure":"ignore"}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate field `on_failure`"));
+    }
+
+    #[test]
+    fn test_onfailure_子エントリのserializeで往復する() {
+        let ignore = ChildEntry {
+            on_failure: Some(OnFailure::Ignore),
+            ..ChildEntry::reference("flaky")
+        };
+        assert_eq!(
+            serde_json::to_value(&ignore).unwrap(),
+            serde_json::json!({"flaky": {"on_failure": "ignore"}})
+        );
+
+        let retry = ChildEntry {
+            on_failure: Some(OnFailure::Retry(2)),
+            ..ChildEntry::reference("flaky")
+        };
+        assert_eq!(
+            serde_json::to_value(&retry).unwrap(),
+            serde_json::json!({"flaky": {"on_failure": {"retry": 2}}})
+        );
+
+        // 扱いなしは文字列参照へ畳まれる（現行のまま）。
+        assert_eq!(
+            serde_json::to_value(ChildEntry::reference("plain")).unwrap(),
+            serde_json::json!("plain")
+        );
+    }
+
+    #[test]
     fn test_node_definition_facet参照を検出する() {
         let mut node = NodeDefinition::default();
         assert!(!node.has_facet_refs());
@@ -1418,11 +1567,13 @@ mod definition_tests {
             output: None,
             children: vec![
                 ChildEntry {
+                    on_failure: None,
                     name: "first".to_string(),
                     inputs: Vec::new(),
                     rules: Some(vec![Rule::Next("third".to_string())]),
                 },
                 ChildEntry {
+                    on_failure: None,
                     name: "second".to_string(),
                     inputs: Vec::new(),
                     rules: Some(Vec::new()),

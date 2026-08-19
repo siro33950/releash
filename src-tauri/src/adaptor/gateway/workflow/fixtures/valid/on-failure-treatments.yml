@@ -1,0 +1,26 @@
+name: on-failure-treatments
+description: children entries declaring retry and ignore treatments without artifact dependents
+nodes:
+  main:
+    sequence:
+      children:
+      - flaky:
+          on_failure:
+            retry: 2
+      - optional_step:
+          on_failure: ignore
+      - sweep
+      - wrap_up
+  flaky:
+    command: printf flaky
+  optional_step:
+    command: printf optional
+  sweep:
+    fanout:
+      children:
+      - probe:
+          on_failure: ignore
+  probe:
+    command: printf probe
+  wrap_up:
+    command: printf done

@@ -2276,7 +2276,7 @@ impl WorkflowRuntimeHost {
                 timestamp,
             );
         }
-        let events = vec![WorkflowEvent::NodeFailed {
+        let mut events = vec![WorkflowEvent::NodeFailed {
             execution_id: execution_id.to_string(),
             node_execution_id: node_execution_id.to_string(),
             node_name,
@@ -2286,6 +2286,25 @@ impl WorkflowRuntimeHost {
             retry_count: None,
             timestamp,
         }];
+        // children エントリの on_failure（自動 retry / ignore）。決定と適用は
+        // domain が所有し、NodeFailed と同一バッチで事実を追記する。
+        let mut new_id = new_node_execution_id;
+        let treatment =
+            match candidate.apply_on_failure_treatment(node_execution_id, &mut new_id, timestamp) {
+                Ok(treatment) => treatment,
+                Err(error) => {
+                    log::warn!(
+                        "workflow {execution_id}: on_failure treatment was not applied: {error}"
+                    );
+                    None
+                }
+            };
+        let treatment_applied = treatment.is_some();
+        let mut leaves = Vec::new();
+        if let Some(treatment) = treatment {
+            events.extend(treatment.events);
+            leaves = treatment.leaves;
+        }
         let snapshot = self
             .commit_control_plane_candidate(
                 app,
@@ -2299,7 +2318,15 @@ impl WorkflowRuntimeHost {
                 },
             )
             .await?;
-        self.finish_control_plane_commit(app, worktree_path, &snapshot, None)
+        let outcome = if !leaves.is_empty() {
+            Some(NodeOutcome::StartLeaves(snapshot.clone(), leaves))
+        } else if treatment_applied {
+            // ignore 前進が leaf 起動なしで完了へ到達した場合も finalize を通す。
+            Some(NodeOutcome::Persist(snapshot.clone()))
+        } else {
+            None
+        };
+        self.finish_control_plane_commit(app, worktree_path, &snapshot, outcome)
             .await?;
         Ok(())
     }

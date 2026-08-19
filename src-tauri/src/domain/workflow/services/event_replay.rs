@@ -1036,6 +1036,7 @@ mod tests {
                 children: children
                     .into_iter()
                     .map(|(name, rules)| crate::domain::workflow::ChildEntry {
+                        on_failure: None,
                         name: name.to_string(),
                         inputs: Vec::new(),
                         rules,
