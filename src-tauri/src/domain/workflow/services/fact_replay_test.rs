@@ -500,23 +500,23 @@ mod fanout_tests {
                 started_child(ExecutionParentRef::fanout_child("fan-exec", None, index)),
             );
         }
-        for (id, summary) in [("worker-a", "result-a"), ("worker-b", "result-b")] {
+        for (id, summary) in [("worker-a", None), ("worker-b", Some("result-b"))] {
             let worker = meta(id, Some("fan-exec"), "worker", NodeKindName::Session, 1);
             log.push(worker.clone(), submit());
-            log.push(worker, stop_with_summary(summary));
+            log.push(worker, summary.map_or_else(stop, stop_with_summary));
         }
 
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         let model = derive_read_model(&tree);
 
-        for (id, expected) in [("worker-a", "result-a"), ("worker-b", "result-b")] {
+        for (id, expected) in [("worker-a", None), ("worker-b", Some("result-b"))] {
             assert_eq!(
                 model
                     .node_executions
                     .iter()
                     .find(|node| node.id == id)
                     .and_then(|node| node.result_summary.as_deref()),
-                Some(expected)
+                expected
             );
         }
     }

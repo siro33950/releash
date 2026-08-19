@@ -172,18 +172,6 @@ mod store_round_trip_tests {
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].node_execution_id, "root");
-
-        // When: tree を削除する
-        let deleted = store.delete_node_event_tree("tree-1".to_string()).await;
-
-        // Then: 全行が消える
-        assert_eq!(deleted.unwrap(), 2);
-        let rows = store
-            .submit_indexed_query_blocking(|connection| {
-                read_tree(connection, "tree-1").map_err(|_| LocalEventQueryError::InvalidRequest)
-            })
-            .unwrap();
-        assert!(rows.is_empty());
     }
 }
 

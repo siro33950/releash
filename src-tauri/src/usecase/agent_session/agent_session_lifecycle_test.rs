@@ -52,6 +52,13 @@ impl ProviderLifecycleEventRepository for NoopLifecycleEvents {
     ) -> Result<(), ProviderLifecycleRepositoryError> {
         Ok(())
     }
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Default)]

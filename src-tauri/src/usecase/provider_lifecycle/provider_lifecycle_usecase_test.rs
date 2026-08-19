@@ -123,6 +123,13 @@ impl ProviderLifecycleEventRepository for ConcurrentEvents {
         }
         Ok(())
     }
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
+    }
 }
 
 fn slot_id(value: &str) -> ProviderLifecycleSlotId {

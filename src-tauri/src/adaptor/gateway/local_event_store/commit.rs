@@ -1058,6 +1058,9 @@ fn validate_one_guard(
             check_guard(existing, m.expected)
         }
         LocalStateMutation::AgentSessionRemoval(m) => {
+            if m.node_event_tree_id.trim().is_empty() {
+                return Err(CommitBatchError::PayloadConflict);
+            }
             match (
                 &m.ownership_projection_id,
                 &m.ownership_stream,
@@ -1336,6 +1339,7 @@ fn apply_mutation(
             apply_session_projection(connection, commit_id, m)
         }
         LocalStateMutation::AgentSessionRemoval(m) => {
+            run(node_events::delete_tree(connection, &m.node_event_tree_id))?;
             if let (Some(projection_id), Some(stream), Some(_)) = (
                 &m.ownership_projection_id,
                 &m.ownership_stream,

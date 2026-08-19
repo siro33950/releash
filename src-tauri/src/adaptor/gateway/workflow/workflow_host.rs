@@ -589,14 +589,32 @@ impl WorkflowRuntimeHost {
                     resume_from_node: model.resume_from_node.clone(),
                     total_token_usage: model.total_token_usage.clone(),
                 };
-                if let Err(error) = self
+                let metadata = match self
                     .execution_store
                     .reconcile_orphan_from_projection(metadata, &model)
                     .await
                 {
-                    log::warn!(
-                        "workflow {tree_id}: reconciliation metadata registration failed: {error}"
-                    );
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        let error = WorkflowRuntimeError::SessionStore(format!(
+                            "workflow {tree_id}: reconciliation metadata refresh failed: {error}"
+                        ));
+                        log::warn!("{error}");
+                        first_recovery_error.get_or_insert(error);
+                        continue;
+                    }
+                };
+                if let Err(error) = self
+                    .execution_store
+                    .register_active_execution(metadata)
+                    .await
+                {
+                    let error = WorkflowRuntimeError::SessionStore(format!(
+                        "workflow {tree_id}: reconciliation active registry restore failed: {error}"
+                    ));
+                    log::warn!("{error}");
+                    first_recovery_error.get_or_insert(error);
+                    continue;
                 }
             }
             {
@@ -927,7 +945,7 @@ impl WorkflowRuntimeHost {
         let current = executions
             .get_mut(execution_id)
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
-        let durable = transaction
+        let persisted = transaction
             .persist_async(current, |events| async move {
                 if provider_events.is_empty() {
                     workflow_event_log_writer::append_required_events_for_app(app, &events)
@@ -940,15 +958,57 @@ impl WorkflowRuntimeHost {
                     .await
                 }
             })
-            .await
-            .map_err(|error| match error {
-                WorkflowTransactionCommitError::StaleCandidate => WorkflowRuntimeError::Conflict(
-                    format!("execution '{execution_id}' changed before control-plane commit"),
-                ),
-                WorkflowTransactionCommitError::Persistence(error) => {
-                    WorkflowRuntimeError::SessionStore(error)
+            .await;
+        let durable = match persisted {
+            Ok(durable) => durable,
+            Err(WorkflowTransactionCommitError::StaleCandidate) => {
+                return Err(WorkflowRuntimeError::Conflict(format!(
+                    "execution '{execution_id}' changed before control-plane commit"
+                )));
+            }
+            Err(WorkflowTransactionCommitError::Persistence(error)) => {
+                let backend =
+                    workflow_fact_log::FactLogReadBackend::Live(
+                        app.try_state::<std::sync::Arc<
+                            crate::adaptor::gateway::local_event_store::LocalEventStore,
+                        >>()
+                        .map(|store| store.inner().clone())
+                        .ok_or_else(|| {
+                            WorkflowRuntimeError::SessionStore(
+                                "workflow SQLite event authority is not managed".to_string(),
+                            )
+                        })?,
+                    );
+                let refreshed_snapshot = match workflow_fact_log::fold_tree_from(
+                    &backend,
+                    execution_id,
+                ) {
+                    Ok(Some(folded)) => {
+                        *current = folded.aggregate;
+                        RuntimeCommitSnapshot::from_execution(current).ok()
+                    }
+                    Ok(None) => None,
+                    Err(refresh_error) => {
+                        log::error!(
+                            "workflow {execution_id}: failed to reconcile facts after partial persistence: {refresh_error}"
+                        );
+                        None
+                    }
+                };
+                drop(executions);
+                if let Some(refreshed_snapshot) = refreshed_snapshot {
+                    if let Err(refresh_error) = self
+                        .sync_state_after_required_event_commit(&refreshed_snapshot)
+                        .await
+                    {
+                        log::error!(
+                            "workflow {execution_id}: failed to refresh execution registry after partial persistence: {refresh_error}"
+                        );
+                    }
                 }
-            })?;
+                return Err(WorkflowRuntimeError::SessionStore(error));
+            }
+        };
         debug_assert_eq!(
             durable.into_effects(),
             vec![WorkflowRuntimeEffect::BroadcastState]

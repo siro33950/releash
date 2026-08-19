@@ -73,10 +73,11 @@ pub(crate) fn append_node_event(
 
 /// Physically delete every row of one tree. This is the delete operation's
 /// meaning (removing the data), not a fact append.
-pub(crate) fn delete_tree(connection: &Connection, tree_id: &str) -> Result<u64, rusqlite::Error> {
-    connection
-        .execute("DELETE FROM node_events WHERE tree_id = ?1", [tree_id])
-        .map(|deleted| deleted as u64)
+pub(crate) fn delete_tree(
+    connection: &Connection,
+    tree_id: &str,
+) -> Result<usize, rusqlite::Error> {
+    connection.execute("DELETE FROM node_events WHERE tree_id = ?1", [tree_id])
 }
 
 fn row_from_sql(row: &rusqlite::Row<'_>) -> Result<NodeEventRow, rusqlite::Error> {

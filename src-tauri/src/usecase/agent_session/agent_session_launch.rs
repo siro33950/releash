@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use futures_util::future::{BoxFuture, FutureExt, Shared};
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
     AgentSessionTreeParent, ManagedPtyPresence, ResolvedProviderExecutable,
@@ -159,7 +159,14 @@ pub(crate) struct AgentSessionLaunchUsecase {
     hook_health: Arc<ProviderHookHealthUsecase>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
-    activated_workflow_launches: Arc<Mutex<HashMap<String, VersionedAgentSession>>>,
+    activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
+    hook_health_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+#[derive(Clone)]
+enum WorkflowLaunchActivation {
+    Activating(watch::Receiver<bool>),
+    Activated(VersionedAgentSession),
 }
 
 struct PreparedAgentSessionLaunch {
@@ -198,6 +205,7 @@ impl AgentSessionLaunchUsecase {
             standalone_requests: Mutex::new(StandaloneLaunchRequestRegistry::default()),
             pending_workflow_launches: Mutex::new(HashMap::new()),
             activated_workflow_launches: Arc::new(Mutex::new(HashMap::new())),
+            hook_health_tasks: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -260,12 +268,20 @@ impl AgentSessionLaunchUsecase {
         &self,
         agent_session_id: &str,
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
-        self.activated_workflow_launches
-            .lock()
-            .await
-            .remove(agent_session_id)
-            .map(|_| ())
-            .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)
+        loop {
+            let activation = {
+                let mut launches = self.activated_workflow_launches.lock().await;
+                match launches.get(agent_session_id).cloned() {
+                    Some(WorkflowLaunchActivation::Activated(_)) => {
+                        launches.remove(agent_session_id);
+                        return Ok(());
+                    }
+                    Some(WorkflowLaunchActivation::Activating(completion)) => completion,
+                    None => return Err(AgentSessionLaunchUsecaseError::InvalidInput),
+                }
+            };
+            wait_for_activation(activation).await;
+        }
     }
 
     pub(crate) async fn prepare_workflow_node(
@@ -316,19 +332,49 @@ impl AgentSessionLaunchUsecase {
         &self,
         agent_session_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
-        let mut launches = self.activated_workflow_launches.lock().await;
-        if launches.contains_key(agent_session_id) {
-            return Err(AgentSessionLaunchUsecaseError::Corrupt);
+        let (completion_tx, completion_rx) = watch::channel(false);
+        {
+            let mut launches = self.activated_workflow_launches.lock().await;
+            if launches.contains_key(agent_session_id) {
+                return Err(AgentSessionLaunchUsecaseError::Corrupt);
+            }
+            launches.insert(
+                agent_session_id.to_string(),
+                WorkflowLaunchActivation::Activating(completion_rx),
+            );
         }
-        let pending = self
+        let pending = match self
             .pending_workflow_launches
             .lock()
             .await
             .remove(agent_session_id)
-            .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
-        let activated = self.spawn_prepared(pending).await?;
-        launches.insert(agent_session_id.to_string(), activated.clone());
-        drop(launches);
+        {
+            Some(pending) => pending,
+            None => {
+                self.activated_workflow_launches
+                    .lock()
+                    .await
+                    .remove(agent_session_id);
+                let _ = completion_tx.send(true);
+                return Err(AgentSessionLaunchUsecaseError::InvalidInput);
+            }
+        };
+        let activated = match self.spawn_prepared(pending).await {
+            Ok(activated) => activated,
+            Err(error) => {
+                self.activated_workflow_launches
+                    .lock()
+                    .await
+                    .remove(agent_session_id);
+                let _ = completion_tx.send(true);
+                return Err(error);
+            }
+        };
+        self.activated_workflow_launches.lock().await.insert(
+            agent_session_id.to_string(),
+            WorkflowLaunchActivation::Activated(activated.clone()),
+        );
+        let _ = completion_tx.send(true);
         let launches = Arc::clone(&self.activated_workflow_launches);
         let agent_session_id = agent_session_id.to_string();
         tokio::spawn(async move {
@@ -411,11 +457,27 @@ impl AgentSessionLaunchUsecase {
             .lock()
             .await
             .remove(agent_session_id);
-        let activated = self
-            .activated_workflow_launches
-            .lock()
-            .await
-            .remove(agent_session_id);
+        let activated = loop {
+            let activation = {
+                let mut launches = self.activated_workflow_launches.lock().await;
+                match launches.get(agent_session_id).cloned() {
+                    Some(WorkflowLaunchActivation::Activated(session)) => {
+                        launches.remove(agent_session_id);
+                        break Some(session);
+                    }
+                    Some(WorkflowLaunchActivation::Activating(completion)) if pending.is_none() => {
+                        Some(completion)
+                    }
+                    Some(WorkflowLaunchActivation::Activating(_)) | None => {
+                        launches.remove(agent_session_id);
+                        break None;
+                    }
+                }
+            };
+            if let Some(activation) = activation {
+                wait_for_activation(activation).await;
+            }
+        };
         let session = match (pending, activated) {
             (Some(pending), _) => pending.durable.created.clone(),
             (None, Some(activated)) => activated,
@@ -758,6 +820,20 @@ impl AgentSessionLaunchUsecase {
         self.standalone_requests.lock().await.in_flight.len()
     }
 
+    pub(crate) async fn wait_for_background_tasks(&self) -> Result<(), tokio::task::JoinError> {
+        let tasks = {
+            let mut tasks = self
+                .hook_health_tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        for task in tasks {
+            task.await?;
+        }
+        Ok(())
+    }
+
     fn record_hook_launch(
         &self,
         provider: ProviderKind,
@@ -768,7 +844,7 @@ impl AgentSessionLaunchUsecase {
         let hook_health = Arc::clone(&self.hook_health);
         let launch_id = launch_id.to_string();
         let caller_request_id = format!("{caller_request_id}.hook-launch");
-        let _hook_health_task = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             if let Err(error) = hook_health
                 .record_launch_with_warning(provider, &launch_id, warning, &caller_request_id)
                 .await
@@ -778,6 +854,18 @@ impl AgentSessionLaunchUsecase {
                 );
             }
         });
+        let mut tasks = self
+            .hook_health_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+}
+
+async fn wait_for_activation(mut completion: watch::Receiver<bool>) {
+    if !*completion.borrow() {
+        let _ = completion.changed().await;
     }
 }
 

@@ -97,7 +97,7 @@ impl LocalApiServerBinding {
         } = self;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let discovery_for_task = discovery.clone();
-        runtime.spawn(async move {
+        let task = runtime.spawn(async move {
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => listener,
                 Err(error) => {
@@ -128,6 +128,7 @@ impl LocalApiServerBinding {
         log::info!("local API listening on 127.0.0.1:{port}");
         Arc::new(LocalApiServer {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
+            task: parking_lot::Mutex::new(Some(task)),
             discovery,
         })
     }
@@ -135,6 +136,7 @@ impl LocalApiServerBinding {
 
 pub(crate) struct LocalApiServer {
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
+    task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     discovery: LocalApiDiscoveryFile,
 }
 
@@ -146,6 +148,15 @@ impl LocalApiServer {
         if let Err(error) = self.discovery.remove_if_owned() {
             log::warn!("failed to remove local API discovery file: {error}");
         }
+    }
+
+    pub(crate) async fn shutdown_and_wait(&self) -> Result<(), tokio::task::JoinError> {
+        self.shutdown();
+        let task = self.task.lock().take();
+        if let Some(task) = task {
+            task.await?;
+        }
+        Ok(())
     }
 }
 

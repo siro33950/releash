@@ -146,6 +146,7 @@ pub struct SessionProjectionMutation {
 /// retaining its resume identifier in Releash state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSessionRemovalMutation {
+    pub node_event_tree_id: String,
     pub ownership_projection_id: Option<String>,
     pub ownership_stream: Option<StreamId>,
     pub ownership_expected: Option<Revision>,
@@ -351,6 +352,7 @@ impl LocalStateMutation {
             }
             Self::AgentSessionRemoval(m) => {
                 text(&mut bytes, "agent_session_removal");
+                text(&mut bytes, &m.node_event_tree_id);
                 match (
                     &m.ownership_projection_id,
                     &m.ownership_stream,
@@ -417,7 +419,8 @@ impl LocalStateMutation {
             Self::OperationRecord(m) => typed(&m.receipt) + typed(&m.latest_status) + 64,
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
             Self::AgentSessionRemoval(m) => {
-                m.ownership_projection_id.as_ref().map_or(0, String::len)
+                m.node_event_tree_id.len()
+                    + m.ownership_projection_id.as_ref().map_or(0, String::len)
                     + m.ownership_stream
                         .as_ref()
                         .map_or(0, |stream| stream.as_str().len())

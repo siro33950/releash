@@ -531,6 +531,13 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         if session.tree_parent().is_some() {
             return Err(AgentSessionRepositoryError::InvalidRequest);
         }
+        let tree_id = session.id().to_string();
+        let mut removal = AgentSessionRemovalMutation {
+            node_event_tree_id: tree_id,
+            ownership_projection_id: None,
+            ownership_stream: None,
+            ownership_expected: None,
+        };
         // 所有権の解放（provider session を他 session が取り込めるように）。
         if let Some(provider_session_id) = session.provider_session_id() {
             let ownership_key = ownership_storage_key(session.provider(), provider_session_id);
@@ -538,52 +545,40 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 .load_ownership(&ownership_key, session.provider(), provider_session_id)
                 .await?;
             if ownership.agent_session_id() == Some(session.id()) {
-                let mutations = vec![LocalStateMutation::AgentSessionRemoval(
-                    AgentSessionRemovalMutation {
-                        ownership_projection_id: Some(ownership_key),
-                        ownership_stream: Some(ownership_stream(
-                            session.provider(),
-                            provider_session_id,
-                        )?),
-                        ownership_expected: Some(revision(ownership_revision)?),
-                    },
-                )];
-                let (commit_id, payload_hash) = commit_identity(
-                    self.repository.as_ref(),
-                    caller_request_id,
-                    &[],
-                    &mutations,
-                    &[],
-                )?;
-                let batch = LocalAtomicBatch {
-                    commit_id,
-                    idempotency: IdempotencyBinding {
-                        installation_id: self.installation_id.clone(),
-                        operation_kind: CommitOperationKind::UserMutation,
-                        idempotency_key: format!("agent-session.remove.{caller_request_id}"),
-                        payload_hash,
-                    },
-                    expected_heads: Vec::new(),
-                    events: Vec::new(),
-                    state_mutations: mutations,
-                };
-                match self.repository.commit_batch(batch).await {
-                    Ok(_) => {}
-                    Err(
-                        CommitBatchError::StorageUnavailable { .. }
-                        | CommitBatchError::OutcomeUnknown { .. },
-                    ) => return Err(AgentSessionRepositoryError::Unavailable),
-                    Err(_) => return Err(AgentSessionRepositoryError::Conflict),
-                }
+                removal.ownership_projection_id = Some(ownership_key);
+                removal.ownership_stream =
+                    Some(ownership_stream(session.provider(), provider_session_id)?);
+                removal.ownership_expected = Some(revision(ownership_revision)?);
             }
         }
-        // delete の意味はデータを消すこと: 木の行を物理削除する。
-        let tree_id = session.id().to_string();
-        self.store
-            .delete_node_event_tree(tree_id)
-            .await
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-        Ok(())
+        let mutations = vec![LocalStateMutation::AgentSessionRemoval(removal)];
+        let (commit_id, payload_hash) = commit_identity(
+            self.repository.as_ref(),
+            caller_request_id,
+            &[],
+            &mutations,
+            &[],
+        )?;
+        let batch = LocalAtomicBatch {
+            commit_id,
+            idempotency: IdempotencyBinding {
+                installation_id: self.installation_id.clone(),
+                operation_kind: CommitOperationKind::UserMutation,
+                idempotency_key: format!("agent-session.remove.{caller_request_id}"),
+                payload_hash,
+            },
+            expected_heads: Vec::new(),
+            events: Vec::new(),
+            state_mutations: mutations,
+        };
+        match self.repository.commit_batch(batch).await {
+            Ok(_) => Ok(()),
+            Err(
+                CommitBatchError::StorageUnavailable { .. }
+                | CommitBatchError::OutcomeUnknown { .. },
+            ) => Err(AgentSessionRepositoryError::Unavailable),
+            Err(_) => Err(AgentSessionRepositoryError::Conflict),
+        }
     }
 }
 

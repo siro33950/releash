@@ -62,12 +62,6 @@ pub struct NodeEventAppendRequest {
     pub reply: oneshot::Sender<Result<i64, NodeEventWriteError>>,
 }
 
-/// Physically delete one tree from `node_events`.
-pub struct NodeEventTreeDeleteRequest {
-    pub tree_id: String,
-    pub reply: oneshot::Sender<Result<u64, NodeEventWriteError>>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NodeEventWriteError {
     #[error("node event storage is unavailable")]
@@ -81,7 +75,6 @@ pub enum NodeEventWriteError {
 pub enum WriteRequest {
     Commit(CommitWriteRequest),
     NodeEventAppend(NodeEventAppendRequest),
-    NodeEventTreeDelete(NodeEventTreeDeleteRequest),
 }
 
 impl WriteRequest {
@@ -89,14 +82,13 @@ impl WriteRequest {
         match self {
             Self::Commit(request) => request.prepared.decoded_bytes,
             Self::NodeEventAppend(request) => request.row.detail.len() + 256,
-            Self::NodeEventTreeDelete(_) => 256,
         }
     }
 
     fn critical(&self) -> bool {
         match self {
             Self::Commit(request) => request.prepared.critical,
-            Self::NodeEventAppend(_) | Self::NodeEventTreeDelete(_) => false,
+            Self::NodeEventAppend(_) => false,
         }
     }
 }

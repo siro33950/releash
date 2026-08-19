@@ -744,7 +744,10 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .await
             .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
-        local_api.shutdown();
+        local_api
+            .shutdown_and_wait()
+            .await
+            .map_err(|error| format!("join local API server: {error}"))?;
         _app.unmanage::<Arc<LocalEventStore>>();
         drop((local_api, _runtime, provider_sessions, terminal, _app));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {

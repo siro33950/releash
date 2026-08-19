@@ -52,7 +52,6 @@ async fn test_local_api_server終了_停止を通知して所有discoveryを削�
     let server = binding.start(Router::new(), &tokio::runtime::Handle::current());
 
     assert!(discovery_path.exists());
-    server.shutdown();
-    tokio::task::yield_now().await;
+    server.shutdown_and_wait().await.unwrap();
     assert!(!discovery_path.exists());
 }

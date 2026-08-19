@@ -18,10 +18,8 @@ pub(crate) trait ProviderLifecycleEventRepository: Send + Sync {
 
     async fn load_scope(
         &self,
-        _scope: &ProviderLifecycleScope,
-    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
-        Ok(Vec::new())
-    }
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

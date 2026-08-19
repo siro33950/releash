@@ -295,6 +295,88 @@ mod tests {
         assert!(!persisted);
     }
 
+    #[tokio::test]
+    async fn persist_async_updates_current_only_after_persistence_succeeds() {
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+            let outcome = candidate.stop();
+            Ok(WorkflowRuntimeDecision {
+                outcome,
+                events: vec![interrupted_event()],
+                effects: vec![WorkflowRuntimeEffect::BroadcastState],
+            })
+        })
+        .unwrap();
+
+        let durable = prepared
+            .persist_async(&mut live, |_| async { Ok::<_, ()>(()) })
+            .await
+            .unwrap();
+
+        assert_eq!(live.state(), &RuntimeExecutionState::Interrupted);
+        assert_eq!(durable.outcome(), TransitionOutcome::Applied);
+        assert_eq!(
+            durable.into_effects(),
+            vec![WorkflowRuntimeEffect::BroadcastState]
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_async_rejects_stale_candidate_without_persistence() {
+        let live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+            let outcome = candidate.stop();
+            Ok(WorkflowRuntimeDecision {
+                outcome,
+                events: vec![interrupted_event()],
+                effects: Vec::new(),
+            })
+        })
+        .unwrap();
+        let mut stale = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        stale.abort();
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = persisted.clone();
+
+        let result = prepared
+            .persist_async(&mut stale, move |_| async move {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, ()>(())
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkflowTransactionCommitError::StaleCandidate)
+        ));
+        assert!(!persisted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn persist_async_propagates_persistence_failure_without_updating_current() {
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let before = live.clone();
+        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+            let outcome = candidate.stop();
+            Ok(WorkflowRuntimeDecision {
+                outcome,
+                events: vec![interrupted_event()],
+                effects: vec![WorkflowRuntimeEffect::BroadcastState],
+            })
+        })
+        .unwrap();
+
+        let result = prepared
+            .persist_async(&mut live, |_| async { Err("disk") })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkflowTransactionCommitError::Persistence("disk"))
+        ));
+        assert_eq!(live, before);
+    }
+
     #[test]
     fn aggregate_rejection_is_preserved_as_a_typed_decision() {
         let live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);

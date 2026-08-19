@@ -571,6 +571,79 @@ async fn test_agent_session_repository削除で木の行を物理削除しprovid
 }
 
 #[tokio::test]
+async fn test_agent_session_repository削除失敗時に木とprovider所有権を原子的に維持する() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let session = parentless_session(
+        "agent-session-atomic-delete",
+        "/repo/.worktrees/atomic-delete",
+        ProviderKind::Claude,
+    );
+    let mut session = repository
+        .create(session, "create-atomic-delete")
+        .await
+        .unwrap();
+    session
+        .session_mut()
+        .associate_provider_session("provider-session-atomic-delete", None)
+        .unwrap();
+    let mut session = repository
+        .save(session, "associate-atomic-delete")
+        .await
+        .unwrap();
+    session.session_mut().archive().unwrap();
+    let session = repository
+        .save(session, "archive-atomic-delete")
+        .await
+        .unwrap();
+    let authorization = session.session().authorize_delete().unwrap();
+    store.fault_injector().arm_fail_before_commit();
+
+    let result = repository
+        .remove(session, authorization, "delete-atomic")
+        .await;
+
+    assert_eq!(
+        result.unwrap_err(),
+        crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
+    );
+    let retained = repository
+        .find("agent-session-atomic-delete")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        fact_log::read_tree_records(&store, "agent-session-atomic-delete")
+            .unwrap()
+            .len()
+            > 0
+    );
+    assert!(repository
+        .is_owned(ProviderKind::Claude, "provider-session-atomic-delete")
+        .await
+        .unwrap());
+
+    repository
+        .remove(
+            retained.clone(),
+            retained.session().authorize_delete().unwrap(),
+            "delete-atomic",
+        )
+        .await
+        .unwrap();
+    assert!(repository
+        .find("agent-session-atomic-delete")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!repository
+        .is_owned(ProviderKind::Claude, "provider-session-atomic-delete")
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
 async fn test_agent_session_repository永続化失敗時に所有権も導出状態も進めない() {
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);

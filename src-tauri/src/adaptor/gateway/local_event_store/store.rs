@@ -39,9 +39,9 @@ use crate::adaptor::gateway::local_event_store::schema::{
     InitialStoreMetadata, APPLICATION_ID, CURRENT_SCHEMA_VERSION,
 };
 use crate::adaptor::gateway::local_event_store::writer::{
-    AdmitRejection, CommitWriteRequest, NodeEventAppendRequest, NodeEventTreeDeleteRequest,
-    NodeEventWriteError, PreparedBatch, PreparedEvent, PreparedNodeEvent, QueuePop, WriteQueue,
-    WriteRequest, MAX_BATCH_DECODED_BYTES, MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
+    AdmitRejection, CommitWriteRequest, NodeEventAppendRequest, NodeEventWriteError, PreparedBatch,
+    PreparedEvent, PreparedNodeEvent, QueuePop, WriteQueue, WriteRequest, MAX_BATCH_DECODED_BYTES,
+    MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
 };
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
@@ -774,18 +774,6 @@ impl LocalEventStore {
                                 });
                                 let _ = request.reply.send(result);
                             }
-                            WriteRequest::NodeEventTreeDelete(request) => {
-                                let result =
-                                    node_events::delete_tree(&writer_connection, &request.tree_id)
-                                        .map_err(|error| {
-                                            let correlation = correlation_id();
-                                            log::error!(
-                                        "node event tree delete failed [{correlation}]: {error}"
-                                    );
-                                            NodeEventWriteError::StorageUnavailable
-                                        });
-                                let _ = request.reply.send(result);
-                            }
                         },
                         QueuePop::Idle => {}
                         QueuePop::Closed => break,
@@ -1000,24 +988,6 @@ impl LocalEventStore {
                 timestamp_ms,
                 reply,
             })) {
-            Ok(()) => {}
-            Err(AdmitRejection::Capacity) => return Err(NodeEventWriteError::StorageUnavailable),
-            Err(AdmitRejection::Closed) => return Err(NodeEventWriteError::OutcomeUnknown),
-        }
-        receiver
-            .await
-            .map_err(|_| NodeEventWriteError::OutcomeUnknown)?
-    }
-
-    /// Physically delete one tree from the unified-node fact log.
-    pub(crate) async fn delete_node_event_tree(
-        &self,
-        tree_id: String,
-    ) -> Result<u64, NodeEventWriteError> {
-        let (reply, receiver) = oneshot::channel();
-        match self.queue.admit(WriteRequest::NodeEventTreeDelete(
-            NodeEventTreeDeleteRequest { tree_id, reply },
-        )) {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(NodeEventWriteError::StorageUnavailable),
             Err(AdmitRejection::Closed) => return Err(NodeEventWriteError::OutcomeUnknown),

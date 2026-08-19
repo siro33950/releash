@@ -714,14 +714,14 @@ pub(crate) fn reconcile_tree_pass(
     Ok(Some(TreeReconciliation { folded, leaves }))
 }
 
-/// worktree（= workspace identity）に root を植えた木の tree_id 一覧
+/// worktree（= workspace identity）に root を植えた木の識別子と root 事実
 /// （root started の追記順）。`worktree_path` が None なら全木。
 ///
 /// 絞り込みは detail JSON を Rust で読む（SQL に判定規則を持ち込まない）。
-pub(crate) fn list_tree_ids(
+pub(crate) fn list_tree_roots(
     backend: &FactLogReadBackend,
     worktree_path: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(String, TreeRootFact)>, String> {
     let rows = backend
         .run_indexed(move |connection| {
             node_events::list_tree_roots(connection, "started")
@@ -729,7 +729,7 @@ pub(crate) fn list_tree_ids(
         })
         .map_err(|error| format!("node fact root listing failed: {error:?}"))?;
     let mut seen = std::collections::HashSet::new();
-    let mut tree_ids = Vec::new();
+    let mut roots = Vec::new();
     for row in rows {
         if !seen.insert(row.tree_id.clone()) {
             continue;
@@ -746,10 +746,18 @@ pub(crate) fn list_tree_ids(
             crate::domain::workflow::TreeRootFact::Session(session) => &session.worktree_path,
         };
         if worktree_path.is_none_or(|wanted| wanted == root_worktree) {
-            tree_ids.push(row.tree_id);
+            roots.push((row.tree_id, root.clone()));
         }
     }
-    Ok(tree_ids)
+    Ok(roots)
+}
+
+pub(crate) fn list_tree_ids(
+    backend: &FactLogReadBackend,
+    worktree_path: Option<&str>,
+) -> Result<Vec<String>, String> {
+    list_tree_roots(backend, worktree_path)
+        .map(|roots| roots.into_iter().map(|(tree_id, _)| tree_id).collect())
 }
 
 /// 1 tree の fold（読み出し + 導出）。

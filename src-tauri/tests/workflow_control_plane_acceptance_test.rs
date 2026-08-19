@@ -676,6 +676,14 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
                 SignalOrder::StopThenSubmit => AcceptanceNodeExecutionStatus::Running,
             }
         );
+        let duplicate_start = host_after
+            .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+            .await
+            .unwrap_err();
+        assert!(
+            duplicate_start.starts_with("HTTP 409:"),
+            "{duplicate_start}"
+        );
         host_after.shutdown().await.unwrap();
     }
 }

@@ -24,7 +24,7 @@ use crate::domain::agent_session::{
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
     ProviderHookHealthRepositoryError, ProviderKind, ProviderLifecycleEventRepository,
-    ProviderLifecycleRepositoryError, ProviderLifecycleUnavailableReason,
+    ProviderLifecycleRepositoryError, ProviderLifecycleScope, ProviderLifecycleUnavailableReason,
     ScopedProviderLifecycleEvent, VersionedProviderHookHealth,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
@@ -226,6 +226,13 @@ impl ProviderLifecycleEventRepository for FailingFirstLifecycleEvents {
             Ok(())
         }
     }
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait::async_trait]
@@ -236,6 +243,23 @@ impl ProviderLifecycleEventRepository for RecordingLifecycleEvents {
     ) -> Result<(), ProviderLifecycleRepositoryError> {
         self.events.lock().unwrap().extend(events);
         Ok(())
+    }
+
+    async fn load_scope(
+        &self,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| {
+                let (event_scope, event) = event.clone().into_parts();
+                (event_scope == *scope)
+                    .then(|| ScopedProviderLifecycleEvent::new(event_scope, event))
+            })
+            .collect())
     }
 }
 
@@ -373,6 +397,7 @@ struct BlockingLaunchTerminal {
     presence: Mutex<ManagedPtyPresence>,
     spawn_entered: Mutex<Option<mpsc::Sender<()>>>,
     spawn_release: Mutex<Option<mpsc::Receiver<()>>>,
+    spawns: AtomicUsize,
     deletes: Mutex<usize>,
 }
 
@@ -385,20 +410,18 @@ impl ProviderAgentTerminalGateway for BlockingLaunchTerminal {
         _rows: u16,
         _cols: u16,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.spawn_entered
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap()
-            .send(())
-            .unwrap();
-        self.spawn_release
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        self.spawns.fetch_add(1, Ordering::SeqCst);
+        let entered = self.spawn_entered.lock().unwrap().take();
+        if let Some(entered) = entered {
+            entered.send(()).unwrap();
+            self.spawn_release
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
         *self.presence.lock().unwrap() = ManagedPtyPresence::Live;
         Ok(())
     }
@@ -807,6 +830,7 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
         presence: Mutex::new(ManagedPtyPresence::ConfirmedAbsent),
         spawn_entered: Mutex::new(Some(entered_sender)),
         spawn_release: Mutex::new(Some(release_receiver)),
+        spawns: AtomicUsize::new(0),
         deletes: Mutex::new(0),
     });
     let usecase = Arc::new(AgentSessionLaunchUsecase::new(
@@ -1045,6 +1069,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         presence: Mutex::new(ManagedPtyPresence::ConfirmedAbsent),
         spawn_entered: Mutex::new(Some(entered_sender)),
         spawn_release: Mutex::new(Some(release_receiver)),
+        spawns: AtomicUsize::new(0),
         deletes: Mutex::new(0),
     });
     let launches = Arc::new(RecordingLaunchGateway::default());
@@ -1504,6 +1529,110 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
             .await,
         Err(AgentSessionLaunchUsecaseError::InvalidInput)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起動待ちで直列化しない() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+        crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+    )));
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let terminal = Arc::new(BlockingLaunchTerminal {
+        presence: Mutex::new(ManagedPtyPresence::ConfirmedAbsent),
+        spawn_entered: Mutex::new(Some(entered_sender)),
+        spawn_release: Mutex::new(Some(release_receiver)),
+        spawns: AtomicUsize::new(0),
+        deletes: Mutex::new(0),
+    });
+    let usecase = Arc::new(AgentSessionLaunchUsecase::new(
+        sessions,
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            Arc::new(RecordingLifecycleEvents::default()),
+        )),
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
+        Arc::new(RecordingLaunchGateway::default()),
+        terminal.clone(),
+        Arc::new(FixedHistory { entries: Vec::new() }),
+        hook_health_usecase(),
+    ));
+    let first = usecase
+        .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree-first".to_string(),
+            provider: ProviderKind::Claude,
+            model: None,
+            permission: None,
+            workflow_execution_id: "workflow-parallel".to_string(),
+            node_execution_id: "node-first".to_string(),
+            initial_instruction: "Implement first.".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "workflow-parallel-first".to_string(),
+        })
+        .await
+        .unwrap();
+    let second = usecase
+        .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree-second".to_string(),
+            provider: ProviderKind::Claude,
+            model: None,
+            permission: None,
+            workflow_execution_id: "workflow-parallel".to_string(),
+            node_execution_id: "node-second".to_string(),
+            initial_instruction: "Implement second.".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "workflow-parallel-second".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let first_session_id = first.session().id().to_string();
+    let first_usecase = Arc::clone(&usecase);
+    let first_activation = tokio::spawn(async move {
+        first_usecase
+            .activate_workflow_node(&first_session_id)
+            .await
+    });
+    entered_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    let second_session_id = second.session().id().to_string();
+    let second_usecase = Arc::clone(&usecase);
+    let mut second_activation = tokio::spawn(async move {
+        second_usecase
+            .activate_workflow_node(&second_session_id)
+            .await
+    });
+    let second_result = tokio::time::timeout(Duration::from_secs(1), &mut second_activation).await;
+    release_sender.send(()).unwrap();
+    first_activation.await.unwrap().unwrap();
+
+    match second_result {
+        Ok(result) => {
+            result.unwrap().unwrap();
+        }
+        Err(_) => {
+            second_activation.await.unwrap().unwrap();
+            panic!("unrelated workflow activation waited for another terminal spawn");
+        }
+    }
+    assert_eq!(terminal.spawns.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

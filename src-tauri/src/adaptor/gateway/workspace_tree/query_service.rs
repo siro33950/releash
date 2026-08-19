@@ -54,21 +54,22 @@ impl SqliteWorkspaceQueryService {
     ) -> Result<Vec<crate::domain::local_event::WorkflowExecutionMetadataRecord>, WorkflowError>
     {
         let backend = self.repository.fact_backend();
-        let tree_ids = crate::adaptor::gateway::workflow::fact_log::list_tree_ids(
+        let tree_roots = crate::adaptor::gateway::workflow::fact_log::list_tree_roots(
             &backend,
             workspace_identity.map(|identity| identity.as_str()),
         )
         .map_err(WorkflowError::external)?;
         let mut records = Vec::new();
-        for tree_id in tree_ids {
+        for (tree_id, root) in tree_roots {
+            if !matches!(root, TreeRootFact::Workflow(_)) {
+                continue;
+            }
             let Some((folded, record)) =
                 self.repository.folded_tree(&tree_id).map_err(query_error)?
             else {
                 continue;
             };
-            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
-                continue;
-            }
+            debug_assert!(matches!(folded.root, TreeRootFact::Workflow(_)));
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
                 Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),

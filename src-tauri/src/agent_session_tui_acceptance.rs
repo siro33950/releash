@@ -419,7 +419,19 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let local_api = local_api
             .into_inner()
             .map_err(|_| "lock local API server".to_string())?;
-        local_api.shutdown();
+        local_api
+            .shutdown_and_wait()
+            .await
+            .map_err(|error| format!("join local API server: {error}"))?;
+        let launch = app
+            .try_state::<Arc<AgentSessionLaunchUsecase>>()
+            .map(|state| state.inner().clone());
+        if let Some(launch) = launch {
+            launch
+                .wait_for_background_tasks()
+                .await
+                .map_err(|error| format!("join AgentSession background task: {error}"))?;
+        }
         app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
         app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
         app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
