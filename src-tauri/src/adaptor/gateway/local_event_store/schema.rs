@@ -11,7 +11,7 @@ mod schema_test;
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 pub const CURRENT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS logical_commits (
@@ -191,63 +191,29 @@ CREATE INDEX IF NOT EXISTS idx_operation_bindings_operation
     ON operation_bindings (installation_id, kind, operation_id, principal, caller_request_id);
 "#;
 
-const WORKSPACE_QUERY_RECORDS_V3: &str = r#"
-CREATE TABLE IF NOT EXISTS workflow_executions (
-    execution_id TEXT PRIMARY KEY,
-    workspace_identity TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (
-        status IN ('running', 'waiting_approval', 'completed', 'failed', 'aborted', 'interrupted')
-    ),
-    list_kind TEXT NOT NULL CHECK (list_kind IN ('active', 'terminal')),
-    sort_at_bits INTEGER NOT NULL,
-    record_schema TEXT NOT NULL CHECK (record_schema = 'workflow_execution_record_v1'),
-    record TEXT NOT NULL,
-    source_revision INTEGER NOT NULL CHECK (source_revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
-);
-CREATE TABLE IF NOT EXISTS workflow_execution_nodes (
-    execution_id TEXT NOT NULL REFERENCES workflow_executions (execution_id) ON DELETE CASCADE,
-    node_id TEXT NOT NULL,
+/// The unified-node fact log: one normalized table, one row per pure fact.
+/// No transition events and no status columns; state is derived by the
+/// domain fold on the read side. Columns beyond the fact identity exist for
+/// tree / node / kind narrowing only, so `event_type` carries no CHECK (the
+/// vocabulary is owned by the domain, not duplicated into SQL).
+const NODE_EVENTS_TABLE_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS node_events (
+    tree_id TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 1),
+    node_execution_id TEXT NOT NULL,
     parent_id TEXT,
-    sibling_order INTEGER NOT NULL CHECK (sibling_order >= 0),
-    session_id TEXT,
-    node_execution_id TEXT,
-    record_schema TEXT NOT NULL CHECK (record_schema = 'workflow_execution_node_record_v1'),
-    tree_record TEXT NOT NULL,
-    detail_record TEXT NOT NULL,
-    source_revision INTEGER NOT NULL CHECK (source_revision >= 0),
-    commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
-    PRIMARY KEY (execution_id, node_id),
-    UNIQUE (execution_id, node_execution_id)
+    node_name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('session', 'command', 'fanout', 'sequence')),
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    event_type TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
+    PRIMARY KEY (tree_id, seq)
 );
-CREATE INDEX IF NOT EXISTS idx_workflow_executions_workspace_list
-    ON workflow_executions (
-        workspace_identity, list_kind, sort_at_bits DESC, execution_id
-    );
-CREATE INDEX IF NOT EXISTS idx_workflow_executions_global_list
-    ON workflow_executions (list_kind, sort_at_bits DESC, execution_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_node
-    ON workflow_execution_nodes (node_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_execution_nodes_occurrence
-    ON workflow_execution_nodes (execution_id, sibling_order, node_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_session
-    ON workflow_execution_nodes (session_id)
-    WHERE session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_session_projection_public_list
-    ON session_projection (
-        workspace_identity, public_list_kind, public_sort_key_bits DESC, session_id
-    );
-CREATE INDEX IF NOT EXISTS idx_session_projection_public_node
-    ON session_projection (
-        workspace_identity, json_extract(public_summary, '$.node_id')
-    )
-    WHERE public_summary IS NOT NULL;
-"#;
-
-const NODE_EXECUTION_IDENTITY_V4: &str = r#"
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_execution_nodes_node_execution
-    ON workflow_execution_nodes (node_execution_id)
-    WHERE node_execution_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_node_events_node
+    ON node_events (node_execution_id, seq);
+CREATE INDEX IF NOT EXISTS idx_node_events_kind
+    ON node_events (kind, tree_id);
 "#;
 
 const SESSION_PROJECTION_TABLE_V3: &str = r#"
@@ -294,7 +260,7 @@ fn create_store_metadata(
 ) -> Result<(), rusqlite::Error> {
     if !matches!(table_name, "store_metadata" | "store_metadata_v2")
         || !matches!(shutdown_plans_table, "shutdown_plans" | "shutdown_plans_v2")
-        || !matches!(schema_version, 2..=5)
+        || !matches!(schema_version, 2..=6)
     {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -337,16 +303,15 @@ pub fn initialize_schema(
     if let Err(error) = (|| {
         connection.execute_batch(CURRENT_SCHEMA)?;
         connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 5)?;
-        connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
-        connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
+        connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
         connection.execute(
             "INSERT INTO store_metadata (
                 id, schema_version, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
                 next_global_sequence, health, current_shutdown_id,
                 shutdown_pointer_revision
-             ) VALUES (1, 5, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
+             ) VALUES (1, 6, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
                        NULL, 0)",
             rusqlite::params![
                 metadata.installation_id,
@@ -388,9 +353,10 @@ enum SupportedMetadataVersion {
     V2,
     V3,
     V4,
+    V5,
 }
 
-fn carry_forward_store_metadata_v5(
+fn carry_forward_store_metadata_v6(
     connection: &Connection,
     source_version: SupportedMetadataVersion,
 ) -> Result<(), rusqlite::Error> {
@@ -398,11 +364,12 @@ fn carry_forward_store_metadata_v5(
         SupportedMetadataVersion::V2 => "store_metadata_v2",
         SupportedMetadataVersion::V3 => "store_metadata_v3",
         SupportedMetadataVersion::V4 => "store_metadata_v4",
+        SupportedMetadataVersion::V5 => "store_metadata_v5",
     };
     connection.execute_batch(&format!(
         "ALTER TABLE store_metadata RENAME TO {source_table};"
     ))?;
-    create_store_metadata(connection, "store_metadata", "shutdown_plans", 5)?;
+    create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
     connection.execute_batch(&format!(
         "INSERT INTO store_metadata (
              id, schema_version, installation_id, created_at_ms,
@@ -410,7 +377,7 @@ fn carry_forward_store_metadata_v5(
              process_instance_id, next_global_sequence, health,
              current_shutdown_id, shutdown_pointer_revision
          )
-         SELECT id, 5, installation_id, created_at_ms,
+         SELECT id, 6, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key,
                 process_instance_id, next_global_sequence, health,
                 current_shutdown_id, shutdown_pointer_revision
@@ -473,6 +440,21 @@ pub fn evolve_schema(
         return Ok(false);
     }
 
+    let is_supported_v5 = application_id == i64::from(APPLICATION_ID)
+        && user_version == 5
+        && metadata_columns
+            .iter()
+            .any(|column| column == "installation_id")
+        && !metadata_columns.iter().any(|column| column == "store_id");
+    if is_supported_v5 {
+        return evolve_schema_transaction(connection, fault, |connection| {
+            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V5)?;
+            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            discard_retired_event_sourcing_v6(connection)?;
+            Ok(())
+        });
+    }
+
     let is_supported_v4 = application_id == i64::from(APPLICATION_ID)
         && user_version == 4
         && metadata_columns
@@ -481,8 +463,10 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v4 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v5(connection, SupportedMetadataVersion::V4)?;
+            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V4)?;
             drop_retired_schema_v5(connection)?;
+            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
     }
@@ -495,9 +479,10 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v3 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v5(connection, SupportedMetadataVersion::V3)?;
-            connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
+            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V3)?;
             drop_retired_schema_v5(connection)?;
+            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
     }
@@ -510,12 +495,11 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v2 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v5(connection, SupportedMetadataVersion::V2)?;
+            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V2)?;
             evolve_session_projection_v3(connection)?;
-            connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
-            super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
-            connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
             drop_retired_schema_v5(connection)?;
+            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
     }
@@ -709,7 +693,7 @@ pub fn evolve_schema(
                  ON shutdown_plans (details_state);
              PRAGMA application_id = 0x524C5348;",
         )?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 5)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
         connection.execute_batch(
             "INSERT INTO store_metadata (
                  id, schema_version, installation_id, created_at_ms,
@@ -717,7 +701,7 @@ pub fn evolve_schema(
                  next_global_sequence, health, current_shutdown_id,
                  shutdown_pointer_revision
              )
-             SELECT id, 5, generation_id, created_at_ms,
+             SELECT id, 6, generation_id, created_at_ms,
                     cursor_hmac_key, operation_binding_hmac_key, boot_id,
                     next_global_sequence, 'ok', current_shutdown_plan_id,
                     shutdown_pointer_revision
@@ -725,10 +709,9 @@ pub fn evolve_schema(
              DROP TABLE store_metadata_v1;",
         )?;
         evolve_session_projection_v3(connection)?;
-        connection.execute_batch(WORKSPACE_QUERY_RECORDS_V3)?;
-        super::workspace_query_migration::rebuild_workspace_query_records(connection)?;
-        connection.execute_batch(NODE_EXECUTION_IDENTITY_V4)?;
         drop_retired_schema_v5(connection)?;
+        connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+        discard_retired_event_sourcing_v6(connection)?;
         Ok(())
     })
 }
@@ -739,6 +722,50 @@ fn drop_retired_schema_v5(connection: &Connection) -> Result<(), rusqlite::Error
          DROP TABLE IF EXISTS message_projection;
          DROP TABLE IF EXISTS terminal_records;
          DROP TABLE IF EXISTS stop_resolutions;",
+    )
+}
+
+/// v6: 旧 event-sourcing 資産の破棄。
+///
+/// blob イベント（`workflow:` / `agent-session:` ストリーム）と導出状態の永続写し
+/// （workflow_executions / workflow_execution_nodes / session_projection の projection 行 /
+/// workflow-execution obligations）は読み替えず捨てる（prototype・移行なし）。
+/// provider 系ストリームは実世界突合の材料として温存する。
+fn discard_retired_event_sourcing_v6(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch(
+        "DROP INDEX IF EXISTS idx_workflow_executions_workspace_list;
+         DROP INDEX IF EXISTS idx_workflow_executions_global_list;
+         DROP INDEX IF EXISTS idx_workflow_execution_nodes_node;
+         DROP INDEX IF EXISTS idx_workflow_execution_nodes_occurrence;
+         DROP INDEX IF EXISTS idx_workflow_execution_nodes_session;
+         DROP INDEX IF EXISTS idx_workflow_execution_nodes_node_execution;
+         DROP TABLE IF EXISTS workflow_execution_nodes;
+         DROP TABLE IF EXISTS workflow_executions;
+         DROP INDEX IF EXISTS idx_session_projection_public_list;
+         DROP INDEX IF EXISTS idx_session_projection_public_node;
+         DELETE FROM session_projection
+          WHERE session_id LIKE 'workflow:%'
+             OR session_id LIKE 'workflow-worktree:%'
+             OR session_id LIKE 'agent-session:%';
+         DELETE FROM pending_obligations
+          WHERE obligation_id LIKE 'workflow-execution-%';
+         DELETE FROM obligations
+          WHERE obligation_id LIKE 'workflow-execution-%';
+         DELETE FROM events
+          WHERE stream_id LIKE 'workflow:%'
+             OR stream_id LIKE 'agent-session:%';
+         DELETE FROM stream_heads
+          WHERE stream_id LIKE 'workflow:%'
+             OR stream_id LIKE 'agent-session:%';
+         DELETE FROM logical_commits
+          WHERE commit_id NOT IN (SELECT commit_id FROM events)
+            AND commit_id NOT IN (SELECT updated_commit_id FROM stream_heads)
+            AND commit_id NOT IN (SELECT commit_id FROM operation_bindings)
+            AND commit_id NOT IN (SELECT commit_id FROM caller_attempts)
+            AND commit_id NOT IN (SELECT commit_id FROM operation_records)
+            AND commit_id NOT IN (SELECT commit_id FROM session_projection)
+            AND commit_id NOT IN (SELECT commit_id FROM obligations)
+            AND commit_id NOT IN (SELECT commit_id FROM pending_obligations);",
     )
 }
 
@@ -905,34 +932,18 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
     )?;
     require_exact_columns(
         connection,
-        "workflow_executions",
+        "node_events",
         &[
-            "execution_id",
-            "workspace_identity",
-            "status",
-            "list_kind",
-            "sort_at_bits",
-            "record_schema",
-            "record",
-            "source_revision",
-            "commit_id",
-        ],
-    )?;
-    require_exact_columns(
-        connection,
-        "workflow_execution_nodes",
-        &[
-            "execution_id",
-            "node_id",
-            "parent_id",
-            "sibling_order",
-            "session_id",
+            "tree_id",
+            "seq",
             "node_execution_id",
-            "record_schema",
-            "tree_record",
-            "detail_record",
-            "source_revision",
-            "commit_id",
+            "parent_id",
+            "node_name",
+            "kind",
+            "attempt",
+            "event_type",
+            "detail",
+            "timestamp",
         ],
     )?;
     for index in [
@@ -943,21 +954,23 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "idx_caller_attempts_scope",
         "idx_caller_attempts_pending_kind",
         "idx_operation_bindings_operation",
-        "idx_workflow_executions_workspace_list",
-        "idx_workflow_executions_global_list",
-        "idx_workflow_execution_nodes_node",
-        "idx_workflow_execution_nodes_occurrence",
-        "idx_workflow_execution_nodes_node_execution",
-        "idx_workflow_execution_nodes_session",
-        "idx_session_projection_public_list",
-        "idx_session_projection_public_node",
+        "idx_node_events_node",
+        "idx_node_events_kind",
     ] {
         require_index(connection, index)?;
     }
-    for table in ["message_projection", "terminal_records", "stop_resolutions"] {
+    for table in [
+        "message_projection",
+        "terminal_records",
+        "stop_resolutions",
+        "workflow_executions",
+        "workflow_execution_nodes",
+    ] {
         require_schema_object_absent(connection, "table", table)?;
     }
     require_schema_object_absent(connection, "index", "idx_message_projection_ordinal")?;
+    require_schema_object_absent(connection, "index", "idx_session_projection_public_list")?;
+    require_schema_object_absent(connection, "index", "idx_session_projection_public_node")?;
     for table in ["logical_commits", "operation_bindings", "caller_attempts"] {
         let divergent_identity_count: i64 = connection.query_row(
             &format!(
@@ -1201,17 +1214,19 @@ mod tests {
     }
 
     #[test]
-    fn schema_v3_evolves_to_global_node_execution_identity() {
+    fn schema_v5_evolves_to_node_events() {
         let connection = Connection::open_in_memory().unwrap();
         initialize(&connection);
         connection
             .execute_batch(
                 "BEGIN IMMEDIATE;
-                 DROP INDEX idx_workflow_execution_nodes_node_execution;
-                 ALTER TABLE store_metadata RENAME TO store_metadata_v4;",
+                 DROP INDEX idx_node_events_node;
+                 DROP INDEX idx_node_events_kind;
+                 DROP TABLE node_events;
+                 ALTER TABLE store_metadata RENAME TO store_metadata_old;",
             )
             .unwrap();
-        create_store_metadata(&connection, "store_metadata", "shutdown_plans", 3).unwrap();
+        create_store_metadata(&connection, "store_metadata", "shutdown_plans", 5).unwrap();
         connection
             .execute_batch(
                 "INSERT INTO store_metadata (
@@ -1220,62 +1235,20 @@ mod tests {
                      process_instance_id, next_global_sequence, health,
                      current_shutdown_id, shutdown_pointer_revision
                  )
-                 SELECT id, 3, installation_id, created_at_ms,
+                 SELECT id, 5, installation_id, created_at_ms,
                         cursor_hmac_key, operation_binding_hmac_key,
                         process_instance_id, next_global_sequence, health,
                         current_shutdown_id, shutdown_pointer_revision
-                 FROM store_metadata_v4;
-                 DROP TABLE store_metadata_v4;
-                 PRAGMA user_version = 3;
+                 FROM store_metadata_old;
+                 DROP TABLE store_metadata_old;
+                 PRAGMA user_version = 5;
                  COMMIT;",
             )
             .unwrap();
 
         assert!(evolve_schema(&connection, &FaultInjector::new()).unwrap());
         validate_current_schema(&connection).unwrap();
-        require_index(&connection, "idx_workflow_execution_nodes_node_execution").unwrap();
-    }
-
-    #[test]
-    fn node_execution_identity_is_unique_across_workflow_executions() {
-        let connection = Connection::open_in_memory().unwrap();
-        initialize(&connection);
-        connection
-            .execute_batch("PRAGMA foreign_keys = OFF;")
-            .unwrap();
-        for execution_id in ["execution-1", "execution-2"] {
-            connection
-                .execute(
-                    "INSERT INTO workflow_executions (
-                         execution_id, workspace_identity, status, list_kind,
-                         sort_at_bits, record_schema, record, source_revision, commit_id
-                     ) VALUES (?1, ?2, 'running', 'active', 0,
-                               'workflow_execution_record_v1', '{}', 0, 'commit')",
-                    rusqlite::params![execution_id, format!("/{execution_id}")],
-                )
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO workflow_execution_nodes (
-                     execution_id, node_id, parent_id, sibling_order, session_id,
-                     node_execution_id, record_schema, tree_record, detail_record,
-                     source_revision, commit_id
-                 ) VALUES ('execution-1', 'node-1', NULL, 0, NULL, 'node-execution-1',
-                           'workflow_execution_node_record_v1', '{}', '{}', 0, 'commit')",
-                [],
-            )
-            .unwrap();
-
-        let duplicate = connection.execute(
-            "INSERT INTO workflow_execution_nodes (
-                 execution_id, node_id, parent_id, sibling_order, session_id,
-                 node_execution_id, record_schema, tree_record, detail_record,
-                 source_revision, commit_id
-             ) VALUES ('execution-2', 'node-2', NULL, 0, NULL, 'node-execution-1',
-                       'workflow_execution_node_record_v1', '{}', '{}', 0, 'commit')",
-            [],
-        );
-        assert!(duplicate.is_err());
+        require_index(&connection, "idx_node_events_node").unwrap();
+        require_index(&connection, "idx_node_events_kind").unwrap();
     }
 }

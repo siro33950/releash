@@ -7,7 +7,7 @@ use std::time::Duration;
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releash_lib::agent_session_tui_acceptance::{
     product_agent_session_invoke_handler, AcceptanceAgentSessionLifecycle,
-    AcceptanceAgentSessionOrigin, AcceptanceArchiveOutcome, AcceptanceHookWarning,
+    AcceptanceAgentSessionTreeParent, AcceptanceArchiveOutcome, AcceptanceHookWarning,
     AcceptanceOpenOutcome, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
@@ -551,12 +551,6 @@ static TERMINAL_LAUNCH_PERFORMANCE_GATE_LOCK: tokio::sync::Mutex<()> =
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentSessionListPage {
-    items: Vec<releash_lib::agent_session_tui_acceptance::AcceptanceAgentSession>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct AgentSessionHistoryPage {
     items: Vec<releash_lib::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
 }
@@ -755,24 +749,6 @@ impl AgentSessionTuiAcceptanceHost {
             "get_agent_session",
             serde_json::json!({ "agentSessionId": agent_session_id }),
         )
-    }
-
-    async fn list(
-        &self,
-        workspace_identity: &str,
-    ) -> Result<Vec<releash_lib::agent_session_tui_acceptance::AcceptanceAgentSession>, String>
-    {
-        self.invoke::<AgentSessionListPage>(
-            "list_agent_sessions",
-            serde_json::json!({
-                "workspaceIdentity": workspace_identity,
-                "lifecycle": null,
-                "origin": null,
-                "limit": 100,
-                "afterSessionId": null,
-            }),
-        )
-        .map(|page| page.items)
     }
 
     async fn list_history(
@@ -1192,7 +1168,6 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .unwrap();
     assert!(!codex.available);
     assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
-    let sessions_before = host.list("workspace-atui-025").await.unwrap().len();
     assert!(host
         .launch_standalone(
             "workspace-atui-025",
@@ -1214,10 +1189,7 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         )
         .await
         .is_err());
-    assert_eq!(
-        host.list("workspace-atui-025").await.unwrap().len(),
-        sessions_before
-    );
+    assert!(host.get(&standalone_id).await.unwrap().is_some());
 
     host.terminal()
         .write(standalone_owner, "still-running\r")
@@ -1619,11 +1591,11 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
         .unwrap();
 
     assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().origin,
-        AcceptanceAgentSessionOrigin::WorkflowNode {
-            workflow_execution_id: "workflow-execution-1".to_string(),
+        host.get(&session_id).await.unwrap().unwrap().tree_parent,
+        Some(AcceptanceAgentSessionTreeParent {
+            tree_id: "workflow-execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-        }
+        })
     );
     assert!(
         !host
@@ -1910,7 +1882,6 @@ async fn test_atui_030_provider利用不可とduplicate所有を永続境界で�
         )
         .await
         .is_err());
-    assert!(unavailable.list("workspace-1").await.unwrap().is_empty());
     unavailable.shutdown().await.unwrap();
 }
 

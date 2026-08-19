@@ -30,6 +30,7 @@ use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 pub(crate) struct AgentSessionCompositionInput {
     pub(crate) repository: Arc<dyn LocalEventTransactionRepository>,
     pub(crate) installation_id: String,
+    pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub(crate) data_dir: PathBuf,
     pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
     pub(crate) provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
@@ -102,10 +103,7 @@ pub(crate) fn compose_agent_sessions(
             input.installation_id.clone(),
         )),
     ));
-    let session_repository = Arc::new(LocalAgentSessionRepository::new(
-        input.repository.clone(),
-        input.installation_id.clone(),
-    ));
+    let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
     let sessions = Arc::new(AgentSessionUsecase::new(session_repository.clone()));
     let hook_health = Arc::new(ProviderHookHealthUsecase::new(Arc::new(
         LocalProviderHookHealthRepository::new(input.repository.clone(), input.installation_id),
@@ -159,7 +157,7 @@ pub(crate) fn compose_agent_sessions(
         input.change_notifier.clone(),
     ));
     let query: Arc<dyn AgentSessionQueryService> =
-        Arc::new(LocalAgentSessionQueryService::new(input.repository));
+        Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));
     let read = Arc::new(AgentSessionReadUsecase::new(
         query,
         lifecycle.clone(),

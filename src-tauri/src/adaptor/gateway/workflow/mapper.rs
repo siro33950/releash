@@ -1,7 +1,10 @@
 #[cfg(test)]
+use crate::adaptor::gateway::workflow::event as workflow_event;
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
-use crate::adaptor::gateway::workflow::{event as workflow_event, facet as gateway_facet};
+use crate::adaptor::gateway::workflow::facet as gateway_facet;
 use crate::domain::workflow as domain;
+#[cfg(test)]
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
 #[cfg(test)]
@@ -222,31 +225,6 @@ pub(crate) fn event_draft_to_event(
             "invalid payload for {} event: {error}",
             event.event_kind
         ))
-    })
-}
-
-pub(crate) fn workflow_event_to_domain_draft(
-    event: &workflow_event::WorkflowEvent,
-) -> Result<WorkflowEventDraft, domain::WorkflowError> {
-    let mut value = serde_json::to_value(event)
-        .map_err(|e| domain::WorkflowError::external(format!("serialize workflow event: {e}")))?;
-    let object = value.as_object_mut().ok_or_else(|| {
-        domain::WorkflowError::external("workflow event did not serialize as object")
-    })?;
-    let event_kind = object
-        .remove("event")
-        .and_then(|value| value.as_str().map(str::to_string))
-        .ok_or_else(|| domain::WorkflowError::external("workflow event missing event tag"))?;
-    let timestamp = object
-        .remove("timestamp")
-        .and_then(|value| value.as_f64())
-        .unwrap_or_default();
-    object.remove("execution_id");
-    Ok(WorkflowEventDraft {
-        execution_id: event.execution_id().to_string(),
-        event_kind,
-        timestamp,
-        payload: value,
     })
 }
 

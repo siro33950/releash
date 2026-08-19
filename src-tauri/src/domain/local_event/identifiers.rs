@@ -89,16 +89,8 @@ impl StreamId {
         Ok(Self(raw.to_string()))
     }
 
-    pub fn agent_session(session_id: &str) -> Result<Self, IdentityError> {
-        Self::parse(&format!("{AGENT_SESSION_PREFIX}{session_id}"))
-    }
-
     pub fn provider_lifecycle(agent_session_id: &str) -> Result<Self, IdentityError> {
         Self::parse(&format!("{PROVIDER_LIFECYCLE_PREFIX}{agent_session_id}"))
-    }
-
-    pub fn workflow(execution_id: &str) -> Result<Self, IdentityError> {
-        Self::parse(&format!("{WORKFLOW_PREFIX}{execution_id}"))
     }
 
     pub fn provider_session_ownership(provider: &str, digest: &str) -> Result<Self, IdentityError> {
@@ -225,12 +217,8 @@ mod tests {
 
     #[test]
     fn stream_id_namespaces() {
-        let session = StreamId::agent_session("s-1").unwrap();
-        assert_eq!(session.as_str(), "agent-session:s-1");
         let provider_lifecycle = StreamId::provider_lifecycle("s-1").unwrap();
         assert_eq!(provider_lifecycle.as_str(), "provider-lifecycle:s-1");
-        let workflow = StreamId::workflow("exec.1").unwrap();
-        assert_eq!(workflow.as_str(), "workflow:exec.1");
         assert_eq!(StreamId::application().as_str(), "application");
         let ownership = StreamId::provider_session_ownership("codex", "ownership-digest").unwrap();
         assert_eq!(

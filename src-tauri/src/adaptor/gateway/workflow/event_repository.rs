@@ -1,14 +1,15 @@
-#[cfg(test)]
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-use crate::domain::local_event::LocalEventTransactionRepository;
+use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
-use super::mapper;
-
+/// 事実ログ（node_events）を実行イベント一覧として読む repository。
+///
+/// event_kind は統一 Node の事実語彙（started / submit_received / ...）、
+/// payload は detail カラムの JSON。
 #[derive(Clone)]
 pub(crate) struct WorkflowEventLogRepository {
     source: WorkflowEventReadSource,
@@ -16,83 +17,79 @@ pub(crate) struct WorkflowEventLogRepository {
 
 #[derive(Clone)]
 enum WorkflowEventReadSource {
-    #[cfg(test)]
-    Legacy(PathBuf),
-    Canonical {
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
-    },
+    Canonical(FactLogReadBackend),
 }
 
 impl WorkflowEventLogRepository {
-    #[cfg(test)]
-    pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
+    pub(crate) fn with_store(store: Arc<LocalEventStore>) -> Self {
         Self {
-            source: WorkflowEventReadSource::Legacy(data_dir.into()),
+            source: WorkflowEventReadSource::Canonical(FactLogReadBackend::Live(store)),
         }
     }
 
-    pub(crate) fn with_authority(
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
-    ) -> Self {
+    pub(crate) fn with_read_store(store: Arc<LocalEventReadStore>) -> Self {
         Self {
-            source: WorkflowEventReadSource::Canonical {
-                repository,
-                installation_id,
-            },
+            source: WorkflowEventReadSource::Canonical(FactLogReadBackend::ReadOnly(store)),
         }
     }
 
-    fn log(&self) -> WorkflowEventLog {
-        match &self.source {
-            #[cfg(test)]
-            WorkflowEventReadSource::Legacy(data_dir) => WorkflowEventLog::new(data_dir),
-            WorkflowEventReadSource::Canonical {
-                repository,
-                installation_id,
-            } => WorkflowEventLog::with_authority(repository.clone(), installation_id.clone()),
-        }
-    }
-
-    fn read_events(
+    fn read_drafts(
         &self,
         execution_id: &WorkflowExecutionId,
-    ) -> Result<Vec<crate::adaptor::gateway::workflow::event::WorkflowEvent>, String> {
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         match &self.source {
-            #[cfg(test)]
-            WorkflowEventReadSource::Legacy(_) => self.log().read_log(execution_id.as_str()),
-            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
+            WorkflowEventReadSource::Canonical(backend) => {
+                let records = fact_log::read_tree_records_from(backend, execution_id.as_str())
+                    .map_err(WorkflowError::external)?;
+                records
+                    .iter()
+                    .map(|record| {
+                        let detail = record
+                            .fact
+                            .encode_detail()
+                            .map_err(|error| WorkflowError::external(error.to_string()))?;
+                        let mut payload: serde_json::Map<String, serde_json::Value> =
+                            serde_json::from_str(&detail)
+                                .map_err(|error| WorkflowError::external(error.to_string()))?;
+                        // 行の同定カラムを payload に併合して1つの view にする。
+                        payload.insert(
+                            "nodeExecutionId".to_string(),
+                            record.meta.node_execution_id.clone().into(),
+                        );
+                        payload
+                            .insert("nodeName".to_string(), record.meta.node_name.clone().into());
+                        payload.insert(
+                            "kind".to_string(),
+                            serde_json::to_value(record.meta.kind)
+                                .map_err(|error| WorkflowError::external(error.to_string()))?,
+                        );
+                        payload.insert("attempt".to_string(), record.meta.attempt.into());
+                        Ok(WorkflowEventDraft {
+                            execution_id: record.meta.tree_id.clone(),
+                            event_kind: record.fact.event_type().to_string(),
+                            timestamp: record.timestamp_ms as f64 / 1000.0,
+                            payload: serde_json::Value::Object(payload),
+                        })
+                    })
+                    .collect()
+            }
         }
     }
 }
 
 impl WorkflowEventRepository for WorkflowEventLogRepository {
     #[cfg(test)]
-    fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
-        self.append_batch(std::slice::from_ref(event))
-    }
-
-    #[cfg(test)]
-    fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
-        let workflow_events: Vec<_> = events
-            .iter()
-            .map(mapper::event_draft_to_event)
-            .collect::<Result<_, _>>()?;
-        self.log()
-            .append_batch(&workflow_events)
-            .map_err(WorkflowError::external)
+    fn append(&self, _event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
+        Err(WorkflowError::external(
+            "canonical event repository is read-only",
+        ))
     }
 
     fn read(
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_events(execution_id)
-            .map_err(WorkflowError::external)?
-            .iter()
-            .map(mapper::workflow_event_to_domain_draft)
-            .collect()
+        self.read_drafts(execution_id)
     }
 
     fn read_page(
@@ -100,13 +97,12 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         execution_id: &WorkflowExecutionId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_events(execution_id)
-            .map_err(WorkflowError::external)?
+        Ok(self
+            .read_drafts(execution_id)?
             .into_iter()
             .skip(page.offset)
             .take(page.limit)
-            .map(|event| mapper::workflow_event_to_domain_draft(&event))
-            .collect()
+            .collect())
     }
 }
 
@@ -116,96 +112,109 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+    use crate::domain::workflow::{
+        ExecutionOrigin, NodeCompletion, NodeDefinition, NodeKind, NodeKindName, SessionSpec,
+        WorkflowDefinition, WorkflowEvent,
+    };
+
+    fn definition() -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![NodeDefinition {
+                name: "main".to_string(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                artifact: None,
+                input: Vec::new(),
+                completion: NodeCompletion::Auto,
+                worktree: None,
+            }],
+            entry: "main".to_string(),
+        }
+    }
+
+    fn started_events(execution_id: &str) -> Vec<WorkflowEvent> {
+        vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "wf".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: "ship it".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: format!("{execution_id}-root"),
+                node_name: "main".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 1.0,
+            },
+        ]
+    }
+
     #[test]
-    fn append_preserves_canonical_execution_event_tag() {
+    fn read_returns_fact_rows_with_unified_vocabulary() {
         let tmp = TempDir::new().unwrap();
-        let repo = WorkflowEventLogRepository::new(tmp.path());
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
         let execution_id =
             WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").unwrap();
-
-        repo.append(&WorkflowEventDraft {
-            execution_id: execution_id.to_string(),
-            event_kind: "execution_started".to_string(),
-            timestamp: 1.0,
-            payload: serde_json::json!({
-                "workflow_name": "wf",
-                "worktree_path": "/repo",
-                "created_from": "cli",
-                "request": "ship it",
-                "definition": {
-                    "name": "wf",
-                    "description": "",
-                    "nodes": {
-                        "node": {
-                            "session": { "provider": "claude" }
-                        }
-                    }
-                }
-            }),
-        })
-        .unwrap();
-
-        let content = std::fs::read_to_string(
-            tmp.path()
-                .join("workflow_execution_logs")
-                .join(format!("{execution_id}.ndjson")),
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &store,
+            &started_events(execution_id.as_str()),
         )
         .unwrap();
-        assert!(content.contains("\"event\":\"execution_started\""));
+        let repo = WorkflowEventLogRepository::with_store(store);
 
         let events = repo.read(&execution_id).unwrap();
-        assert_eq!(events[0].event_kind, "execution_started");
-        assert_eq!(events[0].payload["workflow_name"], "wf");
-        assert_eq!(events[0].payload["request"], "ship it");
+
+        assert_eq!(events[0].event_kind, "started");
+        assert_eq!(events[0].payload["root"]["workflowName"], "wf");
+        assert_eq!(events[0].payload["root"]["request"], "ship it");
     }
 
     #[test]
     fn read_after_cached_read_observes_incremental_append() {
         let tmp = TempDir::new().unwrap();
-        let repo = WorkflowEventLogRepository::new(tmp.path());
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
         let execution_id =
             WorkflowExecutionId::new("00000000-0000-4000-8000-000000000002").unwrap();
-
-        repo.append(&WorkflowEventDraft {
-            execution_id: execution_id.to_string(),
-            event_kind: "execution_started".to_string(),
-            timestamp: 1.0,
-            payload: serde_json::json!({
-                "workflow_name": "wf",
-                "worktree_path": "/repo",
-                "created_from": "cli",
-                "request": "",
-                "definition": {
-                    "name": "wf",
-                    "description": "",
-                    "nodes": {
-                        "node": {
-                            "session": { "provider": "claude" }
-                        }
-                    }
-                }
-            }),
-        })
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &store,
+            &started_events(execution_id.as_str()),
+        )
         .unwrap();
+        let repo = WorkflowEventLogRepository::with_store(store.clone());
 
+        // ExecutionStarted と root の NodeStarted は 1 つの root started 行に融合される。
         let first = repo.read(&execution_id).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].event_kind, "execution_started");
-        assert_eq!(first[0].payload["workflow_name"], "wf");
+        assert_eq!(first[0].event_kind, "started");
 
-        repo.append(&WorkflowEventDraft {
-            execution_id: execution_id.to_string(),
-            event_kind: "execution_aborted".to_string(),
-            timestamp: 2.0,
-            payload: serde_json::json!({"aborted_node": null}),
-        })
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(
+            &store,
+            &[WorkflowEvent::ExecutionAborted {
+                execution_id: execution_id.to_string(),
+                aborted_node: None,
+                timestamp: 2.0,
+            }],
+        )
         .unwrap();
 
         let second = repo.read(&execution_id).unwrap();
         assert_eq!(second.len(), 2);
         assert_eq!(second[0], first[0]);
-        assert_eq!(second[1].event_kind, "execution_aborted");
+        assert_eq!(second[1].event_kind, "abort_requested");
         assert_eq!(second[1].timestamp, 2.0);
-        assert_eq!(second[1].payload["aborted_node"], serde_json::Value::Null);
     }
 }

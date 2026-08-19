@@ -114,22 +114,12 @@ pub(in crate::cli) mod test_support {
     use std::fs;
     use std::path::Path;
 
-    use sha2::Digest as _;
-
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::execution_store::{
-        workflow_execution_record, WorkflowExecutionMetadata,
-    };
+    use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::domain::comment::{
         ReviewActor, ReviewComment, ReviewHistoryEntry, ReviewResolveInfo, ReviewTarget,
         ReviewThread, ReviewThreadState,
-    };
-    use crate::domain::local_event::{
-        CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
-        LocalEventTransactionRepository, LocalStateMutation, Revision, RevisionGuard,
-        SessionProjectionMutation, SessionProjectionRecord, WorkflowExecutionProjectionMutation,
-        WorkflowExecutionProjectionRecord,
     };
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 
@@ -146,7 +136,7 @@ pub(in crate::cli) mod test_support {
             data_dir,
             session_id,
             backend_id,
-            crate::domain::local_event::AgentSessionLifecycleRecord::Open,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open,
         );
     }
 
@@ -154,54 +144,64 @@ pub(in crate::cli) mod test_support {
         data_dir: &Path,
         session_id: &str,
         backend_id: Option<&str>,
-        lifecycle: crate::domain::local_event::AgentSessionLifecycleRecord,
+        lifecycle: crate::domain::agent_session::aggregates::AgentSessionLifecycle,
     ) {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .unwrap();
         let provider = match backend_id.unwrap_or("codex") {
-            "claude" => crate::domain::local_event::AgentSessionProviderRecord::Claude,
-            _ => crate::domain::local_event::AgentSessionProviderRecord::Codex,
+            "claude" => crate::domain::provider_lifecycle::ProviderKind::Claude,
+            _ => crate::domain::provider_lifecycle::ProviderKind::Codex,
         };
-        let commit_id = uuid::Uuid::new_v4().to_string();
-        let batch = LocalAtomicBatch {
-            commit_id: CommitIdentity::parse(&commit_id).unwrap(),
-            idempotency: IdempotencyBinding {
-                installation_id: store.installation_id().to_string(),
-                operation_kind: CommitOperationKind::Projection,
-                idempotency_key: commit_id,
-                payload_hash: [7; 32],
-            },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![LocalStateMutation::SessionProjection(
-                SessionProjectionMutation {
-                    session_id: format!("agent-session:{session_id}"),
-                    projection: SessionProjectionRecord::AgentSession(
-                        crate::domain::local_event::AgentSessionProjectionRecord {
-                            id: session_id.to_string(),
-                            workspace_identity: "/repo".to_string(),
-                            worktree_path: "/repo".to_string(),
+        let meta = crate::domain::workflow::NodeFactMeta {
+            tree_id: session_id.to_string(),
+            node_execution_id: session_id.to_string(),
+            parent_id: None,
+            node_name: "session".to_string(),
+            kind: crate::domain::workflow::NodeKindName::Session,
+            attempt: 1,
+        };
+        let root =
+            crate::domain::workflow::NodeFact::Started(crate::domain::workflow::StartedFact {
+                parent: None,
+                root: Some(crate::domain::workflow::TreeRootFact::Session(
+                    crate::domain::workflow::SessionRootFact {
+                        workspace_identity: "/repo".to_string(),
+                        worktree_path: "/repo".to_string(),
+                        session: crate::domain::workflow::SessionSpec {
                             provider,
-                            origin:
-                                crate::domain::local_event::AgentSessionOriginRecord::Standalone,
-                            lifecycle,
-                            provider_session_id: None,
-                            transcript_ref: None,
-                            initial_instruction_admitted: false,
-                            last_exit_abnormal: false,
+                            model: None,
+                            permission: None,
+                            facets: Default::default(),
                         },
-                    ),
-                    expected: RevisionGuard::Absent,
-                    revision: Revision::new(0).unwrap(),
-                },
-            )],
-        };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+                        created_from: ExecutionOrigin::DesktopUi,
+                    },
+                )),
+            });
+        crate::adaptor::gateway::workflow::fact_log::append_single_fact(&store, &meta, &root, 1)
             .unwrap();
-        runtime.block_on(store.commit_batch(batch)).unwrap();
+        let lifecycle_fact = match lifecycle {
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open => None,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Paused => {
+                Some(crate::domain::workflow::NodeFact::ProcessExited(
+                    crate::domain::workflow::ProcessExitedFact {
+                        exit_code: Some(0),
+                        result_summary: None,
+                        failure_reason: None,
+                        failure_kind: None,
+                    },
+                ))
+            }
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived => {
+                Some(crate::domain::workflow::NodeFact::ArchiveRequested)
+            }
+        };
+        if let Some(fact) = lifecycle_fact {
+            crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+                &store, &meta, &fact, 2,
+            )
+            .unwrap();
+        }
     }
 
     pub(in crate::cli) fn make_execution(
@@ -251,71 +251,26 @@ pub(in crate::cli) mod test_support {
     }
 
     pub(in crate::cli) fn append_workflow_event(data_dir: &Path, event: &WorkflowEvent) {
-        crate::adaptor::gateway::workflow::log::WorkflowEventLog::new(data_dir)
-            .append(event)
-            .expect("append legacy workflow event fixture");
+        append_workflow_events(data_dir, std::slice::from_ref(event));
+    }
+
+    pub(in crate::cli) fn append_workflow_events(data_dir: &Path, events: &[WorkflowEvent]) {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .expect("open canonical local event store");
-        let log = crate::adaptor::gateway::workflow::log::WorkflowEventLog::with_authority(
-            store.clone(),
-            store.installation_id().to_string(),
-        );
-        log.append_batch_durable_with_mutations_blocking_as(
-            CommitOperationKind::Workflow,
-            std::slice::from_ref(event),
-            Vec::new(),
-        )
-        .expect("append canonical workflow event fixture");
+        crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)
+            .expect("append canonical node fact fixture");
     }
 
     fn write_canonical_execution(data_dir: &Path, execution: &WorkflowExecutionMetadata) {
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
                 .expect("open canonical local event store");
-        let record = workflow_execution_record(execution);
-        let revision = Revision::new(0).unwrap();
-        let batch = LocalAtomicBatch {
-            commit_id: CommitIdentity::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
-            idempotency: IdempotencyBinding {
-                installation_id: store.installation_id().to_string(),
-                operation_kind: CommitOperationKind::Workflow,
-                idempotency_key: format!("cli-test-execution:{}", execution.execution_id),
-                payload_hash: sha2::Sha256::digest(
-                    format!(
-                        "{}:{}:{}",
-                        execution.execution_id, execution.worktree_path, execution.updated_at
-                    )
-                    .as_bytes(),
-                )
-                .into(),
-            },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![
-                LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                    session_id: format!("workflow:{}", execution.execution_id),
-                    projection: SessionProjectionRecord::WorkflowExecution(
-                        WorkflowExecutionProjectionRecord::Present(record.clone()),
-                    ),
-                    expected: RevisionGuard::Absent,
-                    revision,
-                }),
-                LocalStateMutation::WorkflowExecutionProjection(
-                    WorkflowExecutionProjectionMutation {
-                        projection: WorkflowExecutionProjectionRecord::Present(record),
-                        expected: RevisionGuard::Absent,
-                        revision,
-                    },
-                ),
-            ],
-        };
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(store.commit_batch(batch))
-            .expect("seed canonical workflow execution");
+        crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
+            &store,
+            execution,
+            &[],
+        );
     }
 
     pub(in crate::cli) fn test_uuid(seed: u8) -> String {
@@ -395,10 +350,33 @@ pub(in crate::cli) mod test_support {
                 description: "test".to_string(),
                 builtin: false,
                 schemas: Default::default(),
-                nodes: vec![],
+                nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
+                    name: "main".to_string(),
+                    kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
+                        crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                    ),
+                    ..Default::default()
+                }],
                 entry: "main".to_string(),
             },
             timestamp: 100.0,
+        }
+    }
+
+    pub(in crate::cli) fn root_node_started_event(
+        execution_id: &str,
+        node_execution_id: &str,
+        node_name: &str,
+        timestamp: f64,
+    ) -> WorkflowEvent {
+        WorkflowEvent::NodeStarted {
+            execution_id: execution_id.to_string(),
+            node_execution_id: node_execution_id.to_string(),
+            node_name: node_name.to_string(),
+            kind: crate::domain::workflow::NodeKindName::Session,
+            attempt: 1,
+            parent: None,
+            timestamp,
         }
     }
 }

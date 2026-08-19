@@ -81,11 +81,18 @@ fn execution_started_workflow_from_drafts<'a>(
 ) -> Result<ExecutionStartedWorkflow<'a>, ContractLookupError> {
     events
         .iter()
-        .find(|event| event.event_kind == "execution_started")
+        .find(|event| {
+            event.event_kind == "started"
+                && event
+                    .payload
+                    .get("root")
+                    .and_then(|root| root.get("definition"))
+                    .is_some()
+        })
         .map(|event| {
             execution_started_workflow_from_payload(&event.payload).map_err(|details| {
                 ContractLookupError::InvalidExecutionStartedPayload {
-                    details: format!("invalid payload for execution_started event: {details}"),
+                    details: format!("invalid payload for root started fact: {details}"),
                 }
             })
         })
@@ -99,8 +106,9 @@ fn execution_started_workflow_from_payload(
     payload: &Value,
 ) -> Result<ExecutionStartedWorkflow<'_>, String> {
     let definition = payload
-        .get("definition")
-        .ok_or_else(|| "missing definition".to_string())?;
+        .get("root")
+        .and_then(|root| root.get("definition"))
+        .ok_or_else(|| "missing root definition".to_string())?;
     let name = definition
         .get("name")
         .and_then(Value::as_str)
@@ -158,16 +166,12 @@ fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct ArtifactProducedDraftPayload {
-    #[serde(rename = "node_execution_id")]
-    _node_execution_id: String,
     node_name: String,
     #[serde(default)]
     contract: Option<String>,
     value: Value,
-    #[serde(default)]
-    submitted_at: Option<f64>,
     #[serde(default)]
     request_id: Option<String>,
 }
@@ -185,7 +189,7 @@ pub(crate) fn latest_artifact_produced_from_drafts(
         (payload.node_name == node_name).then_some(ArtifactSubmittedSnapshot {
             contract: payload.contract,
             value: payload.value,
-            submitted_at: payload.submitted_at,
+            submitted_at: Some(event.timestamp),
             request_id: payload.request_id,
             timestamp: event.timestamp,
         })
@@ -196,26 +200,41 @@ pub(crate) fn latest_artifact_produced_from_drafts(
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolve_node_artifact_contract_from_drafts_reads_execution_started_definition() {
-        let events = vec![WorkflowEventDraft {
+    fn root_started(definition: serde_json::Value) -> WorkflowEventDraft {
+        WorkflowEventDraft {
             execution_id: "execution-1".to_string(),
-            event_kind: "execution_started".to_string(),
+            event_kind: "started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "definition": {
-                    "name": "wf",
-                    "description": "",
-                    "builtin": false,
-                    "nodes": {
-                        "review": {
-                            "session": {"provider": "claude"},
-                            "artifact": "review-verdict"
-                        }
-                    }
+                "nodeExecutionId": "node-root",
+                "nodeName": "review",
+                "kind": "session",
+                "attempt": 1,
+                "root": {
+                    "tree": "workflow",
+                    "workflowName": "wf",
+                    "worktreePath": "/repo",
+                    "createdFrom": "cli",
+                    "request": "",
+                    "definition": definition
                 }
             }),
-        }];
+        }
+    }
+
+    #[test]
+    fn resolve_node_artifact_contract_from_drafts_reads_execution_started_definition() {
+        let events = vec![root_started(serde_json::json!({
+            "name": "wf",
+            "description": "",
+            "builtin": false,
+            "nodes": {
+                "review": {
+                    "session": {"provider": "claude"},
+                    "artifact": "review-verdict"
+                }
+            }
+        }))];
 
         let contract = resolve_node_artifact_contract_from_drafts(&events, "review", "execution-1")
             .expect("contract should resolve");
@@ -227,17 +246,28 @@ mod tests {
     fn resolve_node_artifact_contract_from_drafts_rejects_noncanonical_definition_key() {
         let events = vec![WorkflowEventDraft {
             execution_id: "execution-1".to_string(),
-            event_kind: "execution_started".to_string(),
+            event_kind: "started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "workflowDefinition": {
-                    "name": "wf",
-                    "description": "",
-                    "builtin": false,
-                    "nodes": {
-                        "review": {
-                            "session": {"provider": "claude"},
-                            "artifact": "review-verdict"
+                "nodeExecutionId": "node-root",
+                "nodeName": "review",
+                "kind": "session",
+                "attempt": 1,
+                "root": {
+                    "tree": "workflow",
+                    "workflowName": "wf",
+                    "worktreePath": "/repo",
+                    "createdFrom": "cli",
+                    "request": "",
+                    "workflowDefinition": {
+                        "name": "wf",
+                        "description": "",
+                        "builtin": false,
+                        "nodes": {
+                            "review": {
+                                "session": {"provider": "claude"},
+                                "artifact": "review-verdict"
+                            }
                         }
                     }
                 }
@@ -248,35 +278,28 @@ mod tests {
             .expect_err("noncanonical definition key must be rejected");
         assert!(matches!(
             error,
-            ContractLookupError::InvalidExecutionStartedPayload { .. }
+            ContractLookupError::ExecutionNotFound { .. }
         ));
     }
 
     #[test]
     fn resolve_node_artifact_contract_from_drafts_reads_top_level_fanout_child_contract() {
-        let events = vec![WorkflowEventDraft {
-            execution_id: "execution-1".to_string(),
-            event_kind: "execution_started".to_string(),
-            timestamp: 1.0,
-            payload: serde_json::json!({
-                "definition": {
-                    "name": "wf",
-                    "description": "",
-                    "builtin": false,
-                    "nodes": {
-                        "review-fanout": {
-                            "fanout": {
-                                "child": "security-review"
-                            }
-                        },
-                        "security-review": {
-                            "session": {"provider": "claude"},
-                            "artifact": "review-verdict"
-                        }
+        let events = vec![root_started(serde_json::json!({
+            "name": "wf",
+            "description": "",
+            "builtin": false,
+            "nodes": {
+                "review-fanout": {
+                    "fanout": {
+                        "child": "security-review"
                     }
+                },
+                "security-review": {
+                    "session": {"provider": "claude"},
+                    "artifact": "review-verdict"
                 }
-            }),
-        }];
+            }
+        }))];
 
         let contract =
             resolve_node_artifact_contract_from_drafts(&events, "security-review", "execution-1")
@@ -287,23 +310,16 @@ mod tests {
 
     #[test]
     fn resolve_node_artifact_contract_from_drafts_reports_missing_contract() {
-        let events = vec![WorkflowEventDraft {
-            execution_id: "execution-1".to_string(),
-            event_kind: "execution_started".to_string(),
-            timestamp: 1.0,
-            payload: serde_json::json!({
-                "definition": {
-                    "name": "wf",
-                    "description": "",
-                    "builtin": false,
-                    "nodes": {
-                        "review": {
-                            "session": {"provider": "claude"}
-                        }
-                    }
+        let events = vec![root_started(serde_json::json!({
+            "name": "wf",
+            "description": "",
+            "builtin": false,
+            "nodes": {
+                "review": {
+                    "session": {"provider": "claude"}
                 }
-            }),
-        }];
+            }
+        }))];
 
         let err = resolve_node_artifact_contract_from_drafts(&events, "review", "execution-1")
             .expect_err("missing contract should be explicit");
@@ -323,12 +339,13 @@ mod tests {
             event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
-                "node_execution_id": format!("node-{timestamp}"),
-                "node_name": node,
+                "nodeExecutionId": format!("node-{timestamp}"),
+                "nodeName": node,
+                "kind": "session",
+                "attempt": 1,
                 "contract": "review-verdict",
                 "value": {"verdict": verdict},
-                "submitted_at": timestamp - 1.0,
-                "request_id": format!("req-{timestamp}")
+                "requestId": format!("req-{timestamp}")
             }),
         }
     }
@@ -346,7 +363,7 @@ mod tests {
 
         assert_eq!(snapshot.timestamp, 30.0);
         assert_eq!(snapshot.value["verdict"], "LGTM");
-        assert_eq!(snapshot.submitted_at, Some(29.0));
+        assert_eq!(snapshot.submitted_at, Some(30.0));
         assert_eq!(snapshot.request_id.as_deref(), Some("req-30"));
     }
 
@@ -384,8 +401,10 @@ mod tests {
             event_kind: "artifact_produced".to_string(),
             timestamp: 10.0,
             payload: serde_json::json!({
-                "node_execution_id": "node-10",
-                "node_name": "review",
+                "nodeExecutionId": "node-10",
+                "nodeName": "review",
+                "kind": "command",
+                "attempt": 1,
                 "value": {"stdout": "ok"}
             }),
         }];

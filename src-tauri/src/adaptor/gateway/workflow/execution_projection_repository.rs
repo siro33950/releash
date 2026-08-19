@@ -1,34 +1,29 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-use crate::domain::local_event::LocalEventTransactionRepository;
+use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
+use crate::domain::workflow::services::fact_replay;
 use crate::domain::workflow::{WorkflowError, WorkflowExecution, WorkflowExecutionId};
 use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
 
+/// 事実ログ（node_events）の tree fold から実行 read model を導出する。
 #[derive(Clone)]
 pub(crate) struct WorkflowExecutionProjectionLogRepository {
-    repository: Arc<dyn LocalEventTransactionRepository>,
-    installation_id: String,
+    backend: FactLogReadBackend,
 }
 
 impl WorkflowExecutionProjectionLogRepository {
-    pub(crate) fn with_authority(
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
-    ) -> Self {
+    pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
-            repository,
-            installation_id,
+            backend: FactLogReadBackend::Live(store),
         }
     }
 
-    fn read_events(
-        &self,
-        execution_id: &WorkflowExecutionId,
-    ) -> Result<Vec<WorkflowEvent>, String> {
-        WorkflowEventLog::with_authority(self.repository.clone(), self.installation_id.clone())
-            .read_log_durable_blocking(execution_id.as_str())
+    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
+        Self {
+            backend: FactLogReadBackend::ReadOnly(store),
+        }
     }
 }
 
@@ -37,13 +32,13 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecution>, WorkflowError> {
-        let events = self
-            .read_events(execution_id)
+        let records = fact_log::read_tree_records_from(&self.backend, execution_id.as_str())
             .map_err(WorkflowError::external)?;
-        crate::domain::workflow::services::event_replay::project_workflow_execution(
-            execution_id.as_str(),
-            &events,
-        )
-        .map_err(WorkflowError::external)
+        let Some(tree) = fact_replay::fold_execution_tree(execution_id.as_str(), &records)
+            .map_err(WorkflowError::external)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(fact_replay::derive_read_model(&tree)))
     }
 }

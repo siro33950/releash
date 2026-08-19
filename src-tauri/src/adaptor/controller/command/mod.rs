@@ -167,7 +167,6 @@ mod tests {
                 "reset_provider_executable",
                 "create_agent_session",
                 "resume_agent_session_history_candidate",
-                "list_agent_sessions",
                 "get_agent_session",
                 "open_agent_session",
                 "resume_agent_session",

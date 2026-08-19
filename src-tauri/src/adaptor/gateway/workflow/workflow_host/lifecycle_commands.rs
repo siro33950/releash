@@ -219,7 +219,6 @@ impl WorkflowRuntimeHost {
             .commit_control_plane_candidate(
                 app,
                 ControlPlaneCommitCandidate {
-                    operation_kind: CommitOperationKind::UserMutation,
                     execution_id,
                     snapshot_before,
                     candidate,
@@ -303,7 +302,6 @@ impl WorkflowRuntimeHost {
             .commit_control_plane_candidate(
                 app,
                 ControlPlaneCommitCandidate {
-                    operation_kind: CommitOperationKind::Workflow,
                     execution_id,
                     snapshot_before,
                     candidate,
@@ -356,7 +354,6 @@ impl WorkflowRuntimeHost {
             .commit_control_plane_candidate(
                 app,
                 ControlPlaneCommitCandidate {
-                    operation_kind: CommitOperationKind::Workflow,
                     execution_id,
                     snapshot_before,
                     candidate,
@@ -442,7 +439,6 @@ impl WorkflowRuntimeHost {
                 self.commit_control_plane_candidate(
                     app,
                     ControlPlaneCommitCandidate {
-                        operation_kind: CommitOperationKind::UserMutation,
                         execution_id,
                         snapshot_before,
                         candidate,
@@ -632,7 +628,6 @@ impl WorkflowRuntimeHost {
             .commit_required_events(
                 app,
                 RequiredEventCommit {
-                    operation_kind: CommitOperationKind::UserMutation,
                     execution_id,
                     snapshot_for_commit: &snapshot_state,
                     snapshot_before,

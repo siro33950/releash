@@ -95,6 +95,7 @@ mod tests {
                     session_id: None,
                     display_command: None,
                     artifact: None,
+                    result_summary: None,
                     token_usage: None,
                     failure: None,
                     parent: None,

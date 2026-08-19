@@ -20,8 +20,6 @@ pub struct WorkflowEventDraft {
 pub trait WorkflowEventRepository: Send + Sync {
     #[cfg(test)]
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
-    #[cfg(test)]
-    fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError>;
     fn read(
         &self,
         execution_id: &WorkflowExecutionId,

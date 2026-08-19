@@ -50,7 +50,6 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::repository::WorktreeTerminalGateway;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::usecase::code_query_service::CodeQueryService;
@@ -152,8 +151,11 @@ pub(crate) fn build_canonical_agent_session_query(
 ) -> Result<crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService, String> {
     let data_dir = data_dir.into();
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
-    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
-    Ok(crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService::new(repository))
+    Ok(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService::new_read_only(
+            local_event_store,
+        ),
+    )
 }
 
 pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
@@ -187,15 +189,11 @@ pub(crate) fn build_workflow_usecase_and_store(
     let local_event_store =
         LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
             .expect("test workflow composition requires the canonical local event store");
-    let installation_id = local_event_store.installation_id().to_string();
-    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
     let workflow_usecase = build_workflow_services_with_gateways(
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(NoopWorkflowExternalEditorGateway),
         Arc::new(EmptySecretSourceGateway),
-        repository,
-        installation_id,
         local_event_store.clone(),
     )
     .0;
@@ -214,9 +212,6 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
     Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
 ) {
     let data_dir = data_dir.into();
-    let installation_id = local_event_store.installation_id().to_string();
-    let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
-        local_event_store.clone();
     build_workflow_services_with_gateways(
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
@@ -225,8 +220,6 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
         )),
         Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
-        local_event_repository,
-        installation_id,
         local_event_store,
     )
 }
@@ -237,9 +230,6 @@ pub(crate) fn build_canonical_workflow_read_usecase(
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
-    let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
-        local_event_store.clone();
-    let installation_id = local_event_store.installation_id().to_string();
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let config_path = data_dir.join("releash.toml");
@@ -265,13 +255,11 @@ pub(crate) fn build_canonical_workflow_read_usecase(
         workflows_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
-    let events = Arc::new(WorkflowEventLogRepository::with_authority(
-        local_event_repository.clone(),
-        installation_id.clone(),
+    let events = Arc::new(WorkflowEventLogRepository::with_read_store(
+        local_event_store.clone(),
     ));
-    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
-        local_event_repository,
-        installation_id,
+    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new_read_only(
+        local_event_store.clone(),
     ));
     let query = WorkflowQueryService::new(
         definitions,
@@ -298,8 +286,6 @@ fn build_workflow_services_with_gateways(
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
     secrets: Arc<dyn SecretSourceGateway>,
-    repository: Arc<dyn LocalEventTransactionRepository>,
-    installation_id: String,
     store: Arc<LocalEventStore>,
 ) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
     let data_dir = data_dir.into();
@@ -309,7 +295,7 @@ fn build_workflow_services_with_gateways(
         data_dir.clone(),
     ));
     let workspace_nodes =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone());
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
             workspace_nodes.clone(),
@@ -324,14 +310,9 @@ fn build_workflow_services_with_gateways(
         facets_base_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
-    let events = Arc::new(WorkflowEventLogRepository::with_authority(
-        repository.clone(),
-        installation_id.clone(),
-    ));
-    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
-        repository,
-        installation_id,
-    ));
+    let events = Arc::new(WorkflowEventLogRepository::with_store(store.clone()));
+    let execution_projection =
+        Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone()));
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
         facets_base_dir,
@@ -400,84 +381,28 @@ mod tests {
     use super::*;
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
-        use crate::domain::local_event::{
-            CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
-            LocalStateMutation, Revision, RevisionGuard, WorkflowExecutionMetadataRecord,
-            WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
-            WorkflowExecutionProjectionRecord,
-        };
-        use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
-        use crate::domain::workspace_tree::{
-            WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeProjector,
-        };
+        use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
 
         let execution_id = "00000000-0000-4000-8000-000000001491";
-        let record = WorkflowExecutionMetadataRecord {
-            execution_id: execution_id.to_string(),
-            workflow_name: "B006 workflow".to_string(),
-            status: ExecutionStatus::Running,
-            worktree_path: workspace.to_string(),
-            current_node: None,
-            created_from: ExecutionOrigin::DesktopUi,
-            started_at_bits: 1.0f64.to_bits(),
-            updated_at_bits: 2.0f64.to_bits(),
-            completed_at_bits: None,
-            error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
-            total_token_usage: TokenUsage::default(),
-        };
-        let mut tree = WorkspaceTree::empty(workspace);
-        WorkspaceTreeProjector::project(
-            &mut tree,
-            [
-                WorkspaceStructureFact::WorkflowStarted {
-                    execution_id: execution_id.to_string(),
-                    workflow_name: record.workflow_name.clone(),
-                    worktree_path: workspace.to_string(),
-                    definition: crate::domain::workflow::WorkflowDefinition::default(),
-                    timestamp: 1.0,
-                },
-                WorkspaceStructureFact::WorkflowSummaryProjected {
-                    execution_id: execution_id.to_string(),
-                    workflow_name: record.workflow_name.clone(),
-                    status: record.status,
-                    updated_at: 2.0,
-                },
-            ],
-        )
-        .unwrap();
-        store
-            .commit_batch(LocalAtomicBatch {
-                commit_id: CommitIdentity::parse("b006-production-seed").unwrap(),
-                idempotency: IdempotencyBinding {
-                    installation_id: store.installation_id().to_string(),
-                    operation_kind: CommitOperationKind::Workflow,
-                    idempotency_key: "b006-production-seed".to_string(),
-                    payload_hash: [149; 32],
-                },
-                expected_heads: Vec::new(),
-                events: Vec::new(),
-                state_mutations: vec![
-                    LocalStateMutation::WorkflowExecutionProjection(
-                        WorkflowExecutionProjectionMutation {
-                            projection: WorkflowExecutionProjectionRecord::Present(record),
-                            expected: RevisionGuard::Absent,
-                            revision: Revision::new(0).unwrap(),
-                        },
-                    ),
-                    LocalStateMutation::WorkflowExecutionNodeProjection(
-                        WorkflowExecutionNodeProjectionMutation {
-                            execution_id: execution_id.to_string(),
-                            nodes: tree.nodes().to_vec(),
-                            expected: RevisionGuard::Absent,
-                            revision: Revision::new(0).unwrap(),
-                        },
-                    ),
-                ],
-            })
-            .await
-            .unwrap();
+        crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
+            store,
+            &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
+                execution_id: execution_id.to_string(),
+                workflow_name: "B006 workflow".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: workspace.to_string(),
+                current_node: None,
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 1.0,
+                updated_at: 2.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: Default::default(),
+            },
+            &[],
+        );
     }
 
     #[tokio::test]
@@ -499,14 +424,11 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         seed_b006_execution(&store, &workspace).await;
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let (workflow, query) = build_workflow_services_with_gateways(
             root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
             Arc::new(EmptySecretSourceGateway),
-            repository,
-            store.installation_id().to_string(),
             store.clone(),
         );
         let standalone =

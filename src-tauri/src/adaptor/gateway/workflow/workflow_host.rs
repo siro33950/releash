@@ -20,8 +20,6 @@ mod lifecycle_commands;
 pub(crate) mod node_settings;
 pub(crate) mod output_limit;
 pub(crate) mod prompt_rendering;
-mod restart_recovery;
-pub(crate) mod resume_projection;
 pub(crate) mod runtime_commit;
 pub(crate) mod runtime_session;
 
@@ -33,12 +31,11 @@ use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionOrigin, ExecutionStatus, ExecutionStore, ExecutionStoreError,
     WorkflowExecutionMetadata,
 };
-use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+use crate::adaptor::gateway::workflow::fact_log as workflow_fact_log;
 use crate::adaptor::gateway::workflow::node_session_boundary::{
     ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort, WorkflowSessionLaunchConfig,
 };
 use crate::adaptor::gateway::workflow::secret_source;
-use crate::domain::local_event::CommitOperationKind;
 use crate::domain::workflow::entities::workflow_execution::{
     AppliedAdvance, LeafStart, RuntimeNodeExecutionStatus as NodeExecutionStatus, TransitionOutcome,
 };
@@ -74,11 +71,11 @@ use execution_state::{DomainWorkflowExecution, SessionWorkflowRef};
 use node_settings::WorkflowDefaults;
 use output_limit as workflow_output_limit;
 use prompt_rendering as workflow_prompt;
-use resume_projection as workflow_resume_projection;
 use runtime_commit::{
     self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, RequiredEventCommit,
 };
 use runtime_session as workflow_runtime_session;
+use tauri::Manager as _;
 
 fn current_timestamp() -> f64 {
     std::time::SystemTime::now()
@@ -126,23 +123,16 @@ pub struct WorkflowRuntimeHost {
 enum RequiredEventCommitFailure {
     /// No event fact became visible; rollbackable resources may be discarded.
     BeforeDurableAppend(WorkflowRuntimeError),
-    /// Legacy test authority committed the event but failed its separate file projection.
-    #[cfg(test)]
-    AfterDurableAppend(WorkflowRuntimeError),
 }
 
 impl RequiredEventCommitFailure {
     fn into_workflow_error(self) -> WorkflowRuntimeError {
-        match self {
-            Self::BeforeDurableAppend(error) => error,
-            #[cfg(test)]
-            Self::AfterDurableAppend(error) => error,
-        }
+        let Self::BeforeDurableAppend(error) = self;
+        error
     }
 }
 
 struct ControlPlaneCommitCandidate<'a> {
-    operation_kind: CommitOperationKind,
     execution_id: &'a str,
     snapshot_before: DomainWorkflowExecution,
     candidate: DomainWorkflowExecution,
@@ -293,7 +283,6 @@ impl WorkflowRuntimeHost {
         self.commit_control_plane_candidate(
             app,
             ControlPlaneCommitCandidate {
-                operation_kind: commit.operation_kind,
                 execution_id: &commit.execution_id,
                 snapshot_before: commit.before,
                 candidate: commit.after,
@@ -320,8 +309,6 @@ impl WorkflowRuntimeHost {
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         data_dir: Option<std::path::PathBuf>,
-        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        installation_id: String,
         agent_session_launch: Arc<AgentSessionLaunchUsecase>,
         agent_session_initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
         agent_session_interrupt: Arc<AgentSessionInterruptUsecase>,
@@ -330,11 +317,7 @@ impl WorkflowRuntimeHost {
         Self::with_execution_store(
             workflow_resolver,
             worktree_resolver,
-            Arc::new(ExecutionStore::new_canonical(
-                data_dir,
-                repository,
-                installation_id,
-            )),
+            Arc::new(ExecutionStore::new_canonical(data_dir)),
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 agent_session_launch,
                 agent_session_initial_instruction,
@@ -413,12 +396,8 @@ impl WorkflowRuntimeHost {
         now: f64,
     ) -> Result<String, WorkflowRuntimeError> {
         let execution_id = uuid::Uuid::new_v4().to_string();
-        if self.execution_store.local_event_authority().await.is_some() {
-            // The worktree-owner CAS is included in the same required SQLite
-            // batch as ExecutionStarted/NodeStarted. The in-memory store is a
-            // post-commit list projection and cannot pre-admit the command.
-            return Ok(execution_id);
-        }
+        // worktree 排他は in-memory 登録（+ 起動時の fold 再構築）で判定する。
+        // 永続層に worktree-owner CAS は存在しない（純粋事実ログの規約）。
         self.execution_store
             .register_active_execution(WorkflowExecutionMetadata {
                 execution_id: execution_id.clone(),
@@ -541,277 +520,112 @@ impl WorkflowRuntimeHost {
         Ok(ids)
     }
 
-    async fn durable_workflow_event_log(
-        &self,
-        _data_dir: &std::path::Path,
-    ) -> Result<WorkflowEventLog, WorkflowRuntimeError> {
-        let Some((repository, installation_id)) =
-            self.execution_store.local_event_authority().await
-        else {
-            #[cfg(test)]
-            return Ok(WorkflowEventLog::new(_data_dir));
-            #[cfg(not(test))]
-            return Err(WorkflowRuntimeError::SessionStore(
-                "workflow SQLite event authority is not configured".to_string(),
-            ));
-        };
-        Ok(WorkflowEventLog::with_authority(
-            repository,
-            installation_id,
-        ))
-    }
-
-    /// 起動時 recovery: 前回プロセスで実行中だった Agent Node を同一 Attempt の Paused へ
-    /// 遷移させる。受信済み completion signal は保持し、Stop 受信済みの Submit 待ちと
-    /// WaitingApproval には Pause を重ねない。
+    /// 冪等 reconciliation の1周: 事実ログの fold で導出された状態を見て、
+    /// まだ実行していない行動を実行し、実行した事実を追記する。
     ///
-    /// `<data_dir>/workflow_execution_logs/<execution_id>.ndjson` 末尾に
-    /// 必要な `NodePaused` を append した後、event log 全体を replay し、active projection と
-    /// live aggregateを同じ durable stateから復元する。
+    /// - 前プロセスと共に消えた実行中プロセスは、喪失の観測（process_exited）
+    ///   として追記される（Paused は fold の導出）。provider CLI はアプリ内
+    ///   Terminal Surface で動くため、再起動を跨いで生き残る実プロセスは無い。
+    /// - 前進の実行と事実の追記の間で落ちた場合の未実行の前進
+    ///   （次の子の起動・fanout 展開の続き）は、導出された差分として検出・実行
+    ///   される。既に事実が揃っている行動は差分に現れないため二重実行されない。
     ///
-    /// 本メソッドは `set_execution_store_data_dir` 直後（in-memory `executions` map が空の状態）に
-    /// 1 度だけ呼ばれる前提。canonical read / projection / commit のいずれかを確認できない場合は
-    /// startup recovery 全体を失敗させる。呼び出し側は通常 activation を開始せず、同じ durable
-    /// inventory から再試行する。
-    pub async fn recover_orphan_executions<R: tauri::Runtime>(
+    /// 起動時復旧はこの1周目と同一であり、復旧専用経路は存在しない。
+    pub async fn reconcile_startup<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
     ) -> Result<(), WorkflowRuntimeError> {
-        let _recovery_guard = self.startup_recovery_lock.lock().await;
-        let orphans = self
-            .execution_store
-            .try_list_non_terminal_metadata()
-            .await
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?
-            .into_iter()
-            .collect::<Vec<_>>();
-        if orphans.is_empty() {
-            return Ok(());
-        }
-        let sqlite_authority = self.execution_store.local_event_authority().await.is_some();
-        let data_dir = match self.execution_store.configured_data_dir().await {
-            Some(data_dir) => data_dir,
-            None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?,
-        };
-        for metadata in orphans {
-            let execution_id = metadata.execution_id.clone();
-            let log = self.durable_workflow_event_log(&data_dir).await?;
-            let events = log.read_log_durable(&execution_id).await.map_err(|error| {
-                WorkflowRuntimeError::SessionStore(format!(
-                    "orphan recovery event read failed for {}: {error}",
-                    execution_id
-                ))
-            })?;
-            let projected_before =
-                match crate::domain::workflow::services::event_replay::project_workflow_execution(
-                    &execution_id,
-                    &events,
-                ) {
-                    Ok(Some(projected)) => projected,
-                    Ok(None) => {
-                        if sqlite_authority {
-                            let mutations = self
-                            .execution_store
-                            .prepare_atomic_stale_reservation_deletion_mutations(&metadata)
-                            .await
-                            .map_err(|error| {
-                                WorkflowRuntimeError::SessionStore(format!(
-                                    "orphan recovery stale reservation deletion preparation failed for {}: {error}",
-                                    execution_id
-                                ))
-                            })?;
-                            log.commit_projection_durable(&execution_id, mutations)
-                            .await
-                            .map_err(|error| {
-                                WorkflowRuntimeError::SessionStore(format!(
-                                    "orphan recovery stale reservation deletion failed for {}: {error}",
-                                    execution_id
-                                ))
-                            })?;
-                        } else {
-                            self.execution_store
-                                .cancel_reservation(&execution_id)
-                                .await
-                                .map_err(|error| {
-                                    WorkflowRuntimeError::SessionStore(format!(
-                                    "orphan recovery reservation cleanup failed for {}: {error}",
-                                    execution_id
-                                ))
-                                })?;
-                        }
-                        continue;
-                    }
-                    Err(error) => {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "orphan recovery event projection failed for {}: {error}",
-                            execution_id
-                        )));
-                    }
-                };
+        use crate::domain::workflow::TreeRootFact;
 
-            // A terminal/interrupted event may already be durable while the previous process died
-            // before metadata projection. Reconcile it without appending a contradictory orphan
-            // interruption. Only an event-log-active execution is a real orphan.
-            let projected = if projected_before.status.is_active() {
-                if projected_before.worktree_path != metadata.worktree_path {
-                    return Err(WorkflowRuntimeError::InvalidState(format!(
-                        "orphan recovery worktree mismatch for {}",
-                        execution_id
-                    )));
-                }
-                let checkpoint =
-                    workflow_resume_projection::project_restart_checkpoint(&execution_id, &events)
-                        .map_err(|error| {
-                            WorkflowRuntimeError::InvalidState(format!(
-                                "restart reconciliation checkpoint failed for {}: {error}",
-                                execution_id
-                            ))
-                        })?;
-                let mut live_execution = restart_recovery::hydrate_restart_execution(&checkpoint)?;
-                let pause_timestamp = current_timestamp();
-                let pause_targets = live_execution
-                    .node_executions
-                    .iter()
-                    .filter(|node| {
-                        matches!(node.kind, NodeKindName::Session | NodeKindName::Command)
-                            && node.status == NodeExecutionStatus::Running
-                            && node.completion_signals
-                                != crate::domain::workflow::NodeCompletionSignalState::StopReceived
-                    })
-                    .map(|node| node.id.clone())
-                    .collect::<Vec<_>>();
-                let mut reconciliation_events = Vec::with_capacity(pause_targets.len());
-                for node_execution_id in pause_targets {
-                    if live_execution.pause_node_execution(&node_execution_id, pause_timestamp)
-                        == crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-                    {
-                        reconciliation_events.push(WorkflowEvent::NodePaused {
-                            execution_id: execution_id.clone(),
-                            node_execution_id,
-                            timestamp: pause_timestamp,
-                        });
-                    }
-                }
-                let mut candidate_events = events.clone();
-                candidate_events.extend(reconciliation_events.iter().cloned());
-                let reconciled = match crate::domain::workflow::services::event_replay::project_workflow_execution(
-                    &execution_id,
-                    &candidate_events,
-                ) {
-                    Ok(Some(projected)) if projected.status.is_active() => projected,
-                    Ok(Some(projected)) => {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "orphan recovery projection for {} has unexpected status {}",
-                            execution_id,
-                            projected.status.as_str()
-                        )));
-                    }
-                    Ok(None) => {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "restart reconciliation projection for {} is empty",
-                            execution_id
-                        )));
-                    }
-                    Err(error) => {
-                        return Err(WorkflowRuntimeError::InvalidState(format!(
-                            "restart reconciliation projection failed for {}: {error}",
-                            execution_id
-                        )));
-                    }
+        let _reconcile_guard = self.startup_recovery_lock.lock().await;
+        let Some(store) = app.try_state::<std::sync::Arc<
+            crate::adaptor::gateway::local_event_store::LocalEventStore,
+        >>() else {
+            // canonical store の無い（テスト）構成では対象の木が無い。
+            return Ok(());
+        };
+        let store = store.inner().clone();
+        let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
+        let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
+            .map_err(WorkflowRuntimeError::SessionStore)?;
+        for tree_id in tree_ids {
+            if self.executions.lock().await.contains_key(&tree_id) {
+                continue;
+            }
+            let now = current_timestamp();
+            let mut new_id = new_node_execution_id;
+            let Some(reconciliation) =
+                workflow_fact_log::reconcile_tree_pass(&store, &tree_id, now, &mut new_id)
+                    .map_err(WorkflowRuntimeError::SessionStore)?
+            else {
+                continue;
+            };
+            let folded = reconciliation.folded;
+            let pending_leaves = reconciliation.leaves;
+            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
+                continue;
+            }
+            if !folded.aggregate.is_active() {
+                continue;
+            }
+            // 導出状態を engine の作業状態（in-memory・非永続）として登録する。
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
+            let worktree_path = folded.aggregate.worktree_path.clone();
+            if model.status.is_active() {
+                let metadata = WorkflowExecutionMetadata {
+                    execution_id: model.id.clone(),
+                    workflow_name: model.workflow_name.clone(),
+                    status: model.status,
+                    worktree_path: model.worktree_path.clone(),
+                    current_node: model.current_node.clone(),
+                    created_from: model.created_from,
+                    started_at: model.started_at,
+                    updated_at: model.updated_at,
+                    completed_at: model.completed_at,
+                    error_reason: model.error_reason.clone(),
+                    interruption_reason: model.interruption_reason,
+                    resume_from_node: model.resume_from_node.clone(),
+                    total_token_usage: model.total_token_usage.clone(),
                 };
-                let mutations = match self
+                if let Err(error) = self
                     .execution_store
-                    .prepare_atomic_event_reconciliation_metadata_mutations(&metadata, &reconciled)
+                    .reconcile_orphan_from_projection(metadata, &model)
                     .await
                 {
-                    Ok(mutations) => mutations,
-                    Err(error) => {
-                        return Err(WorkflowRuntimeError::SessionStore(format!(
-                            "orphan recovery projection preparation failed for {}: {error}",
-                            execution_id
-                        )));
-                    }
-                };
-                if reconciliation_events.is_empty() {
-                    if sqlite_authority && !mutations.is_empty() {
-                        log.commit_projection_durable(&execution_id, mutations)
-                            .await
-                            .map_err(|error| {
-                                WorkflowRuntimeError::SessionStore(format!(
-                                    "restart reconciliation metadata commit failed for {}: {error}",
-                                    execution_id
-                                ))
-                            })?;
-                    }
-                } else {
-                    self.write_log_required_batch_with_mutations(
-                        app,
-                        &reconciliation_events,
-                        mutations,
-                    )
-                    .map_err(|error| {
-                        WorkflowRuntimeError::SessionStore(format!(
-                            "restart reconciliation atomic pause commit failed for {}: {error}",
-                            execution_id
-                        ))
-                    })?;
+                    log::warn!(
+                        "workflow {tree_id}: reconciliation metadata registration failed: {error}"
+                    );
                 }
-                {
-                    let mut executions = self.executions.lock().await;
-                    executions.insert(execution_id.clone(), live_execution.clone());
-                }
-                {
-                    let mut refs = self.session_workflow_refs.lock().await;
-                    for node in &live_execution.node_executions {
-                        if let Some(session_id) = &node.session_id {
-                            refs.insert(
-                                session_id.clone(),
-                                SessionWorkflowRef {
-                                    execution_id: execution_id.clone(),
-                                },
-                            );
-                        }
+            }
+            {
+                let mut executions = self.executions.lock().await;
+                executions.insert(tree_id.clone(), folded.aggregate.clone());
+            }
+            {
+                let mut refs = self.session_workflow_refs.lock().await;
+                for node in &folded.aggregate.node_executions {
+                    if let Some(session_id) = &node.session_id {
+                        refs.insert(
+                            session_id.clone(),
+                            SessionWorkflowRef {
+                                execution_id: tree_id.clone(),
+                            },
+                        );
                     }
                 }
-                reconciled
-            } else {
-                if sqlite_authority {
-                    let mutations = self
-                        .execution_store
-                        .prepare_atomic_event_reconciliation_metadata_mutations(
-                            &metadata,
-                            &projected_before,
-                        )
+            }
+            // 4) 未起動または前進で生まれた leaf を起動する。失敗した tree は
+            //    registry から戻し、次の reconciliation 呼び出しで再試行できるようにする。
+            if !pending_leaves.is_empty() {
+                if let Err(error) = self.start_leaves(app, &worktree_path, pending_leaves).await {
+                    self.executions.lock().await.remove(&tree_id);
+                    self.session_workflow_refs
+                        .lock()
                         .await
-                        .map_err(|error| {
-                            WorkflowRuntimeError::SessionStore(format!(
-                                "orphan recovery durable event reconciliation preparation failed for {}: {error}",
-                                execution_id
-                            ))
-                        })?;
-                    if !mutations.is_empty() {
-                        log.commit_projection_durable(&execution_id, mutations)
-                            .await
-                            .map_err(|error| {
-                                WorkflowRuntimeError::SessionStore(format!(
-                                    "orphan recovery durable event reconciliation failed for {}: {error}",
-                                    execution_id
-                                ))
-                            })?;
-                    }
+                        .retain(|_, reference| reference.execution_id != tree_id);
+                    return Err(error);
                 }
-                projected_before
-            };
-            self.execution_store
-                .reconcile_orphan_from_projection(metadata, &projected)
-                .await
-                .map_err(|error| {
-                    WorkflowRuntimeError::SessionStore(format!(
-                        "orphan recovery projection reconciliation failed for {}: {error}",
-                        execution_id
-                    ))
-                })?;
+            }
         }
         Ok(())
     }
@@ -853,7 +667,6 @@ impl WorkflowRuntimeHost {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
             .map_err(|e| WorkflowRuntimeError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let now = current_timestamp();
-        let sqlite_authority = self.execution_store.local_event_authority().await.is_some();
         let execution_id = self
             .reserve_workflow_execution(
                 &workflow,
@@ -876,13 +689,6 @@ impl WorkflowRuntimeHost {
         // 撤回 helper は最終的な Result を返し、呼出側で start_workflow の Err に伝播させる。
         let rollback_execution_id = execution_id.clone();
         let rollback_reservation = |reason: String| async move {
-            if sqlite_authority {
-                // Before the required batch commits there is no canonical
-                // reservation to undo. Runtime maps are discarded by the
-                // caller; a compensating ExecutionStore write would restore a
-                // second admission authority.
-                return;
-            }
             if let Err(rs_err) = self
                 .execution_store
                 .cancel_reservation(&rollback_execution_id)
@@ -933,28 +739,7 @@ impl WorkflowRuntimeHost {
             timestamp: now,
         }];
         required_start_events.extend(applied.events);
-        let start_projection_mutations = match self
-            .execution_store
-            .prepare_atomic_initial_snapshot_mutations(&snapshot)
-            .await
-        {
-            Ok(mutations) => mutations,
-            Err(error) => {
-                self.executions.lock().await.remove(&execution_id);
-                self.release_execution_facet_contents(&execution_id).await;
-                rollback_reservation(format!(
-                    "initial workflow projection preparation failed: {error}"
-                ))
-                .await;
-                return Err(WorkflowRuntimeError::SessionStore(error.to_string()));
-            }
-        };
-        if let Err(e) = self.write_log_required_batch_with_mutations_as(
-            app,
-            CommitOperationKind::UserMutation,
-            &required_start_events,
-            start_projection_mutations,
-        ) {
+        if let Err(e) = self.write_log_required_batch(app, &required_start_events) {
             let mut execs = self.executions.lock().await;
             execs.remove(&execution_id);
             drop(execs);
@@ -963,18 +748,6 @@ impl WorkflowRuntimeHost {
             return Err(WorkflowRuntimeError::SessionStore(format!(
                 "write initial workflow event batch failed: {e}"
             )));
-        }
-
-        if sqlite_authority {
-            if let Err(error) = self
-                .execution_store
-                .rebuild_active_projection_from_authority()
-                .await
-            {
-                log::warn!(
-                    "workflow {execution_id}: failed to refresh derived execution list after commit: {error}"
-                );
-            }
         }
 
         // [04] post-commit: broadcast。ExecutionStarted は append 済みのため command は既に受理。
@@ -1099,7 +872,6 @@ impl WorkflowRuntimeHost {
             .commit_control_plane_candidate(
                 app,
                 ControlPlaneCommitCandidate {
-                    operation_kind: CommitOperationKind::UserMutation,
                     execution_id,
                     snapshot_before,
                     candidate,
@@ -1127,7 +899,6 @@ impl WorkflowRuntimeHost {
         commit: ControlPlaneCommitCandidate<'_>,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         let ControlPlaneCommitCandidate {
-            operation_kind,
             execution_id,
             snapshot_before,
             candidate,
@@ -1146,11 +917,6 @@ impl WorkflowRuntimeHost {
                 "invalid control-plane transaction preparation: {error:?}"
             ))
         })?;
-        let projection_mutations = self
-            .execution_store
-            .prepare_atomic_existing_snapshot_mutations(&snapshot)
-            .await
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
         let mut executions = self.executions.lock().await;
         let current = executions
             .get_mut(execution_id)
@@ -1158,19 +924,12 @@ impl WorkflowRuntimeHost {
         let durable = transaction
             .persist(current, |events| {
                 if provider_events.is_empty() {
-                    workflow_event_log_writer::append_required_events_with_mutations_for_app_as(
-                        app,
-                        operation_kind,
-                        events,
-                        projection_mutations,
-                    )
+                    workflow_event_log_writer::append_required_events_for_app(app, events)
                 } else {
                     workflow_event_log_writer::append_provider_stop_for_app(
                         app,
-                        execution_id,
                         events,
                         provider_events,
-                        projection_mutations,
                     )
                 }
             })
@@ -1401,7 +1160,35 @@ impl WorkflowRuntimeHost {
                 }
             }
         }
-        if !session_setups.is_empty() {
+        let mut activated_sessions = Vec::with_capacity(session_setups.len());
+        for (node_execution_id, session_id) in &session_setups {
+            match run_runtime_activation(
+                &activation_gate,
+                &execution_id,
+                "session",
+                self.workflow_agent_sessions
+                    .activate_workflow_agent_session(session_id, node_execution_id),
+            )
+            .await
+            {
+                Ok(()) => activated_sessions.push((node_execution_id.clone(), session_id.clone())),
+                Err(error) => {
+                    self.session_workflow_refs.lock().await.remove(session_id);
+                    self.settle_runtime_failure_for_node(
+                        app,
+                        worktree_path,
+                        &execution_id,
+                        node_execution_id,
+                        &error,
+                    )
+                    .await?;
+                    log::warn!(
+                        "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
+                    );
+                }
+            }
+        }
+        if !activated_sessions.is_empty() {
             let timestamp = current_timestamp();
             let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = async {
                 let (snapshot_before, snapshot, events) = {
@@ -1411,7 +1198,7 @@ impl WorkflowRuntimeHost {
                     })?;
                     let snapshot_before = execution.clone();
                     let mut events = Vec::new();
-                    for (node_execution_id, session_id) in &session_setups {
+                    for (node_execution_id, session_id) in &activated_sessions {
                         if execution.attach_node_session(
                             node_execution_id,
                             session_id.clone(),
@@ -1443,8 +1230,7 @@ impl WorkflowRuntimeHost {
                 self.commit_required_events(
                     app,
                     RequiredEventCommit {
-                        operation_kind: CommitOperationKind::Workflow,
-                        execution_id: &execution_id,
+                            execution_id: &execution_id,
                         snapshot_for_commit: &snapshot,
                         snapshot_before,
                         execution_store_snapshot_before,
@@ -1459,7 +1245,7 @@ impl WorkflowRuntimeHost {
             let snapshot = match commit_result {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    return match self.rollback_prepared_sessions(&session_setups).await {
+                    return match self.rollback_prepared_sessions(&activated_sessions).await {
                         Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
                             "{error}; rollback failed: {rollback_error}"
                         ))),
@@ -1468,28 +1254,16 @@ impl WorkflowRuntimeHost {
                 }
             };
             workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
-        }
-        for (node_execution_id, session_id) in &session_setups {
-            if let Err(error) = run_runtime_activation(
-                &activation_gate,
-                &execution_id,
-                "session",
-                self.workflow_agent_sessions
-                    .activate_workflow_agent_session(session_id, node_execution_id),
-            )
-            .await
-            {
-                self.settle_runtime_failure_for_node(
-                    app,
-                    worktree_path,
-                    &execution_id,
-                    node_execution_id,
-                    &error,
-                )
-                .await?;
-                log::warn!(
-                    "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
-                );
+            for (_, session_id) in &activated_sessions {
+                if let Err(error) = self
+                    .workflow_agent_sessions
+                    .confirm_workflow_agent_session_attachment(session_id)
+                    .await
+                {
+                    log::warn!(
+                        "workflow {execution_id}: failed to release attached AgentSession '{session_id}' launch state: {error}"
+                    );
+                }
             }
         }
         drop(activation_guard);
@@ -1541,9 +1315,16 @@ impl WorkflowRuntimeHost {
         app: &tauri::AppHandle<R>,
         mut input: CommandExecutionInput,
     ) -> Result<(), WorkflowRuntimeError> {
-        if !self.commit_command_prepared(app, &input).await? {
-            return Ok(());
-        }
+        let display_command = {
+            let raw_command = input.raw_command.as_deref().ok_or_else(|| {
+                WorkflowRuntimeError::InvalidState(format!(
+                    "raw command for node execution '{}' is unavailable",
+                    input.node_execution_id
+                ))
+            })?;
+            let secrets = secret_source::collect_configured_secret_values(app);
+            workflow_secret_masker::mask_sensitive_text(raw_command, &secrets)
+        };
         let raw_command = input.raw_command.take().ok_or_else(|| {
             WorkflowRuntimeError::InvalidState(format!(
                 "raw command for node execution '{}' is unavailable",
@@ -1602,6 +1383,36 @@ impl WorkflowRuntimeHost {
                 )));
             }
         };
+        match self
+            .commit_command_spawned(app, &input, display_command)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                running.handle().request_shutdown();
+                self.active_commands
+                    .lock()
+                    .await
+                    .remove(&input.node_execution_id);
+                self.active_command_executions
+                    .lock()
+                    .await
+                    .remove(&input.node_execution_id);
+                return Ok(());
+            }
+            Err(error) => {
+                running.handle().request_shutdown();
+                self.active_commands
+                    .lock()
+                    .await
+                    .remove(&input.node_execution_id);
+                self.active_command_executions
+                    .lock()
+                    .await
+                    .remove(&input.node_execution_id);
+                return Err(error);
+            }
+        }
         let driver = self.clone();
         let observer_app = app.clone();
         let node_execution_id = input.node_execution_id.clone();
@@ -1741,6 +1552,7 @@ impl WorkflowRuntimeHost {
                 Some(result_summary.clone()),
                 Some(artifact_value.clone()),
                 artifact_event_contract.clone(),
+                None,
                 timestamp,
             );
             let mut required_events = vec![WorkflowEvent::ArtifactProduced {
@@ -1809,7 +1621,6 @@ impl WorkflowRuntimeHost {
         self.commit_required_events(
             app,
             RequiredEventCommit {
-                operation_kind: CommitOperationKind::Workflow,
                 execution_id: &input.execution_id,
                 snapshot_for_commit: &snapshot_for_commit,
                 snapshot_before,
@@ -1997,7 +1808,6 @@ impl WorkflowRuntimeHost {
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), RequiredEventCommitFailure> {
         let RequiredEventCommit {
-            operation_kind,
             execution_id,
             snapshot_for_commit,
             snapshot_before,
@@ -2005,16 +1815,6 @@ impl WorkflowRuntimeHost {
             required_events,
             append_error_context,
         } = commit;
-
-        let projection_mutations = self
-            .execution_store
-            .prepare_atomic_existing_snapshot_mutations(snapshot_for_commit)
-            .await
-            .map_err(|error| {
-                RequiredEventCommitFailure::BeforeDurableAppend(WorkflowRuntimeError::SessionStore(
-                    format!("{append_error_context}: {error}"),
-                ))
-            })?;
 
         // Reacquire the execution mutex and keep it through the synchronous append. Every runtime
         // mutation uses this mutex, so a newer stop/completion cannot overtake this event commit.
@@ -2054,14 +1854,7 @@ impl WorkflowRuntimeHost {
             };
             *current = snapshot_before;
             transaction
-                .persist(current, |events| {
-                    self.write_log_required_batch_with_mutations_as(
-                        app,
-                        operation_kind,
-                        events,
-                        projection_mutations,
-                    )
-                })
+                .persist(current, |events| self.write_log_required_batch(app, events))
                 .map(|durable| {
                     debug_assert_eq!(
                         durable.into_effects(),
@@ -2090,14 +1883,6 @@ impl WorkflowRuntimeHost {
             .sync_state_after_required_event_commit(snapshot_for_commit)
             .await
         {
-            #[cfg(test)]
-            if self.execution_store.local_event_authority().await.is_none() {
-                return Err(RequiredEventCommitFailure::AfterDurableAppend(
-                    WorkflowRuntimeError::SessionStore(format!(
-                        "required event projection failed: {e}"
-                    )),
-                ));
-            }
             // Required events are the SQLite commit authority.  The
             // ExecutionStore/JSON view is a rebuildable post-commit
             // projection; its failure must not reverse an accepted command.
@@ -2315,7 +2100,6 @@ impl WorkflowRuntimeHost {
             .commit_control_plane_candidate(
                 app,
                 ControlPlaneCommitCandidate {
-                    operation_kind: CommitOperationKind::Workflow,
                     execution_id,
                     snapshot_before,
                     candidate,
@@ -2380,59 +2164,17 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    /// 複数の必須 event を 1 つの atomic commit point として一括追記する。
+    /// 複数の必須 event を事実ログへ一括追記する。
     ///
     /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
-    /// 複数 required event を発行する場合は本 helper を使い、partial commit を構造的に
-    /// 排除する。
+    /// 複数 required event を発行する場合は本 helper を使う。永続形は純粋事実の
+    /// 行 append であり、導出表 mutation は存在しない。
     fn write_log_required_batch<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         events: &[WorkflowEvent],
     ) -> Result<(), String> {
-        self.write_log_required_batch_as(
-            app,
-            crate::domain::local_event::CommitOperationKind::Workflow,
-            events,
-        )
-    }
-
-    fn write_log_required_batch_as<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        operation_kind: crate::domain::local_event::CommitOperationKind,
-        events: &[WorkflowEvent],
-    ) -> Result<(), String> {
-        workflow_event_log_writer::append_required_events_for_app_as(app, operation_kind, events)
-    }
-
-    fn write_log_required_batch_with_mutations<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        events: &[WorkflowEvent],
-        mutations: Vec<crate::domain::local_event::LocalStateMutation>,
-    ) -> Result<(), String> {
-        self.write_log_required_batch_with_mutations_as(
-            app,
-            crate::domain::local_event::CommitOperationKind::Workflow,
-            events,
-            mutations,
-        )
-    }
-
-    fn write_log_required_batch_with_mutations_as<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        operation_kind: crate::domain::local_event::CommitOperationKind,
-        events: &[WorkflowEvent],
-        mutations: Vec<crate::domain::local_event::LocalStateMutation>,
-    ) -> Result<(), String> {
-        workflow_event_log_writer::append_required_events_with_mutations_for_app_as(
-            app,
-            operation_kind,
-            events,
-            mutations,
-        )
+        workflow_event_log_writer::append_required_events_for_app(app, events)
     }
 }
 

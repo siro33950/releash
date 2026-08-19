@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::common::test_support::{
-    append_workflow_event, make_execution, test_uuid, write_execution_file,
+    append_workflow_event, append_workflow_events, make_execution, test_uuid, write_execution_file,
 };
 use super::super::Cli;
 use super::*;
@@ -9,15 +9,11 @@ use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::schema::{
     NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinitionYaml,
 };
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
+use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, NodeKindName};
 use clap::Parser;
 use tempfile::TempDir;
 
 fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
-    write_execution_file(
-        data_dir,
-        &make_execution(execution_id, "/repo", ExecutionStatus::Running, 1.0),
-    );
     let definition = WorkflowDefinitionYaml {
         name: "wf".to_string(),
         description: String::new(),
@@ -40,17 +36,32 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
         }],
         entry: "review".to_string(),
     };
-    append_workflow_event(
+    append_workflow_events(
         data_dir,
-        &WorkflowEvent::ExecutionStarted {
-            execution_id: execution_id.to_string(),
-            workflow_name: "wf".to_string(),
-            worktree_path: "/repo".to_string(),
-            created_from: ExecutionOrigin::Cli,
-            request: String::new(),
-            definition,
-            timestamp: 1.0,
-        },
+        &[
+            WorkflowEvent::ExecutionStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "wf".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: String::new(),
+                definition,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "node-0".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 1.0,
+            },
+        ],
+    );
+    write_execution_file(
+        data_dir,
+        &make_execution(execution_id, "/repo", ExecutionStatus::Running, 1.0),
     );
 }
 
@@ -192,21 +203,48 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(12);
     seed_artifact_node(temp.path(), &execution_id);
-    for (index, verdict) in ["FIX", "LGTM"].into_iter().enumerate() {
-        append_workflow_event(
-            temp.path(),
-            &WorkflowEvent::ArtifactProduced {
+    append_workflow_event(
+        temp.path(),
+        &WorkflowEvent::ArtifactProduced {
+            execution_id: execution_id.clone(),
+            node_execution_id: "node-0".to_string(),
+            node_name: "review".to_string(),
+            contract: Some("review-verdict".to_string()),
+            value: serde_json::json!({"verdict": "FIX"}),
+            request_id: Some("request-0".to_string()),
+            submitted_at: Some(2.0),
+            timestamp: 2.0,
+        },
+    );
+    append_workflow_events(
+        temp.path(),
+        &[
+            WorkflowEvent::NodeRetryRequested {
                 execution_id: execution_id.clone(),
-                node_execution_id: format!("node-{index}"),
+                node_execution_id: "node-0".to_string(),
+                timestamp: 2.5,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: execution_id.clone(),
+                node_execution_id: "node-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 2,
+                parent: None,
+                timestamp: 2.5,
+            },
+            WorkflowEvent::ArtifactProduced {
+                execution_id: execution_id.clone(),
+                node_execution_id: "node-1".to_string(),
                 node_name: "review".to_string(),
                 contract: Some("review-verdict".to_string()),
-                value: serde_json::json!({"verdict": verdict}),
-                request_id: Some(format!("request-{index}")),
-                submitted_at: Some(2.0 + index as f64),
-                timestamp: 2.0 + index as f64,
+                value: serde_json::json!({"verdict": "LGTM"}),
+                request_id: Some("request-1".to_string()),
+                submitted_at: Some(3.0),
+                timestamp: 3.0,
             },
-        );
-    }
+        ],
+    );
 
     let output = cmd_output_get(temp.path(), &execution_id, "review", true).unwrap();
     let output: serde_json::Value = serde_json::from_str(&output).unwrap();

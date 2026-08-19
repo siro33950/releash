@@ -1,4 +1,5 @@
 pub mod aggregates;
+mod launch_identity;
 mod provider_availability_gateway;
 mod provider_history_gateway;
 mod provider_launch;
@@ -6,6 +7,8 @@ mod provider_launch_gateway;
 mod provider_session_ownership;
 mod provider_terminal_gateway;
 pub mod repository;
+
+pub(crate) use launch_identity::launch_resource_id;
 
 pub(crate) use provider_availability_gateway::{
     ProviderAvailabilityReader, ProviderExecutableConfigRepository,

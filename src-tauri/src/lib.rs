@@ -737,6 +737,7 @@ pub fn run() {
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
                         repository: projected_local_event_repository.clone(),
                         installation_id: local_event_store.installation_id().to_string(),
+                        store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
                         provider_executable_probe: Arc::new(

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::domain::local_event::CommitOperationKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::entities::workflow_execution::{
     NodeRestartMode, ProviderStopRejection, TransitionOutcome,
@@ -16,7 +15,6 @@ use super::runtime_error::WorkflowRuntimeError;
 use super::runtime_snapshot::RuntimeCommitSnapshot;
 
 pub(crate) struct WorkflowControlPlaneCommit {
-    pub(crate) operation_kind: CommitOperationKind,
     pub(crate) execution_id: String,
     pub(crate) before: DomainWorkflowExecution,
     pub(crate) after: DomainWorkflowExecution,
@@ -42,10 +40,13 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError>;
 
-    async fn load_persisted_events(
+    /// 対象 node への承認が既に事実として永続化されているか（approval の冪等判定）。
+    async fn approval_persisted(
         &self,
         execution_id: &str,
-    ) -> Result<Vec<WorkflowEvent>, WorkflowError>;
+        node_name: &str,
+        node_execution_id: Option<&str>,
+    ) -> Result<bool, WorkflowError>;
 
     fn configured_secret_values(&self) -> Vec<String>;
 
@@ -109,15 +110,15 @@ impl WorkflowControlPlaneUsecase {
         ) {
             Ok(target) => target,
             Err(error) => {
-                let events = self
+                if self
                     .runtime
-                    .load_persisted_events(&command.execution_id)
-                    .await?;
-                if approval_was_persisted(
-                    &events,
-                    &command.node_name,
-                    command.node_execution_id.as_deref(),
-                ) {
+                    .approval_persisted(
+                        &command.execution_id,
+                        &command.node_name,
+                        command.node_execution_id.as_deref(),
+                    )
+                    .await?
+                {
                     return Ok(());
                 }
                 return Err(error);
@@ -148,7 +149,6 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                operation_kind: CommitOperationKind::UserMutation,
                 execution_id: command.execution_id,
                 before: current,
                 after: candidate,
@@ -319,7 +319,6 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                operation_kind: CommitOperationKind::UserMutation,
                 execution_id,
                 before: current,
                 after: candidate,
@@ -384,7 +383,6 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                operation_kind: CommitOperationKind::UserMutation,
                 execution_id: command.execution_id,
                 before: current,
                 after: candidate,
@@ -498,7 +496,6 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                operation_kind: CommitOperationKind::Workflow,
                 execution_id: command.workflow_execution_id,
                 before: current,
                 after: candidate,
@@ -511,24 +508,6 @@ impl WorkflowControlPlaneUsecase {
             .await?;
         self.auto_approve_if_needed(&snapshot).await
     }
-}
-
-fn approval_was_persisted(
-    events: &[WorkflowEvent],
-    node_name: &str,
-    node_execution_id: Option<&str>,
-) -> bool {
-    events.iter().any(|event| {
-        matches!(
-            event,
-            WorkflowEvent::ApprovalResolved {
-                node_execution_id: persisted_id,
-                node_name: persisted_name,
-                ..
-            } if persisted_name == node_name
-                && node_execution_id.is_none_or(|expected| expected == persisted_id)
-        )
-    })
 }
 
 fn apply_completion_handshake(

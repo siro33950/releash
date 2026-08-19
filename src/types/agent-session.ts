@@ -20,11 +20,6 @@ export interface AgentSessionLaunchAttachment {
 	provider: AgentSessionItem["provider"];
 }
 
-export interface AgentSessionListPage {
-	items: AgentSessionItem[];
-	nextAfterSessionId: string | null;
-}
-
 export interface AgentSessionHistoryCandidate {
 	provider: string;
 	providerSessionId: string;

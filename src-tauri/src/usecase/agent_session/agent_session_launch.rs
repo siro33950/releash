@@ -5,7 +5,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionOrigin, ManagedPtyPresence, ResolvedProviderExecutable,
+    AgentSessionTreeParent, ManagedPtyPresence, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::VersionedAgentSession;
 use crate::domain::agent_session::{
@@ -95,10 +95,16 @@ fn issue_agent_session_id(
     if caller_request_id.trim().is_empty() {
         return Err(AgentSessionLaunchUsecaseError::InvalidInput);
     }
-    Ok(format!(
-        "agent-session-{}",
-        crate::other::id::unique_simple_id()
-    ))
+    crate::domain::agent_session::launch_resource_id("agent-session", caller_request_id)
+        .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)
+}
+
+fn issue_lifecycle_slot_id(
+    caller_request_id: &str,
+) -> Result<ProviderLifecycleSlotId, AgentSessionLaunchUsecaseError> {
+    let id = crate::domain::agent_session::launch_resource_id("provider-slot", caller_request_id)
+        .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
+    ProviderLifecycleSlotId::new(id).map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)
 }
 
 #[derive(Default)]
@@ -151,6 +157,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     hook_health: Arc<ProviderHookHealthUsecase>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
+    activated_workflow_launches: Mutex<HashMap<String, VersionedAgentSession>>,
 }
 
 struct PreparedAgentSessionLaunch {
@@ -188,6 +195,7 @@ impl AgentSessionLaunchUsecase {
             hook_health,
             standalone_requests: Mutex::new(StandaloneLaunchRequestRegistry::default()),
             pending_workflow_launches: Mutex::new(HashMap::new()),
+            activated_workflow_launches: Mutex::new(HashMap::new()),
         }
     }
 
@@ -244,22 +252,33 @@ impl AgentSessionLaunchUsecase {
             .prepare_new_session(
                 agent_session_id,
                 request,
-                Ok(AgentSessionOrigin::Standalone),
+                Ok(None),
                 ProviderSessionLaunch::New,
             )
             .await?;
         self.spawn_prepared(pending).await
     }
 
+    pub(crate) async fn confirm_workflow_node_attachment(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<(), AgentSessionLaunchUsecaseError> {
+        self.activated_workflow_launches
+            .lock()
+            .await
+            .remove(agent_session_id)
+            .map(|_| ())
+            .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)
+    }
+
     pub(crate) async fn prepare_workflow_node(
         &self,
         request: WorkflowAgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
-        let origin = AgentSessionOrigin::workflow_node(
-            &request.workflow_execution_id,
-            &request.node_execution_id,
-        )
-        .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput);
+        let tree_parent =
+            AgentSessionTreeParent::new(&request.workflow_execution_id, &request.node_execution_id)
+                .map(Some)
+                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput);
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let launch =
             ProviderSessionLaunch::new_with_initial_instruction(request.initial_instruction)
@@ -279,7 +298,7 @@ impl AgentSessionLaunchUsecase {
                     cols: request.cols,
                     caller_request_id: request.caller_request_id,
                 },
-                origin,
+                tree_parent,
                 launch,
             )
             .await?;
@@ -306,14 +325,24 @@ impl AgentSessionLaunchUsecase {
             .await
             .remove(agent_session_id)
             .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
-        self.spawn_prepared(pending).await
+        let activated = self.spawn_prepared(pending).await?;
+        if self
+            .activated_workflow_launches
+            .lock()
+            .await
+            .insert(agent_session_id.to_string(), activated.clone())
+            .is_some()
+        {
+            return Err(AgentSessionLaunchUsecaseError::Corrupt);
+        }
+        Ok(activated)
     }
 
     async fn prepare_new_session(
         &self,
         agent_session_id: String,
         request: AgentSessionLaunchRequest,
-        origin: Result<AgentSessionOrigin, AgentSessionLaunchUsecaseError>,
+        tree_parent: Result<Option<AgentSessionTreeParent>, AgentSessionLaunchUsecaseError>,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
         let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
@@ -329,9 +358,8 @@ impl AgentSessionLaunchUsecase {
             .await
             .map_err(map_session_error)?;
         availability_and_lock.finish();
-        let origin = origin?;
-        let slot_id = ProviderLifecycleSlotId::new(crate::other::id::unique_simple_id())
-            .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
+        let tree_parent = tree_parent?;
+        let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
         let durable_create = crate::other::telemetry::start_terminal_launch_phase(
@@ -347,7 +375,7 @@ impl AgentSessionLaunchUsecase {
                             workspace: request.workspace.clone(),
                             worktree_path: request.worktree_path.clone(),
                             provider: request.provider,
-                            origin,
+                            tree_parent,
                             admit_initial_instruction: launch.initial_instruction().is_some(),
                         },
                         lifecycle_events,
@@ -377,20 +405,28 @@ impl AgentSessionLaunchUsecase {
     pub(crate) async fn rollback_workflow_node(
         &self,
         agent_session_id: &str,
-        caller_request_id: &str,
+        _caller_request_id: &str,
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
-        let _pending = self
+        let pending = self
             .pending_workflow_launches
             .lock()
             .await
-            .remove(agent_session_id)
-            .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
-        let session = self
-            .sessions
-            .find(agent_session_id)
+            .remove(agent_session_id);
+        let activated = self
+            .activated_workflow_launches
+            .lock()
             .await
-            .map_err(map_session_error)?
-            .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
+            .remove(agent_session_id);
+        let session = match (pending, activated) {
+            (Some(pending), _) => pending.durable.created.clone(),
+            (None, Some(activated)) => activated,
+            (None, None) => self
+                .sessions
+                .find(agent_session_id)
+                .await
+                .map_err(map_session_error)?
+                .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?,
+        };
         session
             .session()
             .authorize_workflow_launch_rollback()
@@ -415,16 +451,9 @@ impl AgentSessionLaunchUsecase {
             .launch_gateway
             .cleanup(agent_session_id)
             .map_err(map_launch_error);
-        let session_result = self
-            .sessions
-            .rollback_workflow_launch(agent_session_id, caller_request_id)
-            .await
-            .map_err(map_session_error);
-
         terminal_result?;
         lifecycle_result?;
         launch_result?;
-        session_result?;
         Ok(())
     }
 
@@ -554,7 +583,7 @@ impl AgentSessionLaunchUsecase {
                 request.workspace.clone(),
                 &request.worktree_path,
                 request.provider,
-                AgentSessionOrigin::Standalone,
+                None,
                 &format!("{}.create", request.caller_request_id),
             )
             .await
@@ -569,8 +598,7 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error)?;
-        let slot_id = ProviderLifecycleSlotId::new(crate::other::id::unique_simple_id())
-            .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
+        let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(associated.session().id())
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
         let armed = match self

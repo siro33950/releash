@@ -6,11 +6,10 @@
 
 use super::{
     workflow_shutdown, ApplicationDomainEvent, ApplicationShutdownPhase, CommitOperationKind,
-    LocalAtomicBatch, LocalDomainEvent, LocalStateMutation, ObligationMutation, ObligationRecord,
+    LocalAtomicBatch, LocalDomainEvent, LocalStateMutation, ObligationRecord,
     ObligationStateRecord, OperationKind, OperationReceiptRecord, OperationStatusValue,
-    RecoveryAttemptRecord, RecoveryResultRecord, RevisionGuard, SessionProjectionRecord,
-    ShutdownPlanKey, ShutdownPlanRecord, ShutdownTargetRecord, ShutdownTargetStateRecord, StreamId,
-    WorkflowExecutionProjectionRecord,
+    RecoveryAttemptRecord, RecoveryResultRecord, RevisionGuard, ShutdownPlanKey,
+    ShutdownPlanRecord, ShutdownTargetRecord, ShutdownTargetStateRecord, StreamId,
 };
 
 /// Which commit lanes a closed shutdown admission rejects outright. The
@@ -66,10 +65,7 @@ pub fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]
                     return false;
                 }
             }
-            LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_) => {}
             LocalStateMutation::OperationBinding(_)
-            | LocalStateMutation::SessionProjectionRemoval(_)
             | LocalStateMutation::AgentSessionRemoval(_)
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
@@ -123,26 +119,6 @@ pub fn internal_progress_is_anchored_to_existing_owner(batch: &LocalAtomicBatch)
                     return false;
                 }
             }
-            LocalStateMutation::SessionProjectionRemoval(removal) => {
-                if !matches!(removal.expected, RevisionGuard::Expected(_)) {
-                    return false;
-                }
-                advances_existing_owner = true;
-            }
-            LocalStateMutation::WorkflowExecutionProjection(workflow) => {
-                if !workflow.expected.advances_to(workflow.revision)
-                    && !workflow.expected.inserts_zero(workflow.revision)
-                {
-                    return false;
-                }
-            }
-            LocalStateMutation::WorkflowExecutionNodeProjection(nodes) => {
-                if !nodes.expected.advances_to(nodes.revision)
-                    && !nodes.expected.inserts_zero(nodes.revision)
-                {
-                    return false;
-                }
-            }
         }
     }
     if !advances_existing_owner {
@@ -150,7 +126,9 @@ pub fn internal_progress_is_anchored_to_existing_owner(batch: &LocalAtomicBatch)
     }
     match batch.idempotency.operation_kind {
         CommitOperationKind::Projection => false,
-        CommitOperationKind::Workflow => workflow_progress_has_one_execution_scope(batch),
+        // 旧 workflow blob commit は存在しない。provider-stop の provider イベント
+        // commit は shutdown 中の internal progress として扱わない。
+        CommitOperationKind::Workflow => false,
         CommitOperationKind::ApplicationQuit
         | CommitOperationKind::Recovery
         | CommitOperationKind::UserMutation
@@ -158,114 +136,6 @@ pub fn internal_progress_is_anchored_to_existing_owner(batch: &LocalAtomicBatch)
     }
 }
 
-fn workflow_progress_has_one_execution_scope(batch: &LocalAtomicBatch) -> bool {
-    let mut execution_id = None;
-    for mutation in &batch.state_mutations {
-        if let LocalStateMutation::Obligation(ObligationMutation {
-            record: ObligationRecord::WorkflowExecution { execution },
-            expected,
-            revision,
-            ..
-        }) = mutation
-        {
-            if !expected.advances_to(*revision)
-                || execution_id
-                    .as_ref()
-                    .is_some_and(|stored| stored != &execution.execution_id)
-            {
-                return false;
-            }
-            execution_id = Some(execution.execution_id.clone());
-        }
-    }
-    let Some(execution_id) = execution_id else {
-        return false;
-    };
-    let expected_stream = match StreamId::workflow(&execution_id) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    if batch
-        .expected_heads
-        .iter()
-        .any(|head| head.stream_id != expected_stream)
-        || batch.events.iter().any(|event| {
-            event.stream_id != expected_stream
-                || !matches!(
-                    &event.event,
-                    LocalDomainEvent::Workflow(workflow)
-                        if workflow.execution_id() == execution_id
-                )
-        })
-    {
-        return false;
-    }
-    batch.state_mutations.iter().all(|mutation| match mutation {
-        LocalStateMutation::Obligation(ObligationMutation {
-            record: ObligationRecord::WorkflowExecution { execution },
-            ..
-        }) => execution.execution_id == execution_id,
-        LocalStateMutation::SessionProjection(projection) => match &projection.projection {
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Present(execution),
-            ) => {
-                projection.session_id == format!("workflow:{execution_id}")
-                    && execution.execution_id == execution_id
-            }
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Deleted {
-                    execution_id: deleted,
-                },
-            ) => {
-                projection.session_id == format!("workflow:{execution_id}")
-                    && deleted == &execution_id
-            }
-            SessionProjectionRecord::WorkflowWorktreeOwner(owner) => {
-                owner.execution_id == execution_id
-            }
-            SessionProjectionRecord::AgentSession(_)
-            | SessionProjectionRecord::ProviderSessionOwnership(_)
-            | SessionProjectionRecord::ProviderHookHealth(_) => false,
-        },
-        LocalStateMutation::WorkflowExecutionProjection(projection) => {
-            batch.state_mutations.iter().any(|candidate| {
-                matches!(
-                    candidate,
-                    LocalStateMutation::SessionProjection(source)
-                        if source.session_id == format!("workflow:{execution_id}")
-                            && source.expected == projection.expected
-                            && source.revision == projection.revision
-                )
-            }) && match &projection.projection {
-                WorkflowExecutionProjectionRecord::Present(execution) => {
-                    execution.execution_id == execution_id
-                }
-                WorkflowExecutionProjectionRecord::Deleted {
-                    execution_id: deleted,
-                } => deleted == &execution_id,
-            }
-        }
-        LocalStateMutation::WorkflowExecutionNodeProjection(nodes) => {
-            nodes.execution_id == execution_id
-                && nodes
-                    .nodes
-                    .iter()
-                    .all(|node| node.execution_id.as_deref() == Some(execution_id.as_str()))
-                && batch.state_mutations.iter().any(|candidate| {
-                    matches!(
-                        candidate,
-                        LocalStateMutation::WorkflowExecutionProjection(projection)
-                            if projection.expected == nodes.expected
-                                && projection.revision == nodes.revision
-                    )
-                })
-        }
-        _ => false,
-    })
-}
-
-/// Durable rows the store fetched and decoded for one ApplicationQuit-kind
-/// batch under closed admission.
 pub struct QuitProgressFacts<'a> {
     pub plan_id: &'a str,
     pub plan_summary: &'a ShutdownPlanRecord,
@@ -315,10 +185,7 @@ pub fn application_quit_progress_is_bound_to_current_plan(
             owner_revision,
             execution_id,
             state,
-        } = &obligation.record
-        else {
-            return false;
-        };
+        } = &obligation.record;
         let mut target_matches = false;
         for (detail, revision) in facts.plan_targets {
             if workflow_shutdown::obligation_anchor_matches(
@@ -473,12 +340,9 @@ pub fn application_quit_progress_is_bound_to_current_plan(
             LocalStateMutation::OperationBinding(_)
             | LocalStateMutation::CallerAttempt(_)
             | LocalStateMutation::SessionProjection(_)
-            | LocalStateMutation::SessionProjectionRemoval(_)
             | LocalStateMutation::AgentSessionRemoval(_)
             | LocalStateMutation::Obligation(_)
             | LocalStateMutation::RecoveryAction(_)
-            | LocalStateMutation::WorkflowExecutionProjection(_)
-            | LocalStateMutation::WorkflowExecutionNodeProjection(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
             | LocalStateMutation::ShutdownDetailsCompaction(_) => return false,
         }

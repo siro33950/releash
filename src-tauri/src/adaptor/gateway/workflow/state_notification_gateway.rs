@@ -139,17 +139,40 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::adaptor::gateway::workflow::event::{TokenUsage as EventTokenUsage, WorkflowEvent};
+    use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition as EventNodeDefinition, NodeKindName as EventNodeKindName,
         WorkflowDefinitionYaml as EventWorkflowDefinitionYaml,
     };
-    use crate::domain::workflow::services::event_replay::project_workflow_execution;
+    use crate::domain::workflow::TokenUsage as EventTokenUsage;
     use crate::domain::workflow::{
         ExecutionParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
         NodeExecutionStatus, NodeHistoryEntry, NodeKindName, RuntimeArtifact, TokenUsage,
         WorkflowDefinition,
     };
+
+    /// event 列を事実ログへ写像し、fold で読み model を導出する
+    /// （canonical な読み経路とruntime snapshot mapper の parity を固定する）。
+    fn fold_projection(
+        execution_id: &str,
+        events: &[WorkflowEvent],
+    ) -> crate::domain::workflow::WorkflowExecution {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                tmp.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, events)
+            .unwrap();
+        let backend = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(store);
+        let folded =
+            crate::adaptor::gateway::workflow::fact_log::fold_tree_from(&backend, execution_id)
+                .unwrap()
+                .unwrap();
+        crate::domain::workflow::services::fact_replay::derive_read_model(&folded)
+    }
 
     #[test]
     fn runtime_snapshot_mapper_matches_event_log_projection() {
@@ -181,7 +204,12 @@ mod tests {
                 kind: EventNodeKindName::Session,
                 attempt: 1,
                 parent: None,
-                timestamp: 2.0,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.to_string(),
+                timestamp: 3.0,
             },
             WorkflowEvent::ArtifactProduced {
                 execution_id: execution_id.to_string(),
@@ -192,6 +220,11 @@ mod tests {
                 request_id: None,
                 submitted_at: None,
                 timestamp: 3.0,
+            },
+            WorkflowEvent::NodeStopReceived {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.to_string(),
+                timestamp: 4.0,
             },
             WorkflowEvent::NodeCompleted {
                 execution_id: execution_id.to_string(),
@@ -211,17 +244,16 @@ mod tests {
                     input_tokens: 3,
                     output_tokens: 2,
                 },
-                timestamp: 5.0,
+                timestamp: 4.0,
             },
         ];
-        let event_projection = project_workflow_execution(execution_id, &events)
-            .unwrap()
-            .unwrap();
+        let event_projection = fold_projection(execution_id, &events);
+        // 成果の produced_at は settle（stop 受理決着）時刻。
         let artifact = Artifact {
             node_name: "review".to_string(),
             contract: Some("review_result".to_string()),
             value: value.clone(),
-            produced_at: 3.0,
+            produced_at: 4.0,
         };
         let runtime_projection =
             workflow_execution_from_runtime_snapshot(WorkflowRuntimeSnapshot {
@@ -274,7 +306,7 @@ mod tests {
                             input_tokens: 3,
                             output_tokens: 2,
                         }),
-                        completed_at: 3.0,
+                        completed_at: 4.0,
                     },
                 )]),
                 node_executions: vec![NodeExecution {
@@ -294,12 +326,12 @@ mod tests {
                     }),
                     failure: None,
                     parent: None,
-                    completion_signals: Default::default(),
-                    started_at: 2.0,
+                    completion_signals: crate::domain::workflow::NodeCompletionSignalState::Ready,
+                    started_at: 1.0,
                     completed_at: Some(4.0),
                 }],
                 started_at: 1.0,
-                updated_at: 5.0,
+                updated_at: 4.0,
             });
 
         assert_eq!(runtime_projection, event_projection);
@@ -379,9 +411,7 @@ mod tests {
                 timestamp: 3.0,
             },
         ];
-        let event_projection = project_workflow_execution(execution_id, &events)
-            .unwrap()
-            .unwrap();
+        let event_projection = fold_projection(execution_id, &events);
         let failure = || NodeExecutionFailure {
             reason: "review failed".to_string(),
             kind: NodeExecutionFailureKind::ValidationFailure,
@@ -467,6 +497,21 @@ mod tests {
                 updated_at: 3.0,
             });
 
-        assert_eq!(runtime_projection, event_projection);
+        // 主張: node の失敗は workflow を terminal にしない。
+        // live（runtime snapshot）は engine の観測どおり Failed を示す。
+        assert_eq!(runtime_projection.status, ExecutionStatus::Running);
+        assert_eq!(
+            runtime_projection.node_executions[1].status,
+            NodeExecutionStatus::Failed
+        );
+        // fold（事実ログ）は D1a により process_exited を再開可能な中断として
+        // 導出する（Failed は live の観測・Paused は永続からの導出）。
+        assert_eq!(event_projection.status, ExecutionStatus::Running);
+        assert_eq!(
+            event_projection.node_executions[1].status,
+            NodeExecutionStatus::Paused
+        );
+        assert_eq!(event_projection.completed_at, None);
+        assert_eq!(runtime_projection.completed_at, None);
     }
 }

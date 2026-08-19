@@ -1,4 +1,7 @@
-import type { AgentSessionLaunchAttachment } from "./agent-session";
+import type {
+	AgentSessionItem,
+	AgentSessionLaunchAttachment,
+} from "./agent-session";
 import type { WorkflowExecutionSummary } from "./workflow";
 
 export type CenterSelection =
@@ -82,6 +85,7 @@ export type WorkspaceTreeItem =
 
 export interface WorkspaceTreeSnapshot {
 	nodes: WorkspaceTreeItem[];
+	sessions?: AgentSessionItem[];
 	preferredNodeId?: string | null;
 }
 

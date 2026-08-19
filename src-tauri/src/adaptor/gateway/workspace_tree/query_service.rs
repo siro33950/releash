@@ -1,14 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rusqlite::{params, OptionalExtension as _};
-
-use super::repository::{codec_query_error, sql_query_error};
 use super::SqliteWorkspaceTreeRepository;
-use crate::adaptor::gateway::local_event_store::indexed_projection_codec::decode_workflow_execution_record_v1;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
-    ExecutionStatusFilter, WorkflowError, WorkflowExecutionArchiveRepository,
+    ExecutionStatusFilter, TreeRootFact, WorkflowError, WorkflowExecutionArchiveRepository,
     WorkflowExecutionSummary, WorkflowPageRequest, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 use crate::domain::workspace_tree::{
@@ -23,23 +19,6 @@ use crate::usecase::workflow::{
     WorkspaceWorkflowHistoryItemDto,
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
-
-pub(crate) const SQL_EXECUTIONS_BY_WORKSPACE_AND_KIND: &str =
-    "SELECT record FROM workflow_executions
-     WHERE workspace_identity = ?1 AND list_kind = ?2
-     ORDER BY sort_at_bits DESC, execution_id
-     LIMIT ?3 OFFSET ?4";
-pub(crate) const SQL_EXECUTIONS_BY_WORKSPACE: &str = "SELECT record FROM workflow_executions
-     WHERE workspace_identity = ?1
-     ORDER BY list_kind, sort_at_bits DESC, execution_id
-     LIMIT ?3 OFFSET ?4";
-pub(crate) const SQL_EXECUTIONS_BY_KIND: &str = "SELECT record FROM workflow_executions
-     WHERE list_kind = ?2
-     ORDER BY sort_at_bits DESC, execution_id
-     LIMIT ?3 OFFSET ?4";
-pub(crate) const SQL_EXECUTIONS_ALL: &str = "SELECT record FROM workflow_executions
-     ORDER BY list_kind, sort_at_bits DESC, execution_id
-     LIMIT ?3 OFFSET ?4";
 
 pub(crate) struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
@@ -74,39 +53,44 @@ impl SqliteWorkspaceQueryService {
         page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<crate::domain::local_event::WorkflowExecutionMetadataRecord>, WorkflowError>
     {
-        let workspace = workspace_identity.map(|identity| identity.as_str().to_string());
-        let list_kind = status.map(|filter| match filter {
-            ExecutionStatusFilter::Active => "active".to_string(),
-            ExecutionStatusFilter::Terminal => "terminal".to_string(),
+        let backend = self.repository.fact_backend();
+        let tree_ids = crate::adaptor::gateway::workflow::fact_log::list_tree_ids(
+            &backend,
+            workspace_identity.map(|identity| identity.as_str()),
+        )
+        .map_err(WorkflowError::external)?;
+        let mut records = Vec::new();
+        for tree_id in tree_ids {
+            let Some((_, record)) = self.repository.folded_tree(&tree_id).map_err(query_error)?
+            else {
+                continue;
+            };
+            let keep = match status {
+                Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
+                Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),
+                None => true,
+            };
+            if keep {
+                records.push(record);
+            }
+        }
+        // 旧一覧と同じ並び: active が先、次に更新時刻の新しい順、最後に id。
+        records.sort_by(|left, right| {
+            left.status
+                .is_finished()
+                .cmp(&right.status.is_finished())
+                .then_with(|| {
+                    f64::from_bits(right.updated_at_bits)
+                        .total_cmp(&f64::from_bits(left.updated_at_bits))
+                })
+                .then_with(|| left.execution_id.cmp(&right.execution_id))
         });
         let (limit, offset) = sqlite_page_bounds(page);
-        self.repository
-            .run_indexed(move |connection| {
-                let (sql, first, second) = match (&workspace, &list_kind) {
-                    (Some(_), Some(_)) => (
-                        SQL_EXECUTIONS_BY_WORKSPACE_AND_KIND,
-                        workspace.clone(),
-                        list_kind.clone(),
-                    ),
-                    (Some(_), None) => (SQL_EXECUTIONS_BY_WORKSPACE, workspace.clone(), None),
-                    (None, Some(_)) => (SQL_EXECUTIONS_BY_KIND, None, list_kind.clone()),
-                    (None, None) => (SQL_EXECUTIONS_ALL, None, None),
-                };
-                let mut statement = connection.prepare(sql).map_err(sql_query_error)?;
-                let records = statement
-                    .query_map(params![first, second, limit, offset], |row| {
-                        row.get::<_, String>(0)
-                    })
-                    .map_err(sql_query_error)?
-                    .map(|row| {
-                        row.map_err(sql_query_error).and_then(|raw| {
-                            decode_workflow_execution_record_v1(&raw).map_err(codec_query_error)
-                        })
-                    })
-                    .collect();
-                records
-            })
-            .map_err(query_error)
+        Ok(records
+            .into_iter()
+            .skip(usize::try_from(offset).unwrap_or(0))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .collect())
     }
 }
 
@@ -115,11 +99,26 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         &self,
         workspace_identity: &WorkspaceIdentity,
     ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
+        let folded = self
+            .repository
+            .folded_workspace_trees(workspace_identity.as_str())
+            .map_err(query_error)?;
         let tree = self
             .repository
-            .load(workspace_identity)
+            .workspace_tree_from_folded(workspace_identity.as_str(), &folded)
             .map_err(query_error)?
             .unwrap_or_else(|| WorkspaceTree::empty(workspace_identity.as_str()));
+        let session_tree_ids = folded
+            .iter()
+            .filter_map(|(tree, _)| match &tree.root {
+                TreeRootFact::Session(root)
+                    if root.workspace_identity == workspace_identity.as_str() =>
+                {
+                    Some(tree.aggregate.id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let execution_ids = tree
             .nodes()
             .iter()
@@ -139,6 +138,14 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let nodes = project_tree(&tree, &hidden);
         Ok(WorkspaceTreeSnapshotDto {
             nodes,
+            sessions: crate::adaptor::gateway::agent_session::workspace_session_items(
+                &self.repository.fact_backend(),
+                &session_tree_ids,
+                workspace_identity.as_str(),
+            )
+            .map_err(|error| {
+                WorkflowError::external(format!("workspace session query failed: {error:?}"))
+            })?,
             preferred_node_id,
         })
     }
@@ -180,22 +187,10 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         &self,
         execution_id: &str,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        let execution_id = execution_id.to_string();
         self.repository
-            .run_indexed(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT record FROM workflow_executions WHERE execution_id = ?1",
-                        params![execution_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(sql_query_error)?
-                    .map(|raw| decode_workflow_execution_record_v1(&raw).map_err(codec_query_error))
-                    .transpose()
-            })
+            .folded_tree(execution_id)
             .map_err(query_error)?
-            .map(execution_summary)
+            .map(|(_, record)| execution_summary(record))
             .transpose()
     }
 

@@ -882,7 +882,7 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
     assert_eq!(
         after_running_log
             .iter()
-            .filter(|event| event["event"] == "node_submit_received")
+            .filter(|event| event["event"] == "submit_received")
             .count(),
         1
     );

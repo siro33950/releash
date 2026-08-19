@@ -8,51 +8,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::adaptor::gateway::workflow::execution_store::{
-    decode_workflow_execution_projection_record_v1, decode_workflow_worktree_owner_record_v1,
-    encode_workflow_execution_projection_record_v1, encode_workflow_worktree_owner_record_v1,
-};
 use crate::domain::local_event::{
-    AgentSessionLifecycleRecord, AgentSessionOriginRecord, AgentSessionProjectionRecord,
     AgentSessionProviderRecord, LocalStateMutation, ProviderHookHealthProjectionRecord,
     ProviderSessionOwnershipProjectionRecord, RevisionGuard, SessionProjectionRecord,
-    WorkflowExecutionProjectionRecord,
 };
 
-use super::indexed_projection_codec::encode_workflow_execution_node_v1;
 use super::state_record_codec::{StoredOperationReceiptV1, StoredOperationStatusV1};
 
 pub(crate) const PROJECTION_RECORD_MAX_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const AGENT_SESSION_STORAGE_PREFIX: &str = "agent-session:";
 pub(crate) const PROVIDER_SESSION_OWNERSHIP_STORAGE_PREFIX: &str = "provider-session-ownership:";
 pub(crate) const PROVIDER_HOOK_HEALTH_STORAGE_PREFIX: &str = "provider-hook-health:";
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoredAgentSessionProjectionV1 {
-    schema: String,
-    id: String,
-    workspace_identity: String,
-    worktree_path: String,
-    provider: String,
-    origin: StoredAgentSessionOriginV1,
-    lifecycle: String,
-    provider_session_id: Option<String>,
-    transcript_ref: Option<String>,
-    initial_instruction_admitted: bool,
-    #[serde(default)]
-    last_exit_abnormal: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredAgentSessionOriginV1 {
-    Standalone,
-    WorkflowNode {
-        workflow_execution_id: String,
-        node_execution_id: String,
-    },
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,110 +151,6 @@ fn decode_provider_record(value: &str) -> Result<AgentSessionProviderRecord, Str
     }
 }
 
-fn encode_agent_session_projection_record_v1(
-    record: &AgentSessionProjectionRecord,
-) -> Result<String, String> {
-    validate_agent_session_projection(record)?;
-    let stored = StoredAgentSessionProjectionV1 {
-        schema: "agent_session_projection_v1".to_string(),
-        id: record.id.clone(),
-        workspace_identity: record.workspace_identity.clone(),
-        worktree_path: record.worktree_path.clone(),
-        provider: provider_record_label(record.provider).to_string(),
-        origin: match &record.origin {
-            AgentSessionOriginRecord::Standalone => StoredAgentSessionOriginV1::Standalone,
-            AgentSessionOriginRecord::WorkflowNode {
-                workflow_execution_id,
-                node_execution_id,
-            } => StoredAgentSessionOriginV1::WorkflowNode {
-                workflow_execution_id: workflow_execution_id.clone(),
-                node_execution_id: node_execution_id.clone(),
-            },
-        },
-        lifecycle: match record.lifecycle {
-            AgentSessionLifecycleRecord::Open => "open",
-            AgentSessionLifecycleRecord::Paused => "paused",
-            AgentSessionLifecycleRecord::Archived => "archived",
-        }
-        .to_string(),
-        provider_session_id: record.provider_session_id.clone(),
-        transcript_ref: record.transcript_ref.clone(),
-        initial_instruction_admitted: record.initial_instruction_admitted,
-        last_exit_abnormal: record.last_exit_abnormal,
-    };
-    serde_json::to_string(&stored).map_err(|_| "provider AgentSession encode failed".to_string())
-}
-
-fn decode_agent_session_projection_record_v1(
-    raw: &str,
-) -> Result<AgentSessionProjectionRecord, String> {
-    let stored: StoredAgentSessionProjectionV1 = serde_json::from_str(raw)
-        .map_err(|_| "provider AgentSession projection is malformed".to_string())?;
-    if stored.schema != "agent_session_projection_v1" {
-        return Err("provider AgentSession projection schema is unsupported".to_string());
-    }
-    let record = AgentSessionProjectionRecord {
-        id: stored.id,
-        workspace_identity: stored.workspace_identity,
-        worktree_path: stored.worktree_path,
-        provider: decode_provider_record(&stored.provider)
-            .map_err(|_| "provider AgentSession provider is invalid".to_string())?,
-        origin: match stored.origin {
-            StoredAgentSessionOriginV1::Standalone => AgentSessionOriginRecord::Standalone,
-            StoredAgentSessionOriginV1::WorkflowNode {
-                workflow_execution_id,
-                node_execution_id,
-            } => AgentSessionOriginRecord::WorkflowNode {
-                workflow_execution_id,
-                node_execution_id,
-            },
-        },
-        lifecycle: match stored.lifecycle.as_str() {
-            "open" => AgentSessionLifecycleRecord::Open,
-            "paused" => AgentSessionLifecycleRecord::Paused,
-            "archived" => AgentSessionLifecycleRecord::Archived,
-            _ => return Err("provider AgentSession lifecycle is invalid".to_string()),
-        },
-        provider_session_id: stored.provider_session_id,
-        transcript_ref: stored.transcript_ref,
-        initial_instruction_admitted: stored.initial_instruction_admitted,
-        last_exit_abnormal: stored.last_exit_abnormal,
-    };
-    validate_agent_session_projection(&record)?;
-    Ok(record)
-}
-
-fn validate_agent_session_projection(record: &AgentSessionProjectionRecord) -> Result<(), String> {
-    if record.id.trim().is_empty()
-        || record.workspace_identity.trim().is_empty()
-        || record.worktree_path.trim().is_empty()
-        || crate::domain::repository::normalize_repo_path(&record.workspace_identity)
-            != record.workspace_identity
-        || crate::domain::repository::normalize_repo_path(&record.worktree_path)
-            != record.worktree_path
-        || record
-            .provider_session_id
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        || record
-            .transcript_ref
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-    {
-        return Err("provider AgentSession projection is invalid".to_string());
-    }
-    if let AgentSessionOriginRecord::WorkflowNode {
-        workflow_execution_id,
-        node_execution_id,
-    } = &record.origin
-    {
-        if workflow_execution_id.trim().is_empty() || node_execution_id.trim().is_empty() {
-            return Err("provider AgentSession workflow ownership is invalid".to_string());
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn canonical_mutation_identity_v1(
     mutation: &LocalStateMutation,
 ) -> Result<Vec<u8>, String> {
@@ -323,28 +184,6 @@ pub(crate) fn canonical_mutation_identity_v1(
             bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
             Ok(bytes)
         }
-        LocalStateMutation::WorkflowExecutionProjection(mutation) => {
-            text(&mut bytes, "workflow_execution_projection");
-            text(
-                &mut bytes,
-                &encode_workflow_execution_projection_record_v1(&mutation.projection)?,
-            );
-            revision_guard(&mut bytes, mutation.expected);
-            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
-            Ok(bytes)
-        }
-        LocalStateMutation::WorkflowExecutionNodeProjection(mutation) => {
-            text(&mut bytes, "workflow_execution_node_projection");
-            text(&mut bytes, &mutation.execution_id);
-            for node in &mutation.nodes {
-                let (tree, detail) = encode_workflow_execution_node_v1(node)?;
-                text(&mut bytes, &tree);
-                text(&mut bytes, &detail);
-            }
-            revision_guard(&mut bytes, mutation.expected);
-            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
-            Ok(bytes)
-        }
         LocalStateMutation::OperationRecord(mutation) => {
             text(&mut bytes, "operation_record");
             text(&mut bytes, mutation.kind.label());
@@ -371,20 +210,11 @@ pub(crate) fn encode_session_projection_record_v1(
     record: &SessionProjectionRecord,
 ) -> Result<String, String> {
     let raw = match record {
-        SessionProjectionRecord::AgentSession(projection) => {
-            encode_agent_session_projection_record_v1(projection)?
-        }
         SessionProjectionRecord::ProviderSessionOwnership(projection) => {
             encode_provider_session_ownership_projection_record_v1(projection)?
         }
         SessionProjectionRecord::ProviderHookHealth(projection) => {
             encode_provider_hook_health_projection_record_v1(projection)?
-        }
-        SessionProjectionRecord::WorkflowExecution(projection) => {
-            encode_workflow_execution_projection_record_v1(projection)?
-        }
-        SessionProjectionRecord::WorkflowWorktreeOwner(owner) => {
-            encode_workflow_worktree_owner_record_v1(owner)?
         }
     };
     validate_stored_bound(&raw)?;
@@ -404,16 +234,6 @@ pub(crate) fn decode_session_projection_record_v1(
         SessionProjectionRecord::ProviderSessionOwnership(
             decode_provider_session_ownership_projection_record_v1(raw)?,
         )
-    } else if session_id.starts_with(AGENT_SESSION_STORAGE_PREFIX) {
-        SessionProjectionRecord::AgentSession(decode_agent_session_projection_record_v1(raw)?)
-    } else if session_id.starts_with("workflow-worktree:") {
-        SessionProjectionRecord::WorkflowWorktreeOwner(decode_workflow_worktree_owner_record_v1(
-            raw,
-        )?)
-    } else if session_id.starts_with("workflow:") {
-        SessionProjectionRecord::WorkflowExecution(decode_workflow_execution_projection_record_v1(
-            raw,
-        )?)
     } else {
         return Err("legacy Agent Session projection is unsupported".to_string());
     };
@@ -444,13 +264,6 @@ fn validate_session_projection_key(
     record: &SessionProjectionRecord,
 ) -> Result<(), String> {
     match record {
-        SessionProjectionRecord::AgentSession(projection)
-            if session_id
-                .strip_prefix(AGENT_SESSION_STORAGE_PREFIX)
-                .is_some_and(|id| id == projection.id) =>
-        {
-            Ok(())
-        }
         SessionProjectionRecord::ProviderSessionOwnership(projection)
             if session_id == provider_session_ownership_storage_key(projection) =>
         {
@@ -465,35 +278,8 @@ fn validate_session_projection_key(
         {
             Ok(())
         }
-        SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
-            execution,
-        )) if session_id
-            .strip_prefix("workflow:")
-            .is_some_and(|id| id == execution.execution_id) =>
-        {
-            Ok(())
-        }
-        SessionProjectionRecord::WorkflowExecution(
-            WorkflowExecutionProjectionRecord::Deleted { execution_id },
-        ) if session_id
-            .strip_prefix("workflow:")
-            .is_some_and(|id| id == execution_id) =>
-        {
-            Ok(())
-        }
-        SessionProjectionRecord::WorkflowWorktreeOwner(owner)
-            if session_id == workflow_worktree_storage_key(&owner.worktree_path)
-                && !owner.execution_id.is_empty() =>
-        {
-            Ok(())
-        }
         _ => Err("projection row identity does not match its semantic record".to_string()),
     }
-}
-
-fn workflow_worktree_storage_key(worktree_path: &str) -> String {
-    let digest = Sha256::digest(worktree_path.as_bytes());
-    format!("workflow-worktree:{}", hex::encode(digest))
 }
 
 fn provider_session_ownership_storage_key(
@@ -570,10 +356,6 @@ fn preserve_additive_fields(raw: &Value, known: &Value, next: &mut Value) {
         _ => {}
     }
 }
-
-#[cfg(test)]
-#[path = "agent_session_lifecycle_projection_codec_test.rs"]
-mod agent_session_lifecycle_projection_codec_tests;
 
 fn unique_array_keys(values: &[Value]) -> Option<Vec<String>> {
     let keys = values

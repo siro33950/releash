@@ -31,9 +31,8 @@ pub(crate) use agent_session_lifecycle::{
 };
 pub(crate) use agent_session_query::{
     AgentSessionActivityDto, AgentSessionItemDto, AgentSessionLifecycleDto,
-    AgentSessionListPageDto, AgentSessionListRequest, AgentSessionOperationsDto,
-    AgentSessionOriginDto, AgentSessionOriginFilter, AgentSessionProviderDto,
-    AgentSessionQueryError, AgentSessionQueryService,
+    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionQueryError,
+    AgentSessionQueryService, AgentSessionTreeParentDto,
 };
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;

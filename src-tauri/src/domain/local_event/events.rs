@@ -4,13 +4,11 @@
 //! enums so variant additions in those modules never require changes here.
 //! The application stream owns its own minimal event vocabulary below.
 
-use crate::domain::agent_session::aggregates::AgentSessionLifecycleEvent;
 use crate::domain::agent_session::ProviderSessionOwnershipEvent;
 use crate::domain::local_event::identifiers::{
     CommitIdentity, EventId, GlobalSequence, StreamId, StreamSequence, StreamVersion,
 };
 use crate::domain::provider_lifecycle::{ProviderHookHealthEvent, ProviderLifecycleEvent};
-use crate::domain::workflow::events::WorkflowDomainEvent;
 
 /// Shutdown / quit intent fixed by the first accepted quit request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +62,7 @@ pub enum ApplicationDomainEvent {
 /// Closed sum of every domain event the store can persist.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalDomainEvent {
-    AgentSessionLifecycle(AgentSessionLifecycleEvent),
     ProviderSessionOwnership(ProviderSessionOwnershipEvent),
-    Workflow(WorkflowDomainEvent),
     ProviderLifecycle(ProviderLifecycleEvent),
     ProviderHookHealth(ProviderHookHealthEvent),
     Application(ApplicationDomainEvent),

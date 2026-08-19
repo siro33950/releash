@@ -503,22 +503,12 @@ mod tests {
                  ) VALUES (
                      'maintenance-shutdown', 'owner', 0, '{}', 'maintenance-preserved'
                  );
-                 INSERT INTO workflow_executions (
-                     execution_id, workspace_identity, status, list_kind, sort_at_bits,
-                     record_schema, record, source_revision, commit_id
+                 INSERT INTO node_events (
+                     tree_id, seq, node_execution_id, parent_id, node_name, kind,
+                     attempt, event_type, detail, timestamp
                  ) VALUES (
-                     'maintenance-execution', 'maintenance-workspace', 'running', 'active', 1,
-                     'workflow_execution_record_v1', '{}', 1, 'maintenance-preserved'
-                 );
-                 INSERT INTO workflow_execution_nodes (
-                     execution_id, node_id, parent_id, sibling_order, session_id,
-                     node_execution_id, record_schema, tree_record, detail_record,
-                     source_revision, commit_id
-                 ) VALUES (
-                     'maintenance-execution', 'maintenance-node', NULL, 0,
-                     'maintenance-session', 'maintenance-node-execution',
-                     'workflow_execution_node_record_v1', '{}', '{}', 1,
-                     'maintenance-preserved'
+                     'maintenance-execution', 1, 'maintenance-node-execution', NULL,
+                     'main', 'session', 1, 'started', '{}', 1
                  );
                  UPDATE store_metadata
                     SET next_global_sequence = 2,
@@ -551,7 +541,7 @@ mod tests {
     }
 
     fn snapshot_store(connection: &Connection) -> StoreSnapshot {
-        const TABLES: [&str; 15] = [
+        const TABLES: [&str; 14] = [
             "logical_commits",
             "stream_heads",
             "events",
@@ -565,8 +555,7 @@ mod tests {
             "shutdown_plans",
             "shutdown_targets",
             "shutdown_recovery_snapshots",
-            "workflow_executions",
-            "workflow_execution_nodes",
+            "node_events",
         ];
 
         let tables = TABLES

@@ -365,6 +365,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
 			repository: repository.clone(),
 			installation_id: installation_id.clone(),
+			store: store.clone(),
 			data_dir: config.data_dir.clone(),
 				provider_executable_config: Arc::new(
 					crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
@@ -395,8 +396,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             Some(config.data_dir.clone()),
-            repository.clone(),
-            installation_id.clone(),
             composition.launch.clone(),
             composition.initial_instruction.clone(),
             composition.interrupt.clone(),

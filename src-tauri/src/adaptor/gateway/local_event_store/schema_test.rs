@@ -143,7 +143,6 @@ fn rewrite_as_supported_v1(connection: &Connection) {
              DROP INDEX idx_pending_obligations_owner;
              DROP INDEX idx_pending_obligations_shutdown;
              DROP INDEX idx_shutdown_plans_details_state;
-             DROP INDEX idx_workflow_execution_nodes_node_execution;
              ALTER TABLE logical_commits
                  RENAME COLUMN installation_id TO generation_id;
              ALTER TABLE operation_bindings
@@ -204,8 +203,6 @@ fn rewrite_as_supported_v1(connection: &Connection) {
              SELECT session_id, projection, revision, commit_id
              FROM session_projection_v5;
              DROP TABLE session_projection_v5;
-             DROP TABLE workflow_execution_nodes;
-             DROP TABLE workflow_executions;
              PRAGMA user_version = 1;
              COMMIT;
              PRAGMA foreign_keys = ON;",
@@ -220,11 +217,6 @@ fn create_supported_store(root: &Path, version: i64) {
         rewrite_as_supported_v1(&connection);
         add_retired_schema_and_data(&connection, "generation_id");
     } else {
-        if version <= 3 {
-            connection
-                .execute_batch("DROP INDEX idx_workflow_execution_nodes_node_execution;")
-                .unwrap();
-        }
         rewrite_metadata_version(&connection, version);
         add_retired_schema_and_data(&connection, "installation_id");
     }
@@ -283,6 +275,8 @@ fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削除�
         drop(open_store(root.path()));
         let connection = open_existing_writer(&database_path(root.path())).unwrap();
         assert_retired_schema_absent(&connection);
+        // v6: どのテーブルからも参照されなくなった commit 台帳（孤児）は
+        // 廃止データと一緒に掃除される（D3）。
         let retained_commit_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM logical_commits
@@ -291,7 +285,7 @@ fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削除�
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(retained_commit_count, 1, "supported schema v{version}");
+        assert_eq!(retained_commit_count, 0, "supported schema v{version}");
         drop(connection);
 
         drop(open_store(root.path()));

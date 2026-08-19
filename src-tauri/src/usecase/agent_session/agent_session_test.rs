@@ -7,7 +7,7 @@ use super::{
     AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
     AgentSessionUsecase, AgentSessionUsecaseError, WorkflowAgentSessionLaunchRequest,
 };
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionOrigin};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeParent};
 use crate::domain::agent_session::aggregates::{
     AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionProcessExitOutcome,
     AgentSessionRecoveryResult, ManagedPtyPresence, ResolvedProviderExecutable,
@@ -117,7 +117,7 @@ async fn test_agent_session_usecase選択されたproviderでstandalone_session�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -130,14 +130,14 @@ async fn test_agent_session_usecase選択されたproviderでstandalone_session�
             WorkspaceIdentity::new("/repo"),
             "/repo/.worktrees/feature",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-request-1",
         )
         .await
         .unwrap();
 
     assert_eq!(created.session().provider(), ProviderKind::Codex);
-    assert_eq!(created.session().origin(), &AgentSessionOrigin::Standalone);
+    assert_eq!(created.session().tree_parent(), None);
     assert_eq!(created.revision(), 1);
 }
 
@@ -148,7 +148,7 @@ async fn test_agent_session_usecase永続化失敗で共有状態を進めない
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(session));
@@ -562,7 +562,7 @@ async fn test_agent_session_launch_利用可能な選択providerをterminal_root
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -619,7 +619,7 @@ async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepo
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -670,7 +670,7 @@ async fn test_agent_session_launch_hookwarning保存完了を待たずpty起動�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -730,7 +730,7 @@ async fn test_agent_session_launch_利用不可providerではsessionもptyも作
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -796,7 +796,7 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -855,7 +855,7 @@ async fn test_agent_session_launch_完了済みrequest_id再送は再作成せ�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -895,7 +895,7 @@ async fn test_agent_session_launch_異なるrequest_idは別のsessionを作成�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -936,7 +936,7 @@ async fn test_agent_session_launch_失敗結果も記録し同一request_id再�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -982,7 +982,7 @@ async fn test_agent_session_launch_起動panic後はin_flightに残さず同一r
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -1031,10 +1031,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
@@ -1130,10 +1127,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
@@ -1209,10 +1203,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
@@ -1278,10 +1269,7 @@ fn durable_usecase(
     )
     .unwrap();
     let repository = Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     );
     (store, AgentSessionUsecase::new(repository))
 }
@@ -1296,7 +1284,7 @@ async fn test_agent_session_usecase_process_exit_resume_archive_deleteを永続�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-1",
         )
         .await
@@ -1370,7 +1358,7 @@ async fn test_agent_session_usecase_id不明archiveは確認後deleteへ縮退�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-unknown",
         )
         .await
@@ -1409,7 +1397,7 @@ async fn test_agent_session_usecase_gcはpty不在確定時だけunknown_idを�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-gc",
         )
         .await
@@ -1448,10 +1436,7 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
@@ -1491,8 +1476,8 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
         .unwrap();
 
     assert_eq!(
-        launched.session().origin(),
-        &AgentSessionOrigin::workflow_node("workflow-1", "node-1").unwrap()
+        launched.session().tree_parent(),
+        Some(&AgentSessionTreeParent::new("workflow-1", "node-1").unwrap())
     );
     assert_eq!(
         launch_gateway.launches.lock().unwrap().as_slice(),
@@ -1521,10 +1506,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
@@ -1581,10 +1563,7 @@ async fn test_agent_session_launch_rollbackのterminal削除失敗でも後続cl
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     *launch_gateway.fail_prepare.lock().unwrap() = true;
@@ -1641,7 +1620,7 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));

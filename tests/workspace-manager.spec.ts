@@ -192,10 +192,6 @@ test.describe("Workspace Manager", () => {
 				(branch) => branch.name === "feat/wip",
 			),
 			list_available_agent_session_providers: ["codex"],
-			list_agent_sessions: {
-				items: [],
-				nextAfterSessionId: null,
-			},
 			create_agent_session: agentSessionId,
 			get_agent_session: agentSession(agentSessionId, worktreePath),
 			open_agent_session: "attached",

@@ -1,13 +1,8 @@
-use super::{WorkspaceIdentity, WorkspaceTree, WorkspaceTreeNode};
+use super::{WorkspaceIdentity, WorkspaceTreeNode};
 
 /// Read-only port for restoring a Workspace aggregate from canonical indexed
 /// records. There is intentionally no save/CAS operation.
 pub trait WorkspaceTreeRepository: Send + Sync {
-    fn load(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-    ) -> Result<Option<WorkspaceTree>, crate::domain::local_event::LocalEventQueryError>;
-
     fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,

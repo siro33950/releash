@@ -144,48 +144,9 @@ impl NodeExecution {
                 NodeExecutionStatus::Running | NodeExecutionStatus::Paused
             ) && self.completion_signals.is_partial())
     }
-
-    pub fn replay_completed(
-        &mut self,
-        result_summary: Option<String>,
-        token_usage: Option<TokenUsage>,
-        completed_at: f64,
-    ) {
-        self.status = NodeExecutionStatus::Succeeded;
-        self.result_summary = result_summary;
-        self.token_usage = token_usage;
-        self.failure = None;
-        self.completed_at = Some(completed_at);
-    }
-
-    pub fn replay_failed(&mut self, failure: NodeExecutionFailure, completed_at: f64) {
-        self.status = NodeExecutionStatus::Failed;
-        self.failure = Some(failure);
-        self.completed_at = Some(completed_at);
-    }
-
-    pub fn replay_approval_requested(&mut self) {
-        self.status = NodeExecutionStatus::WaitingApproval;
-    }
-
-    pub fn replay_paused(&mut self) {
-        self.status = NodeExecutionStatus::Paused;
-    }
-
-    pub fn replay_resumed(&mut self) {
-        self.status = NodeExecutionStatus::Running;
-    }
-
-    pub fn replay_approval_resolved(&mut self) {
-        self.status = NodeExecutionStatus::Running;
-    }
 }
 
-impl NodeExecution {
-    pub fn record_artifact(&mut self, artifact: Artifact) {
-        self.artifact = Some(artifact);
-    }
-}
+impl NodeExecution {}
 
 #[cfg(test)]
 mod tests {

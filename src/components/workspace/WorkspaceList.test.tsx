@@ -1,7 +1,9 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
+import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
@@ -12,6 +14,7 @@ import { WorkspaceList } from "./WorkspaceList";
 
 type MockWorkspaceTreeState = {
 	nodes: WorkspaceTreeItem[];
+	sessions?: AgentSessionItem[];
 	preferredNodeId?: string | null;
 	workflowHistory?: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent?: WorkspaceTreeReconciliationEvent | null;
@@ -61,8 +64,31 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 		const state = mocks.treeStateOverrides.get(worktreePath) ?? {
 			nodes: [],
 		};
+		const [sessions, setSessions] = useState<AgentSessionItem[]>(
+			state.sessions ?? [],
+		);
+		useEffect(() => {
+			if (state.sessions) {
+				setSessions(state.sessions);
+				return;
+			}
+			let active = true;
+			void mocks
+				.invoke("list_workspace_worktree_nodes", { worktreePath })
+				.then((snapshot: unknown) => {
+					if (!active) return;
+					setSessions(
+						(snapshot as { sessions?: AgentSessionItem[] } | null)?.sessions ??
+							[],
+					);
+				});
+			return () => {
+				active = false;
+			};
+		}, [state.sessions, worktreePath]);
 		return {
 			nodes: state.nodes,
+			sessions,
 			preferredNodeId: state.preferredNodeId ?? null,
 			workflowHistory: state.workflowHistory ?? [],
 			reconciliationEvent: state.reconciliationEvent ?? null,
@@ -204,8 +230,8 @@ function mockDeferredProviderCreate() {
 		reject?: (error: Error) => void;
 	} = {};
 	mocks.invoke.mockImplementation((command: string) => {
-		if (command === "list_agent_sessions") {
-			return Promise.resolve({ items: [], nextAfterSessionId: null });
+		if (command === "list_workspace_worktree_nodes") {
+			return Promise.resolve({ nodes: [], sessions: [] });
 		}
 		if (command === "list_available_agent_session_providers") {
 			return Promise.resolve(["codex"]);
@@ -305,9 +331,10 @@ describe("WorkspaceList", () => {
 
 	it("backendが絞り込んだStandalone AgentSessionを選択できる", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_agent_sessions") {
+			if (command === "list_workspace_worktree_nodes") {
 				return Promise.resolve({
-					items: [
+					nodes: [],
+					sessions: [
 						{
 							id: "provider-agent-1",
 							workspaceIdentity: "/repo/wt",
@@ -323,7 +350,6 @@ describe("WorkspaceList", () => {
 							},
 						},
 					],
-					nextAfterSessionId: null,
 				});
 			}
 			return Promise.resolve(null);
@@ -337,10 +363,8 @@ describe("WorkspaceList", () => {
 			}),
 		);
 
-		expect(mocks.invoke).toHaveBeenCalledWith("list_agent_sessions", {
-			workspaceIdentity: "/repo/wt",
-			origin: "standalone",
-			limit: 100,
+		expect(mocks.invoke).toHaveBeenCalledWith("list_workspace_worktree_nodes", {
+			worktreePath: "/repo/wt",
 		});
 		expect(onSelectWorktree).toHaveBeenCalledWith(
 			"/repo/wt",
@@ -355,32 +379,27 @@ describe("WorkspaceList", () => {
 	});
 
 	it("Archived AgentSessionをWorkspaceからSessionHistoryへ移して復帰できる", async () => {
-		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
-			if (command === "list_agent_sessions") {
-				const lifecycle = (args as { lifecycle?: string })?.lifecycle;
-				return Promise.resolve(
-					lifecycle === "archived"
-						? {
-								items: [
-									{
-										id: "provider-agent-archived",
-										workspaceIdentity: "/repo/wt",
-										worktreePath: "/repo/wt",
-										provider: "claude",
-										lifecycle: "archived",
-										activity: "idle",
-										lastExitAbnormal: false,
-										operations: {
-											canArchive: false,
-											canRestore: true,
-											canDelete: true,
-										},
-									},
-								],
-								nextAfterSessionId: null,
-							}
-						: { items: [], nextAfterSessionId: null },
-				);
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command === "list_workspace_worktree_nodes") {
+				return Promise.resolve({
+					nodes: [],
+					sessions: [
+						{
+							id: "provider-agent-archived",
+							workspaceIdentity: "/repo/wt",
+							worktreePath: "/repo/wt",
+							provider: "claude",
+							lifecycle: "archived",
+							activity: "idle",
+							lastExitAbnormal: false,
+							operations: {
+								canArchive: false,
+								canRestore: true,
+								canDelete: true,
+							},
+						},
+					],
+				});
 			}
 			if (command === "list_agent_session_history") {
 				return Promise.resolve({ items: [], nextAfter: null });
@@ -436,9 +455,10 @@ describe("WorkspaceList", () => {
 
 	it("Standalone AgentSessionの実行状態はテキストでなくアイコン色で表現する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_agent_sessions") {
+			if (command === "list_workspace_worktree_nodes") {
 				return Promise.resolve({
-					items: [
+					nodes: [],
+					sessions: [
 						{
 							id: "provider-agent-running",
 							workspaceIdentity: "/repo/wt",
@@ -496,7 +516,6 @@ describe("WorkspaceList", () => {
 							},
 						},
 					],
-					nextAfterSessionId: null,
 				});
 			}
 			return Promise.resolve(undefined);
@@ -538,9 +557,10 @@ describe("WorkspaceList", () => {
 
 	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_agent_sessions") {
+			if (command === "list_workspace_worktree_nodes") {
 				return Promise.resolve({
-					items: [
+					nodes: [],
+					sessions: [
 						{
 							id: "provider-agent-unknown",
 							workspaceIdentity: "/repo/wt",
@@ -556,7 +576,6 @@ describe("WorkspaceList", () => {
 							},
 						},
 					],
-					nextAfterSessionId: null,
 				});
 			}
 			if (command === "archive_agent_session") {
@@ -596,9 +615,10 @@ describe("WorkspaceList", () => {
 
 	it("Standalone AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_agent_sessions") {
+			if (command === "list_workspace_worktree_nodes") {
 				return Promise.resolve({
-					items: [
+					nodes: [],
+					sessions: [
 						{
 							id: "provider-agent-known",
 							workspaceIdentity: "/repo/wt",
@@ -614,7 +634,6 @@ describe("WorkspaceList", () => {
 							},
 						},
 					],
-					nextAfterSessionId: null,
 				});
 			}
 			if (command === "archive_agent_session") {
@@ -641,72 +660,54 @@ describe("WorkspaceList", () => {
 		window.removeEventListener("agent-session-refresh", refresh);
 	});
 
-	it("Standalone AgentSession一覧の次pageをcursorから表示する", async () => {
-		mocks.invoke.mockImplementation((command: string, args?: unknown) => {
-			if (command !== "list_agent_sessions") {
+	it("Standalone AgentSession一覧を共通snapshotから表示する", async () => {
+		mocks.invoke.mockImplementation((command: string) => {
+			if (command !== "list_workspace_worktree_nodes") {
 				return Promise.resolve(null);
 			}
-			const afterSessionId = (args as { afterSessionId?: string })
-				?.afterSessionId;
-			return Promise.resolve(
-				afterSessionId
-					? {
-							items: [
-								{
-									id: "provider-agent-2",
-									workspaceIdentity: "/repo/wt",
-									worktreePath: "/repo/wt",
-									provider: "codex",
-									lifecycle: "open",
-									activity: "idle",
-									lastExitAbnormal: false,
-									operations: {
-										canArchive: true,
-										canRestore: false,
-										canDelete: false,
-									},
-								},
-							],
-							nextAfterSessionId: null,
-						}
-					: {
-							items: [
-								{
-									id: "provider-agent-1",
-									workspaceIdentity: "/repo/wt",
-									worktreePath: "/repo/wt",
-									provider: "claude",
-									lifecycle: "open",
-									activity: "idle",
-									lastExitAbnormal: false,
-									operations: {
-										canArchive: true,
-										canRestore: false,
-										canDelete: false,
-									},
-								},
-							],
-							nextAfterSessionId: "provider-agent-1",
+			return Promise.resolve({
+				nodes: [],
+				sessions: [
+					{
+						id: "provider-agent-2",
+						workspaceIdentity: "/repo/wt",
+						worktreePath: "/repo/wt",
+						provider: "codex",
+						lifecycle: "open",
+						activity: "idle",
+						lastExitAbnormal: false,
+						operations: {
+							canArchive: true,
+							canRestore: false,
+							canDelete: false,
 						},
-			);
+					},
+					{
+						id: "provider-agent-1",
+						workspaceIdentity: "/repo/wt",
+						worktreePath: "/repo/wt",
+						provider: "claude",
+						lifecycle: "open",
+						activity: "idle",
+						lastExitAbnormal: false,
+						operations: {
+							canArchive: true,
+							canRestore: false,
+							canDelete: false,
+						},
+					},
+				],
+			});
 		});
-		const user = userEvent.setup();
 		renderWorkspaceList();
-
-		await user.click(
-			await screen.findByRole("button", { name: "Load more AgentSessions" }),
-		);
 
 		expect(
 			await screen.findByRole("button", {
 				name: "Codex AgentSession, open",
 			}),
 		).toBeVisible();
-		expect(mocks.invoke).toHaveBeenCalledWith("list_agent_sessions", {
-			workspaceIdentity: "/repo/wt",
-			origin: "standalone",
-			limit: 100,
-			afterSessionId: "provider-agent-1",
+		expect(mocks.invoke).toHaveBeenCalledWith("list_workspace_worktree_nodes", {
+			worktreePath: "/repo/wt",
 		});
 	});
 
@@ -1186,10 +1187,10 @@ describe("WorkspaceList", () => {
 			provider: "codex" as const,
 		};
 		mocks.invoke.mockImplementation((command) => {
-			if (command === "list_agent_sessions") {
+			if (command === "list_workspace_worktree_nodes") {
 				providerSessionListCalls += 1;
 				return providerSessionListCalls === 1
-					? Promise.resolve({ items: [], nextAfterSessionId: null })
+					? Promise.resolve({ nodes: [], sessions: [] })
 					: refreshAfterCreate;
 			}
 			if (command === "list_available_agent_session_providers") {
@@ -1494,8 +1495,8 @@ describe("WorkspaceList", () => {
 	it("resumes a Provider history candidate as a new AgentSession", async () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command) => {
-			if (command === "list_agent_sessions") {
-				return Promise.resolve({ items: [], nextAfterSessionId: null });
+			if (command === "list_workspace_worktree_nodes") {
+				return Promise.resolve({ nodes: [], sessions: [] });
 			}
 			if (command === "list_agent_session_history") {
 				return Promise.resolve({
@@ -1552,8 +1553,8 @@ describe("WorkspaceList", () => {
 	it("Provider historyの次pageをcursorから表示する", async () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command, args?: unknown) => {
-			if (command === "list_agent_sessions") {
-				return Promise.resolve({ items: [], nextAfterSessionId: null });
+			if (command === "list_workspace_worktree_nodes") {
+				return Promise.resolve({ nodes: [], sessions: [] });
 			}
 			if (command === "list_agent_session_history") {
 				const after = (args as { after?: string })?.after;

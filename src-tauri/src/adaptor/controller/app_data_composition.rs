@@ -119,16 +119,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use parking_lot::RwLock;
-    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::domain::local_event::{
-        AgentSessionLifecycleRecord, AgentSessionOriginRecord, AgentSessionProjectionRecord,
-        AgentSessionProviderRecord, CanonicalRuntimeOwnerView, CommitBatchError, CommitBatchResult,
-        CommitIdentity, CommitOperationKind, CommitResolution, DomainEventPage, IdempotencyBinding,
-        LocalAtomicBatch, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
-        LocalStateMutation, Revision, RevisionGuard, SessionProjectionMutation,
-        SessionProjectionRecord, WorkflowWorktreeOwnerRecord,
+        CanonicalRuntimeOwnerView, CommitBatchError, CommitBatchResult, CommitIdentity,
+        CommitResolution, DomainEventPage, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
+        LocalEventQueryResult, LocalStateMutation,
     };
     use crate::infrastructure::app_data_path::AppDataPathOperation;
 
@@ -147,7 +143,12 @@ mod tests {
     }
 
     enum OwnerQueryAction {
-        Commit(LocalAtomicBatch),
+        AppendFacts(
+            Vec<(
+                crate::domain::workflow::NodeFactMeta,
+                crate::domain::workflow::NodeFact,
+            )>,
+        ),
         FailRevalidation,
         ReturnWrongShape,
         ReturnOversizeSnapshot(Vec<CanonicalRuntimeOwnerView>),
@@ -256,11 +257,16 @@ mod tests {
                 let action = self.action.lock().expect("owner race action").take();
                 if let Some(action) = action {
                     match action {
-                        OwnerQueryAction::Commit(batch) => {
-                            self.inner
-                                .commit_batch(batch)
-                                .await
-                                .expect("projection committed after candidate planning");
+                        OwnerQueryAction::AppendFacts(facts) => {
+                            for (meta, fact) in facts {
+                                crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+                                    &self.inner,
+                                    &meta,
+                                    &fact,
+                                    1,
+                                )
+                                .expect("fact appended after candidate planning");
+                            }
                             self.committed_action_count.fetch_add(1, Ordering::SeqCst);
                         }
                         OwnerQueryAction::FailRevalidation => {
@@ -281,71 +287,86 @@ mod tests {
             }
             self.inner.query(request).await
         }
-
-        fn query_blocking(
-            &self,
-            request: LocalEventQuery,
-        ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-            self.inner.query_blocking(request)
-        }
     }
 
-    fn projection_commit(
-        installation_id: &str,
-        suffix: &str,
-        session_id: String,
-        projection: SessionProjectionRecord,
-    ) -> LocalAtomicBatch {
-        LocalAtomicBatch {
-            commit_id: CommitIdentity::parse(&format!("gc-race-commit-{suffix}"))
-                .expect("commit identity"),
-            idempotency: IdempotencyBinding {
-                installation_id: installation_id.to_string(),
-                operation_kind: CommitOperationKind::Projection,
-                idempotency_key: format!("gc-race-key-{suffix}"),
-                payload_hash: [37; 32],
+    fn session_root_facts(
+        session_id: &str,
+        worktree_path: &str,
+    ) -> Vec<(
+        crate::domain::workflow::NodeFactMeta,
+        crate::domain::workflow::NodeFact,
+    )> {
+        use crate::domain::workflow::{
+            ExecutionOrigin, NodeFact, NodeFactMeta, NodeKindName, SessionRootFact, SessionSpec,
+            StartedFact, TreeRootFact,
+        };
+        vec![(
+            NodeFactMeta {
+                tree_id: session_id.to_string(),
+                node_execution_id: session_id.to_string(),
+                parent_id: None,
+                node_name: "session".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
             },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![LocalStateMutation::SessionProjection(
-                SessionProjectionMutation {
-                    session_id,
-                    projection,
-                    expected: RevisionGuard::Absent,
-                    revision: Revision::new(0).expect("initial projection revision"),
-                },
-            )],
-        }
-    }
-
-    fn active_session_projection(session_id: &str, worktree_path: &str) -> SessionProjectionRecord {
-        SessionProjectionRecord::AgentSession(AgentSessionProjectionRecord {
-            id: session_id.to_string(),
-            workspace_identity: worktree_path.to_string(),
-            worktree_path: worktree_path.to_string(),
-            provider: AgentSessionProviderRecord::Codex,
-            origin: AgentSessionOriginRecord::Standalone,
-            lifecycle: AgentSessionLifecycleRecord::Open,
-            provider_session_id: None,
-            transcript_ref: None,
-            initial_instruction_admitted: false,
-            last_exit_abnormal: false,
-        })
-    }
-
-    fn running_workflow_projection(worktree_path: &str) -> (String, SessionProjectionRecord) {
-        let key = format!(
-            "workflow-worktree:{}",
-            hex::encode(Sha256::digest(worktree_path.as_bytes()))
-        );
-        (
-            key,
-            SessionProjectionRecord::WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord {
-                worktree_path: worktree_path.to_string(),
-                execution_id: "gc-race-running-workflow".to_string(),
-                active: true,
+            NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(TreeRootFact::Session(SessionRootFact {
+                    workspace_identity: worktree_path.to_string(),
+                    worktree_path: worktree_path.to_string(),
+                    session: SessionSpec::default(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                })),
             }),
-        )
+        )]
+    }
+
+    fn workflow_root_facts(
+        execution_id: &str,
+        worktree_path: &str,
+    ) -> Vec<(
+        crate::domain::workflow::NodeFactMeta,
+        crate::domain::workflow::NodeFact,
+    )> {
+        use crate::domain::workflow::{
+            ExecutionOrigin, NodeCompletion, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
+            NodeKindName, SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition,
+            WorkflowRootFact,
+        };
+        vec![(
+            NodeFactMeta {
+                tree_id: execution_id.to_string(),
+                node_execution_id: execution_id.to_string(),
+                parent_id: None,
+                node_name: "main".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+            },
+            NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(TreeRootFact::Workflow(WorkflowRootFact {
+                    workflow_name: "wf".to_string(),
+                    worktree_path: worktree_path.to_string(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    definition: WorkflowDefinition {
+                        name: "wf".to_string(),
+                        description: String::new(),
+                        builtin: false,
+                        schemas: Default::default(),
+                        nodes: vec![NodeDefinition {
+                            name: "main".to_string(),
+                            kind: NodeKind::Session(SessionSpec::default()),
+                            artifact: None,
+                            input: Vec::new(),
+                            completion: NodeCompletion::Auto,
+                            worktree: None,
+                        }],
+                        entry: "main".to_string(),
+                    },
+                })),
+            }),
+        )]
     }
 
     fn oversize_owner_snapshot() -> Vec<CanonicalRuntimeOwnerView> {
@@ -391,10 +412,11 @@ mod tests {
         (live_repo, repo_paths)
     }
 
-    async fn assert_projection_committed_at_sweep_boundary_is_protected(
-        suffix: &str,
-        projection_id: String,
-        projection: SessionProjectionRecord,
+    async fn assert_facts_appended_at_sweep_boundary_are_protected(
+        facts: Vec<(
+            crate::domain::workflow::NodeFactMeta,
+            crate::domain::workflow::NodeFact,
+        )>,
         protected_worktree: &str,
     ) {
         let app_data = tempfile::tempdir().expect("app data");
@@ -406,10 +428,9 @@ mod tests {
         let store = composition
             .open_local_event_store()
             .expect("open canonical store");
-        let commit = projection_commit(store.installation_id(), suffix, projection_id, projection);
         let repository = Arc::new(OwnerRaceRepository::new(
             store,
-            OwnerQueryAction::Commit(commit),
+            OwnerQueryAction::AppendFacts(facts),
         ));
         let (workspace_state, review_comments) =
             create_workspace_keyed_candidates(app_data.path(), protected_worktree);
@@ -462,10 +483,8 @@ mod tests {
     #[tokio::test]
     async fn app_data_gc_active_session_committed_after_plan_is_revalidated_before_remove() {
         let worktree = "/deleted-before-gc-but-session-became-active";
-        assert_projection_committed_at_sweep_boundary_is_protected(
-            "active-session",
-            "agent-session:gc-race-active-session".to_string(),
-            active_session_projection("gc-race-active-session", worktree),
+        assert_facts_appended_at_sweep_boundary_are_protected(
+            session_root_facts("gc-race-active-session", worktree),
             worktree,
         )
         .await;
@@ -474,11 +493,8 @@ mod tests {
     #[tokio::test]
     async fn app_data_gc_running_workflow_committed_after_plan_is_revalidated_before_remove() {
         let worktree = "/deleted-before-gc-but-workflow-became-running";
-        let (projection_id, projection) = running_workflow_projection(worktree);
-        assert_projection_committed_at_sweep_boundary_is_protected(
-            "running-workflow",
-            projection_id,
-            projection,
+        assert_facts_appended_at_sweep_boundary_are_protected(
+            workflow_root_facts("gc-race-running-workflow", worktree),
             worktree,
         )
         .await;

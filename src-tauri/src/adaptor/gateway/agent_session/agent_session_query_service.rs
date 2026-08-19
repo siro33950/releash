@@ -1,41 +1,66 @@
 use std::sync::Arc;
 
+use super::agent_session_repository::{derive_session, locate_session};
+use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::agent_session::aggregates::{
-    AgentSessionLifecycle, AgentSessionOperations, AgentSessionOrigin,
+    AgentSession, AgentSessionLifecycle, AgentSessionOperations,
 };
-use crate::domain::local_event::{
-    AgentSessionLifecycleRecord, AgentSessionOriginKind, AgentSessionOriginRecord,
-    AgentSessionProviderRecord, LocalEventQuery, LocalEventQueryResult,
-    LocalEventTransactionRepository, SessionProjectionRecord,
-};
+use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::{NodeFact, TreeRootFact};
 use crate::usecase::agent_session::{
     AgentSessionActivityDto, AgentSessionItemDto, AgentSessionLifecycleDto,
-    AgentSessionListPageDto, AgentSessionListRequest, AgentSessionOperationsDto,
-    AgentSessionOriginDto, AgentSessionOriginFilter, AgentSessionProviderDto,
-    AgentSessionQueryError, AgentSessionQueryService,
+    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionQueryError,
+    AgentSessionQueryService, AgentSessionTreeParentDto,
 };
 
+/// 統一 Node 事実ログから session を読む query service。
+///
+/// 一覧は「親を持たない session（= session root の実行木）」であり、
+/// 出所種別による別系統の一覧 query は存在しない。workflow の子 session は
+/// 実行木の view（workspace_tree）で観測する。
 pub(crate) struct LocalAgentSessionQueryService {
-    repository: Arc<dyn LocalEventTransactionRepository>,
+    backend: FactLogReadBackend,
 }
 
 impl LocalAgentSessionQueryService {
-    pub(crate) fn new(repository: Arc<dyn LocalEventTransactionRepository>) -> Self {
-        Self { repository }
+    pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
+        Self {
+            backend: FactLogReadBackend::Live(store),
+        }
     }
 
-    pub(crate) fn get_blocking(
+    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
+        Self {
+            backend: FactLogReadBackend::ReadOnly(store),
+        }
+    }
+
+    fn get_derived(
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
         if agent_session_id.trim().is_empty() {
             return Err(AgentSessionQueryError::InvalidRequest);
         }
-        let result = self
-            .repository
-            .query_blocking(agent_session_query(agent_session_id))
-            .map_err(map_query_error)?;
-        agent_session_from_query(result)
+        let Some(location) = locate_session(&self.backend, agent_session_id)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        let records = fact_log::read_tree_records_from(&self.backend, &location.tree_id)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let session = derive_session(agent_session_id, &location, &records)
+            .map_err(|_| AgentSessionQueryError::Corrupt)?;
+        Ok(Some(agent_session_item(session.session())))
+    }
+
+    pub(crate) fn get_blocking(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
+        self.get_derived(agent_session_id)
     }
 }
 
@@ -45,152 +70,77 @@ impl AgentSessionQueryService for LocalAgentSessionQueryService {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-        if agent_session_id.trim().is_empty() {
-            return Err(AgentSessionQueryError::InvalidRequest);
-        }
-        let result = self
-            .repository
-            .query(agent_session_query(agent_session_id))
-            .await
-            .map_err(map_query_error)?;
-        agent_session_from_query(result)
+        self.get_derived(agent_session_id)
     }
+}
 
-    async fn list(
-        &self,
-        request: AgentSessionListRequest,
-    ) -> Result<AgentSessionListPageDto, AgentSessionQueryError> {
-        let result = self
-            .repository
-            .query(LocalEventQuery::AgentSessionProjectionPage {
-                workspace_identity: request.workspace.as_str().to_string(),
-                lifecycle: request.lifecycle.map(lifecycle_record),
-                origin: request.origin.map(|origin| match origin {
-                    AgentSessionOriginFilter::Standalone => AgentSessionOriginKind::Standalone,
-                    AgentSessionOriginFilter::WorkflowNode => AgentSessionOriginKind::WorkflowNode,
-                }),
-                limit: request.limit,
-                after_agent_session_id: request.after_session_id,
-            })
-            .await
-            .map_err(map_query_error)?;
-        let LocalEventQueryResult::AgentSessionProjectionPage(page) = result else {
-            return Err(AgentSessionQueryError::Corrupt);
+pub(crate) fn workspace_session_items(
+    backend: &FactLogReadBackend,
+    tree_ids: &[String],
+    workspace: &str,
+) -> Result<Vec<AgentSessionItemDto>, AgentSessionQueryError> {
+    let mut items = Vec::new();
+    for tree_id in tree_ids {
+        let records = fact_log::read_tree_records_from(backend, tree_id)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let Some(first) = records.first() else {
+            continue;
         };
-        let items = page
-            .sessions
-            .into_iter()
-            .map(|view| agent_session_item(view.projection))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(AgentSessionListPageDto {
-            items,
-            next_after_session_id: page.next_after_agent_session_id,
-        })
+        let is_workspace_session = matches!(
+            &first.fact,
+            NodeFact::Started(started)
+                if matches!(
+                    &started.root,
+                    Some(TreeRootFact::Session(root)) if root.workspace_identity == workspace
+                )
+        );
+        if !is_workspace_session {
+            continue;
+        }
+        let location = super::agent_session_repository::SessionLocation {
+            tree_id: tree_id.clone(),
+            node_execution_id: first.meta.node_execution_id.clone(),
+            parent_id: first.meta.parent_id.clone(),
+            node_name: first.meta.node_name.clone(),
+            attempt: first.meta.attempt,
+        };
+        let session = derive_session(tree_id, &location, &records)
+            .map_err(|_| AgentSessionQueryError::Corrupt)?;
+        items.push(agent_session_item(session.session()));
     }
+    items.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(items)
 }
 
-fn agent_session_query(agent_session_id: &str) -> LocalEventQuery {
-    LocalEventQuery::SessionProjectionByIdentity {
-        session_id: format!("agent-session:{agent_session_id}"),
-    }
-}
-
-fn agent_session_from_query(
-    result: LocalEventQueryResult,
-) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-    let LocalEventQueryResult::SessionProjectionByIdentity(view) = result else {
-        return Err(AgentSessionQueryError::Corrupt);
-    };
-    view.map(|view| agent_session_item(view.projection))
-        .transpose()
-}
-
-fn agent_session_item(
-    projection: SessionProjectionRecord,
-) -> Result<AgentSessionItemDto, AgentSessionQueryError> {
-    let SessionProjectionRecord::AgentSession(session) = projection else {
-        return Err(AgentSessionQueryError::Corrupt);
-    };
-    let origin = domain_origin(&session.origin)?;
-    let lifecycle = domain_lifecycle(session.lifecycle);
-    let available_operations = AgentSessionOperations::for_state(&origin, lifecycle);
-    let operations = AgentSessionOperationsDto {
-        can_archive: available_operations.can_archive,
-        can_restore: available_operations.can_restore,
-        can_delete: available_operations.can_delete,
-    };
-    Ok(AgentSessionItemDto {
-        id: session.id,
-        workspace_identity: session.workspace_identity,
-        worktree_path: session.worktree_path,
-        provider: match session.provider {
-            AgentSessionProviderRecord::Claude => AgentSessionProviderDto::Claude,
-            AgentSessionProviderRecord::Codex => AgentSessionProviderDto::Codex,
+pub(crate) fn agent_session_item(session: &AgentSession) -> AgentSessionItemDto {
+    let operations = AgentSessionOperations::for_state(session.tree_parent(), session.lifecycle());
+    AgentSessionItemDto {
+        id: session.id().to_string(),
+        workspace_identity: session.workspace().as_str().to_string(),
+        worktree_path: session.worktree_path().to_string(),
+        provider: match session.provider() {
+            ProviderKind::Claude => AgentSessionProviderDto::Claude,
+            ProviderKind::Codex => AgentSessionProviderDto::Codex,
         },
-        origin: match session.origin {
-            AgentSessionOriginRecord::Standalone => AgentSessionOriginDto::Standalone,
-            AgentSessionOriginRecord::WorkflowNode {
-                workflow_execution_id,
-                node_execution_id,
-            } => AgentSessionOriginDto::WorkflowNode {
-                workflow_execution_id,
-                node_execution_id,
-            },
-        },
-        lifecycle: match lifecycle {
+        tree_parent: session
+            .tree_parent()
+            .map(|parent| AgentSessionTreeParentDto {
+                tree_id: parent.tree_id.clone(),
+                node_execution_id: parent.node_execution_id.clone(),
+            }),
+        lifecycle: match session.lifecycle() {
             AgentSessionLifecycle::Open => AgentSessionLifecycleDto::Open,
             AgentSessionLifecycle::Paused => AgentSessionLifecycleDto::Paused,
             AgentSessionLifecycle::Archived => AgentSessionLifecycleDto::Archived,
         },
-        provider_session_id: session.provider_session_id,
-        transcript_ref: session.transcript_ref,
-        operations,
+        provider_session_id: session.provider_session_id().map(str::to_string),
+        transcript_ref: session.transcript_ref().map(str::to_string),
+        operations: AgentSessionOperationsDto {
+            can_archive: operations.can_archive,
+            can_restore: operations.can_restore,
+            can_delete: operations.can_delete,
+        },
         activity: AgentSessionActivityDto::Idle,
-        last_exit_abnormal: session.last_exit_abnormal,
-    })
-}
-
-fn domain_origin(
-    origin: &AgentSessionOriginRecord,
-) -> Result<AgentSessionOrigin, AgentSessionQueryError> {
-    match origin {
-        AgentSessionOriginRecord::Standalone => Ok(AgentSessionOrigin::Standalone),
-        AgentSessionOriginRecord::WorkflowNode {
-            workflow_execution_id,
-            node_execution_id,
-        } => AgentSessionOrigin::workflow_node(workflow_execution_id, node_execution_id)
-            .map_err(|_| AgentSessionQueryError::Corrupt),
-    }
-}
-
-fn domain_lifecycle(lifecycle: AgentSessionLifecycleRecord) -> AgentSessionLifecycle {
-    match lifecycle {
-        AgentSessionLifecycleRecord::Open => AgentSessionLifecycle::Open,
-        AgentSessionLifecycleRecord::Paused => AgentSessionLifecycle::Paused,
-        AgentSessionLifecycleRecord::Archived => AgentSessionLifecycle::Archived,
-    }
-}
-
-fn map_query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> AgentSessionQueryError {
-    match error {
-        crate::domain::local_event::LocalEventQueryError::InvalidRequest => {
-            AgentSessionQueryError::InvalidRequest
-        }
-        crate::domain::local_event::LocalEventQueryError::StorageUnavailable { .. }
-        | crate::domain::local_event::LocalEventQueryError::QueryBusy
-        | crate::domain::local_event::LocalEventQueryError::DeadlineExceeded => {
-            AgentSessionQueryError::Unavailable
-        }
-        _ => AgentSessionQueryError::Corrupt,
-    }
-}
-
-fn lifecycle_record(lifecycle: AgentSessionLifecycleDto) -> AgentSessionLifecycleRecord {
-    match lifecycle {
-        AgentSessionLifecycleDto::Open => AgentSessionLifecycleRecord::Open,
-        AgentSessionLifecycleDto::Paused => AgentSessionLifecycleRecord::Paused,
-        AgentSessionLifecycleDto::Archived => AgentSessionLifecycleRecord::Archived,
+        last_exit_abnormal: session.last_exit_abnormal(),
     }
 }

@@ -181,11 +181,6 @@ mod tests {
             Ok(())
         }
 
-        fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
-            self.events.lock().unwrap().extend_from_slice(events);
-            Ok(())
-        }
-
         fn read(
             &self,
             _execution_id: &WorkflowExecutionId,
@@ -311,10 +306,21 @@ mod tests {
     fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
         WorkflowEventDraft {
             execution_id: execution_id.to_string(),
-            event_kind: "execution_started".to_string(),
+            event_kind: "started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "definition": serde_json::to_value(&definition).unwrap(),
+                "nodeExecutionId": format!("{execution_id}:review:1"),
+                "nodeName": "review",
+                "kind": "session",
+                "attempt": 1,
+                "root": {
+                    "tree": "workflow",
+                    "workflowName": definition.name.clone(),
+                    "worktreePath": "/repo",
+                    "createdFrom": "cli",
+                    "request": "",
+                    "definition": serde_json::to_value(&definition).unwrap(),
+                },
             }),
         }
     }
@@ -332,12 +338,13 @@ mod tests {
             event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
-                "node_execution_id": format!("{execution_id}:{node_name}:1"),
-                "node_name": node_name,
+                "nodeExecutionId": format!("{execution_id}:{node_name}:1"),
+                "nodeName": node_name,
+                "kind": "session",
+                "attempt": 1,
                 "contract": contract,
                 "value": structured_output,
-                "submitted_at": timestamp,
-                "request_id": request_id,
+                "requestId": request_id,
             }),
         }
     }

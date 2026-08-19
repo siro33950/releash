@@ -626,7 +626,6 @@ mod tests {
         let workflow_module_source = include_str!("../workflow/mod.rs");
         let execution_store_source = include_str!("../workflow/execution_store.rs");
         let event_repository_source = include_str!("../workflow/event_repository.rs");
-        let workflow_log_source = include_str!("../workflow/log.rs");
         for legacy in [
             "sessions",
             "session_titles.json",
@@ -683,21 +682,6 @@ mod tests {
                 "pub async fn resolve_worktree_by_execution",
                 "workflow execution reverse-lookup fallback",
             ),
-            (
-                event_repository_source,
-                "Legacy(PathBuf)",
-                "workflow event legacy repository",
-            ),
-            (
-                workflow_log_source,
-                "log_dir: PathBuf",
-                "workflow legacy event log",
-            ),
-            (
-                workflow_log_source,
-                "pub fn new(data_dir: &Path)",
-                "workflow legacy event log constructor",
-            ),
         ] {
             assert_test_only(source, needle, label);
         }
@@ -711,12 +695,12 @@ mod tests {
             "production workflow execution store must require canonical construction"
         );
         assert!(
-            event_repository_source.contains("pub(crate) fn with_authority("),
+            event_repository_source.contains("pub(crate) fn with_store("),
             "production workflow event repository must require canonical authority"
         );
         assert!(
-            workflow_log_source.contains("pub(crate) fn with_authority("),
-            "production workflow event log must require canonical authority"
+            !event_repository_source.contains("Legacy(PathBuf)"),
+            "workflow event legacy repository must stay removed"
         );
     }
 }

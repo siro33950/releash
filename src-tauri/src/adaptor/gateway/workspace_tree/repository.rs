@@ -1,41 +1,17 @@
 use std::sync::Arc;
 
-use rusqlite::{params, OptionalExtension};
-
-use crate::adaptor::gateway::local_event_store::indexed_projection_codec::{
-    decode_workflow_execution_node_detail_v1, decode_workflow_execution_node_tree_v1,
-    decode_workflow_execution_record_v1,
-};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
-use crate::domain::local_event::{
-    LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
-};
+use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
+use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadataRecord};
+#[cfg(test)]
+use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
+use crate::domain::workflow::services::fact_replay::{self, FoldedTree};
+use crate::domain::workflow::TreeRootFact;
 use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeNode,
-    WorkspaceTreeProjector, WorkspaceTreeRepository,
+    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspaceStructureFact, WorkspaceTree,
+    WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
-
-pub(crate) const SQL_WORKSPACE_TREE_NODES: &str = "SELECT node.tree_record
-     FROM workflow_executions AS execution
-     JOIN workflow_execution_nodes AS node
-       ON node.execution_id = execution.execution_id
-     WHERE execution.workspace_identity = ?1";
-pub(crate) const SQL_WORKSPACE_TREE_EXECUTIONS: &str = "SELECT record FROM workflow_executions
-     WHERE workspace_identity = ?1";
-pub(crate) const SQL_WORKFLOW_NODE_DETAIL: &str = "SELECT node.tree_record, node.detail_record
-     FROM workflow_execution_nodes AS node
-     JOIN workflow_executions AS execution
-       ON execution.execution_id = node.execution_id
-     WHERE node.node_id = ?1 AND execution.workspace_identity = ?2";
-pub(crate) const SQL_WORKFLOW_NODE_BY_NODE_EXECUTION: &str =
-    "SELECT tree_record, detail_record FROM workflow_execution_nodes
-     WHERE node_execution_id = ?1";
-pub(crate) const SQL_WORKFLOW_NODE_ID_FOR_SESSION: &str = "SELECT node.node_id
-     FROM workflow_execution_nodes AS node
-     JOIN workflow_executions AS execution
-       ON execution.execution_id = node.execution_id
-     WHERE node.session_id = ?1 AND execution.workspace_identity = ?2";
 
 #[derive(Clone)]
 enum WorkspaceSqliteBackend {
@@ -61,88 +37,111 @@ impl SqliteWorkspaceTreeRepository {
         })
     }
 
-    pub(super) fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
-    {
+    pub(super) fn fact_backend(&self) -> FactLogReadBackend {
         match &self.backend {
-            WorkspaceSqliteBackend::Live(store) => store.submit_indexed_query_blocking(run),
-            WorkspaceSqliteBackend::ReadOnly(store) => store.submit_indexed_query_blocking(run),
+            WorkspaceSqliteBackend::Live(store) => FactLogReadBackend::Live(Arc::clone(store)),
+            WorkspaceSqliteBackend::ReadOnly(store) => {
+                FactLogReadBackend::ReadOnly(Arc::clone(store))
+            }
         }
+    }
+
+    /// workspace（= worktree）に root を植えた全実行木の fold と metadata。
+    pub(super) fn folded_workspace_trees(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<(FoldedTree, WorkflowExecutionMetadataRecord)>, LocalEventQueryError> {
+        let backend = self.fact_backend();
+        let tree_ids =
+            fact_log::list_tree_ids(&backend, Some(workspace)).map_err(fold_query_error)?;
+        let mut trees = Vec::new();
+        for tree_id in tree_ids {
+            let Some(folded) =
+                fact_log::fold_tree_from(&backend, &tree_id).map_err(fold_query_error)?
+            else {
+                continue;
+            };
+            let model = fact_replay::derive_read_model(&folded);
+            let record = fact_log::metadata_record_from_read_model(&model);
+            trees.push((folded, record));
+        }
+        Ok(trees)
+    }
+
+    /// 1 tree の fold と metadata。
+    pub(super) fn folded_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<Option<(FoldedTree, WorkflowExecutionMetadataRecord)>, LocalEventQueryError> {
+        let backend = self.fact_backend();
+        let Some(folded) = fact_log::fold_tree_from(&backend, tree_id).map_err(fold_query_error)?
+        else {
+            return Ok(None);
+        };
+        let model = fact_replay::derive_read_model(&folded);
+        let record = fact_log::metadata_record_from_read_model(&model);
+        Ok(Some((folded, record)))
+    }
+
+    fn tree_nodes(
+        workspace: &str,
+        folded: &FoldedTree,
+        record: &WorkflowExecutionMetadataRecord,
+    ) -> Result<Vec<WorkspaceTreeNode>, LocalEventQueryError> {
+        crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: &folded.aggregate.id,
+            workflow_name: &folded.aggregate.workflow.name,
+            workspace_identity: workspace,
+            workflow_definition: &folded.aggregate.workflow,
+            node_executions: &folded.aggregate.node_executions,
+            started_at: folded.aggregate.started_at,
+            updated_at: folded.aggregate.updated_at,
+            execution: record,
+            recovery_owner_reason: None,
+        })
+        .map_err(invariant_query_error)
+    }
+
+    pub(super) fn workspace_tree_from_folded(
+        &self,
+        workspace: &str,
+        trees: &[(FoldedTree, WorkflowExecutionMetadataRecord)],
+    ) -> Result<Option<WorkspaceTree>, LocalEventQueryError> {
+        if trees.is_empty() {
+            return Ok(None);
+        }
+        let mut nodes = Vec::new();
+        let mut facts = Vec::new();
+        for (folded, record) in trees {
+            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
+                continue;
+            }
+            nodes.extend(Self::tree_nodes(workspace, folded, record)?);
+            facts.push(execution_summary_fact(record));
+        }
+        let mut tree =
+            WorkspaceTree::restore(workspace.to_string(), nodes).map_err(invariant_query_error)?;
+        WorkspaceTreeProjector::project(&mut tree, facts).map_err(invariant_query_error)?;
+        Ok(Some(tree))
     }
 }
 
 impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
-    fn load(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-    ) -> Result<Option<WorkspaceTree>, LocalEventQueryError> {
-        let workspace = workspace_identity.as_str().to_string();
-        self.run_indexed(move |connection| {
-            let mut node_statement = connection
-                .prepare(SQL_WORKSPACE_TREE_NODES)
-                .map_err(sql_query_error)?;
-            let nodes = node_statement
-                .query_map(params![workspace], |row| row.get::<_, String>(0))
-                .map_err(sql_query_error)?
-                .map(|row| {
-                    row.map_err(sql_query_error).and_then(|raw| {
-                        decode_workflow_execution_node_tree_v1(&raw).map_err(codec_query_error)
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let mut execution_statement = connection
-                .prepare(SQL_WORKSPACE_TREE_EXECUTIONS)
-                .map_err(sql_query_error)?;
-            let facts = execution_statement
-                .query_map(params![workspace], |row| row.get::<_, String>(0))
-                .map_err(sql_query_error)?
-                .map(|row| {
-                    row.map_err(sql_query_error)
-                        .and_then(|raw| {
-                            decode_workflow_execution_record_v1(&raw).map_err(codec_query_error)
-                        })
-                        .map(execution_summary_fact)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            if nodes.is_empty() && facts.is_empty() {
-                return Ok(None);
-            }
-            let mut tree =
-                WorkspaceTree::restore(workspace, nodes).map_err(invariant_query_error)?;
-            WorkspaceTreeProjector::project(&mut tree, facts).map_err(invariant_query_error)?;
-            Ok(Some(tree))
-        })
-    }
-
     fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
-        let requested = node_id.to_string();
-        let lookup_workspace = workspace.clone();
-        let lookup_requested = requested.clone();
-        let workflow_node = self.run_indexed(move |connection| {
-            connection
-                .query_row(
-                    SQL_WORKFLOW_NODE_DETAIL,
-                    params![lookup_requested, lookup_workspace],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()
-                .map_err(sql_query_error)
-        })?;
-        if let Some((tree_record, detail_record)) = workflow_node {
-            return decode_workflow_execution_node_detail_v1(&tree_record, &detail_record)
-                .map(Some)
-                .map_err(codec_query_error);
+        let trees = self.folded_workspace_trees(&workspace)?;
+        for (folded, record) in &trees {
+            if let Some(node) = Self::tree_nodes(&workspace, folded, record)?
+                .into_iter()
+                .find(|node| node.id == node_id)
+            {
+                return Ok(Some(node));
+            }
         }
-
         Ok(None)
     }
 
@@ -150,23 +149,20 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         &self,
         node_execution_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-        let requested = node_execution_id.to_string();
-        let workflow_node = self.run_indexed(move |connection| {
-            connection
-                .query_row(
-                    SQL_WORKFLOW_NODE_BY_NODE_EXECUTION,
-                    params![requested],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()
-                .map_err(sql_query_error)
-        })?;
-        workflow_node
-            .map(|(tree_record, detail_record)| {
-                decode_workflow_execution_node_detail_v1(&tree_record, &detail_record)
-                    .map_err(codec_query_error)
-            })
-            .transpose()
+        let backend = self.fact_backend();
+        let Some(tree_id) = backend
+            .tree_id_for_node(node_execution_id)
+            .map_err(fold_query_error)?
+        else {
+            return Ok(None);
+        };
+        let Some((folded, record)) = self.folded_tree(&tree_id)? else {
+            return Ok(None);
+        };
+        let workspace = record.worktree_path.clone();
+        Ok(Self::tree_nodes(&workspace, &folded, &record)?
+            .into_iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
     }
 
     fn node_id_for_session(
@@ -175,33 +171,36 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         session_id: &str,
     ) -> Result<Option<String>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
-        let session = session_id.to_string();
-        self.run_indexed(move |connection| {
-            let workflow_node = connection
-                .query_row(
-                    SQL_WORKFLOW_NODE_ID_FOR_SESSION,
-                    params![session, workspace],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(sql_query_error)?;
-            Ok(workflow_node)
-        })
+        let backend = self.fact_backend();
+        let Some((tree_id, node_execution_id)) =
+            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?
+        else {
+            return Ok(None);
+        };
+        let Some((folded, record)) = self.folded_tree(&tree_id)? else {
+            return Ok(None);
+        };
+        if record.worktree_path != workspace {
+            return Ok(None);
+        }
+        Ok(Self::tree_nodes(&workspace, &folded, &record)?
+            .into_iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id.as_str()))
+            .map(|node| node.id))
     }
 }
 
-fn execution_summary_fact(
-    execution: crate::domain::local_event::WorkflowExecutionMetadataRecord,
-) -> WorkspaceStructureFact {
+fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> WorkspaceStructureFact {
     WorkspaceStructureFact::WorkflowSummaryProjected {
-        execution_id: execution.execution_id,
-        workflow_name: execution.workflow_name,
+        execution_id: execution.execution_id.clone(),
+        workflow_name: execution.workflow_name.clone(),
         status: execution.status,
         updated_at: f64::from_bits(execution.updated_at_bits),
     }
 }
 
-pub(super) fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
+#[cfg(test)]
+fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
     if let rusqlite::Error::SqliteFailure(inner, _) = &error {
         if matches!(
             inner.code,
@@ -238,13 +237,21 @@ pub(super) fn sql_query_error(error: rusqlite::Error) -> LocalEventQueryError {
 }
 
 #[cfg(test)]
+fn store_corruption_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    log::error!("Workspace indexed store corruption [{correlation_id}]: {error}");
+    LocalEventQueryError::Corrupt { correlation_id }
+}
+
+pub(super) fn fold_query_error(reason: String) -> LocalEventQueryError {
+    codec_query_error(reason)
+}
+
+#[cfg(test)]
 mod legacy_projection_tests {
     use super::*;
     use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
     use crate::adaptor::gateway::local_event_store::store::LocalEventStoreConfig;
-    use crate::domain::local_event::{
-        LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository,
-    };
 
     #[tokio::test]
     async fn legacy_agent_projection_row_is_ignored_by_canonical_session_and_workspace_queries() {
@@ -283,33 +290,13 @@ mod legacy_projection_tests {
             .unwrap();
         drop(connection);
 
-        let result = store
-            .query(LocalEventQuery::AgentSessionProjectionPage {
-                workspace_identity: "/repo".to_string(),
-                lifecycle: None,
-                origin: None,
-                limit: 100,
-                after_agent_session_id: None,
-            })
-            .await
-            .unwrap();
-        let LocalEventQueryResult::AgentSessionProjectionPage(page) = result else {
-            panic!("canonical AgentSession page expected");
-        };
-        assert!(page.sessions.is_empty());
-
         let repository = SqliteWorkspaceTreeRepository::new(store);
+        let trees = repository.folded_workspace_trees("/repo").unwrap();
         assert!(repository
-            .load(&WorkspaceIdentity::new("/repo"))
+            .workspace_tree_from_folded("/repo", &trees)
             .unwrap()
             .is_none());
     }
-}
-
-fn store_corruption_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
-    let correlation_id = uuid::Uuid::new_v4().to_string();
-    log::error!("Workspace indexed store corruption [{correlation_id}]: {error}");
-    LocalEventQueryError::Corrupt { correlation_id }
 }
 
 pub(super) fn codec_query_error(error: String) -> LocalEventQueryError {
@@ -361,13 +348,5 @@ mod tests {
             sql_query_error(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
             LocalEventQueryError::StorageUnavailable { .. }
         ));
-    }
-
-    #[test]
-    fn snapshot_mode_never_materializes_command_payloads() {
-        assert!(!SQL_WORKSPACE_TREE_NODES.contains("detail_record"));
-        assert!(!SQL_WORKSPACE_TREE_NODES.contains("display_command"));
-        assert!(!SQL_WORKSPACE_TREE_NODES.contains("command_result"));
-        assert!(SQL_WORKFLOW_NODE_DETAIL.contains("detail_record"));
     }
 }

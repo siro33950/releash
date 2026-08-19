@@ -7,6 +7,7 @@ use super::workspace_node_command::{
 };
 use super::WorkflowUsecase;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
+use crate::usecase::agent_session::AgentSessionItemDto;
 
 fn unix_timestamp_seconds() -> f64 {
     SystemTime::now()
@@ -19,6 +20,7 @@ fn unix_timestamp_seconds() -> f64 {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceTreeSnapshotDto {
     pub nodes: Vec<WorkspaceTreeItemDto>,
+    pub sessions: Vec<AgentSessionItemDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_node_id: Option<String>,
 }
@@ -380,6 +382,7 @@ mod tests {
                 })],
                 updated_at: 1.0,
             })],
+            sessions: Vec::new(),
             preferred_node_id: Some("selected-node".to_string()),
         }
     }
