@@ -1058,19 +1058,6 @@ fn validate_one_guard(
             check_guard(existing, m.expected)
         }
         LocalStateMutation::AgentSessionRemoval(m) => {
-            if let (Some(stream), Some(retained)) =
-                (&m.agent_session_stream, m.retained_tombstone_sequence)
-            {
-                let current_head = read_revision(
-                    connection,
-                    "SELECT head FROM stream_heads WHERE stream_id = ?1",
-                    params![stream.as_str()],
-                )?
-                .ok_or_else(|| conflict(0))?;
-                if current_head.checked_add(1) != Some(retained.value()) {
-                    return Err(conflict(current_head));
-                }
-            }
             match (
                 &m.ownership_projection_id,
                 &m.ownership_stream,
@@ -1349,14 +1336,6 @@ fn apply_mutation(
             apply_session_projection(connection, commit_id, m)
         }
         LocalStateMutation::AgentSessionRemoval(m) => {
-            if let (Some(stream), Some(retained)) =
-                (&m.agent_session_stream, m.retained_tombstone_sequence)
-            {
-                run(connection.execute(
-                    "DELETE FROM events WHERE stream_id = ?1 AND stream_sequence < ?2",
-                    params![stream.as_str(), retained.value()],
-                ))?;
-            }
             if let (Some(projection_id), Some(stream), Some(_)) = (
                 &m.ownership_projection_id,
                 &m.ownership_stream,

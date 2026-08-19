@@ -166,6 +166,29 @@ impl PreparedWorkflowTransaction {
             effects: self.decision.effects,
         })
     }
+
+    pub(crate) async fn persist_async<E, P, Fut>(
+        self,
+        current: &mut WorkflowExecution,
+        persist: P,
+    ) -> Result<DurableWorkflowTransaction, WorkflowTransactionCommitError<E>>
+    where
+        P: FnOnce(Vec<WorkflowEvent>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
+    {
+        if current != &self.before {
+            return Err(WorkflowTransactionCommitError::StaleCandidate);
+        }
+        persist(self.decision.events.clone())
+            .await
+            .map_err(WorkflowTransactionCommitError::Persistence)?;
+        *current = self.after;
+        Ok(DurableWorkflowTransaction {
+            #[cfg(test)]
+            outcome: self.decision.outcome,
+            effects: self.decision.effects,
+        })
+    }
 }
 
 /// Proof that canonical facts are durable.

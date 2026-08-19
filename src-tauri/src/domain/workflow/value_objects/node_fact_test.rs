@@ -92,6 +92,31 @@ mod vocabulary_tests {
             ))
         );
     }
+
+    #[test]
+    fn test_session_attachedの必須session_id欠落はdetail不一致になる() {
+        let error = NodeFact::decode("session_attached", "{}").expect_err("session_id is required");
+        assert!(matches!(
+            error,
+            NodeFactDecodeError::DetailMismatch { event_type, .. }
+                if event_type == "session_attached"
+        ));
+    }
+
+    #[test]
+    fn test_既知event_typeの追加fieldは前方互換のため無視する() {
+        let decoded = NodeFact::decode(
+            "command_spawned",
+            r#"{"displayCommand":"true","futureField":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            NodeFact::CommandSpawned(CommandSpawnedFact {
+                display_command: "true".to_string(),
+            })
+        );
+    }
 }
 
 mod detail_round_trip_tests {

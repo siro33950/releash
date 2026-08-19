@@ -16,11 +16,13 @@ use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::{
-    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionParentRef, NodeFact,
-    NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact, SessionAttachedFact,
-    StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
-    WorkflowEvent, WorkflowRootFact,
+    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, NodeFact, NodeFactMeta,
+    NodeFactRecord, NodeKindName, ProcessExitedFact, SessionAttachedFact, StartedFact,
+    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact, WorkflowEvent,
+    WorkflowRootFact,
 };
+
+const MAX_RECONCILIATION_ADVANCE_ROUNDS: usize = 4_096;
 
 #[cfg(test)]
 #[path = "fact_log_test.rs"]
@@ -58,6 +60,10 @@ fn pending_row(
     fact: &NodeFact,
     timestamp: f64,
 ) -> Result<PendingFactRow, String> {
+    let session_id = match fact {
+        NodeFact::SessionAttached(fact) => Some(fact.session_id.clone()),
+        _ => None,
+    };
     let detail = fact
         .encode_detail()
         .map_err(|error| format!("node fact encode failed: {error}"))?;
@@ -70,6 +76,7 @@ fn pending_row(
             kind: kind_column(meta.kind).to_string(),
             attempt: i64::from(meta.attempt),
             event_type: fact.event_type().to_string(),
+            session_id,
             detail,
         },
         timestamp_ms: (timestamp * 1000.0) as i64,
@@ -349,9 +356,15 @@ fn fact_rows_for_events(
             | WorkflowEvent::ExecutionCompleted { .. }
             | WorkflowEvent::StallObserved { .. }
             | WorkflowEvent::StallCleared { .. } => {}
-            WorkflowEvent::ExecutionInterrupted { .. } | WorkflowEvent::ExecutionResumed { .. } => {
+            WorkflowEvent::ExecutionInterrupted { .. } => {
                 log::warn!(
-                    "workflow event {} is not representable as a node fact and was dropped",
+                    "workflow event ExecutionInterrupted for {} is not representable as a node fact and was dropped",
+                    event.execution_id()
+                );
+            }
+            WorkflowEvent::ExecutionResumed { .. } => {
+                log::warn!(
+                    "workflow event ExecutionResumed for {} is not representable as a node fact and was dropped",
                     event.execution_id()
                 );
             }
@@ -487,6 +500,38 @@ pub(crate) fn read_tree_records_from(
     rows.iter().map(record_from_row).collect()
 }
 
+pub(crate) fn read_tree_record_page_from(
+    backend: &FactLogReadBackend,
+    tree_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<NodeFactRecord>, String> {
+    let tree_id_owned = tree_id.to_string();
+    let rows = backend
+        .run_indexed(move |connection| {
+            node_events::read_tree_page(connection, &tree_id_owned, offset, limit)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("node fact tree page read failed: {error:?}"))?;
+    rows.iter().map(record_from_row).collect()
+}
+
+pub(crate) fn read_tree_root_from(
+    backend: &FactLogReadBackend,
+    tree_id: &str,
+) -> Result<Option<NodeFactRecord>, String> {
+    let tree_id_owned = tree_id.to_string();
+    backend
+        .run_indexed(move |connection| {
+            node_events::first_row_of_tree(connection, &tree_id_owned)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("node fact tree root read failed: {error:?}"))?
+        .as_ref()
+        .map(record_from_row)
+        .transpose()
+}
+
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
 pub(crate) fn read_tree_records(
     store: &Arc<LocalEventStore>,
@@ -540,18 +585,13 @@ pub(crate) fn pending_single_fact(
         kind: kind_column(meta.kind).to_string(),
         attempt: i64::from(meta.attempt),
         event_type: fact.event_type().to_string(),
+        session_id: match fact {
+            NodeFact::SessionAttached(fact) => Some(fact.session_id.clone()),
+            _ => None,
+        },
         detail,
     };
     Ok(PendingFactRow { row, timestamp_ms })
-}
-
-/// tree_id を跨がずに parent を張るための補助（fold 済み parent 参照の復元）。
-#[allow(dead_code)]
-pub(crate) fn parent_ref_of(record: &NodeFactRecord) -> Option<ExecutionParentRef> {
-    match &record.fact {
-        NodeFact::Started(started) => started.parent.clone(),
-        _ => None,
-    }
 }
 
 /// 1 tree に対する reconciliation パスの結果。
@@ -648,11 +688,18 @@ pub(crate) fn reconcile_tree_pass(
                 .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut advance_rounds = 0;
     loop {
         let advances = folded.aggregate.derive_pending_advances();
         if advances.is_empty() {
             break;
         }
+        if advance_rounds == MAX_RECONCILIATION_ADVANCE_ROUNDS {
+            return Err(format!(
+                "workflow tree {tree_id} reconciliation exceeded {MAX_RECONCILIATION_ADVANCE_ROUNDS} advance rounds"
+            ));
+        }
+        advance_rounds += 1;
         for advance in advances {
             let applied = folded
                 .aggregate
@@ -744,22 +791,22 @@ pub(crate) fn find_session_attachment(
     session_id: &str,
 ) -> Result<Option<(String, String)>, String> {
     let session = session_id.to_string();
-    let rows = backend
+    let query_session = session.clone();
+    let row = backend
         .run_indexed(move |connection| {
-            node_events::rows_of_event_type(connection, "session_attached")
+            node_events::latest_session_attachment(connection, &query_session)
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("session attachment lookup failed: {error:?}"))?;
-    for row in rows.iter().rev() {
-        let record = record_from_row(row)?;
-        if let NodeFact::SessionAttached(fact) = &record.fact {
-            if fact.session_id == session {
-                return Ok(Some((
-                    record.meta.tree_id.clone(),
-                    record.meta.node_execution_id.clone(),
-                )));
-            }
-        }
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let record = record_from_row(&row)?;
+    let NodeFact::SessionAttached(fact) = &record.fact else {
+        return Err("session attachment index points to a non-attachment fact".to_string());
+    };
+    if fact.session_id != session {
+        return Err("session attachment index identity mismatch".to_string());
     }
-    Ok(None)
+    Ok(Some((record.meta.tree_id, record.meta.node_execution_id)))
 }

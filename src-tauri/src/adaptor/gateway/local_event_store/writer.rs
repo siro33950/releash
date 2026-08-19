@@ -235,6 +235,15 @@ impl WriteQueue {
         drop(state);
         self.available.notify_all();
     }
+
+    /// Stop admission and let the writer consume every already-admitted
+    /// request before it exits.
+    pub fn close_after_drain(&self) {
+        let mut state = self.state.lock().expect("write queue poisoned");
+        state.closed = true;
+        drop(state);
+        self.available.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -296,5 +305,22 @@ mod tests {
             .is_ok());
         assert!(queue.admit(request(false, 2)).is_err());
         assert!(queue.admit(request(false, 1)).is_ok());
+    }
+
+    #[test]
+    fn close_after_drain_preserves_admitted_requests() {
+        let queue = WriteQueue::new();
+        assert!(queue.admit(request(false, 1)).is_ok());
+        assert!(queue.admit(request(true, 1)).is_ok());
+
+        queue.close_after_drain();
+
+        assert!(queue.pop_blocking().unwrap().critical());
+        assert!(!queue.pop_blocking().unwrap().critical());
+        assert!(queue.pop_blocking().is_none());
+        assert!(matches!(
+            queue.admit(request(false, 1)),
+            Err(AdmitRejection::Closed)
+        ));
     }
 }

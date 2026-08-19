@@ -125,13 +125,14 @@ fn read_model_node(
         RuntimeNodeExecutionStatus::Failed => NodeExecutionStatus::Failed,
         RuntimeNodeExecutionStatus::Aborted => NodeExecutionStatus::Aborted,
     };
-    let result_summary = aggregate
-        .node_history
-        .iter()
-        .rev()
-        .find(|entry| entry.node_name == node.node_name && entry.attempt == node.attempt)
-        .and_then(|entry| entry.result.clone())
-        .or_else(|| node.result_summary.clone());
+    let result_summary = node.result_summary.clone().or_else(|| {
+        aggregate
+            .node_history
+            .iter()
+            .rev()
+            .find(|entry| entry.node_name == node.node_name && entry.attempt == node.attempt)
+            .and_then(|entry| entry.result.clone())
+    });
     let contract = aggregate
         .workflow
         .node_by_name(&node.node_name)

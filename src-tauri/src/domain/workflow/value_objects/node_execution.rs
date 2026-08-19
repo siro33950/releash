@@ -146,8 +146,6 @@ impl NodeExecution {
     }
 }
 
-impl NodeExecution {}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,7 +12,6 @@ use crate::adaptor::gateway::provider_lifecycle::{
 use crate::domain::agent_session::{
     ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
 };
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::usecase::agent_session::{
     AgentSessionActivityUsecase, AgentSessionChangeNotifier, AgentSessionExitUsecase,
     AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
@@ -28,8 +27,6 @@ use crate::usecase::provider_lifecycle::{
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub(crate) struct AgentSessionCompositionInput {
-    pub(crate) repository: Arc<dyn LocalEventTransactionRepository>,
-    pub(crate) installation_id: String,
     pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub(crate) data_dir: PathBuf,
     pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
@@ -96,17 +93,20 @@ impl ProviderWorkflowStopTransaction for DeferredProviderWorkflowStopTransaction
 pub(crate) fn compose_agent_sessions(
     input: AgentSessionCompositionInput,
 ) -> Result<AgentSessionComposition, ProviderAvailabilityUsecaseError> {
+    let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+        input.store.clone();
+    let installation_id = input.store.installation_id().to_string();
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(LocalProviderLifecycleEventRepository::new(
-            input.repository.clone(),
-            input.installation_id.clone(),
+            repository.clone(),
+            installation_id.clone(),
         )),
     ));
     let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
     let sessions = Arc::new(AgentSessionUsecase::new(session_repository.clone()));
     let hook_health = Arc::new(ProviderHookHealthUsecase::new(Arc::new(
-        LocalProviderHookHealthRepository::new(input.repository.clone(), input.installation_id),
+        LocalProviderHookHealthRepository::new(repository, installation_id),
     )));
     let hook_health_read = Arc::new(ProviderHookHealthReadUsecase::new(
         hook_health.clone(),

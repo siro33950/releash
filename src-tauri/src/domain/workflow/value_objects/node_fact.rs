@@ -75,7 +75,7 @@ pub enum NodeFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StartedFact {
     /// 実行木上の親参照。root の started のみ None。
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -95,7 +95,7 @@ pub enum TreeRootFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowRootFact {
     pub workflow_name: String,
     /// 実行木が所属する worktree（正規化済みパス。workspace の同定もこの値）。
@@ -108,7 +108,7 @@ pub struct WorkflowRootFact {
 
 /// 単独 Session（定義なし1ノード木）の実行構成。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionRootFact {
     /// session が属する workspace の同定子（呼び出し側が指定した値を往復させる。
     /// terminal surface の owner 鍵になるため worktree_path から導出しない）。
@@ -122,7 +122,7 @@ pub struct SessionRootFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionAttachedFact {
     pub session_id: String,
     /// provider CLI 側の session 識別子（実世界突合の鍵）。
@@ -137,13 +137,13 @@ pub struct SessionAttachedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandSpawnedFact {
     pub display_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessExitedFact {
     /// OS の exit code。reconciliation の突合で喪失を発見した場合は None。
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -158,14 +158,14 @@ pub struct ProcessExitedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SubmitReceivedFact {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SubmitRejectedFact {
     pub violations: Vec<ContractViolationRecord>,
     pub repair_attempt: u32,
@@ -174,7 +174,7 @@ pub struct SubmitRejectedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StopReceivedFact {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result_summary: Option<String>,
@@ -183,7 +183,7 @@ pub struct StopReceivedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ArtifactProducedFact {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub contract: Option<String>,
@@ -193,7 +193,7 @@ pub struct ArtifactProducedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ApprovalGrantedFact {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub comment: Option<String>,

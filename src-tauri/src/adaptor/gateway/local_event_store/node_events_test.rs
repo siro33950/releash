@@ -30,6 +30,7 @@ fn row(tree_id: &str, node_execution_id: &str, parent_id: Option<&str>) -> NewNo
         kind: "session".to_string(),
         attempt: 1,
         event_type: "started".to_string(),
+        session_id: None,
         detail: "{}".to_string(),
     }
 }

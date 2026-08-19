@@ -6,7 +6,7 @@
 //! converges on the saved result, a different content is a typed conflict.
 
 use crate::domain::local_event::events::ApplicationShutdownPhase;
-use crate::domain::local_event::identifiers::{Revision, StreamId, StreamVersion};
+use crate::domain::local_event::identifiers::{Revision, StreamId};
 use crate::domain::local_event::record::{
     ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
     RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord,
@@ -146,10 +146,6 @@ pub struct SessionProjectionMutation {
 /// retaining its resume identifier in Releash state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSessionRemovalMutation {
-    /// 旧 agent-session stream の切り詰め対象。事実ログ移行後の session は
-    /// stream を持たないため None（ownership の解放だけを行う）。
-    pub agent_session_stream: Option<StreamId>,
-    pub retained_tombstone_sequence: Option<StreamVersion>,
     pub ownership_projection_id: Option<String>,
     pub ownership_stream: Option<StreamId>,
     pub ownership_expected: Option<Revision>,
@@ -355,19 +351,6 @@ impl LocalStateMutation {
             }
             Self::AgentSessionRemoval(m) => {
                 text(&mut bytes, "agent_session_removal");
-                text(
-                    &mut bytes,
-                    m.agent_session_stream
-                        .as_ref()
-                        .map(|stream| stream.as_str())
-                        .unwrap_or(""),
-                );
-                bytes.extend_from_slice(
-                    &m.retained_tombstone_sequence
-                        .map(|sequence| sequence.value())
-                        .unwrap_or(0)
-                        .to_be_bytes(),
-                );
                 match (
                     &m.ownership_projection_id,
                     &m.ownership_stream,
@@ -434,10 +417,7 @@ impl LocalStateMutation {
             Self::OperationRecord(m) => typed(&m.receipt) + typed(&m.latest_status) + 64,
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
             Self::AgentSessionRemoval(m) => {
-                m.agent_session_stream
-                    .as_ref()
-                    .map_or(0, |stream| stream.as_str().len())
-                    + m.ownership_projection_id.as_ref().map_or(0, String::len)
+                m.ownership_projection_id.as_ref().map_or(0, String::len)
                     + m.ownership_stream
                         .as_ref()
                         .map_or(0, |stream| stream.as_str().len())

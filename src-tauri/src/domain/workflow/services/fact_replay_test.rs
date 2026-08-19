@@ -153,6 +153,13 @@ fn stop() -> NodeFact {
     })
 }
 
+fn stop_with_summary(summary: &str) -> NodeFact {
+    NodeFact::StopReceived(StopReceivedFact {
+        result_summary: Some(summary.to_string()),
+        token_usage: None,
+    })
+}
+
 fn exited(code: i32) -> NodeFact {
     NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
         exit_code: Some(code),
@@ -263,6 +270,39 @@ mod standalone_session_tests {
 
         log.push(root_meta, NodeFact::RestoreRequested);
         assert!(!super::derive_session_facts(&log.records, "root-exec", "root-exec").archived);
+    }
+
+    #[test]
+    fn test_単独session_process_exitの状態と異常終了を導出する() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), exited(0));
+        let normal = super::derive_session_facts(&log.records, "root-exec", "session-1");
+        assert!(normal.exited);
+        assert!(!normal.last_exit_abnormal);
+
+        log.push(root_meta.clone(), attached("session-1"));
+        let reattached = super::derive_session_facts(&log.records, "root-exec", "session-1");
+        assert!(!reattached.exited);
+
+        log.push(root_meta.clone(), exited(1));
+        let non_zero = super::derive_session_facts(&log.records, "root-exec", "session-1");
+        assert!(non_zero.exited);
+        assert!(non_zero.last_exit_abnormal);
+
+        log.push(
+            root_meta,
+            NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                exit_code: Some(0),
+                result_summary: None,
+                failure_reason: Some("provider failure".to_string()),
+                failure_kind: None,
+            }),
+        );
+        let failed = super::derive_session_facts(&log.records, "root-exec", "session-1");
+        assert!(failed.last_exit_abnormal);
     }
 }
 
@@ -420,6 +460,65 @@ mod fanout_tests {
             RuntimeNodeExecutionStatus::Succeeded
         );
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+    fn test_fanout_同名同attemptの並走laneで結果summaryを取り違えない() {
+        let definition = workflow_definition(
+            vec![
+                session_leaf("worker"),
+                fanout_node(
+                    "fan",
+                    vec![
+                        ChildEntry::reference("worker"),
+                        ChildEntry::reference("worker"),
+                    ],
+                ),
+                sequence_node("main", vec![ChildEntry::reference("fan")]),
+            ],
+            "main",
+        );
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(definition)),
+        );
+        log.push(
+            meta(
+                "fan-exec",
+                Some("main-exec"),
+                "fan",
+                NodeKindName::Fanout,
+                1,
+            ),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        for (index, id) in [(0, "worker-a"), (1, "worker-b")] {
+            let worker = meta(id, Some("fan-exec"), "worker", NodeKindName::Session, 1);
+            log.push(
+                worker.clone(),
+                started_child(ExecutionParentRef::fanout_child("fan-exec", None, index)),
+            );
+        }
+        for (id, summary) in [("worker-a", "result-a"), ("worker-b", "result-b")] {
+            let worker = meta(id, Some("fan-exec"), "worker", NodeKindName::Session, 1);
+            log.push(worker.clone(), submit());
+            log.push(worker, stop_with_summary(summary));
+        }
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let model = derive_read_model(&tree);
+
+        for (id, expected) in [("worker-a", "result-a"), ("worker-b", "result-b")] {
+            assert_eq!(
+                model
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == id)
+                    .and_then(|node| node.result_summary.as_deref()),
+                Some(expected)
+            );
+        }
     }
 }
 
@@ -733,5 +832,30 @@ mod input_validation_tests {
             started_root(session_root()),
         );
         assert!(fold_execution_tree("other-tree", &log.records).is_err());
+    }
+
+    #[test]
+    fn test_先頭がstartedではない事実列を拒否する() {
+        let mut log = FactLog::new();
+        log.push(
+            meta("root-exec", None, "chat", NodeKindName::Session, 1),
+            submit(),
+        );
+
+        assert!(fold_execution_tree(TREE, &log.records).is_err());
+    }
+
+    #[test]
+    fn test_先頭startedがrootを持たない事実列を拒否する() {
+        let mut log = FactLog::new();
+        log.push(
+            meta("root-exec", None, "chat", NodeKindName::Session, 1),
+            NodeFact::Started(StartedFact {
+                parent: None,
+                root: None,
+            }),
+        );
+
+        assert!(fold_execution_tree(TREE, &log.records).is_err());
     }
 }

@@ -4,18 +4,15 @@ use super::agent_session_initial_instruction::AgentSessionInitialInstructionDeli
 use super::{AgentSessionInitialInstructionUsecase, AgentSessionUsecase};
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::adaptor::gateway::workflow::fact_log;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
 use crate::domain::agent_session::aggregates::AgentSessionTreeParent;
 use crate::domain::agent_session::{
     ProviderAgentTerminalGatewayError, ProviderAgentTerminalInputGateway,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
-use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
-    NodeKindName, SequenceSpec, SessionAttachedFact, SessionSpec, StartedFact, TreeRootFact,
-    WorkflowDefinition, WorkflowRootFact,
-};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 /// workflow engine が所有する実行木を模して、session が attach 済みの
@@ -27,86 +24,19 @@ fn seed_workflow_tree(
     session_id: &str,
     provider: ProviderKind,
 ) {
-    let definition = WorkflowDefinition {
-        name: "wf".to_string(),
-        description: String::new(),
-        builtin: false,
-        schemas: Default::default(),
-        nodes: vec![
-            NodeDefinition {
-                name: "main".to_string(),
-                kind: NodeKind::Sequence(SequenceSpec {
-                    entry: None,
-                    output: None,
-                    children: Vec::new(),
-                }),
-                ..NodeDefinition::default()
-            },
-            NodeDefinition {
-                name: "impl".to_string(),
-                kind: NodeKind::Session(SessionSpec {
-                    provider,
-                    model: None,
-                    permission: None,
-                    facets: Default::default(),
-                }),
-                ..NodeDefinition::default()
-            },
-        ],
-        entry: "main".to_string(),
-    };
-    let root_meta = NodeFactMeta {
-        tree_id: tree_id.to_string(),
-        node_execution_id: tree_id.to_string(),
-        parent_id: None,
-        node_name: "main".to_string(),
-        kind: NodeKindName::Sequence,
-        attempt: 1,
-    };
-    let node_meta = NodeFactMeta {
-        tree_id: tree_id.to_string(),
-        node_execution_id: node_execution_id.to_string(),
-        parent_id: Some(tree_id.to_string()),
-        node_name: "impl".to_string(),
-        kind: NodeKindName::Session,
-        attempt: 1,
-    };
-    fact_log::append_single_fact(
+    seed_workflow_session_facts(
         store,
-        &root_meta,
-        &NodeFact::Started(StartedFact {
-            parent: None,
-            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                workflow_name: "wf".to_string(),
-                worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: "initial instruction".to_string(),
-                definition,
-            })),
-        }),
-        1,
-    )
-    .unwrap();
-    fact_log::append_single_fact(
-        store,
-        &node_meta,
-        &NodeFact::Started(StartedFact {
-            parent: Some(ExecutionParentRef::sequence_child(tree_id)),
-            root: None,
-        }),
-        2,
-    )
-    .unwrap();
-    fact_log::append_single_fact(
-        store,
-        &node_meta,
-        &NodeFact::SessionAttached(SessionAttachedFact {
-            session_id: session_id.to_string(),
-            provider_session_id: None,
-            transcript_ref: None,
+        WorkflowSessionFactSeed {
+            workflow_name: "wf",
+            request: "initial instruction",
+            worktree_path: "/repo",
+            provider,
+            workflow_execution_id: tree_id,
+            node_execution_id,
+            session_id,
+            // dispatch 前の未配送状態を検証する fixture。
             initial_instruction_admitted: false,
-        }),
-        3,
+        },
     )
     .unwrap();
 }

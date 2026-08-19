@@ -302,6 +302,7 @@ export function useWorkspaceTreeNodes(
 		);
 		const unsubscribeAgentSessions = subscribeAgentSessionChanged(
 			({ worktreePath: changedWorktreePath }) => {
+				if (!mounted) return;
 				if (changedWorktreePath && changedWorktreePath !== worktreePath) return;
 				scheduleRefresh();
 			},

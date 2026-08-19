@@ -5,8 +5,8 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::domain::workflow::services::fact_replay::fold_execution_tree;
 use crate::domain::workflow::value_objects::ContractViolationRecord;
 use crate::domain::workflow::{
-    ChildEntry, ExecutionOrigin, NodeDefinition, NodeKind, RuntimeExecutionState, SequenceSpec,
-    WorkflowDefinition,
+    ChildEntry, ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeKind,
+    RuntimeExecutionState, SequenceSpec, WorkflowDefinition,
 };
 
 const TREE: &str = "00000000-0000-4000-8000-00000000e001";
@@ -431,8 +431,9 @@ mod reconciliation_tests {
 
         // provider lifecycle の準備は node_events 上の外部実行成立事実ではない。
         // attach 前に kill された場合、2周目も同じ leaf を返し、started は増やさない。
-        let started_count = read_tree_records(&store, TREE)
-            .unwrap()
+        let before_second = read_tree_records(&store, TREE).unwrap();
+        let expected_record_count = before_second.len();
+        let started_count = before_second
             .iter()
             .filter(|record| record.fact.event_type() == "started")
             .count();
@@ -442,7 +443,7 @@ mod reconciliation_tests {
             .unwrap();
         assert_eq!(second.leaves, outcome.leaves);
         let after_second = read_tree_records(&store, TREE).unwrap();
-        assert_eq!(after_second.len(), started_count);
+        assert_eq!(after_second.len(), expected_record_count);
         assert_eq!(
             after_second
                 .iter()

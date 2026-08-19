@@ -363,8 +363,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             config.data_dir.clone(),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
-			repository: repository.clone(),
-			installation_id: installation_id.clone(),
 			store: store.clone(),
 			data_dir: config.data_dir.clone(),
 				provider_executable_config: Arc::new(
@@ -392,10 +390,23 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
         terminal.bind_agent_session_activity(composition.activity.clone());
 
+        let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                    store.clone(),
+                ),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                        config.data_dir.clone(),
+                    ),
+                ),
+            );
+
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
             Some(config.data_dir.clone()),
+            workspace_query,
             composition.launch.clone(),
             composition.initial_instruction.clone(),
             composition.interrupt.clone(),

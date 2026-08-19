@@ -309,6 +309,7 @@ impl WorkflowRuntimeHost {
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         data_dir: Option<std::path::PathBuf>,
+        workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         agent_session_launch: Arc<AgentSessionLaunchUsecase>,
         agent_session_initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
         agent_session_interrupt: Arc<AgentSessionInterruptUsecase>,
@@ -317,7 +318,7 @@ impl WorkflowRuntimeHost {
         Self::with_execution_store(
             workflow_resolver,
             worktree_resolver,
-            Arc::new(ExecutionStore::new_canonical(data_dir)),
+            Arc::new(ExecutionStore::new_canonical(data_dir, workspace_query)),
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 agent_session_launch,
                 agent_session_initial_instruction,
@@ -548,6 +549,7 @@ impl WorkflowRuntimeHost {
         let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
         let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
             .map_err(WorkflowRuntimeError::SessionStore)?;
+        let mut first_recovery_error = None;
         for tree_id in tree_ids {
             if self.executions.lock().await.contains_key(&tree_id) {
                 continue;
@@ -623,11 +625,15 @@ impl WorkflowRuntimeHost {
                         .lock()
                         .await
                         .retain(|_, reference| reference.execution_id != tree_id);
-                    return Err(error);
+                    first_recovery_error.get_or_insert(error);
+                    continue;
                 }
             }
         }
-        Ok(())
+        match first_recovery_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -922,17 +928,19 @@ impl WorkflowRuntimeHost {
             .get_mut(execution_id)
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
         let durable = transaction
-            .persist(current, |events| {
+            .persist_async(current, |events| async move {
                 if provider_events.is_empty() {
-                    workflow_event_log_writer::append_required_events_for_app(app, events)
+                    workflow_event_log_writer::append_required_events_for_app(app, &events)
                 } else {
                     workflow_event_log_writer::append_provider_stop_for_app(
                         app,
-                        events,
+                        &events,
                         provider_events,
                     )
+                    .await
                 }
             })
+            .await
             .map_err(|error| match error {
                 WorkflowTransactionCommitError::StaleCandidate => WorkflowRuntimeError::Conflict(
                     format!("execution '{execution_id}' changed before control-plane commit"),
@@ -1174,14 +1182,23 @@ impl WorkflowRuntimeHost {
                 Ok(()) => activated_sessions.push((node_execution_id.clone(), session_id.clone())),
                 Err(error) => {
                     self.session_workflow_refs.lock().await.remove(session_id);
-                    self.settle_runtime_failure_for_node(
-                        app,
-                        worktree_path,
-                        &execution_id,
-                        node_execution_id,
-                        &error,
-                    )
-                    .await?;
+                    if let Err(settlement_error) = self
+                        .settle_runtime_failure_for_node(
+                            app,
+                            worktree_path,
+                            &execution_id,
+                            node_execution_id,
+                            &error,
+                        )
+                        .await
+                    {
+                        return match self.rollback_prepared_sessions(&session_setups).await {
+                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
+                                format!("{settlement_error}; rollback failed: {rollback_error}"),
+                            )),
+                            None => Err(settlement_error),
+                        };
+                    }
                     log::warn!(
                         "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
                     );
@@ -1315,22 +1332,16 @@ impl WorkflowRuntimeHost {
         app: &tauri::AppHandle<R>,
         mut input: CommandExecutionInput,
     ) -> Result<(), WorkflowRuntimeError> {
-        let display_command = {
-            let raw_command = input.raw_command.as_deref().ok_or_else(|| {
-                WorkflowRuntimeError::InvalidState(format!(
-                    "raw command for node execution '{}' is unavailable",
-                    input.node_execution_id
-                ))
-            })?;
-            let secrets = secret_source::collect_configured_secret_values(app);
-            workflow_secret_masker::mask_sensitive_text(raw_command, &secrets)
-        };
         let raw_command = input.raw_command.take().ok_or_else(|| {
             WorkflowRuntimeError::InvalidState(format!(
                 "raw command for node execution '{}' is unavailable",
                 input.node_execution_id
             ))
         })?;
+        let display_command = {
+            let secrets = secret_source::collect_configured_secret_values(app);
+            workflow_secret_masker::mask_sensitive_text(&raw_command, &secrets)
+        };
         // Keep the execution lock from the final current-node check through process registration.
         // A concurrent stop therefore has only two observable orders: it wins first and no process
         // is spawned, or the process is registered first and stop can always find and kill it.

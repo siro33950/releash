@@ -17,6 +17,7 @@ use std::io::Write;
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -541,6 +542,7 @@ impl ExecutionStoreInner {
 /// SQLite authority 導入後は filesystem metadata を読まず、projection は authority から再構築する。
 pub struct ExecutionStore {
     inner: Mutex<ExecutionStoreInner>,
+    canonical_query: Option<Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>>,
     #[cfg(test)]
     data_dir: Mutex<Option<PathBuf>>,
     #[cfg(test)]
@@ -607,14 +609,19 @@ impl ExecutionStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
+            canonical_query: None,
             data_dir: Mutex::new(None),
             allow_in_memory_without_data_dir: false,
         }
     }
 
-    pub(crate) fn new_canonical(_data_dir: Option<PathBuf>) -> Self {
+    pub(crate) fn new_canonical(
+        _data_dir: Option<PathBuf>,
+        canonical_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+    ) -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
+            canonical_query: Some(canonical_query),
             #[cfg(test)]
             data_dir: Mutex::new(_data_dir),
             #[cfg(test)]
@@ -626,6 +633,7 @@ impl ExecutionStore {
     pub fn new_in_memory_for_tests() -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
+            canonical_query: None,
             data_dir: Mutex::new(None),
             allow_in_memory_without_data_dir: true,
         }
@@ -665,13 +673,14 @@ impl ExecutionStore {
         Ok(None)
     }
 
-    /// 新規 execution を active として登録し、metadata を初期保存する。
+    /// 新規 execution を active として登録する。production は in-memory 状態だけを更新し、
+    /// filesystem metadata の保存はテスト fixture でのみ行う。
     /// 既に同一 worktree に別 execution_id の active execution が存在する場合は `Err` を返す。
     /// 既に同一 execution_id を別 worktree_path で登録しようとした場合も `Err` を返す
     /// （古い by_worktree index が孤立しないように同一 critical section で拒否する）。
     ///
-    /// 重複チェックと active map 更新だけを Mutex 内で行い、metadata 永続化は
-    /// `spawn_blocking` 経由で実行する。永続化失敗時は同一 snapshot の場合だけ rollback する。
+    /// 重複チェックと active map 更新だけを Mutex 内で行う。テスト fixture の metadata
+    /// 保存に失敗した場合は、同一 snapshot の場合だけ rollback する。
     pub async fn register_active_execution(
         &self,
         execution: WorkflowExecutionMetadata,
@@ -839,8 +848,8 @@ impl ExecutionStore {
     }
 
     /// active execution の現在 node / status / updated_at を更新する（状態遷移ではない属性更新含む）。
-    /// `mutator` は in-memory の execution を直接書き換える。metadata 永続化は Mutex を解放してから
-    /// `spawn_blocking` 経由で行い、永続化失敗時は同一 snapshot の場合だけ rollback する。
+    /// production は in-memory 状態だけを更新する。テスト fixture の metadata 保存に
+    /// 失敗した場合は同一 snapshot の場合だけ rollback する。
     ///
     /// 永続化失敗時は in-memory 側の変更を rollback して `Err` を返す。
     /// Spec issues-1011 finding 4: `execution_id` は UUID 形式である必要がある。
@@ -973,8 +982,9 @@ impl ExecutionStore {
             .await
     }
 
-    /// active execution を terminal 状態へ遷移し、同じ projection commit で累計 usage も
-    /// 確定する。通常 runtime は event append 後の authoritative snapshot を渡す。
+    /// active execution を terminal 状態へ遷移し、累計 usage も確定する。production は
+    /// in-memory active set から除外し、terminal 状態は canonical read model から読む。
+    /// filesystem metadata の保存はテスト fixture でのみ行う。
     pub async fn complete_execution_with_usage(
         &self,
         execution_id: &str,
@@ -1378,10 +1388,9 @@ impl ExecutionStore {
         Ok(metadata)
     }
 
-    /// active set から該当 execution を取り除き、永続化された metadata ファイルも削除する。
-    /// `complete_execution` と異なり terminal metadata は残さず、reservation 状態を完全に
-    /// 撤回する用途で使う（Spec issues-1011 finding 9: start_workflow の rollback で
-    /// 失敗した reservation を撤回するため、terminal entry を completed 一覧に残さない）。
+    /// active set から該当 execution を取り除き、reservation 状態を完全に撤回する。
+    /// production は in-memory 状態だけを更新し、filesystem metadata の削除は
+    /// テスト fixture でのみ行う。
     pub async fn cancel_reservation(&self, execution_id: &str) -> Result<(), ExecutionStoreError> {
         if !is_valid_execution_id(execution_id) {
             return Err(ExecutionStoreError::InvalidExecutionId {
@@ -1518,13 +1527,24 @@ impl ExecutionStore {
                 execution_id: execution_id.to_string(),
             });
         }
-        // in-memory active registry（engine 作業状態）が正。terminal の詳細照会は
-        // fold ベースの read model（workspace query）が担い、ここでは扱わない。
         {
             let inner = self.inner.lock().await;
             if let Some(execution) = inner.active.get(execution_id) {
                 return Ok(Some(execution.clone()));
             }
+        }
+        if let Some(query) = &self.canonical_query {
+            let query = Arc::clone(query);
+            let execution_id = execution_id.to_string();
+            return tokio::task::spawn_blocking(move || query.execution_summary(&execution_id))
+                .await
+                .map_err(|error| ExecutionStoreError::AuthorityReadFailed {
+                    reason: error.to_string(),
+                })?
+                .map(|summary| summary.map(workflow_summary_to_metadata))
+                .map_err(|error| ExecutionStoreError::AuthorityReadFailed {
+                    reason: error.to_string(),
+                });
         }
         #[cfg(test)]
         {
@@ -1595,6 +1615,26 @@ impl ExecutionStore {
     #[cfg(test)]
     pub async fn active_len(&self) -> usize {
         self.inner.lock().await.active.len()
+    }
+}
+
+fn workflow_summary_to_metadata(
+    summary: crate::domain::workflow::WorkflowExecutionSummary,
+) -> WorkflowExecutionMetadata {
+    WorkflowExecutionMetadata {
+        execution_id: summary.execution_id,
+        workflow_name: summary.workflow_name,
+        status: summary.status,
+        worktree_path: summary.worktree_path,
+        current_node: summary.current_node,
+        created_from: summary.created_from,
+        started_at: summary.started_at,
+        updated_at: summary.updated_at,
+        completed_at: summary.completed_at,
+        error_reason: summary.error_reason,
+        interruption_reason: summary.interruption_reason,
+        resume_from_node: summary.resume_from_node,
+        total_token_usage: summary.total_token_usage,
     }
 }
 
@@ -1707,7 +1747,6 @@ pub enum ExecutionStoreError {
     ImmutableFieldChanged { execution_id: String, field: String },
     #[error("update_active for {execution_id} cannot transition to a non-active status")]
     NonActiveNotAllowedInUpdate { execution_id: String },
-    #[cfg(test)]
     #[error("canonical workflow authority read failed: {reason}")]
     AuthorityReadFailed { reason: String },
     #[error("workflow execution was not found: {execution_id}")]

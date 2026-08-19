@@ -61,10 +61,14 @@ impl SqliteWorkspaceQueryService {
         .map_err(WorkflowError::external)?;
         let mut records = Vec::new();
         for tree_id in tree_ids {
-            let Some((_, record)) = self.repository.folded_tree(&tree_id).map_err(query_error)?
+            let Some((folded, record)) =
+                self.repository.folded_tree(&tree_id).map_err(query_error)?
             else {
                 continue;
             };
+            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
+                continue;
+            }
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
                 Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),
@@ -190,6 +194,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         self.repository
             .folded_tree(execution_id)
             .map_err(query_error)?
+            .filter(|(folded, _)| matches!(folded.root, TreeRootFact::Workflow(_)))
             .map(|(_, record)| execution_summary(record))
             .transpose()
     }

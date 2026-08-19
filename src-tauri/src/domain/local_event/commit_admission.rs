@@ -125,10 +125,7 @@ pub fn internal_progress_is_anchored_to_existing_owner(batch: &LocalAtomicBatch)
         return false;
     }
     match batch.idempotency.operation_kind {
-        CommitOperationKind::Projection => false,
-        // 旧 workflow blob commit は存在しない。provider-stop の provider イベント
-        // commit は shutdown 中の internal progress として扱わない。
-        CommitOperationKind::Workflow => false,
+        CommitOperationKind::Projection | CommitOperationKind::Workflow => advances_existing_owner,
         CommitOperationKind::ApplicationQuit
         | CommitOperationKind::Recovery
         | CommitOperationKind::UserMutation
@@ -649,5 +646,68 @@ pub fn shutdown_target_recovery_is_bound_to_current_plan(
                 && completed.resource_revision == target.revision.value() as u64
                 && facts.completed_result_targets_target
         }
+    }
+}
+
+#[cfg(test)]
+mod internal_progress_tests {
+    use super::*;
+    use crate::domain::local_event::{
+        AgentSessionProviderRecord, CommitIdentity, IdempotencyBinding,
+        ProviderHookHealthProjectionRecord, Revision, SessionProjectionMutation,
+        SessionProjectionRecord,
+    };
+
+    fn batch(kind: CommitOperationKind, anchored: bool) -> LocalAtomicBatch {
+        LocalAtomicBatch {
+            commit_id: CommitIdentity::parse("internal-progress-test").unwrap(),
+            idempotency: IdempotencyBinding {
+                installation_id: "installation-1".to_string(),
+                operation_kind: kind,
+                idempotency_key: "internal-progress-test".to_string(),
+                payload_hash: [0; 32],
+            },
+            expected_heads: Vec::new(),
+            events: Vec::new(),
+            state_mutations: anchored
+                .then(|| {
+                    LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                        session_id: "provider-hook-health:codex".to_string(),
+                        projection: SessionProjectionRecord::ProviderHookHealth(
+                            ProviderHookHealthProjectionRecord {
+                                provider: AgentSessionProviderRecord::Codex,
+                                latest_launch_id: "launch-1".to_string(),
+                                latest_launch_session_started: true,
+                                warning_launch_id: None,
+                                warning_reason: None,
+                            },
+                        ),
+                        expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+                        revision: Revision::new(1).unwrap(),
+                    })
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn workflowとprojectionの既存owner更新を内部進行として許可する() {
+        for kind in [
+            CommitOperationKind::Workflow,
+            CommitOperationKind::Projection,
+        ] {
+            assert!(internal_progress_is_anchored_to_existing_owner(&batch(
+                kind, true
+            )));
+        }
+    }
+
+    #[test]
+    fn provider_stopの空batchは内部進行として許可しない() {
+        assert!(!internal_progress_is_anchored_to_existing_owner(&batch(
+            CommitOperationKind::Workflow,
+            false,
+        )));
     }
 }

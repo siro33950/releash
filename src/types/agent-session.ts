@@ -3,6 +3,10 @@ export interface AgentSessionItem {
 	workspaceIdentity: string;
 	worktreePath: string;
 	provider: string;
+	treeParent?: {
+		treeId: string;
+		nodeExecutionId: string;
+	} | null;
 	lifecycle: "open" | "paused" | "archived";
 	activity: "running" | "idle";
 	lastExitAbnormal: boolean;

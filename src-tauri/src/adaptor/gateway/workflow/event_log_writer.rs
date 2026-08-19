@@ -31,7 +31,7 @@ pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
 /// 事実が先である理由: 途中で落ちた場合、事実側が残れば node は完了し（利用者の
 /// 観測として正しい）、provider 側の再配送は同じ事実の重複 append（fold で無害）に
 /// 収束する。逆順は「provider は止まったが node が完了しない」窓を作る。
-pub(crate) fn append_provider_stop_for_app<R: tauri::Runtime>(
+pub(crate) async fn append_provider_stop_for_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     events: &[WorkflowEvent],
     provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
@@ -41,33 +41,11 @@ pub(crate) fn append_provider_stop_for_app<R: tauri::Runtime>(
     if provider_events.is_empty() {
         return Ok(());
     }
-    commit_provider_lifecycle_events_blocking(&store, provider_events)
-}
-
-fn commit_provider_lifecycle_events_blocking(
-    store: &std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-) -> Result<(), String> {
     let repository: std::sync::Arc<
         dyn crate::domain::local_event::LocalEventTransactionRepository,
     > = store.clone();
     let installation_id = store.installation_id().to_string();
-    std::thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| format!("failed to create provider commit runtime: {error}"))?
-                    .block_on(commit_provider_lifecycle_events(
-                        repository,
-                        installation_id,
-                        provider_events,
-                    ))
-            })
-            .join()
-            .map_err(|_| "provider lifecycle commit worker panicked".to_string())?
-    })
+    commit_provider_lifecycle_events(repository, installation_id, provider_events).await
 }
 
 async fn commit_provider_lifecycle_events(
@@ -79,7 +57,7 @@ async fn commit_provider_lifecycle_events(
     let occurred_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0);
+        .map_err(|error| format!("provider lifecycle clock is before UNIX_EPOCH: {error}"))?;
     let mut uncommitted = Vec::with_capacity(provider_events.len());
     let mut expected_heads: Vec<crate::domain::local_event::ExpectedStreamHead> = Vec::new();
     for scoped in provider_events {

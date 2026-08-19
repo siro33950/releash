@@ -444,6 +444,20 @@ pub struct LocalEventStore {
 }
 
 impl LocalEventStore {
+    /// Stop new writes, persist every request already admitted to the writer,
+    /// then join all store workers.
+    pub(crate) fn drain_and_close(mut self) {
+        self.queue.close_after_drain();
+        self.readers.close();
+        self.recovery_snapshots.close();
+        for worker in self.reader_workers.drain(..) {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self.writer_worker.take() {
+            let _ = worker.join();
+        }
+    }
+
     /// Open (or bootstrap) the store under `app_data_root`.
     ///
     /// Create or open the single fixed-path SQLite authority.

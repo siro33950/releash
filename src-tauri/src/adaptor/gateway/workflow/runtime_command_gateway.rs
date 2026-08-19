@@ -37,6 +37,7 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
     pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub(crate) local_event_repository:
         Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     pub(crate) local_event_installation_id: String,
@@ -167,6 +168,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             repository_usecase,
             app_config,
             data_dir,
+            workspace_query,
             local_event_repository,
             local_event_installation_id,
             agent_session_launch,
@@ -181,6 +183,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
                 app_config,
             )),
             data_dir,
+            workspace_query,
             agent_session_launch,
             agent_session_initial_instruction,
             agent_session_interrupt,

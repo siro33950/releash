@@ -130,7 +130,11 @@ impl LocalAgentSessionRepository {
                     last_exit_abnormal,
                 } => match lifecycle {
                     AgentSessionLifecycle::Paused => NodeFact::ProcessExited(ProcessExitedFact {
-                        exit_code: (!last_exit_abnormal).then_some(0),
+                        exit_code: if *last_exit_abnormal {
+                            session.last_exit_code()
+                        } else {
+                            Some(0)
+                        },
                         result_summary: None,
                         failure_reason: last_exit_abnormal
                             .then(|| "provider process exited abnormally".to_string()),
@@ -536,8 +540,6 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             if ownership.agent_session_id() == Some(session.id()) {
                 let mutations = vec![LocalStateMutation::AgentSessionRemoval(
                     AgentSessionRemovalMutation {
-                        agent_session_stream: None,
-                        retained_tombstone_sequence: None,
                         ownership_projection_id: Some(ownership_key),
                         ownership_stream: Some(ownership_stream(
                             session.provider(),
@@ -576,21 +578,11 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             }
         }
         // delete の意味はデータを消すこと: 木の行を物理削除する。
-        let store = Arc::clone(&self.store);
         let tree_id = session.id().to_string();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|_| AgentSessionRepositoryError::Unavailable)?
-                        .block_on(store.delete_node_event_tree(tree_id))
-                        .map_err(|_| AgentSessionRepositoryError::Unavailable)
-                })
-                .join()
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?
-        })?;
+        self.store
+            .delete_node_event_tree(tree_id)
+            .await
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
         Ok(())
     }
 }

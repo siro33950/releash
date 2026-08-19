@@ -41,40 +41,57 @@ impl WorkflowEventLogRepository {
             WorkflowEventReadSource::Canonical(backend) => {
                 let records = fact_log::read_tree_records_from(backend, execution_id.as_str())
                     .map_err(WorkflowError::external)?;
-                records
-                    .iter()
-                    .map(|record| {
-                        let detail = record
-                            .fact
-                            .encode_detail()
-                            .map_err(|error| WorkflowError::external(error.to_string()))?;
-                        let mut payload: serde_json::Map<String, serde_json::Value> =
-                            serde_json::from_str(&detail)
-                                .map_err(|error| WorkflowError::external(error.to_string()))?;
-                        // 行の同定カラムを payload に併合して1つの view にする。
-                        payload.insert(
-                            "nodeExecutionId".to_string(),
-                            record.meta.node_execution_id.clone().into(),
-                        );
-                        payload
-                            .insert("nodeName".to_string(), record.meta.node_name.clone().into());
-                        payload.insert(
-                            "kind".to_string(),
-                            serde_json::to_value(record.meta.kind)
-                                .map_err(|error| WorkflowError::external(error.to_string()))?,
-                        );
-                        payload.insert("attempt".to_string(), record.meta.attempt.into());
-                        Ok(WorkflowEventDraft {
-                            execution_id: record.meta.tree_id.clone(),
-                            event_kind: record.fact.event_type().to_string(),
-                            timestamp: record.timestamp_ms as f64 / 1000.0,
-                            payload: serde_json::Value::Object(payload),
-                        })
-                    })
-                    .collect()
+                records.iter().map(record_to_draft).collect()
             }
         }
     }
+
+    fn read_draft_page(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        match &self.source {
+            WorkflowEventReadSource::Canonical(backend) => fact_log::read_tree_record_page_from(
+                backend,
+                execution_id.as_str(),
+                page.offset,
+                page.limit,
+            )
+            .map_err(WorkflowError::external)?
+            .iter()
+            .map(record_to_draft)
+            .collect(),
+        }
+    }
+}
+
+fn record_to_draft(
+    record: &crate::domain::workflow::NodeFactRecord,
+) -> Result<WorkflowEventDraft, WorkflowError> {
+    let detail = record
+        .fact
+        .encode_detail()
+        .map_err(|error| WorkflowError::external(error.to_string()))?;
+    let mut payload: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&detail)
+        .map_err(|error| WorkflowError::external(error.to_string()))?;
+    payload.insert(
+        "nodeExecutionId".to_string(),
+        record.meta.node_execution_id.clone().into(),
+    );
+    payload.insert("nodeName".to_string(), record.meta.node_name.clone().into());
+    payload.insert(
+        "kind".to_string(),
+        serde_json::to_value(record.meta.kind)
+            .map_err(|error| WorkflowError::external(error.to_string()))?,
+    );
+    payload.insert("attempt".to_string(), record.meta.attempt.into());
+    Ok(WorkflowEventDraft {
+        execution_id: record.meta.tree_id.clone(),
+        event_kind: record.fact.event_type().to_string(),
+        timestamp: record.timestamp_ms as f64 / 1000.0,
+        payload: serde_json::Value::Object(payload),
+    })
 }
 
 impl WorkflowEventRepository for WorkflowEventLogRepository {
@@ -97,12 +114,7 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         execution_id: &WorkflowExecutionId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        Ok(self
-            .read_drafts(execution_id)?
-            .into_iter()
-            .skip(page.offset)
-            .take(page.limit)
-            .collect())
+        self.read_draft_page(execution_id, page)
     }
 }
 

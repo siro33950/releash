@@ -20,6 +20,7 @@ pub(crate) struct NewNodeEventRow {
     pub kind: String,
     pub attempt: i64,
     pub event_type: String,
+    pub session_id: Option<String>,
     pub detail: String,
 }
 
@@ -34,6 +35,7 @@ pub(crate) struct NodeEventRow {
     pub kind: String,
     pub attempt: i64,
     pub event_type: String,
+    pub session_id: Option<String>,
     pub detail: String,
     pub timestamp_ms: i64,
 }
@@ -48,9 +50,9 @@ pub(crate) fn append_node_event(
     connection.query_row(
         "INSERT INTO node_events (
              tree_id, seq, node_execution_id, parent_id, node_name,
-             kind, attempt, event_type, detail, timestamp
+             kind, attempt, event_type, session_id, detail, timestamp
          )
-         SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+         SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
          FROM node_events WHERE tree_id = ?1
          RETURNING seq",
         rusqlite::params![
@@ -61,6 +63,7 @@ pub(crate) fn append_node_event(
             row.kind,
             row.attempt,
             row.event_type,
+            row.session_id,
             row.detail,
             timestamp_ms,
         ],
@@ -86,13 +89,14 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> Result<NodeEventRow, rusqlite::Error
         kind: row.get(5)?,
         attempt: row.get(6)?,
         event_type: row.get(7)?,
-        detail: row.get(8)?,
-        timestamp_ms: row.get(9)?,
+        session_id: row.get(8)?,
+        detail: row.get(9)?,
+        timestamp_ms: row.get(10)?,
     })
 }
 
 const ROW_COLUMNS: &str = "tree_id, seq, node_execution_id, parent_id, node_name, \
-     kind, attempt, event_type, detail, timestamp";
+     kind, attempt, event_type, session_id, detail, timestamp";
 
 /// Read one tree's facts in append order.
 pub(crate) fn read_tree(
@@ -103,6 +107,21 @@ pub(crate) fn read_tree(
         "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 ORDER BY seq"
     ))?;
     let rows = statement.query_map([tree_id], row_from_sql)?;
+    rows.collect()
+}
+
+pub(crate) fn read_tree_page(
+    connection: &Connection,
+    tree_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 ORDER BY seq LIMIT ?2 OFFSET ?3"
+    ))?;
+    let rows = statement.query_map(rusqlite::params![tree_id, limit, offset], row_from_sql)?;
     rows.collect()
 }
 
@@ -149,18 +168,14 @@ pub(crate) fn list_tree_roots(
     rows.collect()
 }
 
-/// List every fact of the given event type, in append order. The event type
-/// is a caller-provided narrowing value; interpreting the detail stays with
-/// the caller (Rust side, never SQL).
-pub(crate) fn rows_of_event_type(
+pub(crate) fn latest_session_attachment(
     connection: &Connection,
-    event_type: &str,
-) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    session_id: &str,
+) -> Result<Option<NodeEventRow>, rusqlite::Error> {
     let mut statement = connection.prepare(&format!(
         "SELECT {ROW_COLUMNS} FROM node_events
-         WHERE event_type = ?1
-         ORDER BY tree_id, seq"
+         WHERE session_id = ?1 ORDER BY tree_id DESC, seq DESC LIMIT 1"
     ))?;
-    let rows = statement.query_map([event_type], row_from_sql)?;
-    rows.collect()
+    let mut rows = statement.query_map([session_id], row_from_sql)?;
+    rows.next().transpose()
 }

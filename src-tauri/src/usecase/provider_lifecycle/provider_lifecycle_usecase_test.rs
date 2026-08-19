@@ -65,6 +65,24 @@ impl ProviderLifecycleEventRepository for RecordingEvents {
         self.batches.lock().unwrap().push(events);
         Ok(())
     }
+
+    async fn load_scope(
+        &self,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(self
+            .batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter_map(|event| {
+                let (event_scope, event) = event.clone().into_parts();
+                (event_scope == *scope)
+                    .then(|| ScopedProviderLifecycleEvent::new(event_scope, event))
+            })
+            .collect())
+    }
 }
 
 struct ConcurrentEvents {
@@ -351,6 +369,32 @@ async fn test_providerライフサイクルusecase_agent_session終了でscope�
             ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
         );
     }
+}
+
+#[tokio::test]
+async fn test_providerライフサイクルusecase_再起動後もscopeのbindingを失効する() {
+    let events = Arc::new(RecordingEvents::default());
+    let credentials = Arc::new(FakeCredentials::default());
+    let before_restart = ProviderLifecycleUsecase::new(credentials.clone(), events.clone());
+    let target_scope = scope("agent-restarted");
+    before_restart
+        .arm(
+            slot_id("slot-before-restart"),
+            ProviderKind::Codex,
+            target_scope.clone(),
+        )
+        .await
+        .unwrap();
+
+    let after_restart = ProviderLifecycleUsecase::new(credentials, events.clone());
+    assert_eq!(after_restart.release_scope(&target_scope).await.unwrap(), 1);
+
+    let persisted = events.load_scope(&target_scope).await.unwrap();
+    assert!(matches!(
+        persisted.last().cloned().map(|event| event.into_parts().1),
+        Some(ProviderLifecycleEvent::BindingExpired { .. })
+    ));
+    assert_eq!(after_restart.release_scope(&target_scope).await.unwrap(), 0);
 }
 
 #[test]

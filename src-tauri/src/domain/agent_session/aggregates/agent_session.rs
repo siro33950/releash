@@ -53,16 +53,18 @@ impl AgentSessionTreeParent {
         node_execution_id: impl Into<String>,
     ) -> Result<Self, AgentSessionTreeParentError> {
         let tree_id = tree_id.into();
-        if tree_id.trim().is_empty() {
+        let tree_id = tree_id.trim();
+        if tree_id.is_empty() {
             return Err(AgentSessionTreeParentError::EmptyTreeId);
         }
         let node_execution_id = node_execution_id.into();
-        if node_execution_id.trim().is_empty() {
+        let node_execution_id = node_execution_id.trim();
+        if node_execution_id.is_empty() {
             return Err(AgentSessionTreeParentError::EmptyNodeExecutionId);
         }
         Ok(Self {
-            tree_id,
-            node_execution_id,
+            tree_id: tree_id.to_string(),
+            node_execution_id: node_execution_id.to_string(),
         })
     }
 }
@@ -199,6 +201,7 @@ pub(crate) struct AgentSession {
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
     last_exit_abnormal: bool,
+    last_exit_code: Option<i32>,
     uncommitted_events: Vec<AgentSessionLifecycleEvent>,
 }
 
@@ -240,20 +243,22 @@ impl AgentSession {
             transcript_ref: None,
             initial_instruction_admitted: false,
             last_exit_abnormal: false,
+            last_exit_code: None,
             uncommitted_events: vec![created],
         })
     }
 
-    /// 事実ログの導出から lifecycle を直接復元する（イベント検証を伴わない）。
-    /// 呼び出し側（repository）が導出規則を適用済みであることが前提。
+    /// 事実ログから導出済みの lifecycle と異常終了状態だけを復元する。
+    /// provider session 参照など、別の事実から復元する属性は変更しない。
     pub(crate) fn restore_derived_lifecycle(
         &mut self,
         lifecycle: AgentSessionLifecycle,
         last_exit_abnormal: bool,
     ) {
+        debug_assert!(self.uncommitted_events.is_empty());
         self.lifecycle = lifecycle;
         self.last_exit_abnormal = last_exit_abnormal;
-        self.uncommitted_events.clear();
+        self.last_exit_code = None;
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -349,6 +354,10 @@ impl AgentSession {
         self.last_exit_abnormal
     }
 
+    pub(crate) fn last_exit_code(&self) -> Option<i32> {
+        self.last_exit_code
+    }
+
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {
         match pty_presence {
             ManagedPtyPresence::Live => AgentSessionOpenAction::Attach,
@@ -379,6 +388,7 @@ impl AgentSession {
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
         self.last_exit_abnormal = exit_code != Some(0);
+        self.last_exit_code = exit_code;
         self.uncommitted_events
             .push(AgentSessionLifecycleEvent::LifecycleChanged {
                 lifecycle: AgentSessionLifecycle::Paused,
@@ -417,6 +427,7 @@ impl AgentSession {
             AgentSessionRecoveryResult::Succeeded => {
                 self.lifecycle = AgentSessionLifecycle::Open;
                 self.last_exit_abnormal = false;
+                self.last_exit_code = None;
                 self.uncommitted_events
                     .push(AgentSessionLifecycleEvent::LifecycleChanged {
                         lifecycle: AgentSessionLifecycle::Open,
@@ -437,6 +448,7 @@ impl AgentSession {
             AgentSessionRecoveryResult::Succeeded => {
                 self.lifecycle = AgentSessionLifecycle::Open;
                 self.last_exit_abnormal = false;
+                self.last_exit_code = None;
                 self.uncommitted_events
                     .push(AgentSessionLifecycleEvent::LifecycleChanged {
                         lifecycle: AgentSessionLifecycle::Open,

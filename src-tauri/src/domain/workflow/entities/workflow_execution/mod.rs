@@ -1725,7 +1725,9 @@ impl WorkflowExecution {
                         slot.artifact.clone().or_else(|| node.artifact.clone()),
                         slot.contract.clone(),
                         slot.result.clone().or_else(|| node.result_summary.clone()),
-                        Some(slot.token_usage.clone()),
+                        (slot.token_usage != TokenUsage::default())
+                            .then(|| slot.token_usage.clone())
+                            .or_else(|| node.token_usage.clone()),
                     )
                 })
                 .unwrap_or((
@@ -3145,7 +3147,7 @@ impl WorkflowExecution {
                     // 展開途中（宣言された座標より slot が少ない）は展開の続き。
                     // 全 slot 決着で未完のケースは fold が畳んでいるため残らない
                     // （on_failure 既定の停止は除く）。
-                    let expected = self
+                    let Some(expected) = self
                         .runtime
                         .workflow
                         .node_by_name(&scope.node_name)
@@ -3157,7 +3159,9 @@ impl WorkflowExecution {
                                 .map(|items| items.len() * spec.children.len())
                                 .unwrap_or(spec.children.len())
                         })
-                        .unwrap_or(0);
+                    else {
+                        continue;
+                    };
                     if fanout.children.len() < expected || fanout.children.is_empty() {
                         pending.push(PendingAdvance::ExpandFanout {
                             scope_id: scope_id.clone(),

@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS node_events (
     kind TEXT NOT NULL CHECK (kind IN ('session', 'command', 'fanout', 'sequence')),
     attempt INTEGER NOT NULL CHECK (attempt >= 1),
     event_type TEXT NOT NULL,
+    session_id TEXT,
     detail TEXT NOT NULL,
     timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
     PRIMARY KEY (tree_id, seq)
@@ -214,6 +215,9 @@ CREATE INDEX IF NOT EXISTS idx_node_events_node
     ON node_events (node_execution_id, seq);
 CREATE INDEX IF NOT EXISTS idx_node_events_kind
     ON node_events (kind, tree_id);
+CREATE INDEX IF NOT EXISTS idx_node_events_session
+    ON node_events (session_id, tree_id, seq)
+    WHERE session_id IS NOT NULL;
 "#;
 
 const SESSION_PROJECTION_TABLE_V3: &str = r#"
@@ -765,7 +769,11 @@ fn discard_retired_event_sourcing_v6(connection: &Connection) -> Result<(), rusq
             AND commit_id NOT IN (SELECT commit_id FROM operation_records)
             AND commit_id NOT IN (SELECT commit_id FROM session_projection)
             AND commit_id NOT IN (SELECT commit_id FROM obligations)
-            AND commit_id NOT IN (SELECT commit_id FROM pending_obligations);",
+            AND commit_id NOT IN (SELECT commit_id FROM pending_obligations)
+            AND commit_id NOT IN (SELECT commit_id FROM recovery_action_attempts)
+            AND commit_id NOT IN (SELECT commit_id FROM shutdown_plans)
+            AND commit_id NOT IN (SELECT commit_id FROM shutdown_targets)
+            AND commit_id NOT IN (SELECT commit_id FROM shutdown_recovery_snapshots);",
     )
 }
 
@@ -942,6 +950,7 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
             "kind",
             "attempt",
             "event_type",
+            "session_id",
             "detail",
             "timestamp",
         ],
@@ -956,6 +965,7 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "idx_operation_bindings_operation",
         "idx_node_events_node",
         "idx_node_events_kind",
+        "idx_node_events_session",
     ] {
         require_index(connection, index)?;
     }
@@ -1222,8 +1232,27 @@ mod tests {
                 "BEGIN IMMEDIATE;
                  DROP INDEX idx_node_events_node;
                  DROP INDEX idx_node_events_kind;
+                 DROP INDEX idx_node_events_session;
                  DROP TABLE node_events;
                  ALTER TABLE store_metadata RENAME TO store_metadata_old;",
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO logical_commits VALUES
+                    ('keep-recovery', '00000000-0000-4000-8000-000000000001', 'recovery', 'keep-recovery', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
+                    ('keep-plan', '00000000-0000-4000-8000-000000000001', 'application_quit', 'keep-plan', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
+                    ('keep-target', '00000000-0000-4000-8000-000000000001', 'shutdown_target', 'keep-target', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
+                    ('keep-snapshot', '00000000-0000-4000-8000-000000000001', 'recovery', 'keep-snapshot', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
+                    ('delete-orphan', '00000000-0000-4000-8000-000000000001', 'workflow', 'delete-orphan', zeroblob(32), 'sealed', NULL, NULL, 0, 0, '{}', NULL, 1);
+                 INSERT INTO recovery_action_attempts VALUES
+                    ('action-1', zeroblob(32), '{}', NULL, 0, 'keep-recovery');
+                 INSERT INTO shutdown_plans VALUES
+                    ('shutdown-1', 'prepared', '{}', 'available', 0, 'keep-plan');
+                 INSERT INTO shutdown_targets VALUES
+                    ('shutdown-1', 0, '{}', 0, 'keep-target');
+                 INSERT INTO shutdown_recovery_snapshots VALUES
+                    ('shutdown-1', 'owner', 0, '{}', 'keep-snapshot');",
             )
             .unwrap();
         create_store_metadata(&connection, "store_metadata", "shutdown_plans", 5).unwrap();
@@ -1250,5 +1279,25 @@ mod tests {
         validate_current_schema(&connection).unwrap();
         require_index(&connection, "idx_node_events_node").unwrap();
         require_index(&connection, "idx_node_events_kind").unwrap();
+        require_index(&connection, "idx_node_events_session").unwrap();
+        for commit_id in ["keep-recovery", "keep-plan", "keep-target", "keep-snapshot"] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM logical_commits WHERE commit_id = ?1",
+                    [commit_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "referenced commit must survive: {commit_id}");
+        }
+        let orphan_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM logical_commits WHERE commit_id = 'delete-orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_count, 0);
+        require_foreign_key_integrity(&connection).unwrap();
     }
 }

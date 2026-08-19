@@ -681,6 +681,33 @@ fn test_agent_session生成_実行木上の親を固定する() {
 }
 
 #[test]
+fn test_agent_session生成_tree_parentをtrimして保持する() {
+    let parent = AgentSessionTreeParent::new(" workflow-1 ", " node-1 ").unwrap();
+
+    assert_eq!(parent.tree_id, "workflow-1");
+    assert_eq!(parent.node_execution_id, "node-1");
+}
+
+#[test]
+fn test_agent_session導出復元_lifecycleと異常終了だけを未commit事実なしで設定する() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        None,
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    session.restore_derived_lifecycle(AgentSessionLifecycle::Paused, true);
+
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
+    assert!(session.last_exit_abnormal());
+    assert!(session.uncommitted_events().is_empty());
+}
+
+#[test]
 fn test_agent_session生成_空のtree_idを拒否する() {
     let error = AgentSessionTreeParent::new(" ", "node-execution-1").unwrap_err();
 

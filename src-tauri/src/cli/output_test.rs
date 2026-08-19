@@ -9,7 +9,9 @@ use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::schema::{
     NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinitionYaml,
 };
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, NodeKindName};
+use crate::domain::workflow::{
+    ExecutionOrigin, ExecutionStatus, NodeExecutionFailureKind, NodeKindName,
+};
 use clap::Parser;
 use tempfile::TempDir;
 
@@ -219,10 +221,25 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
     append_workflow_events(
         temp.path(),
         &[
+            WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution_id.clone(),
+                node_execution_id: "node-0".to_string(),
+                timestamp: 2.25,
+            },
+            WorkflowEvent::NodeFailed {
+                execution_id: execution_id.clone(),
+                node_execution_id: "node-0".to_string(),
+                node_name: "review".to_string(),
+                attempt: 1,
+                reason: "retry fixture".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                retry_count: None,
+                timestamp: 2.5,
+            },
             WorkflowEvent::NodeRetryRequested {
                 execution_id: execution_id.clone(),
                 node_execution_id: "node-0".to_string(),
-                timestamp: 2.5,
+                timestamp: 2.75,
             },
             WorkflowEvent::NodeStarted {
                 execution_id: execution_id.clone(),
@@ -231,7 +248,7 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
                 kind: NodeKindName::Session,
                 attempt: 2,
                 parent: None,
-                timestamp: 2.5,
+                timestamp: 2.75,
             },
             WorkflowEvent::ArtifactProduced {
                 execution_id: execution_id.clone(),

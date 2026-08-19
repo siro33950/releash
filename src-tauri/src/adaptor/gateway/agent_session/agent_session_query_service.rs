@@ -37,19 +37,19 @@ impl LocalAgentSessionQueryService {
         }
     }
 
-    fn get_derived(
-        &self,
+    fn get_derived_from(
+        backend: &FactLogReadBackend,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
         if agent_session_id.trim().is_empty() {
             return Err(AgentSessionQueryError::InvalidRequest);
         }
-        let Some(location) = locate_session(&self.backend, agent_session_id)
+        let Some(location) = locate_session(backend, agent_session_id)
             .map_err(|_| AgentSessionQueryError::Unavailable)?
         else {
             return Ok(None);
         };
-        let records = fact_log::read_tree_records_from(&self.backend, &location.tree_id)
+        let records = fact_log::read_tree_records_from(backend, &location.tree_id)
             .map_err(|_| AgentSessionQueryError::Unavailable)?;
         let session = derive_session(agent_session_id, &location, &records)
             .map_err(|_| AgentSessionQueryError::Corrupt)?;
@@ -60,7 +60,7 @@ impl LocalAgentSessionQueryService {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-        self.get_derived(agent_session_id)
+        Self::get_derived_from(&self.backend, agent_session_id)
     }
 }
 
@@ -70,7 +70,11 @@ impl AgentSessionQueryService for LocalAgentSessionQueryService {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError> {
-        self.get_derived(agent_session_id)
+        let backend = self.backend.clone();
+        let agent_session_id = agent_session_id.to_string();
+        tokio::task::spawn_blocking(move || Self::get_derived_from(&backend, &agent_session_id))
+            .await
+            .map_err(|_| AgentSessionQueryError::Unavailable)?
     }
 }
 
@@ -81,13 +85,13 @@ pub(crate) fn workspace_session_items(
 ) -> Result<Vec<AgentSessionItemDto>, AgentSessionQueryError> {
     let mut items = Vec::new();
     for tree_id in tree_ids {
-        let records = fact_log::read_tree_records_from(backend, tree_id)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?;
-        let Some(first) = records.first() else {
+        let Some(root) = fact_log::read_tree_root_from(backend, tree_id)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?
+        else {
             continue;
         };
         let is_workspace_session = matches!(
-            &first.fact,
+            &root.fact,
             NodeFact::Started(started)
                 if matches!(
                     &started.root,
@@ -97,6 +101,11 @@ pub(crate) fn workspace_session_items(
         if !is_workspace_session {
             continue;
         }
+        let records = fact_log::read_tree_records_from(backend, tree_id)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let Some(first) = records.first() else {
+            continue;
+        };
         let location = super::agent_session_repository::SessionLocation {
             tree_id: tree_id.clone(),
             node_execution_id: first.meta.node_execution_id.clone(),
@@ -104,7 +113,7 @@ pub(crate) fn workspace_session_items(
             node_name: first.meta.node_name.clone(),
             attempt: first.meta.attempt,
         };
-        let session = derive_session(tree_id, &location, &records)
+        let session = derive_session(&first.meta.node_execution_id, &location, &records)
             .map_err(|_| AgentSessionQueryError::Corrupt)?;
         items.push(agent_session_item(session.session()));
     }

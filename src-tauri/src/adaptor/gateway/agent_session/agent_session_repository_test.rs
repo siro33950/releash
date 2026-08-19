@@ -352,7 +352,7 @@ async fn test_agent_session_repository_異常exitをfailure付きprocess_exited�
     let NodeFact::ProcessExited(exited) = &records.last().unwrap().fact else {
         panic!("abnormal exit must be recorded as a process_exited fact: {records:?}");
     };
-    assert_eq!(exited.exit_code, None);
+    assert_eq!(exited.exit_code, Some(1));
     assert!(exited.failure_reason.is_some());
     let loaded = repository
         .find("agent-session-abnormal")

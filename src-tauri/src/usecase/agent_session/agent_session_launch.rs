@@ -88,6 +88,8 @@ type StandaloneLaunchOutcome = Result<String, AgentSessionLaunchUsecaseError>;
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
 const COMPLETED_STANDALONE_LAUNCH_CAPACITY: usize = 128;
+const ACTIVATED_WORKFLOW_LAUNCH_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(300);
 
 fn issue_agent_session_id(
     caller_request_id: &str,
@@ -157,7 +159,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     hook_health: Arc<ProviderHookHealthUsecase>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
-    activated_workflow_launches: Mutex<HashMap<String, VersionedAgentSession>>,
+    activated_workflow_launches: Arc<Mutex<HashMap<String, VersionedAgentSession>>>,
 }
 
 struct PreparedAgentSessionLaunch {
@@ -195,7 +197,7 @@ impl AgentSessionLaunchUsecase {
             hook_health,
             standalone_requests: Mutex::new(StandaloneLaunchRequestRegistry::default()),
             pending_workflow_launches: Mutex::new(HashMap::new()),
-            activated_workflow_launches: Mutex::new(HashMap::new()),
+            activated_workflow_launches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -249,12 +251,7 @@ impl AgentSessionLaunchUsecase {
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let pending = self
-            .prepare_new_session(
-                agent_session_id,
-                request,
-                Ok(None),
-                ProviderSessionLaunch::New,
-            )
+            .prepare_new_session(agent_session_id, request, None, ProviderSessionLaunch::New)
             .await?;
         self.spawn_prepared(pending).await
     }
@@ -278,7 +275,7 @@ impl AgentSessionLaunchUsecase {
         let tree_parent =
             AgentSessionTreeParent::new(&request.workflow_execution_id, &request.node_execution_id)
                 .map(Some)
-                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput);
+                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let launch =
             ProviderSessionLaunch::new_with_initial_instruction(request.initial_instruction)
@@ -319,6 +316,10 @@ impl AgentSessionLaunchUsecase {
         &self,
         agent_session_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
+        let mut launches = self.activated_workflow_launches.lock().await;
+        if launches.contains_key(agent_session_id) {
+            return Err(AgentSessionLaunchUsecaseError::Corrupt);
+        }
         let pending = self
             .pending_workflow_launches
             .lock()
@@ -326,15 +327,14 @@ impl AgentSessionLaunchUsecase {
             .remove(agent_session_id)
             .ok_or(AgentSessionLaunchUsecaseError::InvalidInput)?;
         let activated = self.spawn_prepared(pending).await?;
-        if self
-            .activated_workflow_launches
-            .lock()
-            .await
-            .insert(agent_session_id.to_string(), activated.clone())
-            .is_some()
-        {
-            return Err(AgentSessionLaunchUsecaseError::Corrupt);
-        }
+        launches.insert(agent_session_id.to_string(), activated.clone());
+        drop(launches);
+        let launches = Arc::clone(&self.activated_workflow_launches);
+        let agent_session_id = agent_session_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(ACTIVATED_WORKFLOW_LAUNCH_RETENTION).await;
+            launches.lock().await.remove(&agent_session_id);
+        });
         Ok(activated)
     }
 
@@ -342,7 +342,7 @@ impl AgentSessionLaunchUsecase {
         &self,
         agent_session_id: String,
         request: AgentSessionLaunchRequest,
-        tree_parent: Result<Option<AgentSessionTreeParent>, AgentSessionLaunchUsecaseError>,
+        tree_parent: Option<AgentSessionTreeParent>,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
         let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
@@ -358,7 +358,6 @@ impl AgentSessionLaunchUsecase {
             .await
             .map_err(map_session_error)?;
         availability_and_lock.finish();
-        let tree_parent = tree_parent?;
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;

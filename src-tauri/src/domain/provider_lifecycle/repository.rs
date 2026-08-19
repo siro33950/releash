@@ -1,5 +1,6 @@
-use super::ScopedProviderLifecycleEvent;
-use super::{ProviderHookHealth, ProviderKind};
+use super::{
+    ProviderHookHealth, ProviderKind, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleRepositoryError {
@@ -14,6 +15,13 @@ pub(crate) trait ProviderLifecycleEventRepository: Send + Sync {
         &self,
         events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), ProviderLifecycleRepositoryError>;
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -788,7 +788,6 @@ pub(crate) mod test_support {
                 "node_name": "review",
                 "contract": "review-result",
                 "value": {"status": "approved"},
-                "submitted_at": 109.0,
                 "request_id": "request-1"
             }),
         }];

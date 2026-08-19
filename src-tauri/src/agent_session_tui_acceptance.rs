@@ -11,7 +11,9 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::node_session_boundary::{
     ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort,
 };
-use crate::domain::local_event::LocalEventTransactionRepository;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
@@ -147,11 +149,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             app.handle().clone(),
             config.data_dir.clone(),
         );
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let data_dir = config.data_dir.clone();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
-            repository,
-            installation_id: store.installation_id().to_string(),
             store: store.clone(),
             data_dir: config.data_dir,
             provider_executable_config: Arc::new(
@@ -341,128 +340,24 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             )
             .await
             .map_err(|error| format!("{error:?}"))?;
-        // engine 相当の事実を記録する（production では workflow engine が実行木の
-        // started 行を持ち、prepare と activate の間に SessionAttached を commit する）。
-        self.seed_workflow_session_facts(
-            worktree_path,
-            provider_kind(provider),
-            workflow_execution_id,
-            node_execution_id,
-            &session.id,
+        seed_workflow_session_facts(
+            &self.store,
+            WorkflowSessionFactSeed {
+                workflow_name: "acceptance-workflow",
+                request: "acceptance",
+                worktree_path,
+                provider: provider_kind(provider),
+                workflow_execution_id,
+                node_execution_id,
+                session_id: &session.id,
+                initial_instruction_admitted: true,
+            },
         )?;
         self.workflow_agent_sessions
             .activate_workflow_agent_session(&session.id, node_execution_id)
             .await
             .map_err(|error| format!("{error:?}"))?;
         Ok(session.id)
-    }
-
-    fn seed_workflow_session_facts(
-        &self,
-        worktree_path: &str,
-        provider: crate::domain::provider_lifecycle::ProviderKind,
-        workflow_execution_id: &str,
-        node_execution_id: &str,
-        session_id: &str,
-    ) -> Result<(), String> {
-        use crate::adaptor::gateway::workflow::fact_log;
-        use crate::domain::workflow::{
-            ExecutionOrigin, ExecutionParentRef, NodeCompletion, NodeDefinition, NodeFact,
-            NodeFactMeta, NodeKind, NodeKindName, SequenceSpec, SessionAttachedFact, SessionSpec,
-            StartedFact, TreeRootFact, WorkflowDefinition, WorkflowRootFact,
-        };
-        fn node(name: &str, kind: NodeKind) -> NodeDefinition {
-            NodeDefinition {
-                name: name.to_string(),
-                kind,
-                artifact: None,
-                input: Vec::new(),
-                completion: NodeCompletion::Auto,
-                worktree: None,
-            }
-        }
-        let definition = WorkflowDefinition {
-            name: "acceptance-workflow".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![
-                node(
-                    "main",
-                    NodeKind::Sequence(SequenceSpec {
-                        entry: None,
-                        output: None,
-                        children: Vec::new(),
-                    }),
-                ),
-                node(
-                    "impl",
-                    NodeKind::Session(SessionSpec {
-                        provider,
-                        model: None,
-                        permission: None,
-                        facets: Default::default(),
-                    }),
-                ),
-            ],
-            entry: "main".to_string(),
-        };
-        let root_meta = NodeFactMeta {
-            tree_id: workflow_execution_id.to_string(),
-            node_execution_id: workflow_execution_id.to_string(),
-            parent_id: None,
-            node_name: "main".to_string(),
-            kind: NodeKindName::Sequence,
-            attempt: 1,
-        };
-        let node_meta = NodeFactMeta {
-            tree_id: workflow_execution_id.to_string(),
-            node_execution_id: node_execution_id.to_string(),
-            parent_id: Some(workflow_execution_id.to_string()),
-            node_name: "impl".to_string(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-        };
-        fact_log::append_single_fact(
-            &self.store,
-            &root_meta,
-            &NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                    workflow_name: "acceptance-workflow".to_string(),
-                    worktree_path: worktree_path.to_string(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                    request: "acceptance".to_string(),
-                    definition,
-                })),
-            }),
-            1,
-        )
-        .map_err(|error| format!("{error:?}"))?;
-        fact_log::append_single_fact(
-            &self.store,
-            &node_meta,
-            &NodeFact::Started(StartedFact {
-                parent: Some(ExecutionParentRef::sequence_child(workflow_execution_id)),
-                root: None,
-            }),
-            2,
-        )
-        .map_err(|error| format!("{error:?}"))?;
-        fact_log::append_single_fact(
-            &self.store,
-            &node_meta,
-            &NodeFact::SessionAttached(SessionAttachedFact {
-                session_id: session_id.to_string(),
-                provider_session_id: None,
-                transcript_ref: None,
-                // engine と同じく spawn 時配送済みとして記録する。
-                initial_instruction_admitted: true,
-            }),
-            3,
-        )
-        .map_err(|error| format!("{error:?}"))?;
-        Ok(())
     }
 
     pub async fn dispatch_initial_instruction(
@@ -505,7 +400,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
     #[allow(deprecated)]
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
-            _app,
+            _app: app,
             window,
             exit_observer,
             exit_observer_cancellation,
@@ -513,26 +408,36 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             workflow_agent_sessions,
             local_api,
             local_api_data_dir: _,
-            provider_lifecycle_ingress: _,
-            store: _,
+            provider_lifecycle_ingress,
+            store,
         } = self;
         exit_observer_cancellation.cancel();
         exit_observer
             .await
             .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
-        local_api
+        let local_api = local_api
             .into_inner()
-            .map_err(|_| "lock local API server".to_string())?
-            .shutdown();
-        _app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
-        _app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
-        _app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
-        _app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
-        _app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
-        _app.unmanage::<Arc<AgentSessionReadUsecase>>();
-        _app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
-        drop((workflow_agent_sessions, window, _app));
+            .map_err(|_| "lock local API server".to_string())?;
+        local_api.shutdown();
+        app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
+        app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
+        app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
+        app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
+        app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
+        app.unmanage::<Arc<AgentSessionReadUsecase>>();
+        app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
+        drop((
+            local_api,
+            workflow_agent_sessions,
+            provider_lifecycle_ingress,
+            terminal,
+            window,
+            app,
+        ));
+        let store = Arc::try_unwrap(store)
+            .map_err(|_| "local event store is still referenced during shutdown".to_string())?;
+        store.drain_and_close();
         Ok(())
     }
 }

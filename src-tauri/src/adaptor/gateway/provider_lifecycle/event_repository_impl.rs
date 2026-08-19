@@ -10,7 +10,7 @@ use crate::domain::local_event::{
     LocalEventTransactionRepository, StreamId, UncommittedDomainEvent,
 };
 use crate::domain::provider_lifecycle::{
-    ProviderLifecycleEventRepository, ProviderLifecycleRepositoryError,
+    ProviderLifecycleEventRepository, ProviderLifecycleRepositoryError, ProviderLifecycleScope,
     ScopedProviderLifecycleEvent,
 };
 
@@ -238,6 +238,41 @@ impl ProviderLifecycleEventRepository for LocalProviderLifecycleEventRepository 
         events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), ProviderLifecycleRepositoryError> {
         self.append_events(events).await
+    }
+
+    async fn load_scope(
+        &self,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        let stream_id = StreamId::provider_lifecycle(scope.agent_session_id())
+            .map_err(|_| ProviderLifecycleRepositoryError::InvalidInput)?;
+        let mut after = None;
+        let mut events = Vec::new();
+        loop {
+            let page = self
+                .repository
+                .load_stream(LoadStreamRequest {
+                    stream_id: stream_id.clone(),
+                    after,
+                    limit: 256,
+                })
+                .await
+                .map_err(|_| ProviderLifecycleRepositoryError::StorageUnavailable)?;
+            for committed in page.events {
+                let crate::domain::local_event::LoadedDomainEvent::Known(event) = committed.event
+                else {
+                    return Err(ProviderLifecycleRepositoryError::Corrupt);
+                };
+                let LocalDomainEvent::ProviderLifecycle(event) = *event else {
+                    return Err(ProviderLifecycleRepositoryError::Corrupt);
+                };
+                events.push(ScopedProviderLifecycleEvent::new(scope.clone(), event));
+            }
+            let Some(next_after) = page.next_after else {
+                return Ok(events);
+            };
+            after = Some(next_after);
+        }
     }
 }
 

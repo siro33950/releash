@@ -180,8 +180,8 @@ impl ProviderLifecycleIngressUsecase {
                 let transaction = self.workflow_stop_transaction.clone();
                 let command = ProviderWorkflowStopCommand {
                     agent_session_id,
-                    workflow_execution_id: workflow_execution_id.clone(),
-                    node_execution_id: node_execution_id.clone(),
+                    workflow_execution_id,
+                    node_execution_id,
                     binding_id,
                 };
                 return self

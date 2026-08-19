@@ -82,7 +82,8 @@ fn execution_started_workflow_from_drafts<'a>(
     events
         .iter()
         .find(|event| {
-            event.event_kind == "started"
+            event.execution_id == execution_id
+                && event.event_kind == "started"
                 && event
                     .payload
                     .get("root")
@@ -224,17 +225,32 @@ mod tests {
 
     #[test]
     fn resolve_node_artifact_contract_from_drafts_reads_execution_started_definition() {
-        let events = vec![root_started(serde_json::json!({
-            "name": "wf",
+        let mut other = root_started(serde_json::json!({
+            "name": "other",
             "description": "",
             "builtin": false,
             "nodes": {
                 "review": {
                     "session": {"provider": "claude"},
-                    "artifact": "review-verdict"
+                    "artifact": "wrong-contract"
                 }
             }
-        }))];
+        }));
+        other.execution_id = "execution-other".to_string();
+        let events = vec![
+            other,
+            root_started(serde_json::json!({
+                "name": "wf",
+                "description": "",
+                "builtin": false,
+                "nodes": {
+                    "review": {
+                        "session": {"provider": "claude"},
+                        "artifact": "review-verdict"
+                    }
+                }
+            })),
+        ];
 
         let contract = resolve_node_artifact_contract_from_drafts(&events, "review", "execution-1")
             .expect("contract should resolve");

@@ -906,9 +906,6 @@ fn canonical_runtime_owner_snapshot(
     // 統一 Node 事実ログの木ごとの fold で生存 owner を導出する。
     let roots = super::node_events::list_tree_roots(connection, "started")
         .map_err(|error| storage_unavailable(&error))?;
-    if roots.len() > limit {
-        return Err(LocalEventQueryError::ResponseTooLarge);
-    }
     let mut owners = Vec::new();
     for root in roots {
         let records = super::node_events::read_tree(connection, &root.tree_id)
@@ -927,16 +924,17 @@ fn canonical_runtime_owner_snapshot(
                     &root.node_execution_id,
                     &root.tree_id,
                 );
-                owners.push(CanonicalRuntimeOwnerView::AgentSession {
-                    worktree_path: session_root.worktree_path.clone(),
-                    active: view.is_open(),
-                });
+                if view.is_open() {
+                    owners.push(CanonicalRuntimeOwnerView::AgentSession {
+                        worktree_path: session_root.worktree_path.clone(),
+                        active: true,
+                    });
+                }
             }
             Some(TreeRootFact::Workflow(workflow_root)) => {
-                let Ok(Some(folded)) = fact_replay::fold_execution_tree(&root.tree_id, &records)
-                else {
-                    continue;
-                };
+                let folded = fact_replay::fold_execution_tree(&root.tree_id, &records)
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)?
+                    .ok_or(LocalEventQueryError::InvalidRequest)?;
                 let read_model = fact_replay::derive_read_model(&folded);
                 if read_model.status.is_active() {
                     owners.push(CanonicalRuntimeOwnerView::ActiveWorkflow {
@@ -945,6 +943,9 @@ fn canonical_runtime_owner_snapshot(
                 }
             }
             None => {}
+        }
+        if owners.len() > limit {
+            return Err(LocalEventQueryError::ResponseTooLarge);
         }
     }
     Ok(owners)
@@ -2222,6 +2223,10 @@ impl RecoverySnapshotPager {
 #[cfg(test)]
 mod canonical_runtime_owner_snapshot_tests {
     use super::*;
+    use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
+    use crate::adaptor::gateway::local_event_store::schema::{
+        initialize_schema, InitialStoreMetadata,
+    };
     use crate::domain::workflow::{
         ExecutionOrigin, NodeCompletion, NodeDefinition, NodeFact, NodeKind, SessionRootFact,
         SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition, WorkflowRootFact,
@@ -2229,23 +2234,18 @@ mod canonical_runtime_owner_snapshot_tests {
 
     fn connection_with_node_events() -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection
-            .execute_batch(
-                "CREATE TABLE node_events (
-                    tree_id TEXT NOT NULL,
-                    seq INTEGER NOT NULL,
-                    node_execution_id TEXT NOT NULL,
-                    parent_id TEXT,
-                    node_name TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    attempt INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    detail TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    PRIMARY KEY (tree_id, seq)
-                );",
-            )
-            .expect("node_events table");
+        initialize_schema(
+            &connection,
+            &InitialStoreMetadata {
+                installation_id: "00000000-0000-4000-8000-000000000001",
+                cursor_hmac_key: &[1; 32],
+                operation_binding_hmac_key: &[2; 32],
+                process_instance_id: "00000000-0000-4000-8000-000000000002",
+                created_at_ms: 1,
+            },
+            &FaultInjector::new(),
+        )
+        .expect("initialize schema");
         connection
     }
 
@@ -2259,6 +2259,18 @@ mod canonical_runtime_owner_snapshot_tests {
                 params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
             )
             .expect("insert root fact");
+    }
+
+    fn insert_second_fact(connection: &Connection, tree_id: &str, fact: &NodeFact) {
+        connection
+            .execute(
+                "INSERT INTO node_events (
+                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
+                    attempt, event_type, detail, timestamp
+                 ) VALUES (?1, 2, ?1, NULL, 'main', 'session', 1, ?2, ?3, 2)",
+                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+            )
+            .expect("insert second fact");
     }
 
     fn workflow_root(worktree_path: &str) -> NodeFact {
@@ -2350,5 +2362,34 @@ mod canonical_runtime_owner_snapshot_tests {
             canonical_runtime_owner_snapshot(&connection, 1),
             Err(LocalEventQueryError::ResponseTooLarge)
         );
+    }
+
+    #[test]
+    fn app_data_gc_owner_snapshot_applies_limit_after_closed_sessions_are_removed() {
+        let connection = connection_with_active_workflow_owners(1);
+        for session_id in ["closed-session-1", "closed-session-2"] {
+            insert_root(
+                &connection,
+                session_id,
+                &NodeFact::Started(StartedFact {
+                    parent: None,
+                    root: Some(TreeRootFact::Session(SessionRootFact {
+                        workspace_identity: "/snapshot".to_string(),
+                        worktree_path: format!("/snapshot/{session_id}"),
+                        session: SessionSpec::default(),
+                        created_from: ExecutionOrigin::DesktopUi,
+                    })),
+                }),
+            );
+            insert_second_fact(&connection, session_id, &NodeFact::ArchiveRequested);
+        }
+
+        let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();
+
+        assert_eq!(owners.len(), 1);
+        assert!(matches!(
+            owners[0],
+            CanonicalRuntimeOwnerView::ActiveWorkflow { .. }
+        ));
     }
 }

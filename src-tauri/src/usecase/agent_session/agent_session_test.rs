@@ -1494,6 +1494,87 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
         .await
         .unwrap();
     assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
+    usecase
+        .confirm_workflow_node_attachment(launched.session().id())
+        .await
+        .unwrap();
+    assert_eq!(
+        usecase
+            .confirm_workflow_node_attachment(launched.session().id())
+            .await,
+        Err(AgentSessionLaunchUsecaseError::InvalidInput)
+    );
+}
+
+#[tokio::test]
+async fn test_provider_agent_workflow_session_launch_activate後のrollbackで起動資源を解放する() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+        crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+    )));
+    let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    let usecase = AgentSessionLaunchUsecase::new(
+        sessions,
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            lifecycle_events.clone(),
+        )),
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
+        launch_gateway.clone(),
+        terminal.clone(),
+        Arc::new(FixedHistory { entries: Vec::new() }),
+        hook_health_usecase(),
+    );
+    let launched = usecase
+        .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Claude,
+            model: None,
+            permission: None,
+            workflow_execution_id: "workflow-rollback".to_string(),
+            node_execution_id: "node-rollback".to_string(),
+            initial_instruction: "Implement rollback.".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "workflow-launch-rollback".to_string(),
+        })
+        .await
+        .unwrap();
+    usecase
+        .activate_workflow_node(launched.session().id())
+        .await
+        .unwrap();
+
+    usecase
+        .rollback_workflow_node(launched.session().id(), "rollback-request")
+        .await
+        .unwrap();
+
+    assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+    assert_eq!(
+        launch_gateway.cleanups.lock().unwrap().as_slice(),
+        &[launched.session().id().to_string()]
+    );
+    assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.clone().into_parts().1,
+            crate::domain::provider_lifecycle::ProviderLifecycleEvent::BindingExpired { .. }
+        )
+    }));
 }
 
 #[tokio::test]
