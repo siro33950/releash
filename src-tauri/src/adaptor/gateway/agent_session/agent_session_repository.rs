@@ -18,12 +18,11 @@ use crate::domain::agent_session::{
     ProviderSessionOwnershipEvent,
 };
 use crate::domain::local_event::{
-    AgentSessionRemovalMutation, CommitBatchError, CommitBatchResult, CommitIdentity,
-    CommitOperationKind, ExpectedStreamHead, IdempotencyBinding, LoadStreamRequest,
-    LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryResult,
-    LocalEventTransactionRepository, LocalStateMutation, ProviderSessionOwnershipProjectionRecord,
-    Revision, RevisionGuard, SessionProjectionMutation, SessionProjectionRecord, StreamId,
-    StreamVersion, UncommittedDomainEvent,
+    AgentSessionRemovalMutation, CommitBatchError, CommitIdentity, CommitOperationKind,
+    ExpectedStreamHead, IdempotencyBinding, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent,
+    LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
+    ProviderSessionOwnershipProjectionRecord, Revision, RevisionGuard, SessionProjectionMutation,
+    SessionProjectionRecord, StreamId, StreamVersion, UncommittedDomainEvent,
 };
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ScopedProviderLifecycleEvent,
@@ -55,6 +54,20 @@ pub(crate) struct SessionLocation {
     pub(crate) parent_id: Option<String>,
     pub(crate) node_name: String,
     pub(crate) attempt: u32,
+}
+
+pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRepositoryError {
+    match error {
+        CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. } => {
+            AgentSessionRepositoryError::Conflict
+        }
+        CommitBatchError::StorageUnavailable { .. } | CommitBatchError::OutcomeUnknown { .. } => {
+            AgentSessionRepositoryError::Unavailable
+        }
+        CommitBatchError::CapacityExceeded
+        | CommitBatchError::SequenceExhausted
+        | CommitBatchError::Corrupt { .. } => AgentSessionRepositoryError::Corrupt,
+    }
 }
 
 impl SessionLocation {
@@ -261,25 +274,11 @@ impl LocalAgentSessionRepository {
             events,
             state_mutations: mutations,
         };
-        match self
-            .store
+        self.store
             .commit_batch_with_node_events(batch, node_events)
             .await
-        {
-            Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => Ok(()),
-            Err(
-                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
-            ) => Err(AgentSessionRepositoryError::Conflict),
-            Err(
-                CommitBatchError::StorageUnavailable { .. }
-                | CommitBatchError::OutcomeUnknown { .. },
-            ) => Err(AgentSessionRepositoryError::Unavailable),
-            Err(
-                CommitBatchError::CapacityExceeded
-                | CommitBatchError::SequenceExhausted
-                | CommitBatchError::Corrupt { .. },
-            ) => Err(AgentSessionRepositoryError::Corrupt),
-        }
+            .map(|_| ())
+            .map_err(map_commit_batch_error)
     }
 
     async fn claim_ownership(
@@ -571,14 +570,11 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             events: Vec::new(),
             state_mutations: mutations,
         };
-        match self.repository.commit_batch(batch).await {
-            Ok(_) => Ok(()),
-            Err(
-                CommitBatchError::StorageUnavailable { .. }
-                | CommitBatchError::OutcomeUnknown { .. },
-            ) => Err(AgentSessionRepositoryError::Unavailable),
-            Err(_) => Err(AgentSessionRepositoryError::Conflict),
-        }
+        self.repository
+            .commit_batch(batch)
+            .await
+            .map(|_| ())
+            .map_err(map_commit_batch_error)
     }
 }
 

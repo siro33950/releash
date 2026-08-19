@@ -2,12 +2,15 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::{http::StatusCode, routing::get};
 use tokio::sync::oneshot;
 
 use super::{process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
+
+const LOCAL_API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
@@ -154,9 +157,24 @@ impl LocalApiServer {
         self.shutdown();
         let task = self.task.lock().take();
         if let Some(task) = task {
-            task.await?;
+            wait_for_server_task(task, LOCAL_API_SHUTDOWN_TIMEOUT).await?;
         }
         Ok(())
+    }
+}
+
+async fn wait_for_server_task(
+    mut task: tokio::task::JoinHandle<()>,
+    timeout: Duration,
+) -> Result<(), tokio::task::JoinError> {
+    if let Ok(result) = tokio::time::timeout(timeout, &mut task).await {
+        return result;
+    }
+    task.abort();
+    match task.await {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

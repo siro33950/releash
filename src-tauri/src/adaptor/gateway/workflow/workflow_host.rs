@@ -556,12 +556,19 @@ impl WorkflowRuntimeHost {
             }
             let now = current_timestamp();
             let mut new_id = new_node_execution_id;
-            let Some(reconciliation) =
-                workflow_fact_log::reconcile_tree_pass(&store, &tree_id, now, &mut new_id)
-                    .map_err(WorkflowRuntimeError::SessionStore)?
-            else {
-                continue;
-            };
+            let reconciliation =
+                match workflow_fact_log::reconcile_tree_pass(&store, &tree_id, now, &mut new_id) {
+                    Ok(Some(reconciliation)) => reconciliation,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        let error = WorkflowRuntimeError::SessionStore(format!(
+                            "workflow {tree_id}: reconciliation pass failed: {error}"
+                        ));
+                        log::warn!("{error}");
+                        first_recovery_error.get_or_insert(error);
+                        continue;
+                    }
+                };
             let folded = reconciliation.folded;
             let pending_leaves = reconciliation.leaves;
             if !matches!(folded.root, TreeRootFact::Workflow(_)) {
@@ -2246,6 +2253,250 @@ impl WorkflowRuntimeHost {
         events: &[WorkflowEvent],
     ) -> Result<(), String> {
         workflow_event_log_writer::append_required_events_for_app(app, events)
+    }
+}
+
+#[cfg(test)]
+mod startup_recovery_tests {
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+    use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
+    use crate::domain::provider_lifecycle::ProviderKind;
+    use crate::domain::workflow::{
+        ChildEntry, ExecutionParentRef, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
+        SequenceSpec, SessionSpec, StartedFact, TreeRootFact, WorkflowRootFact,
+    };
+    use crate::usecase::workflow::runtime_resolver::{
+        ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
+    };
+
+    struct UnusedWorkflowResolver;
+
+    #[async_trait::async_trait]
+    impl WorkflowDefinitionResolver for UnusedWorkflowResolver {
+        async fn resolve(
+            &self,
+            _workflow_name: &str,
+        ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+            Err(WorkflowDefinitionResolverError::Infrastructure(
+                "unused in startup recovery".to_string(),
+            ))
+        }
+    }
+
+    struct UnusedWorktreeResolver;
+
+    #[async_trait::async_trait]
+    impl ManagedWorktreeResolver for UnusedWorktreeResolver {
+        async fn resolve(
+            &self,
+            _worktree_path: String,
+        ) -> Result<String, ManagedWorktreeResolverError> {
+            Err(ManagedWorktreeResolverError::Validation(
+                "unused in startup recovery".to_string(),
+            ))
+        }
+    }
+
+    struct FailingWorkflowAgentSessions;
+
+    #[async_trait::async_trait]
+    impl WorkflowAgentSessionPort for FailingWorkflowAgentSessions {
+        fn is_provider_available(&self, _provider: ProviderKind) -> bool {
+            true
+        }
+
+        async fn prepare_workflow_agent_session(
+            &self,
+            _worktree_path: &str,
+            _config: WorkflowSessionLaunchConfig,
+            _workflow_execution_id: &str,
+            _node_execution_id: &str,
+            _initial_instruction: &str,
+        ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+            Err(WorkflowRuntimeError::AgentSession(
+                "intentional prepare failure".to_string(),
+            ))
+        }
+
+        async fn activate_workflow_agent_session(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            unreachable!()
+        }
+
+        async fn confirm_workflow_agent_session_attachment(
+            &self,
+            _node_session_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            unreachable!()
+        }
+
+        async fn dispatch_initial_instruction(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+            _instruction: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            unreachable!()
+        }
+
+        async fn interrupt_workflow_agent_session(
+            &self,
+            _node_session_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            unreachable!()
+        }
+
+        async fn rollback_workflow_agent_session(
+            &self,
+            _node_session_id: &str,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowRuntimeError> {
+            unreachable!()
+        }
+    }
+
+    fn append_started_session_tree(
+        store: &Arc<LocalEventStore>,
+        tree_id: &str,
+        worktree_path: &str,
+        timestamp_ms: i64,
+    ) {
+        let definition = WorkflowDefinition {
+            name: format!("workflow-{tree_id}"),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "main".to_string(),
+                    kind: NodeKind::Sequence(SequenceSpec {
+                        entry: None,
+                        output: None,
+                        children: vec![ChildEntry::reference("impl")],
+                    }),
+                    artifact: None,
+                    input: Vec::new(),
+                    completion: crate::domain::workflow::NodeCompletion::Auto,
+                    worktree: None,
+                },
+                NodeDefinition {
+                    name: "impl".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
+                        provider: ProviderKind::Codex,
+                        model: None,
+                        permission: None,
+                        facets: Default::default(),
+                    }),
+                    artifact: None,
+                    input: Vec::new(),
+                    completion: crate::domain::workflow::NodeCompletion::Auto,
+                    worktree: None,
+                },
+            ],
+            entry: "main".to_string(),
+        };
+        let root_meta = NodeFactMeta {
+            tree_id: tree_id.to_string(),
+            node_execution_id: tree_id.to_string(),
+            parent_id: None,
+            node_name: "main".to_string(),
+            kind: NodeKindName::Sequence,
+            attempt: 1,
+        };
+        workflow_fact_log::append_single_fact(
+            store,
+            &root_meta,
+            &NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(TreeRootFact::Workflow(WorkflowRootFact {
+                    workflow_name: definition.name.clone(),
+                    worktree_path: worktree_path.to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition,
+                })),
+            }),
+            timestamp_ms,
+        )
+        .unwrap();
+        let child_meta = NodeFactMeta {
+            tree_id: tree_id.to_string(),
+            node_execution_id: format!("{tree_id}-session"),
+            parent_id: Some(tree_id.to_string()),
+            node_name: "impl".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+        };
+        workflow_fact_log::append_single_fact(
+            store,
+            &child_meta,
+            &NodeFact::Started(StartedFact {
+                parent: Some(ExecutionParentRef::sequence_child(tree_id)),
+                root: None,
+            }),
+            timestamp_ms + 1,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_startup_reconciliation_壊れたtreeの後続treeも処理する() {
+        const CORRUPT_TREE_ID: &str = "00000000-0000-4000-8000-000000000001";
+        const VALID_TREE_ID: &str = "00000000-0000-4000-8000-000000000002";
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        append_started_session_tree(&store, CORRUPT_TREE_ID, "/repo/corrupt", 1);
+        store
+            .append_node_event(
+                NewNodeEventRow {
+                    tree_id: CORRUPT_TREE_ID.to_string(),
+                    node_execution_id: CORRUPT_TREE_ID.to_string(),
+                    parent_id: None,
+                    node_name: "main".to_string(),
+                    kind: "session".to_string(),
+                    attempt: 1,
+                    event_type: "submit_received".to_string(),
+                    session_id: None,
+                    detail: "{".to_string(),
+                },
+                Some(2),
+            )
+            .await
+            .unwrap();
+        append_started_session_tree(&store, VALID_TREE_ID, "/repo/valid", 3);
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(store);
+        let host = WorkflowRuntimeHost::with_execution_store(
+            Arc::new(UnusedWorkflowResolver),
+            Arc::new(UnusedWorktreeResolver),
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            Arc::new(FailingWorkflowAgentSessions),
+        );
+
+        let error = host.reconcile_startup(app.handle()).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains(&format!("workflow {CORRUPT_TREE_ID}")));
+        assert!(host
+            .execution_store
+            .list_active()
+            .await
+            .unwrap()
+            .iter()
+            .any(|execution| execution.execution_id == VALID_TREE_ID));
     }
 }
 

@@ -1,5 +1,9 @@
 use std::error::Error;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use super::*;
 
 #[test]
@@ -54,4 +58,31 @@ async fn test_local_api_server終了_停止を通知して所有discoveryを削�
     assert!(discovery_path.exists());
     server.shutdown_and_wait().await.unwrap();
     assert!(!discovery_path.exists());
+}
+
+#[tokio::test]
+async fn test_local_api_server終了_timeout時にtaskをabortして待機する() {
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_dropped = Arc::clone(&dropped);
+    let task = tokio::spawn(async move {
+        let _drop_flag = DropFlag(task_dropped);
+        started_tx.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    started_rx.await.unwrap();
+
+    wait_for_server_task(task, Duration::from_millis(1))
+        .await
+        .unwrap();
+
+    assert!(dropped.load(Ordering::SeqCst));
 }

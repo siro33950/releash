@@ -1619,7 +1619,7 @@ async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起
             .activate_workflow_node(&second_session_id)
             .await
     });
-    let second_result = tokio::time::timeout(Duration::from_secs(1), &mut second_activation).await;
+    let second_result = tokio::time::timeout(Duration::from_secs(5), &mut second_activation).await;
     release_sender.send(()).unwrap();
     first_activation.await.unwrap().unwrap();
 

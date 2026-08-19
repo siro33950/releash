@@ -3,6 +3,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
+use super::agent_session_repository::map_commit_batch_error;
 use super::{workspace_session_items, LocalAgentSessionQueryService, LocalAgentSessionRepository};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::fact_log;
@@ -11,6 +12,7 @@ use crate::domain::agent_session::aggregates::{
 };
 use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::agent_session::AgentSessionOwnershipQuery;
+use crate::domain::local_event::CommitBatchError;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
@@ -31,6 +33,22 @@ fn open_store(directory: &TempDir) -> Arc<LocalEventStore> {
 
 fn new_repository(store: &Arc<LocalEventStore>) -> LocalAgentSessionRepository {
     LocalAgentSessionRepository::new(store.clone())
+}
+
+#[test]
+fn test_agent_session_repository_commit_errorの非競合障害をcorruptに分類する() {
+    for error in [
+        CommitBatchError::CapacityExceeded,
+        CommitBatchError::SequenceExhausted,
+        CommitBatchError::Corrupt {
+            correlation_id: "corrupt-commit".to_string(),
+        },
+    ] {
+        assert_eq!(
+            map_commit_batch_error(error),
+            crate::domain::agent_session::repository::AgentSessionRepositoryError::Corrupt
+        );
+    }
 }
 
 fn parentless_session(id: &str, worktree_path: &str, provider: ProviderKind) -> AgentSession {
@@ -614,10 +632,9 @@ async fn test_agent_session_repository削除失敗時に木とprovider所有権�
         .unwrap()
         .unwrap();
     assert!(
-        fact_log::read_tree_records(&store, "agent-session-atomic-delete")
+        !fact_log::read_tree_records(&store, "agent-session-atomic-delete")
             .unwrap()
-            .len()
-            > 0
+            .is_empty()
     );
     assert!(repository
         .is_owned(ProviderKind::Claude, "provider-session-atomic-delete")

@@ -280,7 +280,21 @@ impl AgentSessionLaunchUsecase {
                     None => return Err(AgentSessionLaunchUsecaseError::InvalidInput),
                 }
             };
-            wait_for_activation(activation).await;
+            if !wait_for_activation(activation).await {
+                self.remove_abandoned_workflow_activation(agent_session_id)
+                    .await;
+                return Err(AgentSessionLaunchUsecaseError::Corrupt);
+            }
+        }
+    }
+
+    async fn remove_abandoned_workflow_activation(&self, agent_session_id: &str) {
+        let mut launches = self.activated_workflow_launches.lock().await;
+        if matches!(
+            launches.get(agent_session_id),
+            Some(WorkflowLaunchActivation::Activating(_))
+        ) {
+            launches.remove(agent_session_id);
         }
     }
 
@@ -475,7 +489,11 @@ impl AgentSessionLaunchUsecase {
                 }
             };
             if let Some(activation) = activation {
-                wait_for_activation(activation).await;
+                if !wait_for_activation(activation).await {
+                    self.remove_abandoned_workflow_activation(agent_session_id)
+                        .await;
+                    break None;
+                }
             }
         };
         let session = match (pending, activated) {
@@ -863,10 +881,11 @@ impl AgentSessionLaunchUsecase {
     }
 }
 
-async fn wait_for_activation(mut completion: watch::Receiver<bool>) {
-    if !*completion.borrow() {
-        let _ = completion.changed().await;
+async fn wait_for_activation(mut completion: watch::Receiver<bool>) -> bool {
+    if *completion.borrow() {
+        return true;
     }
+    completion.changed().await.is_ok() && *completion.borrow()
 }
 
 fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionLaunchUsecaseError {
