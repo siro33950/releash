@@ -2288,6 +2288,7 @@ impl WorkflowRuntimeHost {
         }];
         // children エントリの on_failure（自動 retry / ignore）。決定と適用は
         // domain が所有し、NodeFailed と同一バッチで事実を追記する。
+        let candidate_before_treatment = candidate.clone();
         let mut new_id = new_node_execution_id;
         let treatment =
             match candidate.apply_on_failure_treatment(node_execution_id, &mut new_id, timestamp) {
@@ -2300,6 +2301,11 @@ impl WorkflowRuntimeHost {
                 }
             };
         let treatment_applied = treatment.is_some();
+        if !treatment_applied {
+            // 処遇が得られなかった場合（Err / 防御分岐の None）は、途中まで適用された
+            // 状態変化が対応イベントなしで commit されないよう処遇前へ戻す。
+            candidate = candidate_before_treatment;
+        }
         let mut leaves = Vec::new();
         if let Some(treatment) = treatment {
             events.extend(treatment.events);
