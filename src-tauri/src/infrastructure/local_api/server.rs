@@ -2,12 +2,15 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::{http::StatusCode, routing::get};
 use tokio::sync::oneshot;
 
 use super::{process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
+
+const LOCAL_API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
@@ -97,7 +100,7 @@ impl LocalApiServerBinding {
         } = self;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let discovery_for_task = discovery.clone();
-        runtime.spawn(async move {
+        let task = runtime.spawn(async move {
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => listener,
                 Err(error) => {
@@ -128,6 +131,7 @@ impl LocalApiServerBinding {
         log::info!("local API listening on 127.0.0.1:{port}");
         Arc::new(LocalApiServer {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
+            task: parking_lot::Mutex::new(Some(task)),
             discovery,
         })
     }
@@ -135,6 +139,7 @@ impl LocalApiServerBinding {
 
 pub(crate) struct LocalApiServer {
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
+    task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     discovery: LocalApiDiscoveryFile,
 }
 
@@ -146,6 +151,30 @@ impl LocalApiServer {
         if let Err(error) = self.discovery.remove_if_owned() {
             log::warn!("failed to remove local API discovery file: {error}");
         }
+    }
+
+    pub(crate) async fn shutdown_and_wait(&self) -> Result<(), tokio::task::JoinError> {
+        self.shutdown();
+        let task = self.task.lock().take();
+        if let Some(task) = task {
+            wait_for_server_task(task, LOCAL_API_SHUTDOWN_TIMEOUT).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn wait_for_server_task(
+    mut task: tokio::task::JoinHandle<()>,
+    timeout: Duration,
+) -> Result<(), tokio::task::JoinError> {
+    if let Ok(result) = tokio::time::timeout(timeout, &mut task).await {
+        return result;
+    }
+    task.abort();
+    match task.await {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

@@ -676,6 +676,14 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
                 SignalOrder::StopThenSubmit => AcceptanceNodeExecutionStatus::Running,
             }
         );
+        let duplicate_start = host_after
+            .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+            .await
+            .unwrap_err();
+        assert!(
+            duplicate_start.starts_with("HTTP 409:"),
+            "{duplicate_start}"
+        );
         host_after.shutdown().await.unwrap();
     }
 }
@@ -882,7 +890,7 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
     assert_eq!(
         after_running_log
             .iter()
-            .filter(|event| event["event"] == "node_submit_received")
+            .filter(|event| event["event"] == "submit_received")
             .count(),
         1
     );

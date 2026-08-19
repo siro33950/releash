@@ -36,7 +36,6 @@ pub enum WorkspaceNodeStatus {
     Running,
     Paused,
     Failed,
-    Error,
     Waiting,
     Interrupted,
     Aborted,
@@ -49,7 +48,6 @@ impl WorkspaceNodeStatus {
             Self::Running => "running",
             Self::Paused => "paused",
             Self::Failed => "failed",
-            Self::Error => "error",
             Self::Waiting => "waiting",
             Self::Interrupted => "interrupted",
             Self::Aborted => "aborted",
@@ -136,9 +134,6 @@ pub enum WorkspaceStructureFact {
         status: ExecutionStatus,
         updated_at: f64,
     },
-    WorkflowRemoved {
-        execution_id: String,
-    },
     RecoveryFenceProjected {
         owner: String,
         reason: Option<String>,
@@ -156,26 +151,6 @@ pub enum WorkspaceStructureFact {
         execution_id: String,
         node_execution_id: String,
         session_id: String,
-        timestamp: f64,
-    },
-    NodeSubmitReceived {
-        execution_id: String,
-        node_execution_id: String,
-        timestamp: f64,
-    },
-    NodeStopReceived {
-        execution_id: String,
-        node_execution_id: String,
-        timestamp: f64,
-    },
-    NodePaused {
-        execution_id: String,
-        node_execution_id: String,
-        timestamp: f64,
-    },
-    NodeResumed {
-        execution_id: String,
-        node_execution_id: String,
         timestamp: f64,
     },
     NodeCommandPrepared {
@@ -203,11 +178,6 @@ pub enum WorkspaceStructureFact {
         timestamp: f64,
     },
     NodeApprovalRequested {
-        execution_id: String,
-        node_execution_id: String,
-        timestamp: f64,
-    },
-    NodeApprovalResolved {
         execution_id: String,
         node_execution_id: String,
         timestamp: f64,

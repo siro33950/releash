@@ -174,6 +174,9 @@ pub struct RuntimeNodeExecution {
     pub session_id: Option<String>,
     pub display_command: Option<String>,
     pub artifact: Option<serde_json::Value>,
+    /// 完了前に記録された結果 summary（親スコープを持たない root leaf でも
+    /// 保持されるよう node 自身が持つ）。
+    pub result_summary: Option<String>,
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<RuntimeNodeExecutionFailure>,
     pub parent: Option<ExecutionParentRef>,
@@ -495,7 +498,6 @@ pub enum TransitionRejection {
 /// Canonical fact derived from an observed turn result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalNodeFact {
-    Completed,
     Failed {
         reason: String,
         kind: NodeExecutionFailureKind,
@@ -527,6 +529,28 @@ pub enum ReplayOutcome {
     Rejected(TransitionRejection),
 }
 
+/// 完了伝播の出力先。
+///
+/// live 経路は追記イベントと起動 leaf を収集し、fold（事実からの導出）は
+/// 状態効果のみを適用する。導出では前進（次 leaf の起動）を行わない —
+/// 実際に起きた起動は事実列自身が started として語る。
+enum AdvanceEffects<'a> {
+    Live {
+        new_id: &'a mut dyn FnMut() -> String,
+        events: &'a mut Vec<WorkflowEvent>,
+        leaves: &'a mut Vec<LeafStart>,
+    },
+    Derive,
+}
+
+impl AdvanceEffects<'_> {
+    fn emit(&mut self, event: WorkflowEvent) {
+        if let Self::Live { events, .. } = self {
+            events.push(event);
+        }
+    }
+}
+
 /// 起動すべき leaf（Session / Command）実行。束縛は起動時に確定した値。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LeafStart {
@@ -552,6 +576,20 @@ pub enum ExecutionAdvanceDecision {
 pub struct AppliedAdvance {
     pub decision: ExecutionAdvanceDecision,
     pub events: Vec<WorkflowEvent>,
+}
+
+/// 導出状態にあるが、まだ実行されていない前進（reconciliation の検出結果）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingAdvance {
+    /// 完了済みの子からの前進（次の子の started が無い）。
+    AfterChild {
+        scope_id: String,
+        child_name: String,
+    },
+    /// 合成子は開始済みだが実効 entry の子が未開始。
+    StartEntry { scope_id: String },
+    /// fanout の展開が途中で途切れている（欠けている展開座標がある）。
+    ExpandFanout { scope_id: String },
 }
 
 /// children エントリの on_failure 処遇の適用結果: 追記すべきイベント列と
@@ -915,9 +953,36 @@ impl WorkflowExecution {
                     .collect(),
             };
         if coordinates.is_empty() {
-            return self.complete_scope(scope_id, false, new_id, timestamp, events, leaves);
+            return self.complete_scope(
+                scope_id,
+                false,
+                &mut AdvanceEffects::Live {
+                    new_id,
+                    events,
+                    leaves,
+                },
+                timestamp,
+            );
         }
+        // 展開は冪等: 既に slot が生えている座標は飛ばす（reconciliation が
+        // 途中で途切れた展開の続きだけを実行できるように）。
+        let occupied: std::collections::HashSet<(Option<usize>, usize)> = self
+            .runtime
+            .node_executions
+            .iter()
+            .filter_map(|execution| {
+                let parent = execution.parent.as_ref()?;
+                if parent.parent_id != scope_id {
+                    return None;
+                }
+                let slot = parent.fanout_slot?;
+                Some((slot.item_index, slot.child_index))
+            })
+            .collect();
         for (child_name, item, item_index, child_index) in coordinates {
+            if occupied.contains(&(item_index, child_index)) {
+                continue;
+            }
             self.start_fanout_child_instance(
                 scope_id,
                 &child_name,
@@ -1064,6 +1129,7 @@ impl WorkflowExecution {
             session_id: None,
             display_command: None,
             artifact: None,
+            result_summary: None,
             token_usage: None,
             failure: None,
             parent: parent.clone(),
@@ -1189,10 +1255,8 @@ impl WorkflowExecution {
         &mut self,
         scope_id: &str,
         completed_child: &str,
-        new_id: &mut dyn FnMut() -> String,
+        effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
-        events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
         let Some(scope) = self.scope(scope_id) else {
             // スコープが既に確定している（例: 失敗停止後の遅延完了）。前進しない。
@@ -1225,18 +1289,25 @@ impl WorkflowExecution {
                     artifact.as_ref(),
                     &counts,
                 )? {
-                    workflow_routing::RouteDecision::TransitionTo(next) => {
-                        self.start_node_instance(
-                            Some(scope_id),
-                            &next,
+                    workflow_routing::RouteDecision::TransitionTo(next) => match effects {
+                        AdvanceEffects::Live {
                             new_id,
-                            timestamp,
                             events,
                             leaves,
-                        )?;
-                    }
+                        } => {
+                            self.start_node_instance(
+                                Some(scope_id),
+                                &next,
+                                &mut **new_id,
+                                timestamp,
+                                events,
+                                leaves,
+                            )?;
+                        }
+                        AdvanceEffects::Derive => {}
+                    },
                     workflow_routing::RouteDecision::Completed => {
-                        self.complete_scope(scope_id, false, new_id, timestamp, events, leaves)?;
+                        self.complete_scope(scope_id, false, effects, timestamp)?;
                     }
                 }
             }
@@ -1248,7 +1319,7 @@ impl WorkflowExecution {
                     )
                 });
                 if all_terminal {
-                    self.complete_scope(scope_id, false, new_id, timestamp, events, leaves)?;
+                    self.complete_scope(scope_id, false, effects, timestamp)?;
                 }
             }
         }
@@ -1263,10 +1334,8 @@ impl WorkflowExecution {
         &mut self,
         scope_id: &str,
         approved: bool,
-        new_id: &mut dyn FnMut() -> String,
+        effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
-        events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
         let scope = self.scope(scope_id).cloned().ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1286,7 +1355,7 @@ impl WorkflowExecution {
             })?;
         if node.requires_approval_completion() && !approved {
             if self.mark_node_waiting_approval(scope_id, timestamp) == TransitionOutcome::Applied {
-                events.push(WorkflowEvent::ApprovalRequested {
+                effects.emit(WorkflowEvent::ApprovalRequested {
                     execution_id: self.runtime.id.clone(),
                     node_execution_id: scope_id.to_string(),
                     node_name: scope.node_name.clone(),
@@ -1329,7 +1398,7 @@ impl WorkflowExecution {
                                 NodeExecutionFailureKind::ValidationFailure,
                                 timestamp,
                             );
-                            events.push(WorkflowEvent::NodeFailed {
+                            effects.emit(WorkflowEvent::NodeFailed {
                                 execution_id: self.runtime.id.clone(),
                                 node_execution_id: scope_id.to_string(),
                                 node_name: scope.node_name.clone(),
@@ -1357,10 +1426,8 @@ impl WorkflowExecution {
                                     self.advance_scope_after_child(
                                         &parent_scope_id,
                                         &scope.node_name,
-                                        new_id,
+                                        effects,
                                         timestamp,
-                                        events,
-                                        leaves,
                                     )?;
                                 }
                             }
@@ -1399,7 +1466,7 @@ impl WorkflowExecution {
             .map(|execution| execution.attempt)
             .unwrap_or(1);
         if let Some(value) = &artifact_value {
-            events.push(WorkflowEvent::ArtifactProduced {
+            effects.emit(WorkflowEvent::ArtifactProduced {
                 execution_id: self.runtime.id.clone(),
                 node_execution_id: scope_id.to_string(),
                 node_name: scope.node_name.clone(),
@@ -1421,7 +1488,7 @@ impl WorkflowExecution {
             token_usage.clone(),
             timestamp,
         );
-        events.push(WorkflowEvent::NodeCompleted {
+        effects.emit(WorkflowEvent::NodeCompleted {
             execution_id: self.runtime.id.clone(),
             node_execution_id: scope_id.to_string(),
             node_name: scope.node_name.clone(),
@@ -1437,7 +1504,7 @@ impl WorkflowExecution {
         match scope.parent_scope_id.as_deref() {
             None => {
                 let _ = self.complete();
-                events.push(WorkflowEvent::ExecutionCompleted {
+                effects.emit(WorkflowEvent::ExecutionCompleted {
                     execution_id: self.runtime.id.clone(),
                     total_token_usage:
                         crate::domain::workflow::services::projection::total_token_usage(
@@ -1468,10 +1535,8 @@ impl WorkflowExecution {
                 self.advance_scope_after_child(
                     &parent_scope_id,
                     &scope.node_name,
-                    new_id,
+                    effects,
                     timestamp,
-                    events,
-                    leaves,
                 )?;
             }
         }
@@ -1541,10 +1606,8 @@ impl WorkflowExecution {
     fn apply_leaf_completion(
         &mut self,
         node_execution_id: &str,
-        new_id: &mut dyn FnMut() -> String,
+        effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
-        events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
         let node = self
             .node_execution(node_execution_id)
@@ -1577,7 +1640,7 @@ impl WorkflowExecution {
                 format!("node execution '{node_execution_id}' cannot complete"),
             ));
         }
-        events.push(WorkflowEvent::NodeCompleted {
+        effects.emit(WorkflowEvent::NodeCompleted {
             execution_id: self.runtime.id.clone(),
             node_execution_id: node_execution_id.to_string(),
             node_name: node.node_name.clone(),
@@ -1606,7 +1669,7 @@ impl WorkflowExecution {
             None => {
                 // 単独実行の root leaf: workflow 完了。
                 let _ = self.complete();
-                events.push(WorkflowEvent::ExecutionCompleted {
+                effects.emit(WorkflowEvent::ExecutionCompleted {
                     execution_id: self.runtime.id.clone(),
                     total_token_usage:
                         crate::domain::workflow::services::projection::total_token_usage(
@@ -1634,14 +1697,7 @@ impl WorkflowExecution {
                     timestamp,
                 );
                 let scope_id = scope_id.to_string();
-                self.advance_scope_after_child(
-                    &scope_id,
-                    &node.node_name,
-                    new_id,
-                    timestamp,
-                    events,
-                    leaves,
-                )?;
+                self.advance_scope_after_child(&scope_id, &node.node_name, effects, timestamp)?;
             }
         }
         Ok(())
@@ -1668,11 +1724,18 @@ impl WorkflowExecution {
                     (
                         slot.artifact.clone().or_else(|| node.artifact.clone()),
                         slot.contract.clone(),
-                        slot.result.clone(),
-                        Some(slot.token_usage.clone()),
+                        slot.result.clone().or_else(|| node.result_summary.clone()),
+                        (slot.token_usage != TokenUsage::default())
+                            .then(|| slot.token_usage.clone())
+                            .or_else(|| node.token_usage.clone()),
                     )
                 })
-                .unwrap_or((node.artifact.clone(), None, None, node.token_usage.clone())),
+                .unwrap_or((
+                    node.artifact.clone(),
+                    None,
+                    node.result_summary.clone(),
+                    node.token_usage.clone(),
+                )),
             Some(ScopeRuntimeKind::Sequence(sequence)) => sequence
                 .artifacts
                 .get(&node.node_name)
@@ -1681,15 +1744,28 @@ impl WorkflowExecution {
                     (
                         output.artifact.clone().or_else(|| node.artifact.clone()),
                         output.contract.clone(),
-                        output.result.clone(),
+                        output
+                            .result
+                            .clone()
+                            .or_else(|| node.result_summary.clone()),
                         output
                             .token_usage
                             .clone()
                             .or_else(|| node.token_usage.clone()),
                     )
                 })
-                .unwrap_or((node.artifact.clone(), None, None, node.token_usage.clone())),
-            None => (node.artifact.clone(), None, None, node.token_usage.clone()),
+                .unwrap_or((
+                    node.artifact.clone(),
+                    None,
+                    node.result_summary.clone(),
+                    node.token_usage.clone(),
+                )),
+            None => (
+                node.artifact.clone(),
+                None,
+                node.result_summary.clone(),
+                node.token_usage.clone(),
+            ),
         }
     }
 
@@ -1939,20 +2015,24 @@ impl WorkflowExecution {
             NodeKindName::Command | NodeKindName::Session => {
                 self.apply_leaf_completion(
                     target_node_execution_id,
-                    new_id,
+                    &mut AdvanceEffects::Live {
+                        new_id,
+                        events: &mut events,
+                        leaves: &mut leaves,
+                    },
                     timestamp,
-                    &mut events,
-                    &mut leaves,
                 )?;
             }
             NodeKindName::Sequence | NodeKindName::Fanout => {
                 self.complete_scope(
                     target_node_execution_id,
                     true,
-                    new_id,
+                    &mut AdvanceEffects::Live {
+                        new_id,
+                        events: &mut events,
+                        leaves: &mut leaves,
+                    },
                     timestamp,
-                    &mut events,
-                    &mut leaves,
                 )?;
             }
         }
@@ -1997,6 +2077,7 @@ impl WorkflowExecution {
             session_id: None,
             display_command: None,
             artifact: None,
+            result_summary: None,
             token_usage: None,
             failure: None,
             parent,
@@ -2082,6 +2163,8 @@ impl WorkflowExecution {
     /// 完了を保留したまま node の成果を記録する（submit / command 出力）。
     ///
     /// 記録先は node の親スコープ（sequence の兄弟空間 / fanout の slot）。
+    /// 同じ attempt への既存記録とはフィールド単位でマージする（Artifact と
+    /// 結果 summary / token usage が別の事実として届くため）。
     #[allow(clippy::too_many_arguments)]
     pub fn record_pending_result(
         &mut self,
@@ -2089,6 +2172,7 @@ impl WorkflowExecution {
         result: Option<String>,
         artifact: Option<serde_json::Value>,
         contract: Option<String>,
+        token_usage: Option<TokenUsage>,
         timestamp: f64,
     ) -> TransitionOutcome {
         let Some(execution) = self
@@ -2101,6 +2185,12 @@ impl WorkflowExecution {
         };
         if let Some(value) = &artifact {
             execution.artifact = Some(value.clone());
+        }
+        if let Some(value) = &result {
+            execution.result_summary = Some(value.clone());
+        }
+        if let Some(usage) = &token_usage {
+            execution.token_usage = Some(usage.clone());
         }
         let node_name = execution.node_name.clone();
         let attempt = execution.attempt;
@@ -2125,28 +2215,38 @@ impl WorkflowExecution {
                 else {
                     return TransitionOutcome::NotApplicable;
                 };
-                slot.result = result;
+                if result.is_some() {
+                    slot.result = result;
+                }
                 if artifact.is_some() {
                     slot.artifact = artifact;
                 }
                 if contract.is_some() {
                     slot.contract = contract;
                 }
+                if let Some(usage) = token_usage {
+                    slot.token_usage = usage;
+                }
             }
             ScopeRuntimeKind::Sequence(sequence) => {
-                sequence.artifacts.insert(
-                    node_name.clone(),
-                    RuntimeArtifact {
-                        node_name,
-                        attempt,
-                        session_id,
-                        result,
-                        artifact,
-                        contract,
-                        token_usage: None,
-                        completed_at: timestamp,
-                    },
-                );
+                let existing = sequence
+                    .artifacts
+                    .get(&node_name)
+                    .filter(|entry| entry.attempt == attempt);
+                let merged = RuntimeArtifact {
+                    node_name: node_name.clone(),
+                    attempt,
+                    session_id,
+                    result: result.or_else(|| existing.and_then(|entry| entry.result.clone())),
+                    artifact: artifact
+                        .or_else(|| existing.and_then(|entry| entry.artifact.clone())),
+                    contract: contract
+                        .or_else(|| existing.and_then(|entry| entry.contract.clone())),
+                    token_usage: token_usage
+                        .or_else(|| existing.and_then(|entry| entry.token_usage.clone())),
+                    completed_at: timestamp,
+                };
+                sequence.artifacts.insert(node_name, merged);
             }
         }
         self.runtime.updated_at = timestamp;
@@ -2189,7 +2289,14 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
             return TransitionOutcome::Applied;
         }
-        self.record_pending_result(node_execution_id, None, Some(value), contract, timestamp)
+        self.record_pending_result(
+            node_execution_id,
+            None,
+            Some(value),
+            contract,
+            None,
+            timestamp,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2220,6 +2327,7 @@ impl WorkflowExecution {
             result,
             Some(output),
             Some(contract),
+            None,
             timestamp,
         )
     }
@@ -2612,10 +2720,12 @@ impl WorkflowExecution {
                 let mut leaves = Vec::new();
                 self.apply_leaf_completion(
                     node_execution_id,
-                    new_id,
+                    &mut AdvanceEffects::Live {
+                        new_id,
+                        events: &mut events,
+                        leaves: &mut leaves,
+                    },
                     timestamp,
-                    &mut events,
-                    &mut leaves,
                 )?;
                 Ok(AppliedNodeCompletionHandshake {
                     advance: Some(if leaves.is_empty() {
@@ -2641,10 +2751,12 @@ impl WorkflowExecution {
         let mut leaves = Vec::new();
         self.apply_leaf_completion(
             node_execution_id,
-            new_id,
+            &mut AdvanceEffects::Live {
+                new_id,
+                events: &mut events,
+                leaves: &mut leaves,
+            },
             timestamp,
-            &mut events,
-            &mut leaves,
         )?;
         self.runtime.updated_at = timestamp;
         Ok(AppliedAdvance {
@@ -2846,33 +2958,69 @@ impl WorkflowExecution {
                 self.advance_scope_after_child(
                     &parent_scope_id,
                     &target.node_name,
-                    new_id,
+                    &mut AdvanceEffects::Live {
+                        new_id,
+                        events: &mut events,
+                        leaves: &mut leaves,
+                    },
                     timestamp,
-                    &mut events,
-                    &mut leaves,
                 )?;
                 Ok(Some(FailureTreatmentOutcome { events, leaves }))
             }
         }
     }
 
-    /// replay: NodeFailed の適用。
+    /// fold: 完了二信号の充足から session leaf の決着を導出する。
     ///
-    /// 遷移結果は検証しない（abort 済み node への遅延 NodeFailed など、
-    /// 適用されない事実列は正当）。未知の node_execution_id だけを
-    /// ログ破損としてエラーにする。
-    pub fn replay_node_failed(
+    /// 完了規則（Submit + Stop 揃いで完了・`completion: approval` は human
+    /// 承認まで完了しない）は live 経路と共有する
+    /// `decide_node_completion_handshake` だけが知る。前進（次 leaf の起動）は
+    /// 事実列自身が started として語るため行わない。
+    pub fn derive_session_settlement(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> Result<(), String> {
+        match self.decide_node_completion_handshake(node_execution_id) {
+            NodeCompletionHandshakeDecision::AwaitingSignal
+            | NodeCompletionHandshakeDecision::AlreadySettled
+            | NodeCompletionHandshakeDecision::NotApplicable => Ok(()),
+            NodeCompletionHandshakeDecision::RequestApproval => {
+                let _ = self.mark_node_waiting_approval(node_execution_id, timestamp);
+                Ok(())
+            }
+            NodeCompletionHandshakeDecision::CompleteAuto => self
+                .apply_leaf_completion(node_execution_id, &mut AdvanceEffects::Derive, timestamp)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// fold: leaf 完了の導出（command の exit 0 等）。決着済みへの遅延事実は
+    /// 何もしない。
+    pub fn derive_leaf_completed(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> Result<(), String> {
+        if !self
+            .node_execution(node_execution_id)
+            .is_some_and(|node| node.status.is_active())
+        {
+            return Ok(());
+        }
+        self.apply_leaf_completion(node_execution_id, &mut AdvanceEffects::Derive, timestamp)
+            .map_err(|error| error.to_string())
+    }
+
+    /// fold: leaf 失敗の導出。`on_failure: ignore` の親前進もここで導出する
+    /// （retry は行動なので、後続の retry_requested / started 事実が語る）。
+    pub fn derive_leaf_failed(
         &mut self,
         node_execution_id: &str,
         reason: String,
         kind: NodeExecutionFailureKind,
         timestamp: f64,
     ) -> Result<(), String> {
-        if self.node_execution(node_execution_id).is_none() {
-            return Err(format!(
-                "node_failed references unknown node_execution_id {node_execution_id}"
-            ));
-        }
         let decision = self.apply_turn_completion(CanonicalNodeFact::Failed {
             reason: reason.clone(),
             kind,
@@ -2887,7 +3035,204 @@ impl WorkflowExecution {
             FailureDisposition::Terminal,
             timestamp,
         );
+        let Some(target) = self.node_execution(node_execution_id).cloned() else {
+            return Ok(());
+        };
+        if self.on_failure_treatment_for(&target) == Some(OnFailure::Ignore) {
+            if let Some(parent_scope_id) = target
+                .parent
+                .as_ref()
+                .map(|parent| parent.parent_id.clone())
+            {
+                if !self.ignore_advance_blocked_by_halted_sibling(&parent_scope_id) {
+                    self.advance_scope_after_child(
+                        &parent_scope_id,
+                        &target.node_name,
+                        &mut AdvanceEffects::Derive,
+                        timestamp,
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// fold: human 承認による完了の導出。
+    pub fn derive_approval_completion(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> Result<(), String> {
+        let Some(target) = self.node_execution(node_execution_id).cloned() else {
+            return Ok(());
+        };
+        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+            return Ok(());
+        }
+        match target.kind {
+            NodeKindName::Command | NodeKindName::Session => self
+                .apply_leaf_completion(node_execution_id, &mut AdvanceEffects::Derive, timestamp)
+                .map_err(|error| error.to_string()),
+            NodeKindName::Sequence | NodeKindName::Fanout => self
+                .complete_scope(
+                    node_execution_id,
+                    true,
+                    &mut AdvanceEffects::Derive,
+                    timestamp,
+                )
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// reconciliation: 導出状態から「まだ実行していない前進」を検出する。
+    ///
+    /// 前進の実行と事実の追記の間でプロセスが落ちた場合、fold の導出は
+    /// 「進むべきなのにアクティブな子が居ないスコープ」を残す。このメソッドは
+    /// その差分を列挙し、engine の冪等 reconciliation ループが
+    /// `apply_pending_advance` で実行する。
+    pub fn derive_pending_advances(&self) -> Vec<PendingAdvance> {
+        if !self.is_active() {
+            return Vec::new();
+        }
+        let mut pending = Vec::new();
+        for scope in &self.runtime.scopes {
+            let scope_id = &scope.node_execution_id;
+            let Some(scope_node) = self.node_execution(scope_id) else {
+                continue;
+            };
+            // 承認待ちの合成子は human の行動待ち。決着済みスコープは対象外。
+            if scope_node.status != RuntimeNodeExecutionStatus::Running {
+                continue;
+            }
+            let has_active_child = self.runtime.node_executions.iter().any(|node| {
+                node.parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.parent_id == *scope_id)
+                    && node.status.is_active()
+            });
+            if has_active_child {
+                continue;
+            }
+            match &scope.kind {
+                ScopeRuntimeKind::Sequence(sequence) => match &sequence.current_child {
+                    None => pending.push(PendingAdvance::StartEntry {
+                        scope_id: scope_id.clone(),
+                    }),
+                    Some(child_name) => {
+                        let latest_settled = self
+                            .runtime
+                            .node_executions
+                            .iter()
+                            .filter(|node| {
+                                node.node_name == *child_name
+                                    && node
+                                        .parent
+                                        .as_ref()
+                                        .is_some_and(|parent| parent.parent_id == *scope_id)
+                            })
+                            .max_by_key(|node| node.attempt)
+                            .map(|node| node.status);
+                        // 完了済みの子からの前進だけが「未実行の行動」。失敗・中断は
+                        // 既定の停止（human の retry / resume 待ち）であり行動ではない。
+                        if latest_settled == Some(RuntimeNodeExecutionStatus::Succeeded) {
+                            pending.push(PendingAdvance::AfterChild {
+                                scope_id: scope_id.clone(),
+                                child_name: child_name.clone(),
+                            });
+                        }
+                    }
+                },
+                ScopeRuntimeKind::Fanout(fanout) => {
+                    // 展開途中（宣言された座標より slot が少ない）は展開の続き。
+                    // 全 slot 決着で未完のケースは fold が畳んでいるため残らない
+                    // （on_failure 既定の停止は除く）。
+                    let Some(expected) = self
+                        .runtime
+                        .workflow
+                        .node_by_name(&scope.node_name)
+                        .and_then(|node| node.fanout())
+                        .map(|spec| {
+                            fanout
+                                .items
+                                .as_ref()
+                                .map(|items| items.len() * spec.children.len())
+                                .unwrap_or(spec.children.len())
+                        })
+                    else {
+                        continue;
+                    };
+                    if fanout.children.len() < expected || fanout.children.is_empty() {
+                        pending.push(PendingAdvance::ExpandFanout {
+                            scope_id: scope_id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        pending
+    }
+
+    /// reconciliation: 検出された未実行の前進を live 経路と同じ機構で実行する。
+    /// 返り値の events は追記すべき事実、leaves は起動すべき leaf。
+    pub fn apply_pending_advance(
+        &mut self,
+        advance: &PendingAdvance,
+        new_id: &mut dyn FnMut() -> String,
+        timestamp: f64,
+    ) -> Result<AppliedAdvance, crate::domain::workflow::WorkflowError> {
+        let mut events = Vec::new();
+        let mut leaves = Vec::new();
+        match advance {
+            PendingAdvance::AfterChild {
+                scope_id,
+                child_name,
+            } => {
+                self.advance_scope_after_child(
+                    scope_id,
+                    child_name,
+                    &mut AdvanceEffects::Live {
+                        new_id,
+                        events: &mut events,
+                        leaves: &mut leaves,
+                    },
+                    timestamp,
+                )?;
+            }
+            PendingAdvance::StartEntry { scope_id } => {
+                let entry_child = self
+                    .scope(scope_id)
+                    .and_then(|scope| self.runtime.workflow.node_by_name(&scope.node_name))
+                    .and_then(|node| node.sequence())
+                    .and_then(|sequence| sequence.entry_child_name())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        crate::domain::workflow::WorkflowError::invalid_state(format!(
+                            "sequence scope '{scope_id}' has no effective entry"
+                        ))
+                    })?;
+                self.start_node_instance(
+                    Some(scope_id),
+                    &entry_child,
+                    new_id,
+                    timestamp,
+                    &mut events,
+                    &mut leaves,
+                )?;
+            }
+            PendingAdvance::ExpandFanout { scope_id } => {
+                self.expand_fanout_scope(scope_id, new_id, timestamp, &mut events, &mut leaves)?;
+            }
+        }
+        self.runtime.updated_at = timestamp;
+        Ok(AppliedAdvance {
+            decision: if leaves.is_empty() {
+                ExecutionAdvanceDecision::Persist
+            } else {
+                ExecutionAdvanceDecision::StartLeaves(leaves)
+            },
+            events,
+        })
     }
 
     pub fn fail_node_execution(
@@ -3087,105 +3432,6 @@ impl WorkflowExecution {
         Ok(())
     }
 
-    /// replay: NodeCompleted の適用。完了を確定し、スコープへ成果を渡す。
-    /// 前進（次の NodeStarted）はイベント列自身が語るため、ここでは行わない。
-    pub fn replay_node_completed(
-        &mut self,
-        node_execution_id: &str,
-        result_summary: Option<String>,
-        token_usage: Option<TokenUsage>,
-        timestamp: f64,
-    ) -> Result<(), String> {
-        let Some(node) = self.node_execution(node_execution_id).cloned() else {
-            return Err(format!(
-                "node_completed references unknown node_execution_id {node_execution_id}"
-            ));
-        };
-        let decision = self.apply_turn_completion(CanonicalNodeFact::Completed);
-        if decision.application == TurnCompletionApplication::Superseded {
-            return Ok(());
-        }
-        if self
-            .node_execution(node_execution_id)
-            .is_some_and(|execution| {
-                execution.status == RuntimeNodeExecutionStatus::WaitingApproval
-            })
-        {
-            let _ = self.mark_node_running(node_execution_id, timestamp);
-        }
-        let artifact = node.artifact.clone();
-        let _ = self.complete_node_execution(
-            node_execution_id,
-            artifact.clone(),
-            token_usage.clone(),
-            timestamp,
-        );
-        let parent_scope_id = node.parent.as_ref().map(|parent| parent.parent_id.clone());
-        if node.kind.is_composite_kind() {
-            // スコープを畳んで成果を親へ渡す。
-            let contract = self
-                .runtime
-                .workflow
-                .node_by_name(&node.node_name)
-                .and_then(|definition| definition.artifact.clone());
-            self.runtime
-                .scopes
-                .retain(|scope| scope.node_execution_id != node_execution_id);
-            if let Some(scope_id) = parent_scope_id.as_deref() {
-                self.record_child_result_in_scope(
-                    scope_id,
-                    &node.node_name,
-                    node_execution_id,
-                    RuntimeArtifact {
-                        node_name: node.node_name.clone(),
-                        attempt: node.attempt,
-                        session_id: None,
-                        result: result_summary.clone(),
-                        artifact,
-                        contract,
-                        token_usage: token_usage.clone(),
-                        completed_at: timestamp,
-                    },
-                    timestamp,
-                );
-            }
-        } else {
-            if let Some(scope_id) = parent_scope_id.as_deref() {
-                let (pending_artifact, pending_contract, pending_result, _) =
-                    self.pending_leaf_result(&node, Some(scope_id));
-                self.record_child_result_in_scope(
-                    scope_id,
-                    &node.node_name,
-                    node_execution_id,
-                    RuntimeArtifact {
-                        node_name: node.node_name.clone(),
-                        attempt: node.attempt,
-                        session_id: node.session_id.clone(),
-                        result: result_summary.clone().or(pending_result),
-                        artifact: pending_artifact.or(artifact),
-                        contract: pending_contract,
-                        token_usage: token_usage.clone(),
-                        completed_at: timestamp,
-                    },
-                    timestamp,
-                );
-            }
-            self.runtime.node_history.push(NodeHistoryEntry {
-                node_name: node.node_name.clone(),
-                completed_at: timestamp,
-                result: result_summary,
-                session_id: node.session_id.clone(),
-                token_usage,
-                artifact: node.artifact.clone(),
-                attempt: node.attempt,
-                fanout_children: None,
-                state: crate::domain::workflow::NODE_STATUS_COMPLETED.to_string(),
-            });
-        }
-        self.runtime.updated_at = timestamp;
-        Ok(())
-    }
-
     /// 表示用の「現在の node」。承認待ちを優先し、無ければ最後にアクティブな
     /// leaf、それも無ければ最後にアクティブな node。
     pub fn display_current_node(&self) -> Option<String> {
@@ -3312,25 +3558,6 @@ impl WorkflowExecution {
             self.runtime.updated_at = timestamp;
         }
         changed
-    }
-
-    pub fn observe_node_stall(&mut self, observation: NodeStallObservation) -> TransitionOutcome {
-        if !self.is_active() {
-            return TransitionOutcome::NotApplicable;
-        }
-        let observed_at = observation.observed_at;
-        if let Some(existing) = self
-            .runtime
-            .current_stall_observations
-            .iter_mut()
-            .find(|existing| existing.session_id == observation.session_id)
-        {
-            *existing = observation;
-        } else {
-            self.runtime.current_stall_observations.push(observation);
-        }
-        self.runtime.updated_at = observed_at;
-        TransitionOutcome::Applied
     }
 
     pub fn clear_node_stalls(&mut self, timestamp: f64) {
@@ -3520,45 +3747,8 @@ impl WorkflowExecution {
         }
     }
 
-    pub fn replay_completed(&mut self) -> ReplayOutcome {
-        transition_to_replay(self.complete())
-    }
-
     pub fn replay_aborted(&mut self) -> ReplayOutcome {
         transition_to_replay(self.abort())
-    }
-
-    pub fn replay_completed_at(&mut self, timestamp: f64) -> ReplayOutcome {
-        let outcome = self.replay_completed();
-        if matches!(
-            outcome,
-            ReplayOutcome::Applied | ReplayOutcome::AlreadyApplied
-        ) {
-            let active = self
-                .runtime
-                .node_executions
-                .iter()
-                .filter(|execution| execution.status.is_active())
-                .map(|execution| {
-                    (
-                        execution.id.clone(),
-                        execution.artifact.clone(),
-                        execution.token_usage.clone(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            for (node_execution_id, artifact, token_usage) in active {
-                let _ = self.complete_node_execution(
-                    &node_execution_id,
-                    artifact,
-                    token_usage,
-                    timestamp,
-                );
-            }
-            self.runtime.error_reason = None;
-            self.runtime.updated_at = timestamp;
-        }
-        outcome
     }
 
     pub fn replay_aborted_at(&mut self, timestamp: f64) -> ReplayOutcome {
@@ -4635,7 +4825,7 @@ mod tests {
         );
 
         execution
-            .replay_node_failed(
+            .derive_leaf_failed(
                 &node_execution_id,
                 "exit 1".to_string(),
                 NodeExecutionFailureKind::ValidationFailure,
@@ -4710,6 +4900,7 @@ mod tests {
             Some("done".to_string()),
             Some(serde_json::json!({"ok": true})),
             Some("result".to_string()),
+            None,
             11.9,
         );
 
@@ -5170,6 +5361,7 @@ mod tests {
                 Some("done".to_string()),
                 Some(output_value.clone()),
                 Some("part-result".to_string()),
+                None,
                 4.0,
             ),
             TransitionOutcome::Applied
@@ -5390,17 +5582,10 @@ mod tests {
                     .unwrap(),
                 WorkflowEvent::NodeCompleted {
                     node_execution_id,
-                    result_summary,
-                    token_usage,
                     timestamp,
                     ..
                 } => replayed
-                    .replay_node_completed(
-                        node_execution_id,
-                        result_summary.clone(),
-                        token_usage.clone(),
-                        *timestamp,
-                    )
+                    .derive_session_settlement(node_execution_id, *timestamp)
                     .unwrap(),
                 _ => {}
             }
@@ -5619,6 +5804,7 @@ mod tests {
                 &leaves[0].node_execution_id,
                 Some("done".to_string()),
                 Some(prepared_value.clone()),
+                None,
                 None,
                 2.0,
             ),
@@ -6308,7 +6494,7 @@ mod tests {
             )
             .unwrap();
         replayed
-            .replay_node_failed(
+            .derive_leaf_failed(
                 &first,
                 "exit 1".to_string(),
                 NodeExecutionFailureKind::ValidationFailure,
@@ -6399,7 +6585,7 @@ mod tests {
             )
             .unwrap();
         replayed
-            .replay_node_failed(
+            .derive_leaf_failed(
                 &optional,
                 "exit 1".to_string(),
                 NodeExecutionFailureKind::ValidationFailure,

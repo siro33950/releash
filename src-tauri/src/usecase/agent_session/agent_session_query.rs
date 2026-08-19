@@ -1,7 +1,5 @@
 use serde::Serialize;
 
-use crate::domain::workspace_tree::WorkspaceIdentity;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AgentSessionProviderDto {
@@ -9,14 +7,12 @@ pub(crate) enum AgentSessionProviderDto {
     Codex,
 }
 
+/// 実行木上の親 node への参照（親を持つ session は workflow の子）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum AgentSessionOriginDto {
-    Standalone,
-    WorkflowNode {
-        workflow_execution_id: String,
-        node_execution_id: String,
-    },
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentSessionTreeParentDto {
+    pub tree_id: String,
+    pub node_execution_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -34,12 +30,6 @@ pub(crate) enum AgentSessionActivityDto {
     Idle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionOriginFilter {
-    Standalone,
-    WorkflowNode,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentSessionOperationsDto {
@@ -55,29 +45,13 @@ pub(crate) struct AgentSessionItemDto {
     pub workspace_identity: String,
     pub worktree_path: String,
     pub provider: AgentSessionProviderDto,
-    pub origin: AgentSessionOriginDto,
+    pub tree_parent: Option<AgentSessionTreeParentDto>,
     pub lifecycle: AgentSessionLifecycleDto,
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
     pub operations: AgentSessionOperationsDto,
     pub activity: AgentSessionActivityDto,
     pub last_exit_abnormal: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionListPageDto {
-    pub items: Vec<AgentSessionItemDto>,
-    pub next_after_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionListRequest {
-    pub workspace: WorkspaceIdentity,
-    pub lifecycle: Option<AgentSessionLifecycleDto>,
-    pub origin: Option<AgentSessionOriginFilter>,
-    pub limit: usize,
-    pub after_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +67,4 @@ pub(crate) trait AgentSessionQueryService: Send + Sync {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionQueryError>;
-
-    async fn list(
-        &self,
-        request: AgentSessionListRequest,
-    ) -> Result<AgentSessionListPageDto, AgentSessionQueryError>;
 }

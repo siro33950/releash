@@ -54,10 +54,7 @@ fn record_identity(
         owner_revision: stored_owner_revision,
         execution_id: stored_execution_id,
         state,
-    } = &record.record
-    else {
-        return None;
-    };
+    } = &record.record;
     (stored_operation_id == operation_id
         && stored_effect_identity == effect_identity
         && stored_execution_id == execution_id)

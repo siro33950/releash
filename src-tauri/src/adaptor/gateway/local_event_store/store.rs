@@ -29,6 +29,7 @@ use crate::adaptor::gateway::local_event_store::layout::{
 use crate::adaptor::gateway::local_event_store::maintenance::{
     run_startup_maintenance, StartupMaintenanceError,
 };
+use crate::adaptor::gateway::local_event_store::node_events::{self, NewNodeEventRow};
 use crate::adaptor::gateway::local_event_store::projection_record_codec::canonical_mutation_identity_v1 as canonical_projection_mutation_identity_v1;
 use crate::adaptor::gateway::local_event_store::reader::{
     load_stream_page, run_query, QueryContext, ReaderPool, RecoverySnapshotPager, READER_POOL_SIZE,
@@ -38,8 +39,9 @@ use crate::adaptor::gateway::local_event_store::schema::{
     InitialStoreMetadata, APPLICATION_ID, CURRENT_SCHEMA_VERSION,
 };
 use crate::adaptor::gateway::local_event_store::writer::{
-    AdmitRejection, PreparedBatch, PreparedEvent, QueuePop, WriteQueue, WriteRequest,
-    MAX_BATCH_DECODED_BYTES, MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
+    AdmitRejection, CommitWriteRequest, NodeEventAppendRequest, NodeEventWriteError, PreparedBatch,
+    PreparedEvent, PreparedNodeEvent, QueuePop, WriteQueue, WriteRequest, MAX_BATCH_DECODED_BYTES,
+    MAX_BATCH_EVENTS, MAX_BATCH_STATE_MUTATIONS,
 };
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
@@ -275,6 +277,7 @@ enum ExistingDatabaseKind {
     SupportedV2,
     SupportedV3,
     SupportedV4,
+    SupportedV5,
 }
 
 fn classify_existing_database(
@@ -339,7 +342,7 @@ fn classify_existing_database(
         return Ok(ExistingDatabaseKind::SupportedV1);
     }
     if application_id == i64::from(APPLICATION_ID) {
-        if matches!(user_version, 2..=4)
+        if matches!(user_version, 2..=5)
             && columns.iter().any(|column| column == "installation_id")
             && !columns.iter().any(|column| column == "store_id")
         {
@@ -347,6 +350,7 @@ fn classify_existing_database(
                 2 => ExistingDatabaseKind::SupportedV2,
                 3 => ExistingDatabaseKind::SupportedV3,
                 4 => ExistingDatabaseKind::SupportedV4,
+                5 => ExistingDatabaseKind::SupportedV5,
                 _ => unreachable!("supported schema version was matched above"),
             });
         }
@@ -440,6 +444,20 @@ pub struct LocalEventStore {
 }
 
 impl LocalEventStore {
+    /// Stop new writes, persist every request already admitted to the writer,
+    /// then join all store workers.
+    pub(crate) fn drain_and_close(mut self) {
+        self.queue.close_after_drain();
+        self.readers.close();
+        self.recovery_snapshots.close();
+        for worker in self.reader_workers.drain(..) {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self.writer_worker.take() {
+            let _ = worker.join();
+        }
+    }
+
     /// Open (or bootstrap) the store under `app_data_root`.
     ///
     /// Create or open the single fixed-path SQLite authority.
@@ -594,6 +612,7 @@ impl LocalEventStore {
                         | ExistingDatabaseKind::SupportedV2
                         | ExistingDatabaseKind::SupportedV3
                         | ExistingDatabaseKind::SupportedV4
+                        | ExistingDatabaseKind::SupportedV5
                 ) {
                     evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
                         classify_sqlite_error(
@@ -722,19 +741,40 @@ impl LocalEventStore {
                 .name("local-event-store-writer".to_string())
                 .spawn(move || loop {
                     match queue.pop_with_timeout(std::time::Duration::from_secs(1)) {
-                        QueuePop::Request(request) => {
-                            let result = execute_commit(
-                                &writer_connection,
-                                &request.prepared,
-                                clock.now_ms().max(0),
-                                &fault,
-                            );
-                            if fault.take_drop_reply() {
-                                drop(request.reply);
-                            } else {
+                        QueuePop::Request(request) => match *request {
+                            WriteRequest::Commit(request) => {
+                                let result = execute_commit(
+                                    &writer_connection,
+                                    &request.prepared,
+                                    clock.now_ms().max(0),
+                                    &fault,
+                                );
+                                if fault.take_drop_reply() {
+                                    drop(request.reply);
+                                } else {
+                                    let _ = request.reply.send(result);
+                                }
+                            }
+                            WriteRequest::NodeEventAppend(request) => {
+                                let timestamp_ms = request
+                                    .timestamp_ms
+                                    .unwrap_or_else(|| clock.now_ms())
+                                    .max(0);
+                                let result = node_events::append_node_event(
+                                    &writer_connection,
+                                    &request.row,
+                                    timestamp_ms,
+                                )
+                                .map_err(|error| {
+                                    let correlation = correlation_id();
+                                    log::error!(
+                                        "node event append failed [{correlation}]: {error}"
+                                    );
+                                    NodeEventWriteError::StorageUnavailable
+                                });
                                 let _ = request.reply.send(result);
                             }
-                        }
+                        },
                         QueuePop::Idle => {}
                         QueuePop::Closed => break,
                     }
@@ -862,9 +902,46 @@ impl LocalEventStore {
         Ok(PreparedBatch {
             batch,
             events: prepared_events,
+            node_events: Vec::new(),
             decoded_bytes,
             critical,
         })
+    }
+
+    pub(crate) async fn commit_batch_with_node_events(
+        &self,
+        batch: LocalAtomicBatch,
+        node_events: Vec<PreparedNodeEvent>,
+    ) -> Result<CommitBatchResult, CommitBatchError> {
+        if node_events.len() > MAX_BATCH_EVENTS {
+            return Err(CommitBatchError::CapacityExceeded);
+        }
+        let identity = batch.commit_id.clone();
+        let mut prepared = self.prepare(batch)?;
+        for event in &node_events {
+            prepared.decoded_bytes = prepared
+                .decoded_bytes
+                .saturating_add(event.row.detail.len().saturating_add(256));
+        }
+        if prepared.decoded_bytes > MAX_BATCH_DECODED_BYTES {
+            return Err(CommitBatchError::CapacityExceeded);
+        }
+        prepared.node_events = node_events;
+        let (reply, receiver) = oneshot::channel();
+        match self
+            .queue
+            .admit(WriteRequest::Commit(CommitWriteRequest { prepared, reply }))
+        {
+            Ok(()) => {}
+            Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
+            Err(AdmitRejection::Closed) => {
+                return Err(CommitBatchError::OutcomeUnknown { identity });
+            }
+        }
+        match receiver.await {
+            Ok(result) => result,
+            Err(_) => Err(CommitBatchError::OutcomeUnknown { identity }),
+        }
     }
 
     fn shape_error(&self, context: &str) -> CommitBatchError {
@@ -891,6 +968,33 @@ impl LocalEventStore {
                     correlation_id(),
                 ),
             })?
+    }
+
+    /// Append one fact row to the unified-node fact log. The write is a
+    /// single-row INSERT serialized on the writer thread; atomicity never
+    /// spans more than this one row.
+    ///
+    /// `timestamp_ms` は事実の発生時刻。None なら store の clock で刻む。
+    pub(crate) async fn append_node_event(
+        &self,
+        row: NewNodeEventRow,
+        timestamp_ms: Option<i64>,
+    ) -> Result<i64, NodeEventWriteError> {
+        let (reply, receiver) = oneshot::channel();
+        match self
+            .queue
+            .admit(WriteRequest::NodeEventAppend(NodeEventAppendRequest {
+                row,
+                timestamp_ms,
+                reply,
+            })) {
+            Ok(()) => {}
+            Err(AdmitRejection::Capacity) => return Err(NodeEventWriteError::StorageUnavailable),
+            Err(AdmitRejection::Closed) => return Err(NodeEventWriteError::OutcomeUnknown),
+        }
+        receiver
+            .await
+            .map_err(|_| NodeEventWriteError::OutcomeUnknown)?
     }
 
     /// Runs gateway-local indexed reads on the store's fixed reader pool.
@@ -1026,7 +1130,10 @@ impl LocalEventTransactionRepository for LocalEventStore {
         let identity = batch.commit_id.clone();
         let prepared = self.prepare(batch)?;
         let (reply, receiver) = oneshot::channel();
-        match self.queue.admit(WriteRequest { prepared, reply }) {
+        match self
+            .queue
+            .admit(WriteRequest::Commit(CommitWriteRequest { prepared, reply }))
+        {
             Ok(()) => {}
             Err(AdmitRejection::Capacity) => return Err(CommitBatchError::CapacityExceeded),
             Err(AdmitRejection::Closed) => {
@@ -1072,23 +1179,6 @@ impl LocalEventTransactionRepository for LocalEventStore {
         let context = Arc::clone(&self.query_context);
         self.submit_query(move |connection| run_query(connection, &context, &request))
             .await
-    }
-
-    fn query_blocking(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        if matches!(
-            &request,
-            LocalEventQuery::PendingRecoveryPage { .. }
-                | LocalEventQuery::PendingRecoverySnapshotPage { .. }
-        ) {
-            return Err(LocalEventQueryError::InvalidRequest);
-        }
-        let context = Arc::clone(&self.query_context);
-        self.submit_indexed_query_blocking(move |connection| {
-            run_query(connection, &context, &request)
-        })
     }
 }
 

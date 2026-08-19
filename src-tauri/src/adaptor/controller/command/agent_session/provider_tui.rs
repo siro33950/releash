@@ -15,10 +15,9 @@ use crate::usecase::agent_session::{
     AgentSessionHistoryPageDto, AgentSessionHistoryQueryError, AgentSessionHistoryReadUsecase,
     AgentSessionHistoryRequest, AgentSessionHistoryResumeRequest, AgentSessionItemDto,
     AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError,
-    AgentSessionLifecycleDto, AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError,
-    AgentSessionListPageDto, AgentSessionListRequest, AgentSessionOpenOutcome,
-    AgentSessionOriginFilter, AgentSessionProviderDto, AgentSessionReadUsecase,
-    AgentSessionReadUsecaseError, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,
+    AgentSessionProviderDto, AgentSessionReadUsecase, AgentSessionReadUsecaseError,
+    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
@@ -195,39 +194,6 @@ fn parse_provider(value: &str) -> Result<ProviderKind, AppError> {
 }
 
 #[tauri::command]
-pub async fn list_agent_sessions(
-    read: State<'_, Arc<AgentSessionReadUsecase>>,
-    workspace_identity: String,
-    lifecycle: Option<String>,
-    origin: Option<String>,
-    limit: Option<usize>,
-    after_session_id: Option<String>,
-) -> Result<AgentSessionListPageDto, AppError> {
-    let lifecycle = lifecycle.as_deref().map(parse_lifecycle).transpose()?;
-    let origin = origin.as_deref().map(parse_origin).transpose()?;
-    read.list(AgentSessionListRequest {
-        workspace: WorkspaceIdentity::new(workspace_identity),
-        lifecycle,
-        origin,
-        limit: limit.unwrap_or(100),
-        after_session_id,
-    })
-    .await
-    .map_err(read_error)
-}
-
-fn parse_origin(value: &str) -> Result<AgentSessionOriginFilter, AppError> {
-    match value {
-        "standalone" => Ok(AgentSessionOriginFilter::Standalone),
-        "workflow_node" => Ok(AgentSessionOriginFilter::WorkflowNode),
-        _ => Err(AppError::coded(
-            "AGENT_SESSION_INVALID_ORIGIN",
-            "AgentSession origin is invalid",
-        )),
-    }
-}
-
-#[tauri::command]
 pub async fn get_agent_session(
     read: State<'_, Arc<AgentSessionReadUsecase>>,
     agent_session_id: String,
@@ -343,18 +309,6 @@ pub async fn list_provider_hook_health_warnings(
         .await
         .map(|warnings| warnings.into_iter().map(Into::into).collect())
         .map_err(hook_health_error)
-}
-
-fn parse_lifecycle(value: &str) -> Result<AgentSessionLifecycleDto, AppError> {
-    match value {
-        "open" => Ok(AgentSessionLifecycleDto::Open),
-        "paused" => Ok(AgentSessionLifecycleDto::Paused),
-        "archived" => Ok(AgentSessionLifecycleDto::Archived),
-        _ => Err(AppError::coded(
-            "AGENT_SESSION_INVALID_LIFECYCLE",
-            "AgentSession lifecycle is invalid",
-        )),
-    }
 }
 
 impl From<AgentSessionOpenOutcome> for AgentSessionOpenResponse {

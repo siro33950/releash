@@ -1822,34 +1822,28 @@ mod tests {
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         let execution_id = read_only_test_uuid(4);
-        write_read_only_execution(
-            &local_event_store,
-            &make_read_only_execution(
-                &execution_id,
-                "wf",
-                &worktree_path,
-                ExecutionStatus::Completed,
-                400.0,
-            ),
-        );
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &local_event_store,
-            &[WorkflowEvent::ExecutionStarted {
-                execution_id: execution_id.clone(),
-                workflow_name: "wf".to_string(),
-                worktree_path: worktree_path.clone(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: String::new(),
-                definition: WorkflowDefinitionYaml {
-                    name: "wf".to_string(),
-                    description: "test".to_string(),
-                    builtin: false,
-                    schemas: Default::default(),
-                    nodes: vec![],
-                    entry: "main".to_string(),
+            &[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition: make_test_workflow("wf"),
+                    timestamp: 400.0,
                 },
-                timestamp: 400.0,
-            }],
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-main-1".to_string(),
+                    node_name: "main".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 400.0,
+                },
+            ],
         )
         .unwrap();
 
@@ -1862,7 +1856,7 @@ mod tests {
         .expect("get_workflow_execution_log must succeed")
         .expect("execution must be found");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["event"], "execution_started");
+        assert_eq!(events[0]["event"], "started");
         // spec issues-1023: 永続化された秒単位 timestamp は API 境界で ms 単位の
         // view 型へ変換されて返る（`timestampMs` フィールドで単位を明示）。
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(400_000.0));
@@ -1885,27 +1879,28 @@ mod tests {
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         let execution_id = read_only_test_uuid(5);
-        write_read_only_execution(
-            &local_event_store,
-            &make_read_only_execution(
-                &execution_id,
-                "wf",
-                &worktree_path,
-                ExecutionStatus::Running,
-                500.0,
-            ),
-        );
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &local_event_store,
-            &[WorkflowEvent::ExecutionStarted {
-                execution_id: execution_id.clone(),
-                workflow_name: "adapter-boundary".to_string(),
-                worktree_path: worktree_path.clone(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: String::new(),
-                definition: make_test_workflow("adapter-boundary"),
-                timestamp: 500.0,
-            }],
+            &[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "adapter-boundary".to_string(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition: make_test_workflow("adapter-boundary"),
+                    timestamp: 500.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-main-1".to_string(),
+                    node_name: "main".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 500.0,
+                },
+            ],
         )
         .unwrap();
 
@@ -1918,7 +1913,9 @@ mod tests {
         .expect("get_workflow_execution_state must succeed")
         .expect("state must be available");
         assert_eq!(view.id, execution_id);
-        assert!(view.node_executions.is_empty());
+        assert_eq!(view.node_executions.len(), 1);
+        assert_eq!(view.node_executions[0].node_name, "main");
+        assert!(view.node_executions[0].session_id.is_none());
 
         // 存在しない execution_id は Ok(None)。
         let missing = get_workflow_execution_state_impl(
@@ -1940,35 +1937,34 @@ mod tests {
             make_read_only_app_with_managed_worktree();
 
         let execution_id = read_only_test_uuid(82);
-        write_read_only_execution(
-            &local_event_store,
-            &make_read_only_execution(
-                &execution_id,
-                "wf",
-                &worktree_path,
-                ExecutionStatus::Completed,
-                100.0,
-            ),
-        );
         let snapshot = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![crate::adaptor::gateway::workflow::schema::NodeDefinition {
-                name: "plan".to_string(),
-                kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
-                    crate::adaptor::gateway::workflow::schema::SessionSpec {
-                        facets: crate::adaptor::gateway::workflow::schema::FacetRefs {
-                            instruction: Some("review-acceptance".to_string()),
-                            ..Default::default()
+            nodes: vec![
+                crate::adaptor::gateway::workflow::schema::NodeDefinition {
+                    name: "main".to_string(),
+                    kind: crate::adaptor::gateway::workflow::schema::NodeKind::Sequence(
+                        crate::adaptor::gateway::workflow::schema::SequenceSpec {
+                            entry: None,
+                            output: None,
+                            children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
                         },
-                        ..Default::default()
-                    },
-                ),
-                ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
-            }],
-            entry: "plan".to_string(),
+                    ),
+                    ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
+                },
+                crate::adaptor::gateway::workflow::schema::NodeDefinition {
+                    name: "plan".to_string(),
+                    kind: crate::adaptor::gateway::workflow::schema::NodeKind::Command(
+                        crate::adaptor::gateway::workflow::schema::CommandSpec {
+                            command: "true".to_string(),
+                        },
+                    ),
+                    ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()
+                },
+            ],
+            entry: "main".to_string(),
         };
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &local_event_store,
@@ -1984,11 +1980,22 @@ mod tests {
                 },
                 WorkflowEvent::NodeStarted {
                     execution_id: execution_id.clone(),
-                    node_execution_id: "ne-plan-1".to_string(),
-                    node_name: "plan".to_string(),
-                    kind: NodeKindName::Session,
+                    node_execution_id: "ne-main-1".to_string(),
+                    node_name: "main".to_string(),
+                    kind: NodeKindName::Sequence,
                     attempt: 1,
                     parent: None,
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Command,
+                    attempt: 1,
+                    parent: Some(crate::domain::workflow::ExecutionParentRef::sequence_child(
+                        "ne-main-1",
+                    )),
                     timestamp: 101.0,
                 },
                 WorkflowEvent::NodeCompleted {

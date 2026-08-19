@@ -5,7 +5,7 @@ use super::{
     ProviderSessionStartTransaction, ProviderWorkflowStopCommand, ProviderWorkflowStopTransaction,
 };
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionOrigin};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeParent};
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
 };
@@ -32,7 +32,7 @@ impl AgentSessionRepository for MemoryAgentSessions {
         _session: AgentSession,
         _caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
-        Err(AgentSessionRepositoryError::AlreadyExists)
+        Err(AgentSessionRepositoryError::Conflict)
     }
 
     async fn create_with_lifecycle_events(
@@ -41,7 +41,7 @@ impl AgentSessionRepository for MemoryAgentSessions {
         _lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         _caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
-        Err(AgentSessionRepositoryError::AlreadyExists)
+        Err(AgentSessionRepositoryError::Conflict)
     }
 
     async fn find(
@@ -129,6 +129,13 @@ impl ProviderLifecycleEventRepository for MemoryLifecycleEvents {
     ) -> Result<(), ProviderLifecycleRepositoryError> {
         Ok(())
     }
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Default)]
@@ -176,7 +183,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        AgentSessionOrigin::workflow_node("workflow-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-1", "node-execution-1").unwrap()),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -339,7 +346,7 @@ async fn standalone_stop_does_not_enter_the_workflow_transaction() {
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -411,7 +418,7 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -494,7 +501,7 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -572,7 +579,7 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -651,7 +658,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();

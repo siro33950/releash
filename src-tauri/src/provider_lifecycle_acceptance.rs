@@ -253,10 +253,12 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         Err(unavailable_workflow_runtime())
     }
 
-    async fn load_persisted_events(
+    async fn approval_persisted(
         &self,
         _execution_id: &str,
-    ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+        _node_name: &str,
+        _node_execution_id: Option<&str>,
+    ) -> Result<bool, WorkflowError> {
         self.record_command();
         Err(unavailable_workflow_runtime())
     }

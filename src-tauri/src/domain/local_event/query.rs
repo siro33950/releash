@@ -14,20 +14,13 @@ use crate::domain::local_event::mutation::{
     ShutdownDetailsState, ShutdownPlanKey,
 };
 use crate::domain::local_event::record::{
-    AgentSessionLifecycleRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
-    RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord,
+    ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
+    RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord,
 };
 
 /// Opaque MAC-protected pagination cursor issued by the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryCursor(String);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentSessionOriginKind {
-    Standalone,
-    WorkflowNode,
-}
 
 impl QueryCursor {
     /// Wrap an opaque cursor token received back from a caller. Integrity is
@@ -85,16 +78,6 @@ pub enum LocalEventQuery {
     },
     SessionProjectionByIdentity {
         session_id: String,
-    },
-    WorkflowExecutionByNodeExecution {
-        node_execution_id: String,
-    },
-    AgentSessionProjectionPage {
-        workspace_identity: String,
-        lifecycle: Option<AgentSessionLifecycleRecord>,
-        origin: Option<AgentSessionOriginKind>,
-        limit: usize,
-        after_agent_session_id: Option<String>,
     },
     /// One bounded, lightweight owner inventory read by a single SQLite
     /// statement. Startup GC uses this instead of composing independently
@@ -194,28 +177,13 @@ pub struct SessionProjectionView {
     pub revision: Revision,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AgentSessionProjectionPageView {
-    pub sessions: Vec<SessionProjectionView>,
-    pub next_after_agent_session_id: Option<String>,
-}
-
 /// Lightweight runtime-ownership facts extracted from one canonical SQLite
 /// statement. Inactive sessions remain present so a live PID can be resolved
 /// to its canonical worktree without returning the full projection body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalRuntimeOwnerView {
-    AgentSession {
-        projection_id: String,
-        session_id: String,
-        worktree_path: String,
-        active: bool,
-        shutdown_target: bool,
-        workflow_node_session: bool,
-    },
-    ActiveWorkflow {
-        worktree_path: String,
-    },
+    AgentSession { worktree_path: String, active: bool },
+    ActiveWorkflow { worktree_path: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -325,8 +293,6 @@ pub enum LocalEventQueryResult {
     CallerAttemptPage(Vec<CallerAttemptView>),
     ObligationByIdentity(Option<ObligationView>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
-    WorkflowExecutionByNodeExecution(Option<String>),
-    AgentSessionProjectionPage(AgentSessionProjectionPageView),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
     PendingRecoveryPage(PendingRecoveryPageView),
     PendingRecoverySnapshotPage(PendingRecoverySnapshotPageView),

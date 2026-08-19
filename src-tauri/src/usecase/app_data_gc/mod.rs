@@ -556,12 +556,8 @@ mod tests {
         let mut owners = CanonicalRuntimeOwners::default();
         apply_runtime_owner(
             CanonicalRuntimeOwnerView::AgentSession {
-                projection_id: "active-session".to_string(),
-                session_id: "active-session".to_string(),
                 worktree_path: "/worktrees/active".to_string(),
                 active: true,
-                shutdown_target: true,
-                workflow_node_session: false,
             },
             &mut owners,
         );

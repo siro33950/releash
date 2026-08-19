@@ -84,6 +84,7 @@ impl ExecutionInterruptionReason {
         }
     }
 
+    #[cfg(test)]
     pub fn from_reason(reason: &str) -> Option<Self> {
         match reason {
             "crash" => Some(Self::Crash),

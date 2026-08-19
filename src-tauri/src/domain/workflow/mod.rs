@@ -7,7 +7,6 @@
 
 pub mod entities;
 pub mod error;
-pub mod events;
 pub mod gateway;
 #[allow(clippy::module_inception)]
 pub mod repository;
@@ -15,7 +14,6 @@ pub mod services;
 pub mod value_objects;
 
 pub use error::WorkflowError;
-pub use events::{WorkflowContractViolation, WorkflowDomainEvent, WorkflowJsonPayload};
 pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};
 pub use repository::{
     FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
@@ -30,16 +28,19 @@ pub use value_objects::ExecutionListFilter;
 #[cfg(test)]
 pub use value_objects::WorkflowExecutionRecord;
 pub use value_objects::{
-    is_reserved_node_name, ApprovalTarget, Artifact, ChildEntry, CommandSpec, ContractType,
-    ContractValidationResult, ContractViolationRecord, ExecutionInterruptionReason,
-    ExecutionOrigin, ExecutionParentRef, ExecutionStatus, ExecutionStatusFilter, FacetContents,
-    FacetKey, FacetKind, FacetRefs, FacetSummary, FailureClassification, FailureDisposition,
-    Fanout, FanoutSlot, FanoutSpec, InputParam, ItemsSource, NodeCompletion, NodeCompletionSignal,
-    NodeCompletionSignalState, NodeDefinition, NodeDefinitionName, NodeExecution,
-    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeHistoryEntry,
-    NodeKind, NodeKindName, OnFailure, Rule, RuntimeArtifact, RuntimeExecutionState, SchemaDef,
-    SequenceSpec, SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition, WorkflowDefinitionName,
-    WorkflowEvent, WorkflowExecution, WorkflowExecutionId, WorkflowExecutionSummary,
-    WorkflowFacetContents, WorkflowPageRequest, WorkflowRuntimeSnapshot, WorkflowSummary,
-    WorkspaceWorktreePath, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
+    is_reserved_node_name, ApprovalGrantedFact, ApprovalTarget, Artifact, ArtifactProducedFact,
+    ChildEntry, CommandSpawnedFact, CommandSpec, ContractType, ContractValidationResult,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, ExecutionStatus,
+    ExecutionStatusFilter, FacetContents, FacetKey, FacetKind, FacetRefs, FacetSummary,
+    FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec, InputParam,
+    ItemsSource, NodeCompletion, NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition,
+    NodeDefinitionName, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
+    NodeExecutionStatus, NodeFact, NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind,
+    NodeKindName, OnFailure, ProcessExitedFact, Rule, RuntimeArtifact, RuntimeExecutionState,
+    SchemaDef, SequenceSpec, SessionAttachedFact, SessionRootFact, SessionSpec, StartedFact,
+    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
+    TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecution,
+    WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest,
+    WorkflowRootFact, WorkflowRuntimeSnapshot, WorkflowSummary, WorkspaceWorktreePath,
+    NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
 };

@@ -44,7 +44,6 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import { useAgentSessions } from "@/hooks/useAgentSessions";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
@@ -565,6 +564,7 @@ function WorktreeTreeItem({
 	const canDelete = !branch.is_main_worktree;
 	const {
 		nodes,
+		sessions: workspaceAgentSessions,
 		preferredNodeId,
 		workflowHistory,
 		reconciliationEvent,
@@ -575,27 +575,27 @@ function WorktreeTreeItem({
 		synchronizeSelectedNodeId,
 		isReconciliationEventCurrent,
 	} = useWorkspaceTreeNodes(branch.worktree_path);
-	const {
-		items: agentSessions,
-		loading: providerSessionsLoading,
-		loadingMore: providerSessionsLoadingMore,
-		hasMore: providerSessionsHasMore,
-		error: providerSessionsError,
-		refresh: refreshAgentSessions,
-		loadMore: loadMoreAgentSessions,
-	} = useAgentSessions(branch.worktree_path ?? null);
-	const {
-		items: archivedAgentSessions,
-		loading: archivedProviderSessionsLoading,
-		loadingMore: archivedProviderSessionsLoadingMore,
-		hasMore: archivedProviderSessionsHasMore,
-		error: archivedProviderSessionsError,
-		refresh: refreshArchivedAgentSessions,
-		loadMore: loadMoreArchivedAgentSessions,
-	} = useAgentSessions(
-		worktreeMenuOpen ? (branch.worktree_path ?? null) : null,
-		"archived",
+	const agentSessions = useMemo(
+		() =>
+			workspaceAgentSessions.filter(
+				(session) => session.lifecycle !== "archived",
+			),
+		[workspaceAgentSessions],
 	);
+	const archivedAgentSessions = useMemo(
+		() =>
+			workspaceAgentSessions.filter(
+				(session) => session.lifecycle === "archived",
+			),
+		[workspaceAgentSessions],
+	);
+	const providerSessionsLoading = treeLoading;
+	const providerSessionsError = treeError;
+	const archivedProviderSessionsLoading = treeLoading && worktreeMenuOpen;
+	const archivedProviderSessionsError = treeError;
+	const refreshAgentSessions = useCallback(async () => {
+		await refreshTree();
+	}, [refreshTree]);
 	const {
 		workflows,
 		loading: workflowsLoading,
@@ -743,10 +743,7 @@ function WorktreeTreeItem({
 				);
 				setArchiveFallbackDelete(null);
 				notifyAgentSessionChanged(session.worktreePath);
-				await Promise.all([
-					refreshAgentSessions(),
-					refreshArchivedAgentSessions(),
-				]);
+				await refreshAgentSessions();
 				if (
 					scopedCenterSelection?.kind === "agent_session" &&
 					scopedCenterSelection.agentSessionId === session.id &&
@@ -764,7 +761,6 @@ function WorktreeTreeItem({
 			branch.name,
 			branch.worktree_path,
 			onSelectWorktree,
-			refreshArchivedAgentSessions,
 			refreshAgentSessions,
 			repoName,
 			scopedCenterSelection,
@@ -782,10 +778,7 @@ function WorktreeTreeItem({
 					callerRequestId: `restore.${crypto.randomUUID()}`,
 				});
 				notifyAgentSessionChanged(session.worktreePath);
-				await Promise.all([
-					refreshAgentSessions(),
-					refreshArchivedAgentSessions(),
-				]);
+				await refreshAgentSessions();
 				selectCenter({
 					kind: "agent_session",
 					worktreePath: branch.worktree_path,
@@ -797,12 +790,7 @@ function WorktreeTreeItem({
 				);
 			}
 		},
-		[
-			branch.worktree_path,
-			refreshArchivedAgentSessions,
-			refreshAgentSessions,
-			selectCenter,
-		],
+		[branch.worktree_path, refreshAgentSessions, selectCenter],
 	);
 
 	const refreshProviderHistory = useCallback(async () => {
@@ -1215,17 +1203,6 @@ function WorktreeTreeItem({
 												</Button>
 											</DropdownMenuItem>
 										))}
-										{archivedProviderSessionsHasMore && (
-											<DropdownMenuItem
-												disabled={archivedProviderSessionsLoadingMore}
-												onSelect={(event) => {
-													event.preventDefault();
-													void loadMoreArchivedAgentSessions();
-												}}
-											>
-												Load more archived AgentSessions
-											</DropdownMenuItem>
-										)}
 										{archivedProviderSessionsError && (
 											<DropdownMenuItem disabled>
 												<span className="max-w-52 truncate text-destructive">
@@ -1429,20 +1406,6 @@ function WorktreeTreeItem({
 							onDelete={() => void handleDeleteAgentSession(session, false)}
 						/>
 					))}
-					{providerSessionsHasMore && (
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							className="h-7 w-full justify-start text-xs text-muted-foreground"
-							disabled={providerSessionsLoadingMore}
-							onClick={() => void loadMoreAgentSessions()}
-						>
-							{providerSessionsLoadingMore
-								? "Loading AgentSessions"
-								: "Load more AgentSessions"}
-						</Button>
-					)}
 					{treeLoading ? (
 						<div
 							className="flex h-8 items-center text-muted-foreground"

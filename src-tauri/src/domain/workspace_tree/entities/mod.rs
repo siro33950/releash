@@ -243,26 +243,6 @@ impl WorkspaceTree {
         })
     }
 
-    pub(super) fn remove_subtree(&mut self, root_id: &str) {
-        let mut removed = HashSet::from([root_id.to_string()]);
-        loop {
-            let before = removed.len();
-            for node in &self.nodes {
-                if node
-                    .parent_id
-                    .as_ref()
-                    .is_some_and(|parent| removed.contains(parent))
-                {
-                    removed.insert(node.id.clone());
-                }
-            }
-            if removed.len() == before {
-                break;
-            }
-        }
-        self.nodes.retain(|node| !removed.contains(&node.id));
-    }
-
     pub(super) fn apply_workflow_started(
         &mut self,
         execution_id: String,
@@ -691,11 +671,6 @@ impl WorkspaceTreeProjector {
                         );
                     }
                 }
-                WorkspaceStructureFact::WorkflowRemoved { execution_id } => {
-                    if let Some(workflow) = tree.workflow_node(&execution_id).cloned() {
-                        tree.remove_subtree(&workflow.id);
-                    }
-                }
                 WorkspaceStructureFact::RecoveryFenceProjected { owner, reason } => {
                     if let Some(workflow) = tree.workflow_node_mut(&owner) {
                         workflow.recovery_owner_reason = reason;
@@ -739,76 +714,6 @@ impl WorkspaceTreeProjector {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
                     node.session_id = Some(session_id);
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
-                }
-                WorkspaceStructureFact::NodeSubmitReceived {
-                    execution_id,
-                    node_execution_id,
-                    timestamp,
-                } => {
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .ok_or_else(|| {
-                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                        })?;
-                    node.completion_signals = match node.completion_signals {
-                        NodeCompletionSignalState::Pending => {
-                            NodeCompletionSignalState::SubmitReceived
-                        }
-                        NodeCompletionSignalState::StopReceived => NodeCompletionSignalState::Ready,
-                        state => state,
-                    };
-                    node.can_retry = node.completion_signals.is_partial();
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
-                }
-                WorkspaceStructureFact::NodeStopReceived {
-                    execution_id,
-                    node_execution_id,
-                    timestamp,
-                } => {
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .ok_or_else(|| {
-                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                        })?;
-                    node.completion_signals = match node.completion_signals {
-                        NodeCompletionSignalState::Pending => {
-                            NodeCompletionSignalState::StopReceived
-                        }
-                        NodeCompletionSignalState::SubmitReceived => {
-                            NodeCompletionSignalState::Ready
-                        }
-                        state => state,
-                    };
-                    node.can_retry = node.completion_signals.is_partial();
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
-                }
-                WorkspaceStructureFact::NodePaused {
-                    execution_id,
-                    node_execution_id,
-                    timestamp,
-                } => {
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .ok_or_else(|| {
-                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                        })?;
-                    node.status = WorkspaceNodeStatus::Paused;
-                    node.can_retry = node.completion_signals.is_partial();
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
-                }
-                WorkspaceStructureFact::NodeResumed {
-                    execution_id,
-                    node_execution_id,
-                    timestamp,
-                } => {
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .ok_or_else(|| {
-                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                        })?;
-                    node.status = WorkspaceNodeStatus::Running;
-                    node.can_retry = node.completion_signals.is_partial();
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeCommandPrepared {
@@ -891,21 +796,6 @@ impl WorkspaceTreeProjector {
                     node.status = WorkspaceNodeStatus::Waiting;
                     node.can_approve = true;
                     node.can_retry = false;
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
-                }
-                WorkspaceStructureFact::NodeApprovalResolved {
-                    execution_id,
-                    node_execution_id,
-                    timestamp,
-                } => {
-                    let node = tree
-                        .execution_node_mut(&execution_id, &node_execution_id)
-                        .ok_or_else(|| {
-                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                        })?;
-                    node.status = WorkspaceNodeStatus::Running;
-                    node.can_approve = false;
-                    node.can_retry = node.completion_signals.is_partial();
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
             }
@@ -1040,7 +930,6 @@ fn aggregate_status(
             WorkspaceNodeStatus::Running => 1,
             WorkspaceNodeStatus::Paused => 2,
             WorkspaceNodeStatus::Failed => 3,
-            WorkspaceNodeStatus::Error => 4,
             WorkspaceNodeStatus::Waiting => 5,
             WorkspaceNodeStatus::Interrupted => 6,
             WorkspaceNodeStatus::Aborted => 7,
@@ -2178,50 +2067,6 @@ mod tests {
             .unwrap();
         assert_eq!(waiting.status, WorkspaceNodeStatus::Waiting);
         assert!(waiting.can_approve);
-    }
-
-    #[test]
-    fn active_workflow_root_display_is_derived_from_the_current_node() {
-        let execution_id = "00000000-0000-4000-8000-000000000154";
-        let mut tree = WorkspaceTree::empty("/repo");
-        WorkspaceTreeProjector::project(
-            &mut tree,
-            [
-                WorkspaceStructureFact::WorkflowStarted {
-                    execution_id: execution_id.to_string(),
-                    workflow_name: "review".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    definition: definition(),
-                    timestamp: 1.0,
-                },
-                WorkspaceStructureFact::NodeStarted {
-                    execution_id: execution_id.to_string(),
-                    node_execution_id: "plan".to_string(),
-                    node_name: "plan".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    parent: None,
-                    timestamp: 2.0,
-                },
-                WorkspaceStructureFact::NodePaused {
-                    execution_id: execution_id.to_string(),
-                    node_execution_id: "plan".to_string(),
-                    timestamp: 3.0,
-                },
-                WorkspaceStructureFact::WorkflowSummaryProjected {
-                    execution_id: execution_id.to_string(),
-                    workflow_name: "review".to_string(),
-                    status: ExecutionStatus::Running,
-                    updated_at: 3.0,
-                },
-            ],
-        )
-        .unwrap();
-
-        let workflow = tree.workflow_node(execution_id).unwrap();
-        assert_eq!(workflow.status, WorkspaceNodeStatus::Paused);
-        assert!(!workflow.can_stop);
-        assert!(workflow.can_resume);
     }
 
     #[test]

@@ -653,13 +653,6 @@ impl LocalEventTransactionRepository for ResolveFailureRepository {
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
         self.inner.query(request).await
     }
-
-    fn query_blocking(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        self.inner.query_blocking(request)
-    }
 }
 
 impl ResolveFailureOnceRepository {
@@ -718,13 +711,6 @@ impl LocalEventTransactionRepository for ResolveFailureOnceRepository {
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
         self.inner.query(request).await
-    }
-
-    fn query_blocking(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        self.inner.query_blocking(request)
     }
 }
 

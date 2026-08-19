@@ -20,25 +20,21 @@ use crate::adaptor::gateway::local_event_store::cursor::{
 use crate::adaptor::gateway::local_event_store::envelope::{
     label_to_shutdown_phase, DecodedStoredEvent, EventCodecRegistry,
 };
-use crate::adaptor::gateway::local_event_store::projection_record_codec::{
-    decode_session_projection_record_v1, AGENT_SESSION_STORAGE_PREFIX,
-};
+use crate::adaptor::gateway::local_event_store::projection_record_codec::decode_session_projection_record_v1;
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
     StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1,
 };
 use crate::domain::local_event::{
-    validate_operation_record, AgentSessionLifecycleRecord, AgentSessionOriginKind,
-    AgentSessionOriginRecord, AgentSessionProjectionPageView, CallerAttemptResolution,
-    CallerAttemptView, CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent,
-    DomainEventPage, EventId, LoadStreamRequest, LoadedDomainEvent, LocalEventQuery,
-    LocalEventQueryError, LocalEventQueryResult, ObligationView, OperationBindingView,
-    OperationKind, OperationRecordView, PendingIndexEntryView, PendingObligationView,
-    PendingPartition, PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor,
-    RecoveryActionView, SafeOperationFailure, SessionOperationFailureKind, SessionProjectionRecord,
+    validate_operation_record, CallerAttemptResolution, CallerAttemptView,
+    CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId,
+    LoadStreamRequest, LoadedDomainEvent, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, ObligationView, OperationBindingView, OperationKind,
+    OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingPartition,
+    PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView,
+    SafeOperationFailure, SessionOperationFailureKind, SessionProjectionRecord,
     SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey, ShutdownPlanPageView,
     ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StreamSequence, StreamVersion,
-    WorkflowExecutionProjectionRecord,
 };
 use crate::domain::local_event::{
     ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
@@ -70,8 +66,6 @@ pub const SHUTDOWN_PAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_PAGE: usize = 200;
 pub const STREAM_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT: usize = 8_192;
-pub const CANONICAL_RUNTIME_OWNER_SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
-
 /// Query plans for these statements are snapshot-gated in tests: they must
 /// never contain a `SCAN events` step.
 pub(crate) const SQL_PENDING_FIRST_PAGE: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?2";
@@ -329,27 +323,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 session_projection_by_identity(connection, session_id)?,
             ))
         }
-        LocalEventQuery::WorkflowExecutionByNodeExecution { node_execution_id } => {
-            Ok(LocalEventQueryResult::WorkflowExecutionByNodeExecution(
-                workflow_execution_by_node_execution(connection, node_execution_id)?,
-            ))
-        }
-        LocalEventQuery::AgentSessionProjectionPage {
-            workspace_identity,
-            lifecycle,
-            origin,
-            limit,
-            after_agent_session_id,
-        } => Ok(LocalEventQueryResult::AgentSessionProjectionPage(
-            agent_session_projection_page(
-                connection,
-                workspace_identity,
-                *lifecycle,
-                origin.as_ref(),
-                *limit,
-                after_agent_session_id.as_deref(),
-            )?,
-        )),
         LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit } => {
             Ok(LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(
                 canonical_runtime_owner_snapshot(connection, *limit)?,
@@ -432,24 +405,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
             cursor.as_ref(),
         )?)),
     }
-}
-
-fn workflow_execution_by_node_execution(
-    connection: &Connection,
-    node_execution_id: &str,
-) -> Result<Option<String>, LocalEventQueryError> {
-    if node_execution_id.trim().is_empty() {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    connection
-        .query_row(
-            "SELECT execution_id FROM workflow_execution_nodes
-             WHERE node_execution_id = ?1",
-            params![node_execution_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))
 }
 
 fn operation_binding_by_identity(
@@ -937,202 +892,60 @@ fn session_projection_by_identity(
     .transpose()
 }
 
-fn agent_session_projection_page(
-    connection: &Connection,
-    workspace_identity: &str,
-    lifecycle: Option<AgentSessionLifecycleRecord>,
-    origin: Option<&AgentSessionOriginKind>,
-    limit: usize,
-    after_agent_session_id: Option<&str>,
-) -> Result<AgentSessionProjectionPageView, LocalEventQueryError> {
-    if limit == 0
-        || limit > 200
-        || workspace_identity.trim().is_empty()
-        || crate::domain::repository::normalize_repo_path(workspace_identity) != workspace_identity
-        || after_agent_session_id.is_some_and(|id| {
-            id.trim().is_empty() || crate::domain::local_event::StreamId::agent_session(id).is_err()
-        })
-    {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    let lifecycle = lifecycle.map(|value| match value {
-        AgentSessionLifecycleRecord::Open => "open",
-        AgentSessionLifecycleRecord::Paused => "paused",
-        AgentSessionLifecycleRecord::Archived => "archived",
-    });
-    let origin = origin.map(|value| match value {
-        AgentSessionOriginKind::Standalone => "standalone",
-        AgentSessionOriginKind::WorkflowNode => "workflow_node",
-    });
-    let after_storage_id =
-        after_agent_session_id.map(|id| format!("{AGENT_SESSION_STORAGE_PREFIX}{id}"));
-    let fetch_limit =
-        i64::try_from(limit.saturating_add(1)).map_err(|_| LocalEventQueryError::InvalidRequest)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT session_id, projection, revision FROM session_projection
-             WHERE workspace_identity = ?1
-               AND session_id LIKE 'agent-session:%'
-               AND ((?2 IS NULL AND json_extract(projection, '$.lifecycle') <> 'archived')
-                    OR json_extract(projection, '$.lifecycle') = ?2)
-               AND (?3 IS NULL OR json_extract(projection, '$.origin.kind') = ?3)
-               AND (?4 IS NULL OR session_id > ?4)
-             ORDER BY session_id ASC LIMIT ?5",
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let rows = statement
-        .query_map(
-            params![
-                workspace_identity,
-                lifecycle,
-                origin,
-                after_storage_id,
-                fetch_limit
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut sessions = rows
-        .map(|row| {
-            let (session_id, projection, revision) =
-                row.map_err(|error| storage_unavailable(&error))?;
-            let projection = session_projection_record(
-                projection,
-                &session_id,
-                "provider AgentSession projection page",
-            )?;
-            if !matches!(projection, SessionProjectionRecord::AgentSession(_)) {
-                return Err(corrupt("provider AgentSession projection page owner kind"));
-            }
-            Ok(SessionProjectionView {
-                session_id,
-                projection,
-                revision: crate::domain::local_event::Revision::new(revision)
-                    .map_err(|_| corrupt("provider AgentSession projection page revision"))?,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let has_more = sessions.len() > limit;
-    if has_more {
-        sessions.pop();
-    }
-    let next_after_agent_session_id = has_more
-        .then(|| {
-            sessions.last().and_then(|session| {
-                session
-                    .session_id
-                    .strip_prefix(AGENT_SESSION_STORAGE_PREFIX)
-                    .map(str::to_string)
-            })
-        })
-        .flatten()
-        .ok_or_else(|| corrupt("provider AgentSession projection page cursor"))
-        .map(Some)
-        .or_else(|error| if has_more { Err(error) } else { Ok(None) })?;
-    Ok(AgentSessionProjectionPageView {
-        sessions,
-        next_after_agent_session_id,
-    })
-}
-
-/// Reads the complete bounded owner inventory through one SQLite statement.
-///
-/// The rows iterator keeps one SQLite read snapshot alive until exhaustion;
-/// concurrent inserts therefore cannot fall behind a page cursor. The extra
-/// row proves whether the caller's bound was sufficient without returning a
-/// partial inventory as complete.
 fn canonical_runtime_owner_snapshot(
     connection: &Connection,
     limit: usize,
 ) -> Result<Vec<CanonicalRuntimeOwnerView>, LocalEventQueryError> {
+    use crate::adaptor::gateway::workflow::fact_log::record_from_row;
+    use crate::domain::workflow::services::fact_replay;
+    use crate::domain::workflow::{NodeFact, TreeRootFact};
+
     if limit == 0 || limit > MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT {
         return Err(LocalEventQueryError::InvalidRequest);
     }
-    let fetch_limit =
-        i64::try_from(limit.saturating_add(1)).map_err(|_| LocalEventQueryError::InvalidRequest)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT session_id, projection FROM session_projection
-             ORDER BY session_id ASC LIMIT ?1",
-        )
+    // 統一 Node 事実ログの木ごとの fold で生存 owner を導出する。
+    let roots = super::node_events::list_tree_roots(connection, "started")
         .map_err(|error| storage_unavailable(&error))?;
-    let mut rows = statement
-        .query(params![fetch_limit])
-        .map_err(|error| storage_unavailable(&error))?;
-    let mut scanned = 0usize;
-    let mut response_bytes = 0usize;
     let mut owners = Vec::new();
-    while let Some(row) = rows.next().map_err(|error| storage_unavailable(&error))? {
-        scanned = scanned.saturating_add(1);
-        if scanned > limit {
-            return Err(LocalEventQueryError::ResponseTooLarge);
-        }
-        let projection_id = row
-            .get::<_, String>(0)
-            .map_err(|error| storage_unavailable(&error))?;
-        let raw = row
-            .get::<_, String>(1)
-            .map_err(|error| storage_unavailable(&error))?;
-        let projection =
-            session_projection_record(raw, &projection_id, "canonical runtime owner snapshot")?;
-        let owner = match projection {
-            SessionProjectionRecord::AgentSession(session) => {
-                Some(CanonicalRuntimeOwnerView::AgentSession {
-                    projection_id,
-                    session_id: session.id,
-                    worktree_path: session.worktree_path,
-                    active: session.lifecycle == AgentSessionLifecycleRecord::Open,
-                    shutdown_target: false,
-                    workflow_node_session: matches!(
-                        session.origin,
-                        AgentSessionOriginRecord::WorkflowNode { .. }
-                    ),
-                })
-            }
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Present(execution),
-            ) if execution.status.is_active() => Some(CanonicalRuntimeOwnerView::ActiveWorkflow {
-                worktree_path: execution.worktree_path,
-            }),
-            SessionProjectionRecord::WorkflowWorktreeOwner(owner) if owner.active => {
-                Some(CanonicalRuntimeOwnerView::ActiveWorkflow {
-                    worktree_path: owner.worktree_path,
-                })
-            }
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Present(_)
-                | WorkflowExecutionProjectionRecord::Deleted { .. },
-            )
-            | SessionProjectionRecord::ProviderSessionOwnership(_)
-            | SessionProjectionRecord::ProviderHookHealth(_)
-            | SessionProjectionRecord::WorkflowWorktreeOwner(_) => None,
+    for root in roots {
+        let records = super::node_events::read_tree(connection, &root.tree_id)
+            .map_err(|error| storage_unavailable(&error))?
+            .iter()
+            .map(record_from_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| LocalEventQueryError::InvalidRequest)?;
+        let Some(NodeFact::Started(started)) = records.first().map(|record| &record.fact) else {
+            continue;
         };
-        if let Some(owner) = owner {
-            response_bytes = response_bytes.saturating_add(match &owner {
-                CanonicalRuntimeOwnerView::AgentSession {
-                    projection_id,
-                    session_id,
-                    worktree_path,
-                    ..
-                } => projection_id
-                    .len()
-                    .saturating_add(session_id.len())
-                    .saturating_add(worktree_path.len())
-                    .saturating_add(32),
-                CanonicalRuntimeOwnerView::ActiveWorkflow { worktree_path } => {
-                    worktree_path.len().saturating_add(16)
+        match &started.root {
+            Some(TreeRootFact::Session(session_root)) => {
+                let view = fact_replay::derive_session_facts(
+                    &records,
+                    &root.node_execution_id,
+                    &root.tree_id,
+                );
+                if view.is_open() {
+                    owners.push(CanonicalRuntimeOwnerView::AgentSession {
+                        worktree_path: session_root.worktree_path.clone(),
+                        active: true,
+                    });
                 }
-            });
-            if response_bytes > CANONICAL_RUNTIME_OWNER_SNAPSHOT_MAX_BYTES {
-                return Err(LocalEventQueryError::ResponseTooLarge);
             }
-            owners.push(owner);
+            Some(TreeRootFact::Workflow(workflow_root)) => {
+                let folded = fact_replay::fold_execution_tree(&root.tree_id, &records)
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)?
+                    .ok_or(LocalEventQueryError::InvalidRequest)?;
+                let read_model = fact_replay::derive_read_model(&folded);
+                if read_model.status.is_active() {
+                    owners.push(CanonicalRuntimeOwnerView::ActiveWorkflow {
+                        worktree_path: workflow_root.worktree_path.clone(),
+                    });
+                }
+            }
+            None => {}
+        }
+        if owners.len() > limit {
+            return Err(LocalEventQueryError::ResponseTooLarge);
         }
     }
     Ok(owners)
@@ -2410,40 +2223,91 @@ impl RecoverySnapshotPager {
 #[cfg(test)]
 mod canonical_runtime_owner_snapshot_tests {
     use super::*;
-    use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_record_v1;
-    use crate::domain::local_event::{SessionProjectionRecord, WorkflowWorktreeOwnerRecord};
+    use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
+    use crate::adaptor::gateway::local_event_store::schema::{
+        initialize_schema, InitialStoreMetadata,
+    };
+    use crate::domain::workflow::{
+        ExecutionOrigin, NodeCompletion, NodeDefinition, NodeFact, NodeKind, SessionRootFact,
+        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition, WorkflowRootFact,
+    };
+
+    fn connection_with_node_events() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        initialize_schema(
+            &connection,
+            &InitialStoreMetadata {
+                installation_id: "00000000-0000-4000-8000-000000000001",
+                cursor_hmac_key: &[1; 32],
+                operation_binding_hmac_key: &[2; 32],
+                process_instance_id: "00000000-0000-4000-8000-000000000002",
+                created_at_ms: 1,
+            },
+            &FaultInjector::new(),
+        )
+        .expect("initialize schema");
+        connection
+    }
+
+    fn insert_root(connection: &Connection, tree_id: &str, fact: &NodeFact) {
+        connection
+            .execute(
+                "INSERT INTO node_events (
+                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
+                    attempt, event_type, detail, timestamp
+                 ) VALUES (?1, 1, ?1, NULL, 'main', 'session', 1, ?2, ?3, 1)",
+                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+            )
+            .expect("insert root fact");
+    }
+
+    fn insert_second_fact(connection: &Connection, tree_id: &str, fact: &NodeFact) {
+        connection
+            .execute(
+                "INSERT INTO node_events (
+                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
+                    attempt, event_type, detail, timestamp
+                 ) VALUES (?1, 2, ?1, NULL, 'main', 'session', 1, ?2, ?3, 2)",
+                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+            )
+            .expect("insert second fact");
+    }
+
+    fn workflow_root(worktree_path: &str) -> NodeFact {
+        NodeFact::Started(StartedFact {
+            parent: None,
+            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
+                workflow_name: "wf".to_string(),
+                worktree_path: worktree_path.to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: String::new(),
+                definition: WorkflowDefinition {
+                    name: "wf".to_string(),
+                    description: String::new(),
+                    builtin: false,
+                    schemas: Default::default(),
+                    nodes: vec![NodeDefinition {
+                        name: "main".to_string(),
+                        kind: NodeKind::Session(SessionSpec::default()),
+                        artifact: None,
+                        input: Vec::new(),
+                        completion: NodeCompletion::Auto,
+                        worktree: None,
+                    }],
+                    entry: "main".to_string(),
+                },
+            })),
+        })
+    }
 
     fn connection_with_active_workflow_owners(count: usize) -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection
-            .execute_batch(
-                "CREATE TABLE session_projection (
-                    session_id TEXT PRIMARY KEY,
-                    projection TEXT NOT NULL
-                );",
-            )
-            .expect("projection table");
+        let connection = connection_with_node_events();
         for index in 0..count {
-            let worktree_path = format!("/snapshot/worktree-{index}");
-            let owner = WorkflowWorktreeOwnerRecord {
-                worktree_path: worktree_path.clone(),
-                execution_id: format!("execution-{index}"),
-                active: true,
-            };
-            let projection = encode_session_projection_record_v1(
-                &SessionProjectionRecord::WorkflowWorktreeOwner(owner),
-            )
-            .expect("encoded workflow owner");
-            let projection_id = format!(
-                "workflow-worktree:{}",
-                hex::encode(Sha256::digest(worktree_path.as_bytes()))
+            insert_root(
+                &connection,
+                &format!("execution-{index}"),
+                &workflow_root(&format!("/snapshot/worktree-{index}")),
             );
-            connection
-                .execute(
-                    "INSERT INTO session_projection (session_id, projection) VALUES (?1, ?2)",
-                    params![projection_id, projection],
-                )
-                .expect("insert workflow owner");
         }
         connection
     }
@@ -2462,6 +2326,35 @@ mod canonical_runtime_owner_snapshot_tests {
     }
 
     #[test]
+    fn app_data_gc_owner_snapshot_lists_open_session_trees() {
+        let connection = connection_with_node_events();
+        insert_root(
+            &connection,
+            "agent-session-1",
+            &NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(TreeRootFact::Session(SessionRootFact {
+                    workspace_identity: "/snapshot/worktree-a".to_string(),
+                    worktree_path: "/snapshot/worktree-a".to_string(),
+                    session: SessionSpec::default(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                })),
+            }),
+        );
+
+        let owners =
+            canonical_runtime_owner_snapshot(&connection, 8).expect("complete owner snapshot");
+
+        assert_eq!(
+            owners,
+            vec![CanonicalRuntimeOwnerView::AgentSession {
+                worktree_path: "/snapshot/worktree-a".to_string(),
+                active: true,
+            }]
+        );
+    }
+
+    #[test]
     fn app_data_gc_owner_snapshot_limit_plus_one_fails_closed() {
         let connection = connection_with_active_workflow_owners(2);
 
@@ -2472,31 +2365,31 @@ mod canonical_runtime_owner_snapshot_tests {
     }
 
     #[test]
-    fn node_execution_identity_resolves_its_workflow_execution() {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection
-            .execute_batch(
-                "CREATE TABLE workflow_execution_nodes (
-                     execution_id TEXT NOT NULL,
-                     node_execution_id TEXT UNIQUE
-                 );
-                 INSERT INTO workflow_execution_nodes
-                     (execution_id, node_execution_id)
-                 VALUES ('execution-1', 'node-execution-1');",
-            )
-            .unwrap();
+    fn app_data_gc_owner_snapshot_applies_limit_after_closed_sessions_are_removed() {
+        let connection = connection_with_active_workflow_owners(1);
+        for session_id in ["closed-session-1", "closed-session-2"] {
+            insert_root(
+                &connection,
+                session_id,
+                &NodeFact::Started(StartedFact {
+                    parent: None,
+                    root: Some(TreeRootFact::Session(SessionRootFact {
+                        workspace_identity: "/snapshot".to_string(),
+                        worktree_path: format!("/snapshot/{session_id}"),
+                        session: SessionSpec::default(),
+                        created_from: ExecutionOrigin::DesktopUi,
+                    })),
+                }),
+            );
+            insert_second_fact(&connection, session_id, &NodeFact::ArchiveRequested);
+        }
 
-        assert_eq!(
-            workflow_execution_by_node_execution(&connection, "node-execution-1").unwrap(),
-            Some("execution-1".to_string())
-        );
-        assert_eq!(
-            workflow_execution_by_node_execution(&connection, "missing").unwrap(),
-            None
-        );
-        assert_eq!(
-            workflow_execution_by_node_execution(&connection, ""),
-            Err(LocalEventQueryError::InvalidRequest)
-        );
+        let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();
+
+        assert_eq!(owners.len(), 1);
+        assert!(matches!(
+            owners[0],
+            CanonicalRuntimeOwnerView::ActiveWorkflow { .. }
+        ));
     }
 }

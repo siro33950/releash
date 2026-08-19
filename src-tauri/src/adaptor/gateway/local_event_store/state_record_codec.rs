@@ -6,9 +6,6 @@ use crate::domain::local_event::{
     OperationKind, QuitIntent, RecoveryActionKind, RecoveryResultClassification,
     SessionOperationFailureKind, ShutdownPlanKey,
 };
-use crate::domain::workflow::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoredRecordFamily {
@@ -575,121 +572,6 @@ fn decode_obligation_state(
     })
 }
 
-fn encode_workflow_execution(
-    value: &WorkflowExecutionMetadataRecord,
-    family: StoredRecordFamily,
-) -> Result<Value, StoredRecordCodecError> {
-    let finite = |bits| {
-        let value = f64::from_bits(bits);
-        value
-            .is_finite()
-            .then_some(value)
-            .ok_or(StoredRecordCodecError::Malformed { family })
-    };
-    Ok(serde_json::json!({
-        "executionId":value.execution_id,
-        "workflowName":value.workflow_name,
-        "status":value.status.as_str(),
-        "worktreePath":value.worktree_path,
-        "currentNode":value.current_node,
-        "createdFrom":value.created_from.as_public_value(),
-        "startedAt":finite(value.started_at_bits)?,
-        "updatedAt":finite(value.updated_at_bits)?,
-        "completedAt":value.completed_at_bits.map(finite).transpose()?,
-        "errorReason":value.error_reason,
-        "interruptionReason":value.interruption_reason.map(|value| value.as_str()),
-        "resumeFromNode":value.resume_from_node,
-        "totalTokenUsage":{
-            "inputTokens":value.total_token_usage.input_tokens,
-            "outputTokens":value.total_token_usage.output_tokens,
-        },
-    }))
-}
-
-fn decode_workflow_execution(
-    value: &Value,
-    family: StoredRecordFamily,
-) -> Result<WorkflowExecutionMetadataRecord, StoredRecordCodecError> {
-    let object = value
-        .as_object()
-        .ok_or(StoredRecordCodecError::Malformed { family })?;
-    let status = match required_text(object, family, "status")? {
-        "running" => ExecutionStatus::Running,
-        #[cfg(test)]
-        "waiting_approval" => ExecutionStatus::WaitingApproval,
-        "completed" => ExecutionStatus::Completed,
-        "aborted" => ExecutionStatus::Aborted,
-        #[cfg(test)]
-        "interrupted" => ExecutionStatus::Interrupted,
-        other => {
-            return Err(StoredRecordCodecError::Incompatible {
-                family,
-                schema: format!("workflow_status.{other}"),
-            })
-        }
-    };
-    let created_from = match required_text(object, family, "createdFrom")? {
-        "desktop_ui" | "desktop-ui" => ExecutionOrigin::DesktopUi,
-        "cli" => ExecutionOrigin::Cli,
-        "agent" => ExecutionOrigin::Agent,
-        "api" => ExecutionOrigin::Api,
-        other => {
-            return Err(StoredRecordCodecError::Incompatible {
-                family,
-                schema: format!("workflow_origin.{other}"),
-            })
-        }
-    };
-    let finite = |field: &'static str| {
-        object
-            .get(field)
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite())
-            .map(f64::to_bits)
-            .ok_or(StoredRecordCodecError::MissingReference { family, field })
-    };
-    let usage = object
-        .get("totalTokenUsage")
-        .and_then(Value::as_object)
-        .ok_or(StoredRecordCodecError::MissingReference {
-            family,
-            field: "totalTokenUsage",
-        })?;
-    Ok(WorkflowExecutionMetadataRecord {
-        execution_id: required_text(object, family, "executionId")?.to_string(),
-        workflow_name: required_text(object, family, "workflowName")?.to_string(),
-        status,
-        worktree_path: required_text(object, family, "worktreePath")?.to_string(),
-        current_node: optional_string(object, "currentNode"),
-        created_from,
-        started_at_bits: finite("startedAt")?,
-        updated_at_bits: finite("updatedAt")?,
-        completed_at_bits: object
-            .get("completedAt")
-            .filter(|value| !value.is_null())
-            .map(|_| finite("completedAt"))
-            .transpose()?,
-        error_reason: optional_string(object, "errorReason"),
-        interruption_reason: object
-            .get("interruptionReason")
-            .and_then(Value::as_str)
-            .map(|value| {
-                ExecutionInterruptionReason::from_reason(value).ok_or_else(|| {
-                    StoredRecordCodecError::Incompatible {
-                        family,
-                        schema: format!("workflow_interruption.{value}"),
-                    }
-                })
-            })
-            .transpose()?,
-        resume_from_node: optional_string(object, "resumeFromNode"),
-        total_token_usage: WorkflowTokenUsage {
-            input_tokens: required_u64(usage, family, "inputTokens")?,
-            output_tokens: required_u64(usage, family, "outputTokens")?,
-        },
-    })
-}
-
 fn encode_obligation(value: &ObligationRecord) -> Result<Value, StoredRecordCodecError> {
     match value {
         ObligationRecord::WorkflowShutdown {
@@ -706,10 +588,6 @@ fn encode_obligation(value: &ObligationRecord) -> Result<Value, StoredRecordCode
             "execution_id":execution_id,
             "state":obligation_state_label(*state),
         })),
-        ObligationRecord::WorkflowExecution { execution } => Ok(serde_json::json!({
-            "schema":"workflow_execution_projection_v1",
-            "execution":encode_workflow_execution(execution, StoredRecordFamily::Obligation)?,
-        })),
     }
 }
 
@@ -724,17 +602,6 @@ fn decode_obligation(
             owner_revision: required_i64(object, family, "owner_revision")?,
             execution_id: required_text(object, family, "execution_id")?.to_string(),
             state: decode_obligation_state(object, family)?,
-        }),
-        "workflow_execution_projection_v1" => Ok(ObligationRecord::WorkflowExecution {
-            execution: decode_workflow_execution(
-                object
-                    .get("execution")
-                    .ok_or(StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "execution",
-                    })?,
-                family,
-            )?,
         }),
         _ => unreachable!("schema was validated"),
     }

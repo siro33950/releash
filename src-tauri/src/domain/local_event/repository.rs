@@ -68,13 +68,4 @@ pub trait LocalEventTransactionRepository: Send + Sync {
         &self,
         request: LocalEventQuery,
     ) -> Result<LocalEventQueryResult, LocalEventQueryError>;
-
-    /// Synchronous facade for established synchronous application ports.
-    ///
-    /// Implementations dispatch onto an existing bounded reader pool. A call
-    /// must not create a thread, async runtime, or database connection.
-    fn query_blocking(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError>;
 }

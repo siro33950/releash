@@ -5,8 +5,8 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
-    AgentSessionMutationOutcome, AgentSessionOrigin, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionMutationOutcome, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    ManagedPtyPresence,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -30,7 +30,8 @@ pub(crate) struct AgentSessionCreateRequest {
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
-    pub(crate) origin: AgentSessionOrigin,
+    pub(crate) tree_parent:
+        Option<crate::domain::agent_session::aggregates::AgentSessionTreeParent>,
     pub(crate) admit_initial_instruction: bool,
 }
 
@@ -74,12 +75,17 @@ impl AgentSessionUsecase {
         workspace: WorkspaceIdentity,
         worktree_path: &str,
         provider: ProviderKind,
-        origin: AgentSessionOrigin,
+        tree_parent: Option<crate::domain::agent_session::aggregates::AgentSessionTreeParent>,
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionUsecaseError> {
-        let session =
-            AgentSession::create(agent_session_id, workspace, worktree_path, provider, origin)
-                .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
+        let session = AgentSession::create(
+            agent_session_id,
+            workspace,
+            worktree_path,
+            provider,
+            tree_parent,
+        )
+        .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         self.repository
             .create(session, caller_request_id)
             .await
@@ -97,7 +103,7 @@ impl AgentSessionUsecase {
             request.workspace,
             &request.worktree_path,
             request.provider,
-            request.origin,
+            request.tree_parent,
         )
         .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         if request.admit_initial_instruction {
@@ -275,22 +281,6 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn rollback_workflow_launch(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<(), AgentSessionUsecaseError> {
-        let session = self.required(agent_session_id).await?;
-        let authorization = session
-            .session()
-            .authorize_workflow_launch_rollback()
-            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
-        self.repository
-            .remove(session, authorization, caller_request_id)
-            .await
-            .map_err(map_repository_error)
-    }
-
     pub(crate) async fn admit_initial_instruction(
         &self,
         agent_session_id: &str,
@@ -332,9 +322,7 @@ impl AgentSessionUsecase {
 
 fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionUsecaseError {
     match error {
-        AgentSessionRepositoryError::AlreadyExists | AgentSessionRepositoryError::Conflict => {
-            AgentSessionUsecaseError::Conflict
-        }
+        AgentSessionRepositoryError::Conflict => AgentSessionUsecaseError::Conflict,
         AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id } => {
             AgentSessionUsecaseError::ProviderSessionAlreadyOwned { agent_session_id }
         }

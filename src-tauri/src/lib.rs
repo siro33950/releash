@@ -735,8 +735,7 @@ pub fn run() {
             let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
-                        repository: projected_local_event_repository.clone(),
-                        installation_id: local_event_store.installation_id().to_string(),
+                        store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
                         provider_executable_probe: Arc::new(
@@ -897,7 +896,7 @@ pub fn run() {
                         local_event_store.clone(),
                     );
                 let workflow_usecase = Arc::new(workflow_usecase);
-                app.manage(workspace_query_service);
+                app.manage(workspace_query_service.clone());
                 let notion_usecase = Arc::new(usecase::notion::usecase::NotionUsecase::new(
                     notion_config_repository.clone(),
                     notion_api_gateway.clone(),
@@ -939,6 +938,10 @@ pub fn run() {
                         repository_usecase: repository_usecase.clone(),
                         app_config: config_repository.clone(),
                         data_dir: Some(data_dir.clone()),
+                        workspace_query: app
+                            .state::<Arc<dyn usecase::workspace_tree::WorkspaceQueryService>>()
+                            .inner()
+                            .clone(),
                         local_event_repository: projected_local_event_repository.clone(),
                         local_event_installation_id: local_event_store
                             .installation_id()

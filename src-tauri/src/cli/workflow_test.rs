@@ -1,6 +1,6 @@
 use super::super::common::test_support::{
-    append_workflow_event, execution_started_event, initialize_canonical_store, make_execution,
-    test_uuid, write_execution_file,
+    append_workflow_events, execution_started_event, initialize_canonical_store, make_execution,
+    root_node_started_event, test_uuid, write_execution_file,
 };
 use super::super::Cli;
 use super::*;
@@ -13,9 +13,12 @@ fn seed_execution(data_dir: &Path, execution_id: &str) {
         data_dir,
         &make_execution(execution_id, "/repo", ExecutionStatus::Running, 100.0),
     );
-    append_workflow_event(
+    append_workflow_events(
         data_dir,
-        &execution_started_event(execution_id, "wf", "/repo"),
+        &[
+            execution_started_event(execution_id, "wf", "/repo"),
+            root_node_started_event(execution_id, "ne-main-1", "main", 100.0),
+        ],
     );
 }
 

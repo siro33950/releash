@@ -72,7 +72,7 @@ pub enum WorkflowEvent {
         node_execution_id: String,
         timestamp: f64,
     },
-    CommandPrepared {
+    CommandSpawned {
         execution_id: String,
         node_execution_id: String,
         display_command: String,

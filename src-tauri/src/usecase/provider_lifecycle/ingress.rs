@@ -174,15 +174,14 @@ impl ProviderLifecycleIngressUsecase {
                 .await
                 .map_err(map_session_error)?
                 .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
-            let origin = session.session().origin();
-            if let (Some(workflow_execution_id), Some(node_execution_id)) =
-                (origin.workflow_execution_id(), origin.node_execution_id())
-            {
+            if let Some(tree_parent) = session.session().tree_parent().cloned() {
+                let workflow_execution_id = tree_parent.tree_id;
+                let node_execution_id = tree_parent.node_execution_id;
                 let transaction = self.workflow_stop_transaction.clone();
                 let command = ProviderWorkflowStopCommand {
                     agent_session_id,
-                    workflow_execution_id: workflow_execution_id.to_string(),
-                    node_execution_id: node_execution_id.to_string(),
+                    workflow_execution_id,
+                    node_execution_id,
                     binding_id,
                 };
                 return self
@@ -340,9 +339,7 @@ fn map_session_repository_error(
     error: AgentSessionRepositoryError,
 ) -> ProviderLifecycleIngressUsecaseError {
     match error {
-        AgentSessionRepositoryError::AlreadyExists | AgentSessionRepositoryError::Conflict => {
-            ProviderLifecycleIngressUsecaseError::Conflict
-        }
+        AgentSessionRepositoryError::Conflict => ProviderLifecycleIngressUsecaseError::Conflict,
         AgentSessionRepositoryError::ProviderSessionAlreadyOwned { .. } => {
             ProviderLifecycleIngressUsecaseError::Conflict
         }

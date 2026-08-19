@@ -177,10 +177,6 @@ impl LocalEventReadStore {
         }))
     }
 
-    pub(crate) fn installation_id(&self) -> &str {
-        &self.installation_id
-    }
-
     async fn read<T, F>(&self, operation: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
@@ -211,6 +207,11 @@ impl LocalEventReadStore {
                     uuid::Uuid::new_v4().to_string(),
                 ),
             })?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn installation_id(&self) -> &str {
+        &self.installation_id
     }
 
     pub(crate) fn submit_indexed_query_blocking<T, F>(
@@ -351,16 +352,6 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
     ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
         self.read(move |connection, context| run_query(connection, context, &request))
             .await
-    }
-
-    fn query_blocking(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
-        let context = Arc::clone(&self.query_context);
-        self.submit_indexed_query_blocking(move |connection| {
-            run_query(connection, &context, &request)
-        })
     }
 }
 

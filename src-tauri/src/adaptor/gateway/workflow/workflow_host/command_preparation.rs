@@ -31,24 +31,15 @@ pub(super) fn command_execution_input_is_current(
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn commit_command_prepared<R: tauri::Runtime>(
+    pub(super) async fn commit_command_spawned<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         input: &CommandExecutionInput,
+        display_command: String,
     ) -> Result<bool, WorkflowRuntimeError> {
-        let raw_command = input.raw_command.as_deref().ok_or_else(|| {
-            WorkflowRuntimeError::InvalidState(format!(
-                "raw command for node execution '{}' is unavailable",
-                input.node_execution_id
-            ))
-        })?;
-        let secrets = secret_source::collect_configured_secret_values(app);
-        let display_command = workflow_secret_masker::mask_sensitive_text(raw_command, &secrets);
         let timestamp = current_timestamp();
 
-        // Keep validation, runtime projection mutation, and the required append under the same
-        // execution lock. A concurrent stop can therefore either win before preparation (no
-        // event and no spawn) or after the durable CommandPrepared fact.
+        // spawn 成功後の実在する副作用だけを事実として追記する。
         let (snapshot, worktree_path) = {
             let mut executions = self.executions.lock().await;
             let Some(execution) = executions.get_mut(&input.execution_id) else {
@@ -81,7 +72,7 @@ impl WorkflowRuntimeHost {
                 timestamp,
             );
             let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
-            let event = WorkflowEvent::CommandPrepared {
+            let event = WorkflowEvent::CommandSpawned {
                 execution_id: input.execution_id.clone(),
                 node_execution_id: input.node_execution_id.clone(),
                 display_command,
@@ -90,7 +81,7 @@ impl WorkflowRuntimeHost {
             if let Err(error) = self.write_log_required_batch(app, &[event]) {
                 *execution = snapshot_before;
                 return Err(WorkflowRuntimeError::SessionStore(format!(
-                    "command prepared event append failed: {error}"
+                    "command spawned event append failed: {error}"
                 )));
             }
             (snapshot, execution.worktree_path.clone())

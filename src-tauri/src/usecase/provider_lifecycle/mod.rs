@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
@@ -267,6 +267,40 @@ impl ProviderLifecycleUsecase {
             self.cleanup_empty_slot(&slot_id, &live)?;
             if result == ProviderLifecycleIngressResult::Applied {
                 released += 1;
+            }
+        }
+        if released == 0 {
+            let historical = self.events.load_scope(scope).await?;
+            let mut active_bindings = HashSet::new();
+            for scoped_event in historical {
+                let (_, event) = scoped_event.into_parts();
+                match event {
+                    ProviderLifecycleEvent::BindingArmed { binding_id, .. } => {
+                        active_bindings.insert(binding_id);
+                    }
+                    ProviderLifecycleEvent::BindingExpired { binding_id } => {
+                        active_bindings.remove(&binding_id);
+                    }
+                    _ => {}
+                }
+            }
+            if !active_bindings.is_empty() {
+                released = active_bindings.len();
+                let mut active_bindings = active_bindings.into_iter().collect::<Vec<_>>();
+                active_bindings.sort();
+                self.events
+                    .append(
+                        active_bindings
+                            .into_iter()
+                            .map(|binding_id| {
+                                ScopedProviderLifecycleEvent::new(
+                                    scope.clone(),
+                                    ProviderLifecycleEvent::BindingExpired { binding_id },
+                                )
+                            })
+                            .collect(),
+                    )
+                    .await?;
             }
         }
         Ok(released)

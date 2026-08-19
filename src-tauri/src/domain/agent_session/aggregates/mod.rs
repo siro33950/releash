@@ -10,8 +10,8 @@ mod provider_registry_tests;
 pub(crate) use agent_session::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
     AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionOperations, AgentSessionOrigin,
-    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionRemovalAuthorization,
+    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
+    AgentSessionRecoveryResult, AgentSessionRemovalAuthorization, AgentSessionTreeParent,
     ManagedPtyPresence,
 };
 #[cfg(test)]

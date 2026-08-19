@@ -300,10 +300,12 @@ mod tests {
             ))
         }
 
-        async fn load_persisted_events(
+        async fn approval_persisted(
             &self,
             _execution_id: &str,
-        ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
+            _node_name: &str,
+            _node_execution_id: Option<&str>,
+        ) -> Result<bool, WorkflowError> {
             Err(WorkflowError::external(
                 "control plane is not used by this test",
             ))

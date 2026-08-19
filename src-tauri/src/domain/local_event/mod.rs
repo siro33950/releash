@@ -39,30 +39,26 @@ pub use mutation::{
     CallerOperationKey, LocalStateMutation, ObligationMutation, OperationBindingMutation,
     OperationKind, OperationRecordMutation, PendingIndexEntry, PendingPartition,
     RecoveryActionMutation, RevisionGuard, SessionProjectionMutation,
-    SessionProjectionRemovalMutation, ShutdownDetailsCompactionMutation, ShutdownDetailsState,
-    ShutdownLatestPointerMutation, ShutdownPlanKey, ShutdownPlanMutation,
-    ShutdownRecoverySnapshotMutation, ShutdownTargetMutation,
-    WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+    ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
+    ShutdownPlanKey, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
+    ShutdownTargetMutation,
 };
 pub use operation_identity::{constant_time_eq_32, validate_operation_identity};
 pub use operation_record::validate_operation_record;
 pub use query::{
-    AgentSessionOriginKind, AgentSessionProjectionPageView, CallerAttemptView,
-    CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
-    ObligationView, OperationBindingSummaryView, OperationBindingView, OperationRecordView,
-    PendingIndexEntryView, PendingObligationView, PendingRecoveryPageView,
+    CallerAttemptView, CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, ObligationView, OperationBindingSummaryView, OperationBindingView,
+    OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingRecoveryPageView,
     PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView, SessionProjectionView,
     ShutdownPlanPageView, ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView,
 };
 pub use record::{
-    AgentSessionLifecycleRecord, AgentSessionOriginRecord, AgentSessionProjectionRecord,
     AgentSessionProviderRecord, ObligationRecord, ObligationStateRecord, OperationReceiptRecord,
     OperationStatusRecord, OperationStatusValue, ProviderHookHealthProjectionRecord,
     ProviderSessionOwnershipProjectionRecord, RecoveryAttemptRecord, RecoveryResourceViewRecord,
     RecoveryResultOutcomeRecord, RecoveryResultRecord, SessionProjectionRecord,
     ShutdownOutcomeRecord, ShutdownPlanRecord, ShutdownTargetKindRecord, ShutdownTargetRecord,
     ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord, WorkflowExecutionMetadataRecord,
-    WorkflowExecutionProjectionRecord, WorkflowWorktreeOwnerRecord,
 };
 pub use recovery::{RecoveryActionKind, RecoveryResultClassification};
 pub use repository::LocalEventTransactionRepository;

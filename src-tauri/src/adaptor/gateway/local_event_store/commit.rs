@@ -5,19 +5,14 @@
 //! start of COMMIT and the completed fresh readback is `OutcomeUnknown` for
 //! the same commit identity.
 
-use std::collections::HashSet;
-
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
-use crate::adaptor::gateway::local_event_store::indexed_projection_codec::{
-    indexed_execution_node_row, indexed_execution_row, indexed_session_public_columns,
-    IndexedExecutionNodeRow, IndexedExecutionRow, EXECUTION_NODE_RECORD_SCHEMA,
-    EXECUTION_RECORD_SCHEMA,
-};
+use crate::adaptor::gateway::local_event_store::indexed_projection_codec::indexed_session_public_columns;
+use crate::adaptor::gateway::local_event_store::node_events;
 use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_update_v1;
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
@@ -29,13 +24,12 @@ use crate::domain::local_event::{
     CommitOperationKind, CommitResolution, CommittedBatch, CommittedStreamHead, IdempotencyBinding,
     LocalEventQueryError, LocalStateMutation, ObligationMutation, ObligationRecord,
     OperationBindingMutation, OperationRecordMutation, RecoveryActionMutation,
-    RecoveryAttemptRecord, RecoveryResourceViewRecord, RecoveryResultRecord, Revision,
-    RevisionGuard, SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
+    RecoveryAttemptRecord, RecoveryResourceViewRecord, RecoveryResultRecord, RevisionGuard,
+    SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
     ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation, ShutdownPlanMutation,
     ShutdownRecoverySnapshotMutation, ShutdownTargetMutation, ShutdownTargetRecord, StreamId,
-    StreamVersion, WorkflowExecutionNodeProjectionMutation, WorkflowExecutionProjectionMutation,
+    StreamVersion,
 };
-use crate::domain::workspace_tree::WorkspaceTree;
 
 use crate::adaptor::gateway::local_event_store::envelope::shutdown_phase_to_label;
 
@@ -172,10 +166,10 @@ fn application_quit_progress_is_bound_to_current_plan(
     let mut plan_targets: Vec<(ShutdownTargetRecord, i64)> = Vec::new();
     let mut workflow_shutdown_obligation_id = None;
     if let [LocalStateMutation::Obligation(obligation)] = batch.state_mutations.as_slice() {
-        if let ObligationRecord::WorkflowShutdown {
-            effect_identity, ..
-        } = &obligation.record
         {
+            let ObligationRecord::WorkflowShutdown {
+                effect_identity, ..
+            } = &obligation.record;
             let mut statement = connection
                 .prepare(
                     "SELECT detail, revision FROM shutdown_targets
@@ -656,6 +650,15 @@ fn execute_in_transaction(
     if existing_commit.is_some() {
         return Err(CommitBatchError::PayloadConflict);
     }
+    for event in &prepared.node_events {
+        if event.expect_tree_absent
+            && node_events::first_row_of_tree(connection, &event.row.tree_id)
+                .map_err(|error| storage_unavailable(&error))?
+                .is_some()
+        {
+            return Err(CommitBatchError::PayloadConflict);
+        }
+    }
 
     // A current shutdown plan is the global admission authority. Saved
     // idempotent results above remain readable/replayable, while every new
@@ -882,6 +885,11 @@ fn execute_in_transaction(
         apply_mutation(connection, commit_id, mutation)?;
         fail_after_participant_write_if_armed(fault)?;
     }
+    for event in &prepared.node_events {
+        node_events::append_node_event(connection, &event.row, event.timestamp_ms)
+            .map_err(|error| storage_unavailable(&error))?;
+        fail_after_participant_write_if_armed(fault)?;
+    }
 
     // Step 7: verify counts / range and seal.
     let sequence_range = if event_count > 0 {
@@ -1049,23 +1057,9 @@ fn validate_one_guard(
             )?;
             check_guard(existing, m.expected)
         }
-        LocalStateMutation::SessionProjectionRemoval(m) => {
-            let existing = read_revision(
-                connection,
-                "SELECT revision FROM session_projection WHERE session_id = ?1",
-                params![m.session_id],
-            )?;
-            check_guard(existing, m.expected)
-        }
         LocalStateMutation::AgentSessionRemoval(m) => {
-            let current_head = read_revision(
-                connection,
-                "SELECT head FROM stream_heads WHERE stream_id = ?1",
-                params![m.agent_session_stream.as_str()],
-            )?
-            .ok_or_else(|| conflict(0))?;
-            if current_head.checked_add(1) != Some(m.retained_tombstone_sequence.value()) {
-                return Err(conflict(current_head));
+            if m.node_event_tree_id.trim().is_empty() {
+                return Err(CommitBatchError::PayloadConflict);
             }
             match (
                 &m.ownership_projection_id,
@@ -1207,80 +1201,7 @@ fn validate_one_guard(
             }
         }
         LocalStateMutation::ShutdownLatestPointer(m) => validate_shutdown_pointer(connection, m),
-        LocalStateMutation::WorkflowExecutionProjection(m) => {
-            validate_workflow_execution_projection(connection, m)
-        }
-        LocalStateMutation::WorkflowExecutionNodeProjection(m) => {
-            validate_workflow_execution_node_projection(connection, m)
-        }
     }
-}
-
-fn valid_projection_revision(expected: RevisionGuard, revision: Revision) -> bool {
-    expected.inserts_zero(revision) || expected.advances_to(revision)
-}
-
-fn validate_workflow_execution_projection(
-    connection: &Connection,
-    mutation: &WorkflowExecutionProjectionMutation,
-) -> Result<(), CommitBatchError> {
-    if !valid_projection_revision(mutation.expected, mutation.revision) {
-        return Err(CommitBatchError::PayloadConflict);
-    }
-    let execution_id = match &mutation.projection {
-        crate::domain::local_event::WorkflowExecutionProjectionRecord::Present(execution) => {
-            indexed_execution_row(execution).map_err(|_| CommitBatchError::PayloadConflict)?;
-            execution.execution_id.as_str()
-        }
-        crate::domain::local_event::WorkflowExecutionProjectionRecord::Deleted { execution_id } => {
-            if execution_id.is_empty() {
-                return Err(CommitBatchError::PayloadConflict);
-            }
-            execution_id
-        }
-    };
-    let existing = read_revision(
-        connection,
-        "SELECT source_revision FROM workflow_executions WHERE execution_id = ?1",
-        params![execution_id],
-    )?;
-    check_guard(existing, mutation.expected)
-}
-
-fn validate_workflow_execution_node_projection(
-    connection: &Connection,
-    mutation: &WorkflowExecutionNodeProjectionMutation,
-) -> Result<(), CommitBatchError> {
-    if mutation.execution_id.is_empty()
-        || !valid_projection_revision(mutation.expected, mutation.revision)
-    {
-        return Err(CommitBatchError::PayloadConflict);
-    }
-    let mut node_ids = HashSet::new();
-    for node in &mutation.nodes {
-        if !node_ids.insert(node.id.as_str()) {
-            return Err(CommitBatchError::PayloadConflict);
-        }
-        indexed_execution_node_row(&mutation.execution_id, node)
-            .map_err(|_| CommitBatchError::PayloadConflict)?;
-    }
-    if !mutation.nodes.is_empty() {
-        let restored = WorkspaceTree::restore("/workflow-execution", mutation.nodes.clone())
-            .map_err(|_| CommitBatchError::PayloadConflict)?;
-        if restored
-            .nodes()
-            .iter()
-            .any(|node| node.execution_id.as_deref() != Some(mutation.execution_id.as_str()))
-        {
-            return Err(CommitBatchError::PayloadConflict);
-        }
-    }
-    let existing = read_revision(
-        connection,
-        "SELECT source_revision FROM workflow_executions WHERE execution_id = ?1",
-        params![mutation.execution_id],
-    )?;
-    check_guard(existing, mutation.expected)
 }
 
 fn validate_operation_binding(
@@ -1417,18 +1338,8 @@ fn apply_mutation(
         LocalStateMutation::SessionProjection(m) => {
             apply_session_projection(connection, commit_id, m)
         }
-        LocalStateMutation::SessionProjectionRemoval(m) => run(connection.execute(
-            "DELETE FROM session_projection WHERE session_id = ?1",
-            params![m.session_id],
-        )),
         LocalStateMutation::AgentSessionRemoval(m) => {
-            run(connection.execute(
-                "DELETE FROM events WHERE stream_id = ?1 AND stream_sequence < ?2",
-                params![
-                    m.agent_session_stream.as_str(),
-                    m.retained_tombstone_sequence.value()
-                ],
-            ))?;
+            run(node_events::delete_tree(connection, &m.node_event_tree_id))?;
             if let (Some(projection_id), Some(stream), Some(_)) = (
                 &m.ownership_projection_id,
                 &m.ownership_stream,
@@ -1502,122 +1413,7 @@ fn apply_mutation(
             apply_shutdown_details_compaction(connection, commit_id, m)
         }
         LocalStateMutation::ShutdownLatestPointer(m) => apply_shutdown_pointer(connection, m),
-        LocalStateMutation::WorkflowExecutionProjection(m) => {
-            apply_workflow_execution_projection(connection, commit_id, m)
-        }
-        LocalStateMutation::WorkflowExecutionNodeProjection(m) => {
-            apply_workflow_execution_node_projection(connection, commit_id, m)
-        }
     }
-}
-
-fn apply_workflow_execution_projection(
-    connection: &Connection,
-    commit_id: &str,
-    mutation: &WorkflowExecutionProjectionMutation,
-) -> Result<(), CommitBatchError> {
-    match &mutation.projection {
-        crate::domain::local_event::WorkflowExecutionProjectionRecord::Present(execution) => {
-            let row =
-                indexed_execution_row(execution).map_err(|_| CommitBatchError::PayloadConflict)?;
-            run(upsert_indexed_execution_row(
-                connection,
-                commit_id,
-                mutation.revision.value(),
-                row,
-            ))
-        }
-        crate::domain::local_event::WorkflowExecutionProjectionRecord::Deleted { execution_id } => {
-            run(connection.execute(
-                "DELETE FROM workflow_executions WHERE execution_id = ?1",
-                params![execution_id],
-            ))
-        }
-    }
-}
-
-fn apply_workflow_execution_node_projection(
-    connection: &Connection,
-    commit_id: &str,
-    mutation: &WorkflowExecutionNodeProjectionMutation,
-) -> Result<(), CommitBatchError> {
-    run(connection.execute(
-        "DELETE FROM workflow_execution_nodes WHERE execution_id = ?1",
-        params![mutation.execution_id],
-    ))?;
-    for node in &mutation.nodes {
-        let row = indexed_execution_node_row(&mutation.execution_id, node)
-            .map_err(|_| CommitBatchError::PayloadConflict)?;
-        run(insert_indexed_execution_node_row(
-            connection,
-            commit_id,
-            mutation.revision.value(),
-            row,
-        ))?;
-    }
-    Ok(())
-}
-
-pub(super) fn upsert_indexed_execution_row(
-    connection: &Connection,
-    commit_id: &str,
-    source_revision: i64,
-    row: IndexedExecutionRow,
-) -> Result<usize, rusqlite::Error> {
-    connection.execute(
-        "INSERT INTO workflow_executions
-            (execution_id, workspace_identity, status, list_kind, sort_at_bits,
-             record_schema, record, source_revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT (execution_id) DO UPDATE SET
-            workspace_identity = excluded.workspace_identity,
-            status = excluded.status,
-            list_kind = excluded.list_kind,
-            sort_at_bits = excluded.sort_at_bits,
-            record_schema = excluded.record_schema,
-            record = excluded.record,
-            source_revision = excluded.source_revision,
-            commit_id = excluded.commit_id",
-        params![
-            row.execution_id,
-            row.workspace_identity,
-            row.status,
-            row.list_kind,
-            row.sort_at_bits,
-            EXECUTION_RECORD_SCHEMA,
-            row.record,
-            source_revision,
-            commit_id
-        ],
-    )
-}
-
-pub(super) fn insert_indexed_execution_node_row(
-    connection: &Connection,
-    commit_id: &str,
-    source_revision: i64,
-    row: IndexedExecutionNodeRow,
-) -> Result<usize, rusqlite::Error> {
-    connection.execute(
-        "INSERT INTO workflow_execution_nodes
-            (execution_id, node_id, parent_id, sibling_order, session_id,
-             node_execution_id, record_schema, tree_record, detail_record,
-             source_revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            row.execution_id,
-            row.node_id,
-            row.parent_id,
-            row.sibling_order,
-            row.session_id,
-            row.node_execution_id,
-            EXECUTION_NODE_RECORD_SCHEMA,
-            row.tree_record,
-            row.detail_record,
-            source_revision,
-            commit_id
-        ],
-    )
 }
 
 fn run(result: Result<usize, rusqlite::Error>) -> Result<(), CommitBatchError> {

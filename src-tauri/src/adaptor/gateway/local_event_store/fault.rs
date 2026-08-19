@@ -79,6 +79,12 @@ impl FaultInjector {
             .is_ok_and(|previous| previous == 1)
     }
 
+    #[cfg(test)]
+    pub fn arm_fail_after_participant_write(&self, participant: usize) {
+        self.fail_after_participant_write
+            .store(participant, Ordering::SeqCst);
+    }
+
     /// Storage failure at COMMIT boundary before COMMIT executes.
     #[cfg(test)]
     pub fn arm_fail_before_commit(&self) {

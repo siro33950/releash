@@ -3,8 +3,7 @@ use std::sync::{Arc, Mutex};
 use super::{
     AgentSessionActivityDto, AgentSessionGarbageCollectionOutcome,
     AgentSessionGarbageCollectionPort, AgentSessionItemDto, AgentSessionLifecycleDto,
-    AgentSessionLifecycleUsecaseError, AgentSessionListPageDto, AgentSessionListRequest,
-    AgentSessionOperationsDto, AgentSessionOriginDto, AgentSessionProviderDto,
+    AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto, AgentSessionProviderDto,
     AgentSessionQueryError, AgentSessionQueryService, AgentSessionReadUsecase,
 };
 use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
@@ -70,24 +69,6 @@ impl AgentSessionQueryService for MutableSessionQuery {
             .find(|item| item.id == agent_session_id)
             .cloned())
     }
-
-    async fn list(
-        &self,
-        request: AgentSessionListRequest,
-    ) -> Result<AgentSessionListPageDto, AgentSessionQueryError> {
-        Ok(AgentSessionListPageDto {
-            items: self
-                .items
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|item| item.workspace_identity == request.workspace.as_str())
-                .take(request.limit)
-                .cloned()
-                .collect(),
-            next_after_session_id: None,
-        })
-    }
 }
 
 struct RemovingGarbageCollector {
@@ -123,7 +104,7 @@ fn item(id: &str) -> AgentSessionItemDto {
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo/worktree".to_string(),
         provider: AgentSessionProviderDto::Claude,
-        origin: AgentSessionOriginDto::Standalone,
+        tree_parent: None,
         lifecycle: AgentSessionLifecycleDto::Open,
         provider_session_id: None,
         transcript_ref: None,
@@ -135,48 +116,6 @@ fn item(id: &str) -> AgentSessionItemDto {
         activity: AgentSessionActivityDto::Idle,
         last_exit_abnormal: false,
     }
-}
-
-#[tokio::test]
-async fn test_agent_session_read一覧取得時にgc済みsessionを返さない() {
-    let items = Arc::new(Mutex::new(vec![item("orphan"), item("live")]));
-    let query = Arc::new(MutableSessionQuery {
-        items: items.clone(),
-    });
-    let collector = Arc::new(RemovingGarbageCollector {
-        items,
-        calls: Mutex::new(Vec::new()),
-    });
-    let usecase = AgentSessionReadUsecase::new(
-        query,
-        collector.clone(),
-        Arc::new(FixedActivityTerminal::new(TerminalActivity::Idle)),
-    );
-
-    let page = usecase
-        .list(AgentSessionListRequest {
-            workspace: WorkspaceIdentity::new("/repo"),
-            lifecycle: None,
-            origin: None,
-            limit: 100,
-            after_session_id: None,
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(
-        page.items
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["live"]
-    );
-    assert!(collector
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|id| id == "orphan"));
 }
 
 #[tokio::test]
@@ -216,20 +155,11 @@ async fn test_agent_session_read_open_sessionはterminalのactivity分類を反�
     let terminal = Arc::new(FixedActivityTerminal::new(TerminalActivity::Running));
     let usecase = AgentSessionReadUsecase::new(query, collector, terminal.clone());
 
-    let page = usecase
-        .list(AgentSessionListRequest {
-            workspace: WorkspaceIdentity::new("/repo"),
-            lifecycle: None,
-            origin: None,
-            limit: 100,
-            after_session_id: None,
-        })
-        .await
-        .unwrap();
-
+    let open = usecase.get("open-running").await.unwrap().unwrap();
+    let paused = usecase.get("paused-idle").await.unwrap().unwrap();
     assert_eq!(
-        page.items
-            .iter()
+        [&open, &paused]
+            .into_iter()
             .map(|item| (item.id.as_str(), item.activity, item.last_exit_abnormal))
             .collect::<Vec<_>>(),
         vec![

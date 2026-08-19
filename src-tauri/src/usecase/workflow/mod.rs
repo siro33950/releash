@@ -884,11 +884,6 @@ mod tests {
             Ok(())
         }
 
-        fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
-            self.events.lock().unwrap().extend_from_slice(events);
-            Ok(())
-        }
-
         fn read(
             &self,
             _execution_id: &WorkflowExecutionId,
@@ -1027,16 +1022,6 @@ mod tests {
     }
 
     impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTreeRepository {
-        fn load(
-            &self,
-            _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
-        ) -> Result<
-            Option<crate::domain::workspace_tree::WorkspaceTree>,
-            crate::domain::local_event::LocalEventQueryError,
-        > {
-            Ok(None)
-        }
-
         fn load_node(
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,

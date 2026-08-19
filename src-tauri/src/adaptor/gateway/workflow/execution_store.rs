@@ -22,24 +22,14 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::domain::local_event::{
-    LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
-    ObligationMutation, ObligationRecord, PendingIndexEntry, PendingPartition, QueryCursor,
-    Revision, RevisionGuard, SessionProjectionMutation, SessionProjectionRecord,
-    WorkflowExecutionMetadataRecord, WorkflowExecutionNodeProjectionMutation,
-    WorkflowExecutionProjectionMutation, WorkflowExecutionProjectionRecord,
-    WorkflowWorktreeOwnerRecord,
-};
 use crate::domain::workflow::{
-    ExecutionInterruptionReason, RuntimeExecutionState, TokenUsage,
-    WorkflowExecution as DomainWorkflowExecution,
+    ExecutionInterruptionReason, TokenUsage, WorkflowExecution as DomainWorkflowExecution,
 };
 #[cfg(test)]
 pub(crate) use crate::domain::workflow::{ExecutionListFilter, ExecutionStatusFilter};
 pub(crate) use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, WorkflowExecutionSummary,
 };
-use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
 /// `complete_execution` への入力を terminal status のみに制約する型。
 ///
@@ -91,63 +81,6 @@ pub struct WorkflowExecutionMetadata {
     pub total_token_usage: TokenUsage,
 }
 
-fn valid_event_reconciliation_transition(
-    current: &WorkflowExecutionMetadata,
-    projected: &WorkflowExecutionMetadata,
-) -> bool {
-    let immutable_fields_match = projected.execution_id == current.execution_id
-        && projected.workflow_name == current.workflow_name
-        && projected.worktree_path == current.worktree_path
-        && projected.created_from == current.created_from
-        && projected.started_at == current.started_at;
-    let time_and_usage_are_monotonic = projected.updated_at.is_finite()
-        && projected.updated_at >= current.updated_at
-        && projected.total_token_usage.input_tokens >= current.total_token_usage.input_tokens
-        && projected.total_token_usage.output_tokens >= current.total_token_usage.output_tokens;
-    let source_can_reconcile = current.status.is_active();
-    let target_is_reconciled_checkpoint = match projected.status {
-        ExecutionStatus::Running => {
-            current.status.is_active()
-                && projected.completed_at.is_none()
-                && projected.error_reason.is_none()
-                && projected.interruption_reason.is_none()
-                && projected.resume_from_node.is_none()
-                && projected.current_node.is_some()
-        }
-        #[cfg(test)]
-        ExecutionStatus::WaitingApproval => {
-            current.status.is_active()
-                && projected.completed_at.is_none()
-                && projected.error_reason.is_none()
-                && projected.interruption_reason.is_none()
-                && projected.resume_from_node.is_none()
-                && projected.current_node.is_some()
-        }
-        #[cfg(test)]
-        ExecutionStatus::Interrupted => {
-            projected.completed_at.is_none()
-                && projected.error_reason.is_none()
-                && projected.interruption_reason.is_some()
-                && projected.resume_from_node.is_some()
-        }
-        ExecutionStatus::Completed => {
-            projected.completed_at.is_some()
-                && projected.error_reason.is_none()
-                && projected.interruption_reason.is_none()
-                && projected.resume_from_node.is_none()
-        }
-        ExecutionStatus::Aborted => {
-            projected.completed_at.is_some()
-                && projected.interruption_reason.is_none()
-                && projected.resume_from_node.is_none()
-        }
-    };
-    immutable_fields_match
-        && time_and_usage_are_monotonic
-        && source_can_reconcile
-        && target_is_reconciled_checkpoint
-}
-
 /// Interrupted → Aborted transition の event append 前 in-memory reservation。
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
@@ -180,50 +113,6 @@ impl From<&WorkflowExecutionMetadata> for WorkflowExecutionSummary {
             resume_from_node: execution.resume_from_node.clone(),
             total_token_usage: execution.total_token_usage.clone(),
         }
-    }
-}
-
-pub(crate) fn workflow_execution_record(
-    execution: &WorkflowExecutionMetadata,
-) -> WorkflowExecutionMetadataRecord {
-    WorkflowExecutionMetadataRecord {
-        execution_id: execution.execution_id.clone(),
-        workflow_name: execution.workflow_name.clone(),
-        status: execution.status,
-        worktree_path: crate::domain::workspace_tree::WorkspaceIdentity::new(
-            &execution.worktree_path,
-        )
-        .as_str()
-        .to_string(),
-        current_node: execution.current_node.clone(),
-        created_from: execution.created_from,
-        started_at_bits: execution.started_at.to_bits(),
-        updated_at_bits: execution.updated_at.to_bits(),
-        completed_at_bits: execution.completed_at.map(f64::to_bits),
-        error_reason: execution.error_reason.clone(),
-        interruption_reason: execution.interruption_reason,
-        resume_from_node: execution.resume_from_node.clone(),
-        total_token_usage: execution.total_token_usage.clone(),
-    }
-}
-
-pub(crate) fn workflow_execution_metadata(
-    execution: &WorkflowExecutionMetadataRecord,
-) -> WorkflowExecutionMetadata {
-    WorkflowExecutionMetadata {
-        execution_id: execution.execution_id.clone(),
-        workflow_name: execution.workflow_name.clone(),
-        status: execution.status,
-        worktree_path: execution.worktree_path.clone(),
-        current_node: execution.current_node.clone(),
-        created_from: execution.created_from,
-        started_at: f64::from_bits(execution.started_at_bits),
-        updated_at: f64::from_bits(execution.updated_at_bits),
-        completed_at: execution.completed_at_bits.map(f64::from_bits),
-        error_reason: execution.error_reason.clone(),
-        interruption_reason: execution.interruption_reason,
-        resume_from_node: execution.resume_from_node.clone(),
-        total_token_usage: execution.total_token_usage.clone(),
     }
 }
 
@@ -653,8 +542,9 @@ impl ExecutionStoreInner {
 /// SQLite authority 導入後は filesystem metadata を読まず、projection は authority から再構築する。
 pub struct ExecutionStore {
     inner: Mutex<ExecutionStoreInner>,
+    canonical_query: Option<Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>>,
+    #[cfg(test)]
     data_dir: Mutex<Option<PathBuf>>,
-    authority: Mutex<Option<WorkflowExecutionAuthority>>,
     #[cfg(test)]
     allow_in_memory_without_data_dir: bool,
 }
@@ -707,410 +597,6 @@ impl ExecutionMetadataStore {
     }
 }
 
-#[derive(Clone)]
-struct WorkflowExecutionAuthority {
-    repository: Arc<dyn LocalEventTransactionRepository>,
-    installation_id: String,
-}
-
-#[derive(Clone, Copy)]
-enum WorkflowProjectionMutationExpectation {
-    CreateAbsent,
-    UpdatePresent,
-}
-
-enum WorkflowExecutionAuthorityRead {
-    Absent,
-    Present {
-        metadata: WorkflowExecutionMetadata,
-        revision: Revision,
-    },
-    Deleted {
-        revision: Revision,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum WorkflowProjectionMutationBase {
-    Absent,
-    Present { revision: Revision },
-}
-
-enum WorkflowMetadataTransition<'a> {
-    #[cfg(test)]
-    InterruptedAbort { completed_at: f64 },
-    EventReconciliation {
-        projected: &'a DomainWorkflowExecution,
-    },
-}
-
-pub(crate) fn workflow_worktree_storage_key(worktree_path: &str) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(worktree_path.as_bytes());
-    format!("workflow-worktree:{}", hex::encode(digest))
-}
-
-impl WorkflowExecutionAuthority {
-    fn storage_key(execution_id: &str) -> String {
-        format!("workflow:{execution_id}")
-    }
-
-    async fn load(&self, execution_id: &str) -> Result<WorkflowExecutionAuthorityRead, String> {
-        let result = self
-            .repository
-            .query(LocalEventQuery::SessionProjectionByIdentity {
-                session_id: Self::storage_key(execution_id),
-            })
-            .await
-            .map_err(|error| format!("workflow SQLite projection read failed: {error}"))?;
-        let LocalEventQueryResult::SessionProjectionByIdentity(current) = result else {
-            return Err("workflow SQLite projection returned the wrong result type".to_string());
-        };
-        let Some(current) = current else {
-            return Ok(WorkflowExecutionAuthorityRead::Absent);
-        };
-        match current.projection {
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Deleted {
-                    execution_id: stored_id,
-                },
-            ) if stored_id == execution_id => Ok(WorkflowExecutionAuthorityRead::Deleted {
-                revision: current.revision,
-            }),
-            SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Present(execution),
-            ) if execution.execution_id == execution_id => {
-                Ok(WorkflowExecutionAuthorityRead::Present {
-                    metadata: workflow_execution_metadata(&execution),
-                    revision: current.revision,
-                })
-            }
-            _ => Err("workflow SQLite projection invariant failed".to_string()),
-        }
-    }
-
-    async fn unresolved_recovery_reason(&self, owner: &str) -> Result<Option<String>, String> {
-        crate::domain::workspace_tree::unresolved_recovery_reason(self.repository.as_ref(), owner)
-            .await
-    }
-
-    async fn projection_mutations(
-        &self,
-        execution: &WorkflowExecutionMetadata,
-        base: WorkflowProjectionMutationBase,
-    ) -> Result<Vec<LocalStateMutation>, String> {
-        let (expected, revision) = match base {
-            WorkflowProjectionMutationBase::Absent => (
-                RevisionGuard::Absent,
-                Revision::new(0).expect("zero revision"),
-            ),
-            WorkflowProjectionMutationBase::Present { revision } => (
-                RevisionGuard::Expected(revision),
-                revision
-                    .next()
-                    .ok_or_else(|| "workflow projection revision exhausted".to_string())?,
-            ),
-        };
-        let worktree_key = workflow_worktree_storage_key(&execution.worktree_path);
-        let worktree_current = match self
-            .repository
-            .query(LocalEventQuery::SessionProjectionByIdentity {
-                session_id: worktree_key.clone(),
-            })
-            .await
-            .map_err(|error| format!("workflow worktree owner read failed: {error}"))?
-        {
-            LocalEventQueryResult::SessionProjectionByIdentity(value) => value,
-            _ => return Err("workflow worktree owner returned the wrong result type".to_string()),
-        };
-        if let Some(current) = &worktree_current {
-            let SessionProjectionRecord::WorkflowWorktreeOwner(owner) = &current.projection else {
-                return Err("workflow worktree owner is incompatible".to_string());
-            };
-            if owner.worktree_path != execution.worktree_path {
-                return Err("workflow worktree owner invariant failed".to_string());
-            }
-            if owner.active && owner.execution_id != execution.execution_id {
-                return Err("workflow worktree already has an active execution".to_string());
-            }
-        }
-        let (worktree_expected, worktree_revision) = match worktree_current {
-            Some(current) => (
-                RevisionGuard::Expected(current.revision),
-                current
-                    .revision
-                    .next()
-                    .ok_or_else(|| "workflow worktree owner revision exhausted".to_string())?,
-            ),
-            None => (
-                RevisionGuard::Absent,
-                Revision::new(0).expect("zero revision"),
-            ),
-        };
-        let worktree_projection = WorkflowWorktreeOwnerRecord {
-            worktree_path: execution.worktree_path.clone(),
-            execution_id: execution.execution_id.clone(),
-            active: !execution.status.is_finished(),
-        };
-        let projection = workflow_execution_record(execution);
-        Ok(vec![
-            LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                session_id: Self::storage_key(&execution.execution_id),
-                projection: SessionProjectionRecord::WorkflowExecution(
-                    WorkflowExecutionProjectionRecord::Present(projection.clone()),
-                ),
-                expected,
-                revision,
-            }),
-            LocalStateMutation::Obligation(ObligationMutation {
-                obligation_id: format!("workflow-execution-{}", execution.execution_id),
-                record: ObligationRecord::WorkflowExecution {
-                    execution: workflow_execution_record(execution),
-                },
-                pending: (!execution.status.is_finished()).then(|| PendingIndexEntry {
-                    ordered_key: format!("workflow_execution:{}", execution.execution_id),
-                    owner: "workflow-runtime".to_string(),
-                    partition: PendingPartition::UnownedRuntime,
-                    shutdown_plan: None,
-                }),
-                expected,
-                revision,
-            }),
-            LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                session_id: worktree_key,
-                projection: SessionProjectionRecord::WorkflowWorktreeOwner(worktree_projection),
-                expected: worktree_expected,
-                revision: worktree_revision,
-            }),
-            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
-                projection: WorkflowExecutionProjectionRecord::Present(projection),
-                expected,
-                revision,
-            }),
-        ])
-    }
-
-    async fn deletion_mutations(
-        &self,
-        execution: &WorkflowExecutionMetadata,
-        revision: Revision,
-    ) -> Result<Vec<LocalStateMutation>, String> {
-        let next_revision = revision
-            .next()
-            .ok_or_else(|| "workflow projection revision exhausted".to_string())?;
-        let worktree_key = workflow_worktree_storage_key(&execution.worktree_path);
-        let worktree_current = match self
-            .repository
-            .query(LocalEventQuery::SessionProjectionByIdentity {
-                session_id: worktree_key.clone(),
-            })
-            .await
-            .map_err(|error| format!("workflow worktree owner read failed: {error}"))?
-        {
-            LocalEventQueryResult::SessionProjectionByIdentity(value) => value,
-            _ => return Err("workflow worktree owner returned the wrong result type".to_string()),
-        };
-        let (worktree_expected, worktree_revision) = match &worktree_current {
-            Some(current) => {
-                let SessionProjectionRecord::WorkflowWorktreeOwner(owner) = &current.projection
-                else {
-                    return Err("workflow worktree owner is incompatible".to_string());
-                };
-                if owner.worktree_path != execution.worktree_path
-                    || owner.execution_id != execution.execution_id
-                {
-                    return Err("workflow worktree owner invariant failed".to_string());
-                }
-                (
-                    RevisionGuard::Expected(current.revision),
-                    current
-                        .revision
-                        .next()
-                        .ok_or_else(|| "workflow worktree owner revision exhausted".to_string())?,
-                )
-            }
-            None => (
-                RevisionGuard::Absent,
-                Revision::new(0).expect("zero revision"),
-            ),
-        };
-        Ok(vec![
-            LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                session_id: Self::storage_key(&execution.execution_id),
-                projection: SessionProjectionRecord::WorkflowExecution(
-                    WorkflowExecutionProjectionRecord::Deleted {
-                        execution_id: execution.execution_id.clone(),
-                    },
-                ),
-                expected: RevisionGuard::Expected(revision),
-                revision: next_revision,
-            }),
-            LocalStateMutation::Obligation(ObligationMutation {
-                obligation_id: format!("workflow-execution-{}", execution.execution_id),
-                record: ObligationRecord::WorkflowExecution {
-                    execution: workflow_execution_record(execution),
-                },
-                pending: None,
-                expected: RevisionGuard::Expected(revision),
-                revision: next_revision,
-            }),
-            LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                session_id: worktree_key,
-                projection: SessionProjectionRecord::WorkflowWorktreeOwner(
-                    WorkflowWorktreeOwnerRecord {
-                        worktree_path: execution.worktree_path.clone(),
-                        execution_id: execution.execution_id.clone(),
-                        active: false,
-                    },
-                ),
-                expected: worktree_expected,
-                revision: worktree_revision,
-            }),
-            LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
-                projection: WorkflowExecutionProjectionRecord::Deleted {
-                    execution_id: execution.execution_id.clone(),
-                },
-                expected: RevisionGuard::Expected(revision),
-                revision: next_revision,
-            }),
-        ])
-    }
-
-    async fn list_non_terminal(&self) -> Result<Vec<WorkflowExecutionMetadata>, String> {
-        let mut cursor = None;
-        let mut executions = Vec::new();
-        loop {
-            let result = self
-                .repository
-                .query(LocalEventQuery::PendingRecoveryPage {
-                    limit: 200,
-                    partition: None,
-                    owner: Some("workflow-runtime".to_string()),
-                    ordered_key_prefix: Some("workflow_execution:".to_string()),
-                    shutdown_plan: None,
-                    cursor,
-                })
-                .await
-                .map_err(|error| format!("workflow recovery projection read failed: {error}"))?;
-            let LocalEventQueryResult::PendingRecoveryPage(page) = result else {
-                return Err(
-                    "workflow recovery projection returned the wrong result type".to_string(),
-                );
-            };
-            for stored in page.entries {
-                let ObligationRecord::WorkflowExecution { execution } = &stored.record else {
-                    return Err("pending workflow projection is incompatible".to_string());
-                };
-                let execution = workflow_execution_metadata(execution);
-                if execution.status.is_finished() {
-                    return Err(
-                        "terminal workflow is present in pending recovery index".to_string()
-                    );
-                }
-                executions.push(execution);
-            }
-            let Some(next) = page.next_cursor else {
-                break;
-            };
-            cursor = Some(QueryCursor::from_opaque(next.as_str().to_string()));
-        }
-        Ok(executions)
-    }
-}
-
-#[derive(Deserialize)]
-struct WorkflowExecutionProjectionV1 {
-    schema: String,
-    deleted: bool,
-    #[serde(default)]
-    execution: Option<WorkflowExecutionMetadata>,
-    #[serde(default)]
-    execution_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct WorkflowWorktreeOwnerV1 {
-    schema: String,
-    worktree_path: String,
-    execution_id: String,
-    active: bool,
-}
-
-fn decode_workflow_projection(raw: &str) -> Result<WorkflowExecutionProjectionV1, String> {
-    let envelope: WorkflowExecutionProjectionV1 = serde_json::from_str(raw)
-        .map_err(|_| "workflow SQLite projection decoding failed".to_string())?;
-    if envelope.schema != "workflow_execution_projection_v1" {
-        return Err("workflow SQLite projection schema is unsupported".to_string());
-    }
-    Ok(envelope)
-}
-
-pub(crate) fn encode_workflow_execution_projection_record_v1(
-    projection: &WorkflowExecutionProjectionRecord,
-) -> Result<String, String> {
-    let value = match projection {
-        WorkflowExecutionProjectionRecord::Present(execution) => {
-            let execution = workflow_execution_metadata(execution);
-            serde_json::json!({
-                "schema": "workflow_execution_projection_v1",
-                "deleted": false,
-                "execution": execution,
-            })
-        }
-        WorkflowExecutionProjectionRecord::Deleted { execution_id } => serde_json::json!({
-            "schema": "workflow_execution_projection_v1",
-            "deleted": true,
-            "execution_id": execution_id,
-        }),
-    };
-    serde_json::to_string(&value).map_err(|_| "workflow projection encoding failed".to_string())
-}
-
-pub(crate) fn decode_workflow_execution_projection_record_v1(
-    raw: &str,
-) -> Result<WorkflowExecutionProjectionRecord, String> {
-    let envelope = decode_workflow_projection(raw)?;
-    match (envelope.deleted, envelope.execution, envelope.execution_id) {
-        (false, Some(execution), None) if !execution.execution_id.is_empty() => Ok(
-            WorkflowExecutionProjectionRecord::Present(workflow_execution_record(&execution)),
-        ),
-        (true, None, Some(execution_id)) if !execution_id.is_empty() => {
-            Ok(WorkflowExecutionProjectionRecord::Deleted { execution_id })
-        }
-        _ => Err("workflow projection invariant failed".to_string()),
-    }
-}
-
-pub(crate) fn encode_workflow_worktree_owner_record_v1(
-    owner: &WorkflowWorktreeOwnerRecord,
-) -> Result<String, String> {
-    serde_json::to_string(&WorkflowWorktreeOwnerV1 {
-        schema: "workflow_worktree_owner_v1".to_string(),
-        worktree_path: owner.worktree_path.clone(),
-        execution_id: owner.execution_id.clone(),
-        active: owner.active,
-    })
-    .map_err(|_| "workflow worktree owner encoding failed".to_string())
-}
-
-pub(crate) fn decode_workflow_worktree_owner_record_v1(
-    raw: &str,
-) -> Result<WorkflowWorktreeOwnerRecord, String> {
-    let owner: WorkflowWorktreeOwnerV1 = serde_json::from_str(raw)
-        .map_err(|_| "workflow worktree owner is incompatible".to_string())?;
-    if owner.schema != "workflow_worktree_owner_v1"
-        || owner.worktree_path.is_empty()
-        || owner.execution_id.is_empty()
-    {
-        return Err("workflow worktree owner invariant failed".to_string());
-    }
-    Ok(WorkflowWorktreeOwnerRecord {
-        worktree_path: owner.worktree_path,
-        execution_id: owner.execution_id,
-        active: owner.active,
-    })
-}
-
 #[cfg(test)]
 impl Default for ExecutionStore {
     fn default() -> Self {
@@ -1123,25 +609,21 @@ impl ExecutionStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
+            canonical_query: None,
             data_dir: Mutex::new(None),
-            authority: Mutex::new(None),
-            #[cfg(test)]
             allow_in_memory_without_data_dir: false,
         }
     }
 
     pub(crate) fn new_canonical(
-        data_dir: Option<PathBuf>,
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
+        _data_dir: Option<PathBuf>,
+        canonical_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     ) -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
-            data_dir: Mutex::new(data_dir),
-            authority: Mutex::new(Some(WorkflowExecutionAuthority {
-                repository,
-                installation_id,
-            })),
+            canonical_query: Some(canonical_query),
+            #[cfg(test)]
+            data_dir: Mutex::new(_data_dir),
             #[cfg(test)]
             allow_in_memory_without_data_dir: false,
         }
@@ -1151,8 +633,8 @@ impl ExecutionStore {
     pub fn new_in_memory_for_tests() -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
+            canonical_query: None,
             data_dir: Mutex::new(None),
-            authority: Mutex::new(None),
             allow_in_memory_without_data_dir: true,
         }
     }
@@ -1165,34 +647,8 @@ impl ExecutionStore {
     }
 
     #[cfg(test)]
-    pub async fn set_local_event_repository(
-        &self,
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        installation_id: String,
-    ) {
-        *self.authority.lock().await = Some(WorkflowExecutionAuthority {
-            repository,
-            installation_id,
-        });
-    }
-
-    pub(crate) async fn local_event_authority(
-        &self,
-    ) -> Option<(Arc<dyn LocalEventTransactionRepository>, String)> {
-        self.authority.lock().await.as_ref().map(|authority| {
-            (
-                authority.repository.clone(),
-                authority.installation_id.clone(),
-            )
-        })
-    }
-
     async fn data_dir(&self) -> Option<PathBuf> {
         self.data_dir.lock().await.clone()
-    }
-
-    pub(crate) async fn configured_data_dir(&self) -> Option<PathBuf> {
-        self.data_dir().await
     }
 
     #[cfg(test)]
@@ -1204,33 +660,27 @@ impl ExecutionStore {
         }
     }
 
+    /// 事実ログ移行後、production の ExecutionStore は engine の in-memory
+    /// 作業状態だけを持つ。filesystem metadata はテスト fixture 専用であり、
+    /// その入出力は canonical な workflow 遷移を受理も棄却もしない。
     async fn metadata_store(&self) -> Result<Option<ExecutionMetadataStore>, ExecutionStoreError> {
-        if self.authority.lock().await.is_some() {
-            // With the permanent SQLite authority installed, the in-memory
-            // map is a bounded list/UI projection rebuilt from SQLite. The
-            // legacy workflow_executions JSON tree is not written or deleted,
-            // so its filesystem outcome cannot accept, reject, or roll back a
-            // canonical workflow transition.
-            return Ok(None);
-        }
-        #[cfg(not(test))]
-        return Err(ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        });
         #[cfg(test)]
-        Ok(self
+        return Ok(self
             .persistence_dir()
             .await?
-            .map(ExecutionMetadataStore::new))
+            .map(ExecutionMetadataStore::new));
+        #[cfg(not(test))]
+        Ok(None)
     }
 
-    /// 新規 execution を active として登録し、metadata を初期保存する。
+    /// 新規 execution を active として登録する。production は in-memory 状態だけを更新し、
+    /// filesystem metadata の保存はテスト fixture でのみ行う。
     /// 既に同一 worktree に別 execution_id の active execution が存在する場合は `Err` を返す。
     /// 既に同一 execution_id を別 worktree_path で登録しようとした場合も `Err` を返す
     /// （古い by_worktree index が孤立しないように同一 critical section で拒否する）。
     ///
-    /// 重複チェックと active map 更新だけを Mutex 内で行い、metadata 永続化は
-    /// `spawn_blocking` 経由で実行する。永続化失敗時は同一 snapshot の場合だけ rollback する。
+    /// 重複チェックと active map 更新だけを Mutex 内で行う。テスト fixture の metadata
+    /// 保存に失敗した場合は、同一 snapshot の場合だけ rollback する。
     pub async fn register_active_execution(
         &self,
         execution: WorkflowExecutionMetadata,
@@ -1398,8 +848,8 @@ impl ExecutionStore {
     }
 
     /// active execution の現在 node / status / updated_at を更新する（状態遷移ではない属性更新含む）。
-    /// `mutator` は in-memory の execution を直接書き換える。metadata 永続化は Mutex を解放してから
-    /// `spawn_blocking` 経由で行い、永続化失敗時は同一 snapshot の場合だけ rollback する。
+    /// production は in-memory 状態だけを更新する。テスト fixture の metadata 保存に
+    /// 失敗した場合は同一 snapshot の場合だけ rollback する。
     ///
     /// 永続化失敗時は in-memory 側の変更を rollback して `Err` を返す。
     /// Spec issues-1011 finding 4: `execution_id` は UUID 形式である必要がある。
@@ -1532,8 +982,9 @@ impl ExecutionStore {
             .await
     }
 
-    /// active execution を terminal 状態へ遷移し、同じ projection commit で累計 usage も
-    /// 確定する。通常 runtime は event append 後の authoritative snapshot を渡す。
+    /// active execution を terminal 状態へ遷移し、累計 usage も確定する。production は
+    /// in-memory active set から除外し、terminal 状態は canonical read model から読む。
+    /// filesystem metadata の保存はテスト fixture でのみ行う。
     pub async fn complete_execution_with_usage(
         &self,
         execution_id: &str,
@@ -1937,10 +1388,9 @@ impl ExecutionStore {
         Ok(metadata)
     }
 
-    /// active set から該当 execution を取り除き、永続化された metadata ファイルも削除する。
-    /// `complete_execution` と異なり terminal metadata は残さず、reservation 状態を完全に
-    /// 撤回する用途で使う（Spec issues-1011 finding 9: start_workflow の rollback で
-    /// 失敗した reservation を撤回するため、terminal entry を completed 一覧に残さない）。
+    /// active set から該当 execution を取り除き、reservation 状態を完全に撤回する。
+    /// production は in-memory 状態だけを更新し、filesystem metadata の削除は
+    /// テスト fixture でのみ行う。
     pub async fn cancel_reservation(&self, execution_id: &str) -> Result<(), ExecutionStoreError> {
         if !is_valid_execution_id(execution_id) {
             return Err(ExecutionStoreError::InvalidExecutionId {
@@ -1969,78 +1419,22 @@ impl ExecutionStore {
     }
 
     /// active な execution を一覧する（`WorkflowExecutionSummary` で返す）。
+    ///
+    /// in-memory の active registry が唯一の情報源（engine の作業状態）。
+    /// 起動時は fold ベースの reconciliation が registry を再構築する。
     pub async fn list_active(&self) -> Result<Vec<WorkflowExecutionSummary>, ExecutionStoreError> {
-        if let Some(authority) = self.authority.lock().await.clone() {
-            let executions = authority.list_non_terminal().await.map_err(|error| {
-                ExecutionStoreError::AuthorityReadFailed {
-                    reason: error.to_string(),
-                }
-            })?;
-            let mut executions: Vec<_> = executions
-                .iter()
-                .filter(|execution| execution.status.is_active())
-                .map(WorkflowExecutionSummary::from)
-                .collect();
-            executions.sort_by(|a, b| {
-                b.started_at
-                    .partial_cmp(&a.started_at)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            return Ok(executions);
-        }
-        #[cfg(test)]
-        if self.allow_in_memory_without_data_dir {
-            let inner = self.inner.lock().await;
-            let mut executions: Vec<WorkflowExecutionSummary> = inner
-                .active
-                .values()
-                .map(WorkflowExecutionSummary::from)
-                .collect();
-            executions.sort_by(|a, b| {
-                b.started_at
-                    .partial_cmp(&a.started_at)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            return Ok(executions);
-        }
-        Err(ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        })
-    }
-
-    /// Rebuild the bounded in-memory list/UI mirror from the SQLite pending
-    /// index. This method never writes authority state and is safe to retry
-    /// after a post-commit projection failure.
-    pub(crate) async fn rebuild_active_projection_from_authority(
-        &self,
-    ) -> Result<(), ExecutionStoreError> {
-        let authority = self.authority.lock().await.clone().ok_or_else(|| {
-            ExecutionStoreError::AuthorityReadFailed {
-                reason: "SQLite workflow authority is not installed".to_string(),
-            }
-        })?;
-        let executions = authority
-            .list_non_terminal()
-            .await
-            .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })?;
-        let mut inner = self.inner.lock().await;
-        inner.active.clear();
-        inner.by_worktree.clear();
-        inner.pending_resume_worktrees.clear();
-        inner.pending_interrupted_transitions.clear();
-        for execution in executions
-            .into_iter()
-            .filter(|execution| execution.status.is_active())
-        {
-            inner.by_worktree.insert(
-                execution.worktree_path.clone(),
-                execution.execution_id.clone(),
-            );
-            inner
-                .active
-                .insert(execution.execution_id.clone(), execution);
-        }
-        Ok(())
+        let inner = self.inner.lock().await;
+        let mut executions: Vec<WorkflowExecutionSummary> = inner
+            .active
+            .values()
+            .map(WorkflowExecutionSummary::from)
+            .collect();
+        executions.sort_by(|a, b| {
+            b.started_at
+                .partial_cmp(&a.started_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(executions)
     }
 
     /// テスト専用: worktree_path 限定の active+terminal 一覧（合成順）を返す。
@@ -2113,6 +1507,17 @@ impl ExecutionStore {
             .map(|execution| WorkflowExecutionSummary::from(&execution))
     }
 
+    #[cfg(test)]
+    pub async fn list_non_terminal_metadata(&self) -> Vec<WorkflowExecutionMetadata> {
+        let Some(dir) = self.data_dir().await else {
+            return Vec::new();
+        };
+        iter_valid_execution_metadata(&dir)
+            .into_iter()
+            .filter(|execution| !execution.status.is_finished())
+            .collect()
+    }
+
     pub(crate) async fn get_execution_record(
         &self,
         execution_id: &str,
@@ -2122,37 +1527,29 @@ impl ExecutionStore {
                 execution_id: execution_id.to_string(),
             });
         }
-        if let Some(authority) = self.authority.lock().await.clone() {
-            return authority
-                .load(execution_id)
-                .await
-                .map(|read| match read {
-                    WorkflowExecutionAuthorityRead::Present { metadata, .. } => Some(metadata),
-                    WorkflowExecutionAuthorityRead::Absent
-                    | WorkflowExecutionAuthorityRead::Deleted { .. } => None,
-                })
-                .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason });
-        }
-        #[cfg(not(test))]
         {
-            Err(ExecutionStoreError::AuthorityReadFailed {
-                reason: "workflow SQLite authority is not configured".to_string(),
-            })
+            let inner = self.inner.lock().await;
+            if let Some(execution) = inner.active.get(execution_id) {
+                return Ok(Some(execution.clone()));
+            }
+        }
+        if let Some(query) = &self.canonical_query {
+            let query = Arc::clone(query);
+            let execution_id = execution_id.to_string();
+            return tokio::task::spawn_blocking(move || query.execution_summary(&execution_id))
+                .await
+                .map_err(|error| ExecutionStoreError::AuthorityReadFailed {
+                    reason: error.to_string(),
+                })?
+                .map(|summary| summary.map(workflow_summary_to_metadata))
+                .map_err(|error| ExecutionStoreError::AuthorityReadFailed {
+                    reason: error.to_string(),
+                });
         }
         #[cfg(test)]
         {
-            {
-                let inner = self.inner.lock().await;
-                if let Some(execution) = inner.active.get(execution_id) {
-                    return Ok(Some(execution.clone()));
-                }
-            }
             let Some(dir) = self.data_dir().await else {
-                return if self.allow_in_memory_without_data_dir {
-                    Ok(None)
-                } else {
-                    Err(ExecutionStoreError::DataDirNotConfigured)
-                };
+                return Ok(None);
             };
             let path = execution_file_path(&dir, execution_id);
             if !path.exists() {
@@ -2162,343 +1559,8 @@ impl ExecutionStore {
                 .map(Some)
                 .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })
         }
-    }
-
-    pub(crate) async fn prepare_atomic_initial_snapshot_mutations(
-        &self,
-        snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        self.prepare_atomic_snapshot_mutations(
-            snapshot,
-            WorkflowProjectionMutationExpectation::CreateAbsent,
-        )
-        .await
-    }
-
-    pub(crate) async fn prepare_atomic_existing_snapshot_mutations(
-        &self,
-        snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        self.prepare_atomic_snapshot_mutations(
-            snapshot,
-            WorkflowProjectionMutationExpectation::UpdatePresent,
-        )
-        .await
-    }
-
-    async fn prepare_atomic_snapshot_mutations(
-        &self,
-        snapshot: &RuntimeCommitSnapshot,
-        expectation: WorkflowProjectionMutationExpectation,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        let authority = self.authority.lock().await.clone();
-        #[cfg(test)]
-        if authority.is_none() && self.allow_in_memory_without_data_dir {
-            return Ok(Vec::new());
-        }
-        let authority = authority.ok_or_else(|| ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        })?;
-        let read = authority
-            .load(&snapshot.execution_id)
-            .await
-            .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })?;
-        let (mut execution, base) = match (expectation, read) {
-            (
-                WorkflowProjectionMutationExpectation::CreateAbsent,
-                WorkflowExecutionAuthorityRead::Absent,
-            ) => (
-                WorkflowExecutionMetadata {
-                    execution_id: snapshot.execution_id.clone(),
-                    workflow_name: snapshot.workflow_name.clone(),
-                    status: crate::domain::workflow::ExecutionStatus::Running,
-                    worktree_path: snapshot.worktree_path.clone(),
-                    current_node: snapshot.current_node_name.clone(),
-                    created_from: snapshot.created_from,
-                    started_at: snapshot.started_at,
-                    updated_at: snapshot.updated_at,
-                    completed_at: None,
-                    error_reason: None,
-                    interruption_reason: None,
-                    resume_from_node: None,
-                    total_token_usage: crate::domain::workflow::TokenUsage::default(),
-                },
-                WorkflowProjectionMutationBase::Absent,
-            ),
-            (
-                WorkflowProjectionMutationExpectation::CreateAbsent,
-                WorkflowExecutionAuthorityRead::Present { .. },
-            ) => {
-                return Err(ExecutionStoreError::ExecutionAlreadyExists {
-                    execution_id: snapshot.execution_id.clone(),
-                });
-            }
-            (
-                WorkflowProjectionMutationExpectation::CreateAbsent,
-                WorkflowExecutionAuthorityRead::Deleted { revision },
-            )
-            | (
-                WorkflowProjectionMutationExpectation::UpdatePresent,
-                WorkflowExecutionAuthorityRead::Deleted { revision },
-            ) => {
-                return Err(ExecutionStoreError::ExecutionDeleted {
-                    execution_id: snapshot.execution_id.clone(),
-                    revision,
-                });
-            }
-            (
-                WorkflowProjectionMutationExpectation::UpdatePresent,
-                WorkflowExecutionAuthorityRead::Present { metadata, revision },
-            ) => (
-                metadata,
-                WorkflowProjectionMutationBase::Present { revision },
-            ),
-            (
-                WorkflowProjectionMutationExpectation::UpdatePresent,
-                WorkflowExecutionAuthorityRead::Absent,
-            ) => {
-                return Err(ExecutionStoreError::ExecutionNotFound {
-                    execution_id: snapshot.execution_id.clone(),
-                });
-            }
-        };
-        execution.status = match &snapshot.state {
-            RuntimeExecutionState::Running => crate::domain::workflow::ExecutionStatus::Running,
-            #[cfg(test)]
-            RuntimeExecutionState::WaitingApproval => {
-                crate::domain::workflow::ExecutionStatus::WaitingApproval
-            }
-            #[cfg(test)]
-            RuntimeExecutionState::Interrupted => {
-                crate::domain::workflow::ExecutionStatus::Interrupted
-            }
-            RuntimeExecutionState::Completed => crate::domain::workflow::ExecutionStatus::Completed,
-            RuntimeExecutionState::Aborted => crate::domain::workflow::ExecutionStatus::Aborted,
-        };
-        execution.current_node = snapshot.current_node_name.clone();
-        execution.updated_at = snapshot.updated_at;
-        execution.completed_at = execution
-            .status
-            .is_finished()
-            .then_some(snapshot.updated_at);
-        execution.error_reason = snapshot.error_reason.clone();
-        execution.interruption_reason = None;
-        execution.resume_from_node = None;
-        execution.total_token_usage = crate::domain::workflow::TokenUsage {
-            input_tokens: snapshot.total_token_usage.input_tokens,
-            output_tokens: snapshot.total_token_usage.output_tokens,
-        };
-        let mut mutations = authority
-            .projection_mutations(&execution, base)
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: snapshot.execution_id.clone(),
-                reason,
-            })?;
-        let (expected, revision, record) = mutations
-            .iter()
-            .find_map(|mutation| match mutation {
-                LocalStateMutation::WorkflowExecutionProjection(projection) => {
-                    match &projection.projection {
-                        WorkflowExecutionProjectionRecord::Present(record) => {
-                            Some((projection.expected, projection.revision, record.clone()))
-                        }
-                        WorkflowExecutionProjectionRecord::Deleted { .. } => None,
-                    }
-                }
-                _ => None,
-            })
-            .ok_or_else(|| ExecutionStoreError::PersistFailed {
-                execution_id: snapshot.execution_id.clone(),
-                reason: "Workflow execution projection mutation is missing".to_string(),
-            })?;
-        let recovery_owner_reason = authority
-            .unresolved_recovery_reason(&snapshot.execution_id)
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: snapshot.execution_id.clone(),
-                reason,
-            })?;
-        let nodes = crate::domain::workspace_tree::runtime_snapshot_nodes(
-            crate::domain::workspace_tree::RuntimeSnapshotNodeProjection {
-                execution_id: &snapshot.execution_id,
-                workflow_name: &snapshot.workflow_name,
-                workspace_identity: &snapshot.worktree_path,
-                workflow_definition: &snapshot.workflow_definition,
-                node_executions: &snapshot.node_executions,
-                started_at: snapshot.started_at,
-                updated_at: snapshot.updated_at,
-                execution: &record,
-                recovery_owner_reason,
-            },
-        )
-        .map_err(|reason| ExecutionStoreError::PersistFailed {
-            execution_id: snapshot.execution_id.clone(),
-            reason,
-        })?;
-        mutations.push(LocalStateMutation::WorkflowExecutionNodeProjection(
-            WorkflowExecutionNodeProjectionMutation {
-                execution_id: snapshot.execution_id.clone(),
-                nodes,
-                expected,
-                revision,
-            },
-        ));
-        Ok(mutations)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn prepare_atomic_interrupted_abort_metadata_mutations(
-        &self,
-        expected_current: &WorkflowExecutionMetadata,
-        completed_at: f64,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        self.prepare_atomic_existing_metadata_transition(
-            expected_current,
-            WorkflowMetadataTransition::InterruptedAbort { completed_at },
-        )
-        .await
-    }
-
-    pub(crate) async fn prepare_atomic_event_reconciliation_metadata_mutations(
-        &self,
-        expected_current: &WorkflowExecutionMetadata,
-        projected: &DomainWorkflowExecution,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        self.prepare_atomic_existing_metadata_transition(
-            expected_current,
-            WorkflowMetadataTransition::EventReconciliation { projected },
-        )
-        .await
-    }
-
-    pub(crate) async fn prepare_atomic_stale_reservation_deletion_mutations(
-        &self,
-        expected_current: &WorkflowExecutionMetadata,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        let authority = self.authority.lock().await.clone();
-        #[cfg(test)]
-        if authority.is_none() && self.allow_in_memory_without_data_dir {
-            return Ok(Vec::new());
-        }
-        let authority = authority.ok_or_else(|| ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        })?;
-        let read = authority
-            .load(&expected_current.execution_id)
-            .await
-            .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })?;
-        let revision = match read {
-            WorkflowExecutionAuthorityRead::Absent => {
-                return Err(ExecutionStoreError::ExecutionNotFound {
-                    execution_id: expected_current.execution_id.clone(),
-                });
-            }
-            WorkflowExecutionAuthorityRead::Deleted { revision } => {
-                return Err(ExecutionStoreError::ExecutionDeleted {
-                    execution_id: expected_current.execution_id.clone(),
-                    revision,
-                });
-            }
-            WorkflowExecutionAuthorityRead::Present { metadata, revision } => {
-                if &metadata != expected_current {
-                    return Err(ExecutionStoreError::ExecutionRecordChanged {
-                        execution_id: expected_current.execution_id.clone(),
-                    });
-                }
-                revision
-            }
-        };
-        authority
-            .deletion_mutations(expected_current, revision)
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: expected_current.execution_id.clone(),
-                reason,
-            })
-    }
-
-    async fn prepare_atomic_existing_metadata_transition(
-        &self,
-        expected_current: &WorkflowExecutionMetadata,
-        transition: WorkflowMetadataTransition<'_>,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        let authority = self.authority.lock().await.clone();
-        #[cfg(test)]
-        if authority.is_none() && self.allow_in_memory_without_data_dir {
-            return Ok(Vec::new());
-        }
-        let authority = authority.ok_or_else(|| ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        })?;
-        let read = authority
-            .load(&expected_current.execution_id)
-            .await
-            .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })?;
-        let (canonical, revision) = match read {
-            WorkflowExecutionAuthorityRead::Absent => {
-                return Err(ExecutionStoreError::ExecutionNotFound {
-                    execution_id: expected_current.execution_id.clone(),
-                });
-            }
-            WorkflowExecutionAuthorityRead::Deleted { revision } => {
-                return Err(ExecutionStoreError::ExecutionDeleted {
-                    execution_id: expected_current.execution_id.clone(),
-                    revision,
-                });
-            }
-            WorkflowExecutionAuthorityRead::Present { metadata, revision } => {
-                if &metadata != expected_current {
-                    return Err(ExecutionStoreError::ExecutionRecordChanged {
-                        execution_id: expected_current.execution_id.clone(),
-                    });
-                }
-                (metadata, revision)
-            }
-        };
-        let execution = match transition {
-            #[cfg(test)]
-            WorkflowMetadataTransition::InterruptedAbort { completed_at } => {
-                if canonical.status != ExecutionStatus::Interrupted
-                    || !completed_at.is_finite()
-                    || completed_at < canonical.updated_at
-                {
-                    return Err(ExecutionStoreError::InvalidCanonicalTransition {
-                        execution_id: canonical.execution_id.clone(),
-                    });
-                }
-                let mut aborted = canonical.clone();
-                aborted.status = ExecutionStatus::Aborted;
-                aborted.updated_at = completed_at;
-                aborted.completed_at = Some(completed_at);
-                aborted.error_reason = None;
-                aborted.interruption_reason = None;
-                aborted.resume_from_node = None;
-                aborted
-            }
-            WorkflowMetadataTransition::EventReconciliation { projected } => {
-                let projected = WorkflowExecutionMetadata::from(projected);
-                if !valid_event_reconciliation_transition(&canonical, &projected) {
-                    return Err(ExecutionStoreError::InvalidCanonicalTransition {
-                        execution_id: canonical.execution_id.clone(),
-                    });
-                }
-                projected
-            }
-        };
-        if execution == canonical {
-            return Ok(Vec::new());
-        }
-        authority
-            .projection_mutations(
-                &execution,
-                WorkflowProjectionMutationBase::Present { revision },
-            )
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: execution.execution_id.clone(),
-                reason,
-            })
+        #[cfg(not(test))]
+        Ok(None)
     }
 
     /// worktree_path から active な execution_id を解決する。
@@ -2531,21 +1593,6 @@ impl ExecutionStore {
             );
             return None;
         }
-        if let Some(authority) = self.authority.lock().await.clone() {
-            return match authority.load(execution_id).await {
-                Ok(WorkflowExecutionAuthorityRead::Present { metadata, .. }) => {
-                    Some(metadata.worktree_path)
-                }
-                Ok(WorkflowExecutionAuthorityRead::Absent)
-                | Ok(WorkflowExecutionAuthorityRead::Deleted { .. }) => None,
-                Err(error) => {
-                    log::warn!(
-                        "ExecutionStore: canonical workflow reverse lookup failed for {execution_id}: {error}"
-                    );
-                    None
-                }
-            };
-        }
         let dir = self.data_dir().await?;
         let path = execution_file_path(&dir, execution_id);
         if !path.exists() {
@@ -2569,50 +1616,25 @@ impl ExecutionStore {
     pub async fn active_len(&self) -> usize {
         self.inner.lock().await.active.len()
     }
+}
 
-    /// Startup replay 対象。active orphan に加え、event commit 後の metadata persist failure
-    /// で stale になり得る Interrupted checkpoint も再照合する。
-    #[cfg(test)]
-    pub async fn list_non_terminal_metadata(&self) -> Vec<WorkflowExecutionMetadata> {
-        self.try_list_non_terminal_metadata()
-            .await
-            .unwrap_or_else(|error| {
-                log::warn!("ExecutionStore: non-terminal metadata lookup failed: {error}");
-                Vec::new()
-            })
-    }
-
-    pub(crate) async fn try_list_non_terminal_metadata(
-        &self,
-    ) -> Result<Vec<WorkflowExecutionMetadata>, ExecutionStoreError> {
-        if let Some(authority) = self.authority.lock().await.clone() {
-            return authority
-                .list_non_terminal()
-                .await
-                .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason });
-        }
-        #[cfg(not(test))]
-        return Err(ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        });
-        #[cfg(test)]
-        {
-            let Some(dir) = self.data_dir().await else {
-                return Ok(Vec::new());
-            };
-            let executions =
-                tokio::task::spawn_blocking(move || iter_valid_execution_metadata(&dir))
-                    .await
-                    .map_err(|error| ExecutionStoreError::AuthorityReadFailed {
-                        reason: format!(
-                            "failed to join recovery metadata listing request: {error}"
-                        ),
-                    })?;
-            Ok(executions
-                .into_iter()
-                .filter(|execution| !execution.status.is_finished())
-                .collect())
-        }
+fn workflow_summary_to_metadata(
+    summary: crate::domain::workflow::WorkflowExecutionSummary,
+) -> WorkflowExecutionMetadata {
+    WorkflowExecutionMetadata {
+        execution_id: summary.execution_id,
+        workflow_name: summary.workflow_name,
+        status: summary.status,
+        worktree_path: summary.worktree_path,
+        current_node: summary.current_node,
+        created_from: summary.created_from,
+        started_at: summary.started_at,
+        updated_at: summary.updated_at,
+        completed_at: summary.completed_at,
+        error_reason: summary.error_reason,
+        interruption_reason: summary.interruption_reason,
+        resume_from_node: summary.resume_from_node,
+        total_token_usage: summary.total_token_usage,
     }
 }
 
@@ -2693,8 +1715,6 @@ pub enum ExecutionStoreError {
     #[cfg(test)]
     #[error("ExecutionStore data_dir is not configured")]
     DataDirNotConfigured,
-    #[error("failed to read canonical workflow execution authority: {reason}")]
-    AuthorityReadFailed { reason: String },
     #[error("worktree {worktree_path} already has active execution {existing_execution_id}")]
     WorktreeAlreadyActive {
         worktree_path: String,
@@ -2727,19 +1747,10 @@ pub enum ExecutionStoreError {
     ImmutableFieldChanged { execution_id: String, field: String },
     #[error("update_active for {execution_id} cannot transition to a non-active status")]
     NonActiveNotAllowedInUpdate { execution_id: String },
-    #[error("workflow execution already exists: {execution_id}")]
-    ExecutionAlreadyExists { execution_id: String },
-    #[error("workflow execution changed before projection update: {execution_id}")]
-    ExecutionRecordChanged { execution_id: String },
-    #[error("workflow execution transition is not derived from canonical state: {execution_id}")]
-    InvalidCanonicalTransition { execution_id: String },
+    #[error("canonical workflow authority read failed: {reason}")]
+    AuthorityReadFailed { reason: String },
     #[error("workflow execution was not found: {execution_id}")]
     ExecutionNotFound { execution_id: String },
-    #[error("workflow execution projection is deleted: {execution_id} (revision {revision:?})")]
-    ExecutionDeleted {
-        execution_id: String,
-        revision: Revision,
-    },
     #[error(
         "execution {execution_id} cannot transition from {actual:?}; expected one of {expected}"
     )]
@@ -2790,736 +1801,6 @@ mod tests {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
-    }
-
-    fn projected_execution(metadata: &WorkflowExecutionMetadata) -> DomainWorkflowExecution {
-        DomainWorkflowExecution {
-            id: metadata.execution_id.clone(),
-            workflow_name: metadata.workflow_name.clone(),
-            status: metadata.status,
-            current_node: metadata.current_node.clone(),
-            created_from: metadata.created_from,
-            worktree_path: metadata.worktree_path.clone(),
-            started_at: metadata.started_at,
-            updated_at: metadata.updated_at,
-            completed_at: metadata.completed_at,
-            error_reason: metadata.error_reason.clone(),
-            interruption_reason: metadata.interruption_reason,
-            resume_from_node: metadata.resume_from_node.clone(),
-            total_token_usage: metadata.total_token_usage.clone(),
-            node_executions: Vec::new(),
-            artifacts: Vec::new(),
-            fanouts: Vec::new(),
-            approval_target: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_event_worktree_paths_reconcile_as_one_workspace_identity() {
-        for raw_path in [
-            r"C:\repo\\managed-worktree\\",
-            r"\\server\share\\managed-worktree\\",
-            "//server//share/managed-worktree/",
-        ] {
-            let execution_id = test_uuid(raw_path.len() as u8);
-            let normalized = crate::domain::workspace_tree::WorkspaceIdentity::new(raw_path)
-                .as_str()
-                .to_string();
-            let mut current =
-                make_execution(&execution_id, &normalized, ExecutionStatus::Running, 100.0);
-            current.updated_at = 100.0;
-            let mut projected = projected_execution(&current);
-            projected.worktree_path = raw_path.to_string();
-            projected.status = ExecutionStatus::Interrupted;
-            projected.updated_at = 101.0;
-            projected.interruption_reason = Some(ExecutionInterruptionReason::Crash);
-            projected.resume_from_node = Some("node-1".to_string());
-
-            let projected_metadata = WorkflowExecutionMetadata::from(&projected);
-            assert_eq!(projected_metadata.worktree_path, normalized);
-            assert!(valid_event_reconciliation_transition(
-                &current,
-                &projected_metadata
-            ));
-
-            let reconciled = ExecutionStore::new_in_memory_for_tests()
-                .reconcile_orphan_from_projection(current, &projected)
-                .await
-                .unwrap();
-            assert_eq!(reconciled.worktree_path, normalized);
-            assert_eq!(reconciled.status, ExecutionStatus::Interrupted);
-        }
-    }
-
-    #[derive(Clone)]
-    enum CanonicalProjectionFixture {
-        Absent,
-        Present {
-            metadata: WorkflowExecutionMetadata,
-            revision: Revision,
-        },
-        Deleted {
-            revision: Revision,
-        },
-        ReadFailure,
-    }
-
-    struct CanonicalProjectionRepository {
-        execution_id: String,
-        fixture: CanonicalProjectionFixture,
-        execution_reads: std::sync::atomic::AtomicUsize,
-    }
-
-    impl CanonicalProjectionRepository {
-        fn new(execution_id: &str, fixture: CanonicalProjectionFixture) -> Arc<Self> {
-            Arc::new(Self {
-                execution_id: execution_id.to_string(),
-                fixture,
-                execution_reads: std::sync::atomic::AtomicUsize::new(0),
-            })
-        }
-
-        fn execution_reads(&self) -> usize {
-            self.execution_reads
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LocalEventTransactionRepository for CanonicalProjectionRepository {
-        async fn commit_batch(
-            &self,
-            _batch: crate::domain::local_event::LocalAtomicBatch,
-        ) -> Result<
-            crate::domain::local_event::CommitBatchResult,
-            crate::domain::local_event::CommitBatchError,
-        > {
-            unreachable!("canonical projection read fixture does not commit")
-        }
-
-        async fn resolve_commit(
-            &self,
-            _identity: crate::domain::local_event::CommitIdentity,
-        ) -> Result<
-            crate::domain::local_event::CommitResolution,
-            crate::domain::local_event::LocalEventQueryError,
-        > {
-            unreachable!("canonical projection read fixture does not resolve commits")
-        }
-
-        async fn load_stream(
-            &self,
-            _request: crate::domain::local_event::LoadStreamRequest,
-        ) -> Result<
-            crate::domain::local_event::DomainEventPage,
-            crate::domain::local_event::LocalEventQueryError,
-        > {
-            unreachable!("canonical projection read fixture does not load streams")
-        }
-
-        async fn query(
-            &self,
-            request: LocalEventQuery,
-        ) -> Result<LocalEventQueryResult, crate::domain::local_event::LocalEventQueryError>
-        {
-            let session_id = match request {
-                LocalEventQuery::SessionProjectionByIdentity { session_id } => session_id,
-                LocalEventQuery::PendingRecoveryPage { .. } => {
-                    return Ok(LocalEventQueryResult::PendingRecoveryPage(
-                        crate::domain::local_event::PendingRecoveryPageView {
-                            entries: Vec::new(),
-                            continuation_cursors: Vec::new(),
-                            next_cursor: None,
-                        },
-                    ));
-                }
-                _ => unreachable!(
-                    "canonical projection fixture only accepts identity and recovery-fence reads"
-                ),
-            };
-            if session_id != WorkflowExecutionAuthority::storage_key(&self.execution_id) {
-                return Ok(LocalEventQueryResult::SessionProjectionByIdentity(None));
-            }
-            self.execution_reads
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            match &self.fixture {
-                CanonicalProjectionFixture::Absent => {
-                    Ok(LocalEventQueryResult::SessionProjectionByIdentity(None))
-                }
-                CanonicalProjectionFixture::Present { metadata, revision } => {
-                    Ok(LocalEventQueryResult::SessionProjectionByIdentity(Some(
-                        crate::domain::local_event::SessionProjectionView {
-                            session_id,
-                            projection: SessionProjectionRecord::WorkflowExecution(
-                                WorkflowExecutionProjectionRecord::Present(
-                                    workflow_execution_record(metadata),
-                                ),
-                            ),
-                            revision: *revision,
-                        },
-                    )))
-                }
-                CanonicalProjectionFixture::Deleted { revision } => {
-                    Ok(LocalEventQueryResult::SessionProjectionByIdentity(Some(
-                        crate::domain::local_event::SessionProjectionView {
-                            session_id,
-                            projection: SessionProjectionRecord::WorkflowExecution(
-                                WorkflowExecutionProjectionRecord::Deleted {
-                                    execution_id: self.execution_id.clone(),
-                                },
-                            ),
-                            revision: *revision,
-                        },
-                    )))
-                }
-                CanonicalProjectionFixture::ReadFailure => {
-                    Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
-                        correlation_id: "workflow-read-failure".to_string(),
-                    })
-                }
-            }
-        }
-
-        fn query_blocking(
-            &self,
-            _request: LocalEventQuery,
-        ) -> Result<LocalEventQueryResult, crate::domain::local_event::LocalEventQueryError>
-        {
-            Err(crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-        }
-    }
-
-    async fn install_canonical_projection_fixture(
-        store: &ExecutionStore,
-        execution_id: &str,
-        fixture: CanonicalProjectionFixture,
-    ) -> Arc<CanonicalProjectionRepository> {
-        let repository = CanonicalProjectionRepository::new(execution_id, fixture);
-        store
-            .set_local_event_repository(repository.clone(), "test-generation".to_string())
-            .await;
-        repository
-    }
-
-    fn snapshot(execution_id: &str) -> RuntimeCommitSnapshot {
-        RuntimeCommitSnapshot {
-            execution_id: execution_id.to_string(),
-            workflow_name: "wf".to_string(),
-            worktree_path: "/wt/canonical".to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
-            request: String::new(),
-            error_reason: None,
-            state: RuntimeExecutionState::Running,
-            current_node_name: Some("node-1".to_string()),
-            current_session_id: None,
-            node_history: Vec::new(),
-            workflow_definition: crate::domain::workflow::WorkflowDefinition::default(),
-            total_token_usage: TokenUsage::default(),
-            artifacts: HashMap::new(),
-            node_executions: Vec::new(),
-            started_at: 100.0,
-            updated_at: 101.0,
-        }
-    }
-
-    fn attached_session_snapshot(execution_id: &str) -> RuntimeCommitSnapshot {
-        let mut snapshot = snapshot(execution_id);
-        snapshot.current_session_id = Some("session-1".to_string());
-        snapshot.workflow_definition = crate::domain::workflow::WorkflowDefinition {
-            name: "wf".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: std::collections::BTreeMap::new(),
-            nodes: vec![crate::domain::workflow::NodeDefinition {
-                name: "node-1".to_string(),
-                kind: crate::domain::workflow::NodeKind::Session(
-                    crate::domain::workflow::SessionSpec::default(),
-                ),
-                artifact: None,
-                input: Vec::new(),
-                completion: crate::domain::workflow::NodeCompletion::Auto,
-                worktree: None,
-            }],
-            entry: "node-1".to_string(),
-        };
-        snapshot.node_executions = vec![
-            crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution {
-                id: "node-execution-1".to_string(),
-                execution_id: execution_id.to_string(),
-                node_name: "node-1".to_string(),
-                kind: crate::domain::workflow::NodeKindName::Session,
-                attempt: 1,
-                status: crate::domain::workflow::entities::workflow_execution::
-                    RuntimeNodeExecutionStatus::Running,
-                session_id: Some("session-1".to_string()),
-                display_command: None,
-                artifact: None,
-                token_usage: None,
-                failure: None,
-                parent: None,
-                completion_signals: crate::domain::workflow::NodeCompletionSignalState::Pending,
-                started_at: 101.0,
-                completed_at: None,
-            },
-        ];
-        snapshot
-    }
-
-    fn assert_execution_node_projection_parity(mutations: &[LocalStateMutation]) {
-        let execution_projections = mutations
-            .iter()
-            .filter_map(|mutation| match mutation {
-                LocalStateMutation::WorkflowExecutionProjection(projection) => Some(projection),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let node_projections = mutations
-            .iter()
-            .filter_map(|mutation| match mutation {
-                LocalStateMutation::WorkflowExecutionNodeProjection(projection) => Some(projection),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            execution_projections.len(),
-            1,
-            "one source batch must own exactly one execution-row update"
-        );
-        assert_eq!(
-            node_projections.len(),
-            1,
-            "a structural execution-row update must replace its node rows in the same batch"
-        );
-        let execution = execution_projections[0];
-        let node = node_projections[0];
-        let WorkflowExecutionProjectionRecord::Present(record) = &execution.projection else {
-            panic!("snapshot source batches must publish a present execution");
-        };
-        assert_eq!(record.execution_id, node.execution_id);
-        assert_eq!(execution.expected, node.expected);
-        assert_eq!(execution.revision, node.revision);
-    }
-
-    #[tokio::test]
-    async fn canonical_read_failure_is_not_mapped_to_not_found_or_default_projection() {
-        let execution_id = test_uuid(201);
-        let store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &store,
-            &execution_id,
-            CanonicalProjectionFixture::ReadFailure,
-        )
-        .await;
-
-        assert!(matches!(
-            store.get_execution_record(&execution_id).await,
-            Err(ExecutionStoreError::AuthorityReadFailed { .. })
-        ));
-        assert!(matches!(
-            store
-                .prepare_atomic_initial_snapshot_mutations(&snapshot(&execution_id))
-                .await,
-            Err(ExecutionStoreError::AuthorityReadFailed { .. })
-        ));
-        assert!(matches!(
-            store
-                .prepare_atomic_existing_snapshot_mutations(&snapshot(&execution_id))
-                .await,
-            Err(ExecutionStoreError::AuthorityReadFailed { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn snapshot_source_batches_keep_execution_and_node_projection_parity() {
-        let absent_id = test_uuid(202);
-        let absent_store = ExecutionStore::new_in_memory_for_tests();
-        let absent_repository = install_canonical_projection_fixture(
-            &absent_store,
-            &absent_id,
-            CanonicalProjectionFixture::Absent,
-        )
-        .await;
-        let initial = absent_store
-            .prepare_atomic_initial_snapshot_mutations(&snapshot(&absent_id))
-            .await
-            .unwrap();
-        assert_execution_node_projection_parity(&initial);
-        assert_eq!(initial.len(), 5);
-        assert!(matches!(
-            &initial[3],
-            LocalStateMutation::WorkflowExecutionProjection(mutation)
-                if mutation.expected == RevisionGuard::Absent
-                    && mutation.revision == Revision::new(0).unwrap()
-        ));
-        assert!(matches!(
-            &initial[4],
-            LocalStateMutation::WorkflowExecutionNodeProjection(mutation)
-                if mutation.expected == RevisionGuard::Absent
-                    && mutation.revision == Revision::new(0).unwrap()
-        ));
-        assert_eq!(
-            absent_repository.execution_reads(),
-            1,
-            "one versioned read supplies both payload and CAS base"
-        );
-        assert!(matches!(
-            absent_store
-                .prepare_atomic_existing_snapshot_mutations(&snapshot(&absent_id))
-                .await,
-            Err(ExecutionStoreError::ExecutionNotFound { .. })
-        ));
-
-        let present_id = test_uuid(203);
-        let present_store = ExecutionStore::new_in_memory_for_tests();
-        let present_revision = Revision::new(7).unwrap();
-        let present_repository = install_canonical_projection_fixture(
-            &present_store,
-            &present_id,
-            CanonicalProjectionFixture::Present {
-                metadata: make_execution(
-                    &present_id,
-                    "/wt/canonical",
-                    ExecutionStatus::Running,
-                    100.0,
-                ),
-                revision: present_revision,
-            },
-        )
-        .await;
-        let update = present_store
-            .prepare_atomic_existing_snapshot_mutations(&snapshot(&present_id))
-            .await
-            .unwrap();
-        assert_execution_node_projection_parity(&update);
-        assert_eq!(
-            present_repository.execution_reads(),
-            1,
-            "update must not re-read and adopt a newer revision for stale payload"
-        );
-        assert!(update.iter().any(|mutation| matches!(
-            mutation,
-            LocalStateMutation::WorkflowExecutionNodeProjection(node)
-                if node.expected == RevisionGuard::Expected(present_revision)
-                    && node.revision == present_revision.next().unwrap()
-        )));
-        let LocalStateMutation::SessionProjection(execution_mutation) = &update[0] else {
-            panic!("first mutation must update the workflow execution projection");
-        };
-        assert_eq!(
-            execution_mutation.expected,
-            RevisionGuard::Expected(present_revision)
-        );
-        assert_eq!(
-            execution_mutation.revision,
-            present_revision.next().unwrap()
-        );
-        assert!(matches!(
-            present_store
-                .prepare_atomic_initial_snapshot_mutations(&snapshot(&present_id))
-                .await,
-            Err(ExecutionStoreError::ExecutionAlreadyExists { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn initial_snapshot_mutations_share_one_normalized_workspace_identity() {
-        let execution_id = test_uuid(212);
-        let store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &store,
-            &execution_id,
-            CanonicalProjectionFixture::Absent,
-        )
-        .await;
-        let raw_path = r"\\server\share\\managed-worktree\\";
-        let normalized = crate::domain::workspace_tree::WorkspaceIdentity::new(raw_path)
-            .as_str()
-            .to_string();
-        let mut runtime = snapshot(&execution_id);
-        runtime.worktree_path = normalized.clone();
-
-        let mutations = store
-            .prepare_atomic_initial_snapshot_mutations(&runtime)
-            .await
-            .unwrap();
-        let mut execution_paths = Vec::new();
-        let mut owner = None;
-        for mutation in &mutations {
-            match mutation {
-                LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                    projection:
-                        SessionProjectionRecord::WorkflowExecution(
-                            WorkflowExecutionProjectionRecord::Present(execution),
-                        ),
-                    ..
-                })
-                | LocalStateMutation::WorkflowExecutionProjection(
-                    WorkflowExecutionProjectionMutation {
-                        projection: WorkflowExecutionProjectionRecord::Present(execution),
-                        ..
-                    },
-                ) => execution_paths.push(execution.worktree_path.as_str()),
-                LocalStateMutation::SessionProjection(SessionProjectionMutation {
-                    session_id,
-                    projection: SessionProjectionRecord::WorkflowWorktreeOwner(record),
-                    ..
-                }) => owner = Some((session_id.as_str(), record)),
-                _ => {}
-            }
-        }
-
-        assert_eq!(
-            execution_paths,
-            vec![normalized.as_str(), normalized.as_str()]
-        );
-        let (owner_key, owner) = owner.expect("initial snapshot must include one owner mutation");
-        assert_eq!(owner.worktree_path, normalized);
-        assert_eq!(
-            owner_key,
-            workflow_worktree_storage_key(&owner.worktree_path)
-        );
-    }
-
-    #[tokio::test]
-    async fn node_session_attachment_source_batch_publishes_attached_node_atomically() {
-        let execution_id = test_uuid(205);
-        let store = ExecutionStore::new_in_memory_for_tests();
-        let revision = Revision::new(4).unwrap();
-        install_canonical_projection_fixture(
-            &store,
-            &execution_id,
-            CanonicalProjectionFixture::Present {
-                metadata: make_execution(
-                    &execution_id,
-                    "/wt/canonical",
-                    ExecutionStatus::Running,
-                    100.0,
-                ),
-                revision,
-            },
-        )
-        .await;
-
-        let mutations = store
-            .prepare_atomic_existing_snapshot_mutations(&attached_session_snapshot(&execution_id))
-            .await
-            .unwrap();
-
-        assert_execution_node_projection_parity(&mutations);
-        let node_projection = mutations
-            .iter()
-            .find_map(|mutation| match mutation {
-                LocalStateMutation::WorkflowExecutionNodeProjection(projection) => Some(projection),
-                _ => None,
-            })
-            .expect("SessionAttached source batch must replace the execution node rows");
-        assert!(node_projection.nodes.iter().any(|node| {
-            node.node_execution_id.as_deref() == Some("node-execution-1")
-                && node.session_id.as_deref() == Some("session-1")
-        }));
-    }
-
-    #[tokio::test]
-    async fn metadata_only_source_batches_intentionally_do_not_emit_node_replacements() {
-        let assert_metadata_only = |mutations: &[LocalStateMutation], reason: &str| {
-            assert!(
-                mutations.iter().any(|mutation| matches!(
-                    mutation,
-                    LocalStateMutation::WorkflowExecutionProjection(_)
-                )),
-                "{reason}"
-            );
-            assert!(
-                !mutations.iter().any(|mutation| matches!(
-                    mutation,
-                    LocalStateMutation::WorkflowExecutionNodeProjection(_)
-                )),
-                "{reason}"
-            );
-        };
-
-        let abort_id = test_uuid(206);
-        let mut interrupted = make_execution(
-            &abort_id,
-            "/wt/canonical",
-            ExecutionStatus::Interrupted,
-            100.0,
-        );
-        interrupted.interruption_reason = Some(ExecutionInterruptionReason::Crash);
-        interrupted.resume_from_node = Some("node-1".to_string());
-        let abort_store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &abort_store,
-            &abort_id,
-            CanonicalProjectionFixture::Present {
-                metadata: interrupted.clone(),
-                revision: Revision::new(4).unwrap(),
-            },
-        )
-        .await;
-        let mutations = abort_store
-            .prepare_atomic_interrupted_abort_metadata_mutations(&interrupted, 101.0)
-            .await
-            .unwrap();
-        assert_metadata_only(
-            &mutations,
-            "interrupted-abort changes execution metadata only; existing occurrence rows remain valid",
-        );
-
-        let reconciliation_id = test_uuid(207);
-        let running = make_execution(
-            &reconciliation_id,
-            "/wt/canonical",
-            ExecutionStatus::Running,
-            100.0,
-        );
-        let reconciliation_store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &reconciliation_store,
-            &reconciliation_id,
-            CanonicalProjectionFixture::Present {
-                metadata: running.clone(),
-                revision: Revision::new(5).unwrap(),
-            },
-        )
-        .await;
-        let mut completed = running.clone();
-        completed.status = ExecutionStatus::Completed;
-        completed.updated_at = 101.0;
-        completed.completed_at = Some(101.0);
-        let mutations = reconciliation_store
-            .prepare_atomic_event_reconciliation_metadata_mutations(
-                &running,
-                &projected_execution(&completed),
-            )
-            .await
-            .unwrap();
-        assert_metadata_only(
-            &mutations,
-            "event reconciliation changes execution metadata only; existing occurrence rows remain valid",
-        );
-
-        let deletion_id = test_uuid(208);
-        let stale = make_execution(
-            &deletion_id,
-            "/wt/canonical",
-            ExecutionStatus::Running,
-            100.0,
-        );
-        let deletion_store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &deletion_store,
-            &deletion_id,
-            CanonicalProjectionFixture::Present {
-                metadata: stale.clone(),
-                revision: Revision::new(6).unwrap(),
-            },
-        )
-        .await;
-        let mutations = deletion_store
-            .prepare_atomic_stale_reservation_deletion_mutations(&stale)
-            .await
-            .unwrap();
-        assert_metadata_only(
-            &mutations,
-            "deleting the execution row removes owned node rows through the SQLite foreign-key cascade",
-        );
-    }
-
-    #[tokio::test]
-    async fn metadata_update_rejects_stale_expected_or_proposed_payload() {
-        let execution_id = test_uuid(205);
-        let mut current = make_execution(
-            &execution_id,
-            "/wt/canonical",
-            ExecutionStatus::Interrupted,
-            100.0,
-        );
-        current.interruption_reason = Some(ExecutionInterruptionReason::Orphan);
-        current.resume_from_node = Some("node-1".to_string());
-        current.total_token_usage.input_tokens = 10;
-        let mut stale = current.clone();
-        stale.updated_at = 99.0;
-        let store = ExecutionStore::new_in_memory_for_tests();
-        let repository = install_canonical_projection_fixture(
-            &store,
-            &execution_id,
-            CanonicalProjectionFixture::Present {
-                metadata: current.clone(),
-                revision: Revision::new(9).unwrap(),
-            },
-        )
-        .await;
-
-        assert!(matches!(
-            store
-                .prepare_atomic_interrupted_abort_metadata_mutations(&stale, 101.0)
-                .await,
-            Err(ExecutionStoreError::ExecutionRecordChanged { .. })
-        ));
-
-        let mut stale_proposed = stale;
-        stale_proposed.status = ExecutionStatus::Interrupted;
-        stale_proposed.current_node = None;
-        stale_proposed.completed_at = None;
-        stale_proposed.error_reason = None;
-        stale_proposed.interruption_reason = Some(ExecutionInterruptionReason::Orphan);
-        stale_proposed.resume_from_node = Some("node-1".to_string());
-        assert!(matches!(
-            store
-                .prepare_atomic_event_reconciliation_metadata_mutations(
-                    &current,
-                    &projected_execution(&stale_proposed),
-                )
-                .await,
-            Err(ExecutionStoreError::InvalidCanonicalTransition { .. })
-        ));
-        assert_eq!(
-            repository.execution_reads(),
-            2,
-            "each stale payload must be rejected by its single versioned read"
-        );
-    }
-
-    #[tokio::test]
-    async fn tombstoned_projection_is_rejected_for_create_and_update() {
-        let execution_id = test_uuid(204);
-        let revision = Revision::new(3).unwrap();
-        let store = ExecutionStore::new_in_memory_for_tests();
-        install_canonical_projection_fixture(
-            &store,
-            &execution_id,
-            CanonicalProjectionFixture::Deleted { revision },
-        )
-        .await;
-
-        assert!(matches!(
-            store
-                .prepare_atomic_initial_snapshot_mutations(&snapshot(&execution_id))
-                .await,
-            Err(ExecutionStoreError::ExecutionDeleted {
-                revision: actual,
-                ..
-            }) if actual == revision
-        ));
-        assert!(matches!(
-            store
-                .prepare_atomic_existing_snapshot_mutations(&snapshot(&execution_id))
-                .await,
-            Err(ExecutionStoreError::ExecutionDeleted {
-                revision: actual,
-                ..
-            }) if actual == revision
-        ));
-    }
-
-    #[tokio::test]
-    async fn list_active_requires_canonical_authority_outside_test_fixture_mode() {
-        let store = ExecutionStore::new();
-        assert!(matches!(
-            store.list_active().await,
-            Err(ExecutionStoreError::AuthorityReadFailed { .. })
-        ));
     }
 
     /// Rule: workflow を 1 回起動するたびに、その実行は固有の識別子で記録される

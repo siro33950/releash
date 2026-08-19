@@ -51,6 +51,11 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn confirm_workflow_agent_session_attachment(
+        &self,
+        node_session_id: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn dispatch_initial_instruction(
         &self,
         node_session_id: &str,
@@ -147,6 +152,20 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                 ))
             })?;
         Ok(())
+    }
+
+    async fn confirm_workflow_agent_session_attachment(
+        &self,
+        node_session_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.launch
+            .confirm_workflow_node_attachment(node_session_id)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "confirm Workflow AgentSession attachment '{node_session_id}': {error:?}"
+                ))
+            })
     }
 
     async fn dispatch_initial_instruction(

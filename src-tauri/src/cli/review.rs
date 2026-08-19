@@ -520,10 +520,10 @@ mod tests {
                 workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: AgentSessionProviderDto::Claude,
-                origin: crate::usecase::agent_session::AgentSessionOriginDto::WorkflowNode {
-                    workflow_execution_id: "workflow-1".to_string(),
+                tree_parent: Some(crate::usecase::agent_session::AgentSessionTreeParentDto {
+                    tree_id: "workflow-1".to_string(),
                     node_execution_id: "node-1".to_string(),
-                },
+                }),
                 lifecycle: AgentSessionLifecycleDto::Open,
                 provider_session_id: None,
                 transcript_ref: None,
@@ -1008,7 +1008,7 @@ mod tests {
             tmp.path(),
             &archived_session_id,
             Some("codex"),
-            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         );
         let closed_session = cmd_review(
             tmp.path(),
@@ -1167,7 +1167,7 @@ mod tests {
             tmp.path(),
             &session_id,
             Some("codex"),
-            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         );
 
         let worktree = review_worktree_from_session(tmp.path(), &session_id).unwrap();
@@ -1182,8 +1182,8 @@ mod tests {
         let thread_id = seed_review_thread(tmp.path());
 
         for lifecycle in [
-            crate::domain::local_event::AgentSessionLifecycleRecord::Paused,
-            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Paused,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         ] {
             let session_id = uuid::Uuid::new_v4().to_string();
             write_review_session_with_lifecycle(tmp.path(), &session_id, Some("codex"), lifecycle);
@@ -1272,7 +1272,7 @@ mod tests {
             tmp.path(),
             &session_id,
             Some("codex"),
-            crate::domain::local_event::AgentSessionLifecycleRecord::Archived,
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
         );
         let closed = cmd_review(
             tmp.path(),

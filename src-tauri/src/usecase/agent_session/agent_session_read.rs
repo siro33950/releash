@@ -7,8 +7,7 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use super::{
     AgentSessionActivityDto, AgentSessionGarbageCollectionOutcome, AgentSessionItemDto,
     AgentSessionLifecycleDto, AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError,
-    AgentSessionListPageDto, AgentSessionListRequest, AgentSessionQueryError,
-    AgentSessionQueryService,
+    AgentSessionQueryError, AgentSessionQueryService,
 };
 
 #[async_trait::async_trait]
@@ -94,45 +93,9 @@ impl AgentSessionReadUsecase {
         }
     }
 
-    pub(crate) async fn list(
-        &self,
-        request: AgentSessionListRequest,
-    ) -> Result<AgentSessionListPageDto, AgentSessionReadUsecaseError> {
-        loop {
-            let mut page = self
-                .query
-                .list(request.clone())
-                .await
-                .map_err(map_query_error)?;
-            let mut removed = false;
-            for item in &page.items {
-                match self
-                    .garbage_collection
-                    .reconcile_garbage_collection(&item.id, &gc_request_id())
-                    .await
-                {
-                    Ok(AgentSessionGarbageCollectionOutcome::Retained) => {}
-                    Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
-                    | Err(AgentSessionLifecycleUsecaseError::NotFound) => {
-                        removed = true;
-                    }
-                    Err(error) => return Err(map_lifecycle_error(error)),
-                }
-            }
-            if !removed {
-                page.items = page
-                    .items
-                    .into_iter()
-                    .map(|item| self.with_activity(item))
-                    .collect();
-                return Ok(page);
-            }
-        }
-    }
-
     /// open の session は terminal gateway の activity 分類を参照する。
     /// paused / archived は常に idle。
-    fn with_activity(&self, mut item: AgentSessionItemDto) -> AgentSessionItemDto {
+    pub(crate) fn with_activity(&self, mut item: AgentSessionItemDto) -> AgentSessionItemDto {
         item.activity = match item.lifecycle {
             AgentSessionLifecycleDto::Open => {
                 match TerminalSurfaceOwner::session(

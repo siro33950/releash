@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
+import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
@@ -34,6 +36,7 @@ interface WorkspaceTreeState {
 
 interface UseWorkspaceTreeNodesResult {
 	nodes: WorkspaceTreeItem[];
+	sessions: AgentSessionItem[];
 	preferredNodeId: string | null;
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
@@ -56,6 +59,7 @@ interface WorkspaceTreeRefreshDetail {
 
 const EMPTY_SNAPSHOT: WorkspaceTreeSnapshot = {
 	nodes: [],
+	sessions: [],
 	preferredNodeId: null,
 };
 
@@ -296,6 +300,13 @@ export function useWorkspaceTreeNodes(
 			"workspace-tree-refresh",
 			handleWorkspaceTreeRefresh,
 		);
+		const unsubscribeAgentSessions = subscribeAgentSessionChanged(
+			({ worktreePath: changedWorktreePath }) => {
+				if (!mounted) return;
+				if (changedWorktreePath && changedWorktreePath !== worktreePath) return;
+				scheduleRefresh();
+			},
+		);
 
 		const setup = async () => {
 			const nextUnlistenWorkflow =
@@ -321,6 +332,7 @@ export function useWorkspaceTreeNodes(
 				"workspace-tree-refresh",
 				handleWorkspaceTreeRefresh,
 			);
+			unsubscribeAgentSessions();
 			unlistenWorkflow?.();
 			if (refreshTimerRef.current != null) {
 				window.clearTimeout(refreshTimerRef.current);
@@ -341,6 +353,7 @@ export function useWorkspaceTreeNodes(
 
 	return {
 		nodes: treeState.snapshot.nodes,
+		sessions: treeState.snapshot.sessions ?? [],
 		preferredNodeId: treeState.snapshot.preferredNodeId ?? null,
 		workflowHistory: treeState.workflowHistory,
 		reconciliationEvent: treeState.reconciliationEvent,

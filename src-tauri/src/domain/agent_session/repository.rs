@@ -3,7 +3,6 @@ use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionRepositoryError {
-    AlreadyExists,
     Conflict,
     ProviderSessionAlreadyOwned { agent_session_id: String },
     InvalidRequest,

@@ -23,23 +23,6 @@ async fn test_provider_availability_controller_blocking操作中もasync_runtime
 }
 
 #[test]
-fn test_agent_session_controller_lifecycle入力を閉じた型へ変換する() {
-    assert_eq!(
-        parse_lifecycle("open").unwrap(),
-        AgentSessionLifecycleDto::Open
-    );
-    assert_eq!(
-        parse_lifecycle("paused").unwrap(),
-        AgentSessionLifecycleDto::Paused
-    );
-    assert_eq!(
-        parse_lifecycle("archived").unwrap(),
-        AgentSessionLifecycleDto::Archived
-    );
-    assert!(parse_lifecycle("deleted").is_err());
-}
-
-#[test]
 fn test_agent_session_controller_domain結果をwire語彙へ変換する() {
     assert_eq!(
         AgentSessionOpenResponse::from(AgentSessionOpenOutcome::Indeterminate),

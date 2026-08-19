@@ -380,11 +380,13 @@ pub(crate) mod test_support {
             Ok(())
         }
 
-        async fn load_persisted_events(
+        async fn approval_persisted(
             &self,
             _execution_id: &str,
-        ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
-            Ok(Vec::new())
+            _node_name: &str,
+            _node_execution_id: Option<&str>,
+        ) -> Result<bool, WorkflowError> {
+            Ok(false)
         }
 
         fn configured_secret_values(&self) -> Vec<String> {
@@ -753,42 +755,42 @@ pub(crate) mod test_support {
                 }
             }),
         };
-        let event =
-            crate::adaptor::gateway::workflow::mapper::event_draft_to_event(&started).unwrap();
+        let node_started = WorkflowEventDraft {
+            execution_id: execution_id.to_string(),
+            event_kind: "node_started".to_string(),
+            timestamp: 100.0,
+            payload: serde_json::json!({
+                "node_execution_id": "ne-review-1",
+                "node_name": "review",
+                "kind": "session",
+                "attempt": 1
+            }),
+        };
+        let events = [started, node_started]
+            .iter()
+            .map(crate::adaptor::gateway::workflow::mapper::event_draft_to_event)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
             &canonical_local_event_store(data_dir),
             &metadata,
-            &[event],
+            &events,
         );
     }
 
     pub(crate) fn seed_submitted_output(data_dir: &Path, execution_id: &str) {
-        let drafts = [
-            WorkflowEventDraft {
-                execution_id: execution_id.to_string(),
-                event_kind: "node_started".to_string(),
-                timestamp: 105.0,
-                payload: serde_json::json!({
-                    "node_execution_id": "ne-review-1",
-                    "node_name": "review",
-                    "kind": "session",
-                    "attempt": 1
-                }),
-            },
-            WorkflowEventDraft {
-                execution_id: execution_id.to_string(),
-                event_kind: "artifact_produced".to_string(),
-                timestamp: 110.0,
-                payload: serde_json::json!({
-                    "node_execution_id": "ne-review-1",
-                    "node_name": "review",
-                    "contract": "review-result",
-                    "value": {"status": "approved"},
-                    "submitted_at": 109.0,
-                    "request_id": "request-1"
-                }),
-            },
-        ];
+        let drafts = [WorkflowEventDraft {
+            execution_id: execution_id.to_string(),
+            event_kind: "artifact_produced".to_string(),
+            timestamp: 110.0,
+            payload: serde_json::json!({
+                "node_execution_id": "ne-review-1",
+                "node_name": "review",
+                "contract": "review-result",
+                "value": {"status": "approved"},
+                "request_id": "request-1"
+            }),
+        }];
         append_canonical_workflow_drafts(data_dir, &drafts).unwrap();
     }
 
@@ -1265,9 +1267,9 @@ pub(crate) mod test_support {
         )
         .await;
         assert_eq!(logs.0, StatusCode::OK);
-        assert_eq!(logs.1[0]["event"], "execution_started");
+        assert_eq!(logs.1[0]["event"], "started");
         assert_eq!(logs.1[0]["execution_id"], execution_id);
-        assert_eq!(logs.1[0]["request"], "review this change");
+        assert_eq!(logs.1[0]["root"]["request"], "review this change");
 
         let missing_execution_id = "00000000-0000-4000-8000-000000000999";
         let missing_logs = get_json(
@@ -1303,7 +1305,7 @@ pub(crate) mod test_support {
         assert_eq!(output.1["status"], "submitted");
         assert_eq!(output.1["contract"], "review-result");
         assert_eq!(output.1["value"], serde_json::json!({"status": "approved"}));
-        assert_eq!(output.1["submitted_at"], 109.0);
+        assert_eq!(output.1["submitted_at"], 110.0);
         assert_eq!(output.1["request_id"], "request-1");
     }
 
@@ -1314,17 +1316,27 @@ pub(crate) mod test_support {
         seed_query_execution(directory.path(), execution_id);
         append_canonical_workflow_drafts(
             directory.path(),
-            &[WorkflowEventDraft {
-                execution_id: execution_id.to_string(),
-                event_kind: "node_started".to_string(),
-                timestamp: 105.0,
-                payload: serde_json::json!({
-                    "node_execution_id": "ne-review-2",
-                    "node_name": "review",
-                    "kind": "session",
-                    "attempt": 2
-                }),
-            }],
+            &[
+                WorkflowEventDraft {
+                    execution_id: execution_id.to_string(),
+                    event_kind: "node_retry_requested".to_string(),
+                    timestamp: 104.0,
+                    payload: serde_json::json!({
+                        "node_execution_id": "ne-review-1"
+                    }),
+                },
+                WorkflowEventDraft {
+                    execution_id: execution_id.to_string(),
+                    event_kind: "node_started".to_string(),
+                    timestamp: 105.0,
+                    payload: serde_json::json!({
+                        "node_execution_id": "ne-review-2",
+                        "node_name": "review",
+                        "kind": "session",
+                        "attempt": 2
+                    }),
+                },
+            ],
         )
         .unwrap();
         let (router, _, gateway) = test_router(directory.path(), "secret");
@@ -1401,7 +1413,7 @@ pub(crate) mod test_support {
         .await;
         assert_eq!(logs.0, StatusCode::OK);
         assert_eq!(logs.1.as_array().unwrap().len(), 1);
-        assert_eq!(logs.1[0]["event"], "node_started");
+        assert_eq!(logs.1[0]["event"], "artifact_produced");
 
         for uri in [
             "/v1/workflow/executions?limit=0",

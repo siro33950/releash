@@ -43,7 +43,6 @@ pub(crate) enum AbortOutcome {
 }
 
 pub(crate) struct RequiredEventCommit<'a> {
-    pub(crate) operation_kind: crate::domain::local_event::CommitOperationKind,
     pub(crate) execution_id: &'a str,
     pub(crate) snapshot_for_commit: &'a RuntimeCommitSnapshot,
     pub(crate) snapshot_before: DomainWorkflowExecution,

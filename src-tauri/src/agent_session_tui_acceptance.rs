@@ -11,7 +11,9 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::node_session_boundary::{
     ProviderWorkflowAgentSessionPort, WorkflowAgentSessionPort,
 };
-use crate::domain::local_event::LocalEventTransactionRepository;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
@@ -61,13 +63,10 @@ pub enum AcceptanceAgentSessionLifecycle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AcceptanceAgentSessionOrigin {
-    Standalone,
-    WorkflowNode {
-        workflow_execution_id: String,
-        node_execution_id: String,
-    },
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceAgentSessionTreeParent {
+    pub tree_id: String,
+    pub node_execution_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -76,7 +75,7 @@ pub struct AcceptanceAgentSession {
     pub id: String,
     pub provider: AcceptanceProvider,
     pub lifecycle: AcceptanceAgentSessionLifecycle,
-    pub origin: AcceptanceAgentSessionOrigin,
+    pub tree_parent: Option<AcceptanceAgentSessionTreeParent>,
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
 }
@@ -134,6 +133,7 @@ pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     local_api_data_dir: PathBuf,
     provider_lifecycle_ingress:
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+    store: Arc<LocalEventStore>,
 }
 
 impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
@@ -149,11 +149,9 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             app.handle().clone(),
             config.data_dir.clone(),
         );
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let data_dir = config.data_dir.clone();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
-            repository,
-            installation_id: store.installation_id().to_string(),
+            store: store.clone(),
             data_dir: config.data_dir,
             provider_executable_config: Arc::new(
                 crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
@@ -253,6 +251,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             local_api: std::sync::Mutex::new(local_api),
             local_api_data_dir: data_dir,
             provider_lifecycle_ingress,
+            store,
         })
     }
 
@@ -341,6 +340,19 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             )
             .await
             .map_err(|error| format!("{error:?}"))?;
+        seed_workflow_session_facts(
+            &self.store,
+            WorkflowSessionFactSeed {
+                workflow_name: "acceptance-workflow",
+                request: "acceptance",
+                worktree_path,
+                provider: provider_kind(provider),
+                workflow_execution_id,
+                node_execution_id,
+                session_id: &session.id,
+                initial_instruction_admitted: true,
+            },
+        )?;
         self.workflow_agent_sessions
             .activate_workflow_agent_session(&session.id, node_execution_id)
             .await
@@ -388,7 +400,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
     #[allow(deprecated)]
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
-            _app,
+            _app: app,
             window,
             exit_observer,
             exit_observer_cancellation,
@@ -396,25 +408,48 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             workflow_agent_sessions,
             local_api,
             local_api_data_dir: _,
-            provider_lifecycle_ingress: _,
+            provider_lifecycle_ingress,
+            store,
         } = self;
         exit_observer_cancellation.cancel();
         exit_observer
             .await
             .map_err(|error| format!("join AgentSession exit observer: {error}"))?;
         terminal.shutdown()?;
-        local_api
+        let local_api = local_api
             .into_inner()
-            .map_err(|_| "lock local API server".to_string())?
-            .shutdown();
-        _app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
-        _app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
-        _app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
-        _app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
-        _app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
-        _app.unmanage::<Arc<AgentSessionReadUsecase>>();
-        _app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
-        drop((workflow_agent_sessions, window, _app));
+            .map_err(|_| "lock local API server".to_string())?;
+        local_api
+            .shutdown_and_wait()
+            .await
+            .map_err(|error| format!("join local API server: {error}"))?;
+        let launch = app
+            .try_state::<Arc<AgentSessionLaunchUsecase>>()
+            .map(|state| state.inner().clone());
+        if let Some(launch) = launch {
+            launch
+                .wait_for_background_tasks()
+                .await
+                .map_err(|error| format!("join AgentSession background task: {error}"))?;
+        }
+        app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
+        app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
+        app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
+        app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
+        app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
+        app.unmanage::<Arc<AgentSessionReadUsecase>>();
+        app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
+        drop((
+            local_api,
+            workflow_agent_sessions,
+            provider_lifecycle_ingress,
+            terminal,
+            window,
+            app,
+        ));
+        let store = Arc::try_unwrap(store)
+            .map_err(|_| "local event store is still referenced during shutdown".to_string())?;
+        store.drain_and_close();
         Ok(())
     }
 }

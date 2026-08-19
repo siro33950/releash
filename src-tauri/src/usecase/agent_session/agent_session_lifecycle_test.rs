@@ -6,7 +6,7 @@ use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionOrigin, ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionLifecycle, ManagedPtyPresence,
     ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::{
@@ -17,7 +17,6 @@ use crate::domain::agent_session::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
     ProviderSessionLaunch,
 };
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
     ProviderHookHealthRepositoryError, ProviderKind, ProviderLifecycleEventRepository,
@@ -52,6 +51,13 @@ impl ProviderLifecycleEventRepository for NoopLifecycleEvents {
         _events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), ProviderLifecycleRepositoryError> {
         Ok(())
+    }
+
+    async fn load_scope(
+        &self,
+        _scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(Vec::new())
     }
 }
 
@@ -310,10 +316,7 @@ fn setup() -> LifecycleTestContext {
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -363,7 +366,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-1",
         )
         .await
@@ -485,7 +488,7 @@ async fn test_agent_session_lifecycle_unknown_idのprocess_exitをgcする() {
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-gc",
         )
         .await
@@ -536,7 +539,7 @@ async fn test_agent_session_open_liveと生死不明では既存状態を破壊�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-open",
         )
         .await
@@ -578,7 +581,7 @@ async fn test_agent_session_open_known_idを自動resumeし失敗時はpausedに
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-known",
         )
         .await
@@ -630,7 +633,7 @@ async fn test_agent_session_open_pausedは明示resumeを待ちunknown_idはgc�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-paused",
         )
         .await
@@ -660,7 +663,7 @@ async fn test_agent_session_open_pausedは明示resumeを待ちunknown_idはgc�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-orphan",
         )
         .await
@@ -690,7 +693,7 @@ async fn test_agent_session_gc再照合は確定不在かつunknown_idだけを�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-reconcile",
         )
         .await
@@ -733,7 +736,7 @@ async fn test_agent_session_resume_codexでも既知の配送失敗がなけれ�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-hook",
         )
         .await
@@ -775,7 +778,7 @@ async fn test_agent_session_resume_spawn失敗時は未起動launchのhook警告
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-hook-spawn-failure",
         )
         .await
@@ -826,17 +829,14 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
         directory.path().to_path_buf(),
     ))
     .unwrap();
-    let repository = Arc::new(LocalAgentSessionRepository::new(
-        store.clone() as Arc<dyn LocalEventTransactionRepository>,
-        store.installation_id().to_string(),
-    ));
+    let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
     let seed = AgentSessionUsecase::new(repository.clone());
     seed.create(
         "agent-save-failure",
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
         "create-save-failure",
     )
     .await
@@ -907,7 +907,7 @@ async fn test_agent_session_resume_残存bindingを解放して単一launchに�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-stale-binding",
         )
         .await
@@ -955,10 +955,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
     sessions
         .create(
@@ -966,7 +963,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-concurrent-resume",
         )
         .await
@@ -1062,10 +1059,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
     sessions
         .create(
@@ -1073,7 +1067,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-resume-archive",
         )
         .await
@@ -1165,10 +1159,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
     sessions
         .create(
@@ -1176,7 +1167,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-concurrent-open",
         )
         .await
@@ -1258,7 +1249,7 @@ async fn test_agent_session_restore中のdeleteは復帰完了後の状態で拒
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-restore-delete",
         )
         .await
@@ -1340,7 +1331,7 @@ async fn test_agent_session_exit_open待機中に旧世代になったexitを反
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-open-stale-exit",
         )
         .await
@@ -1421,7 +1412,7 @@ async fn test_agent_session_archive縮退delete中のopenはdelete完了後に�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-fallback-delete-open",
         )
         .await
@@ -1492,7 +1483,7 @@ async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通知�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::Standalone,
+            None,
             "create-notify",
         )
         .await

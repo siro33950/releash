@@ -147,7 +147,6 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// AgentSession TUI
 	list_available_agent_session_providers: ["claude", "codex"],
-	list_agent_sessions: { items: [], nextAfterSessionId: null },
 	get_agent_session: null,
 	open_agent_session: "attached",
 	resume_agent_session: "resumed",
@@ -200,7 +199,11 @@ const baseIpcHandler: Record<string, unknown> = {
 	resolve_worktree_by_execution: null,
 
 	// Workspace tree
-	list_workspace_worktree_nodes: { nodes: [], preferredNodeId: null },
+	list_workspace_worktree_nodes: {
+		nodes: [],
+		sessions: [],
+		preferredNodeId: null,
+	},
 	list_workspace_workflow_history: [],
 	get_workspace_node_detail: null,
 	close_workspace_node: null,

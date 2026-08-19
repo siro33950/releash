@@ -17,7 +17,7 @@ pub(crate) enum AgentSessionLifecycleEvent {
         workspace: WorkspaceIdentity,
         worktree_path: String,
         provider: ProviderKind,
-        origin: AgentSessionOrigin,
+        tree_parent: Option<AgentSessionTreeParent>,
     },
     ProviderSessionAssociated {
         provider_session_id: String,
@@ -28,66 +28,44 @@ pub(crate) enum AgentSessionLifecycleEvent {
         last_exit_abnormal: bool,
     },
     InitialInstructionAdmitted,
-    Tombstoned {
-        reason: AgentSessionRemovalAuthorization,
-    },
 }
 
+/// 実行木上の親 node への参照。
+///
+/// 親を持つ session は workflow の子 node として実行されており、明示 start /
+/// archive / delete の対象にならない。区別は出所の種別ではなく実行木上の
+/// 位置（親の有無）で決まる。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionOrigin {
-    Standalone,
-    WorkflowNode {
-        workflow_execution_id: String,
-        node_execution_id: String,
-    },
+pub(crate) struct AgentSessionTreeParent {
+    pub(crate) tree_id: String,
+    pub(crate) node_execution_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionOriginError {
-    EmptyWorkflowExecutionId,
+pub(crate) enum AgentSessionTreeParentError {
+    EmptyTreeId,
     EmptyNodeExecutionId,
 }
 
-impl AgentSessionOrigin {
-    pub(crate) fn workflow_node(
-        workflow_execution_id: impl Into<String>,
+impl AgentSessionTreeParent {
+    pub(crate) fn new(
+        tree_id: impl Into<String>,
         node_execution_id: impl Into<String>,
-    ) -> Result<Self, AgentSessionOriginError> {
-        let workflow_execution_id = workflow_execution_id.into();
-        if workflow_execution_id.trim().is_empty() {
-            return Err(AgentSessionOriginError::EmptyWorkflowExecutionId);
+    ) -> Result<Self, AgentSessionTreeParentError> {
+        let tree_id = tree_id.into();
+        let tree_id = tree_id.trim();
+        if tree_id.is_empty() {
+            return Err(AgentSessionTreeParentError::EmptyTreeId);
         }
         let node_execution_id = node_execution_id.into();
-        if node_execution_id.trim().is_empty() {
-            return Err(AgentSessionOriginError::EmptyNodeExecutionId);
+        let node_execution_id = node_execution_id.trim();
+        if node_execution_id.is_empty() {
+            return Err(AgentSessionTreeParentError::EmptyNodeExecutionId);
         }
-        Ok(Self::WorkflowNode {
-            workflow_execution_id,
-            node_execution_id,
+        Ok(Self {
+            tree_id: tree_id.to_string(),
+            node_execution_id: node_execution_id.to_string(),
         })
-    }
-
-    pub(crate) fn is_standalone(&self) -> bool {
-        matches!(self, Self::Standalone)
-    }
-
-    pub(crate) fn workflow_execution_id(&self) -> Option<&str> {
-        match self {
-            Self::Standalone => None,
-            Self::WorkflowNode {
-                workflow_execution_id,
-                ..
-            } => Some(workflow_execution_id),
-        }
-    }
-
-    pub(crate) fn node_execution_id(&self) -> Option<&str> {
-        match self {
-            Self::Standalone => None,
-            Self::WorkflowNode {
-                node_execution_id, ..
-            } => Some(node_execution_id),
-        }
     }
 }
 
@@ -96,15 +74,6 @@ pub(crate) enum AgentSessionCreationError {
     Identity,
     Workspace,
     Worktree,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionRehydrateError {
-    EmptyStream,
-    FirstEventNotCreated,
-    DuplicateCreated,
-    InvalidEventSequence,
-    Tombstoned(AgentSessionRemovalAuthorization),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +96,8 @@ pub(crate) enum AgentSessionInitialInstructionOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionInitialInstructionError {
-    Standalone,
+    /// 親を持たない（= workflow の子でない）session に初回指示は無い。
+    WithoutTreeParent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,12 +142,6 @@ pub(crate) enum AgentSessionRemovalAuthorization {
     WorkflowLaunchRollback,
 }
 
-impl AgentSessionRemovalAuthorization {
-    pub(crate) fn tombstone_event(self) -> AgentSessionLifecycleEvent {
-        AgentSessionLifecycleEvent::Tombstoned { reason: self }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedPtyPresence {
     ConfirmedAbsent,
@@ -203,19 +167,22 @@ pub(crate) struct AgentSessionOperations {
 }
 
 impl AgentSessionOperations {
-    pub(crate) fn for_state(origin: &AgentSessionOrigin, lifecycle: AgentSessionLifecycle) -> Self {
-        let standalone = origin.is_standalone();
+    pub(crate) fn for_state(
+        tree_parent: Option<&AgentSessionTreeParent>,
+        lifecycle: AgentSessionLifecycle,
+    ) -> Self {
+        let tree_root = tree_parent.is_none();
         Self {
-            can_archive: standalone && lifecycle != AgentSessionLifecycle::Archived,
-            can_restore: standalone && lifecycle == AgentSessionLifecycle::Archived,
-            can_delete: standalone && lifecycle == AgentSessionLifecycle::Archived,
+            can_archive: tree_root && lifecycle != AgentSessionLifecycle::Archived,
+            can_restore: tree_root && lifecycle == AgentSessionLifecycle::Archived,
+            can_delete: tree_root && lifecycle == AgentSessionLifecycle::Archived,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionRemovalError {
-    Standalone,
+    WithoutTreeParent,
     WorkflowOwned,
     NotArchived,
     ProviderSessionKnown,
@@ -228,114 +195,23 @@ pub(crate) struct AgentSession {
     workspace: WorkspaceIdentity,
     worktree_path: String,
     provider: ProviderKind,
-    origin: AgentSessionOrigin,
+    tree_parent: Option<AgentSessionTreeParent>,
     lifecycle: AgentSessionLifecycle,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
     last_exit_abnormal: bool,
+    last_exit_code: Option<i32>,
     uncommitted_events: Vec<AgentSessionLifecycleEvent>,
 }
 
 impl AgentSession {
-    pub(crate) fn rehydrate(
-        events: &[AgentSessionLifecycleEvent],
-    ) -> Result<Self, AgentSessionRehydrateError> {
-        let (first, remaining) = events
-            .split_first()
-            .ok_or(AgentSessionRehydrateError::EmptyStream)?;
-        let AgentSessionLifecycleEvent::Created {
-            id,
-            workspace,
-            worktree_path,
-            provider,
-            origin,
-        } = first
-        else {
-            return Err(AgentSessionRehydrateError::FirstEventNotCreated);
-        };
-        let mut session = Self::create(
-            id.clone(),
-            workspace.clone(),
-            worktree_path.clone(),
-            *provider,
-            origin.clone(),
-        )
-        .map_err(|_| AgentSessionRehydrateError::InvalidEventSequence)?;
-        session.take_uncommitted_events();
-        for event in remaining {
-            match event {
-                AgentSessionLifecycleEvent::Created { .. } => {
-                    return Err(AgentSessionRehydrateError::DuplicateCreated);
-                }
-                AgentSessionLifecycleEvent::ProviderSessionAssociated {
-                    provider_session_id,
-                    transcript_ref,
-                } => {
-                    let outcome = session
-                        .associate_provider_session(
-                            provider_session_id.clone(),
-                            transcript_ref.as_deref(),
-                        )
-                        .map_err(|_| AgentSessionRehydrateError::InvalidEventSequence)?;
-                    if outcome == AgentSessionMutationOutcome::AlreadyApplied {
-                        return Err(AgentSessionRehydrateError::InvalidEventSequence);
-                    }
-                }
-                AgentSessionLifecycleEvent::LifecycleChanged {
-                    lifecycle,
-                    last_exit_abnormal,
-                } => {
-                    let transition_allowed = matches!(
-                        (session.lifecycle, *lifecycle),
-                        (
-                            AgentSessionLifecycle::Open,
-                            AgentSessionLifecycle::Paused | AgentSessionLifecycle::Archived
-                        ) | (
-                            AgentSessionLifecycle::Paused,
-                            AgentSessionLifecycle::Open | AgentSessionLifecycle::Archived
-                        ) | (AgentSessionLifecycle::Archived, AgentSessionLifecycle::Open)
-                    );
-                    if !transition_allowed {
-                        return Err(AgentSessionRehydrateError::InvalidEventSequence);
-                    }
-                    if *lifecycle == AgentSessionLifecycle::Archived
-                        && (session.provider_session_id.is_none()
-                            || !session.origin.is_standalone())
-                    {
-                        return Err(AgentSessionRehydrateError::InvalidEventSequence);
-                    }
-                    if *lifecycle == AgentSessionLifecycle::Paused
-                        && session.provider_session_id.is_none()
-                    {
-                        return Err(AgentSessionRehydrateError::InvalidEventSequence);
-                    }
-                    session.lifecycle = *lifecycle;
-                    session.last_exit_abnormal = *last_exit_abnormal;
-                }
-                AgentSessionLifecycleEvent::InitialInstructionAdmitted => {
-                    let outcome = session
-                        .admit_initial_instruction()
-                        .map_err(|_| AgentSessionRehydrateError::InvalidEventSequence)?;
-                    if outcome == AgentSessionInitialInstructionOutcome::AlreadyAdmitted {
-                        return Err(AgentSessionRehydrateError::InvalidEventSequence);
-                    }
-                }
-                AgentSessionLifecycleEvent::Tombstoned { reason } => {
-                    return Err(AgentSessionRehydrateError::Tombstoned(*reason));
-                }
-            }
-            session.take_uncommitted_events();
-        }
-        Ok(session)
-    }
-
     pub(crate) fn create(
         id: impl Into<String>,
         workspace: WorkspaceIdentity,
         worktree_path: impl Into<String>,
         provider: ProviderKind,
-        origin: AgentSessionOrigin,
+        tree_parent: Option<AgentSessionTreeParent>,
     ) -> Result<Self, AgentSessionCreationError> {
         let id = id.into();
         if id.trim().is_empty() {
@@ -354,21 +230,35 @@ impl AgentSession {
             workspace: workspace.clone(),
             worktree_path: worktree_path.clone(),
             provider,
-            origin: origin.clone(),
+            tree_parent: tree_parent.clone(),
         };
         Ok(Self {
             id,
             workspace,
             worktree_path,
             provider,
-            origin,
+            tree_parent,
             lifecycle: AgentSessionLifecycle::Open,
             provider_session_id: None,
             transcript_ref: None,
             initial_instruction_admitted: false,
             last_exit_abnormal: false,
+            last_exit_code: None,
             uncommitted_events: vec![created],
         })
+    }
+
+    /// 事実ログから導出済みの lifecycle と異常終了状態だけを復元する。
+    /// provider session 参照など、別の事実から復元する属性は変更しない。
+    pub(crate) fn restore_derived_lifecycle(
+        &mut self,
+        lifecycle: AgentSessionLifecycle,
+        last_exit_abnormal: bool,
+    ) {
+        debug_assert!(self.uncommitted_events.is_empty());
+        self.lifecycle = lifecycle;
+        self.last_exit_abnormal = last_exit_abnormal;
+        self.last_exit_code = None;
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -387,8 +277,8 @@ impl AgentSession {
         self.provider
     }
 
-    pub(crate) fn origin(&self) -> &AgentSessionOrigin {
-        &self.origin
+    pub(crate) fn tree_parent(&self) -> Option<&AgentSessionTreeParent> {
+        self.tree_parent.as_ref()
     }
 
     pub(crate) fn lifecycle(&self) -> AgentSessionLifecycle {
@@ -464,6 +354,10 @@ impl AgentSession {
         self.last_exit_abnormal
     }
 
+    pub(crate) fn last_exit_code(&self) -> Option<i32> {
+        self.last_exit_code
+    }
+
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {
         match pty_presence {
             ManagedPtyPresence::Live => AgentSessionOpenAction::Attach,
@@ -494,6 +388,7 @@ impl AgentSession {
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
         self.last_exit_abnormal = exit_code != Some(0);
+        self.last_exit_code = exit_code;
         self.uncommitted_events
             .push(AgentSessionLifecycleEvent::LifecycleChanged {
                 lifecycle: AgentSessionLifecycle::Paused,
@@ -505,7 +400,7 @@ impl AgentSession {
     pub(crate) fn archive(
         &mut self,
     ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
-        if !self.origin.is_standalone() {
+        if self.tree_parent.is_some() {
             return Err(AgentSessionArchiveError::WorkflowOwned);
         }
         if self.lifecycle == AgentSessionLifecycle::Archived {
@@ -532,6 +427,7 @@ impl AgentSession {
             AgentSessionRecoveryResult::Succeeded => {
                 self.lifecycle = AgentSessionLifecycle::Open;
                 self.last_exit_abnormal = false;
+                self.last_exit_code = None;
                 self.uncommitted_events
                     .push(AgentSessionLifecycleEvent::LifecycleChanged {
                         lifecycle: AgentSessionLifecycle::Open,
@@ -552,6 +448,7 @@ impl AgentSession {
             AgentSessionRecoveryResult::Succeeded => {
                 self.lifecycle = AgentSessionLifecycle::Open;
                 self.last_exit_abnormal = false;
+                self.last_exit_code = None;
                 self.uncommitted_events
                     .push(AgentSessionLifecycleEvent::LifecycleChanged {
                         lifecycle: AgentSessionLifecycle::Open,
@@ -580,8 +477,8 @@ impl AgentSession {
     pub(crate) fn admit_initial_instruction(
         &mut self,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
-        if self.origin.is_standalone() {
-            return Err(AgentSessionInitialInstructionError::Standalone);
+        if self.tree_parent.is_none() {
+            return Err(AgentSessionInitialInstructionError::WithoutTreeParent);
         }
         if self.initial_instruction_admitted {
             return Ok(AgentSessionInitialInstructionOutcome::AlreadyAdmitted);
@@ -595,7 +492,7 @@ impl AgentSession {
     pub(crate) fn authorize_delete(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if !self.origin.is_standalone() {
+        if self.tree_parent.is_some() {
             return Err(AgentSessionRemovalError::WorkflowOwned);
         }
         if self.lifecycle != AgentSessionLifecycle::Archived {
@@ -607,7 +504,7 @@ impl AgentSession {
     pub(crate) fn authorize_archive_fallback_delete(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if !self.origin.is_standalone() {
+        if self.tree_parent.is_some() {
             return Err(AgentSessionRemovalError::WorkflowOwned);
         }
         if self.provider_session_id.is_some() {
@@ -632,8 +529,8 @@ impl AgentSession {
     pub(crate) fn authorize_workflow_launch_rollback(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if self.origin.is_standalone() {
-            return Err(AgentSessionRemovalError::Standalone);
+        if self.tree_parent.is_none() {
+            return Err(AgentSessionRemovalError::WithoutTreeParent);
         }
         Ok(AgentSessionRemovalAuthorization::WorkflowLaunchRollback)
     }

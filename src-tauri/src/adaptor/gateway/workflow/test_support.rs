@@ -1,86 +1,220 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-use crate::domain::local_event::{
-    CommitOperationKind, LocalEventTransactionRepository, LocalStateMutation, Revision,
-    RevisionGuard, SessionProjectionMutation, SessionProjectionRecord,
-    WorkflowExecutionMetadataRecord, WorkflowExecutionNodeProjectionMutation,
-    WorkflowExecutionProjectionMutation, WorkflowExecutionProjectionRecord,
-};
 
+#[cfg(test)]
 use super::event::WorkflowEvent;
+#[cfg(test)]
 use super::execution_store::WorkflowExecutionMetadata;
-use super::log::WorkflowEventLog;
 
-fn event_log(store: &Arc<LocalEventStore>) -> WorkflowEventLog {
-    let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-    WorkflowEventLog::with_authority(repository, store.installation_id().to_string())
+pub(crate) struct WorkflowSessionFactSeed<'a> {
+    pub workflow_name: &'a str,
+    pub request: &'a str,
+    pub worktree_path: &'a str,
+    pub provider: crate::domain::provider_lifecycle::ProviderKind,
+    pub workflow_execution_id: &'a str,
+    pub node_execution_id: &'a str,
+    pub session_id: &'a str,
+    pub initial_instruction_admitted: bool,
 }
 
+pub(crate) fn seed_workflow_session_facts(
+    store: &Arc<LocalEventStore>,
+    seed: WorkflowSessionFactSeed<'_>,
+) -> Result<(), String> {
+    use crate::domain::workflow::{
+        ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
+        NodeKindName, SequenceSpec, SessionAttachedFact, SessionSpec, StartedFact, TreeRootFact,
+        WorkflowDefinition, WorkflowRootFact,
+    };
+
+    if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)?.is_empty() {
+        return Ok(());
+    }
+    let definition = WorkflowDefinition {
+        name: seed.workflow_name.to_string(),
+        description: String::new(),
+        builtin: false,
+        schemas: Default::default(),
+        nodes: vec![
+            NodeDefinition {
+                name: "main".to_string(),
+                kind: NodeKind::Sequence(SequenceSpec {
+                    entry: None,
+                    output: None,
+                    children: Vec::new(),
+                }),
+                artifact: None,
+                input: Vec::new(),
+                completion: crate::domain::workflow::NodeCompletion::Auto,
+                worktree: None,
+            },
+            NodeDefinition {
+                name: "impl".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    provider: seed.provider,
+                    model: None,
+                    permission: None,
+                    facets: Default::default(),
+                }),
+                artifact: None,
+                input: Vec::new(),
+                completion: crate::domain::workflow::NodeCompletion::Auto,
+                worktree: None,
+            },
+        ],
+        entry: "main".to_string(),
+    };
+    let root_meta = NodeFactMeta {
+        tree_id: seed.workflow_execution_id.to_string(),
+        node_execution_id: seed.workflow_execution_id.to_string(),
+        parent_id: None,
+        node_name: "main".to_string(),
+        kind: NodeKindName::Sequence,
+        attempt: 1,
+    };
+    let node_meta = NodeFactMeta {
+        tree_id: seed.workflow_execution_id.to_string(),
+        node_execution_id: seed.node_execution_id.to_string(),
+        parent_id: Some(seed.workflow_execution_id.to_string()),
+        node_name: "impl".to_string(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    };
+    super::fact_log::append_single_fact(
+        store,
+        &root_meta,
+        &NodeFact::Started(StartedFact {
+            parent: None,
+            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
+                workflow_name: seed.workflow_name.to_string(),
+                worktree_path: seed.worktree_path.to_string(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: seed.request.to_string(),
+                definition,
+            })),
+        }),
+        1,
+    )?;
+    super::fact_log::append_single_fact(
+        store,
+        &node_meta,
+        &NodeFact::Started(StartedFact {
+            parent: Some(ExecutionParentRef::sequence_child(
+                seed.workflow_execution_id,
+            )),
+            root: None,
+        }),
+        2,
+    )?;
+    super::fact_log::append_single_fact(
+        store,
+        &node_meta,
+        &NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: seed.session_id.to_string(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: seed.initial_instruction_admitted,
+        }),
+        3,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn seed_canonical_execution(
     store: &Arc<LocalEventStore>,
     execution: &WorkflowExecutionMetadata,
     events: &[WorkflowEvent],
 ) {
-    let record = WorkflowExecutionMetadataRecord {
-        execution_id: execution.execution_id.clone(),
-        workflow_name: execution.workflow_name.clone(),
-        status: execution.status,
-        worktree_path: execution.worktree_path.clone(),
-        current_node: execution.current_node.clone(),
-        created_from: execution.created_from,
-        started_at_bits: execution.started_at.to_bits(),
-        updated_at_bits: execution.updated_at.to_bits(),
-        completed_at_bits: execution.completed_at.map(f64::to_bits),
-        error_reason: execution.error_reason.clone(),
-        interruption_reason: execution.interruption_reason,
-        resume_from_node: execution.resume_from_node.clone(),
-        total_token_usage: execution.total_token_usage.clone(),
-    };
-    let mutations = vec![
-        LocalStateMutation::SessionProjection(SessionProjectionMutation {
-            session_id: format!("workflow:{}", execution.execution_id),
-            projection: SessionProjectionRecord::WorkflowExecution(
-                WorkflowExecutionProjectionRecord::Present(record.clone()),
-            ),
-            expected: RevisionGuard::Absent,
-            revision: Revision::new(0).unwrap(),
-        }),
-        LocalStateMutation::WorkflowExecutionProjection(WorkflowExecutionProjectionMutation {
-            projection: WorkflowExecutionProjectionRecord::Present(record),
-            expected: RevisionGuard::Absent,
-            revision: Revision::new(0).unwrap(),
-        }),
-        LocalStateMutation::WorkflowExecutionNodeProjection(
-            WorkflowExecutionNodeProjectionMutation {
-                execution_id: execution.execution_id.clone(),
-                nodes: Vec::new(),
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(0).unwrap(),
-            },
-        ),
-    ];
-    let log = event_log(store);
     if events.is_empty() {
-        log.commit_projection_durable_blocking(&execution.execution_id, mutations)
-            .unwrap();
+        // 事実列が既に seed 済みなら合成しない（既存の木を正とする）。
+        let existing = super::fact_log::read_tree_records(store, &execution.execution_id).unwrap();
+        if existing.is_empty() {
+            let synthesized = synthesized_metadata_events(execution);
+            super::fact_log::append_facts_for_events(store, &synthesized).unwrap();
+        }
     } else {
-        log.append_batch_durable_with_mutations_blocking_as(
-            CommitOperationKind::Workflow,
-            events,
-            mutations,
-        )
-        .unwrap();
+        super::fact_log::append_facts_for_events(store, events).unwrap();
     }
 }
 
+/// metadata のみの seed を fold（node_events）でも観測できるよう、
+/// 状態に対応する最小の事実列を合成する。
+#[cfg(test)]
+fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<WorkflowEvent> {
+    use crate::domain::workflow::{
+        ExecutionStatus, NodeDefinition, NodeKindName, WorkflowDefinition,
+    };
+
+    let definition = WorkflowDefinition {
+        name: execution.workflow_name.clone(),
+        description: String::new(),
+        builtin: false,
+        schemas: Default::default(),
+        nodes: vec![NodeDefinition {
+            name: "main".to_string(),
+            kind: crate::domain::workflow::NodeKind::Session(
+                crate::domain::workflow::SessionSpec::default(),
+            ),
+            artifact: None,
+            input: Vec::new(),
+            completion: crate::domain::workflow::NodeCompletion::Auto,
+            worktree: None,
+        }],
+        entry: "main".to_string(),
+    };
+    let root_node_execution_id = format!("{}-root", execution.execution_id);
+    let mut events = vec![
+        WorkflowEvent::ExecutionStarted {
+            execution_id: execution.execution_id.clone(),
+            workflow_name: execution.workflow_name.clone(),
+            worktree_path: execution.worktree_path.clone(),
+            created_from: execution.created_from,
+            request: String::new(),
+            definition,
+            timestamp: execution.started_at,
+        },
+        WorkflowEvent::NodeStarted {
+            execution_id: execution.execution_id.clone(),
+            node_execution_id: root_node_execution_id.clone(),
+            node_name: "main".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            parent: None,
+            timestamp: execution.started_at,
+        },
+    ];
+    let settled_at = execution.completed_at.unwrap_or(execution.updated_at);
+    match execution.status {
+        ExecutionStatus::Completed => {
+            events.push(WorkflowEvent::NodeSubmitReceived {
+                execution_id: execution.execution_id.clone(),
+                node_execution_id: root_node_execution_id.clone(),
+                timestamp: settled_at,
+            });
+            events.push(WorkflowEvent::NodeStopReceived {
+                execution_id: execution.execution_id.clone(),
+                node_execution_id: root_node_execution_id,
+                timestamp: settled_at,
+            });
+        }
+        ExecutionStatus::Aborted => {
+            events.push(WorkflowEvent::ExecutionAborted {
+                execution_id: execution.execution_id.clone(),
+                aborted_node: None,
+                timestamp: settled_at,
+            });
+        }
+        ExecutionStatus::Running => {}
+        unsupported => panic!("unsupported synthesized terminal status: {unsupported:?}"),
+    }
+    events
+}
+
+#[cfg(test)]
 pub(crate) fn append_canonical_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
-    event_log(store).append_batch_durable_with_mutations_blocking_as(
-        CommitOperationKind::Workflow,
-        events,
-        Vec::new(),
-    )
+    super::fact_log::append_facts_for_events(store, events)
 }

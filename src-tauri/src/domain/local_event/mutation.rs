@@ -6,13 +6,11 @@
 //! converges on the saved result, a different content is a typed conflict.
 
 use crate::domain::local_event::events::ApplicationShutdownPhase;
-use crate::domain::local_event::identifiers::{Revision, StreamId, StreamVersion};
+use crate::domain::local_event::identifiers::{Revision, StreamId};
 use crate::domain::local_event::record::{
     ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
     RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord,
-    WorkflowExecutionProjectionRecord,
 };
-use crate::domain::workspace_tree::WorkspaceTreeNode;
 
 /// Operation kinds that carry a caller operation identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,46 +140,16 @@ pub struct SessionProjectionMutation {
     pub revision: Revision,
 }
 
-/// Remove a newly-created session read model when its owning setup operation
-/// rolls back before admission. Message rows are removed by the same mutation
-/// before the session row, so no derived transcript can survive the rollback.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionProjectionRemovalMutation {
-    pub session_id: String,
-    pub expected: RevisionGuard,
-}
-
 /// Removes every durable AgentSession payload except the newly
 /// appended tombstone. A released provider ownership aggregate is removed in
 /// the same transaction so the provider session can be claimed again without
 /// retaining its resume identifier in Releash state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSessionRemovalMutation {
-    pub agent_session_stream: StreamId,
-    pub retained_tombstone_sequence: StreamVersion,
+    pub node_event_tree_id: String,
     pub ownership_projection_id: Option<String>,
     pub ownership_stream: Option<StreamId>,
     pub ownership_expected: Option<Revision>,
-}
-
-/// One indexed execution row, guarded by the owning WorkflowExecution
-/// aggregate revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowExecutionProjectionMutation {
-    pub projection: WorkflowExecutionProjectionRecord,
-    pub expected: RevisionGuard,
-    pub revision: Revision,
-}
-
-/// Complete node-row delta for one WorkflowExecution revision. Runtime writes
-/// replace only this execution's rows; deleting an execution removes them via
-/// the execution-row foreign key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowExecutionNodeProjectionMutation {
-    pub execution_id: String,
-    pub nodes: Vec<WorkspaceTreeNode>,
-    pub expected: RevisionGuard,
-    pub revision: Revision,
 }
 
 /// Recovery partition presented for unowned pending work.
@@ -332,10 +300,7 @@ pub enum LocalStateMutation {
     CallerAttempt(CallerAttemptMutation),
     OperationRecord(OperationRecordMutation),
     SessionProjection(SessionProjectionMutation),
-    SessionProjectionRemoval(SessionProjectionRemovalMutation),
     AgentSessionRemoval(AgentSessionRemovalMutation),
-    WorkflowExecutionProjection(WorkflowExecutionProjectionMutation),
-    WorkflowExecutionNodeProjection(WorkflowExecutionNodeProjectionMutation),
     Obligation(ObligationMutation),
     RecoveryAction(RecoveryActionMutation),
     ShutdownPlan(ShutdownPlanMutation),
@@ -382,20 +347,12 @@ impl LocalStateMutation {
             // domain-only encoder for a projection would silently change
             // existing replay identities, so projection-capable commit paths
             // must use the gateway canonicalizer.
-            Self::SessionProjection(_)
-            | Self::WorkflowExecutionProjection(_)
-            | Self::WorkflowExecutionNodeProjection(_) => {
+            Self::SessionProjection(_) => {
                 return Err("projection identity-v1 encoding is gateway-owned")
-            }
-            Self::SessionProjectionRemoval(m) => {
-                text(&mut bytes, "session_projection_removal");
-                text(&mut bytes, &m.session_id);
-                revision_guard(&mut bytes, m.expected);
             }
             Self::AgentSessionRemoval(m) => {
                 text(&mut bytes, "agent_session_removal");
-                text(&mut bytes, m.agent_session_stream.as_str());
-                bytes.extend_from_slice(&m.retained_tombstone_sequence.value().to_be_bytes());
+                text(&mut bytes, &m.node_event_tree_id);
                 match (
                     &m.ownership_projection_id,
                     &m.ownership_stream,
@@ -461,32 +418,13 @@ impl LocalStateMutation {
             }
             Self::OperationRecord(m) => typed(&m.receipt) + typed(&m.latest_status) + 64,
             Self::SessionProjection(m) => m.projection.semantic_bytes().saturating_add(64),
-            Self::SessionProjectionRemoval(m) => m.session_id.len() + 64,
             Self::AgentSessionRemoval(m) => {
-                m.agent_session_stream.as_str().len()
+                m.node_event_tree_id.len()
                     + m.ownership_projection_id.as_ref().map_or(0, String::len)
                     + m.ownership_stream
                         .as_ref()
                         .map_or(0, |stream| stream.as_str().len())
                     + 96
-            }
-            Self::WorkflowExecutionProjection(m) => typed(&m.projection).saturating_add(64),
-            Self::WorkflowExecutionNodeProjection(m) => {
-                m.nodes
-                    .iter()
-                    .fold(m.execution_id.len().saturating_add(64), |total, node| {
-                        total
-                            .saturating_add(node.id.len())
-                            .saturating_add(node.title.len())
-                            .saturating_add(node.error_reason.as_ref().map_or(0, String::len))
-                            .saturating_add(node.display_command.as_ref().map_or(0, String::len))
-                            .saturating_add(
-                                node.command_result
-                                    .as_ref()
-                                    .map_or(0, |result| result.stdout.len() + result.stderr.len()),
-                            )
-                            .saturating_add(256)
-                    })
             }
             Self::Obligation(m) => {
                 typed(&m.record)
@@ -542,17 +480,6 @@ mod tests {
 
     #[test]
     fn canonical_identity_v1_is_a_stable_explicit_contract() {
-        let mutation =
-            LocalStateMutation::SessionProjectionRemoval(SessionProjectionRemovalMutation {
-                session_id: "s-1".to_string(),
-                expected: RevisionGuard::Expected(Revision::new(7).unwrap()),
-            });
-
-        assert_eq!(
-            mutation.canonical_identity_v1().unwrap(),
-            mutation.clone().canonical_identity_v1().unwrap()
-        );
-
         let unsupported = LocalStateMutation::OperationBinding(OperationBindingMutation {
             key: CallerOperationKey {
                 principal: "principal".to_string(),

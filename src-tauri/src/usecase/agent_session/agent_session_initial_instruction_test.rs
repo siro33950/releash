@@ -4,14 +4,42 @@ use super::agent_session_initial_instruction::AgentSessionInitialInstructionDeli
 use super::{AgentSessionInitialInstructionUsecase, AgentSessionUsecase};
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::domain::agent_session::aggregates::AgentSessionOrigin;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
+use crate::domain::agent_session::aggregates::AgentSessionTreeParent;
 use crate::domain::agent_session::{
     ProviderAgentTerminalGatewayError, ProviderAgentTerminalInputGateway,
 };
-use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+
+/// workflow engine が所有する実行木を模して、session が attach 済みの
+/// node を持つ tree を node_events に seed する。
+fn seed_workflow_tree(
+    store: &Arc<LocalEventStore>,
+    tree_id: &str,
+    node_execution_id: &str,
+    session_id: &str,
+    provider: ProviderKind,
+) {
+    seed_workflow_session_facts(
+        store,
+        WorkflowSessionFactSeed {
+            workflow_name: "wf",
+            request: "initial instruction",
+            worktree_path: "/repo",
+            provider,
+            workflow_execution_id: tree_id,
+            node_execution_id,
+            session_id,
+            // dispatch 前の未配送状態を検証する fixture。
+            initial_instruction_admitted: false,
+        },
+    )
+    .unwrap();
+}
 
 #[derive(Default)]
 struct FailingTerminalInput {
@@ -42,18 +70,22 @@ async fn test_agent_session_initial_instruction_session操作lock解放後に送
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
+    seed_workflow_tree(
+        &store,
+        "workflow-execution-1",
+        "node-execution-1",
+        "agent-workflow-locked",
+        ProviderKind::Claude,
+    );
     sessions
         .create(
             "agent-workflow-locked",
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+            Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
             "create-workflow-locked",
         )
         .await
@@ -105,18 +137,22 @@ async fn test_agent_session_initial_instruction_delivery不明でも永続化後
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(
-            store.clone() as Arc<dyn LocalEventTransactionRepository>,
-            store.installation_id().to_string(),
-        ),
+        LocalAgentSessionRepository::new(store.clone()),
     )));
+    seed_workflow_tree(
+        &store,
+        "workflow-execution-1",
+        "node-execution-1",
+        "agent-workflow",
+        ProviderKind::Codex,
+    );
     sessions
         .create(
             "agent-workflow",
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+            Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
             "create-workflow",
         )
         .await

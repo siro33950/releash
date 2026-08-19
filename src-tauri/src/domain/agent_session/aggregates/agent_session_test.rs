@@ -1,20 +1,20 @@
 use super::agent_session::{
     AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
-    AgentSessionInitialInstructionError, AgentSessionOriginError, AgentSessionRecoveryError,
-    AgentSessionRehydrateError, AgentSessionRemovalAuthorization, AgentSessionRemovalError,
+    AgentSessionInitialInstructionError, AgentSessionRecoveryError,
+    AgentSessionRemovalAuthorization, AgentSessionRemovalError, AgentSessionTreeParentError,
 };
 use super::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
     AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionOperations, AgentSessionOrigin,
-    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
+    AgentSessionRecoveryResult, AgentSessionTreeParent, ManagedPtyPresence,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[test]
-fn test_agent_session生成_identityとproviderとoriginを固定してopenになる() {
+fn test_agent_session生成_identityとproviderとtree_parentを固定してopenになる() {
     let workspace = WorkspaceIdentity::new("/repo");
 
     let session = AgentSession::create(
@@ -22,7 +22,7 @@ fn test_agent_session生成_identityとproviderとoriginを固定してopenに�
         workspace.clone(),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -30,7 +30,7 @@ fn test_agent_session生成_identityとproviderとoriginを固定してopenに�
     assert_eq!(session.workspace(), &workspace);
     assert_eq!(session.worktree_path(), "/repo/.worktrees/feature");
     assert_eq!(session.provider(), ProviderKind::Claude);
-    assert_eq!(session.origin(), &AgentSessionOrigin::Standalone);
+    assert_eq!(session.tree_parent(), None);
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
     assert_eq!(
         session.terminal_surface_owner(),
@@ -46,7 +46,7 @@ fn test_agent_session生成_永続化するcreated_eventを発生させる() {
         workspace.clone(),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -57,7 +57,7 @@ fn test_agent_session生成_永続化するcreated_eventを発生させる() {
             workspace,
             worktree_path: "/repo/.worktrees/feature".to_string(),
             provider: ProviderKind::Claude,
-            origin: AgentSessionOrigin::Standalone,
+            tree_parent: None,
         }]
     );
 }
@@ -69,7 +69,7 @@ fn test_agent_session_event_永続化へ渡したeventを未commit一覧から�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -80,245 +80,13 @@ fn test_agent_session_event_永続化へ渡したeventを未commit一覧から�
 }
 
 #[test]
-fn test_agent_session再構築_event列から状態を復元し未commit_eventを作らない() {
-    let workspace = WorkspaceIdentity::new("/repo");
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: workspace.clone(),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1")
-                .unwrap(),
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: Some("provider://transcript/1".to_string()),
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: false,
-        },
-        AgentSessionLifecycleEvent::InitialInstructionAdmitted,
-    ];
-
-    let mut session = AgentSession::rehydrate(&events).unwrap();
-
-    assert_eq!(session.id(), "agent-session-1");
-    assert_eq!(session.workspace(), &workspace);
-    assert_eq!(session.provider(), ProviderKind::Codex);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
-    assert_eq!(session.provider_session_id(), Some("provider-session-1"));
-    assert_eq!(session.transcript_ref(), Some("provider://transcript/1"));
-    assert_eq!(
-        session.admit_initial_instruction().unwrap(),
-        AgentSessionInitialInstructionOutcome::AlreadyAdmitted
-    );
-    assert!(session.uncommitted_events().is_empty());
-}
-
-#[test]
-fn test_agent_session再構築_tombstone済みstreamをlive_sessionとして復元しない() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::Tombstoned {
-            reason: AgentSessionRemovalAuthorization::GarbageCollection,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(
-        error,
-        AgentSessionRehydrateError::Tombstoned(AgentSessionRemovalAuthorization::GarbageCollection)
-    );
-}
-
-#[test]
-fn test_agent_session再構築_provider_sessionなしのarchived_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Archived,
-            last_exit_abnormal: false,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_workflow_nodeのarchived_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1")
-                .unwrap(),
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Archived,
-            last_exit_abnormal: false,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_provider_sessionなしのpaused_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: false,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_重複lifecycle_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: false,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: false,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_archivedからpausedへの遷移を拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Archived,
-            last_exit_abnormal: false,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: false,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_重複initial_instruction_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1")
-                .unwrap(),
-        },
-        AgentSessionLifecycleEvent::InitialInstructionAdmitted,
-        AgentSessionLifecycleEvent::InitialInstructionAdmitted,
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
-fn test_agent_session再構築_重複provider_association_eventを拒否する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-    ];
-
-    let error = AgentSession::rehydrate(&events).unwrap_err();
-
-    assert_eq!(error, AgentSessionRehydrateError::InvalidEventSequence);
-}
-
-#[test]
 fn test_agent_session生成_空のidentityを拒否する() {
     let error = AgentSession::create(
         " ",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap_err();
 
@@ -332,7 +100,7 @@ fn test_agent_session生成_空のworkspaceを拒否する() {
         WorkspaceIdentity::new(" "),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap_err();
 
@@ -346,7 +114,7 @@ fn test_agent_session生成_空のworktreeを拒否する() {
         WorkspaceIdentity::new("/repo"),
         " ",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap_err();
 
@@ -360,7 +128,7 @@ fn test_agent_session_restore_失敗時はarchivedを維持する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -383,7 +151,7 @@ fn test_agent_session_restore_成功時はopenへ遷移する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -406,7 +174,7 @@ fn test_agent_session_restore_成功時にopen_eventを発生させる() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -435,7 +203,7 @@ fn test_agent_session_restore_archived以外では拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -454,7 +222,7 @@ fn test_agent_session_resume_失敗時はpausedを維持する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -477,7 +245,7 @@ fn test_agent_session_resume_成功時はopenへ遷移する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -500,7 +268,7 @@ fn test_agent_session_resume_成功時にopen_eventを発生させる() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -529,7 +297,7 @@ fn test_agent_session_resume_paused以外では拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -542,13 +310,13 @@ fn test_agent_session_resume_paused以外では拒否する() {
 }
 
 #[test]
-fn test_agent_sessionアーカイブ_standaloneでprovider_session_id既知ならarchivedになる() {
+fn test_agent_sessionアーカイブ_親なしでprovider_session_id既知ならarchivedになる() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -568,7 +336,7 @@ fn test_agent_sessionアーカイブ_永続化するarchived_eventを発生さ�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -594,7 +362,7 @@ fn test_agent_sessionアーカイブ_archivedへの再要求は冪等になる()
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -615,7 +383,7 @@ fn test_agent_sessionアーカイブ_pausedからarchivedへ遷移する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -636,7 +404,7 @@ fn test_agent_sessionアーカイブ_provider_session_id不明ならdelete確認
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -656,7 +424,7 @@ fn test_agent_sessionアーカイブ縮退_provider_session_id不明なら確認
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -675,7 +443,7 @@ fn test_agent_sessionアーカイブ縮退_provider_session_id既知なら拒否
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -688,13 +456,13 @@ fn test_agent_sessionアーカイブ縮退_provider_session_id既知なら拒否
 }
 
 #[test]
-fn test_agent_sessionアーカイブ縮退_workflow_node所有sessionでは拒否する() {
+fn test_agent_sessionアーカイブ縮退_親を持つsessionでは拒否する() {
     let session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
 
@@ -704,13 +472,13 @@ fn test_agent_sessionアーカイブ縮退_workflow_node所有sessionでは拒�
 }
 
 #[test]
-fn test_agent_sessionアーカイブ_workflow_node所有sessionでは拒否する() {
+fn test_agent_sessionアーカイブ_親を持つsessionでは拒否する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
     session
@@ -724,13 +492,13 @@ fn test_agent_sessionアーカイブ_workflow_node所有sessionでは拒否す�
 }
 
 #[test]
-fn test_agent_session削除_archivedのstandaloneだけを許可する() {
+fn test_agent_session削除_archivedの親なしsessionだけを許可する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -744,12 +512,6 @@ fn test_agent_session削除_archivedのstandaloneだけを許可する() {
         authorization,
         AgentSessionRemovalAuthorization::ExplicitDelete
     );
-    assert_eq!(
-        authorization.tombstone_event(),
-        AgentSessionLifecycleEvent::Tombstoned {
-            reason: AgentSessionRemovalAuthorization::ExplicitDelete,
-        }
-    );
 }
 
 #[test]
@@ -759,7 +521,7 @@ fn test_agent_session削除_openでは拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -769,13 +531,13 @@ fn test_agent_session削除_openでは拒否する() {
 }
 
 #[test]
-fn test_agent_session削除_workflow_node所有sessionでは拒否する() {
+fn test_agent_session削除_親を持つsessionでは拒否する() {
     let session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
 
@@ -785,21 +547,21 @@ fn test_agent_session削除_workflow_node所有sessionでは拒否する() {
 }
 
 #[test]
-fn test_agent_session_workflow添付前rollback_workflow_node所有sessionだけを許可する() {
+fn test_agent_session_workflow添付前rollback_親を持つsessionだけを許可する() {
     let workflow_session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
-    let standalone_session = AgentSession::create(
+    let parentless_session = AgentSession::create(
         "agent-session-2",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -810,10 +572,10 @@ fn test_agent_session_workflow添付前rollback_workflow_node所有sessionだけ
         AgentSessionRemovalAuthorization::WorkflowLaunchRollback
     );
     assert_eq!(
-        standalone_session
+        parentless_session
             .authorize_workflow_launch_rollback()
             .unwrap_err(),
-        AgentSessionRemovalError::Standalone
+        AgentSessionRemovalError::WithoutTreeParent
     );
 }
 
@@ -824,7 +586,7 @@ fn test_agent_session_gc_openでprovider_idなしpty不在確定なら許可す�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -845,7 +607,7 @@ fn test_agent_session_gc_pty生死不明では拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -863,7 +625,7 @@ fn test_agent_session_gc_live_ptyがあれば拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -879,7 +641,7 @@ fn test_agent_session_gc_provider_session_id既知なら拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -894,52 +656,79 @@ fn test_agent_session_gc_provider_session_id既知なら拒否する() {
 }
 
 #[test]
-fn test_agent_session生成_workflow_node所有関係を固定する() {
-    let origin =
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap();
+fn test_agent_session生成_実行木上の親を固定する() {
+    let tree_parent =
+        AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap();
 
     let session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        origin,
+        Some(tree_parent.clone()),
     )
     .unwrap();
 
-    assert!(!session.origin().is_standalone());
+    assert_eq!(session.tree_parent(), Some(&tree_parent));
     assert_eq!(
-        session.origin().workflow_execution_id(),
-        Some("workflow-execution-1")
+        session.tree_parent().unwrap().tree_id,
+        "workflow-execution-1"
     );
     assert_eq!(
-        session.origin().node_execution_id(),
-        Some("node-execution-1")
+        session.tree_parent().unwrap().node_execution_id,
+        "node-execution-1"
     );
 }
 
 #[test]
-fn test_agent_session生成_空のworkflow_execution_idを拒否する() {
-    let error = AgentSessionOrigin::workflow_node(" ", "node-execution-1").unwrap_err();
+fn test_agent_session生成_tree_parentをtrimして保持する() {
+    let parent = AgentSessionTreeParent::new(" workflow-1 ", " node-1 ").unwrap();
 
-    assert_eq!(error, AgentSessionOriginError::EmptyWorkflowExecutionId);
+    assert_eq!(parent.tree_id, "workflow-1");
+    assert_eq!(parent.node_execution_id, "node-1");
 }
 
 #[test]
-fn test_agent_session生成_空のnode_execution_idを拒否する() {
-    let error = AgentSessionOrigin::workflow_node("workflow-execution-1", " ").unwrap_err();
-
-    assert_eq!(error, AgentSessionOriginError::EmptyNodeExecutionId);
-}
-
-#[test]
-fn test_agent_session_initial_instruction_workflow_nodeで最初のdispatchを受理する() {
+fn test_agent_session導出復元_lifecycleと異常終了だけを未commit事実なしで設定する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        None,
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    session.restore_derived_lifecycle(AgentSessionLifecycle::Paused, true);
+
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
+    assert!(session.last_exit_abnormal());
+    assert!(session.uncommitted_events().is_empty());
+}
+
+#[test]
+fn test_agent_session生成_空のtree_idを拒否する() {
+    let error = AgentSessionTreeParent::new(" ", "node-execution-1").unwrap_err();
+
+    assert_eq!(error, AgentSessionTreeParentError::EmptyTreeId);
+}
+
+#[test]
+fn test_agent_session生成_空のnode_execution_idを拒否する() {
+    let error = AgentSessionTreeParent::new("workflow-execution-1", " ").unwrap_err();
+
+    assert_eq!(error, AgentSessionTreeParentError::EmptyNodeExecutionId);
+}
+
+#[test]
+fn test_agent_session_initial_instruction_親を持つsessionで最初のdispatchを受理する() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
 
@@ -955,7 +744,7 @@ fn test_agent_session_initial_instruction_永続化するadmitted_eventを発生
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -975,7 +764,7 @@ fn test_agent_session_initial_instruction_同じsessionへの再要求を冪等�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::workflow_node("workflow-execution-1", "node-execution-1").unwrap(),
+        Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
     )
     .unwrap();
     session.admit_initial_instruction().unwrap();
@@ -991,19 +780,22 @@ fn test_agent_session_initial_instruction_同じsessionへの再要求を冪等�
 }
 
 #[test]
-fn test_agent_session_initial_instruction_standaloneでは拒否する() {
+fn test_agent_session_initial_instruction_親なしでは拒否する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
     let error = session.admit_initial_instruction().unwrap_err();
 
-    assert_eq!(error, AgentSessionInitialInstructionError::Standalone);
+    assert_eq!(
+        error,
+        AgentSessionInitialInstructionError::WithoutTreeParent
+    );
 }
 
 #[test]
@@ -1013,7 +805,7 @@ fn test_agent_session_process終了_provider_session_id既知ならpausedへ遷�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1033,7 +825,7 @@ fn test_agent_session_process終了_永続化するpaused_eventを発生させ�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1059,7 +851,7 @@ fn test_agent_session_process終了_pausedへの重複通知は冪等になる()
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1080,7 +872,7 @@ fn test_agent_session_process終了_archivedへの遅延通知は状態を変え
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1103,7 +895,7 @@ fn test_agent_session_process終了_provider_session_id不明ならgcを要求�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -1120,7 +912,7 @@ fn test_agent_session関連付け_異なるprovider_session_idへの差し替え
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1143,7 +935,7 @@ fn test_agent_session関連付け_同じprovider_sessionとtranscriptの再送�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1166,7 +958,7 @@ fn test_agent_session関連付け_確定済みtranscript_refの差し替えを�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1188,7 +980,7 @@ fn test_agent_session関連付け_provider_session_idとopaque_transcriptだけ�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -1214,7 +1006,7 @@ fn test_agent_session関連付け_永続化するassociated_eventを発生させ
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -1242,7 +1034,7 @@ fn test_agent_session関連付け_空のprovider_session_idを拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -1259,7 +1051,7 @@ fn test_agent_session関連付け_空のtranscript_refを拒否する() {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
 
@@ -1282,7 +1074,7 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -1321,12 +1113,9 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
 }
 
 #[test]
-fn test_agent_session操作表示_originとlifecycleの規則をdomainだけが決める() {
+fn test_agent_session操作表示_tree_parentとlifecycleの規則をdomainだけが決める() {
     assert_eq!(
-        AgentSessionOperations::for_state(
-            &AgentSessionOrigin::Standalone,
-            AgentSessionLifecycle::Open,
-        ),
+        AgentSessionOperations::for_state(None, AgentSessionLifecycle::Open),
         AgentSessionOperations {
             can_archive: true,
             can_restore: false,
@@ -1334,10 +1123,7 @@ fn test_agent_session操作表示_originとlifecycleの規則をdomainだけが�
         }
     );
     assert_eq!(
-        AgentSessionOperations::for_state(
-            &AgentSessionOrigin::Standalone,
-            AgentSessionLifecycle::Archived,
-        ),
+        AgentSessionOperations::for_state(None, AgentSessionLifecycle::Archived),
         AgentSessionOperations {
             can_archive: false,
             can_restore: true,
@@ -1346,7 +1132,7 @@ fn test_agent_session操作表示_originとlifecycleの規則をdomainだけが�
     );
     assert_eq!(
         AgentSessionOperations::for_state(
-            &AgentSessionOrigin::workflow_node("workflow-1", "node-1").unwrap(),
+            Some(&AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
             AgentSessionLifecycle::Open,
         ),
         AgentSessionOperations {
@@ -1364,7 +1150,7 @@ fn test_agent_session復帰開始_resumeとrestoreの受理状態をdomainが判
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1396,7 +1182,7 @@ fn paused_candidate() -> AgentSession {
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        AgentSessionOrigin::Standalone,
+        None,
     )
     .unwrap();
     session
@@ -1465,29 +1251,4 @@ fn test_agent_session_restore成功時にlast_exit_abnormalを解除する() {
         .unwrap();
 
     assert!(!session.last_exit_abnormal());
-}
-
-#[test]
-fn test_agent_session再構築_last_exit_abnormalをevent列から復元する() {
-    let events = vec![
-        AgentSessionLifecycleEvent::Created {
-            id: "agent-session-1".to_string(),
-            workspace: WorkspaceIdentity::new("/repo"),
-            worktree_path: "/repo/.worktrees/feature".to_string(),
-            provider: ProviderKind::Codex,
-            origin: AgentSessionOrigin::Standalone,
-        },
-        AgentSessionLifecycleEvent::ProviderSessionAssociated {
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: None,
-        },
-        AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
-            last_exit_abnormal: true,
-        },
-    ];
-
-    let session = AgentSession::rehydrate(&events).unwrap();
-
-    assert!(session.last_exit_abnormal());
 }

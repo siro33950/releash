@@ -6,6 +6,7 @@ mod facet;
 mod failure;
 mod ids;
 mod node_execution;
+mod node_fact;
 mod runtime_event;
 mod runtime_projection;
 mod state;
@@ -40,6 +41,11 @@ pub use ids::{
 pub use node_execution::{
     ExecutionParentRef, FanoutSlot, NodeCompletionSignal, NodeCompletionSignalState, NodeExecution,
     NodeExecutionFailure, NodeExecutionStatus,
+};
+pub use node_fact::{
+    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, NodeFact, NodeFactMeta,
+    NodeFactRecord, ProcessExitedFact, SessionAttachedFact, SessionRootFact, StartedFact,
+    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact, WorkflowRootFact,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 #[cfg(test)]

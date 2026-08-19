@@ -344,11 +344,6 @@ mod tests {
             Ok(())
         }
 
-        fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
-            self.events.lock().unwrap().extend_from_slice(events);
-            Ok(())
-        }
-
         fn read(
             &self,
             _execution_id: &WorkflowExecutionId,
@@ -497,12 +492,13 @@ mod tests {
             event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
-                "node_execution_id": format!("{execution_id}:{node_name}:1"),
-                "node_name": node_name,
+                "nodeExecutionId": format!("{execution_id}:{node_name}:1"),
+                "nodeName": node_name,
+                "kind": "session",
+                "attempt": 1,
                 "contract": contract,
                 "value": structured_output,
-                "submitted_at": timestamp,
-                "request_id": request_id,
+                "requestId": request_id,
             }),
         }
     }
@@ -704,8 +700,10 @@ mod tests {
                 event_kind: "artifact_produced".to_string(),
                 timestamp: 4.0,
                 payload: serde_json::json!({
-                    "node_execution_id": format!("{}:review:1", test_execution_id()),
-                    "node_name": "review",
+                    "nodeExecutionId": format!("{}:review:1", test_execution_id()),
+                    "nodeName": "review",
+                    "kind": "command",
+                    "attempt": 1,
                     "contract": null,
                     "value": {
                         "ok": false,
@@ -732,7 +730,7 @@ mod tests {
                     "stderr": "err",
                     "duration": 10
                 }),
-                submitted_at: None,
+                submitted_at: Some(4.0),
                 request_id: None,
                 timestamp: 4.0,
             }

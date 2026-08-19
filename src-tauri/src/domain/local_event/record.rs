@@ -7,46 +7,10 @@ use super::{
     SafeOperationFailure, ShutdownPlanKey,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkflowExecutionProjectionRecord {
-    Present(WorkflowExecutionMetadataRecord),
-    Deleted { execution_id: String },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSessionProviderRecord {
     Claude,
     Codex,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentSessionOriginRecord {
-    Standalone,
-    WorkflowNode {
-        workflow_execution_id: String,
-        node_execution_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentSessionLifecycleRecord {
-    Open,
-    Paused,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentSessionProjectionRecord {
-    pub id: String,
-    pub workspace_identity: String,
-    pub worktree_path: String,
-    pub provider: AgentSessionProviderRecord,
-    pub origin: AgentSessionOriginRecord,
-    pub lifecycle: AgentSessionLifecycleRecord,
-    pub provider_session_id: Option<String>,
-    pub transcript_ref: Option<String>,
-    pub initial_instruction_admitted: bool,
-    pub last_exit_abnormal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,20 +29,10 @@ pub struct ProviderHookHealthProjectionRecord {
     pub warning_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowWorktreeOwnerRecord {
-    pub worktree_path: String,
-    pub execution_id: String,
-    pub active: bool,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionProjectionRecord {
-    AgentSession(AgentSessionProjectionRecord),
     ProviderSessionOwnership(ProviderSessionOwnershipProjectionRecord),
     ProviderHookHealth(ProviderHookHealthProjectionRecord),
-    WorkflowExecution(WorkflowExecutionProjectionRecord),
-    WorkflowWorktreeOwner(WorkflowWorktreeOwnerRecord),
 }
 
 impl SessionProjectionRecord {
@@ -87,13 +41,6 @@ impl SessionProjectionRecord {
             value.as_ref().map_or(0, String::len)
         }
         match self {
-            Self::AgentSession(value) => {
-                256 + value.id.len()
-                    + value.workspace_identity.len()
-                    + value.worktree_path.len()
-                    + optional(&value.provider_session_id)
-                    + optional(&value.transcript_ref)
-            }
             Self::ProviderSessionOwnership(value) => {
                 128 + value.provider_session_id.len() + optional(&value.agent_session_id)
             }
@@ -101,20 +48,6 @@ impl SessionProjectionRecord {
                 96 + value.latest_launch_id.len()
                     + optional(&value.warning_launch_id)
                     + optional(&value.warning_reason)
-            }
-            Self::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(value)) => {
-                256 + value.execution_id.len()
-                    + value.workflow_name.len()
-                    + value.worktree_path.len()
-                    + optional(&value.current_node)
-                    + optional(&value.error_reason)
-                    + optional(&value.resume_from_node)
-            }
-            Self::WorkflowExecution(WorkflowExecutionProjectionRecord::Deleted {
-                execution_id,
-            }) => 64 + execution_id.len(),
-            Self::WorkflowWorktreeOwner(value) => {
-                96 + value.worktree_path.len() + value.execution_id.len()
             }
         }
     }
@@ -196,47 +129,9 @@ pub enum ObligationRecord {
         execution_id: String,
         state: ObligationStateRecord,
     },
-    WorkflowExecution {
-        execution: WorkflowExecutionMetadataRecord,
-    },
 }
 
 impl ObligationRecord {
-    pub(crate) fn blocks_effect_admission(&self) -> bool {
-        matches!(
-            self,
-            Self::WorkflowShutdown { state, .. }
-                if !matches!(state, ObligationStateRecord::Completed | ObligationStateRecord::Cancelled)
-        )
-    }
-
-    pub(crate) fn unresolved_recovery_original_identity(
-        &self,
-        obligation_id: &str,
-    ) -> Option<String> {
-        if !self.blocks_effect_admission() {
-            return None;
-        }
-        match self {
-            Self::WorkflowShutdown {
-                effect_identity,
-                execution_id,
-                ..
-            } => Some(
-                [
-                    effect_identity.as_str(),
-                    execution_id.as_str(),
-                    obligation_id,
-                ]
-                .into_iter()
-                .find(|value| !value.is_empty() && value.len() <= 512)
-                .unwrap_or(obligation_id)
-                .to_string(),
-            ),
-            Self::WorkflowExecution { .. } => None,
-        }
-    }
-
     pub(crate) fn write_canonical_identity_v1(
         &self,
         bytes: &mut Vec<u8>,
@@ -259,12 +154,6 @@ impl ObligationRecord {
                 }
                 bytes.extend_from_slice(&owner_revision.to_be_bytes());
                 bytes.push(*state as u8);
-            }
-            Self::WorkflowExecution { execution } => {
-                text(bytes, "workflow_execution");
-                text(bytes, &execution.execution_id);
-                text(bytes, &execution.workflow_name);
-                text(bytes, &execution.worktree_path);
             }
         }
         Ok(())

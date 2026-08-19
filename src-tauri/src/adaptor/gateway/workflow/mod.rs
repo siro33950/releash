@@ -18,10 +18,10 @@ mod execution_projection_repository;
 pub(crate) mod execution_store;
 pub(crate) mod facet;
 mod facet_repository;
+pub(crate) mod fact_log;
 #[cfg(test)]
 pub(crate) mod failure_policy_config;
 pub(crate) mod failure_wire;
-pub(crate) mod log;
 pub(crate) mod mapper;
 pub(crate) mod node_session_boundary;
 mod runtime_command_gateway;
@@ -36,7 +36,6 @@ pub(crate) mod span_map;
 pub(crate) mod state;
 mod state_notification_gateway;
 pub(crate) mod storage;
-#[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
 mod worktree_gateway;

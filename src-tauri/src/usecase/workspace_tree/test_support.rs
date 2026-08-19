@@ -28,6 +28,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
     ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
         Ok(WorkspaceTreeSnapshotDto {
             nodes: Vec::new(),
+            sessions: Vec::new(),
             preferred_node_id: None,
         })
     }

@@ -37,6 +37,7 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
     pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub(crate) local_event_repository:
         Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     pub(crate) local_event_installation_id: String,
@@ -167,6 +168,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             repository_usecase,
             app_config,
             data_dir,
+            workspace_query,
             local_event_repository,
             local_event_installation_id,
             agent_session_launch,
@@ -181,8 +183,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
                 app_config,
             )),
             data_dir,
-            local_event_repository.clone(),
-            local_event_installation_id.clone(),
+            workspace_query,
             agent_session_launch,
             agent_session_initial_instruction,
             agent_session_interrupt,
@@ -328,23 +329,17 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
         &self,
         node_execution_id: &str,
     ) -> Result<Option<String>, WorkflowError> {
-        let result = self
-            .local_event_repository
-            .query(
-                crate::domain::local_event::LocalEventQuery::WorkflowExecutionByNodeExecution {
-                    node_execution_id: node_execution_id.to_string(),
-                },
-            )
-            .await
-            .map_err(|error| WorkflowError::external(error.to_string()))?;
-        match result {
-            crate::domain::local_event::LocalEventQueryResult::WorkflowExecutionByNodeExecution(
-                execution_id,
-            ) => Ok(execution_id),
-            _ => Err(WorkflowError::external(
-                "unexpected node execution lookup result",
-            )),
-        }
+        use tauri::Manager as _;
+        let store = self
+            .app
+            .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| {
+                WorkflowError::external("workflow SQLite event authority is not managed")
+            })?;
+        super::fact_log::FactLogReadBackend::Live(store)
+            .tree_id_for_node(node_execution_id)
+            .map_err(WorkflowError::external)
     }
 
     async fn load_active_execution(
@@ -359,17 +354,35 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
         self.driver
-            .recover_orphan_executions(&self.app)
+            .reconcile_startup(&self.app)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }
 
-    async fn load_persisted_events(
+    async fn approval_persisted(
         &self,
         execution_id: &str,
-    ) -> Result<Vec<crate::domain::workflow::WorkflowEvent>, WorkflowError> {
-        super::event_log_writer::read_events_for_app(&self.app, execution_id)
-            .map_err(WorkflowError::external)
+        node_name: &str,
+        node_execution_id: Option<&str>,
+    ) -> Result<bool, WorkflowError> {
+        use tauri::Manager as _;
+        let store = self
+            .app
+            .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| {
+                WorkflowError::external("workflow SQLite event authority is not managed")
+            })?;
+        let records = super::fact_log::read_tree_records(&store, execution_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?;
+        Ok(records.iter().any(|record| {
+            matches!(
+                record.fact,
+                crate::domain::workflow::NodeFact::ApprovalGranted(_)
+            ) && record.meta.node_name == node_name
+                && node_execution_id
+                    .is_none_or(|expected| expected == record.meta.node_execution_id)
+        }))
     }
 
     fn configured_secret_values(&self) -> Vec<String> {
@@ -408,7 +421,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
 impl<R: tauri::Runtime> WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway<R> {
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         self.driver
-            .recover_orphan_executions(&self.app)
+            .reconcile_startup(&self.app)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }

@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::envelope::EncodedEventPayload;
+use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
 use crate::domain::local_event::{CommitBatchError, CommitBatchResult, LocalAtomicBatch, StreamId};
 
 pub const NORMAL_LANE_MAX_REQUESTS: usize = 1024;
@@ -32,17 +33,64 @@ pub struct PreparedEvent {
     pub occurred_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedNodeEvent {
+    pub(crate) row: NewNodeEventRow,
+    pub(crate) timestamp_ms: i64,
+    pub(crate) expect_tree_absent: bool,
+}
+
 /// A batch validated and encoded before queue admission.
 pub struct PreparedBatch {
     pub batch: LocalAtomicBatch,
     pub events: Vec<PreparedEvent>,
+    pub(crate) node_events: Vec<PreparedNodeEvent>,
     pub decoded_bytes: usize,
     pub critical: bool,
 }
 
-pub struct WriteRequest {
+pub struct CommitWriteRequest {
     pub prepared: PreparedBatch,
     pub reply: oneshot::Sender<Result<CommitBatchResult, CommitBatchError>>,
+}
+
+/// Append one fact row to `node_events`. Never atomic with anything else.
+pub struct NodeEventAppendRequest {
+    pub row: NewNodeEventRow,
+    /// 事実の発生時刻。None なら store の clock で刻む。
+    pub timestamp_ms: Option<i64>,
+    pub reply: oneshot::Sender<Result<i64, NodeEventWriteError>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NodeEventWriteError {
+    #[error("node event storage is unavailable")]
+    StorageUnavailable,
+    /// Admission failed or the reply was lost: the write may or may not be
+    /// durable. Callers re-derive from the log and retry idempotently.
+    #[error("node event write outcome is unknown")]
+    OutcomeUnknown,
+}
+
+pub enum WriteRequest {
+    Commit(CommitWriteRequest),
+    NodeEventAppend(NodeEventAppendRequest),
+}
+
+impl WriteRequest {
+    fn decoded_bytes(&self) -> usize {
+        match self {
+            Self::Commit(request) => request.prepared.decoded_bytes,
+            Self::NodeEventAppend(request) => request.row.detail.len() + 256,
+        }
+    }
+
+    fn critical(&self) -> bool {
+        match self {
+            Self::Commit(request) => request.prepared.critical,
+            Self::NodeEventAppend(_) => false,
+        }
+    }
 }
 
 /// Why a request was not admitted into the write queue.
@@ -95,13 +143,14 @@ impl WriteQueue {
             drop(request);
             return Err(AdmitRejection::Closed);
         }
-        let bytes = request.prepared.decoded_bytes;
-        let lane = if request.prepared.critical {
+        let bytes = request.decoded_bytes();
+        let critical = request.critical();
+        let lane = if critical {
             &mut state.critical
         } else {
             &mut state.normal
         };
-        let (max_requests, max_bytes) = if request.prepared.critical {
+        let (max_requests, max_bytes) = if critical {
             (CRITICAL_LANE_MAX_REQUESTS, CRITICAL_LANE_MAX_BYTES)
         } else {
             (NORMAL_LANE_MAX_REQUESTS, NORMAL_LANE_MAX_BYTES)
@@ -124,11 +173,11 @@ impl WriteQueue {
         let mut state = self.state.lock().expect("write queue poisoned");
         loop {
             if let Some(request) = state.critical.queue.pop_front() {
-                state.critical.bytes -= request.prepared.decoded_bytes;
+                state.critical.bytes -= request.decoded_bytes();
                 return Some(request);
             }
             if let Some(request) = state.normal.queue.pop_front() {
-                state.normal.bytes -= request.prepared.decoded_bytes;
+                state.normal.bytes -= request.decoded_bytes();
                 return Some(request);
             }
             if state.closed {
@@ -145,11 +194,11 @@ impl WriteQueue {
         let mut state = self.state.lock().expect("write queue poisoned");
         loop {
             if let Some(request) = state.critical.queue.pop_front() {
-                state.critical.bytes -= request.prepared.decoded_bytes;
+                state.critical.bytes -= request.decoded_bytes();
                 return QueuePop::Request(Box::new(request));
             }
             if let Some(request) = state.normal.queue.pop_front() {
-                state.normal.bytes -= request.prepared.decoded_bytes;
+                state.normal.bytes -= request.decoded_bytes();
                 return QueuePop::Request(Box::new(request));
             }
             if state.closed {
@@ -178,6 +227,15 @@ impl WriteQueue {
         drop(state);
         self.available.notify_all();
     }
+
+    /// Stop admission and let the writer consume every already-admitted
+    /// request before it exits.
+    pub fn close_after_drain(&self) {
+        let mut state = self.state.lock().expect("write queue poisoned");
+        state.closed = true;
+        drop(state);
+        self.available.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +246,7 @@ mod tests {
     fn request(critical: bool, bytes: usize) -> WriteRequest {
         let (reply, receiver) = oneshot::channel();
         drop(receiver);
-        WriteRequest {
+        WriteRequest::Commit(CommitWriteRequest {
             prepared: PreparedBatch {
                 batch: LocalAtomicBatch {
                     commit_id: CommitIdentity::parse("c-1").unwrap(),
@@ -203,11 +261,12 @@ mod tests {
                     state_mutations: vec![],
                 },
                 events: vec![],
+                node_events: vec![],
                 decoded_bytes: bytes,
                 critical,
             },
             reply,
-        }
+        })
     }
 
     #[test]
@@ -215,8 +274,8 @@ mod tests {
         let queue = WriteQueue::new();
         assert!(queue.admit(request(false, 1)).is_ok());
         assert!(queue.admit(request(true, 1)).is_ok());
-        assert!(queue.pop_blocking().unwrap().prepared.critical);
-        assert!(!queue.pop_blocking().unwrap().prepared.critical);
+        assert!(queue.pop_blocking().unwrap().critical());
+        assert!(!queue.pop_blocking().unwrap().critical());
     }
 
     #[test]
@@ -238,5 +297,22 @@ mod tests {
             .is_ok());
         assert!(queue.admit(request(false, 2)).is_err());
         assert!(queue.admit(request(false, 1)).is_ok());
+    }
+
+    #[test]
+    fn close_after_drain_preserves_admitted_requests() {
+        let queue = WriteQueue::new();
+        assert!(queue.admit(request(false, 1)).is_ok());
+        assert!(queue.admit(request(true, 1)).is_ok());
+
+        queue.close_after_drain();
+
+        assert!(queue.pop_blocking().unwrap().critical());
+        assert!(!queue.pop_blocking().unwrap().critical());
+        assert!(queue.pop_blocking().is_none());
+        assert!(matches!(
+            queue.admit(request(false, 1)),
+            Err(AdmitRejection::Closed)
+        ));
     }
 }
