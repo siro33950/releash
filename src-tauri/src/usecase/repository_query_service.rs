@@ -19,11 +19,11 @@ use crate::domain::workflow::WorkflowError;
 use crate::domain::workflow::{
     IsolatedWorktreeIdentity, IsolatedWorktreeLedgerRepository, IsolatedWorktreeLedgerSnapshot,
     IsolatedWorktreeLifecycle, RepositoryWorktreeInventory, WorkflowExecutionId,
-    WorktreeInventoryEntry,
+    WorktreeInventoryEntry, WorktreeManagementKind,
 };
 use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
 
-use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
+use super::repository_dto::{BranchCardDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
 use super::repository_error::UsecaseError;
 
 /// ブランチカード一覧の読み取りポート（Query 側）。
@@ -70,8 +70,8 @@ impl WorktreeClassificationQuery {
         reconcile_worktrees(&snapshot, &self.owner_states(&snapshot), inventory).classifications
     }
 
-    /// 実行木から復元できた所有 Node の状態だけを返す。復元できない entry の
-    /// 実体は domain 側で所有者不明として扱われる。
+    /// 台帳 entry ごとに、所有 Node の実行状態を実行木から復元する。実行木を
+    /// 読めない間は `Unavailable` を返し、稼働中の②を掃除候補へ倒さない。
     fn owner_states(
         &self,
         ledger: &IsolatedWorktreeLedgerSnapshot,
@@ -83,30 +83,29 @@ impl WorktreeClassificationQuery {
             .collect::<BTreeSet<_>>();
         let mut states = Vec::new();
         for tree_id in tree_ids {
-            let Some(execution) = WorkflowExecutionId::new(tree_id.clone())
-                .ok()
-                .and_then(|execution_id| self.executions.get_execution(&execution_id).ok())
-                .flatten()
-            else {
-                continue;
-            };
+            let execution = WorkflowExecutionId::new(tree_id.clone())
+                .and_then(|execution_id| self.executions.get_execution(&execution_id));
+            let unreadable = execution.is_err();
+            let execution = execution.ok().flatten();
             for entry in ledger.entries().filter(|entry| {
                 entry.owner.tree_id == tree_id
                     && entry.lifecycle != IsolatedWorktreeLifecycle::Released
             }) {
                 let identity = IsolatedWorktreeIdentity::from_meta(&entry.owner);
-                let Some(node) = execution.node_executions.iter().find(|node| {
-                    node.id == identity.node_execution_id && node.attempt == identity.attempt
-                }) else {
-                    continue;
+                let owner = execution.as_ref().and_then(|execution| {
+                    execution.node_executions.iter().find(|node| {
+                        node.id == identity.node_execution_id && node.attempt == identity.attempt
+                    })
+                });
+                let lifecycle = match owner {
+                    _ if unreadable => IsolatedWorktreeOwnerLifecycle::Unavailable,
+                    Some(node) if node.status.is_active() => IsolatedWorktreeOwnerLifecycle::Active,
+                    Some(_) => IsolatedWorktreeOwnerLifecycle::Ended,
+                    None => IsolatedWorktreeOwnerLifecycle::Unknown,
                 };
                 states.push(IsolatedWorktreeOwnerState {
                     identity,
-                    lifecycle: if node.status.is_active() {
-                        IsolatedWorktreeOwnerLifecycle::Active
-                    } else {
-                        IsolatedWorktreeOwnerLifecycle::Ended
-                    },
+                    lifecycle,
                 });
             }
         }
@@ -133,7 +132,13 @@ impl WorktreeClassificationQuery {
         }
     }
 
-    pub fn classify_branch_cards(&self, repository_root: &str, cards: &mut [BranchCardDto]) {
+    /// branch card へ分類を書き込み、管理 UI の表示先ごとに worktree card を振り分ける。
+    /// 表示先の決定はここで閉じ、client 側は返された一覧をそのまま描画する。
+    pub fn classify_branch_cards(
+        &self,
+        repository_root: &str,
+        cards: &mut [BranchCardDto],
+    ) -> WorktreeDisplayGroupsDto {
         let inventory = RepositoryWorktreeInventory::new(
             repository_root,
             cards
@@ -145,13 +150,24 @@ impl WorktreeClassificationQuery {
                 })
                 .collect(),
         );
+        let mut groups = WorktreeDisplayGroupsDto::default();
         for (card, classification) in cards
             .iter_mut()
             .filter(|card| card.worktree_path.is_some())
             .zip(self.classify(&inventory))
         {
             card.management_kind = Some(classification.management_kind.as_public_str().to_string());
+            match classification.management_kind {
+                WorktreeManagementKind::WorkingArea => groups.working_areas.push(card.clone()),
+                WorktreeManagementKind::CleanupCandidate
+                | WorktreeManagementKind::UntrackedCleanupCandidate => {
+                    groups.cleanup_candidates.push(card.clone())
+                }
+                // 所有 Node が再開対象になり得る②は管理 UI に出さない。
+                WorktreeManagementKind::IsolatedOwned => {}
+            }
         }
+        groups
     }
 }
 
@@ -221,7 +237,8 @@ impl RepositoryQueryService {
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
         let mut cards = self.branch_card_query.list_branch_cards(repo_path)?;
         cards.sort_by_key(|card| !card.is_main_worktree);
-        self.worktree_classification
+        let _ = self
+            .worktree_classification
             .classify_branch_cards(repository_root, &mut cards);
         Ok(cards)
     }
@@ -236,7 +253,8 @@ impl RepositoryQueryService {
             .branch_card_query
             .list_branch_cards_for_scan(repo_path, current_dirty_count)?;
         cards.sort_by_key(|card| !card.is_main_worktree);
-        self.worktree_classification
+        let _ = self
+            .worktree_classification
             .classify_branch_cards(repository_root, &mut cards);
         Ok(cards)
     }
@@ -290,8 +308,10 @@ mod repository_query_service_tests {
         }
     }
 
+    #[derive(Default)]
     struct FakeExecutionProjection {
         nodes: Vec<(&'static str, NodeExecutionStatus)>,
+        unreadable: bool,
     }
 
     impl WorkflowExecutionProjectionRepository for FakeExecutionProjection {
@@ -299,6 +319,9 @@ mod repository_query_service_tests {
             &self,
             execution_id: &WorkflowExecutionId,
         ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+            if self.unreadable {
+                return Err(WorkflowError::external("projection is unavailable"));
+            }
             Ok(Some(WorkflowExecution {
                 id: execution_id.to_string(),
                 workflow_name: "test".to_string(),
@@ -495,6 +518,7 @@ mod repository_query_service_tests {
                     ("active", NodeExecutionStatus::Running),
                     ("ended", NodeExecutionStatus::Succeeded),
                 ],
+                ..FakeExecutionProjection::default()
             }),
         );
         let mut cards = vec![
@@ -549,6 +573,7 @@ mod repository_query_service_tests {
             Arc::new(ledger),
             Arc::new(FakeExecutionProjection {
                 nodes: vec![("active", NodeExecutionStatus::Running)],
+                ..FakeExecutionProjection::default()
             }),
         );
         let mut cards = vec![
@@ -576,6 +601,29 @@ mod repository_query_service_tests {
                 Some("working_area"),
             ]
         );
+    }
+
+    #[test]
+    fn an_unreadable_execution_projection_never_marks_a_worktree_as_cleanup() {
+        let classifier = WorktreeClassificationQuery::new(
+            Arc::new(FakeLedger {
+                snapshot: Ok(
+                    IsolatedWorktreeLedgerSnapshot::from_records(&[created("active", 1)]).unwrap(),
+                ),
+            }),
+            Arc::new(FakeExecutionProjection {
+                unreadable: true,
+                ..FakeExecutionProjection::default()
+            }),
+        );
+        let mut cards = vec![card(
+            "releash/isolated/active-a1",
+            Some("/repo-worktrees/.releash-isolated/active-a1"),
+        )];
+
+        classifier.classify_branch_cards("/repo", &mut cards);
+
+        assert_eq!(cards[0].management_kind.as_deref(), Some("isolated_owned"));
     }
 
     #[test]

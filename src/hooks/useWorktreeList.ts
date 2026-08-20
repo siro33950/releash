@@ -5,12 +5,18 @@ import type { PrStatus, WorktreeBranch } from "@/types/git";
 
 const POLL_INTERVAL = 120_000;
 
+interface WorktreeDisplayGroups {
+	working_areas: WorktreeBranch[];
+	cleanup_candidates: WorktreeBranch[];
+}
+
 interface BranchCardsSnapshot {
 	version: number;
 	stale: boolean;
 	loading: boolean;
 	limited: boolean;
 	branches: WorktreeBranch[];
+	worktree_display_groups: WorktreeDisplayGroups;
 }
 
 export function useWorktreeList(repoPath: string) {
@@ -62,23 +68,10 @@ export function useWorktreeList(repoPath: string) {
 						repoPath,
 					},
 				);
-				const enriched = await enrichWithPrStatus(snapshot.branches);
-				const worktreeCards = enriched.filter((b) => b.worktree_path != null);
-				const filtered: WorktreeBranch[] = [];
-				const cleanup: WorktreeBranch[] = [];
-				for (const branch of worktreeCards) {
-					switch (branch.management_kind) {
-						case "working_area":
-							filtered.push(branch);
-							break;
-						case "cleanup_candidate":
-						case "untracked_cleanup_candidate":
-							cleanup.push(branch);
-							break;
-						case "isolated_owned":
-							break;
-					}
-				}
+				// 表示先の振り分けは backend が確定済み。ここでは PR 情報を重ねるだけ。
+				const groups = snapshot.worktree_display_groups;
+				const filtered = await enrichWithPrStatus(groups.working_areas);
+				const cleanup = groups.cleanup_candidates;
 				if (seq === refreshSeqRef.current) {
 					const serialized = JSON.stringify({ filtered, cleanup });
 					if (serialized !== prevBranchesRef.current) {

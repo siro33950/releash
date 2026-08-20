@@ -208,7 +208,8 @@ impl RepositoryStateService {
     ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
         let repository_root = self.repository.main_repo_path(repo_path)?;
         let mut cards = self.get_snapshot(repo_path)?.branch_cards.clone();
-        self.worktree_classification
+        let _ = self
+            .worktree_classification
             .classify_branch_cards(&repository_root, &mut cards);
         Ok(cards)
     }
@@ -220,7 +221,8 @@ impl RepositoryStateService {
         let snapshot = self.get_snapshot(repo_path)?;
         let repository_root = self.repository.main_repo_path(repo_path)?;
         let mut dto = RepositoryBranchCardsSnapshotDto::from_snapshot(snapshot.as_ref());
-        self.worktree_classification
+        dto.worktree_display_groups = self
+            .worktree_classification
             .classify_branch_cards(&repository_root, &mut dto.branches);
         Ok(dto)
     }

@@ -125,10 +125,15 @@ impl IsolatedWorktreeLedgerRepository for NodeEventIsolatedWorktreeLedgerReposit
             .map_err(WorkflowError::external)?;
         let cached = self.cache.read().clone();
         if let LedgerCache::Ready(mut snapshot) = cached {
-            snapshot
-                .apply_record(&record)
-                .map_err(WorkflowError::invalid_state)?;
-            *self.cache.write() = LedgerCache::Ready(snapshot);
+            // durable には追記済みである。summary へ反映できない場合は summary を
+            // 捨て、次回の snapshot で node_events から組み直す。
+            match snapshot.apply_record(&record) {
+                Ok(()) => *self.cache.write() = LedgerCache::Ready(snapshot),
+                Err(reason) => {
+                    log::warn!("isolated worktree ledger summary was discarded: {reason}");
+                    *self.cache.write() = LedgerCache::Uninitialized;
+                }
+            }
         }
         Ok(())
     }

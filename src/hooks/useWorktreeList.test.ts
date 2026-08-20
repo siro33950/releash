@@ -33,6 +33,21 @@ const makeBranch = (
 	...overrides,
 });
 
+// backend が返す表示グループを模す（振り分けは Rust 側の read model が確定する）。
+function displayGroups(branches: WorktreeBranch[]) {
+	const worktreeCards = branches.filter((b) => b.worktree_path != null);
+	return {
+		working_areas: worktreeCards.filter(
+			(b) => b.management_kind === "working_area",
+		),
+		cleanup_candidates: worktreeCards.filter(
+			(b) =>
+				b.management_kind === "cleanup_candidate" ||
+				b.management_kind === "untracked_cleanup_candidate",
+		),
+	};
+}
+
 function setupMockInvoke(branches: WorktreeBranch[]) {
 	mockInvoke.mockImplementation((cmd: string) => {
 		if (cmd === "start_git_dir_watching") return Promise.resolve(42);
@@ -44,6 +59,7 @@ function setupMockInvoke(branches: WorktreeBranch[]) {
 				loading: false,
 				limited: false,
 				branches,
+				worktree_display_groups: displayGroups(branches),
 			});
 		if (cmd === "get_cached_pr_status")
 			return Promise.resolve({ open_prs: {}, merged_branches: [] });
@@ -369,7 +385,7 @@ describe("useWorktreeList", () => {
 		expect(names).not.toContain("feat/a");
 	});
 
-	it("backend management kind partitions working areas, cleanup candidates, and hidden isolated worktrees", async () => {
+	it("renders the worktree groups the backend returned without re-deciding them", async () => {
 		setupMockInvoke([
 			makeBranch({ name: "working", management_kind: "working_area" }),
 			makeBranch({

@@ -114,6 +114,55 @@ mod vocabulary_tests {
     }
 
     #[test]
+    fn test_隔離worktree生成のdetail_field名を固定する() {
+        let detail = NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo-worktrees/.releash-isolated/node-a1".to_string(),
+            branch: "releash/isolated/node-a1".to_string(),
+        })
+        .encode_detail()
+        .unwrap();
+
+        let stored: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(stored["repositoryRoot"], "/repo");
+        assert_eq!(
+            stored["worktreePath"],
+            "/repo-worktrees/.releash-isolated/node-a1"
+        );
+        assert_eq!(stored["branch"], "releash/isolated/node-a1");
+
+        let error = NodeFact::decode("isolated_worktree_created", r#"{"repositoryRoot":"/repo"}"#)
+            .expect_err("worktreePath and branch are required");
+        assert!(matches!(
+            error,
+            NodeFactDecodeError::DetailMismatch { event_type, .. }
+                if event_type == "isolated_worktree_created"
+        ));
+    }
+
+    #[test]
+    fn test_payloadなし事実のdetailはjson_object以外を拒否する() {
+        for event_type in [
+            "retry_requested",
+            "resume_requested",
+            "abort_requested",
+            "archive_requested",
+            "restore_requested",
+            "isolated_worktree_released",
+            "isolated_worktree_lost",
+        ] {
+            assert!(NodeFact::decode(event_type, "{}").is_ok());
+            let error = NodeFact::decode(event_type, "not-json")
+                .expect_err("a corrupted detail must not decode");
+            assert!(matches!(
+                error,
+                NodeFactDecodeError::DetailMismatch { event_type: actual, .. }
+                    if actual == event_type
+            ));
+        }
+    }
+
+    #[test]
     fn test_既知event_typeの追加fieldは前方互換のため無視する() {
         let decoded = NodeFact::decode(
             "command_spawned",

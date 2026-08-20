@@ -571,10 +571,15 @@ impl WorkflowRuntimeHost {
             return Ok(());
         };
         let store = store.inner().clone();
-        let worktree_inventory = self
-            .worktree_inventory
-            .snapshot()
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
+        // inventory を読めないことは「全 worktree が消えた」ではない。隔離環境の
+        // 突合だけを止め、プロセス喪失の観測と未実行の前進は続ける。
+        let worktree_inventory = match self.worktree_inventory.snapshot() {
+            Ok(inventory) => Some(inventory),
+            Err(error) => {
+                log::warn!("isolated worktree inventory is unavailable: {error}");
+                None
+            }
+        };
         let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
         let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
             .map_err(WorkflowRuntimeError::SessionStore)?;
@@ -590,9 +595,11 @@ impl WorkflowRuntimeHost {
                 &tree_id,
                 now,
                 &mut new_id,
-                Some(workflow_fact_log::WorktreeReconciliationPorts {
-                    ledger: self.worktree_ledger.as_ref(),
-                    inventory: &worktree_inventory,
+                worktree_inventory.as_ref().map(|inventory| {
+                    workflow_fact_log::WorktreeReconciliationPorts {
+                        ledger: self.worktree_ledger.as_ref(),
+                        inventory,
+                    }
                 }),
             ) {
                 Ok(Some(reconciliation)) => reconciliation,

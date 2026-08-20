@@ -11,8 +11,10 @@ pub enum IsolatedWorktreeOwnerLifecycle {
     Active,
     /// 実行が終了している。
     Ended,
-    /// 実行木から所有 Node の状態を復元できない。
+    /// 実行木に所有 Node が存在しない。
     Unknown,
+    /// 実行木を読み取れず、所有 Node の状態を判定できない。
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,16 +106,19 @@ fn classify_tracked(
     entry: &IsolatedWorktreeLedgerEntry,
     owner_states: &[IsolatedWorktreeOwnerState],
 ) -> WorktreeManagementKind {
-    if entry.lifecycle == IsolatedWorktreeLifecycle::Released {
+    // 解放済みと喪失記録済みの②は、実体が残っていても所有 Node の再開には使われない。
+    if entry.lifecycle != IsolatedWorktreeLifecycle::Created {
         return WorktreeManagementKind::CleanupCandidate;
     }
     match owner_lifecycle(entry, owner_states) {
         IsolatedWorktreeOwnerLifecycle::Active => WorktreeManagementKind::IsolatedOwned,
-        // 所有 Node が終了した②と、所有 Node を復元できない②は、どちらも
+        // 所有 Node が終了した②と、実行木に所有 Node が無い②は、どちらも
         // 再開対象になり得ないため人間へ掃除候補として提示する。
         IsolatedWorktreeOwnerLifecycle::Ended | IsolatedWorktreeOwnerLifecycle::Unknown => {
             WorktreeManagementKind::CleanupCandidate
         }
+        // 所有 Node の状態を判定できない間は、掃除候補として提示しない。
+        IsolatedWorktreeOwnerLifecycle::Unavailable => WorktreeManagementKind::IsolatedOwned,
     }
 }
 
@@ -226,6 +231,43 @@ mod tests {
             WorktreeManagementKind::CleanupCandidate
         );
         assert!(present.losses.is_empty());
+    }
+
+    #[test]
+    fn a_recovered_worktree_of_a_lost_entry_stays_a_cleanup_candidate() {
+        let owner_meta = meta("node-1", 1);
+        let mut records = vec![created(owner_meta.clone())];
+        records.push(record(owner_meta, NodeFact::IsolatedWorktreeLost, 2));
+        let ledger = IsolatedWorktreeLedgerSnapshot::from_records(&records).unwrap();
+
+        let actual = reconcile_worktrees(
+            &ledger,
+            &[owner("node-1", IsolatedWorktreeOwnerLifecycle::Active)],
+            &RepositoryWorktreeInventory::new("/projects/repo", vec![inventory("node-1")]),
+        );
+
+        assert_eq!(
+            actual.classifications[0].management_kind,
+            WorktreeManagementKind::CleanupCandidate
+        );
+    }
+
+    #[test]
+    fn an_unreadable_owner_is_not_offered_as_a_cleanup_candidate() {
+        let owner_meta = meta("node-1", 1);
+        let ledger = IsolatedWorktreeLedgerSnapshot::from_records(&[created(owner_meta)]).unwrap();
+
+        let actual = reconcile_worktrees(
+            &ledger,
+            &[owner("node-1", IsolatedWorktreeOwnerLifecycle::Unavailable)],
+            &RepositoryWorktreeInventory::new("/projects/repo", vec![inventory("node-1")]),
+        );
+
+        assert_eq!(
+            actual.classifications[0].management_kind,
+            WorktreeManagementKind::IsolatedOwned
+        );
+        assert!(actual.losses.is_empty());
     }
 
     #[test]

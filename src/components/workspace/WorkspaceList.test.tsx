@@ -336,6 +336,8 @@ describe("WorkspaceList", () => {
 		const section = screen.getByLabelText("掃除候補");
 		expect(within(section).getByText("released")).toBeInTheDocument();
 		expect(within(section).getByText("orphan")).toBeInTheDocument();
+		expect(within(section).getByText("/repo/released")).toBeInTheDocument();
+		expect(within(section).getByText("/repo/orphan")).toBeInTheDocument();
 		expect(within(section).getByText("台帳外・掃除候補")).toBeInTheDocument();
 		expect(within(section).queryByRole("button")).not.toBeInTheDocument();
 	});

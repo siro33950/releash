@@ -369,6 +369,7 @@ mod repository_usecase_tests {
         set_branch_base_override_calls: Mutex<Vec<(String, Option<String>)>>,
         set_releash_base_calls: Mutex<Vec<Option<String>>>,
         prune_calls: Mutex<Vec<Vec<String>>>,
+        fail_main_repo_path: bool,
         listed_worktree_paths: Mutex<Vec<String>>,
         branch_card_paths: Mutex<Vec<String>>,
     }
@@ -425,6 +426,11 @@ mod repository_usecase_tests {
 
     impl WorktreeRepository for FakeRepo {
         fn main_repo_path(&self, _any_path: &str) -> Result<String, RepositoryError> {
+            if self.fail_main_repo_path {
+                return Err(RepositoryError::External(
+                    "main repo path is unavailable".to_string(),
+                ));
+            }
             Ok("/main".to_string())
         }
         fn dirty_count(&self, _worktree_path: &str) -> Result<u32, RepositoryError> {
@@ -680,6 +686,27 @@ mod repository_usecase_tests {
 
         assert_eq!(*fake.listed_worktree_paths.lock(), vec!["/linked"]);
         assert_eq!(*fake.branch_card_paths.lock(), vec!["/linked"]);
+    }
+
+    #[test]
+    fn test_repository_root解決に失敗したreadはqueryを呼ばずに失敗する() {
+        let fake = Arc::new(FakeRepo {
+            worktrees: vec![wt("/linked", "feature", false)],
+            fail_main_repo_path: true,
+            ..<FakeRepo as Default>::default()
+        });
+        let repository = usecase(fake.clone());
+
+        assert!(repository.list_worktrees("/linked").is_err());
+        assert!(repository
+            .list_branches_with_status_read_only("/linked")
+            .is_err());
+        assert!(repository
+            .list_branches_with_status_for_scan("/linked", 1)
+            .is_err());
+
+        assert!(fake.listed_worktree_paths.lock().is_empty());
+        assert!(fake.branch_card_paths.lock().is_empty());
     }
 
     #[test]
