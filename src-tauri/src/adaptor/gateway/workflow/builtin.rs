@@ -220,6 +220,7 @@ pub fn list_builtin_workflows() -> Vec<Summary> {
             description: e.description.to_string(),
             builtin: true,
             is_running: false,
+            source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
         })
         .collect()
 }

@@ -4,6 +4,7 @@ use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
 use super::schema::{Summary, WorkflowDefinitionYaml};
 use crate::domain::workflow::validation::{self, ValidationError};
+use crate::domain::workflow::WorkflowSourceFormat;
 use serde::Serialize;
 use std::fmt;
 use std::fs;
@@ -194,7 +195,81 @@ pub fn save_workflow_source(
     Ok(workflow)
 }
 
-/// YAML ファイルから `WorkflowDefinitionYaml` を読み込み、facet 参照を解決した上で validation する。
+trait WorkflowDefinitionLoader {
+    fn diagnose(
+        &self,
+        path: &Path,
+        content: &str,
+        workflows_dir: &Path,
+        facets_base_dir: &Path,
+    ) -> diagnostics::WorkflowSourceDiagnostics;
+}
+
+struct YamlWorkflowDefinitionLoader;
+
+impl WorkflowDefinitionLoader for YamlWorkflowDefinitionLoader {
+    fn diagnose(
+        &self,
+        path: &Path,
+        content: &str,
+        _workflows_dir: &Path,
+        _facets_base_dir: &Path,
+    ) -> diagnostics::WorkflowSourceDiagnostics {
+        diagnostics::diagnose_workflow_source(
+            content,
+            path.file_stem().and_then(|stem| stem.to_str()),
+        )
+    }
+}
+
+struct LuaWorkflowDefinitionLoader;
+
+impl WorkflowDefinitionLoader for LuaWorkflowDefinitionLoader {
+    fn diagnose(
+        &self,
+        path: &Path,
+        content: &str,
+        workflows_dir: &Path,
+        facets_base_dir: &Path,
+    ) -> diagnostics::WorkflowSourceDiagnostics {
+        diagnostics::diagnose_lua_workflow_source(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<unknown>.lua"),
+            content,
+            workflows_dir,
+            facets_base_dir,
+            path.file_stem().and_then(|stem| stem.to_str()),
+        )
+    }
+}
+
+pub(crate) fn diagnose_workflow_file(
+    path: &Path,
+    content: &str,
+    workflows_dir: &Path,
+    facets_base_dir: &Path,
+) -> diagnostics::WorkflowSourceDiagnostics {
+    let loader: &dyn WorkflowDefinitionLoader = match workflow_source_format(path) {
+        Some(WorkflowSourceFormat::Yaml) => &YamlWorkflowDefinitionLoader,
+        Some(WorkflowSourceFormat::Lua) => &LuaWorkflowDefinitionLoader,
+        None => {
+            return diagnostics::WorkflowSourceDiagnostics {
+                workflow: None,
+                diagnostics: vec![diagnostics::DiagnosticItem::new(
+                    "WFS002",
+                    diagnostics::Severity::Error,
+                    diagnostics::DiagnosticStage::ParseShape,
+                    None,
+                    format!("unsupported workflow source extension: {}", path.display()),
+                )],
+            };
+        }
+    };
+    loader.diagnose(path, content, workflows_dir, facets_base_dir)
+}
+
+/// workflow 定義ファイルを読み込み、facet 参照を解決した上で validation する。
 ///
 /// [02] schema 境界: load 経路で `facet.rs` を呼び、session / fanout child の
 /// gateway read model に解決済み内容を格納し、facet 本文の Artifact 参照も検証する。
@@ -205,9 +280,11 @@ pub fn load_workflow(
     facets_base_dir: &Path,
 ) -> Result<WorkflowDefinitionYaml, StorageError> {
     let content = fs::read_to_string(path)?;
-    let diagnosis = diagnostics::diagnose_workflow_source(
+    let diagnosis = diagnose_workflow_file(
+        path,
         &content,
-        path.file_stem().and_then(|stem| stem.to_str()),
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        facets_base_dir,
     );
     if diagnosis.has_errors() {
         return Err(StorageError::Diagnostics(diagnosis.diagnostics));
@@ -227,7 +304,7 @@ pub fn load_workflow(
     Ok(workflow)
 }
 
-fn list_yml_summaries<T, E: fmt::Display>(
+fn list_file_summaries<T, E: fmt::Display>(
     dir: &Path,
     loader: impl Fn(&Path) -> Result<T, E>,
     to_summary: impl Fn(T) -> Summary,
@@ -243,7 +320,7 @@ fn list_yml_summaries<T, E: fmt::Display>(
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+        if workflow_source_format(&path).is_some() {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 log::warn!(
                     "{label}読み込みスキップ: {}: 無効なファイル名",
@@ -255,6 +332,7 @@ fn list_yml_summaries<T, E: fmt::Display>(
                 Ok(item) => {
                     let mut summary = to_summary(item);
                     summary.name = stem.to_string();
+                    summary.source_format = workflow_source_format(&path).unwrap_or_default();
                     summaries.push(summary);
                 }
                 Err(e) => {
@@ -268,13 +346,21 @@ fn list_yml_summaries<T, E: fmt::Display>(
     Ok(summaries)
 }
 
+#[cfg(test)]
 pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
+    list_workflows_with_facets(dir, dir)
+}
+
+pub(crate) fn list_workflows_with_facets(
+    dir: &Path,
+    facets_base_dir: &Path,
+) -> Result<Vec<Summary>, StorageError> {
     // list 用途では facet 未解決でも一覧表示に支障がないため、deserialize+validate のみを行う。
     // facet 解決が必要な実行系経路は明示的に `load_workflow` を呼ぶ。
     let load_for_listing = |path: &Path| -> Result<WorkflowDefinitionYaml, StorageError> {
         let content = fs::read_to_string(path)?;
         let stem = path.file_stem().and_then(|stem| stem.to_str());
-        let diagnosis = diagnostics::diagnose_workflow_source(&content, stem);
+        let diagnosis = diagnose_workflow_file(path, &content, dir, facets_base_dir);
         if diagnosis.has_errors() {
             return Ok(WorkflowDefinitionYaml {
                 name: stem.unwrap_or("invalid").to_string(),
@@ -297,7 +383,7 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
         workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
         Ok(workflow)
     };
-    let mut summaries = list_yml_summaries(
+    let mut summaries = list_file_summaries(
         dir,
         load_for_listing,
         |wf| Summary {
@@ -305,6 +391,7 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
             description: wf.description,
             builtin: false, // name がファイル stem で上書きされた後に再計算する
             is_running: false,
+            source_format: WorkflowSourceFormat::Yaml,
         },
         "ワークフロー",
     )?;
@@ -378,21 +465,48 @@ fn validate_resolved_facet_references(
 
 pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
     validation::validate_name(name)?;
-    let file_path = dir.join(format!("{name}.yml"));
-    if !file_path.exists() {
-        return Err(StorageError::NotFound {
+    let paths = [
+        dir.join(format!("{name}.yml")),
+        dir.join(format!("{name}.lua")),
+    ];
+    let existing = paths
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    match existing.as_slice() {
+        [] => Err(StorageError::NotFound {
             name: name.to_string(),
-        });
+        }),
+        [path] => Ok(path.clone()),
+        _ => Err(StorageError::Diagnostics(vec![
+            diagnostics::DiagnosticItem::new(
+                "WFS006",
+                diagnostics::Severity::Error,
+                diagnostics::DiagnosticStage::ParseShape,
+                None,
+                format!("workflow name '{name}' is duplicated"),
+            ),
+        ])),
     }
-    Ok(file_path)
+}
+
+pub(crate) fn workflow_source_format(path: &Path) -> Option<WorkflowSourceFormat> {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("yml") => Some(WorkflowSourceFormat::Yaml),
+        Some("lua") => Some(WorkflowSourceFormat::Lua),
+        _ => None,
+    }
 }
 
 pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     validation::validate_name(name)?;
-    let file_path = dir.join(format!("{name}.yml"));
-    if file_path.exists() {
-        fs::remove_file(&file_path)?;
-        return Ok(());
+    match resolve_workflow_path(dir, name) {
+        Ok(file_path) => {
+            fs::remove_file(file_path)?;
+            return Ok(());
+        }
+        Err(StorageError::NotFound { .. }) => {}
+        Err(error) => return Err(error),
     }
     // builtin として認識できた場合（load 成功で Some）は削除を拒否する。
     // load 失敗（Err）の場合も「builtin として存在し得る」とみなし、安全側に倒して
@@ -1063,5 +1177,76 @@ nodes:
         std::fs::write(&file_path, yaml).unwrap();
         let wf = load_workflow(&file_path, dir).expect("load must succeed");
         assert_eq!(wf.nodes[0].name, "main");
+    }
+
+    #[test]
+    fn loads_and_lists_lua_workflow_with_source_format() {
+        let tmp = TempDir::new().unwrap();
+        let source = r#"
+local r = require("releash")
+return r.workflow{
+  name = "lua-workflow",
+  description = "Lua workflow",
+  main = r.command{ command = "true" },
+}
+"#;
+        let path = tmp.path().join("lua-workflow.lua");
+        std::fs::write(&path, source).unwrap();
+
+        let workflow = load_workflow(&path, tmp.path()).unwrap();
+        let summaries = list_workflows(tmp.path()).unwrap();
+
+        assert_eq!(workflow.name, "lua-workflow");
+        assert_eq!(workflow.nodes[0].name, "main");
+        assert_eq!(
+            summaries
+                .iter()
+                .find(|summary| summary.name == "lua-workflow")
+                .unwrap()
+                .source_format,
+            WorkflowSourceFormat::Lua
+        );
+    }
+
+    #[test]
+    fn rejects_lua_workflow_name_that_differs_from_file_stem() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("file-name.lua");
+        std::fs::write(
+            &path,
+            r#"
+local r = require("releash")
+return r.workflow{
+  name = "declared-name",
+  description = "Mismatch",
+  main = r.command{ command = "true" },
+}
+"#,
+        )
+        .unwrap();
+
+        let error = load_workflow(&path, tmp.path()).unwrap_err();
+        let StorageError::Diagnostics(items) = error else {
+            panic!("name mismatch must produce diagnostics");
+        };
+
+        let mismatch = items.iter().find(|item| item.code == "WFS006").unwrap();
+        let span = mismatch.span.as_ref().unwrap();
+        assert_eq!(span.source.as_deref(), Some("file-name.lua"));
+        assert_eq!(span.start_line, 6);
+    }
+
+    #[test]
+    fn rejects_ambiguous_yaml_and_lua_files_with_same_stem() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("duplicate.yml"), "name: duplicate").unwrap();
+        std::fs::write(tmp.path().join("duplicate.lua"), "return nil").unwrap();
+
+        let error = resolve_workflow_path(tmp.path(), "duplicate").unwrap_err();
+        let StorageError::Diagnostics(items) = error else {
+            panic!("duplicate source files must produce diagnostics");
+        };
+
+        assert!(items.iter().any(|item| item.code == "WFS006"));
     }
 }

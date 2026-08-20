@@ -13,12 +13,11 @@ mod state;
 mod worktree_origin;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
-#[cfg(test)]
-pub use definition::InputSourceRef;
 pub use definition::{
     is_reserved_node_name, ChildEntry, CommandSpec, EffectiveRules, FacetRefs, FanoutSpec,
-    InputParam, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, NodeKindName, OnFailure,
-    Rule, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowSummary,
+    InputParam, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
+    NodeKindName, NodeNamespace, OnFailure, Rule, SchemaDef, SequenceSpec, SessionSpec,
+    WorkflowDefinition, WorkflowSourceFormat, WorkflowSummary, MAIN_ENTRY_NODE_NAME,
     MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{

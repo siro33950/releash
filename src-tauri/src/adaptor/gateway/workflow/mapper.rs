@@ -155,6 +155,7 @@ pub(crate) fn schema_workflow_summary_to_domain(
         description: summary.description,
         builtin: summary.builtin,
         is_running: summary.is_running,
+        source_format: summary.source_format,
     }
 }
 
@@ -167,6 +168,7 @@ pub(crate) fn domain_workflow_summary_to_schema(
         description: summary.description,
         builtin: summary.builtin,
         is_running: summary.is_running,
+        source_format: summary.source_format,
     }
 }
 
@@ -315,6 +317,7 @@ mod tests {
             description: "desc".to_string(),
             builtin: false,
             is_running: true,
+            source_format: domain::WorkflowSourceFormat::Yaml,
         };
         let mapped = domain_workflow_summary_to_schema(domain.clone());
 
@@ -324,7 +327,8 @@ mod tests {
                 "name": "wf",
                 "description": "desc",
                 "builtin": false,
-                "is_running": true
+                "is_running": true,
+                "source_format": "yaml"
             })
         );
     }

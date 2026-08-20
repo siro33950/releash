@@ -45,6 +45,7 @@ export function AutomationSection({
 		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
+		openWorkflowInEditor,
 		selectFacet,
 		saveFacet,
 		deleteFacet,
@@ -207,6 +208,10 @@ export function AutomationSection({
 	}, [selectedFacetKey, facets]);
 
 	const isEditing = editingFacet || editingWorkflow;
+	const activeWorkflowSourceFormat = activeWorkflowName
+		? (workflows.find((workflow) => workflow.name === activeWorkflowName)
+				?.sourceFormat ?? "yaml")
+		: "yaml";
 
 	const handleReloadExternal = useCallback(() => {
 		clearExternalChange();
@@ -309,6 +314,13 @@ export function AutomationSection({
 									setDuplicateDialogOpen(true);
 								}}
 								onEdit={(name) => {
+									if (
+										workflows.find((workflow) => workflow.name === name)
+											?.sourceFormat === "lua"
+									) {
+										openWorkflowInEditor(name);
+										return;
+									}
 									setEditingWorkflow(true);
 									setWorkflowSaveDiagnostics(
 										report.items.filter((item) => item.workflow_name === name),
@@ -324,6 +336,7 @@ export function AutomationSection({
 						{/* Right: detail / editor */}
 						<div className="flex-1 min-w-0">
 							{editingWorkflow &&
+							activeWorkflowSourceFormat === "yaml" &&
 							activeWorkflowName &&
 							selectedWorkflowSource ? (
 								<WorkflowSourceEditor
@@ -348,14 +361,29 @@ export function AutomationSection({
 									workflow={selectedWorkflow}
 									report={report}
 									source={selectedWorkflowSource}
-									onEdit={handleEditWorkflow}
+									onEdit={() => {
+										if (selectedWorkflow.sourceFormat === "lua") {
+											openWorkflowInEditor(selectedWorkflow.name);
+										} else {
+											handleEditWorkflow();
+										}
+									}}
 								/>
-							) : activeWorkflowName && selectedWorkflowSource ? (
+							) : activeWorkflowName &&
+								(selectedWorkflowSource ||
+									activeWorkflowSourceFormat === "lua") ? (
 								<WorkflowSourceDiagnosticDetail
 									name={activeWorkflowName}
 									report={report}
-									source={selectedWorkflowSource}
-									onEdit={handleEditWorkflow}
+									source={selectedWorkflowSource ?? undefined}
+									sourceFormat={activeWorkflowSourceFormat}
+									onEdit={() => {
+										if (activeWorkflowSourceFormat === "lua") {
+											openWorkflowInEditor(activeWorkflowName);
+										} else {
+											handleEditWorkflow();
+										}
+									}}
 								/>
 							) : (
 								<p className="text-sm text-muted-foreground py-8 text-center">

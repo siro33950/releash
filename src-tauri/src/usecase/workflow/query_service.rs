@@ -79,6 +79,14 @@ impl WorkflowQueryService {
         self.definition_sources.get_source(name.as_str())
     }
 
+    pub fn get_workflow_source_format(
+        &self,
+        file_stem: &str,
+    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+        let name = WorkflowDefinitionName::new(file_stem.to_string())?;
+        self.definition_sources.source_format(name.as_str())
+    }
+
     pub(in crate::usecase::workflow) fn read_events(
         &self,
         execution_id: &str,
@@ -235,6 +243,7 @@ mod tests {
                 description: self.workflow.description.clone(),
                 builtin: self.workflow.builtin,
                 is_running: running_names.contains(&self.workflow.name),
+                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
             }])
         }
 

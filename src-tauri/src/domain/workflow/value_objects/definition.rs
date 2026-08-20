@@ -37,6 +37,60 @@ pub fn is_reserved_node_name(name: &str) -> bool {
     RESERVED_NODE_NAMES.contains(&name)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeNamespaceError {
+    Duplicate(String),
+    Reserved(String),
+}
+
+impl std::fmt::Display for NodeNamespaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Duplicate(name) => write!(formatter, "node name '{name}' is duplicated"),
+            Self::Reserved(name) => write!(formatter, "node name '{name}' is reserved"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NodeNamespace {
+    names: BTreeSet<String>,
+}
+
+impl NodeNamespace {
+    pub fn register(&mut self, name: impl Into<String>) -> Result<String, NodeNamespaceError> {
+        let name = name.into();
+        if !self.names.insert(name.clone()) {
+            return Err(NodeNamespaceError::Duplicate(name));
+        }
+        Ok(name)
+    }
+
+    pub fn register_explicit(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<String, NodeNamespaceError> {
+        let name = name.into();
+        if is_reserved_node_name(&name) {
+            return Err(NodeNamespaceError::Reserved(name));
+        }
+        self.register(name)
+    }
+
+    pub fn register_synthesized(
+        &mut self,
+        owner: &str,
+        child_index: usize,
+    ) -> Result<String, NodeNamespaceError> {
+        self.register(format!("{owner}#{child_index}"))
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
 fn default_entry_node() -> String {
     MAIN_ENTRY_NODE_NAME.to_string()
 }
@@ -967,14 +1021,20 @@ impl<'de> Deserialize<'de> for RawChildElement {
 
 /// 正規化の作業状態。単一名前空間の登録簿と、カタログへ追記するインライン宣言。
 struct CatalogNormalizer {
-    names: BTreeSet<String>,
+    namespace: NodeNamespace,
     inline_nodes: Vec<NodeDefinition>,
 }
 
 impl CatalogNormalizer {
     fn new(top_level_names: BTreeSet<String>) -> Self {
+        let mut namespace = NodeNamespace::default();
+        for name in top_level_names {
+            namespace
+                .register(name)
+                .expect("top-level node names were already deduplicated");
+        }
         Self {
-            names: top_level_names,
+            namespace,
             inline_nodes: Vec::new(),
         }
     }
@@ -983,10 +1043,7 @@ impl CatalogNormalizer {
     where
         E: de::Error,
     {
-        if !self.names.insert(name.to_string()) {
-            return Err(E::custom(format!("node name '{name}' is duplicated")));
-        }
-        Ok(())
+        self.namespace.register(name).map(|_| ()).map_err(E::custom)
     }
 
     fn normalize_children<E>(
@@ -1034,8 +1091,10 @@ impl CatalogNormalizer {
                         }
                         // ④ 無名エントリ: 合成内部名を生成して登録。
                         (None, true) => {
-                            let synthesized = format!("{owner}#{index}");
-                            self.register(&synthesized)?;
+                            let synthesized = self
+                                .namespace
+                                .register_synthesized(owner, index)
+                                .map_err(E::custom)?;
                             let node_definition =
                                 self.raw_body_to_node(synthesized.clone(), node)?;
                             self.inline_nodes.push(node_definition);
@@ -1418,6 +1477,15 @@ pub struct WorkflowSummary {
     pub description: String,
     pub builtin: bool,
     pub is_running: bool,
+    pub source_format: WorkflowSourceFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowSourceFormat {
+    #[default]
+    Yaml,
+    Lua,
 }
 
 #[cfg(test)]
@@ -1609,5 +1677,30 @@ mod definition_tests {
             ..sequence
         };
         assert_eq!(explicit.entry_child_name(), Some("second"));
+    }
+
+    #[test]
+    fn test_node名前空間_明示名と自動生成名を同じ空間で一意にする() {
+        let mut namespace = NodeNamespace::default();
+
+        assert_eq!(namespace.register_explicit("prepare").unwrap(), "prepare");
+        assert_eq!(namespace.register_synthesized("main", 0).unwrap(), "main#0");
+        assert!(namespace.contains("prepare"));
+        assert!(namespace.contains("main#0"));
+        assert_eq!(
+            namespace.register("main#0"),
+            Err(NodeNamespaceError::Duplicate("main#0".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_node名前空間_明示名では予約語を拒否する() {
+        let mut namespace = NodeNamespace::default();
+
+        assert_eq!(
+            namespace.register_explicit("children"),
+            Err(NodeNamespaceError::Reserved("children".to_string()))
+        );
+        assert!(!namespace.contains("children"));
     }
 }

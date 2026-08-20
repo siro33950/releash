@@ -11,6 +11,8 @@ pub(crate) struct WorkflowDto {
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
+    #[serde(rename = "sourceFormat")]
+    pub source_format: domain::WorkflowSourceFormat,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, serde_json::Value>,
     pub nodes: Vec<NodeDefinitionDto>,
@@ -159,6 +161,8 @@ pub(crate) struct WorkflowSummaryDto {
     pub builtin: bool,
     #[serde(default)]
     pub is_running: bool,
+    #[serde(rename = "sourceFormat")]
+    pub source_format: domain::WorkflowSourceFormat,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -228,10 +232,18 @@ pub(crate) struct WorkflowExecutionSummaryDto {
 }
 
 pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
+    workflow_to_dto_with_source_format(definition, domain::WorkflowSourceFormat::Yaml)
+}
+
+pub(crate) fn workflow_to_dto_with_source_format(
+    definition: &domain::WorkflowDefinition,
+    source_format: domain::WorkflowSourceFormat,
+) -> WorkflowDto {
     WorkflowDto {
         name: definition.name.clone(),
         description: definition.description.clone(),
         builtin: definition.builtin,
+        source_format,
         schemas: definition
             .schemas
             .iter()
@@ -252,6 +264,7 @@ pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> Workf
         description: summary.description,
         builtin: summary.builtin,
         is_running: summary.is_running,
+        source_format: summary.source_format,
     }
 }
 
@@ -460,6 +473,7 @@ mod tests {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
+            source_format: domain::WorkflowSourceFormat::Yaml,
             schemas: [(
                 "plan".to_string(),
                 serde_json::json!({
@@ -497,6 +511,7 @@ mod tests {
                 "name": "wf",
                 "description": "desc",
                 "builtin": false,
+                "sourceFormat": "yaml",
                 "schemas": {
                     "plan": {
                         "type": "object",
@@ -519,6 +534,27 @@ mod tests {
                 }]
             })
         );
+    }
+
+    #[test]
+    fn workflow_dto_exposes_lua_only_as_definition_source_metadata() {
+        let workflow = domain::WorkflowDefinition {
+            name: "lua-workflow".to_string(),
+            description: "Lua".to_string(),
+            ..domain::WorkflowDefinition::default()
+        };
+
+        let value = serde_json::to_value(workflow_to_dto_with_source_format(
+            &workflow,
+            domain::WorkflowSourceFormat::Lua,
+        ))
+        .unwrap();
+
+        assert_eq!(value["sourceFormat"], "lua");
+        assert!(serde_json::to_value(workflow)
+            .unwrap()
+            .get("sourceFormat")
+            .is_none());
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub struct Summary {
     pub builtin: bool,
     #[serde(default)]
     pub is_running: bool,
+    pub source_format: crate::domain::workflow::WorkflowSourceFormat,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

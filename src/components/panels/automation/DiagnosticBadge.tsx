@@ -46,7 +46,7 @@ export function DiagnosticViewRow({ item }: { item: DiagnosticView }) {
 			<Info className="size-3 text-blue-500 shrink-0" />
 		);
 	const spanLabel = item.span
-		? `${item.span.start_line}:${item.span.start_col}`
+		? `${item.span.source ? `${item.span.source}:` : ""}${item.span.start_line}:${item.span.start_col}`
 		: null;
 
 	return (

@@ -40,6 +40,7 @@ function makeWorkflow(overrides?: {
 		name: "wf",
 		description: "test workflow",
 		builtin: false,
+		sourceFormat: "yaml",
 		nodes: [
 			{
 				name: "implement",
@@ -241,5 +242,46 @@ describe("WorkflowDetail Monaco diagnostics", () => {
 				code: "WFR003",
 			},
 		]);
+	});
+
+	it("shows Lua diagnostics with source file and line without creating Monaco", () => {
+		vi.clearAllMocks();
+		const report: DiagnosticReport = {
+			items: [
+				{
+					code: "WFS009",
+					severity: "error",
+					stage: "parse_shape",
+					span: {
+						source: "component.lua",
+						start_line: 9,
+						start_col: 1,
+						end_line: 9,
+						end_col: 2,
+					},
+					message: "Lua syntax error",
+					workflow_name: "wf",
+				},
+			],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
+
+		render(
+			<WorkflowSourceDiagnosticDetail
+				name="wf"
+				report={report}
+				sourceFormat="lua"
+				onEdit={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("component.lua:9:1")).toBeInTheDocument();
+		expect(screen.getByText("Lua syntax error")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Open in external editor" }),
+		).toBeInTheDocument();
+		expect(monacoMock.module.editor.create).not.toHaveBeenCalled();
 	});
 });

@@ -148,6 +148,16 @@ mod tests {
     }
 
     #[test]
+    fn workflow_editor_path_resolves_lua_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("custom-lua.lua"), "return nil").unwrap();
+
+        let path = resolve_workflow_editor_path(tmp.path(), "custom-lua").unwrap();
+
+        assert_eq!(path.file_name().unwrap(), "custom-lua.lua");
+    }
+
+    #[test]
     fn facet_editor_path_rejects_builtin_and_resolves_custom_file() {
         let tmp = TempDir::new().unwrap();
         facet::save_facet(facet::FacetKind::Instruction, "custom", "body", tmp.path()).unwrap();

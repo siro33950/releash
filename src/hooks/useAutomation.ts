@@ -157,8 +157,15 @@ export function useAutomation(open: boolean) {
 			setSelectedWorkflowName(name);
 			setError(null);
 			try {
-				const source = await invoke<string>("get_workflow_source", { name });
-				setSelectedWorkflowSource(source);
+				const sourceFormat =
+					workflows.find((workflow) => workflow.name === name)?.sourceFormat ??
+					"yaml";
+				if (sourceFormat === "yaml") {
+					const source = await invoke<string>("get_workflow_source", { name });
+					setSelectedWorkflowSource(source);
+				} else {
+					setSelectedWorkflowSource(null);
+				}
 				try {
 					const wf = await invoke<WorkflowDefinition>("get_workflow", { name });
 					setSelectedWorkflow(wf);
@@ -173,7 +180,7 @@ export function useAutomation(open: boolean) {
 				setError(String(e));
 			}
 		},
-		[refreshDiagnostics],
+		[refreshDiagnostics, workflows],
 	);
 
 	const saveWorkflowSource = useCallback(

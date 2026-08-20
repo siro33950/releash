@@ -34,21 +34,30 @@ export function WorkflowDetail({
 		<div className="flex flex-col gap-4">
 			<div className="flex items-center justify-between">
 				<div>
-					<h4 className="text-sm font-medium">{workflow.name}</h4>
+					<div className="flex items-center gap-2">
+						<h4 className="text-sm font-medium">{workflow.name}</h4>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+							{workflow.sourceFormat}
+						</span>
+					</div>
 					<p className="text-xs text-muted-foreground">
 						{workflow.description}
 					</p>
 				</div>
 				{!workflow.builtin && (
 					<Button variant="outline" size="sm" onClick={onEdit}>
-						Edit
+						{workflow.sourceFormat === "lua"
+							? "Open in external editor"
+							: "Edit"}
 					</Button>
 				)}
 			</div>
 
 			<DiagnosticsPanel items={items} />
 
-			{source && <WorkflowSourcePane source={source} diagnostics={items} />}
+			{workflow.sourceFormat === "yaml" && source && (
+				<WorkflowSourcePane source={source} diagnostics={items} />
+			)}
 
 			<div className="flex flex-col gap-2">
 				<span className="text-xs font-medium text-muted-foreground">
@@ -66,11 +75,13 @@ export function WorkflowSourceDiagnosticDetail({
 	name,
 	report,
 	source,
+	sourceFormat = "yaml",
 	onEdit,
 }: {
 	name: string;
 	report: DiagnosticReport;
-	source: string;
+	source?: string;
+	sourceFormat?: "yaml" | "lua";
 	onEdit: () => void;
 }) {
 	const items = report.items.filter((i) => i.workflow_name === name);
@@ -79,19 +90,26 @@ export function WorkflowSourceDiagnosticDetail({
 		<div className="flex flex-col gap-4">
 			<div className="flex items-center justify-between">
 				<div>
-					<h4 className="text-sm font-medium">{name}</h4>
+					<div className="flex items-center gap-2">
+						<h4 className="text-sm font-medium">{name}</h4>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+							{sourceFormat}
+						</span>
+					</div>
 					<p className="text-xs text-muted-foreground">
 						Invalid workflow definition
 					</p>
 				</div>
 				<Button variant="outline" size="sm" onClick={onEdit}>
-					Edit
+					{sourceFormat === "lua" ? "Open in external editor" : "Edit"}
 				</Button>
 			</div>
 
 			<DiagnosticsPanel items={items} />
 
-			<WorkflowSourcePane source={source} diagnostics={items} />
+			{sourceFormat === "yaml" && source && (
+				<WorkflowSourcePane source={source} diagnostics={items} />
+			)}
 		</div>
 	);
 }

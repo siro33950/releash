@@ -316,6 +316,54 @@ describe("useAutomation", () => {
 		);
 	});
 
+	it("selectWorkflow does not request Lua source", async () => {
+		const luaWorkflow = {
+			name: "lua-workflow",
+			description: "Lua",
+			builtin: false,
+			sourceFormat: "lua",
+			nodes: [],
+		};
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflows") {
+				return Promise.resolve([
+					{
+						name: "lua-workflow",
+						description: "Lua",
+						builtin: false,
+						is_running: false,
+						sourceFormat: "lua",
+					},
+				]);
+			}
+			if (cmd === "get_workflow") return Promise.resolve(luaWorkflow);
+			if (cmd === "diagnose_all_cmd") {
+				return Promise.resolve({
+					items: [],
+					workflow_summaries: {},
+					facet_summaries: {},
+					facet_usage: {},
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+
+		const { result } = renderHook(() => useAutomation(true));
+		await waitFor(() => expect(result.current.workflows).toHaveLength(1));
+
+		await act(async () => {
+			await result.current.selectWorkflow("lua-workflow");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("get_workflow", {
+			name: "lua-workflow",
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith("get_workflow_source", {
+			name: "lua-workflow",
+		});
+		expect(result.current.selectedWorkflowSource).toBeNull();
+	});
+
 	it("selectWorkflow keeps source when typed workflow load returns diagnostics", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_workflow") {
