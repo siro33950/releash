@@ -306,6 +306,50 @@ mod standalone_session_tests {
     }
 }
 
+mod isolated_worktree_ledger_tests {
+    use super::*;
+    use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
+    use crate::domain::workflow::IsolatedWorktreeLifecycle;
+
+    #[test]
+    fn test_隔離worktree出自は事実の再decode後も同じ台帳へ導出される() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(
+            root_meta,
+            NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
+                repository_root: "/projects/repo".to_string(),
+                worktree_path: "/projects/repo-worktrees/.releash-isolated/root-exec-a1"
+                    .to_string(),
+                branch: "releash/isolated/root-exec-a1".to_string(),
+            }),
+        );
+
+        let persisted = log
+            .records
+            .iter()
+            .cloned()
+            .map(|mut record| {
+                let event_type = record.fact.event_type();
+                let detail = record.fact.encode_detail().unwrap();
+                record.fact = NodeFact::decode(event_type, &detail).unwrap();
+                record
+            })
+            .collect::<Vec<_>>();
+        let restarted = fold_execution_tree(TREE, &persisted).unwrap().unwrap();
+        let entry = restarted.isolated_worktrees.entries().next().unwrap();
+
+        assert_eq!(entry.lifecycle, IsolatedWorktreeLifecycle::Created);
+        assert_eq!(entry.owner.node_execution_id, "root-exec");
+        assert_eq!(
+            entry.worktree_path,
+            "/projects/repo-worktrees/.releash-isolated/root-exec-a1"
+        );
+    }
+}
+
 mod sequence_tests {
     use super::*;
 

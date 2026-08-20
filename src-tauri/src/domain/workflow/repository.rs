@@ -4,11 +4,27 @@
 //! are provided by the canonical workspace query port.
 
 use crate::domain::workflow::value_objects::{
-    FacetKind, FacetSummary, WorkflowDefinition, WorkflowExecutionId, WorkflowSummary,
+    FacetKind, FacetSummary, IsolatedWorktreeLedgerSnapshot, NodeFact, NodeFactMeta,
+    WorkflowDefinition, WorkflowExecutionId, WorkflowSummary,
 };
 use crate::domain::workflow::WorkflowError;
 
 pub const WORKFLOW_ARCHIVE_REASON_MANUAL: &str = "manual";
+
+/// `node_events` を正本として隔離 worktree 台帳を復元・追記する port。
+pub trait IsolatedWorktreeLedgerRepository: Send + Sync {
+    fn snapshot(&self) -> Result<IsolatedWorktreeLedgerSnapshot, WorkflowError>;
+    fn snapshot_for_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<IsolatedWorktreeLedgerSnapshot, WorkflowError>;
+    fn append(
+        &self,
+        meta: &NodeFactMeta,
+        fact: &NodeFact,
+        timestamp_ms: i64,
+    ) -> Result<(), WorkflowError>;
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecutionManualArchiveRecord {

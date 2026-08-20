@@ -6,6 +6,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 
 use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
+use crate::usecase::repository_query_service::WorktreeClassificationQuery;
 
 use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
@@ -30,11 +31,13 @@ pub struct RepositoryStateService {
     watcher: Arc<dyn RepositoryStateWatcher>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
     path_normalizer: Arc<dyn WorktreePathNormalizer>,
+    worktree_classification: WorktreeClassificationQuery,
     debounce: Duration,
     worktrees: RwLock<HashMap<PathBuf, Arc<WorktreeState>>>,
 }
 
 impl RepositoryStateService {
+    #[cfg(test)]
     pub fn new(
         repository: Arc<dyn RepositoryStateRepository>,
         scanner: Arc<dyn RepositoryScanner>,
@@ -43,7 +46,7 @@ impl RepositoryStateService {
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
     ) -> Self {
-        Self::new_with_scanner(
+        Self::new_with_scanner_and_worktree_classification(
             repository,
             scanner,
             notifier,
@@ -51,9 +54,33 @@ impl RepositoryStateService {
             runtime,
             path_normalizer,
             DEFAULT_DEBOUNCE,
+            WorktreeClassificationQuery::empty(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_worktree_classification(
+        repository: Arc<dyn RepositoryStateRepository>,
+        scanner: Arc<dyn RepositoryScanner>,
+        notifier: Arc<dyn RepositoryStateNotifier>,
+        watcher: Arc<dyn RepositoryStateWatcher>,
+        runtime: Arc<dyn RepositoryStateWorkerRuntime>,
+        path_normalizer: Arc<dyn WorktreePathNormalizer>,
+        worktree_classification: WorktreeClassificationQuery,
+    ) -> Self {
+        Self::new_with_scanner_and_worktree_classification(
+            repository,
+            scanner,
+            notifier,
+            watcher,
+            runtime,
+            path_normalizer,
+            DEFAULT_DEBOUNCE,
+            worktree_classification,
+        )
+    }
+
+    #[cfg(test)]
     pub fn new_with_scanner(
         repository: Arc<dyn RepositoryStateRepository>,
         scanner: Arc<dyn RepositoryScanner>,
@@ -63,6 +90,29 @@ impl RepositoryStateService {
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
         debounce: Duration,
     ) -> Self {
+        Self::new_with_scanner_and_worktree_classification(
+            repository,
+            scanner,
+            notifier,
+            watcher,
+            runtime,
+            path_normalizer,
+            debounce,
+            WorktreeClassificationQuery::empty(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_scanner_and_worktree_classification(
+        repository: Arc<dyn RepositoryStateRepository>,
+        scanner: Arc<dyn RepositoryScanner>,
+        notifier: Arc<dyn RepositoryStateNotifier>,
+        watcher: Arc<dyn RepositoryStateWatcher>,
+        runtime: Arc<dyn RepositoryStateWorkerRuntime>,
+        path_normalizer: Arc<dyn WorktreePathNormalizer>,
+        debounce: Duration,
+        worktree_classification: WorktreeClassificationQuery,
+    ) -> Self {
         Self {
             repository,
             scanner,
@@ -70,6 +120,7 @@ impl RepositoryStateService {
             watcher,
             runtime,
             path_normalizer,
+            worktree_classification,
             debounce,
             worktrees: RwLock::new(HashMap::new()),
         }
@@ -155,7 +206,11 @@ impl RepositoryStateService {
         &self,
         repo_path: &str,
     ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
-        Ok(self.get_snapshot(repo_path)?.branch_cards.clone())
+        let repository_root = self.repository.main_repo_path(repo_path)?;
+        let mut cards = self.get_snapshot(repo_path)?.branch_cards.clone();
+        self.worktree_classification
+            .classify_branch_cards(&repository_root, &mut cards);
+        Ok(cards)
     }
 
     pub fn list_branches_with_status_snapshot(
@@ -163,9 +218,11 @@ impl RepositoryStateService {
         repo_path: &str,
     ) -> Result<RepositoryBranchCardsSnapshotDto, RepositoryStateError> {
         let snapshot = self.get_snapshot(repo_path)?;
-        Ok(RepositoryBranchCardsSnapshotDto::from_snapshot(
-            snapshot.as_ref(),
-        ))
+        let repository_root = self.repository.main_repo_path(repo_path)?;
+        let mut dto = RepositoryBranchCardsSnapshotDto::from_snapshot(snapshot.as_ref());
+        self.worktree_classification
+            .classify_branch_cards(&repository_root, &mut dto.branches);
+        Ok(dto)
     }
 
     pub fn get_worktree_dirty_count(
@@ -625,6 +682,7 @@ mod tests {
             behind: 0,
             has_upstream: false,
             base_ahead: 0,
+            management_kind: None,
         }]);
         let service =
             counting_service(scanner, Arc::new(CountingRepositoryStateWatcher::default()));
@@ -802,6 +860,7 @@ mod tests {
             behind: 0,
             has_upstream: false,
             base_ahead: 0,
+            management_kind: None,
         }]);
         let service = counting_service(scanner.clone(), Arc::new(NoopRepositoryStateWatcher));
 
@@ -809,6 +868,36 @@ mod tests {
 
         assert_eq!(cards.len(), 1);
         assert!(scanner.prune_calls().is_empty());
+    }
+
+    #[test]
+    fn branch_card_reads_reclassify_cached_cards_at_request_time() {
+        let scanner = Arc::new(CountingScanner::default());
+        scanner.set_branch_cards(vec![BranchCardDto {
+            name: "releash/isolated/orphan-a1".to_string(),
+            is_main_worktree: false,
+            worktree_path: Some("/repo-worktrees/.releash-isolated/orphan-a1".to_string()),
+            dirty_count: 0,
+            is_merged: false,
+            ahead: 0,
+            behind: 0,
+            has_upstream: false,
+            base_ahead: 0,
+            management_kind: Some("working_area".to_string()),
+        }]);
+        let service = counting_service(scanner, Arc::new(NoopRepositoryStateWatcher));
+
+        let cards = service.list_branches_with_status("/repo").unwrap();
+        let snapshot = service.list_branches_with_status_snapshot("/repo").unwrap();
+
+        assert_eq!(
+            cards[0].management_kind.as_deref(),
+            Some("untracked_cleanup_candidate")
+        );
+        assert_eq!(
+            snapshot.branches[0].management_kind.as_deref(),
+            Some("untracked_cleanup_candidate")
+        );
     }
 
     #[test]

@@ -141,9 +141,16 @@ function WorkbenchApp() {
 				const worktrees = await invoke<WorktreeEntry[]>("list_worktrees", {
 					repoPath: mainPath,
 				});
-				if (worktrees.length === 1) {
+				const workingAreas = worktrees.filter(
+					(worktree) => worktree.management_kind === "working_area",
+				);
+				if (workingAreas.length === 1) {
 					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
-					openWorktreeTab(worktrees[0].path, worktrees[0].branch, repoName);
+					openWorktreeTab(
+						workingAreas[0].path,
+						workingAreas[0].branch,
+						repoName,
+					);
 				}
 			} catch {
 				// git リポジトリ外

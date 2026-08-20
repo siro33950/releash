@@ -29,6 +29,7 @@ const makeBranch = (
 	behind: 0,
 	base_ahead: 0,
 	dirty_count: 0,
+	management_kind: "working_area",
 	...overrides,
 });
 
@@ -366,6 +367,40 @@ describe("useWorktreeList", () => {
 		expect(names).toContain("main");
 		expect(names).toContain("feat/b");
 		expect(names).not.toContain("feat/a");
+	});
+
+	it("backend management kind partitions working areas, cleanup candidates, and hidden isolated worktrees", async () => {
+		setupMockInvoke([
+			makeBranch({ name: "working", management_kind: "working_area" }),
+			makeBranch({
+				name: "owned",
+				management_kind: "isolated_owned",
+			}),
+			makeBranch({
+				name: "cleanup",
+				management_kind: "cleanup_candidate",
+			}),
+			makeBranch({
+				name: "orphan",
+				management_kind: "untracked_cleanup_candidate",
+			}),
+		]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches.map((branch) => branch.name)).toEqual([
+				"working",
+			]);
+		});
+		expect(
+			result.current.cleanupCandidates.map((branch) => branch.name),
+		).toEqual(["cleanup", "orphan"]);
+		expect(
+			result.current.branches
+				.concat(result.current.cleanupCandidates)
+				.some((branch) => branch.name === "owned"),
+		).toBe(false);
 	});
 
 	it("should pass is_main_worktree through to branches when main repo is on feature branch", async () => {

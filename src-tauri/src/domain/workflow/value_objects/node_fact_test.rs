@@ -10,8 +10,8 @@ mod vocabulary_tests {
     use super::*;
 
     #[test]
-    fn test_事実語彙_event_typeが14種の固定文字列である() {
-        // Given: 全14 variant
+    fn test_事実語彙_event_typeが17種の固定文字列である() {
+        // Given: 全17 variant
         let facts: Vec<NodeFact> = vec![
             NodeFact::Started(StartedFact {
                 parent: None,
@@ -53,6 +53,13 @@ mod vocabulary_tests {
             NodeFact::AbortRequested,
             NodeFact::ArchiveRequested,
             NodeFact::RestoreRequested,
+            NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
+                repository_root: "/repo".to_string(),
+                worktree_path: "/repo-worktrees/.releash-isolated/node-a1".to_string(),
+                branch: "releash/isolated/node-a1".to_string(),
+            }),
+            NodeFact::IsolatedWorktreeReleased,
+            NodeFact::IsolatedWorktreeLost,
         ];
 
         // When / Then: event_type が確定済み語彙と一致する
@@ -73,6 +80,9 @@ mod vocabulary_tests {
                 "abort_requested",
                 "archive_requested",
                 "restore_requested",
+                "isolated_worktree_created",
+                "isolated_worktree_released",
+                "isolated_worktree_lost",
             ]
         );
 

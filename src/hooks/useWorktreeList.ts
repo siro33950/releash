@@ -15,6 +15,9 @@ interface BranchCardsSnapshot {
 
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
+	const [cleanupCandidates, setCleanupCandidates] = useState<WorktreeBranch[]>(
+		[],
+	);
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
 	const prevBranchesRef = useRef("");
@@ -60,12 +63,28 @@ export function useWorktreeList(repoPath: string) {
 					},
 				);
 				const enriched = await enrichWithPrStatus(snapshot.branches);
-				const filtered = enriched.filter((b) => b.worktree_path != null);
+				const worktreeCards = enriched.filter((b) => b.worktree_path != null);
+				const filtered: WorktreeBranch[] = [];
+				const cleanup: WorktreeBranch[] = [];
+				for (const branch of worktreeCards) {
+					switch (branch.management_kind) {
+						case "working_area":
+							filtered.push(branch);
+							break;
+						case "cleanup_candidate":
+						case "untracked_cleanup_candidate":
+							cleanup.push(branch);
+							break;
+						case "isolated_owned":
+							break;
+					}
+				}
 				if (seq === refreshSeqRef.current) {
-					const serialized = JSON.stringify(filtered);
+					const serialized = JSON.stringify({ filtered, cleanup });
 					if (serialized !== prevBranchesRef.current) {
 						prevBranchesRef.current = serialized;
 						setBranches(filtered);
+						setCleanupCandidates(cleanup);
 					}
 				}
 			} catch (e) {
@@ -131,5 +150,5 @@ export function useWorktreeList(repoPath: string) {
 		return () => clearInterval(id);
 	}, [refresh]);
 
-	return { branches, loading, refresh };
+	return { branches, cleanupCandidates, loading, refresh };
 }

@@ -267,7 +267,13 @@ test.describe("Workspace Manager", () => {
 			worktreePath,
 		);
 		const config = buildMockConfig({
-			list_worktrees: [{ path: worktreePath, branch: "feat/wip" }],
+			list_worktrees: [
+				{
+					path: worktreePath,
+					branch: "feat/wip",
+					management_kind: "working_area",
+				},
+			],
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),

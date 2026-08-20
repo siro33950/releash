@@ -98,6 +98,7 @@ pub struct WorktreeEntryDto {
     pub is_locked: bool,
     pub dirty_count: u32,
     pub base_branch: Option<String>,
+    pub management_kind: String,
 }
 
 /// ブランチカード（旧 `WorktreeBranch`）の read model。
@@ -117,4 +118,5 @@ pub struct BranchCardDto {
     pub behind: usize,
     pub has_upstream: bool,
     pub base_ahead: usize,
+    pub management_kind: Option<String>,
 }

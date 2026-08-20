@@ -285,8 +285,12 @@ mod mapping_tests {
 
 mod reconciliation_tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
-    use crate::domain::workflow::RuntimeExecutionState;
+    use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
+    use crate::domain::workflow::{
+        IsolatedWorktreeLedgerRepository, RepositoryWorktreeInventory, RuntimeExecutionState,
+    };
 
     fn open_store() -> (tempfile::TempDir, std::sync::Arc<LocalEventStore>) {
         let root = tempfile::TempDir::new().unwrap();
@@ -344,7 +348,7 @@ mod reconciliation_tests {
 
         // When: reconciliation パスを実行する
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
             .unwrap()
             .unwrap();
 
@@ -360,7 +364,7 @@ mod reconciliation_tests {
         // Then: started だけが永続化された kill 点では同じ leaf を再び起動対象に返し、
         // started を重複して追記しない。
         let mut new_id = test_id_source();
-        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert_eq!(second.leaves, outcome.leaves);
@@ -386,7 +390,7 @@ mod reconciliation_tests {
         )
         .unwrap();
         let mut new_id = test_id_source();
-        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
+        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert!(third.leaves.is_empty());
@@ -399,7 +403,7 @@ mod reconciliation_tests {
         // 喪失記録後は安定点に達する。
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
+        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert_eq!(row_count(&store), count_after_third);
@@ -419,7 +423,7 @@ mod reconciliation_tests {
         .unwrap();
 
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
             .unwrap()
             .unwrap();
 
@@ -438,7 +442,7 @@ mod reconciliation_tests {
             .filter(|record| record.fact.event_type() == "started")
             .count();
         let mut new_id = test_id_source();
-        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert_eq!(second.leaves, outcome.leaves);
@@ -463,7 +467,7 @@ mod reconciliation_tests {
         )
         .unwrap();
         let mut new_id = test_id_source();
-        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
+        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert!(third.leaves.is_empty());
@@ -475,7 +479,7 @@ mod reconciliation_tests {
 
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
+        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id, None)
             .unwrap()
             .unwrap();
         assert_eq!(row_count(&store), count_after_third);
@@ -509,7 +513,7 @@ mod reconciliation_tests {
         .unwrap();
 
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
             .unwrap()
             .unwrap();
 
@@ -533,9 +537,101 @@ mod reconciliation_tests {
         // 冪等: Paused は喪失対象でないため2周目は何も追記しない
         let count = row_count(&store);
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
+        reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
             .unwrap()
             .unwrap();
+        assert_eq!(row_count(&store), count);
+    }
+
+    #[test]
+    fn test_隔離worktree喪失を同じpassで一度だけ記録しleafを再起動しない() {
+        let (_root, store) = open_store();
+        append_facts_for_events(
+            &store,
+            &[
+                started_event(),
+                node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
+                node_started(
+                    "a-exec",
+                    "a",
+                    NodeKindName::Session,
+                    Some(ExecutionParentRef::sequence_child("main-exec")),
+                    1.0,
+                ),
+                WorkflowEvent::SessionAttached {
+                    execution_id: TREE.to_string(),
+                    node_execution_id: "a-exec".to_string(),
+                    session_id: "session-1".to_string(),
+                    timestamp: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        let meta = NodeFactMeta {
+            tree_id: TREE.to_string(),
+            node_execution_id: "a-exec".to_string(),
+            parent_id: Some("main-exec".to_string()),
+            node_name: "a".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+        };
+        append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
+                repository_root: "/repo".to_string(),
+                worktree_path: "/repo-worktrees/.releash-isolated/a-exec-a1".to_string(),
+                branch: "releash/isolated/a-exec-a1".to_string(),
+            }),
+            3,
+        )
+        .unwrap();
+        let ledger = NodeEventIsolatedWorktreeLedgerRepository::new(store.clone());
+        ledger.snapshot().unwrap();
+        let inventory = [RepositoryWorktreeInventory::new("/repo", Vec::new())];
+
+        let mut new_id = test_id_source();
+        let first = reconcile_tree_pass(
+            &store,
+            TREE,
+            10.0,
+            &mut new_id,
+            Some(WorktreeReconciliationPorts {
+                ledger: &ledger,
+                inventory: &inventory,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(first.leaves.is_empty());
+        assert_eq!(
+            first
+                .folded
+                .isolated_worktrees
+                .recovery_cause_for_node(TREE, "a-exec")
+                .unwrap()
+                .to_string(),
+            "isolated worktree is missing: /repo-worktrees/.releash-isolated/a-exec-a1"
+        );
+        assert!(!read_tree_records(&store, TREE)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+
+        let count = row_count(&store);
+        let mut new_id = test_id_source();
+        reconcile_tree_pass(
+            &store,
+            TREE,
+            11.0,
+            &mut new_id,
+            Some(WorktreeReconciliationPorts {
+                ledger: &ledger,
+                inventory: &inventory,
+            }),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(row_count(&store), count);
     }
 }

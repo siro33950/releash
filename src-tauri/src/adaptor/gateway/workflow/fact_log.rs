@@ -601,6 +601,11 @@ pub(crate) struct TreeReconciliation {
     pub(crate) leaves: Vec<crate::domain::workflow::entities::workflow_execution::LeafStart>,
 }
 
+pub(crate) struct WorktreeReconciliationPorts<'a> {
+    pub(crate) ledger: &'a dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository,
+    pub(crate) inventory: &'a [crate::domain::workflow::RepositoryWorktreeInventory],
+}
+
 /// 1 tree の冪等 reconciliation パス:
 /// 導出された状態を見て、まだ実行していない行動（プロセス喪失の観測・
 /// 途切れた前進）を実行し、実行した事実を追記して、再導出した状態を返す。
@@ -612,16 +617,59 @@ pub(crate) fn reconcile_tree_pass(
     tree_id: &str,
     now: f64,
     new_id: &mut dyn FnMut() -> String,
+    worktrees: Option<WorktreeReconciliationPorts<'_>>,
 ) -> Result<Option<TreeReconciliation>, String> {
     use crate::domain::workflow::entities::workflow_execution::{
         ExecutionAdvanceDecision, RuntimeNodeExecutionStatus,
     };
-    use crate::domain::workflow::{NodeCompletionSignalState, ProcessExitedFact};
+    use crate::domain::workflow::services::worktree_reconciliation::{
+        reconcile_worktrees, IsolatedWorktreeOwnerLifecycle, IsolatedWorktreeOwnerState,
+    };
+    use crate::domain::workflow::{
+        IsolatedWorktreeIdentity, NodeCompletionSignalState, ProcessExitedFact,
+    };
 
     let backend = FactLogReadBackend::Live(Arc::clone(store));
-    let Some(folded) = fold_tree_from(&backend, tree_id)? else {
+    let Some(mut folded) = fold_tree_from(&backend, tree_id)? else {
         return Ok(None);
     };
+    if let Some(worktrees) = worktrees {
+        let owner_states = folded
+            .aggregate
+            .node_executions
+            .iter()
+            .map(|node| IsolatedWorktreeOwnerState {
+                identity: IsolatedWorktreeIdentity {
+                    tree_id: tree_id.to_string(),
+                    node_execution_id: node.id.clone(),
+                    attempt: node.attempt,
+                },
+                lifecycle: if node.status.is_active() {
+                    IsolatedWorktreeOwnerLifecycle::Active
+                } else {
+                    IsolatedWorktreeOwnerLifecycle::Ended
+                },
+            })
+            .collect::<Vec<_>>();
+        for inventory in worktrees.inventory {
+            let reconciliation =
+                reconcile_worktrees(&folded.isolated_worktrees, &owner_states, inventory);
+            for loss in reconciliation.losses {
+                worktrees
+                    .ledger
+                    .append(
+                        &loss.entry.owner,
+                        &NodeFact::IsolatedWorktreeLost,
+                        (now * 1000.0) as i64,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        let Some(refolded) = fold_tree_from(&backend, tree_id)? else {
+            return Ok(None);
+        };
+        folded = refolded;
+    }
     if !folded.aggregate.is_active() {
         return Ok(Some(TreeReconciliation {
             folded,
@@ -648,6 +696,18 @@ pub(crate) fn reconcile_tree_pass(
         if !is_leaf
             || node.status != RuntimeNodeExecutionStatus::Running
             || node.completion_signals == NodeCompletionSignalState::StopReceived
+        {
+            continue;
+        }
+        let worktree_identity = IsolatedWorktreeIdentity {
+            tree_id: tree_id.to_string(),
+            node_execution_id: node.id.clone(),
+            attempt: node.attempt,
+        };
+        if folded
+            .isolated_worktrees
+            .recovery_cause(&worktree_identity)
+            .is_some()
         {
             continue;
         }

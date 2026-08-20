@@ -14,8 +14,9 @@ use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
-    ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind, SchemaDef,
-    SequenceSpec, SessionSpec, WorkflowDefinition,
+    ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind,
+    RepositoryWorktreeInventory, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition,
+    WorkflowError, WorktreeInventoryGateway,
 };
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::terminal_surface::TerminalSurfaceRuntime;
@@ -321,6 +322,14 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
 
 struct AcceptanceManagedWorktreeResolver;
 
+struct AcceptanceWorktreeInventory;
+
+impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
+    fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
+        Ok(Vec::new())
+    }
+}
+
 #[async_trait::async_trait]
 impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError> {
@@ -411,6 +420,12 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             composition.initial_instruction.clone(),
             composition.interrupt.clone(),
             composition.availability_reader.clone(),
+            Arc::new(
+                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                    store.clone(),
+                ),
+            ),
+            Arc::new(AcceptanceWorktreeInventory),
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),

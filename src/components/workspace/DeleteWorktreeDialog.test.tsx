@@ -17,6 +17,7 @@ const baseBranch: WorktreeBranch = {
 	behind: 0,
 	has_upstream: true,
 	base_ahead: 0,
+	management_kind: "working_area",
 };
 
 const dirtyBranch: WorktreeBranch = {

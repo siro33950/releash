@@ -166,6 +166,7 @@ impl RepositoryUsecase {
     /// オーケストレーション。各 worktree 自身のパスで解決し、失敗時は 0 / None に倒す
     /// （旧 gateway の一覧構築と等価）。
     pub fn list_worktrees(&self, repo_path: &str) -> Result<Vec<WorktreeEntryDto>, UsecaseError> {
+        let repository_root = self.worktree.main_repo_path(repo_path)?;
         let worktrees = self.worktree.list(repo_path)?;
         let mut entries = Vec::with_capacity(worktrees.len());
         for wt in worktrees {
@@ -182,8 +183,11 @@ impl RepositoryUsecase {
                 is_locked: wt.is_locked,
                 dirty_count,
                 base_branch,
+                management_kind: String::new(),
             });
         }
+        self.query
+            .classify_worktree_entries(&repository_root, &mut entries);
         Ok(entries)
     }
 
@@ -219,6 +223,7 @@ impl RepositoryUsecase {
             is_locked: wt.is_locked,
             dirty_count: 0,
             base_branch: base_branch.map(|s| s.to_string()),
+            management_kind: "working_area".to_string(),
         })
     }
 
@@ -316,7 +321,9 @@ impl RepositoryUsecase {
         &self,
         repo_path: &str,
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        self.query.list_branches_with_status(repo_path)
+        let repository_root = self.worktree.main_repo_path(repo_path)?;
+        self.query
+            .list_branches_with_status(repo_path, &repository_root)
     }
 
     pub fn list_branches_with_status_for_scan(
@@ -324,8 +331,12 @@ impl RepositoryUsecase {
         repo_path: &str,
         current_dirty_count: usize,
     ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        self.query
-            .list_branches_with_status_for_scan(repo_path, current_dirty_count)
+        let repository_root = self.worktree.main_repo_path(repo_path)?;
+        self.query.list_branches_with_status_for_scan(
+            repo_path,
+            &repository_root,
+            current_dirty_count,
+        )
     }
 }
 
@@ -358,6 +369,8 @@ mod repository_usecase_tests {
         set_branch_base_override_calls: Mutex<Vec<(String, Option<String>)>>,
         set_releash_base_calls: Mutex<Vec<Option<String>>>,
         prune_calls: Mutex<Vec<Vec<String>>>,
+        listed_worktree_paths: Mutex<Vec<String>>,
+        branch_card_paths: Mutex<Vec<String>>,
     }
 
     impl BranchRepository for FakeRepo {
@@ -417,7 +430,10 @@ mod repository_usecase_tests {
         fn dirty_count(&self, _worktree_path: &str) -> Result<u32, RepositoryError> {
             Ok(self.dirty)
         }
-        fn list(&self, _repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
+        fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
+            self.listed_worktree_paths
+                .lock()
+                .push(repo_path.to_string());
             Ok(self.worktrees.clone())
         }
         fn create(
@@ -535,14 +551,27 @@ mod repository_usecase_tests {
     impl BranchCardQuery for FakeRepo {
         fn list_branch_cards(
             &self,
-            _repo_path: &str,
+            repo_path: &str,
         ) -> Result<Vec<BranchCardDto>, RepositoryError> {
+            self.branch_card_paths.lock().push(repo_path.to_string());
+            Ok(Vec::new())
+        }
+
+        fn list_branch_cards_for_scan(
+            &self,
+            repo_path: &str,
+            _current_dirty_count: usize,
+        ) -> Result<Vec<BranchCardDto>, RepositoryError> {
+            self.branch_card_paths.lock().push(repo_path.to_string());
             Ok(Vec::new())
         }
     }
 
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
-        let query = RepositoryQueryService::new(fake.clone());
+        let query = RepositoryQueryService::new(
+            fake.clone(),
+            crate::usecase::repository_query_service::WorktreeClassificationQuery::empty(),
+        );
         RepositoryUsecase::new(
             fake.clone(),
             fake.clone(),
@@ -633,6 +662,44 @@ mod repository_usecase_tests {
         assert!(!e.is_main);
         assert_eq!(e.dirty_count, 3);
         assert_eq!(e.base_branch, Some("develop".to_string()));
+        assert_eq!(e.management_kind, "working_area");
+    }
+
+    #[test]
+    fn test_linked_worktreeのreadには開いたrepo_pathを渡す() {
+        let fake = Arc::new(FakeRepo {
+            worktrees: vec![wt("/linked", "feature", false)],
+            ..<FakeRepo as Default>::default()
+        });
+        let repository = usecase(fake.clone());
+
+        repository.list_worktrees("/linked").unwrap();
+        repository
+            .list_branches_with_status_for_scan("/linked", 1)
+            .unwrap();
+
+        assert_eq!(*fake.listed_worktree_paths.lock(), vec!["/linked"]);
+        assert_eq!(*fake.branch_card_paths.lock(), vec!["/linked"]);
+    }
+
+    #[test]
+    fn test_空の台帳では完全な隔離命名だけを掃除候補にする() {
+        let fake = Arc::new(FakeRepo {
+            worktrees: vec![
+                wt(
+                    "/main-worktrees/.releash-isolated/orphan-a1",
+                    "releash/isolated/orphan-a1",
+                    false,
+                ),
+                wt("/main-worktrees/feature", "feature", false),
+            ],
+            ..<FakeRepo as Default>::default()
+        });
+
+        let entries = usecase(fake).list_worktrees("/main").unwrap();
+
+        assert_eq!(entries[0].management_kind, "untracked_cleanup_candidate");
+        assert_eq!(entries[1].management_kind, "working_area");
     }
 
     #[test]

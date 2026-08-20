@@ -55,6 +55,7 @@ function makeBranch(overrides: Partial<WorktreeBranch> = {}): WorktreeBranch {
 		behind: 0,
 		has_upstream: false,
 		base_ahead: 0,
+		management_kind: overrides.worktree_path === null ? null : "working_area",
 		...overrides,
 	};
 }
@@ -118,6 +119,7 @@ describe("CreateWorktreeModal", () => {
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: "main",
+					management_kind: "working_area",
 				} satisfies WorktreeEntry);
 			}
 			return Promise.resolve([]);

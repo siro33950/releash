@@ -821,9 +821,26 @@ pub fn run() {
             // SharedRepoPaths + AppConfig を共有する。repository usecase は 1 度だけ
             // 組み立て、AppState・単体 State（workflow コマンド注入用）・watcher・
             // workflow リゾルバへ Arc 共有する（各エントリは注入で受け取る）。
+            let worktree_ledger_repository = Arc::new(
+                adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                    local_event_store.clone(),
+                ),
+            );
+            let workflow_execution_projection = Arc::new(
+                adaptor::gateway::workflow::WorkflowExecutionProjectionLogRepository::new(
+                    local_event_store.clone(),
+                ),
+            );
+            let worktree_inventory_gateway = Arc::new(
+                adaptor::gateway::workflow::RepositoryWorktreeInventoryGateway::new(
+                    config_repository.clone(),
+                ),
+            );
             let repository_usecase = Arc::new(
-                adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
+                adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals_and_ledger(
                     terminal_surface.clone(),
+                    worktree_ledger_repository.clone(),
+                    workflow_execution_projection.clone(),
                 ),
             );
             app.manage(repository_usecase.clone());
@@ -863,7 +880,7 @@ pub fn run() {
                     ),
                 );
                 let repository_state =
-                    Arc::new(usecase::repository_state::RepositoryStateService::new(
+                    Arc::new(usecase::repository_state::RepositoryStateService::new_with_worktree_classification(
                         repository_state_repository,
                         repository_scanner,
                         Arc::new(
@@ -880,6 +897,10 @@ pub fn run() {
                             adaptor::gateway::repository::state::TokioRepositoryStateWorkerRuntime,
                         ),
                         Arc::new(adaptor::gateway::repository::state::FsWorktreePathNormalizer),
+                        usecase::repository_query_service::WorktreeClassificationQuery::new(
+                            worktree_ledger_repository.clone(),
+                            workflow_execution_projection.clone(),
+                        ),
                     ));
                 app.manage(repository_state.clone());
                 let review_usecase = Arc::new(usecase::review_usecase::ReviewUsecase::new(
@@ -951,6 +972,8 @@ pub fn run() {
                             .clone(),
                         agent_session_interrupt: agent_session_interrupt.clone(),
                         provider_availability: provider_availability.clone(),
+                        worktree_ledger: worktree_ledger_repository.clone(),
+                        worktree_inventory: worktree_inventory_gateway.clone(),
                     },
                 )
                 .map_err(|error| format!("workflow recovery admission failed: {error}"))?,

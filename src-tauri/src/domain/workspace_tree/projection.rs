@@ -20,6 +20,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub updated_at: f64,
     pub execution: &'a crate::domain::local_event::WorkflowExecutionMetadataRecord,
     pub recovery_owner_reason: Option<String>,
+    pub node_recovery_reasons: &'a [(String, String)],
 }
 
 pub fn runtime_snapshot_nodes(
@@ -40,6 +41,7 @@ pub fn runtime_snapshot_nodes(
         updated_at,
         execution,
         recovery_owner_reason,
+        node_recovery_reasons,
     } = input;
 
     let mut facts = vec![F::WorkflowStarted {
@@ -127,6 +129,14 @@ pub fn runtime_snapshot_nodes(
             }),
         }
     }
+    facts.extend(
+        node_recovery_reasons
+            .iter()
+            .map(|(owner, reason)| F::RecoveryFenceProjected {
+                owner: owner.clone(),
+                reason: Some(reason.clone()),
+            }),
+    );
     facts.push(F::WorkflowSummaryProjected {
         execution_id: execution.execution_id.clone(),
         workflow_name: execution.workflow_name.clone(),
@@ -153,7 +163,8 @@ pub fn runtime_snapshot_nodes(
         };
         node.completion_signals = runtime.completion_signals;
         node.has_artifact = runtime.artifact.is_some();
-        node.can_retry = runtime.can_retry()
+        node.can_retry = node.recovery_owner_reason.is_none()
+            && runtime.can_retry()
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
             });
@@ -289,6 +300,7 @@ mod tests {
             updated_at: 10.0,
             execution: &execution,
             recovery_owner_reason: None,
+            node_recovery_reasons: &[],
         })
         .unwrap();
 
@@ -343,6 +355,7 @@ mod tests {
             updated_at: 10.0,
             execution: &execution,
             recovery_owner_reason: None,
+            node_recovery_reasons: &[],
         })
         .unwrap();
 
@@ -407,6 +420,7 @@ mod tests {
             updated_at: 10.0,
             execution: &execution,
             recovery_owner_reason: None,
+            node_recovery_reasons: &[],
         })
         .unwrap();
 
@@ -444,6 +458,7 @@ mod tests {
             updated_at: 10.0,
             execution: &execution,
             recovery_owner_reason: None,
+            node_recovery_reasons: &[],
         })
         .unwrap();
         let failed = nodes
@@ -456,5 +471,42 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("raw internal failure"));
+    }
+
+    #[test]
+    fn isolated_worktree_loss_fences_retry_and_projects_the_recovery_reason() {
+        let failed = node(
+            "lost-node",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Failed,
+        );
+        let execution = execution();
+        let reason = "isolated worktree is missing: /repo/.releash-isolated/lost-node-a1";
+
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[failed],
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[("lost-node".to_string(), reason.to_string())],
+        })
+        .unwrap();
+
+        let failed = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("lost-node"))
+            .unwrap();
+        assert_eq!(failed.recovery_owner_reason.as_deref(), Some(reason));
+        assert!(!failed.can_retry);
+        let root = nodes
+            .iter()
+            .find(|node| node.node_execution_id.is_none())
+            .unwrap();
+        assert_eq!(root.resume_unavailable_reason.as_deref(), Some(reason));
     }
 }

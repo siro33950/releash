@@ -229,6 +229,14 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         "node-execution-test".to_string()
     }
 
+    fn ensure_node_recovery_available(
+        &self,
+        _execution_id: &str,
+        _node_execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
     async fn resolve_workflow_execution_id(
         &self,
         _node_execution_id: &str,
