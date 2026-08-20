@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::usecase::code_dto::DiffTreeNodeDto;
-use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
+use crate::usecase::repository_dto::{
+    BranchCardDto, FileDiffStatDto, FileStatusDto, WorktreeDisplayGroupsDto,
+};
 
 use super::status_membership::{changed_statuses, staged_statuses};
 
@@ -142,6 +144,8 @@ pub struct RepositoryBranchCardsSnapshotDto {
     pub loading: bool,
     pub limited: bool,
     pub branches: Vec<BranchCardDto>,
+    /// 管理 UI の表示先ごとに振り分けた worktree card。
+    pub worktree_display_groups: WorktreeDisplayGroupsDto,
 }
 
 impl RepositoryBranchCardsSnapshotDto {
@@ -152,6 +156,7 @@ impl RepositoryBranchCardsSnapshotDto {
             loading: snapshot.flags.loading,
             limited: snapshot.flags.limited,
             branches: snapshot.branch_cards.clone(),
+            worktree_display_groups: WorktreeDisplayGroupsDto::default(),
         }
     }
 }

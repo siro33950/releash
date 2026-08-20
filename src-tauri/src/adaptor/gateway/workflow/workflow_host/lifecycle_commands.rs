@@ -372,6 +372,13 @@ impl WorkflowRuntimeHost {
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
+        let ledger = self
+            .worktree_ledger
+            .snapshot_for_tree(execution_id)
+            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
+        if let Some(cause) = ledger.recovery_cause_for_tree(execution_id) {
+            return Err(WorkflowRuntimeError::InvalidState(cause.to_string()));
+        }
         if metadata.status != ExecutionStatus::Running {
             return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be resumed from status {}",

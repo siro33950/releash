@@ -1,3 +1,9 @@
+export type WorktreeManagementKind =
+	| "working_area"
+	| "isolated_owned"
+	| "cleanup_candidate"
+	| "untracked_cleanup_candidate";
+
 export interface GitFileStatus {
 	path: string;
 	index_status: "new" | "modified" | "deleted" | "renamed" | "none";
@@ -12,6 +18,7 @@ export interface WorktreeEntry {
 	is_locked: boolean;
 	dirty_count: number;
 	base_branch: string | null;
+	management_kind: WorktreeManagementKind;
 }
 
 export interface BranchInfo {
@@ -34,6 +41,7 @@ export interface WorktreeBranch {
 	behind: number;
 	has_upstream: boolean;
 	base_ahead: number;
+	management_kind: WorktreeManagementKind | null;
 }
 
 interface PrInfo {

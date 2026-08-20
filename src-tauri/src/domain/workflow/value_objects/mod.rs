@@ -10,6 +10,7 @@ mod node_fact;
 mod runtime_event;
 mod runtime_projection;
 mod state;
+mod worktree_origin;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 #[cfg(test)]
@@ -43,9 +44,10 @@ pub use node_execution::{
     NodeExecutionFailure, NodeExecutionStatus,
 };
 pub use node_fact::{
-    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, NodeFact, NodeFactMeta,
-    NodeFactRecord, ProcessExitedFact, SessionAttachedFact, SessionRootFact, StartedFact,
-    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact, WorkflowRootFact,
+    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, IsolatedWorktreeCreatedFact,
+    NodeFact, NodeFactMeta, NodeFactRecord, ProcessExitedFact, SessionAttachedFact,
+    SessionRootFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
+    TreeRootFact, WorkflowRootFact,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 #[cfg(test)]
@@ -55,3 +57,10 @@ pub use runtime_projection::{
     NODE_STATUS_FAILED,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
+#[cfg(test)]
+pub use worktree_origin::{isolated_worktree_branch, isolated_worktree_path};
+pub use worktree_origin::{
+    IsolatedWorktreeIdentity, IsolatedWorktreeLedgerEntry, IsolatedWorktreeLedgerSnapshot,
+    IsolatedWorktreeLifecycle, IsolatedWorktreeRecoveryCause, RepositoryWorktreeInventory,
+    WorktreeInventoryEntry, WorktreeManagementKind,
+};

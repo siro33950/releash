@@ -348,6 +348,14 @@ pub(crate) mod test_support {
             "node-execution-next".to_string()
         }
 
+        fn ensure_node_recovery_available(
+            &self,
+            _execution_id: &str,
+            _node_execution_id: &str,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
         async fn resolve_workflow_execution_id(
             &self,
             node_execution_id: &str,

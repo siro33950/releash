@@ -12,10 +12,11 @@ use crate::domain::workflow::entities::workflow_execution::{
 };
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
-    Artifact, ExecutionStatus, NodeCompletion, NodeCompletionSignal, NodeDefinition, NodeExecution,
-    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord,
-    NodeKind, NodeKindName, RuntimeExecutionState, SessionRootFact, TreeRootFact,
-    WorkflowDefinition, WorkflowExecution as WorkflowExecutionReadModel,
+    Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot, NodeCompletion,
+    NodeCompletionSignal, NodeDefinition, NodeExecution, NodeExecutionFailure,
+    NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKind,
+    NodeKindName, RuntimeExecutionState, SessionRootFact, TreeRootFact, WorkflowDefinition,
+    WorkflowExecution as WorkflowExecutionReadModel,
 };
 
 #[cfg(test)]
@@ -28,6 +29,8 @@ pub struct FoldedTree {
     pub aggregate: WorkflowExecutionAggregate,
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
+    /// 同じ tree の純粋事実から復元した隔離 worktree 台帳。
+    pub isolated_worktrees: IsolatedWorktreeLedgerSnapshot,
 }
 
 /// 1 tree 分の事実行列から実行木の状態を導出する。
@@ -57,6 +60,7 @@ pub fn fold_execution_tree(
         ));
     };
 
+    let isolated_worktrees = IsolatedWorktreeLedgerSnapshot::from_records(records)?;
     let started_at = timestamp_of(first);
     let mut aggregate = restore_aggregate(tree_id, &root, first, started_at);
 
@@ -65,7 +69,11 @@ pub fn fold_execution_tree(
             .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
     }
 
-    Ok(Some(FoldedTree { aggregate, root }))
+    Ok(Some(FoldedTree {
+        aggregate,
+        root,
+        isolated_worktrees,
+    }))
 }
 
 fn timestamp_of(record: &NodeFactRecord) -> f64 {
@@ -335,7 +343,11 @@ fn apply_record(
             let _ = aggregate.replay_aborted_at(timestamp);
             Ok(())
         }
-        NodeFact::ArchiveRequested | NodeFact::RestoreRequested => Ok(()),
+        NodeFact::ArchiveRequested
+        | NodeFact::RestoreRequested
+        | NodeFact::IsolatedWorktreeCreated(_)
+        | NodeFact::IsolatedWorktreeReleased
+        | NodeFact::IsolatedWorktreeLost => Ok(()),
     }
 }
 

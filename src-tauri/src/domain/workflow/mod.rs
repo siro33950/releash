@@ -14,11 +14,11 @@ pub mod services;
 pub mod value_objects;
 
 pub use error::WorkflowError;
-pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};
+pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway, WorktreeInventoryGateway};
 pub use repository::{
-    FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
-    WorkflowExecutionArchiveSnapshot, WorkflowExecutionManualArchiveRecord,
-    WORKFLOW_ARCHIVE_REASON_MANUAL,
+    FacetRepository, IsolatedWorktreeLedgerRepository, WorkflowDefinitionRepository,
+    WorkflowExecutionArchiveRepository, WorkflowExecutionArchiveSnapshot,
+    WorkflowExecutionManualArchiveRecord, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{contract, secret_masker, validation};
 #[cfg(test)]
@@ -33,14 +33,16 @@ pub use value_objects::{
     ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, ExecutionStatus,
     ExecutionStatusFilter, FacetContents, FacetKey, FacetKind, FacetRefs, FacetSummary,
     FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec, InputParam,
-    ItemsSource, NodeCompletion, NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition,
-    NodeDefinitionName, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
-    NodeExecutionStatus, NodeFact, NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind,
-    NodeKindName, OnFailure, ProcessExitedFact, Rule, RuntimeArtifact, RuntimeExecutionState,
+    IsolatedWorktreeIdentity, IsolatedWorktreeLedgerEntry, IsolatedWorktreeLedgerSnapshot,
+    IsolatedWorktreeLifecycle, IsolatedWorktreeRecoveryCause, ItemsSource, NodeCompletion,
+    NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
+    NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact,
+    NodeFactMeta, NodeFactRecord, NodeHistoryEntry, NodeKind, NodeKindName, OnFailure,
+    ProcessExitedFact, RepositoryWorktreeInventory, Rule, RuntimeArtifact, RuntimeExecutionState,
     SchemaDef, SequenceSpec, SessionAttachedFact, SessionRootFact, SessionSpec, StartedFact,
     StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
     TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecution,
     WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest,
     WorkflowRootFact, WorkflowRuntimeSnapshot, WorkflowSummary, WorkspaceWorktreePath,
-    NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
+    WorktreeInventoryEntry, WorktreeManagementKind, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
 };

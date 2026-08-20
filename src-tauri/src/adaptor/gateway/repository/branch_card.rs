@@ -211,6 +211,7 @@ fn build_branch_card(
         behind,
         has_upstream,
         base_ahead,
+        management_kind: None,
     }
 }
 
@@ -233,6 +234,7 @@ fn build_unmatched_worktree_card(
         behind: 0,
         has_upstream: false,
         base_ahead: 0,
+        management_kind: None,
     }
 }
 
@@ -472,6 +474,23 @@ mod branch_card_gateway_tests {
         assert_eq!(main_card.dirty_count, 1);
         assert_eq!(linked_card.dirty_count, 1);
         assert_eq!(dirty_scan_count(), 1);
+    }
+
+    #[test]
+    fn list_branches_for_scan_assigns_current_dirty_to_the_open_linked_worktree() {
+        let (_parent, _repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-feat", "feat-wt");
+        fs::write(wt_path.join("linked-dirty.txt"), "dirty").unwrap();
+
+        let cards = list_branches_with_status_for_scan(wt_path.to_str().unwrap(), 1).unwrap();
+
+        let main_card = cards.iter().find(|card| card.name == "master").unwrap();
+        let linked_card = cards.iter().find(|card| card.name == "feat-wt").unwrap();
+        assert_eq!(main_card.dirty_count, 0);
+        assert_eq!(linked_card.dirty_count, 1);
+        assert!(linked_card.is_main_worktree);
     }
 
     #[test]

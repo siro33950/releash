@@ -5,16 +5,25 @@ import type { PrStatus, WorktreeBranch } from "@/types/git";
 
 const POLL_INTERVAL = 120_000;
 
+interface WorktreeDisplayGroups {
+	working_areas: WorktreeBranch[];
+	cleanup_candidates: WorktreeBranch[];
+}
+
 interface BranchCardsSnapshot {
 	version: number;
 	stale: boolean;
 	loading: boolean;
 	limited: boolean;
 	branches: WorktreeBranch[];
+	worktree_display_groups: WorktreeDisplayGroups;
 }
 
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
+	const [cleanupCandidates, setCleanupCandidates] = useState<WorktreeBranch[]>(
+		[],
+	);
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
 	const prevBranchesRef = useRef("");
@@ -59,13 +68,16 @@ export function useWorktreeList(repoPath: string) {
 						repoPath,
 					},
 				);
-				const enriched = await enrichWithPrStatus(snapshot.branches);
-				const filtered = enriched.filter((b) => b.worktree_path != null);
+				// 表示先の振り分けは backend が確定済み。ここでは PR 情報を重ねるだけ。
+				const groups = snapshot.worktree_display_groups;
+				const filtered = await enrichWithPrStatus(groups.working_areas);
+				const cleanup = groups.cleanup_candidates;
 				if (seq === refreshSeqRef.current) {
-					const serialized = JSON.stringify(filtered);
+					const serialized = JSON.stringify({ filtered, cleanup });
 					if (serialized !== prevBranchesRef.current) {
 						prevBranchesRef.current = serialized;
 						setBranches(filtered);
+						setCleanupCandidates(cleanup);
 					}
 				}
 			} catch (e) {
@@ -131,5 +143,5 @@ export function useWorktreeList(repoPath: string) {
 		return () => clearInterval(id);
 	}, [refresh]);
 
-	return { branches, loading, refresh };
+	return { branches, cleanupCandidates, loading, refresh };
 }

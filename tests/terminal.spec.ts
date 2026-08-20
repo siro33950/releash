@@ -21,6 +21,7 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
+					management_kind: "working_area",
 				},
 			],
 		}),
@@ -64,6 +65,7 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
+					management_kind: "working_area",
 				},
 			],
 			get_or_spawn_terminal_surface: {
@@ -124,6 +126,7 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
+					management_kind: "working_area",
 				},
 			],
 			get_or_spawn_terminal_surface: {

@@ -556,31 +556,34 @@ impl WorkspaceTree {
             let waiting_approval = self.nodes.iter().any(|node| {
                 node.execution_id.as_deref() == Some(execution_id.as_str()) && node.can_approve
             });
-            let mut session_reasons = self
+            let mut owner_reasons = self
                 .nodes
                 .iter()
                 .filter(|node| {
-                    node.kind == WorkspaceNodeKind::WorkflowSession
-                        && node.execution_id.as_deref() == Some(execution_id.as_str())
+                    node.is_leaf() && node.execution_id.as_deref() == Some(execution_id.as_str())
                 })
                 .filter_map(|node| {
-                    let session_id = node.session_id.as_ref()?;
                     let reason = node
                         .recovery_owner_reason
                         .clone()
                         .or_else(|| execution_reason.clone())?;
-                    Some((session_id.clone(), reason))
+                    let owner = node
+                        .session_id
+                        .clone()
+                        .or_else(|| node.node_execution_id.clone())?;
+                    Some((owner, reason))
                 })
                 .collect::<Vec<_>>();
-            session_reasons.sort_by(|left, right| left.0.cmp(&right.0));
+            owner_reasons.sort_by(|left, right| left.0.cmp(&right.0));
             let paused = self.nodes.iter().any(|node| {
                 node.execution_id.as_deref() == Some(execution_id.as_str())
                     && node.is_leaf()
                     && node.status == WorkspaceNodeStatus::Paused
             });
-            let reason = (interrupted || paused)
+            let recovery_fenced = execution_reason.is_some() || !owner_reasons.is_empty();
+            let reason = (interrupted || paused || recovery_fenced)
                 .then(|| {
-                    session_reasons
+                    owner_reasons
                         .into_iter()
                         .next()
                         .map(|(_, reason)| reason)
@@ -676,6 +679,12 @@ impl WorkspaceTreeProjector {
                         workflow.recovery_owner_reason = reason;
                     } else if let Some(session) = tree.session_node_mut(&owner) {
                         session.recovery_owner_reason = reason;
+                    } else if let Some(node) = tree
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.node_execution_id.as_deref() == Some(owner.as_str()))
+                    {
+                        node.recovery_owner_reason = reason;
                     }
                 }
                 WorkspaceStructureFact::NodeStarted {
@@ -869,7 +878,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
             has_execution
                 && structural_shape
                 && node.session_id.is_none()
-                && node.recovery_owner_reason.is_none()
+                && (!node.is_internal_rule_record() || node.recovery_owner_reason.is_none())
                 && node.display_command.is_none()
                 && node.command_result.is_none()
         }
@@ -881,7 +890,6 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.attempt.is_some()
                 && !node.dynamic_fanout
                 && node.session_id.is_none()
-                && node.recovery_owner_reason.is_none()
                 && node.display_command.is_none()
                 && node.command_result.is_none()
         }
@@ -901,7 +909,6 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && has_node_name
                 && node.attempt.is_some()
                 && node.session_id.is_none()
-                && node.recovery_owner_reason.is_none()
         }
     }
 }

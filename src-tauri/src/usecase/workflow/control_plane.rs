@@ -28,6 +28,12 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 
     fn new_node_execution_id(&self) -> String;
 
+    fn ensure_node_recovery_available(
+        &self,
+        execution_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowError>;
+
     async fn resolve_workflow_execution_id(
         &self,
         node_execution_id: &str,
@@ -338,6 +344,8 @@ impl WorkflowControlPlaneUsecase {
     }
 
     async fn retry_node_once(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
+        self.runtime
+            .ensure_node_recovery_available(&command.execution_id, &command.node_execution_id)?;
         let current = self
             .runtime
             .load_active_execution(&command.execution_id)

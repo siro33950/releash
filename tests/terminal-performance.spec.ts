@@ -90,6 +90,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 					is_locked: false,
 					dirty_count: 0,
 					base_branch: null,
+					management_kind: "working_area",
 				},
 			],
 			list_branches_with_status: [
@@ -97,6 +98,7 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 					name: "main",
 					is_default: true,
 					worktree_path: "/test/repo",
+					management_kind: "working_area",
 					dirty_count: 0,
 					is_merged: false,
 					has_pr: false,

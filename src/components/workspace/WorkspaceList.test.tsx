@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
 	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
 	selectedNodeIds: new Map<string, string | null>(),
 	worktreeBranches: [] as WorktreeBranch[],
+	cleanupCandidates: [] as WorktreeBranch[],
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -107,6 +108,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 vi.mock("@/hooks/useWorktreeList", () => ({
 	useWorktreeList: () => ({
 		branches: mocks.worktreeBranches,
+		cleanupCandidates: mocks.cleanupCandidates,
 		loading: false,
 		refresh: mocks.refreshWorktrees,
 	}),
@@ -183,6 +185,7 @@ function makeBranch(): WorktreeBranch {
 		behind: 0,
 		has_upstream: false,
 		base_ahead: 0,
+		management_kind: "working_area",
 	};
 }
 
@@ -298,6 +301,7 @@ beforeEach(() => {
 	mocks.worktreeBranches = [makeBranch()];
 	mocks.treeStateOverrides.clear();
 	mocks.selectedNodeIds.clear();
+	mocks.cleanupCandidates = [];
 	mocks.treeStateOverrides.set("/repo/wt", { nodes: recursiveTree });
 	mocks.invoke.mockResolvedValue(null);
 	mocks.refreshTree.mockResolvedValue(undefined);
@@ -310,6 +314,34 @@ beforeEach(() => {
 });
 
 describe("WorkspaceList", () => {
+	it("掃除候補を操作なしの別sectionに表示する", () => {
+		mocks.worktreeBranches = [makeBranch()];
+		mocks.cleanupCandidates = [
+			{
+				...makeBranch(),
+				name: "released",
+				worktree_path: "/repo/released",
+				management_kind: "cleanup_candidate",
+			},
+			{
+				...makeBranch(),
+				name: "orphan",
+				worktree_path: "/repo/orphan",
+				management_kind: "untracked_cleanup_candidate",
+			},
+		];
+
+		renderWorkspaceList();
+
+		const section = screen.getByLabelText("掃除候補");
+		expect(within(section).getByText("released")).toBeInTheDocument();
+		expect(within(section).getByText("orphan")).toBeInTheDocument();
+		expect(within(section).getByText("/repo/released")).toBeInTheDocument();
+		expect(within(section).getByText("/repo/orphan")).toBeInTheDocument();
+		expect(within(section).getByText("台帳外・掃除候補")).toBeInTheDocument();
+		expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+	});
+
 	it("renders the backend-owned recursive Workflow and Fanout hierarchy", () => {
 		const { container } = renderWorkspaceList();
 

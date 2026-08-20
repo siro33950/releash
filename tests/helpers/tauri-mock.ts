@@ -163,12 +163,28 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				"list_branches_with_status" in cfg.ipcHandler
 			) {
 				const branches = cfg.ipcHandler.list_branches_with_status;
+				const cards = Array.isArray(branches) ? branches : [];
+				const worktreeCards = cards.filter(
+					(card: Record<string, unknown>) => card.worktree_path != null,
+				);
 				return {
 					version: 1,
 					stale: false,
 					loading: false,
 					limited: false,
-					branches: Array.isArray(branches) ? branches : [],
+					branches: cards,
+					// backend が確定する表示グループ。fixture は作業の場だけを持つ。
+					worktree_display_groups: {
+						working_areas: worktreeCards.filter(
+							(card: Record<string, unknown>) =>
+								card.management_kind === "working_area",
+						),
+						cleanup_candidates: worktreeCards.filter(
+							(card: Record<string, unknown>) =>
+								card.management_kind === "cleanup_candidate" ||
+								card.management_kind === "untracked_cleanup_candidate",
+						),
+					},
 				};
 			}
 

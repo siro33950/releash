@@ -29,8 +29,24 @@ const makeBranch = (
 	behind: 0,
 	base_ahead: 0,
 	dirty_count: 0,
+	management_kind: "working_area",
 	...overrides,
 });
+
+// backend が返す表示グループを模す（振り分けは Rust 側の read model が確定する）。
+function displayGroups(branches: WorktreeBranch[]) {
+	const worktreeCards = branches.filter((b) => b.worktree_path != null);
+	return {
+		working_areas: worktreeCards.filter(
+			(b) => b.management_kind === "working_area",
+		),
+		cleanup_candidates: worktreeCards.filter(
+			(b) =>
+				b.management_kind === "cleanup_candidate" ||
+				b.management_kind === "untracked_cleanup_candidate",
+		),
+	};
+}
 
 function setupMockInvoke(branches: WorktreeBranch[]) {
 	mockInvoke.mockImplementation((cmd: string) => {
@@ -43,6 +59,7 @@ function setupMockInvoke(branches: WorktreeBranch[]) {
 				loading: false,
 				limited: false,
 				branches,
+				worktree_display_groups: displayGroups(branches),
 			});
 		if (cmd === "get_cached_pr_status")
 			return Promise.resolve({ open_prs: {}, merged_branches: [] });
@@ -366,6 +383,40 @@ describe("useWorktreeList", () => {
 		expect(names).toContain("main");
 		expect(names).toContain("feat/b");
 		expect(names).not.toContain("feat/a");
+	});
+
+	it("renders the worktree groups the backend returned without re-deciding them", async () => {
+		setupMockInvoke([
+			makeBranch({ name: "working", management_kind: "working_area" }),
+			makeBranch({
+				name: "owned",
+				management_kind: "isolated_owned",
+			}),
+			makeBranch({
+				name: "cleanup",
+				management_kind: "cleanup_candidate",
+			}),
+			makeBranch({
+				name: "orphan",
+				management_kind: "untracked_cleanup_candidate",
+			}),
+		]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches.map((branch) => branch.name)).toEqual([
+				"working",
+			]);
+		});
+		expect(
+			result.current.cleanupCandidates.map((branch) => branch.name),
+		).toEqual(["cleanup", "orphan"]);
+		expect(
+			result.current.branches
+				.concat(result.current.cleanupCandidates)
+				.some((branch) => branch.name === "owned"),
+		).toBe(false);
 	});
 
 	it("should pass is_main_worktree through to branches when main repo is on feature branch", async () => {

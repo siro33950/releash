@@ -8,6 +8,7 @@ interface WorktreeBranch {
 	name: string;
 	is_default: boolean;
 	worktree_path: string | null;
+	management_kind: "working_area" | null;
 	dirty_count: number;
 	is_merged: boolean;
 	has_pr: boolean;
@@ -222,6 +223,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 		name: "feat/todo",
 		is_default: false,
 		worktree_path: null,
+		management_kind: null,
 		dirty_count: 0,
 		is_merged: false,
 		has_pr: false,
@@ -236,6 +238,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 		name: "feat/wip",
 		is_default: false,
 		worktree_path: "/test/repo-worktrees/feat-wip",
+		management_kind: "working_area",
 		dirty_count: 2,
 		is_merged: false,
 		has_pr: false,
@@ -250,6 +253,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 		name: "feat/review",
 		is_default: false,
 		worktree_path: "/test/repo-worktrees/feat-review",
+		management_kind: "working_area",
 		dirty_count: 0,
 		is_merged: false,
 		has_pr: true,
@@ -264,6 +268,7 @@ export const kanbanBranches: WorktreeBranch[] = [
 		name: "feat/done",
 		is_default: false,
 		worktree_path: null,
+		management_kind: null,
 		dirty_count: 0,
 		is_merged: true,
 		has_pr: false,

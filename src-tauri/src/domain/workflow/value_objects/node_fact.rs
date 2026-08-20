@@ -41,7 +41,7 @@ pub struct NodeFactRecord {
     pub fact: NodeFact,
 }
 
-/// 純粋事実の語彙（全14種）。
+/// 純粋事実の語彙。
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeFact {
     /// 副作用: node 実行（attempt）を開始した。
@@ -72,6 +72,12 @@ pub enum NodeFact {
     ArchiveRequested,
     /// 人間の行動: 木の restore（root にのみ受理される）。
     RestoreRequested,
+    /// 副作用: Node attempt 用の隔離 worktree を生成した。
+    IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact),
+    /// 副作用: Node attempt が所有する隔離 worktree を解放した。
+    IsolatedWorktreeReleased,
+    /// 観測: Node attempt が所有する隔離 worktree の実体を喪失した。
+    IsolatedWorktreeLost,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +205,14 @@ pub struct ApprovalGrantedFact {
     pub comment: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IsolatedWorktreeCreatedFact {
+    pub repository_root: String,
+    pub worktree_path: String,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NodeFactDecodeError {
     #[error("unknown node fact event type: {0}")]
@@ -225,6 +239,9 @@ impl NodeFact {
             Self::AbortRequested => "abort_requested",
             Self::ArchiveRequested => "archive_requested",
             Self::RestoreRequested => "restore_requested",
+            Self::IsolatedWorktreeCreated(_) => "isolated_worktree_created",
+            Self::IsolatedWorktreeReleased => "isolated_worktree_released",
+            Self::IsolatedWorktreeLost => "isolated_worktree_lost",
         }
     }
 
@@ -240,11 +257,14 @@ impl NodeFact {
             Self::StopReceived(fact) => serde_json::to_string(fact),
             Self::ArtifactProduced(fact) => serde_json::to_string(fact),
             Self::ApprovalGranted(fact) => serde_json::to_string(fact),
+            Self::IsolatedWorktreeCreated(fact) => serde_json::to_string(fact),
             Self::RetryRequested
             | Self::ResumeRequested
             | Self::AbortRequested
             | Self::ArchiveRequested
-            | Self::RestoreRequested => Ok("{}".to_string()),
+            | Self::RestoreRequested
+            | Self::IsolatedWorktreeReleased
+            | Self::IsolatedWorktreeLost => Ok("{}".to_string()),
         }
     }
 
@@ -260,6 +280,12 @@ impl NodeFact {
             })
         }
 
+        /// payload を持たない事実の `detail` 契約は JSON object である
+        /// （`encode_detail` は `{}` を書く）。object 以外は破損として拒否する。
+        fn empty(event_type: &str, detail: &str) -> Result<(), NodeFactDecodeError> {
+            parse::<serde_json::Map<String, serde_json::Value>>(event_type, detail).map(|_| ())
+        }
+
         match event_type {
             "started" => parse(event_type, detail).map(Self::Started),
             "session_attached" => parse(event_type, detail).map(Self::SessionAttached),
@@ -270,11 +296,20 @@ impl NodeFact {
             "stop_received" => parse(event_type, detail).map(Self::StopReceived),
             "artifact_produced" => parse(event_type, detail).map(Self::ArtifactProduced),
             "approval_granted" => parse(event_type, detail).map(Self::ApprovalGranted),
-            "retry_requested" => Ok(Self::RetryRequested),
-            "resume_requested" => Ok(Self::ResumeRequested),
-            "abort_requested" => Ok(Self::AbortRequested),
-            "archive_requested" => Ok(Self::ArchiveRequested),
-            "restore_requested" => Ok(Self::RestoreRequested),
+            "retry_requested" => empty(event_type, detail).map(|()| Self::RetryRequested),
+            "resume_requested" => empty(event_type, detail).map(|()| Self::ResumeRequested),
+            "abort_requested" => empty(event_type, detail).map(|()| Self::AbortRequested),
+            "archive_requested" => empty(event_type, detail).map(|()| Self::ArchiveRequested),
+            "restore_requested" => empty(event_type, detail).map(|()| Self::RestoreRequested),
+            "isolated_worktree_created" => {
+                parse(event_type, detail).map(Self::IsolatedWorktreeCreated)
+            }
+            "isolated_worktree_released" => {
+                empty(event_type, detail).map(|()| Self::IsolatedWorktreeReleased)
+            }
+            "isolated_worktree_lost" => {
+                empty(event_type, detail).map(|()| Self::IsolatedWorktreeLost)
+            }
             other => Err(NodeFactDecodeError::UnknownEventType(other.to_string())),
         }
     }

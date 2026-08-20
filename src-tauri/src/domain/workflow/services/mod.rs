@@ -13,6 +13,7 @@ pub mod secret_masker;
 pub mod template_preview;
 pub mod transition;
 pub mod validation;
+pub mod worktree_reconciliation;
 
 #[cfg(test)]
 pub use failure_policy::{TimeoutContext, TimeoutPolicy};

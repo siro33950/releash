@@ -405,6 +405,7 @@ mod tests {
                     behind: 0,
                     has_upstream: false,
                     base_ahead: 0,
+                    management_kind: None,
                 }],
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
