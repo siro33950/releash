@@ -42,6 +42,7 @@ thiserror = "2"
 regex = "1"
 toml = "1.1"
 serde-saphyr = "1.0"
+mlua = { version = "0.12", features = ["lua54", "vendored", "serde"] }
 rand = "0.10"
 # issues-1499 T-02: bundled SQLite (>= 3.51.3) includes the WAL-reset
 # corruption fix required by the permanent local event store.

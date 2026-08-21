@@ -70,6 +70,9 @@ export function WorkflowList({
 										builtin
 									</span>
 								)}
+								<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground shrink-0">
+									{wf.sourceFormat}
+								</span>
 								<DiagnosticBadge summary={report.workflow_summaries[wf.name]} />
 							</div>
 							<span className="text-xs text-muted-foreground truncate">

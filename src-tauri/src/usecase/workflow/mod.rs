@@ -345,6 +345,13 @@ impl WorkflowUsecase {
         self.query.get_workflow_source(file_stem)
     }
 
+    pub fn get_workflow_source_format(
+        &self,
+        file_stem: &str,
+    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+        self.query.get_workflow_source_format(file_stem)
+    }
+
     pub fn get_execution_log(
         &self,
         execution_id: &str,
@@ -738,6 +745,7 @@ mod tests {
                     description: definition.description.clone(),
                     builtin: definition.builtin,
                     is_running: running_names.contains(&definition.name),
+                    source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
                 })
                 .collect::<Vec<_>>();
             summaries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1494,6 +1502,26 @@ mod tests {
         assert_no_forbidden_production_patterns(
             "usecase/repository_state",
             &external_dependency_patterns,
+        );
+    }
+
+    #[test]
+    fn workflow_execution_runtime_does_not_depend_on_lua_evaluation() {
+        let forbidden_patterns = [
+            concat!("infrastructure", "::", "lua"),
+            "mlua::",
+            "load_lua_workflow",
+        ];
+
+        assert_no_forbidden_production_patterns("domain/workflow", &forbidden_patterns);
+        assert_no_forbidden_production_patterns("usecase/workflow", &forbidden_patterns);
+        assert_no_forbidden_production_patterns(
+            "adaptor/gateway/workflow/workflow_host",
+            &forbidden_patterns,
+        );
+        assert_no_forbidden_production_patterns_in_file(
+            "adaptor/gateway/workflow/workflow_host.rs",
+            &forbidden_patterns,
         );
     }
 

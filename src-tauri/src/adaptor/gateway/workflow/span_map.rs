@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_saphyr::granit_parser::{Event, Parser, ScanError, Span as ParserSpan};
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct DiagnosticSpan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
     pub(crate) start_line: usize,
     pub(crate) start_col: usize,
     pub(crate) end_line: usize,
@@ -16,6 +18,7 @@ impl DiagnosticSpan {
         let line = usize::try_from(location.line()).unwrap_or(usize::MAX);
         let col = usize::try_from(location.column()).unwrap_or(usize::MAX);
         Self {
+            source: None,
             start_line: line,
             start_col: col,
             end_line: line,
@@ -26,6 +29,7 @@ impl DiagnosticSpan {
     pub(crate) fn from_scan_error(error: &ScanError) -> Self {
         let marker = error.marker();
         Self {
+            source: None,
             start_line: marker.line(),
             start_col: marker.col() + 1,
             end_line: marker.line(),
@@ -70,11 +74,11 @@ impl YamlSpanMap {
     }
 
     pub(crate) fn value_span(&self, path: &str) -> Option<DiagnosticSpan> {
-        self.value_spans.get(path).copied()
+        self.value_spans.get(path).cloned()
     }
 
     pub(crate) fn key_span(&self, path: &str) -> Option<DiagnosticSpan> {
-        self.key_spans.get(path).copied()
+        self.key_spans.get(path).cloned()
     }
 
     pub(crate) fn nearest_span(&self, path: &str) -> Option<DiagnosticSpan> {
@@ -155,7 +159,7 @@ fn parse_mapping(
             Some((Event::Scalar(value, _, _, _), span)) => {
                 let span = diagnostic_span(&span).expect("parser spans always have coordinates");
                 let child = child_path(&path, &value);
-                map.key_spans.entry(child.clone()).or_insert(span);
+                map.key_spans.entry(child.clone()).or_insert(span.clone());
                 (child, span)
             }
             Some((_, _)) => continue,
@@ -223,6 +227,7 @@ fn parent_path(path: &str) -> Option<String> {
 
 fn diagnostic_span(span: &ParserSpan) -> Option<DiagnosticSpan> {
     Some(DiagnosticSpan {
+        source: None,
         start_line: span.start.line(),
         start_col: span.start.col() + 1,
         end_line: span.end.line(),
@@ -261,6 +266,7 @@ nodes:
         assert_eq!(
             map.field_span("name"),
             Some(DiagnosticSpan {
+                source: None,
                 start_line: 1,
                 start_col: 1,
                 end_line: 1,
@@ -270,6 +276,7 @@ nodes:
         assert_eq!(
             map.field_span("nodes.main.rules[0].when.on"),
             Some(DiagnosticSpan {
+                source: None,
                 start_line: 13,
                 start_col: 11,
                 end_line: 13,
@@ -285,6 +292,7 @@ nodes:
         assert_eq!(
             map.key_span("nodes.done"),
             Some(DiagnosticSpan {
+                source: None,
                 start_line: 16,
                 start_col: 3,
                 end_line: 16,
@@ -312,13 +320,14 @@ nodes:
         let source = "defaults: &defaults\n  provider: claude\nsession: *defaults\n";
         let map = YamlSpanMap::parse(source).unwrap();
         let alias_span = DiagnosticSpan {
+            source: None,
             start_line: 3,
             start_col: 10,
             end_line: 3,
             end_col: 19,
         };
 
-        assert_eq!(map.value_span("session"), Some(alias_span));
+        assert_eq!(map.value_span("session"), Some(alias_span.clone()));
         assert_eq!(map.nearest_span("session.provider"), Some(alias_span));
     }
 

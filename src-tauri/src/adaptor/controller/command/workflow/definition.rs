@@ -1,5 +1,7 @@
 use crate::adaptor::controller::state::AppState;
-use crate::usecase::workflow::dto::{workflow_to_dto, WorkflowDto, WorkflowSummaryDto};
+use crate::usecase::workflow::dto::{
+    workflow_to_dto, workflow_to_dto_with_source_format, WorkflowDto, WorkflowSummaryDto,
+};
 use crate::usecase::workflow::ports::WorkflowSourceSaveError;
 use serde::Serialize;
 
@@ -35,7 +37,12 @@ pub async fn get_workflow(
             .get_workflow(&name)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("ワークフロー '{name}' が見つかりません"))
-            .map(|workflow| workflow_to_dto(&workflow))
+            .and_then(|workflow| {
+                query
+                    .get_workflow_source_format(&name)
+                    .map(|format| workflow_to_dto_with_source_format(&workflow, format))
+                    .map_err(|e| e.to_string())
+            })
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

@@ -124,12 +124,14 @@ describe("AutomationSection", () => {
 					description: "Built-in workflow",
 					builtin: true,
 					is_running: false,
+					sourceFormat: "yaml",
 				},
 				{
 					name: "my-custom",
 					description: "Custom workflow",
 					builtin: false,
 					is_running: false,
+					sourceFormat: "yaml",
 				},
 			],
 		});
@@ -147,6 +149,7 @@ describe("AutomationSection", () => {
 					description: "Built-in",
 					builtin: true,
 					is_running: false,
+					sourceFormat: "yaml",
 				},
 			],
 		});
@@ -164,6 +167,7 @@ describe("AutomationSection", () => {
 					description: "Custom",
 					builtin: false,
 					is_running: false,
+					sourceFormat: "yaml",
 				},
 			],
 		});
@@ -249,6 +253,7 @@ describe("AutomationSection", () => {
 					description: "Test",
 					builtin: false,
 					is_running: false,
+					sourceFormat: "yaml",
 				},
 			],
 			selectWorkflow,
@@ -265,6 +270,7 @@ describe("AutomationSection", () => {
 				name: "my-custom",
 				description: "A custom workflow",
 				builtin: false,
+				sourceFormat: "yaml",
 				nodes: [SESSION_NODE],
 			},
 		});
@@ -278,11 +284,48 @@ describe("AutomationSection", () => {
 				name: "builtin-workflow",
 				description: "Builtin",
 				builtin: true,
+				sourceFormat: "yaml",
 				nodes: [SESSION_NODE],
 			},
 		});
 		render(<AutomationSection automation={automation} />);
 		expect(screen.queryByText("Edit")).not.toBeInTheDocument();
+	});
+
+	it("Lua workflow opens externally without rendering Monaco", async () => {
+		const user = userEvent.setup();
+		monacoMock.module.editor.create.mockClear();
+		const openWorkflowInEditor = vi.fn();
+		const automation = createMockAutomation({
+			workflows: [
+				{
+					name: "lua-workflow",
+					description: "Lua",
+					builtin: false,
+					is_running: false,
+					sourceFormat: "lua",
+				},
+			],
+			selectedWorkflow: {
+				name: "lua-workflow",
+				description: "Lua",
+				builtin: false,
+				sourceFormat: "lua",
+				nodes: [SESSION_NODE],
+			},
+			selectedWorkflowName: "lua-workflow",
+			selectedWorkflowSource: null,
+			openWorkflowInEditor,
+		});
+
+		render(<AutomationSection automation={automation} />);
+		await user.click(
+			screen.getByRole("button", { name: "Open in external editor" }),
+		);
+
+		expect(openWorkflowInEditor).toHaveBeenCalledWith("lua-workflow");
+		expect(monacoMock.module.editor.create).not.toHaveBeenCalled();
+		expect(screen.queryByText("YAML")).not.toBeInTheDocument();
 	});
 
 	it("facet list shows builtin/custom distinction", async () => {
@@ -323,6 +366,7 @@ describe("AutomationSection", () => {
 					description: "Running workflow",
 					builtin: false,
 					is_running: true,
+					sourceFormat: "yaml",
 				},
 			],
 			deleteWorkflow,
@@ -547,6 +591,7 @@ describe("AutomationSection", () => {
 				name: "test-wf",
 				description: "Test",
 				builtin: false,
+				sourceFormat: "yaml",
 				nodes: [SESSION_NODE],
 			},
 			selectedWorkflowName: "test-wf",
@@ -584,6 +629,7 @@ describe("AutomationSection", () => {
 				name: "detail-wf",
 				description: "Full details",
 				builtin: false,
+				sourceFormat: "yaml",
 				nodes: [
 					{
 						name: "complex-step",
@@ -642,6 +688,7 @@ describe("AutomationSection", () => {
 				name: "diag-wf",
 				description: "Workflow with diagnostics",
 				builtin: false,
+				sourceFormat: "yaml",
 				nodes: [SESSION_NODE],
 			},
 			report: {
@@ -765,7 +812,7 @@ describe("AutomationSection", () => {
 		).toBeInTheDocument();
 	});
 
-	it("workflow list shows diagnostic badge", () => {
+	it("Lua workflow list shows source format and diagnostic badge", () => {
 		const automation = createMockAutomation({
 			workflows: [
 				{
@@ -773,6 +820,7 @@ describe("AutomationSection", () => {
 					description: "Has errors",
 					builtin: false,
 					is_running: false,
+					sourceFormat: "lua",
 				},
 			],
 			report: {
@@ -786,6 +834,7 @@ describe("AutomationSection", () => {
 			},
 		});
 		render(<AutomationSection automation={automation} />);
+		expect(screen.getByText("lua")).toBeInTheDocument();
 		expect(screen.getByText("2")).toBeInTheDocument();
 		expect(screen.getByText("3")).toBeInTheDocument();
 	});

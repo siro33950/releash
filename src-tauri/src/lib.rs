@@ -907,6 +907,13 @@ pub fn run() {
                     repository_state.clone(),
                     code_usecase.clone(),
                 ));
+                let workflows_dir =
+                    adaptor::gateway::workflow::WorkflowDefinitionFileRepository::default_workflows_dir();
+                if let Err(error) =
+                    adaptor::gateway::workflow::lua::generate_editor_support(&workflows_dir)
+                {
+                    log::warn!("Lua editor support generation failed at startup: {error}");
+                }
                 let (workflow_usecase, workspace_query_service) =
                     adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
                         data_dir.clone(),

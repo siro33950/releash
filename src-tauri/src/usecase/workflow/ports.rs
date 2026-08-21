@@ -48,6 +48,12 @@ pub trait WorkflowExecutionProjectionRepository: Send + Sync {
 
 pub trait WorkflowDefinitionSourceGateway: Send + Sync {
     fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError>;
+    fn source_format(
+        &self,
+        _file_stem: &str,
+    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+        Ok(crate::domain::workflow::WorkflowSourceFormat::Yaml)
+    }
     fn save_source(
         &self,
         source: &str,

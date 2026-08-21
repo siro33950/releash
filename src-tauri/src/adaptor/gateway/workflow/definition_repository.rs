@@ -82,11 +82,20 @@ fn validate_and_prepare_save(
                 "ビルトインワークフローは編集できません",
             ));
         }
+        if workflows_dir.join(format!("{original_name}.lua")).exists() {
+            return Err(WorkflowError::validation(
+                "Lua workflow は保存できません。外部エディタで編集してください",
+            ));
+        }
     }
 
     let is_new = original_name.is_none();
     let is_rename = original_name.is_some_and(|original_name| original_name != name);
-    if (is_new || is_rename) && workflows_dir.join(format!("{name}.yml")).exists() {
+    if (is_new || is_rename)
+        && ["yml", "lua"]
+            .iter()
+            .any(|extension| workflows_dir.join(format!("{name}.{extension}")).exists())
+    {
         return Err(WorkflowError::validation(format!(
             "ワークフロー '{name}' は既に存在します"
         )));
@@ -119,11 +128,12 @@ fn remove_renamed_workflow_file_after_success(
 
 impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
     fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries: Vec<_> = storage::list_workflows(&self.workflows_dir)
-            .map_err(|e| WorkflowError::external(e.to_string()))?
-            .into_iter()
-            .map(mapper::schema_workflow_summary_to_domain)
-            .collect();
+        let mut summaries: Vec<_> =
+            storage::list_workflows_with_facets(&self.workflows_dir, &self.facets_base_dir)
+                .map_err(|e| WorkflowError::external(e.to_string()))?
+                .into_iter()
+                .map(mapper::schema_workflow_summary_to_domain)
+                .collect();
         for summary in &mut summaries {
             summary.is_running = running_names.contains(&summary.name);
         }
@@ -174,11 +184,29 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
         }
     }
 
+    fn source_format(
+        &self,
+        file_stem: &str,
+    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+        match storage::resolve_workflow_path(&self.workflows_dir, file_stem) {
+            Ok(path) => storage::workflow_source_format(&path).ok_or_else(|| {
+                WorkflowError::external("workflow source has an unsupported extension")
+            }),
+            Err(storage::StorageError::NotFound { .. })
+                if builtin::is_builtin_workflow(file_stem) =>
+            {
+                Ok(crate::domain::workflow::WorkflowSourceFormat::Yaml)
+            }
+            Err(error) => Err(WorkflowError::external(error.to_string())),
+        }
+    }
+
     fn save_source(
         &self,
         source: &str,
         original_name: Option<&str>,
     ) -> Result<WorkflowDefinition, WorkflowError> {
+        reject_lua_source_save(self, original_name)?;
         let workflow = storage::parse_workflow_source(source, &self.facets_base_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))?;
         let plan = validate_and_prepare_save(&self.workflows_dir, &workflow.name, original_name)?;
@@ -194,6 +222,7 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
         source: &str,
         original_name: Option<&str>,
     ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        reject_lua_source_save(self, original_name).map_err(WorkflowSourceSaveError::Workflow)?;
         let workflow = storage::parse_workflow_source(source, &self.facets_base_dir)
             .map_err(storage_error_to_source_save_error)?;
         let plan = validate_and_prepare_save(&self.workflows_dir, &workflow.name, original_name)
@@ -205,6 +234,22 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
             .map_err(WorkflowSourceSaveError::Workflow)?;
         mapper::schema_workflow_to_domain(saved).map_err(WorkflowSourceSaveError::Workflow)
     }
+}
+
+fn reject_lua_source_save(
+    gateway: &WorkflowDefinitionFileSourceGateway,
+    original_name: Option<&str>,
+) -> Result<(), WorkflowError> {
+    if let Some(original_name) = original_name {
+        if gateway.source_format(original_name)?
+            == crate::domain::workflow::WorkflowSourceFormat::Lua
+        {
+            return Err(WorkflowError::validation(
+                "Lua workflow は保存できません。外部エディタで編集してください",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn storage_error_to_source_save_error(error: storage::StorageError) -> WorkflowSourceSaveError {
@@ -441,5 +486,40 @@ nodes:
             .as_str()
             .is_some_and(|message| message.contains("missing-name")));
         assert!(!workflows.path().join("missing-knowledge.yml").exists());
+    }
+
+    #[test]
+    fn source_gateway_reads_lua_verbatim_and_rejects_save() {
+        let workflows = TempDir::new().unwrap();
+        let facets = TempDir::new().unwrap();
+        let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+        let source = r#"
+local r = require("releash")
+return r.workflow{
+  name = "lua-source", description = "Lua",
+  main = r.command{ command = "true" },
+}
+"#;
+        fs::write(workflows.path().join("lua-source.lua"), source).unwrap();
+
+        assert_eq!(
+            gateway.get_source("lua-source").unwrap().as_deref(),
+            Some(source)
+        );
+        assert_eq!(
+            gateway.source_format("lua-source").unwrap(),
+            crate::domain::workflow::WorkflowSourceFormat::Lua
+        );
+        let error = gateway
+            .save_source(
+                "name: replacement\ndescription: replacement\nnodes: {}\n",
+                Some("lua-source"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Lua workflow"));
+        assert_eq!(
+            fs::read_to_string(workflows.path().join("lua-source.lua")).unwrap(),
+            source
+        );
     }
 }

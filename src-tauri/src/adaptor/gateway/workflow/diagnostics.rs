@@ -1,6 +1,7 @@
 use crate::adaptor::gateway::workflow::builtin;
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::facet::{self, FacetKind};
+use crate::adaptor::gateway::workflow::lua;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 use crate::adaptor::gateway::workflow::schema::{NodeKind, Rule, WorkflowDefinitionYaml};
@@ -217,6 +218,111 @@ pub(crate) fn diagnose_workflow_definition(
         items.push(validation_error_to_diagnostic(wf, &error, span_map));
     }
     items
+}
+
+pub(crate) fn diagnose_lua_workflow_source(
+    source_name: &str,
+    source: &str,
+    workflows_dir: &Path,
+    facets_base_dir: &Path,
+    workflow_name_hint: Option<&str>,
+) -> WorkflowSourceDiagnostics {
+    let catalog = match lua::facet_catalog(facets_base_dir) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return WorkflowSourceDiagnostics {
+                workflow: None,
+                diagnostics: vec![DiagnosticItem::new(
+                    "WFS010",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    Some(lua_span(source_name, 1)),
+                    format!("facet index could not be loaded: {error}"),
+                )
+                .workflow(workflow_name_hint.unwrap_or("<unknown>"))],
+            };
+        }
+    };
+    let loaded = match lua::load_lua_workflow(source_name, source, workflows_dir, catalog) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            let stage = stage_for_code(&error.code);
+            let span = error
+                .location
+                .map(|location| lua_location_span(&location, workflows_dir));
+            return WorkflowSourceDiagnostics {
+                workflow: None,
+                diagnostics: vec![DiagnosticItem::new(
+                    error.code,
+                    Severity::Error,
+                    stage,
+                    span,
+                    error.message,
+                )
+                .workflow(workflow_name_hint.unwrap_or("<unknown>"))],
+            };
+        }
+    };
+    let mut diagnostics = diagnose_workflow_definition(&loaded.workflow, None);
+    for item in &mut diagnostics {
+        let location = item
+            .node_name
+            .as_ref()
+            .and_then(|node| loaded.node_locations.get(node))
+            .or_else(|| loaded.node_locations.get("main"));
+        if let Some(location) = location {
+            item.span = Some(lua_location_span(location, workflows_dir));
+        }
+    }
+    if workflow_name_hint.is_some_and(|name| name != loaded.workflow.name) {
+        let location = loaded.node_locations.get("main");
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS006",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                location.map(|location| lua_location_span(location, workflows_dir)),
+                format!(
+                    "Lua workflow name '{}' must match file name '{}'",
+                    loaded.workflow.name,
+                    workflow_name_hint.unwrap_or("<unknown>")
+                ),
+            )
+            .workflow(workflow_name_hint.unwrap_or("<unknown>"))
+            .field("name"),
+        );
+    }
+    WorkflowSourceDiagnostics {
+        workflow: Some(loaded.workflow),
+        diagnostics,
+    }
+}
+
+fn lua_span(source: &str, line: usize) -> DiagnosticSpan {
+    DiagnosticSpan {
+        source: Some(source.to_string()),
+        start_line: line,
+        start_col: 1,
+        end_line: line,
+        end_col: 2,
+    }
+}
+
+fn lua_location_span(
+    location: &crate::infrastructure::lua::LuaSourceLocation,
+    workflows_dir: &Path,
+) -> DiagnosticSpan {
+    let source = Path::new(&location.source);
+    let display_source = if source.is_absolute() {
+        std::fs::canonicalize(workflows_dir)
+            .ok()
+            .and_then(|base| source.strip_prefix(base).ok())
+            .map(|relative| relative.to_string_lossy().into_owned())
+            .unwrap_or_else(|| location.source.clone())
+    } else {
+        location.source.clone()
+    };
+    lua_span(&display_source, location.line)
 }
 
 fn normalize_invalid_source_workflow_name(
@@ -961,8 +1067,9 @@ fn validation_error_code_stage(
     (code, stage_for_code(code))
 }
 
+/// Diagnostic code の接頭辞から段を決める。接頭辞と段の対応はこの関数だけが持つ。
 fn stage_for_code(code: &str) -> DiagnosticStage {
-    if code.starts_with("WFR") || code.starts_with("WFU") {
+    if code.starts_with("WFR") || code.starts_with("WFU") || code.starts_with("FAC") {
         DiagnosticStage::Resolve
     } else if code.starts_with("WFT") {
         DiagnosticStage::Typecheck
@@ -1363,12 +1470,17 @@ fn load_all_workflows(dir: &Path, facets_base_dir: &Path) -> Vec<NamedWorkflowDi
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                if super::storage::workflow_source_format(&path).is_some() {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         let name = stem.to_string();
                         let result = match std::fs::read_to_string(&path) {
                             Ok(content) => {
-                                let diagnosis = diagnose_workflow_source(&content, Some(&name));
+                                let diagnosis = super::storage::diagnose_workflow_file(
+                                    &path,
+                                    &content,
+                                    dir,
+                                    facets_base_dir,
+                                );
                                 if let Some(workflow) = diagnosis.workflow {
                                     let _ =
                                         facet::resolve_workflow_facets(&workflow, facets_base_dir);
@@ -1767,6 +1879,7 @@ fn template_reference_span(content: &str, reference: &str) -> Option<DiagnosticS
             {
                 let end = close + 2;
                 return Some(DiagnosticSpan {
+                    source: None,
                     start_line: line_index + 1,
                     start_col: line[..open].chars().count() + 1,
                     end_line: line_index + 1,
@@ -3393,6 +3506,7 @@ nodes:
         assert_eq!(item.workflow_name.as_deref(), Some("dup-node"));
         let span = item
             .span
+            .as_ref()
             .expect("duplicate node key diagnostic must carry a span");
         assert_eq!(
             span.start_line, 6,
@@ -3668,5 +3782,111 @@ nodes:
                 diagnosis.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn diagnose_all_reports_lua_syntax_file_and_line() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("broken.lua"),
+            "local r = require('releash')\nreturn )",
+        )
+        .unwrap();
+
+        let report = diagnose_all(tmp.path(), tmp.path());
+        let diagnostic = report
+            .items
+            .iter()
+            .find(|item| item.code == "WFS009")
+            .expect("Lua syntax diagnostic");
+        let span = diagnostic.span.as_ref().expect("Lua source span");
+
+        assert_eq!(span.source.as_deref(), Some("broken.lua"));
+        assert_eq!(span.start_line, 2);
+    }
+
+    #[test]
+    fn lua_and_yaml_domain_errors_keep_the_same_diagnostic_identity() {
+        let tmp = TempDir::new().unwrap();
+        let yaml = diagnose_workflow_source(
+            r#"
+name: review
+description: Review
+nodes:
+  main:
+    command: ""
+"#,
+            Some("review"),
+        );
+        let lua = diagnose_lua_workflow_source(
+            "review.lua",
+            r#"
+local r = require("releash")
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.command{ command = "" },
+}
+"#,
+            tmp.path(),
+            tmp.path(),
+            Some("review"),
+        );
+        let yaml_error = yaml
+            .diagnostics
+            .iter()
+            .find(|item| item.severity == Severity::Error)
+            .unwrap();
+        let lua_error = lua
+            .diagnostics
+            .iter()
+            .find(|item| item.severity == Severity::Error)
+            .unwrap();
+
+        assert_eq!(lua_error.code, yaml_error.code);
+        assert_eq!(lua_error.stage, yaml_error.stage);
+        assert_eq!(lua_error.message, yaml_error.message);
+        assert_eq!(
+            lua_error.span.as_ref().unwrap().source.as_deref(),
+            Some("review.lua")
+        );
+    }
+
+    #[test]
+    fn lua_component_error_uses_workflow_relative_source_and_line() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("component.lua"),
+            r#"
+local r = require("releash")
+return function()
+  local child = r.command{ command = "echo" }
+  local invalid = child.missing
+  return child
+end
+"#,
+        )
+        .unwrap();
+
+        let diagnosis = diagnose_lua_workflow_source(
+            "review.lua",
+            r#"
+local component = require("component")
+return require("releash").workflow{
+  name = "review", description = "Review", main = component(),
+}
+"#,
+            tmp.path(),
+            tmp.path(),
+            Some("review"),
+        );
+        let diagnostic = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFR003")
+            .expect("component reference diagnostic");
+        let span = diagnostic.span.as_ref().expect("component source span");
+
+        assert_eq!(span.source.as_deref(), Some("component.lua"));
+        assert_eq!(span.start_line, 5);
     }
 }

@@ -43,6 +43,7 @@ pub use value_objects::{
     StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
     TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecution,
     WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest,
-    WorkflowRootFact, WorkflowRuntimeSnapshot, WorkflowSummary, WorkspaceWorktreePath,
-    WorktreeInventoryEntry, WorktreeManagementKind, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
+    WorkflowRootFact, WorkflowRuntimeSnapshot, WorkflowSourceFormat, WorkflowSummary,
+    WorkspaceWorktreePath, WorktreeInventoryEntry, WorktreeManagementKind, NODE_STATUS_COMPLETED,
+    NODE_STATUS_FAILED,
 };

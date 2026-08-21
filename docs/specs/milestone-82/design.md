@@ -200,11 +200,19 @@ pub struct Diagnostic {
 | WFS004 | kind に許可されない field（fanout への inputs 含む） |
 | WFS005 | 旧構文（type:, output_contract, parallel_children, aggregate, match:, cycle_guard, pass_output_from, variables 等） |
 | WFS006 | node 名重複 / 名前形式違反 |
+| WFS007 | 配線 field の宣言位置違反（node に inputs / rules / on_failure。配線は合成子の children エントリが持つ） |
+| WFS008 | children エントリの形式違反、および sequence の artifact 宣言に対する output 欠落 |
+| WFS009 | Lua の構文エラー |
+| WFS010 | 評価の失敗、上限超過による打ち切り、chunk が `Workflow` を返さない |
+| WFS011 | `require` の解決失敗、workflows ディレクトリ外の参照、循環 require |
 | WFR001 | 未定義 node 参照（rules target / fanout child / inputs） |
 | WFR002 | 未定義 Contract 参照（artifact / input / items） |
 | WFR003 | 未定義または参照不能な Artifact path（artifact 無し session への参照、fanout child 名の参照を含む） |
 | WFR004 | 予約名の誤用（request / item を node 名に、schemas に request 宣言） |
 | WFR005 | `item` の scope 外使用 |
+| WFR006 | root node（`main`）の欠落 |
+| WFR007 | 未解決の input 供給元（合成子のスコープ外、または存在しない供給元） |
+| WFR008 | 曖昧な input 供給元、および予約パラメータ名の使用 |
 | WFT001 | when.on が routing 可能 Boolean でない |
 | WFT002 | switch.on が routing 可能 enum でない / cases に enum 外の値 |
 | WFT003 | fanout items と child input の不整合（要素型不一致・items 無しで child が input 宣言・items 有りで child が input 未宣言） |
@@ -218,9 +226,15 @@ pub struct Diagnostic {
 | WFC004 | switch enum の被覆漏れ（next 無しの場合） |
 | WFC005 | 到達可能な loop_guard の無い cycle / loop_guard の max_iterations 不正 |
 | WFC006 | fanout child の leaf 違反（child への通常遷移 / entry / fanout の入れ子） |
+| WFC007 | children の重複参照、および fanout child エントリへの rules 宣言 |
+| WFC008 | 合成子の包含循環（children に自分自身が現れる） |
+| WFC009 | `on_failure: ignore` を宣言した子の Artifact に下流が依存している |
+| WFC010 | 合成子の子への `on_failure: retry` 宣言 |
 | WFR900 | facet 参照の解決失敗（未定義 facet） |
+| WFU002 | 未対応の `worktree` field 宣言（milestone #85 で解禁） |
+| WFI000 | ビルトイン定義の注記（Info） |
 
-なお WFR900（Resolve 段）/ WFT900（Typecheck 段）は facet・permission・model の参照/解決失敗を表す。stage は code 接頭辞（WFR→Resolve / WFT→Typecheck / WFC→ControlFlow / それ以外→ParseShape）で決まる。
+なお WFR900（Resolve 段）/ WFT900（Typecheck 段）は facet・permission・model の参照/解決失敗を表す。stage は code 接頭辞（WFR / WFU / FAC→Resolve / WFT→Typecheck / WFC→ControlFlow / それ以外→ParseShape）で決まる。
 
 ## 8. Runtime 実行経路
 

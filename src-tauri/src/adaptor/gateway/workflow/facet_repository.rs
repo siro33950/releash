@@ -60,7 +60,11 @@ impl FacetRepository for WorkflowFacetFileRepository {
             )));
         }
         gateway_facet::save_facet(gateway_kind, key, content, &self.base_dir)
-            .map_err(|e| WorkflowError::external(e.to_string()))
+            .map_err(|e| WorkflowError::external(e.to_string()))?;
+        if let Err(error) = super::lua::generate_editor_support(&self.base_dir) {
+            log::warn!("Lua editor support generation failed after facet save: {error}");
+        }
+        Ok(())
     }
 
     fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
@@ -69,7 +73,11 @@ impl FacetRepository for WorkflowFacetFileRepository {
             key,
             &self.base_dir,
         )
-        .map_err(|e| WorkflowError::external(e.to_string()))
+        .map_err(|e| WorkflowError::external(e.to_string()))?;
+        if let Err(error) = super::lua::generate_editor_support(&self.base_dir) {
+            log::warn!("Lua editor support generation failed after facet delete: {error}");
+        }
+        Ok(())
     }
 
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
@@ -89,6 +97,8 @@ impl FacetRepository for WorkflowFacetFileRepository {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -118,5 +128,35 @@ mod tests {
         assert!(summaries
             .iter()
             .any(|summary| summary.key == "impl" && summary.kind == "instruction"));
+    }
+
+    #[test]
+    fn save_and_delete_regenerate_facet_editor_stub() {
+        let tmp = TempDir::new().unwrap();
+        let repo = WorkflowFacetFileRepository::new(tmp.path());
+
+        repo.save(FacetKind::Instruction, "impl", "# Implement", true)
+            .unwrap();
+        let after_save = fs::read_to_string(tmp.path().join(".releash/facets.lua")).unwrap();
+        repo.delete(FacetKind::Instruction, "impl").unwrap();
+        let after_delete = fs::read_to_string(tmp.path().join(".releash/facets.lua")).unwrap();
+
+        assert!(after_save.contains("impl ReleashFacet Implement"));
+        assert!(!after_delete.contains("impl ReleashFacet Implement"));
+    }
+
+    #[test]
+    fn editor_stub_generation_failure_does_not_fail_facet_save() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(".releash"), "blocks generated directory").unwrap();
+        let repo = WorkflowFacetFileRepository::new(tmp.path());
+
+        repo.save(FacetKind::Instruction, "impl", "body", true)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("instructions/impl.md")).unwrap(),
+            "body"
+        );
     }
 }

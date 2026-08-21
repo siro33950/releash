@@ -117,6 +117,7 @@ export interface WorkflowDefinition {
 	name: string;
 	description: string;
 	builtin: boolean;
+	sourceFormat: "yaml" | "lua";
 	schemas?: Record<string, SchemaDefView>;
 	nodes: NodeDefinition[];
 }
@@ -227,6 +228,7 @@ export type WorkflowDefinitionSummary = {
 	description: string;
 	builtin: boolean;
 	is_running: boolean;
+	sourceFormat: "yaml" | "lua";
 };
 
 export type FacetKind = "policy" | "knowledge" | "instruction";
@@ -242,6 +244,7 @@ type DiagnosticSeverity = "error" | "info";
 type DiagnosticStage = "parse_shape" | "resolve" | "typecheck" | "control_flow";
 
 interface DiagnosticSpan {
+	source?: string;
 	start_line: number;
 	start_col: number;
 	end_line: number;

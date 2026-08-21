@@ -54,7 +54,9 @@ pub(crate) fn resolve_workflow_by_name(
         let mut paths = entries
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("yml"))
+            .filter(|path| {
+                crate::adaptor::gateway::workflow::storage::workflow_source_format(path).is_some()
+            })
             .collect::<Vec<_>>();
         paths.sort();
 
@@ -192,5 +194,48 @@ mod tests {
 
         assert!(error.to_string().contains("WFS006"));
         assert!(error.to_string().contains("duplicate-name"));
+    }
+
+    #[test]
+    fn resolves_lua_definition_by_declared_name() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("lua-runtime.lua"),
+            r#"
+local r = require("releash")
+return r.workflow{
+  name = "lua-runtime", description = "Lua runtime",
+  main = r.command{ command = "true" },
+}
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_workflow_by_name(tmp.path(), tmp.path(), "lua-runtime").unwrap();
+
+        assert_eq!(resolved.name, "lua-runtime");
+        assert_eq!(resolved.entry, "main");
+    }
+
+    #[test]
+    fn duplicate_name_across_yaml_and_lua_is_reported() {
+        let tmp = TempDir::new().unwrap();
+        storage::save_workflow(tmp.path(), &workflow("duplicate-cross-format")).unwrap();
+        std::fs::write(
+            tmp.path().join("duplicate-cross-format.lua"),
+            r#"
+local r = require("releash")
+return r.workflow{
+  name = "duplicate-cross-format", description = "Lua duplicate",
+  main = r.command{ command = "true" },
+}
+"#,
+        )
+        .unwrap();
+
+        let error =
+            resolve_workflow_by_name(tmp.path(), tmp.path(), "duplicate-cross-format").unwrap_err();
+
+        assert!(error.to_string().contains("WFS006"));
     }
 }
