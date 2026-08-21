@@ -14,6 +14,7 @@ pub(crate) enum StubGenerationError {
     Io(std::io::Error),
     Facet(FacetError),
     MissingBuiltinFacet { kind: FacetKind, key: String },
+    InvalidDocumentPath { path: PathBuf },
 }
 
 impl fmt::Display for StubGenerationError {
@@ -26,6 +27,11 @@ impl fmt::Display for StubGenerationError {
                 "ビルトインファセット '{key}' ({}) の本文が見つかりません",
                 kind.dir_name()
             ),
+            Self::InvalidDocumentPath { path } => write!(
+                formatter,
+                "ファセット本文のパスを file URL へ変換できません: {}",
+                path.display()
+            ),
         }
     }
 }
@@ -35,7 +41,7 @@ impl std::error::Error for StubGenerationError {
         match self {
             Self::Io(error) => Some(error),
             Self::Facet(error) => Some(error),
-            Self::MissingBuiltinFacet { .. } => None,
+            Self::MissingBuiltinFacet { .. } | Self::InvalidDocumentPath { .. } => None,
         }
     }
 }
@@ -232,7 +238,7 @@ fn generate_facet_stub(base_dir: &Path) -> Result<String, StubGenerationError> {
             let key = lua_doc_field(&summary.key);
             output.push_str(&format!(
                 "---@field {key} ReleashFacet {description} ([本文]({}))\n",
-                facet_document_url(&path)
+                facet_document_url(&path)?
             ));
         }
         output.push('\n');
@@ -266,10 +272,18 @@ fn generate_builtin_facet_documents(base_dir: &Path) -> Result<(), StubGeneratio
 
 /// 生成する `file://` リンク。パス区切りの正規化と percent-encode を URL 側へ任せ、
 /// 空白を含むパス（macOS の `Application Support` 等）でも有効な URL にする。
-fn facet_document_url(path: &Path) -> String {
-    url::Url::from_file_path(path)
+///
+/// `Url::from_file_path` は相対パスを受け付けないため、先に current_dir で絶対化する
+/// （`dirs::config_dir()` が解決できない環境では `workflows_dir()` が相対パスを返す）。
+fn facet_document_url(path: &Path) -> Result<String, StubGenerationError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    url::Url::from_file_path(&absolute)
         .map(|url| url.to_string())
-        .unwrap_or_else(|_| format!("file://{}", path.display()))
+        .map_err(|_| StubGenerationError::InvalidDocumentPath { path: absolute })
 }
 
 fn facet_document_path(
@@ -360,6 +374,17 @@ mod tests {
         let facets = fs::read_to_string(base.join(".releash/facets.lua")).unwrap();
         assert!(facets.contains("Application%20Support"));
         assert!(!facets.contains("Application Support"));
+    }
+
+    #[test]
+    fn facet_document_url_absolutizes_relative_paths() {
+        let url = facet_document_url(Path::new("releash/workflows/policies/coding.md")).unwrap();
+
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(
+            url.ends_with("/releash/workflows/policies/coding.md"),
+            "{url}"
+        );
     }
 
     #[test]

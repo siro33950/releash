@@ -837,6 +837,9 @@ impl WorkflowLuaHost {
             Some(LuaData::Table(values)) => {
                 let mut result = Vec::new();
                 for (key, value) in &values.entries {
+                    // inputs は 1 回の呼び出しで要素数ぶんの Source を積むため、
+                    // 呼び出し入口の検査だけでは上限を超えられる。要素ごとに見る。
+                    self.ensure_arena_budget(&location)?;
                     let LuaTableKey::String(key) = key else {
                         return Err(type_error("inputs", "string-keyed table", &location));
                     };
@@ -2724,6 +2727,37 @@ end
 return r.workflow{
   name = "review", description = "Review",
   main = r.sequence{ children = { r.child{ node = r.command{ command = "true" } } } },
+}
+"#,
+            directory.path(),
+            LuaFacetCatalog::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "WFS010");
+        assert!(error.message.contains("builder values"));
+    }
+
+    #[test]
+    fn rejects_a_single_child_whose_inputs_exhaust_the_arena_budget() {
+        let directory = TempDir::new().unwrap();
+
+        let error = load_lua_workflow(
+            "review.lua",
+            r#"
+local r = require("releash")
+local target = r.command{ command = "x" }
+-- arena を上限の手前まで埋めてから、1 回の r.child で残りを超える inputs を渡す。
+for _ = 1, 99000 do
+  r.command{ command = "x" }
+end
+local inputs = {}
+for i = 1, 5000 do
+  inputs["p" .. i] = target
+end
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{ children = { r.child{ node = target, inputs = inputs } } },
 }
 "#,
             directory.path(),
