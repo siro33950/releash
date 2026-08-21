@@ -246,7 +246,7 @@ pub(crate) fn diagnose_lua_workflow_source(
     let loaded = match lua::load_lua_workflow(source_name, source, workflows_dir, catalog) {
         Ok(loaded) => loaded,
         Err(error) => {
-            let stage = diagnostic_stage_for_code(&error.code);
+            let stage = stage_for_code(&error.code);
             let span = error
                 .location
                 .map(|location| lua_location_span(&location, workflows_dir));
@@ -323,18 +323,6 @@ fn lua_location_span(
         location.source.clone()
     };
     lua_span(&display_source, location.line)
-}
-
-fn diagnostic_stage_for_code(code: &str) -> DiagnosticStage {
-    if code.starts_with("WFR") || code.starts_with("FAC") {
-        DiagnosticStage::Resolve
-    } else if code.starts_with("WFT") {
-        DiagnosticStage::Typecheck
-    } else if code.starts_with("WFC") {
-        DiagnosticStage::ControlFlow
-    } else {
-        DiagnosticStage::ParseShape
-    }
 }
 
 fn normalize_invalid_source_workflow_name(
@@ -1079,8 +1067,9 @@ fn validation_error_code_stage(
     (code, stage_for_code(code))
 }
 
+/// Diagnostic code の接頭辞から段を決める。接頭辞と段の対応はこの関数だけが持つ。
 fn stage_for_code(code: &str) -> DiagnosticStage {
-    if code.starts_with("WFR") || code.starts_with("WFU") {
+    if code.starts_with("WFR") || code.starts_with("WFU") || code.starts_with("FAC") {
         DiagnosticStage::Resolve
     } else if code.starts_with("WFT") {
         DiagnosticStage::Typecheck

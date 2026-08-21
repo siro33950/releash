@@ -102,6 +102,9 @@ impl Serialize for StorageError {
     }
 }
 
+/// 同じ名前を複数の形式が宣言した一覧エントリの説明。
+const DUPLICATE_NAME_DESCRIPTION: &str = "Duplicate workflow definition";
+
 pub fn workflows_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -343,7 +346,22 @@ fn list_file_summaries<T, E: fmt::Display>(
     }
 
     summaries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(summaries)
+    Ok(collapse_duplicate_names(summaries))
+}
+
+/// 同じ名前を複数の形式が宣言した状態は `resolve_workflow_path` が `WFS006` として
+/// 拒否する。一覧でも 1 件へ畳み込み、選べる行と実行できる定義を一致させる。
+fn collapse_duplicate_names(summaries: Vec<Summary>) -> Vec<Summary> {
+    let mut collapsed: Vec<Summary> = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        match collapsed.last_mut() {
+            Some(previous) if previous.name == summary.name => {
+                previous.description = DUPLICATE_NAME_DESCRIPTION.to_string();
+            }
+            _ => collapsed.push(summary),
+        }
+    }
+    collapsed
 }
 
 #[cfg(test)]
@@ -706,6 +724,34 @@ nodes:
 
         assert_eq!(disk_entry.description, "Invalid workflow definition");
         assert!(!disk_entry.builtin);
+    }
+
+    #[test]
+    fn list_workflows_collapses_same_name_across_formats() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        save_workflow(dir, &sample_workflow("duplicated", false)).unwrap();
+        fs::write(
+            dir.join("duplicated.lua"),
+            r#"
+local r = require("releash")
+return r.workflow{
+  name = "duplicated", description = "Lua duplicate",
+  main = r.command{ command = "true" },
+}
+"#,
+        )
+        .unwrap();
+
+        let list = list_workflows(dir).unwrap();
+        let matched = list
+            .iter()
+            .filter(|summary| summary.name == "duplicated")
+            .collect::<Vec<_>>();
+
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].description, DUPLICATE_NAME_DESCRIPTION);
+        assert!(resolve_workflow_path(dir, "duplicated").is_err());
     }
 
     #[test]

@@ -73,7 +73,7 @@ Lua の値と `WorkflowDefinition` の相互変換、Lua 位置と `DiagnosticSp
 
 facet インデックスモジュールは `f.instruction.<key>` / `f.policy.<key>` / `f.knowledge.<key>` を公開し、それぞれ kind を持つ `Facet` を返す。`facets = { policy = <Facet>, knowledge = { <Facet>, ... }, instruction = <Facet> }` で、kind の合わない Facet は呼び出し時点で拒否する。`knowledge` は常に配列で書く（YAML の単数受けは Lua へ持ち込まない）。
 
-部品は `Node` を返す Lua 関数として書く。同じ `Node` の値を複数の `r.child{}` へ渡すことは拒否する（B-005）。再利用は関数を再度呼ぶことで行う。
+部品は `sequence` を返す Lua 関数として書く。sequence を返すことで、実行木に子 sequence として現れ、折り畳みと `completion: approval` の単位になる（B-003）。engine から見れば部品も通常の node であり、部品由来かどうかを識別する情報は定義に残らないため、この規約は Lua 側の書き方として守る（葉を直接返す関数を engine が拒否することはできない）。同じ `Node` の値を複数の `r.child{}` へ渡すことは拒否する（B-005）。再利用は関数を再度呼ぶことで行う。
 
 #### 生成物
 

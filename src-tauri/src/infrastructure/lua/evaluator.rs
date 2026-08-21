@@ -12,6 +12,14 @@ use mlua::{
 
 const HOOK_INSTRUCTION_INTERVAL: u32 = 10_000;
 
+/// Lua table を `LuaData` へ変換するときの入れ子の上限。Rust 側の再帰変換が
+/// stack を使い切る前に打ち切る。
+const MAX_TABLE_DEPTH: usize = 64;
+
+/// 一度の変換で扱う table 要素数の上限。共有 table の展開が組み合わせ的に
+/// 増える経路を有界にする。
+const MAX_TABLE_ELEMENTS: usize = 100_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LuaLimits {
     pub(crate) memory_bytes: usize,
@@ -457,39 +465,76 @@ fn module_to_lua<H: LuaHost + 'static>(
 }
 
 fn lua_to_data<H: LuaHost + 'static>(value: Value) -> mlua::Result<LuaData> {
-    match value {
-        Value::Nil => Ok(LuaData::Nil),
-        Value::Boolean(value) => Ok(LuaData::Boolean(value)),
-        Value::Integer(value) => Ok(LuaData::Integer(value)),
-        Value::Number(value) => Ok(LuaData::Number(value)),
-        Value::String(value) => Ok(LuaData::String(value.to_string_lossy())),
-        Value::Table(table) => {
-            let mut entries = BTreeMap::new();
-            for pair in table.pairs::<Value, Value>() {
-                let (key, value) = pair?;
-                let key = match key {
-                    Value::Boolean(key) => LuaTableKey::Boolean(key),
-                    Value::Integer(key) => LuaTableKey::Integer(key),
-                    Value::String(key) => LuaTableKey::String(key.to_string_lossy()),
-                    other => {
+    TableConversion::default().convert::<H>(value, 0)
+}
+
+/// 一度の `lua_to_data` 呼び出しで共有する変換状態。再帰パス上の table を
+/// identity で覚えて循環参照を拒否し、深さと要素数を有界にする。
+#[derive(Default)]
+struct TableConversion {
+    visiting: Vec<*const std::ffi::c_void>,
+    elements: usize,
+}
+
+impl TableConversion {
+    fn convert<H: LuaHost + 'static>(
+        &mut self,
+        value: Value,
+        depth: usize,
+    ) -> mlua::Result<LuaData> {
+        match value {
+            Value::Nil => Ok(LuaData::Nil),
+            Value::Boolean(value) => Ok(LuaData::Boolean(value)),
+            Value::Integer(value) => Ok(LuaData::Integer(value)),
+            Value::Number(value) => Ok(LuaData::Number(value)),
+            Value::String(value) => Ok(LuaData::String(value.to_string_lossy())),
+            Value::Table(table) => {
+                if depth >= MAX_TABLE_DEPTH {
+                    return Err(mlua::Error::runtime(format!(
+                        "Lua table nesting exceeded the limit of {MAX_TABLE_DEPTH}"
+                    )));
+                }
+                let pointer = table.to_pointer();
+                if self.visiting.contains(&pointer) {
+                    return Err(mlua::Error::runtime(
+                        "Lua table contains a recursive reference",
+                    ));
+                }
+                self.visiting.push(pointer);
+                let mut entries = BTreeMap::new();
+                for pair in table.pairs::<Value, Value>() {
+                    let (key, value) = pair?;
+                    self.elements += 1;
+                    if self.elements > MAX_TABLE_ELEMENTS {
                         return Err(mlua::Error::runtime(format!(
-                            "unsupported Lua table key type '{}'",
-                            other.type_name()
-                        )))
+                            "Lua table conversion exceeded the limit of {MAX_TABLE_ELEMENTS} entries"
+                        )));
                     }
-                };
-                entries.insert(key, lua_to_data::<H>(value)?);
+                    let key = match key {
+                        Value::Boolean(key) => LuaTableKey::Boolean(key),
+                        Value::Integer(key) => LuaTableKey::Integer(key),
+                        Value::String(key) => LuaTableKey::String(key.to_string_lossy()),
+                        other => {
+                            return Err(mlua::Error::runtime(format!(
+                                "unsupported Lua table key type '{}'",
+                                other.type_name()
+                            )))
+                        }
+                    };
+                    entries.insert(key, self.convert::<H>(value, depth + 1)?);
+                }
+                self.visiting.pop();
+                Ok(LuaData::Table(LuaTableData { entries }))
             }
-            Ok(LuaData::Table(LuaTableData { entries }))
+            Value::UserData(userdata) => {
+                let borrowed = userdata.borrow::<HostUserData<H>>()?;
+                Ok(LuaData::Handle(borrowed.handle.clone()))
+            }
+            other => Err(mlua::Error::runtime(format!(
+                "unsupported Lua value type '{}'",
+                other.type_name()
+            ))),
         }
-        Value::UserData(userdata) => {
-            let borrowed = userdata.borrow::<HostUserData<H>>()?;
-            Ok(LuaData::Handle(borrowed.handle.clone()))
-        }
-        other => Err(mlua::Error::runtime(format!(
-            "unsupported Lua value type '{}'",
-            other.type_name()
-        ))),
     }
 }
 
@@ -700,6 +745,48 @@ mod tests {
         };
 
         assert!(table.entries.is_empty());
+    }
+
+    #[test]
+    fn test_lua評価_循環参照するtableを拒否する() {
+        let dir = TempDir::new().unwrap();
+
+        let error = evaluate(
+            request(dir.path(), "local t = {}\nt.self = t\nreturn t"),
+            TestHost::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, LuaFailureKind::Evaluation);
+        assert!(error.message.contains("recursive reference"));
+    }
+
+    #[test]
+    fn test_lua評価_table入れ子の上限を超えたら拒否する() {
+        let dir = TempDir::new().unwrap();
+        let source = format!(
+            "local t = {{}}\nfor _ = 1, {} do t = {{ inner = t }} end\nreturn t",
+            MAX_TABLE_DEPTH + 1
+        );
+
+        let error = evaluate(request(dir.path(), &source), TestHost::default()).unwrap_err();
+
+        assert_eq!(error.kind, LuaFailureKind::Evaluation);
+        assert!(error.message.contains("nesting exceeded"));
+    }
+
+    #[test]
+    fn test_lua評価_table要素数の上限を超えたら拒否する() {
+        let dir = TempDir::new().unwrap();
+        let source = format!(
+            "local t = {{}}\nfor i = 1, {} do t[i] = i end\nreturn t",
+            MAX_TABLE_ELEMENTS + 1
+        );
+
+        let error = evaluate(request(dir.path(), &source), TestHost::default()).unwrap_err();
+
+        assert_eq!(error.kind, LuaFailureKind::Evaluation);
+        assert!(error.message.contains("exceeded the limit"));
     }
 
     #[test]

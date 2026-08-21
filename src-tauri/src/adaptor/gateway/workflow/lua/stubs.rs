@@ -1,10 +1,56 @@
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::adaptor::gateway::workflow::{
     builtin,
-    facet::{self, FacetKind},
+    facet::{self, FacetError, FacetKind},
 };
+
+/// 編集支援ファイルの生成で発生しうるエラー。I/O 失敗と facet カタログの失敗を
+/// 型で分ける。
+#[derive(Debug)]
+pub(crate) enum StubGenerationError {
+    Io(std::io::Error),
+    Facet(FacetError),
+    MissingBuiltinFacet { kind: FacetKind, key: String },
+}
+
+impl fmt::Display for StubGenerationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "I/Oエラー: {error}"),
+            Self::Facet(error) => write!(formatter, "facet一覧の取得に失敗: {error}"),
+            Self::MissingBuiltinFacet { kind, key } => write!(
+                formatter,
+                "ビルトインファセット '{key}' ({}) の本文が見つかりません",
+                kind.dir_name()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StubGenerationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Facet(error) => Some(error),
+            Self::MissingBuiltinFacet { .. } => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for StubGenerationError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<FacetError> for StubGenerationError {
+    fn from(error: FacetError) -> Self {
+        Self::Facet(error)
+    }
+}
 
 const RELEASH_STUB: &str = r#"---@meta
 
@@ -144,7 +190,7 @@ const LUARC: &str = r#"{
 }
 "#;
 
-pub(crate) fn generate_editor_support(workflows_dir: &Path) -> std::io::Result<()> {
+pub(crate) fn generate_editor_support(workflows_dir: &Path) -> Result<(), StubGenerationError> {
     fs::create_dir_all(workflows_dir)?;
     let generated_dir = workflows_dir.join(".releash");
     fs::create_dir_all(&generated_dir)?;
@@ -166,7 +212,7 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
-fn generate_facet_stub(base_dir: &Path) -> std::io::Result<String> {
+fn generate_facet_stub(base_dir: &Path) -> Result<String, StubGenerationError> {
     let mut output = String::from("---@meta\n\n---@class ReleashFacet\n\n");
     for kind in [
         FacetKind::Instruction,
@@ -179,15 +225,14 @@ fn generate_facet_stub(base_dir: &Path) -> std::io::Result<String> {
             FacetKind::Knowledge => "ReleashKnowledgeFacets",
         };
         output.push_str(&format!("---@class {class_name}\n"));
-        let summaries = facet::list_facet_summaries(kind, base_dir)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let summaries = facet::list_facet_summaries(kind, base_dir)?;
         for summary in summaries {
             let path = facet_document_path(base_dir, kind, &summary.key, summary.builtin);
             let description = summary.description.replace(['\r', '\n'], " ");
             let key = lua_doc_field(&summary.key);
             output.push_str(&format!(
-                "---@field {key} ReleashFacet {description} ([本文](file://{}))\n",
-                path.display()
+                "---@field {key} ReleashFacet {description} ([本文]({}))\n",
+                facet_document_url(&path)
             ));
         }
         output.push('\n');
@@ -198,7 +243,7 @@ fn generate_facet_stub(base_dir: &Path) -> std::io::Result<String> {
     Ok(output)
 }
 
-fn generate_builtin_facet_documents(base_dir: &Path) -> std::io::Result<()> {
+fn generate_builtin_facet_documents(base_dir: &Path) -> Result<(), StubGenerationError> {
     for kind in [
         FacetKind::Instruction,
         FacetKind::Policy,
@@ -208,15 +253,23 @@ fn generate_builtin_facet_documents(base_dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(&kind_dir)?;
         for key in builtin::list_builtin_facet_keys(kind) {
             let content = builtin::get_builtin_facet(kind, key).ok_or_else(|| {
-                std::io::Error::other(format!(
-                    "builtin facet content is missing: {}/{key}",
-                    kind.dir_name()
-                ))
+                StubGenerationError::MissingBuiltinFacet {
+                    kind,
+                    key: key.to_string(),
+                }
             })?;
             write_if_changed(&kind_dir.join(format!("{key}.md")), content)?;
         }
     }
     Ok(())
+}
+
+/// 生成する `file://` リンク。パス区切りの正規化と percent-encode を URL 側へ任せ、
+/// 空白を含むパス（macOS の `Application Support` 等）でも有効な URL にする。
+fn facet_document_url(path: &Path) -> String {
+    url::Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| format!("file://{}", path.display()))
 }
 
 fn facet_document_path(
@@ -292,6 +345,32 @@ mod tests {
         assert!(releash.contains("---@field workflow fun(options: ReleashWorkflowOptions)"));
         assert!(releash.contains("---@field on_true ReleashNode"));
         assert!(!releash.contains("---@field equals ReleashNode"));
+    }
+
+    #[test]
+    fn facet_links_percent_encode_paths_with_spaces() {
+        let directory = TempDir::new().unwrap();
+        let base = directory.path().join("Application Support");
+        let instructions = base.join("instructions");
+        fs::create_dir_all(&instructions).unwrap();
+        fs::write(instructions.join("custom.md"), "# Custom facet\nBody").unwrap();
+
+        generate_editor_support(&base).unwrap();
+
+        let facets = fs::read_to_string(base.join(".releash/facets.lua")).unwrap();
+        assert!(facets.contains("Application%20Support"));
+        assert!(!facets.contains("Application Support"));
+    }
+
+    #[test]
+    fn lua_doc_field_quotes_keys_that_are_not_plain_identifiers() {
+        assert_eq!(lua_doc_field("coding"), "coding");
+        assert_eq!(lua_doc_field("_private"), "_private");
+        assert_eq!(
+            lua_doc_field("releash-thread-cli"),
+            "[\"releash-thread-cli\"]"
+        );
+        assert_eq!(lua_doc_field("with\"quote"), "[\"with\\\"quote\"]");
     }
 
     #[test]

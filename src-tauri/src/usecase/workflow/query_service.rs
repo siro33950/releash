@@ -389,6 +389,75 @@ mod tests {
         }
     }
 
+    /// `source_format` の戻り値だけを制御する gateway。
+    struct FakeSourceFormatGateway {
+        format: Option<crate::domain::workflow::WorkflowSourceFormat>,
+    }
+
+    impl WorkflowDefinitionSourceGateway for FakeSourceFormatGateway {
+        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
+            Ok(None)
+        }
+
+        fn source_format(
+            &self,
+            _file_stem: &str,
+        ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+            self.format
+                .ok_or_else(|| WorkflowError::external("source format unavailable"))
+        }
+
+        fn save_source(
+            &self,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<WorkflowDefinition, WorkflowError> {
+            Err(WorkflowError::external("not used"))
+        }
+    }
+
+    fn service_with_source_format(
+        format: Option<crate::domain::workflow::WorkflowSourceFormat>,
+    ) -> WorkflowQueryService {
+        WorkflowQueryService::new(
+            Arc::new(FakeDefinitionRepository {
+                workflow: workflow(),
+            }),
+            Arc::new(FakeSourceFormatGateway { format }),
+            Arc::new(FakeFacetRepository::default()),
+            Arc::new(FakeEventRepository::default()),
+            Arc::new(FakeExecutionProjectionRepository::default()),
+        )
+    }
+
+    #[test]
+    fn get_workflow_source_format_returns_lua_from_gateway() {
+        let service =
+            service_with_source_format(Some(crate::domain::workflow::WorkflowSourceFormat::Lua));
+
+        assert_eq!(
+            service.get_workflow_source_format("wf").unwrap(),
+            crate::domain::workflow::WorkflowSourceFormat::Lua
+        );
+    }
+
+    #[test]
+    fn get_workflow_source_format_propagates_gateway_error() {
+        let service = service_with_source_format(None);
+
+        let error = service.get_workflow_source_format("wf").unwrap_err();
+
+        assert!(error.to_string().contains("source format unavailable"));
+    }
+
+    #[test]
+    fn get_workflow_source_format_rejects_invalid_file_stem() {
+        let service =
+            service_with_source_format(Some(crate::domain::workflow::WorkflowSourceFormat::Lua));
+
+        assert!(service.get_workflow_source_format("../escape").is_err());
+    }
+
     struct Fixture {
         service: WorkflowQueryService,
         facets: Arc<FakeFacetRepository>,

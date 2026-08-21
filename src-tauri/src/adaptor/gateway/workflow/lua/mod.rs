@@ -18,6 +18,10 @@ mod stubs;
 
 pub(crate) use stubs::generate_editor_support;
 
+/// 一度の評価で Lua 側から生成できる中間ハンドルの総数。Lua VM のメモリ上限は
+/// Rust 側の arena を数えないため、ここで別途有界にする。
+const MAX_HOST_ARENA_ENTRIES: usize = 100_000;
+
 const HANDLE_NODE: &str = "node";
 const HANDLE_CHILD: &str = "child";
 const HANDLE_RULE: &str = "rule";
@@ -436,6 +440,34 @@ impl WorkflowLuaHost {
         handle(HANDLE_SOURCE, index)
     }
 
+    /// arena に積まれた中間ハンドルの総数。
+    fn arena_entries(&self) -> usize {
+        self.nodes.len()
+            + self.children.len()
+            + self.rules.len()
+            + self.failures.len()
+            + self.inputs.len()
+            + self.sources.len()
+            + self.schemas.len()
+            + self.facets.len()
+            + self.workflows.len()
+    }
+
+    /// Lua VM のメモリ上限は Rust 側の arena を数えないため、ビルダー呼び出しの
+    /// 入口で総数を有界にする。`MAX_NODES_PER_WORKFLOW` に収まる定義は到達しない。
+    fn ensure_arena_budget(&self, location: &LuaSourceLocation) -> Result<(), LuaHostError> {
+        if self.arena_entries() >= MAX_HOST_ARENA_ENTRIES {
+            return Err(host_error(
+                "WFS010",
+                format!(
+                    "Lua definition exceeded the limit of {MAX_HOST_ARENA_ENTRIES} builder values"
+                ),
+                location.clone(),
+            ));
+        }
+        Ok(())
+    }
+
     fn build(self, workflow_index: usize) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
         WorkflowGraphBuilder::new(self).build(workflow_index)
     }
@@ -456,6 +488,7 @@ impl LuaHost for WorkflowLuaHost {
         arguments: Vec<LuaData>,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
+        self.ensure_arena_budget(&location)?;
         match function {
             FN_COMMAND => self.call_command(arguments, location),
             FN_SESSION => self.call_session(arguments, location),
@@ -491,6 +524,7 @@ impl LuaHost for WorkflowLuaHost {
         key: &str,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
+        self.ensure_arena_budget(&location)?;
         if handle.kind == HANDLE_FACET_INDEX {
             let kind = match handle.index {
                 0 => FacetKind::Instruction,
@@ -2674,6 +2708,31 @@ return r.workflow{
         .unwrap();
 
         assert_eq!(second.workflow, first.workflow);
+    }
+
+    #[test]
+    fn rejects_definitions_that_exhaust_the_host_arena_budget() {
+        let directory = TempDir::new().unwrap();
+
+        let error = load_lua_workflow(
+            "review.lua",
+            r#"
+local r = require("releash")
+for _ = 1, 200000 do
+  r.command{ command = "x" }
+end
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{ children = { r.child{ node = r.command{ command = "true" } } } },
+}
+"#,
+            directory.path(),
+            LuaFacetCatalog::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "WFS010");
+        assert!(error.message.contains("builder values"));
     }
 
     #[test]
