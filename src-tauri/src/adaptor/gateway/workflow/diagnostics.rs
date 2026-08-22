@@ -2101,7 +2101,7 @@ mod tests {
 
     fn canonical_example_path() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../specs/unified-node-model/examples/full-cycle-development.yml")
+            .join("../workflows/examples/full-cycle-development.yml")
     }
 
     #[test]

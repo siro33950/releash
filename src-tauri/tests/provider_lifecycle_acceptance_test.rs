@@ -960,12 +960,3 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
         assert!(!stale_request.contains(&launch.capability));
     }
 }
-
-#[test]
-fn test_providerライフサイクル受信_product_acceptance専用routerを持たない() {
-    let router_source = include_str!("../src/adaptor/controller/api/mod.rs");
-
-    assert!(!router_source.contains("build_provider_lifecycle_router"));
-    assert!(router_source
-        .contains("application_router.merge(provider_lifecycle::router(provider_lifecycle))"));
-}

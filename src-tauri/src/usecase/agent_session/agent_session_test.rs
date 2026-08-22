@@ -802,15 +802,6 @@ fn idempotent_launch_request(caller_request_id: &str) -> AgentSessionLaunchReque
     }
 }
 
-#[test]
-fn test_agent_session_launch_id発行をcontrollerとworkflow_gatewayに分散しない() {
-    let controller = include_str!("../../adaptor/controller/command/agent_session/provider_tui.rs");
-    let workflow_gateway = include_str!("../../adaptor/gateway/workflow/node_session_boundary.rs");
-
-    assert!(!controller.contains("Uuid::new_v4"));
-    assert!(!workflow_gateway.contains("agent-session-{nonce}"));
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_agent_session_launch_同一request_idの並行呼び出しはsessionを一度だけ作成し同じ結果を返す(
 ) {

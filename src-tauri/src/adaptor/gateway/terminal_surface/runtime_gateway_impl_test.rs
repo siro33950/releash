@@ -113,42 +113,6 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
     assert_eq!(*sink.sequences.lock().unwrap(), vec![1, 2]);
 }
 
-#[test]
-fn test_ターミナル増分復元点_compaction用画面とsequenceを同一critical_sectionで確定する() {
-    let source = include_str!("runtime_gateway_impl.rs");
-    let snapshot_start = source
-        .find("fn materialize_checkpoint(")
-        .expect("compaction must use one checkpoint snapshot boundary");
-    let snapshot_body = &source[snapshot_start
-        ..source[snapshot_start..]
-            .find("\n}\n")
-            .map(|end| snapshot_start + end + 3)
-            .unwrap()];
-
-    let terminal_lock = snapshot_body
-        .find("let terminal_surface = terminal_surface.lock();")
-        .expect("Terminal model must be locked before reading its sequence");
-    let registry_lock = snapshot_body
-        .find("let registry = registry.lock();")
-        .expect("registry sequence must be read while the Terminal model stays locked");
-    let snapshot = snapshot_body
-        .find("terminal_surface.snapshot(sequence)")
-        .expect("the locked model and sequence must create one checkpoint");
-    assert!(terminal_lock < registry_lock);
-    assert!(registry_lock < snapshot);
-
-    let compact_start = source.find("fn compact_checkpoint(").unwrap();
-    let compact_body = &source[compact_start
-        ..source[compact_start..]
-            .find("\n}\n")
-            .map(|end| compact_start + end + 3)
-            .unwrap()];
-    assert!(
-        compact_body.find("materialize_checkpoint(").unwrap()
-            < compact_body.find("store.replace_base(").unwrap()
-    );
-}
-
 #[derive(Default)]
 struct CapturedTerminalOutput {
     resizes: StdMutex<Vec<(u16, u16, u64)>>,

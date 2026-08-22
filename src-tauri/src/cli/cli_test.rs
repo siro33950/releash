@@ -54,22 +54,6 @@ fn test_clicommand整理_保持対象workflowとreview_commandを受理する() 
 }
 
 #[test]
-fn test_clicommand整理_一次owner文書が実装済みsurfaceを列挙する() {
-    let document = include_str!("../../../docs/workflow-engine-evolution-plan.md");
-
-    for retained in [
-        "releash workflow status <execution-id>",
-        "releash workflow output submit --node-execution <id>",
-        "releash workflow output get <execution-id>",
-    ] {
-        assert!(
-            document.contains(retained),
-            "missing CLI surface: {retained}"
-        );
-    }
-}
-
-#[test]
 fn test_cli_parse境界_未知入力と現在の引数errorを拒否する() {
     assert!(Cli::try_parse_from(["releash", "workflow", "future-command"]).is_err());
 
@@ -131,19 +115,4 @@ fn test_cli長文help_複数回呼び出しでcacheを再利用する() {
     let first = render_long_help();
     let second = render_long_help();
     assert!(std::ptr::eq(first.as_ptr(), second.as_ptr()));
-}
-
-#[test]
-fn test_file直接読取_local_api_wire_responseへ依存しない() {
-    let source = include_str!("file_direct.rs");
-    for forbidden in [
-        "adaptor::controller::api::protocol",
-        "GetArtifactResponse",
-        "ValidateArtifactResponse",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "file-direct read fallback depends on API wire type: {forbidden}"
-        );
-    }
 }

@@ -5357,7 +5357,7 @@ mod tests {
     #[test]
     fn canonical_example_starts_nested_sequence_inside_fanout() {
         let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../specs/unified-node-model/examples/full-cycle-development.yml");
+            .join("../workflows/examples/full-cycle-development.yml");
         let source = std::fs::read_to_string(source_path).unwrap();
         let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
         let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {

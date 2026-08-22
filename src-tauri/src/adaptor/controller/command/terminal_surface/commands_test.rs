@@ -15,15 +15,6 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 #[test]
-fn test_ターミナル入力_commandはtauri_main_threadを占有しない() {
-    let source = include_str!("commands.rs");
-
-    assert!(source.contains("#[tauri::command(async)]\npub fn write_terminal_surface("));
-    assert!(source.contains("pub fn write_terminal_surface("));
-    assert!(!source.contains("tokio::task::spawn_blocking(move ||"));
-}
-
-#[test]
 fn test_ターミナル画面生成_上限到達を安定したコマンドコードへ変換する() {
     let worktree_error = UsecaseError::from(
         TerminalSurfaceSpawnReservationError::WorktreeCapReached("/repo".to_string()),

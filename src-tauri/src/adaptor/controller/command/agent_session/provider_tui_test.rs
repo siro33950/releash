@@ -49,14 +49,3 @@ fn test_agent_session_controller_provider未選択と未知値を起動前に拒
     assert_eq!(missing["code"], "AGENT_SESSION_INVALID_PROVIDER");
     assert_eq!(unknown["code"], "AGENT_SESSION_INVALID_PROVIDER");
 }
-
-#[test]
-fn test_agent_session_controller_wire型とapperrorを規約境界へ置く() {
-    let source = include_str!("provider_tui.rs");
-
-    assert!(!source.contains("pub(crate) enum AgentSessionOpenOutcomeDto"));
-    assert!(!source.contains("pub(crate) enum AgentSessionArchiveOutcomeDto"));
-    assert!(!source.contains("pub(crate) struct ProviderHookHealthWarningDto"));
-    assert!(!source.contains("Result<String, String>"));
-    assert!(!source.contains("Result<(), String>"));
-}

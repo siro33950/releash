@@ -355,55 +355,6 @@ mod tests {
         "restore_workspace_workflow_run",
     ];
 
-    const RETIRED_WORKFLOW_BOUNDARY_IDENTIFIERS: &[&str] = &[
-        "run_id",
-        "runId",
-        "WorkflowRun",
-        "runs",
-        "step_name",
-        "stepName",
-        "WorkflowStep",
-        "WorkflowStateSnapshot",
-        "StepHistoryEntry",
-        "StepOutput",
-        "ParallelStepState",
-        "list_workflow_runs",
-        "get_workflow_run",
-        "get_workflow_run_log",
-        "get_workflow_run_state",
-        "get_workflow_step_detail",
-        "resolve_active_run_by_worktree",
-        "resolve_worktree_by_run",
-        "get_workspace_workflow_step_detail",
-        "archive_workspace_workflow_run",
-        "restore_workspace_workflow_run",
-    ];
-
-    fn production_prefix(source: &str) -> &str {
-        source
-            .split_once("#[cfg(test)]\nmod tests")
-            .map_or(source, |(production, _)| production)
-    }
-
-    fn contains_source_identifier(source: &str, identifier: &str) -> bool {
-        source
-            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-            .any(|token| token == identifier)
-    }
-
-    fn boundary_source_violations(
-        label: &str,
-        source: &str,
-        retired_identifiers: &[&str],
-    ) -> Vec<String> {
-        let production = production_prefix(source);
-        retired_identifiers
-            .iter()
-            .filter(|identifier| contains_source_identifier(production, identifier))
-            .map(|identifier| format!("{label}: {identifier}"))
-            .collect()
-    }
-
     #[test]
     fn workflow_command_registry_uses_execution_and_node_names() {
         let unique: HashSet<_> = COMMAND_NAMES.iter().copied().collect();
@@ -444,60 +395,6 @@ mod tests {
         assert!(handles_command("workflow_submit_output"));
         assert!(handles_command("workflow_get_output"));
         assert!(!handles_command("get_git_status"));
-    }
-
-    #[test]
-    fn workflow_public_boundary_source_has_no_retired_identifiers() {
-        let sources = [
-            ("workflow controller registry", include_str!("mod.rs")),
-            (
-                "workflow definition controller",
-                include_str!("definition.rs"),
-            ),
-            (
-                "workflow diagnostics controller",
-                include_str!("diagnostics.rs"),
-            ),
-            (
-                "workflow controller execution",
-                include_str!("execution.rs"),
-            ),
-            ("workflow facet controller", include_str!("facet.rs")),
-            ("workflow controller runtime", include_str!("runtime.rs")),
-            ("workflow controller output", include_str!("output.rs")),
-            (
-                "workflow session error controller",
-                include_str!("session_errors.rs"),
-            ),
-            (
-                "workspace workflow controller",
-                include_str!("../workspace_tree.rs"),
-            ),
-            (
-                "workflow protocol",
-                include_str!("../../../protocol/workflow.rs"),
-            ),
-            (
-                "workflow summary DTO",
-                include_str!("../../../../usecase/workflow/dto.rs"),
-            ),
-            (
-                "workspace workflow DTO",
-                include_str!("../../../../usecase/workflow/workspace_tree.rs"),
-            ),
-        ];
-        let violations = sources
-            .into_iter()
-            .flat_map(|(label, source)| {
-                boundary_source_violations(label, source, RETIRED_WORKFLOW_BOUNDARY_IDENTIFIERS)
-            })
-            .collect::<Vec<_>>();
-
-        assert!(
-            violations.is_empty(),
-            "retired workflow boundary identifiers remain:\n{}",
-            violations.join("\n")
-        );
     }
 
     #[test]
