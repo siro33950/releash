@@ -10,6 +10,7 @@ import {
 	GitBranch,
 	GitPullRequest,
 	Home,
+	ListTree,
 	Loader2,
 	MessageSquare,
 	MoreHorizontal,
@@ -63,18 +64,16 @@ import type {
 	CenterSelection,
 	WorkspaceNode,
 	WorkspaceTreeItem,
-	WorkspaceWorkflow,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
 import {
-	agentSessionIconPresentation,
 	isWorkspaceNodePulseStatus,
 	workflowNodeIconClasses,
 } from "./WorkflowNodeStatusIcon";
-import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
+import { WorkspaceBranchStatusIcon } from "./WorkspaceBranchStatusIcon";
 
 interface WorkspaceListProps {
 	repoPaths: string[];
@@ -158,21 +157,33 @@ function WorkspaceNodeRow({
 	selected,
 	onSelect,
 	onClose,
+	historyExpanded,
+	onToggleHistory,
+	onArchiveSession,
+	onDeleteSession,
+	onWorkflowAction,
+	onArchiveWorkflow,
 }: {
 	node: WorkspaceNode;
 	indentPx: number;
 	selected?: boolean;
 	onSelect: () => void;
 	onClose?: () => void;
+	historyExpanded?: boolean;
+	onToggleHistory?: () => void;
+	onArchiveSession?: () => void;
+	onDeleteSession?: () => void;
+	onWorkflowAction: (
+		action: WorkflowExecutionAction,
+		item: WorkspaceTreeItem,
+	) => void | Promise<void>;
+	onArchiveWorkflow: (item: WorkspaceTreeItem) => void | Promise<void>;
 }) {
 	const ContentIcon = node.contentKind === "session" ? Bot : Terminal;
 	const pulseClassName = isWorkspaceNodePulseStatus(node.status)
 		? "animate-pulse"
 		: "";
-	const statusTitle =
-		node.status === "error" && node.errorReason
-			? node.errorReason
-			: `${node.contentKind}, ${node.status}`;
+	const statusTitle = `${node.contentKind}, ${node.status}`;
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
@@ -200,6 +211,55 @@ function WorkspaceNodeRow({
 				</span>
 				<span className="min-w-0 flex-1 truncate">{node.title}</span>
 			</button>
+			{node.pastAttempts.length > 0 && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="size-5 shrink-0 text-muted-foreground"
+					onClick={(event) => {
+						event.stopPropagation();
+						onToggleHistory?.();
+					}}
+					aria-label={`${historyExpanded ? "Hide" : "Show"} past executions for ${node.title}`}
+					title={`${historyExpanded ? "Hide" : "Show"} past executions`}
+				>
+					{historyExpanded ? (
+						<ChevronDown className="size-3" />
+					) : (
+						<ChevronRight className="size-3" />
+					)}
+				</Button>
+			)}
+			{node.sessionCapabilities?.canArchive && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onArchiveSession?.();
+					}}
+					aria-label={`Archive ${node.title}`}
+					title="Archive"
+				>
+					<X className="size-3" />
+				</Button>
+			)}
+			{node.sessionCapabilities?.canDelete && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-destructive group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						onDeleteSession?.();
+					}}
+					aria-label={`Delete ${node.title}`}
+					title="Delete"
+				>
+					<Trash2 className="size-3" />
+				</Button>
+			)}
 			{node.capabilities.canClose && (
 				<Button
 					size="icon-xs"
@@ -215,84 +275,90 @@ function WorkspaceNodeRow({
 					<X className="size-3" />
 				</Button>
 			)}
+			<WorkflowControls
+				item={node}
+				onWorkflowAction={onWorkflowAction}
+				onArchiveWorkflow={onArchiveWorkflow}
+			/>
 		</div>
 	);
 }
 
-function AgentSessionRow({
-	session,
-	selected,
-	onSelect,
-	onArchive,
-	onDelete,
+function WorkflowControls({
+	item,
+	onWorkflowAction,
+	onArchiveWorkflow,
 }: {
-	session: AgentSessionItem;
-	selected: boolean;
-	onSelect: () => void;
-	onArchive: () => void;
-	onDelete: () => void;
+	item: WorkspaceTreeItem;
+	onWorkflowAction: (
+		action: WorkflowExecutionAction,
+		item: WorkspaceTreeItem,
+	) => void | Promise<void>;
+	onArchiveWorkflow: (item: WorkspaceTreeItem) => void | Promise<void>;
 }) {
-	const label = agentSessionLabel(session);
-	const presentation = agentSessionIconPresentation(session);
-	const pulseClassName = presentation.pulse ? "animate-pulse" : "";
+	const [menuOpen, setMenuOpen] = useState(false);
+	const capabilities = item.workflowCapabilities;
+	if (!capabilities) return null;
 	return (
-		<div
-			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
-				selected
-					? "bg-foreground/10 text-foreground"
-					: "text-foreground/90 hover:bg-foreground/5"
-			}`}
-			style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
-		>
-			<button
-				type="button"
-				className="flex min-w-0 flex-1 items-center gap-2 text-left"
-				onClick={onSelect}
-				aria-current={selected ? "page" : undefined}
-				aria-label={`${label}, ${presentation.statusLabel}`}
-				title={session.id}
+		<div className="relative h-5 w-11 shrink-0">
+			<DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+				<DropdownMenuTrigger asChild>
+					<Button
+						size="icon-xs"
+						variant="ghost"
+						className="absolute top-0 right-6 size-5 text-muted-foreground"
+						onClick={(event) => event.stopPropagation()}
+						aria-label={`Open menu for ${item.title}`}
+						title="Menu"
+					>
+						<MoreHorizontal className="size-3" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem
+						disabled={!capabilities.canStop}
+						onSelect={() => {
+							if (capabilities.canStop) onWorkflowAction("stop", item);
+						}}
+					>
+						<Square className="size-3.5" />
+						Stop
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						disabled={!capabilities.canResume}
+						onSelect={() => {
+							if (capabilities.canResume) onWorkflowAction("resume", item);
+						}}
+					>
+						<RotateCcw className="size-3.5" />
+						Resume
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						variant="destructive"
+						disabled={!capabilities.canAbort}
+						onSelect={() => {
+							if (capabilities.canAbort) onWorkflowAction("abort", item);
+						}}
+					>
+						<Ban className="size-3.5" />
+						Abort
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			<Button
+				size="icon-xs"
+				variant="ghost"
+				className="absolute top-0 right-0 size-5 text-muted-foreground"
+				disabled={!capabilities.canArchive}
+				onClick={(event) => {
+					event.stopPropagation();
+					if (capabilities.canArchive) onArchiveWorkflow(item);
+				}}
+				aria-label={`Archive ${item.title}`}
+				title="Archive"
 			>
-				<span
-					className="flex size-5 shrink-0 items-center justify-center"
-					title={presentation.statusLabel}
-				>
-					<Bot
-						className={`size-3.5 shrink-0 ${presentation.className} ${pulseClassName}`}
-						aria-hidden="true"
-					/>
-				</span>
-				<span className="min-w-0 flex-1 truncate">{label}</span>
-			</button>
-			{session.operations.canArchive && (
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onArchive();
-					}}
-					aria-label={`Archive ${label}`}
-					title="Archive"
-				>
-					<X className="size-3" />
-				</Button>
-			)}
-			{session.operations.canDelete && (
-				<Button
-					size="icon-xs"
-					variant="ghost"
-					className="hidden size-5 shrink-0 text-destructive group-hover:flex group-focus-within:flex"
-					onClick={(event) => {
-						event.stopPropagation();
-						onDelete();
-					}}
-					aria-label={`Delete ${label}`}
-					title="Delete"
-				>
-					<Trash2 className="size-3" />
-				</Button>
-			)}
+				<X className="size-3" />
+			</Button>
 		</div>
 	);
 }
@@ -303,6 +369,8 @@ function WorkspaceBranchRow({
 	centerSelection,
 	onSelectNode,
 	onCloseNode,
+	onArchiveSession,
+	onDeleteSession,
 	onWorkflowAction,
 	onArchiveWorkflow,
 }: {
@@ -311,16 +379,15 @@ function WorkspaceBranchRow({
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
+	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
+	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
-		workflow: WorkspaceWorkflow,
+		item: WorkspaceTreeItem,
 	) => void | Promise<void>;
-	onArchiveWorkflow: (workflow: WorkspaceWorkflow) => void | Promise<void>;
+	onArchiveWorkflow: (item: WorkspaceTreeItem) => void | Promise<void>;
 }) {
 	const [expanded, setExpanded] = useState(true);
-	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
-	const workflow = item.kind === "workflow" ? item : null;
-	const actionControlsVisible = workflowMenuOpen;
 	return (
 		<div>
 			<div
@@ -335,7 +402,7 @@ function WorkspaceBranchRow({
 					{item.kind === "fanout" ? (
 						<FanoutRowStatusIcon status={item.status} />
 					) : (
-						<WorkflowRowStatusIcon status={item.status} />
+						<WorkspaceBranchStatusIcon status={item.status} icon={ListTree} />
 					)}
 					<span className="min-w-0 truncate">{item.title}</span>
 					{expanded ? (
@@ -344,85 +411,11 @@ function WorkspaceBranchRow({
 						<ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
 					)}
 				</button>
-				{workflow && (
-					<div
-						className={`relative h-5 w-11 shrink-0 transition-opacity ${
-							actionControlsVisible
-								? "visible opacity-100"
-								: "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
-						}`}
-					>
-						<DropdownMenu
-							open={workflowMenuOpen}
-							onOpenChange={setWorkflowMenuOpen}
-						>
-							<DropdownMenuTrigger asChild>
-								<Button
-									size="icon-xs"
-									variant="ghost"
-									className="absolute top-0 right-6 size-5 shrink-0 text-muted-foreground"
-									onClick={(event) => event.stopPropagation()}
-									aria-label={`Open menu for ${workflow.title}`}
-									title="Menu"
-								>
-									<MoreHorizontal className="size-3" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									disabled={!workflow.capabilities.canStop}
-									onSelect={() => {
-										if (workflow.capabilities.canStop) {
-											onWorkflowAction("stop", workflow);
-										}
-									}}
-								>
-									<Square className="size-3.5" />
-									Stop
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									disabled={!workflow.capabilities.canResume}
-									onSelect={() => {
-										if (workflow.capabilities.canResume) {
-											onWorkflowAction("resume", workflow);
-										}
-									}}
-								>
-									<RotateCcw className="size-3.5" />
-									Resume
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									variant="destructive"
-									disabled={!workflow.capabilities.canAbort}
-									onSelect={() => {
-										if (workflow.capabilities.canAbort) {
-											onWorkflowAction("abort", workflow);
-										}
-									}}
-								>
-									<Ban className="size-3.5" />
-									Abort
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<Button
-							size="icon-xs"
-							variant="ghost"
-							className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
-							disabled={!workflow.capabilities.canArchive}
-							onClick={(event) => {
-								event.stopPropagation();
-								if (workflow.capabilities.canArchive) {
-									onArchiveWorkflow(workflow);
-								}
-							}}
-							aria-label={`Archive ${workflow.title}`}
-							title="Archive"
-						>
-							<X className="size-3" />
-						</Button>
-					</div>
-				)}
+				<WorkflowControls
+					item={item}
+					onWorkflowAction={onWorkflowAction}
+					onArchiveWorkflow={onArchiveWorkflow}
+				/>
 			</div>
 			{expanded &&
 				item.children.map((child) => (
@@ -433,6 +426,8 @@ function WorkspaceBranchRow({
 						centerSelection={centerSelection}
 						onSelectNode={onSelectNode}
 						onCloseNode={onCloseNode}
+						onArchiveSession={onArchiveSession}
+						onDeleteSession={onDeleteSession}
 						onWorkflowAction={onWorkflowAction}
 						onArchiveWorkflow={onArchiveWorkflow}
 					/>
@@ -447,6 +442,8 @@ function WorkspaceTreeItemRow({
 	centerSelection,
 	onSelectNode,
 	onCloseNode,
+	onArchiveSession,
+	onDeleteSession,
 	onWorkflowAction,
 	onArchiveWorkflow,
 }: {
@@ -455,21 +452,47 @@ function WorkspaceTreeItemRow({
 	centerSelection: CenterSelection | null;
 	onSelectNode: (node: WorkspaceNode) => void;
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
+	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
+	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
-		workflow: WorkspaceWorkflow,
+		item: WorkspaceTreeItem,
 	) => void | Promise<void>;
-	onArchiveWorkflow: (workflow: WorkspaceWorkflow) => void | Promise<void>;
+	onArchiveWorkflow: (item: WorkspaceTreeItem) => void | Promise<void>;
 }) {
+	const [pastExpanded, setPastExpanded] = useState(
+		item.kind === "node" && !item.pastAttemptsCollapsed,
+	);
 	if (item.kind === "node") {
 		return (
-			<WorkspaceNodeRow
-				node={item}
-				indentPx={indentPx}
-				selected={isNodeSelected(centerSelection, item)}
-				onSelect={() => onSelectNode(item)}
-				onClose={() => onCloseNode(item)}
-			/>
+			<>
+				{pastExpanded &&
+					item.pastAttempts.map((past) => (
+						<WorkspaceNodeRow
+							key={past.id}
+							node={past}
+							indentPx={indentPx}
+							selected={isNodeSelected(centerSelection, past)}
+							onSelect={() => onSelectNode(past)}
+							onClose={() => onCloseNode(past)}
+							onWorkflowAction={onWorkflowAction}
+							onArchiveWorkflow={onArchiveWorkflow}
+						/>
+					))}
+				<WorkspaceNodeRow
+					node={item}
+					indentPx={indentPx}
+					selected={isNodeSelected(centerSelection, item)}
+					onSelect={() => onSelectNode(item)}
+					onClose={() => onCloseNode(item)}
+					historyExpanded={pastExpanded}
+					onToggleHistory={() => setPastExpanded((current) => !current)}
+					onArchiveSession={() => onArchiveSession(item)}
+					onDeleteSession={() => onDeleteSession(item)}
+					onWorkflowAction={onWorkflowAction}
+					onArchiveWorkflow={onArchiveWorkflow}
+				/>
+			</>
 		);
 	}
 	return (
@@ -479,6 +502,8 @@ function WorkspaceTreeItemRow({
 			centerSelection={centerSelection}
 			onSelectNode={onSelectNode}
 			onCloseNode={onCloseNode}
+			onArchiveSession={onArchiveSession}
+			onDeleteSession={onDeleteSession}
 			onWorkflowAction={onWorkflowAction}
 			onArchiveWorkflow={onArchiveWorkflow}
 		/>
@@ -530,8 +555,11 @@ function WorktreeTreeItem({
 		string | null
 	>(null);
 	const [providerHistoryLoading, setProviderHistoryLoading] = useState(false);
-	const [archiveFallbackDelete, setArchiveFallbackDelete] =
-		useState<AgentSessionItem | null>(null);
+	const [archiveFallbackDelete, setArchiveFallbackDelete] = useState<{
+		id: string;
+		worktreePath: string;
+		selectedNodeId?: string;
+	} | null>(null);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
 	const notifiedReconciliationSeqRef = useRef<number | null>(null);
 	const preferredSelectionRequestRef = useRef<{
@@ -564,7 +592,7 @@ function WorktreeTreeItem({
 	const canDelete = !branch.is_main_worktree;
 	const {
 		nodes,
-		sessions: workspaceAgentSessions,
+		archivedSessions: archivedAgentSessions,
 		preferredNodeId,
 		workflowHistory,
 		reconciliationEvent,
@@ -575,22 +603,6 @@ function WorktreeTreeItem({
 		synchronizeSelectedNodeId,
 		isReconciliationEventCurrent,
 	} = useWorkspaceTreeNodes(branch.worktree_path);
-	const agentSessions = useMemo(
-		() =>
-			workspaceAgentSessions.filter(
-				(session) => session.lifecycle !== "archived",
-			),
-		[workspaceAgentSessions],
-	);
-	const archivedAgentSessions = useMemo(
-		() =>
-			workspaceAgentSessions.filter(
-				(session) => session.lifecycle === "archived",
-			),
-		[workspaceAgentSessions],
-	);
-	const providerSessionsLoading = treeLoading;
-	const providerSessionsError = treeError;
 	const archivedProviderSessionsLoading = treeLoading && worktreeMenuOpen;
 	const archivedProviderSessionsError = treeError;
 	const refreshAgentSessions = useCallback(async () => {
@@ -679,36 +691,31 @@ function WorktreeTreeItem({
 		},
 		[branch.worktree_path, selectCenter],
 	);
-	const handleSelectAgentSession = useCallback(
-		(session: AgentSessionItem) => {
-			if (!branch.worktree_path) return;
-			selectCenter({
-				kind: "agent_session",
-				worktreePath: branch.worktree_path,
-				agentSessionId: session.id,
-			});
-		},
-		[branch.worktree_path, selectCenter],
-	);
 	const handleArchiveAgentSession = useCallback(
-		async (session: AgentSessionItem) => {
+		async (node: WorkspaceNode) => {
+			if (!branch.worktree_path || !node.sessionCapabilities) return;
+			const target = {
+				id: node.sessionCapabilities.sessionRef,
+				worktreePath: branch.worktree_path,
+				selectedNodeId: node.id,
+			};
 			setProviderActionError(null);
 			try {
 				const outcome = await invoke<
 					"archived" | "already_archived" | "delete_confirmation_required"
 				>("archive_agent_session", {
-					agentSessionId: session.id,
+					agentSessionId: target.id,
 					callerRequestId: `archive.${crypto.randomUUID()}`,
 				});
 				if (outcome === "delete_confirmation_required") {
-					setArchiveFallbackDelete(session);
+					setArchiveFallbackDelete(target);
 					return;
 				}
-				notifyAgentSessionChanged(session.worktreePath);
+				notifyAgentSessionChanged(target.worktreePath);
 				await refreshAgentSessions();
 				if (
-					scopedCenterSelection?.kind === "agent_session" &&
-					scopedCenterSelection.agentSessionId === session.id &&
+					scopedCenterSelection?.kind === "node" &&
+					scopedCenterSelection.nodeId === node.id &&
 					branch.worktree_path
 				) {
 					onSelectWorktree(branch.worktree_path, branch.name, repoName);
@@ -729,7 +736,15 @@ function WorktreeTreeItem({
 		],
 	);
 	const handleDeleteAgentSession = useCallback(
-		async (session: AgentSessionItem, archiveFallback: boolean) => {
+		async (
+			target: {
+				id: string;
+				worktreePath: string;
+				selectedNodeId?: string;
+			},
+			archiveFallback: boolean,
+			selectedNodeId?: string,
+		) => {
 			setProviderActionError(null);
 			try {
 				await invoke(
@@ -737,16 +752,18 @@ function WorktreeTreeItem({
 						? "confirm_agent_session_archive_delete"
 						: "delete_agent_session",
 					{
-						agentSessionId: session.id,
+						agentSessionId: target.id,
 						callerRequestId: `delete.${crypto.randomUUID()}`,
 					},
 				);
 				setArchiveFallbackDelete(null);
-				notifyAgentSessionChanged(session.worktreePath);
+				notifyAgentSessionChanged(target.worktreePath);
 				await refreshAgentSessions();
 				if (
-					scopedCenterSelection?.kind === "agent_session" &&
-					scopedCenterSelection.agentSessionId === session.id &&
+					(selectedNodeId ?? target.selectedNodeId) != null &&
+					scopedCenterSelection?.kind === "node" &&
+					scopedCenterSelection.nodeId ===
+						(selectedNodeId ?? target.selectedNodeId) &&
 					branch.worktree_path
 				) {
 					onSelectWorktree(branch.worktree_path, branch.name, repoName);
@@ -779,10 +796,24 @@ function WorktreeTreeItem({
 				});
 				notifyAgentSessionChanged(session.worktreePath);
 				await refreshAgentSessions();
+				const nodeId = await invoke<string | null>(
+					"get_workspace_session_node_id",
+					{
+						worktreePath: branch.worktree_path,
+						sessionId: session.id,
+					},
+				);
+				if (!nodeId) throw new Error("Restored Session Node was not found");
 				selectCenter({
-					kind: "agent_session",
+					kind: "node",
 					worktreePath: branch.worktree_path,
-					agentSessionId: session.id,
+					nodeId,
+					initialSessionAttachment: {
+						agentSessionId: session.id,
+						workspaceIdentity: session.workspaceIdentity,
+						worktreePath: session.worktreePath,
+						provider: session.provider,
+					},
 				});
 			} catch (error) {
 				setProviderActionError(
@@ -859,10 +890,24 @@ function WorktreeTreeItem({
 					},
 				);
 				await refreshAgentSessions();
+				const nodeId = await invoke<string | null>(
+					"get_workspace_session_node_id",
+					{
+						worktreePath: branch.worktree_path,
+						sessionId: agentSessionId,
+					},
+				);
+				if (!nodeId) throw new Error("Resumed Session Node was not found");
 				selectCenter({
-					kind: "agent_session",
+					kind: "node",
 					worktreePath: branch.worktree_path,
-					agentSessionId,
+					nodeId,
+					initialSessionAttachment: {
+						agentSessionId,
+						workspaceIdentity: branch.worktree_path,
+						worktreePath: branch.worktree_path,
+						provider: candidate.provider,
+					},
 				});
 			} catch (error) {
 				setProviderActionError(
@@ -886,7 +931,7 @@ function WorktreeTreeItem({
 	);
 
 	const handleArchiveWorkflow = useCallback(
-		async (workflow: WorkspaceWorkflow) => {
+		async (workflow: WorkspaceTreeItem) => {
 			if (!branch.worktree_path) return;
 			setWorkflowActionError(null);
 			try {
@@ -912,7 +957,7 @@ function WorktreeTreeItem({
 	);
 
 	const handleWorkflowExecutionAction = useCallback(
-		async (action: WorkflowExecutionAction, workflow: WorkspaceWorkflow) => {
+		async (action: WorkflowExecutionAction, workflow: WorkspaceTreeItem) => {
 			setWorkflowActionError(null);
 			try {
 				await executeWorkflowAction(action, workflow.id);
@@ -979,15 +1024,23 @@ function WorktreeTreeItem({
 					callerRequestId: `create.${launchToken}`,
 				});
 				if (isLaunchSelectionCurrent()) {
+					const nodeId = await invoke<string | null>(
+						"get_workspace_session_node_id",
+						{
+							worktreePath: branch.worktree_path,
+							sessionId: agentSessionId,
+						},
+					);
+					if (!nodeId) throw new Error("Created Session Node was not found");
 					selectCenter({
-						kind: "agent_session",
+						kind: "node",
 						worktreePath: branch.worktree_path,
-						agentSessionId,
-						initialAttachment: {
+						nodeId,
+						initialSessionAttachment: {
 							agentSessionId,
 							workspaceIdentity: branch.worktree_path,
 							worktreePath: branch.worktree_path,
-							provider: provider as AgentSessionItem["provider"],
+							provider,
 						},
 					});
 				}
@@ -1393,19 +1446,6 @@ function WorktreeTreeItem({
 			</div>
 			{expanded && hasWorktree && (
 				<div className="mt-0.5">
-					{agentSessions.map((session) => (
-						<AgentSessionRow
-							key={session.id}
-							session={session}
-							selected={
-								scopedCenterSelection?.kind === "agent_session" &&
-								scopedCenterSelection.agentSessionId === session.id
-							}
-							onSelect={() => handleSelectAgentSession(session)}
-							onArchive={() => void handleArchiveAgentSession(session)}
-							onDelete={() => void handleDeleteAgentSession(session, false)}
-						/>
-					))}
 					{treeLoading ? (
 						<div
 							className="flex h-8 items-center text-muted-foreground"
@@ -1420,7 +1460,7 @@ function WorktreeTreeItem({
 						>
 							{treeError}
 						</div>
-					) : nodes.length === 0 && agentSessions.length === 0 ? (
+					) : nodes.length === 0 ? (
 						<div
 							className="truncate py-1 text-xs text-muted-foreground"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
@@ -1436,26 +1476,23 @@ function WorktreeTreeItem({
 								centerSelection={scopedCenterSelection}
 								onSelectNode={handleSelectNode}
 								onCloseNode={handleCloseNode}
+								onArchiveSession={handleArchiveAgentSession}
+								onDeleteSession={(node) => {
+									if (!branch.worktree_path || !node.sessionCapabilities)
+										return;
+									return handleDeleteAgentSession(
+										{
+											id: node.sessionCapabilities.sessionRef,
+											worktreePath: branch.worktree_path,
+										},
+										false,
+										node.id,
+									);
+								}}
 								onWorkflowAction={handleWorkflowExecutionAction}
 								onArchiveWorkflow={handleArchiveWorkflow}
 							/>
 						))
-					)}
-					{providerSessionsLoading && agentSessions.length === 0 && (
-						<div
-							className="flex h-8 items-center text-muted-foreground"
-							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
-						>
-							<Loader2 className="size-3.5 animate-spin" />
-						</div>
-					)}
-					{providerSessionsError && (
-						<div
-							className="truncate py-1 text-xs text-destructive"
-							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
-						>
-							{providerSessionsError}
-						</div>
 					)}
 					{providerActionError && (
 						<div

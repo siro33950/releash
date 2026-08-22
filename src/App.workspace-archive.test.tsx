@@ -138,14 +138,16 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 			status: "running",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: true },
+			pastAttempts: [],
+			pastAttemptsCollapsed: false,
 			updatedAt: 1,
 		},
 		{
-			kind: "workflow",
+			kind: "sequence",
 			id: "archivable-workflow",
 			title: "Archivable workflow",
 			status: "completed",
-			capabilities: {
+			workflowCapabilities: {
 				canStop: false,
 				canResume: false,
 				canAbort: false,
@@ -159,12 +161,15 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 					status: "completed",
 					contentKind: "session",
 					capabilities: { canApprove: false, canRetry: false, canClose: false },
+					pastAttempts: [],
+					pastAttemptsCollapsed: false,
 					updatedAt: 2,
 				},
 			],
 			updatedAt: 2,
 		},
 	],
+	archivedSessions: [],
 	preferredNodeId: SELECTED_NODE_ID,
 };
 
@@ -177,9 +182,12 @@ const fallbackSnapshot: WorkspaceTreeSnapshot = {
 			status: "running",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: true },
+			pastAttempts: [],
+			pastAttemptsCollapsed: false,
 			updatedAt: 3,
 		},
 	],
+	archivedSessions: [],
 	preferredNodeId: FALLBACK_NODE_ID,
 };
 
@@ -351,7 +359,11 @@ describe("App Workspace Archive selection reconciliation", () => {
 
 	it("retries a failed Archive read and becomes unselected when the snapshot has no preferred Node", async () => {
 		const user = userEvent.setup();
-		mocks.postArchiveSnapshot = { nodes: [], preferredNodeId: null };
+		mocks.postArchiveSnapshot = {
+			nodes: [],
+			archivedSessions: [],
+			preferredNodeId: null,
+		};
 		mocks.reconciliationFailuresRemaining = 1;
 		render(<App />);
 		await waitFor(() =>

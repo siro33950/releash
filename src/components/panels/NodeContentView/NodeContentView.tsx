@@ -10,6 +10,7 @@ import {
 	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
+import type { AgentSessionLaunchAttachment } from "@/types/agent-session";
 import type { Theme } from "@/types/settings";
 import type {
 	WorkspaceCommandNodeContent,
@@ -23,6 +24,8 @@ interface NodeContentViewProps {
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
 	onNodeMissing?: (worktreePath: string, nodeId: string) => void;
+	initialSessionAttachment?: AgentSessionLaunchAttachment;
+	onInitialSessionConsumed?: (agentSessionId: string) => void;
 }
 
 export function NodeContentView({
@@ -32,6 +35,8 @@ export function NodeContentView({
 	leftPanels,
 	rightSlot,
 	onNodeMissing,
+	initialSessionAttachment,
+	onInitialSessionConsumed,
 }: NodeContentViewProps) {
 	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
 	const detail = state.detail;
@@ -54,20 +59,21 @@ export function NodeContentView({
 			/>
 			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				{detail ? (
-					detail.content.kind === "agentSession" ? (
+					detail.content.kind === "session" ? (
 						detail.content.sessionId ? (
 							<AgentSessionRoute
 								agentSessionId={detail.content.sessionId}
 								theme={theme}
+								initialAttachment={
+									initialSessionAttachment?.agentSessionId ===
+									detail.content.sessionId
+										? initialSessionAttachment
+										: undefined
+								}
+								onInitialSessionConsumed={onInitialSessionConsumed}
 							/>
 						) : (
-							<NodeEmptyState
-								message={
-									detail.status === "queued"
-										? "This session has not started yet."
-										: "Session unavailable."
-								}
-							/>
+							<NodeEmptyState message="Session unavailable." />
 						)
 					) : detail.content.kind === "command" ? (
 						<CommandNodeContent detail={detail} content={detail.content} />
@@ -135,31 +141,18 @@ function NodeHeader({
 				? "Stop received · waiting for Submit"
 				: null;
 	const visibleErrorReason =
-		detail.status === "failed" ||
-		detail.status === "error" ||
-		detail.status === "paused"
+		detail.status === "failed" || detail.status === "paused"
 			? detail.errorReason
 			: null;
 
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
-			<span
-				title={
-					detail.status === "error" && detail.errorReason
-						? detail.errorReason
-						: detail.status
-				}
-			>
+			<span title={detail.status}>
 				<WorkflowNodeStatusIcon status={detail.status} />
 			</span>
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}
 			</span>
-			{detail.attempt != null && (
-				<span className="shrink-0 text-xs text-muted-foreground">
-					Attempt {detail.attempt}
-				</span>
-			)}
 			{waitingMessage && (
 				<span className="min-w-0 truncate text-xs text-yellow-600 dark:text-yellow-300">
 					{waitingMessage}

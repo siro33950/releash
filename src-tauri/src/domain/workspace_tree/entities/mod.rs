@@ -42,6 +42,7 @@ impl WorkspaceTree {
             nodes,
         };
         tree.recompute_root_order();
+        tree.recompute_retry_histories();
         tree.recompute_branch_summaries();
         tree.validate()?;
         Ok(tree)
@@ -54,7 +55,7 @@ impl WorkspaceTree {
     pub fn preferred_node_id(&self, hidden: &HashSet<String>) -> Option<String> {
         let mut children = BTreeMap::<Option<&str>, Vec<&WorkspaceTreeNode>>::new();
         for node in &self.nodes {
-            if !node.is_internal_rule_record() {
+            if !node.is_internal_rule_record() && !node.is_retry_history {
                 children
                     .entry(node.parent_id.as_deref())
                     .or_default()
@@ -282,6 +283,9 @@ impl WorkspaceTree {
             node_execution_id: None,
             node_name: None,
             attempt: None,
+            retry_predecessor_id: None,
+            past_attempt_ids: Vec::new(),
+            is_retry_history: false,
             completion_signals: Default::default(),
             has_artifact: false,
             session_id: None,
@@ -315,6 +319,9 @@ impl WorkspaceTree {
                 node_execution_id: None,
                 node_name: None,
                 attempt: None,
+                retry_predecessor_id: None,
+                past_attempt_ids: Vec::new(),
+                is_retry_history: false,
                 completion_signals: Default::default(),
                 has_artifact: false,
                 session_id: None,
@@ -352,6 +359,8 @@ impl WorkspaceTree {
         {
             return Ok(());
         }
+        let standalone_session_root =
+            kind == NodeKindName::Session && parent.is_none() && node_execution_id == execution_id;
         let workflow_id = self
             .workflow_node(&execution_id)
             .map(|node| node.id.clone())
@@ -438,7 +447,11 @@ impl WorkspaceTree {
         let id = match kind {
             NodeKindName::Fanout | NodeKindName::Sequence => opaque_branch_id(&semantic_key),
             NodeKindName::Session | NodeKindName::Command => {
-                opaque_workflow_node_id(&execution_id, &semantic_key)?
+                if standalone_session_root {
+                    opaque_standalone_session_node_id(&execution_id, &semantic_key)
+                } else {
+                    opaque_workflow_node_id(&execution_id, &semantic_key)?
+                }
             }
         };
         self.nodes.push(WorkspaceTreeNode {
@@ -459,6 +472,9 @@ impl WorkspaceTree {
             node_execution_id: Some(node_execution_id),
             node_name: Some(node_name),
             attempt: Some(attempt),
+            retry_predecessor_id: None,
+            past_attempt_ids: Vec::new(),
+            is_retry_history: false,
             completion_signals: Default::default(),
             has_artifact: false,
             session_id: None,
@@ -481,7 +497,7 @@ impl WorkspaceTree {
     pub(super) fn recompute_branch_summaries(&mut self) {
         let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
         for (index, node) in self.nodes.iter().enumerate() {
-            if !node.is_internal_rule_record() {
+            if !node.is_internal_rule_record() && !node.is_retry_history {
                 if let Some(parent) = &node.parent_id {
                     by_parent.entry(parent.clone()).or_default().push(index);
                 }
@@ -538,6 +554,65 @@ impl WorkspaceTree {
             }
         }
         self.recompute_workflow_recovery_capabilities();
+    }
+
+    fn recompute_retry_histories(&mut self) {
+        for node in &mut self.nodes {
+            node.past_attempt_ids.clear();
+            node.is_retry_history = false;
+        }
+        let predecessor_execution_ids = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.retry_predecessor_id.clone())
+            .collect::<HashSet<_>>();
+        let retry_heads = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.retry_predecessor_id.is_some()
+                    && node
+                        .node_execution_id
+                        .as_ref()
+                        .is_none_or(|id| !predecessor_execution_ids.contains(id))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for head_index in retry_heads {
+            let mut chain = Vec::new();
+            let mut cursor = self.nodes[head_index].retry_predecessor_id.clone();
+            let mut visited = HashSet::new();
+            while let Some(node_execution_id) = cursor {
+                if !visited.insert(node_execution_id.clone()) {
+                    break;
+                }
+                let Some((index, predecessor)) = self.nodes.iter().enumerate().find(|(_, node)| {
+                    node.node_execution_id.as_deref() == Some(node_execution_id.as_str())
+                }) else {
+                    break;
+                };
+                if !matches!(
+                    predecessor.status,
+                    WorkspaceNodeStatus::Completed
+                        | WorkspaceNodeStatus::Failed
+                        | WorkspaceNodeStatus::Aborted
+                ) {
+                    break;
+                }
+                chain.push(index);
+                cursor = predecessor.retry_predecessor_id.clone();
+            }
+            chain.reverse();
+            let past_attempt_ids = chain
+                .iter()
+                .map(|index| self.nodes[*index].id.clone())
+                .collect();
+            self.nodes[head_index].past_attempt_ids = past_attempt_ids;
+            for index in chain {
+                self.nodes[index].is_retry_history = true;
+            }
+        }
     }
 
     fn recompute_workflow_recovery_capabilities(&mut self) {
@@ -704,6 +779,18 @@ impl WorkspaceTreeProjector {
                     parent,
                     timestamp,
                 )?,
+                WorkspaceStructureFact::NodeRetryLinked {
+                    execution_id,
+                    node_execution_id,
+                    predecessor_node_execution_id,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    node.retry_predecessor_id = Some(predecessor_node_execution_id);
+                }
                 WorkspaceStructureFact::NodeAgentBound {
                     execution_id,
                     node_execution_id,
@@ -810,6 +897,7 @@ impl WorkspaceTreeProjector {
             }
         }
         tree.recompute_root_order();
+        tree.recompute_retry_histories();
         tree.recompute_branch_summaries();
         tree.validate()?;
         if !applied_fact {
@@ -1064,6 +1152,10 @@ fn opaque_workflow_node_id(
         "node-w-{execution_id}-{}",
         hex::encode(&digest[..16])
     ))
+}
+
+fn opaque_standalone_session_node_id(execution_id: &str, semantic_key: &str) -> String {
+    opaque_id("node-s", &format!("{execution_id}\0{semantic_key}"))
 }
 
 fn opaque_branch_id(semantic_key: &str) -> String {

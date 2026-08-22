@@ -9,8 +9,8 @@ use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKi
 use crate::domain::workflow::services::fact_replay::{self, FoldedTree};
 use crate::domain::workflow::TreeRootFact;
 use crate::domain::workspace_tree::{
-    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspaceStructureFact, WorkspaceTree,
-    WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
+    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
+    WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
 
 #[derive(Clone)]
@@ -103,6 +103,9 @@ impl SqliteWorkspaceTreeRepository {
             workspace_identity: workspace,
             workflow_definition: &folded.aggregate.workflow,
             node_executions: &folded.aggregate.node_executions,
+            retry_predecessors: &folded.aggregate.retry_predecessors,
+            standalone_session_id: matches!(&folded.root, TreeRootFact::Session(_))
+                .then_some(folded.aggregate.id.as_str()),
             started_at: folded.aggregate.started_at,
             updated_at: folded.aggregate.updated_at,
             execution: record,
@@ -123,9 +126,6 @@ impl SqliteWorkspaceTreeRepository {
         let mut nodes = Vec::new();
         let mut facts = Vec::new();
         for (folded, record) in trees {
-            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
-                continue;
-            }
             nodes.extend(Self::tree_nodes(workspace, folded, record)?);
             facts.push(execution_summary_fact(record));
         }
@@ -145,10 +145,17 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let workspace = workspace_identity.as_str().to_string();
         let trees = self.folded_workspace_trees(&workspace)?;
         for (folded, record) in &trees {
-            if let Some(node) = Self::tree_nodes(&workspace, folded, record)?
-                .into_iter()
-                .find(|node| node.id == node_id)
-            {
+            let nodes = Self::tree_nodes(&workspace, folded, record)?;
+            if folded.aggregate.id == node_id {
+                if let Some(mut node) =
+                    WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
+                        .map(|root| root.node().clone())
+                {
+                    node.id = node_id.to_string();
+                    return Ok(Some(node));
+                }
+            }
+            if let Some(node) = nodes.iter().find(|node| node.id == node_id).cloned() {
                 return Ok(Some(node));
             }
         }
@@ -182,10 +189,25 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
     ) -> Result<Option<String>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
         let backend = self.fact_backend();
-        let Some((tree_id, node_execution_id)) =
-            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?
-        else {
-            return Ok(None);
+        let attachment =
+            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?;
+        let Some((tree_id, node_execution_id)) = attachment else {
+            let Some((folded, record)) = self.folded_tree(session_id)? else {
+                return Ok(None);
+            };
+            if !matches!(&folded.root, TreeRootFact::Session(_))
+                || record.worktree_path != workspace
+            {
+                return Ok(None);
+            }
+            let nodes = Self::tree_nodes(&workspace, &folded, &record)?;
+            let Some(root) = WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
+            else {
+                return Ok(None);
+            };
+            return Ok((root.node().session_id.as_deref() == Some(session_id)
+                || root.node().node_execution_id.as_deref() == Some(session_id))
+            .then(|| folded.aggregate.id.clone()));
         };
         let Some((folded, record)) = self.folded_tree(&tree_id)? else {
             return Ok(None);
@@ -193,10 +215,14 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         if record.worktree_path != workspace {
             return Ok(None);
         }
-        Ok(Self::tree_nodes(&workspace, &folded, &record)?
-            .into_iter()
+        let nodes = Self::tree_nodes(&workspace, &folded, &record)?;
+        Ok(nodes
+            .iter()
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id.as_str()))
-            .map(|node| node.id))
+            .map(|node| {
+                WorkspacePublicRoot::for_node(&nodes, &node.id)
+                    .map_or_else(|| node.id.clone(), |root| root.public_id().to_string())
+            }))
     }
 }
 
@@ -324,6 +350,11 @@ fn invariant_query_error(error: impl std::fmt::Display) -> LocalEventQueryError 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
+    use crate::adaptor::gateway::local_event_store::store::LocalEventStoreConfig;
+    use crate::domain::agent_session::aggregates::AgentSession;
+    use crate::domain::agent_session::repository::AgentSessionRepository;
+    use crate::domain::provider_lifecycle::ProviderKind;
 
     fn sqlite_failure(code: i32) -> rusqlite::Error {
         rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
@@ -358,5 +389,45 @@ mod tests {
             sql_query_error(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
             LocalEventQueryError::StorageUnavailable { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_owner() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        let workspace = WorkspaceIdentity::new("/repo/.worktrees/feature");
+        let session = AgentSession::create(
+            "agent-session-1",
+            workspace.clone(),
+            workspace.as_str(),
+            ProviderKind::Codex,
+            None,
+        )
+        .unwrap();
+        LocalAgentSessionRepository::new(Arc::clone(&store))
+            .create(session, "create-request-1")
+            .await
+            .unwrap();
+        let repository = SqliteWorkspaceTreeRepository::new(store);
+
+        let node_id = repository
+            .node_id_for_session(&workspace, "agent-session-1")
+            .unwrap()
+            .expect("the standalone Session must have a public Node id");
+        let node = repository
+            .load_node(&workspace, &node_id)
+            .unwrap()
+            .expect("the public Node id must resolve");
+
+        assert_eq!(node_id, "agent-session-1");
+        assert_eq!(
+            node.kind,
+            crate::domain::workspace_tree::WorkspaceNodeKind::WorkflowSession
+        );
+        assert_eq!(node.node_execution_id.as_deref(), Some("agent-session-1"));
+        assert_eq!(node.session_id.as_deref(), Some("agent-session-1"));
     }
 }

@@ -2,43 +2,44 @@
 
 ## 目的
 
-Releash のドメイン横断ユビキタス言語を定義する。
-このドキュメントは [#1176](https://github.com/siro33950/releash/issues/1176) の正規成果物であり、設計、レビュー、移行作業で参照する canonical vocabulary として扱う。
+Releash のドメイン横断ユビキタス言語を定義する。この文書は設計、実装、レビューで参照する canonical vocabulary である。
 
-このドキュメントは現行実装の棚卸しではなく、Releash で使う正しい語彙と構造を定義する。
+## 正規語
 
-## 正規語一覧
+| 正規語 | 定義 | 所有者 / 所属 |
+| --- | --- | --- |
+| WorkflowDefinition | workflow の定義。NodeDefinition、Contract、配線、辺を持つ | workflow / Global |
+| WorkflowExecution | WorkflowDefinition から開始された1本の実行木 | workflow / Worktree |
+| NodeDefinition | Node の Interface、kind 固有設定、completion の定義 | workflow / WorkflowDefinition |
+| NodeExecution | NodeDefinition または単独 Session の一回の実行インスタンス | workflow / execution tree |
+| Session | provider CLI と継続対話する葉 Node | workflow |
+| Command | 非対話 command を一度実行する葉 Node | workflow |
+| Fanout | children を並列に束ねる合成 Node | workflow |
+| Sequence | children を時系列に束ね、辺を所有する合成 Node | workflow |
+| completion | Node 自身が持つ完了の定義 | NodeDefinition / NodeExecution |
+| 実行木（execution tree） | 実際に開始した NodeExecution が作る再帰木 | Worktree |
+| 辺（edge） | Node completion 後の進行先。Sequence の children エントリが所有する | Sequence |
+| Artifact | NodeExecution 間で生成・参照される確定した判断材料 | workflow |
+| Contract | input / Artifact を検証する名前付き schema | WorkflowDefinition |
+| Facet | Session の prompt 構成に使う再利用可能な補助部品 | workflow |
+| Diagnostic | 定義の構文・参照・型・control-flow の検証結果 | workflow definition loader |
+| Workspace | Releash の作業コンテキスト。Worktree を参照するが同一ではない | workspace_state |
+| WorkspaceState | editor tabs、layout、選択など Workspace の UI state | workspace_state |
+| Worktree | Repository の特定 checkout / working tree | repository |
+| 隔離 worktree | `isolated` 宣言で Node attempt ごとに作られる実行環境 | workflow / repository boundary |
+| Repository | Worktree の背後にある履歴、remote、branch のまとまり | repository |
+| Code | Worktree 内のファイル内容 | code / external state |
+| Diff | Worktree / Repository の状態から計算される差分 | code / derived view |
+| CodeAnchor | Code 上の位置への参照 | code |
+| AgentSession | Session Node が参照する provider CLI の継続 identity と lifecycle | agent_session |
+| ProviderLifecycle | provider session identity、transcript reference、Stop 観測の境界 | provider_lifecycle |
+| ProviderAvailability | provider executable と利用可否の境界 | provider_availability |
+| Terminal | 人間または AgentSession が操作する interactive shell surface | terminal_surface |
+| Thread | Workspace に属する会話・判断履歴 | comment |
+| Comment | Thread 配下の一つの記録 | comment |
+| UI / CLI / API | domain を操作・観測する surface | operation_surface |
 
-| 正規語 | 定義 | 所属ドメイン | 使用禁止語 | 備考 |
-|---|---|---|---|---|
-| WorkflowDefinition | workflow の定義。NodeDefinition の構成、順序、条件、入力を持つ。 | workflow | Workflow, WorkflowBundle | 実行状態は持たない。 |
-| NodeDefinition | WorkflowDefinition 内の作業単位の定義。 | workflow | StepDefinition, ChildNodeDefinition, NodeType | 何を扱うかは構成・参照先・実行内容から決まる。 |
-| WorkflowExecution | WorkflowDefinition の一回の実行。 | workflow | WorkflowRun, Run | `status` を持つ。 |
-| NodeExecution | NodeDefinition の一回の実行。 | workflow | StepExecution, WorkflowStep | Session / Command / Fanout を扱うことがある。 |
-| Fanout | 親 NodeExecution から展開された子 NodeExecution 群を束ねる実体。 | workflow | ParallelRun, ParallelChildRun, ParallelStep | `parallel` 系語彙は Fanout に吸収する。 |
-| Artifact | WorkflowExecution / NodeExecution の間で生成・参照される Object。 | workflow | StepOutput, ArtifactSnapshot, ArtifactLineage | 状態は持たない。意味と schema はユーザーまたは WorkflowDefinition が決める。 |
-| Facet | NodeDefinition から参照される再利用可能な補助部品。 | workflow | ResolvedFacets | 主要 Entity ではない。 |
-| Contract | NodeDefinition の output contract や Artifact/output validation に関わる補助語彙。 | workflow | ContractValidationMetadata | 主要 Entity ではない。 |
-| Diagnostic | 定義や参照の構文・validation error。 | workflow | lifecycle state | lifecycle state ではない。 |
-| Workspace | Releash 側の作業コンテキスト。Worktree を参照するが同一ではない。 | workspace_state | Worktree | Releash 所有状態の帰属先。 |
-| WorkspaceState | Workspace の UI state。 | workspace_state | WorkspaceTabsState, WorkspaceLayoutState, WorkspaceTabEntry | editor tabs / layout / selected diff file など。 |
-| Worktree | Repository の特定 checkout / working tree。 | repository | Workspace | 外部実体。Releash は所有しない。 |
-| Repository | Worktree の背後にある履歴・remote・branch のまとまり。 | repository | Repo | Releash は所有しない。 |
-| Code | Worktree 内のファイル内容。 | code | FileContent | Releash は所有せず、参照・表示・操作する。 |
-| Diff | Worktree / Repository の状態から計算される差分。 | code | CodeDiff | Releash が生み出すものではない。固定した判断材料は Artifact にできる。 |
-| CodeAnchor | Code 上の位置への参照。 | code | HunkRef, MentionReference | 命名は仮。Code 本体ではない。 |
-| AgentSession | Provider CLIを継続利用する実行単位。identity、Provider、origin、lifecycle、Provider session ID、opaque transcript reference、Terminal ownershipを持つ。 | agent_session | Session, ChatSession | conversation本文とProvider UIは所有しない。 |
-| ProviderLifecycle | root AgentSessionのProvider session identity、opaque transcript reference、Stop観測を扱う境界。 | provider_lifecycle | Agent runtime | Providerの利用可否は所有しない。 |
-| ProviderAvailability | Provider executableの検出、設定、利用可否を扱う境界。 | provider_availability | BackendRegistry | AgentSession lifecycleは所有しない。 |
-| Thread | Workspace に属する会話・作業履歴・文脈。 | comment | ReviewThread | WorkflowExecution / NodeExecution には属さない。 |
-| Comment | Thread 配下の comment。 | comment | ReviewComment | review comment / discussion comment を吸収する。 |
-| Command | Session と対比される non-interactive な一回の command 実行単位。 | workflow | CommandExecution, ShellCommand, RunCommand | 命名は暫定。 |
-| Terminal | ユーザーが操作する interactive shell session。 | terminal_surface | PtySession, Command | Workspace に属する。workflow / node が直接触るものではない。 |
-| TerminalSurface | 正規語 Terminal の backend 実装語彙（terminal_surface ドメインの集約）。 | terminal_surface | PtySession | product/domain 語彙は Terminal。 |
-| TerminalSurfaceOwner | TerminalSurface の所有者（Workspace または AgentSession）。 | terminal_surface | - | 正規語 Terminal の backend 実装語彙。 |
-| UI | 人間が画面から操作・観測する面。 | operation_surface | FrontendDomain | Operation Surface。 |
-| CLI | command line から操作・観測する面。 | operation_surface | CliMutationRequestRecord | Operation Surface。 |
-| API | 外部 system、automation、remote client が programmatic に操作・観測する面。 | operation_surface | ProtocolDomain | Operation Surface。 |
+Session は Node の正規語、AgentSession は provider CLI identity を扱う実装境界の正規語であり、同じ概念ではない。NodeExecution は AgentSession を参照できるが、conversation 本文を所有しない。
 
 ## 構造
 
@@ -47,63 +48,50 @@ Releash のドメイン横断ユビキタス言語を定義する。
 ```text
 Global / App
   └─ WorkflowDefinition
-       └─ NodeDefinition
+       ├─ NodeDefinition
+       └─ Contract
 ```
 
-- WorkflowDefinition は Global / App に属する。
-- NodeDefinition は WorkflowDefinition に属する。
-- NodeDefinition は standalone では存在しない。
+WorkflowDefinition は Global / App に属し、実行状態を持たない。NodeDefinition は WorkflowDefinition に属し、standalone では存在しない。
 
-### Workspace
+### Workspace と Worktree
 
 ```text
 Workspace
   ├─ targets Worktree
+  │    ├─ execution tree
+  │    │    └─ NodeExecution
+  │    │         ├─ Session ──references──► AgentSession
+  │    │         ├─ Command
+  │    │         ├─ Fanout
+  │    │         │    └─ child NodeExecution[]
+  │    │         └─ Sequence
+  │    │              └─ child NodeExecution[]
+  │    └─ execution tree
+  │         └─ Session
   ├─ Terminal
-  ├─ WorkflowExecution
-  │    ├─ Artifact
-  │    └─ NodeExecution
-  │         └─ Fanout
-  │              ├─ parent NodeExecution
-  │              └─ child NodeExecution[]
-  │
-  ├─ AgentSession
-  │    └─ owns Terminal Surface
-  ├─ Command
   ├─ Thread
   │    └─ Comment
   └─ WorkspaceState
 ```
 
-- Workspace は Releash 側の作業コンテキスト。
-- Workspace は Worktree を参照するが、Worktree そのものではない。
-- WorkflowExecution / AgentSession / Command / Terminal / Thread / WorkspaceState は Workspace に属する。
-- Artifact / NodeExecution は WorkflowExecution に属する。
-- Fanout は親 NodeExecution と子 NodeExecution 群を束ねる。
-- NodeExecution はAgentSessionを参照できるが所有しない。
-- Provider CLI / transcriptがconversationを所有する。
-- Thread は CodeAnchor を参照できるが、CodeAnchor を所有しない。
-- Thread は WorkflowExecution / NodeExecution には属さない。
-- Task は Releash core Entity として持たない。task 的な一覧は Artifact のユーザー定義 field（例: `plan.tasks`）として表現できる。
+- Worktree 配下に、workflow と単独 Session を含む実行木が同じ再帰構造で属する。
+- 単独 Session は Session Node 1個を root とする実行木である。
+- 実行木には実際に開始した NodeExecution だけが載る。
+- Artifact は NodeExecution と合成子 scope から参照されるが lifecycle state を持たない。
+- Thread は CodeAnchor を参照できるが、WorkflowExecution / NodeExecution には属さない。
 
-### Worktree / Repository / Code
+### Repository / Code
 
 ```text
-Worktree
-  ├─ Code
-  │    └─ CodeAnchor
-  └─ Diff
-
 Repository
   └─ Worktree
+       ├─ Code
+       │    └─ CodeAnchor
+       └─ Diff
 ```
 
-- Worktree は Repository の特定 checkout / working tree。
-- Code は Worktree 内のファイル内容。
-- CodeAnchor は Code 上の位置への参照。
-- Diff は Worktree / Repository の状態から計算される。
-- Worktree / Repository / Code / Diff は Releash が所有する状態ではない。
-- CodeAnchor は Code 本体ではなく、Thread などから参照される位置情報。
+Repository、通常の Worktree、Code、Diff は外部 repository 側の実体または派生 view であり、Releash が内容を所有しない。固定した判断材料として保持する場合は Artifact にする。
 
 ### Operation Surface
 
@@ -114,72 +102,45 @@ Operation Surface
   └─ API
 ```
 
-- UI / CLI / API は domain entity ではなく操作・観測の入口。
-- Operation Surface は domain state を所有しない。
+Operation Surface は domain state を所有しない。同じ backend usecase と read model を利用する。
 
 ## 状態所有
 
-### 状態を持つ
+### 実行木
 
-- Workspace
-- WorkflowExecution
-- NodeExecution
-- Fanout
-- AgentSession
-- Command
-- Terminal
-- Thread
-- WorkspaceState
-- WorkflowDefinition（管理状態）
+WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有する。WaitingApproval、Paused、Failed、Interrupted と completion signal は NodeExecution が所有する。workflow aggregate だけが transition を決める。
 
-### 状態を持たない
+### AgentSession
 
-- Artifact
-- Worktree（Releash 側の状態は持たない）
-- Repository（Releash 側の状態は持たない）
-- Code（Releash 側の状態は持たない）
-- Diff（Releash 側の状態は持たない）
-- NodeDefinition
+AgentSession は provider、provider session identity、opaque transcript reference、Terminal ownership、open / paused / archived lifecycle を持つ。conversation 本文と provider UI は provider CLI / transcript が所有する。単独 Session の lifecycle も実行木から分離した別の作業モデルにはしない。
 
-### Diagnostic
+### 隔離 worktree
 
-- WorkflowDefinition の構文・validation error
-- NodeDefinition の構文・参照・遷移 error
+`isolated` 宣言で作られる隔離 worktree では、Node attempt が次の Releash 側状態を所有する。
 
-構文エラー、validation error、参照エラーは lifecycle state ではなく Diagnostic として扱う。
+- root Worktree と owner NodeExecution の identity。
+- attempt ごとの隔離 branch / path identity。
+- 作成済み、喪失、cleanup candidate などの lifecycle fact。
+- recovery fence と公開 reason。
 
-## 外部実体との境界
+隔離 worktree 内の Code / Diff と Git 履歴自体は外部状態である。成果の統合は engine が無条件に実行せず、人間または親 Session が判断して通常の Git 操作として行う。定義上の `worktree` field は現時点では未解禁である。
 
-- Workspace は Worktree を参照するが、Worktree と同一ではない。
-- Worktree / Repository / Code / Diff は外部 repository 側の実体または派生 view。
-- Releash が固定した判断材料として保持したい場合は Artifact にする。
-- PR / Issue / Notion / external editor / remote access / notification は、それぞれ外部 system または integration の情報であり、現時点では core domain entity として扱わない。
-
-## 使用禁止語一覧
+## 使用禁止語
 
 | 使用禁止語 | 正規語 | 理由 |
-|---|---|---|
-| WorkflowRun | WorkflowExecution | `Run` は旧実装語彙。定義の一回の実行は WorkflowExecution と呼ぶ。 |
-| Run | WorkflowExecution | 同上。 |
-| RunId | WorkflowExecution.id | id 属性として扱う。 |
-| RunStatus | WorkflowExecution.status | status 属性として扱う。 |
-| TerminalRunStatus | WorkflowExecution.status | 終了状態だけを切り出した実装型。 |
-| TriggerSource | WorkflowExecution.created_from | 起動元属性として扱う。 |
-| WorkflowName | WorkflowDefinition.name | name 属性として扱う。 |
-| NodeName | NodeDefinition.name | name 属性として扱う。 |
-| WorktreePath | Workspace.worktree_ref.path | Worktree 参照の path 属性として扱う。 |
-| NodeType | なし | NodeDefinition の構成・参照先・実行内容から判断する。 |
-| ChildNodeDefinition | NodeDefinition | fanout 先も通常の NodeDefinition として扱う。 |
-| StepExecution | NodeExecution | step ではなく node execution と呼ぶ。 |
-| WorkflowStep | NodeExecution / NodeDefinition | 文脈に応じて定義か実行に分ける。 |
-| ParallelRun | Fanout | parallel 系語彙は Fanout に吸収する。 |
-| ParallelChildRun | Fanout / NodeExecution | fanout child も NodeExecution。 |
-| ParallelStep | Fanout / NodeExecution | parallel ではなく fanout として扱う。 |
-| Session / ChatSession | AgentSession | Agentとの継続実行単位の正規語はAgentSession。 |
-| AgentTurn / ChatMessage / ActivityEntry | なし | conversationはProvider CLI / transcriptが所有する。 |
-| ReviewThread | Thread | review 固有に分けず Thread に吸収する。 |
-| ReviewComment | Comment | review 固有に分けず Comment に吸収する。 |
-| PtySession | Terminal / TerminalSurface | 旧 backend 実装語彙（pty_session ドメインは terminal_surface へ改名済み）。product/domain 語彙は Terminal、backend 実装語彙は TerminalSurface。 |
-| WorkflowEvent | なし | 現時点では domain entity として採用しない。 |
-| ActionPlan | なし | 合意済み語彙ではない。 |
-| Notification | なし | 今は Entity にしない。 |
+| --- | --- | --- |
+| gate | completion | Node の完了定義と辺を混同する旧語であり、定義・schema・Diagnostic では使用しない |
+| WorkflowRun / Run | WorkflowExecution | 定義の一回の実行は WorkflowExecution |
+| StepExecution / WorkflowStep | NodeExecution | 実行単位は NodeExecution |
+| ParallelRun / ParallelStep | Fanout / NodeExecution | 並列合成子は Fanout |
+| ChildNodeDefinition | NodeDefinition | child も通常の NodeDefinition |
+| NodeType | Node kind | kind は Session / Command / Fanout / Sequence |
+| RunStatus | WorkflowExecution.status | 木全体 status の属性として扱う |
+| ChatSession | Session または AgentSession | Node と provider identity のどちらかを明示する |
+| ReviewThread / ReviewComment | Thread / Comment | review 固有に分けない |
+| PtySession | Terminal / TerminalSurface | product 語彙は Terminal |
+| WorkflowEvent | durable workflow fact | domain entity ではなく記録された事実 |
+
+## Diagnostic
+
+Diagnostic は WorkflowDefinition の parse、shape、resolve、typecheck、control-flow の検証結果であり、実行木や NodeExecution の lifecycle state ではない。

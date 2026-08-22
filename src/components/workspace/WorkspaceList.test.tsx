@@ -7,6 +7,7 @@ import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
+	WorkspaceNode,
 	WorkspaceTreeItem,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
@@ -14,7 +15,7 @@ import { WorkspaceList } from "./WorkspaceList";
 
 type MockWorkspaceTreeState = {
 	nodes: WorkspaceTreeItem[];
-	sessions?: AgentSessionItem[];
+	archivedSessions?: AgentSessionItem[];
 	preferredNodeId?: string | null;
 	workflowHistory?: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent?: WorkspaceTreeReconciliationEvent | null;
@@ -65,12 +66,12 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 		const state = mocks.treeStateOverrides.get(worktreePath) ?? {
 			nodes: [],
 		};
-		const [sessions, setSessions] = useState<AgentSessionItem[]>(
-			state.sessions ?? [],
-		);
+		const [archivedSessions, setArchivedSessions] = useState<
+			AgentSessionItem[]
+		>(state.archivedSessions ?? []);
 		useEffect(() => {
-			if (state.sessions) {
-				setSessions(state.sessions);
+			if (state.archivedSessions) {
+				setArchivedSessions(state.archivedSessions);
 				return;
 			}
 			let active = true;
@@ -78,18 +79,18 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 				.invoke("list_workspace_worktree_nodes", { worktreePath })
 				.then((snapshot: unknown) => {
 					if (!active) return;
-					setSessions(
-						(snapshot as { sessions?: AgentSessionItem[] } | null)?.sessions ??
-							[],
+					setArchivedSessions(
+						(snapshot as { archivedSessions?: AgentSessionItem[] } | null)
+							?.archivedSessions ?? [],
 					);
 				});
 			return () => {
 				active = false;
 			};
-		}, [state.sessions, worktreePath]);
+		}, [state.archivedSessions, worktreePath]);
 		return {
 			nodes: state.nodes,
-			sessions,
+			archivedSessions,
 			preferredNodeId: state.preferredNodeId ?? null,
 			workflowHistory: state.workflowHistory ?? [],
 			reconciliationEvent: state.reconciliationEvent ?? null,
@@ -121,17 +122,52 @@ const directNode: WorkspaceTreeItem = {
 	status: "running",
 	contentKind: "session",
 	capabilities: { canApprove: false, canRetry: false, canClose: true },
+	pastAttempts: [],
+	pastAttemptsCollapsed: false,
 	updatedAt: 1,
 };
+
+function standaloneSessionNode({
+	id,
+	title,
+	status = "running",
+	canArchive = true,
+	canDelete = false,
+	sessionRef = id,
+}: {
+	id: string;
+	title: string;
+	status?: WorkspaceNode["status"];
+	canArchive?: boolean;
+	canDelete?: boolean;
+	sessionRef?: string;
+}): WorkspaceNode {
+	return {
+		kind: "node",
+		id,
+		title,
+		status,
+		contentKind: "session",
+		capabilities: { canApprove: false, canRetry: false, canClose: false },
+		sessionCapabilities: {
+			sessionRef,
+			canArchive,
+			canDelete,
+		},
+		pastAttempts: [],
+		pastAttemptsCollapsed: false,
+		updatedAt: 1,
+	};
+}
 
 const recursiveTree: WorkspaceTreeItem[] = [
 	directNode,
 	{
-		kind: "workflow",
+		kind: "sequence",
 		id: "workflow-internal-uuid",
 		title: "Release workflow",
 		status: "running",
-		capabilities: {
+		workflowCapabilities: {
 			canStop: true,
 			canResume: false,
 			canAbort: true,
@@ -146,6 +182,8 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				status: "completed",
 				contentKind: "session",
 				capabilities: { canApprove: false, canRetry: false, canClose: false },
+				pastAttempts: [],
+				pastAttemptsCollapsed: false,
 				updatedAt: 3,
 			},
 			{
@@ -153,6 +191,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				id: "fanout-internal-uuid",
 				title: "Review all",
 				status: "running",
+				workflowCapabilities: null,
 				updatedAt: 4,
 				children: [
 					{
@@ -166,6 +205,8 @@ const recursiveTree: WorkspaceTreeItem[] = [
 							canRetry: false,
 							canClose: false,
 						},
+						pastAttempts: [],
+						pastAttemptsCollapsed: false,
 						updatedAt: 5,
 					},
 				],
@@ -234,7 +275,7 @@ function mockDeferredProviderCreate() {
 	} = {};
 	mocks.invoke.mockImplementation((command: string) => {
 		if (command === "list_workspace_worktree_nodes") {
-			return Promise.resolve({ nodes: [], sessions: [] });
+			return Promise.resolve({ nodes: [], archivedSessions: [] });
 		}
 		if (command === "list_available_agent_session_providers") {
 			return Promise.resolve(["codex"]);
@@ -351,7 +392,7 @@ describe("WorkspaceList", () => {
 		expect(
 			screen
 				.getByRole("button", { name: "Release workflow" })
-				.querySelector("svg.lucide-workflow"),
+				.querySelector("svg.lucide-list-tree"),
 		).toBeInTheDocument();
 		expect(
 			screen
@@ -361,83 +402,66 @@ describe("WorkspaceList", () => {
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
 	});
 
-	it("backendが絞り込んだStandalone AgentSessionを選択できる", async () => {
-		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({
-					nodes: [],
-					sessions: [
-						{
-							id: "provider-agent-1",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "open",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-					],
-				});
-			}
-			return Promise.resolve(null);
+	it("backendが絞り込んだStandalone Session Nodeを選択できる", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "provider-agent-node-1",
+					title: "Claude AgentSession",
+				}),
+			],
+			archivedSessions: [],
 		});
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();
 
 		await user.click(
-			await screen.findByRole("button", {
-				name: "Claude AgentSession, open",
+			screen.getByRole("button", {
+				name: "Claude AgentSession, running",
 			}),
 		);
 
-		expect(mocks.invoke).toHaveBeenCalledWith("list_workspace_worktree_nodes", {
-			worktreePath: "/repo/wt",
-		});
 		expect(onSelectWorktree).toHaveBeenCalledWith(
 			"/repo/wt",
 			"feature",
 			"repo",
 			{
-				kind: "agent_session",
+				kind: "node",
 				worktreePath: "/repo/wt",
-				agentSessionId: "provider-agent-1",
+				nodeId: "provider-agent-node-1",
 			},
 		);
 	});
 
 	it("Archived AgentSessionをWorkspaceからSessionHistoryへ移して復帰できる", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [],
+			archivedSessions: [
+				{
+					id: "provider-agent-archived",
+					workspaceIdentity: "/repo/wt",
+					worktreePath: "/repo/wt",
+					provider: "claude",
+					lifecycle: "archived",
+					activity: "idle",
+					lastExitAbnormal: false,
+					operations: {
+						canArchive: false,
+						canRestore: true,
+						canDelete: true,
+					},
+				},
+			],
+		});
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({
-					nodes: [],
-					sessions: [
-						{
-							id: "provider-agent-archived",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "archived",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: false,
-								canRestore: true,
-								canDelete: true,
-							},
-						},
-					],
-				});
-			}
 			if (command === "list_agent_session_history") {
 				return Promise.resolve({ items: [], nextAfter: null });
 			}
 			if (command === "restore_agent_session") {
 				return Promise.resolve("restored");
+			}
+			if (command === "get_workspace_session_node_id") {
+				return Promise.resolve("restored-session-node");
 			}
 			return Promise.resolve(null);
 		});
@@ -477,139 +501,90 @@ describe("WorkspaceList", () => {
 				"feature",
 				"repo",
 				{
-					kind: "agent_session",
+					kind: "node",
 					worktreePath: "/repo/wt",
-					agentSessionId: "provider-agent-archived",
+					nodeId: "restored-session-node",
+					initialSessionAttachment: {
+						agentSessionId: "provider-agent-archived",
+						workspaceIdentity: "/repo/wt",
+						worktreePath: "/repo/wt",
+						provider: "claude",
+					},
 				},
 			);
 		});
 	});
 
-	it("Standalone AgentSessionの実行状態はテキストでなくアイコン色で表現する", async () => {
-		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({
-					nodes: [],
-					sessions: [
-						{
-							id: "provider-agent-running",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "open",
-							activity: "running",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-						{
-							id: "provider-agent-open",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "open",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-						{
-							id: "provider-agent-paused-abnormal",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "codex",
-							lifecycle: "paused",
-							activity: "idle",
-							lastExitAbnormal: true,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-						{
-							id: "provider-agent-paused",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "codex",
-							lifecycle: "paused",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-					],
-				});
-			}
-			return Promise.resolve(undefined);
+	it("Standalone Session Nodeの実行状態はテキストでなくアイコン色で表現する", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "provider-agent-running",
+					title: "Running Session",
+					status: "running",
+				}),
+				standaloneSessionNode({
+					id: "provider-agent-completed",
+					title: "Completed Session",
+					status: "completed",
+				}),
+				standaloneSessionNode({
+					id: "provider-agent-failed",
+					title: "Failed Session",
+					status: "failed",
+				}),
+				standaloneSessionNode({
+					id: "provider-agent-paused",
+					title: "Paused Session",
+					status: "paused",
+				}),
+			],
+			archivedSessions: [],
 		});
 		renderWorkspaceList();
 
-		const runningRow = await screen.findByRole("button", {
-			name: "Claude AgentSession, running",
+		const runningRow = screen.getByRole("button", {
+			name: "Running Session, running",
 		});
-		const openRow = screen.getByRole("button", {
-			name: "Claude AgentSession, open",
+		const completedRow = screen.getByRole("button", {
+			name: "Completed Session, completed",
 		});
-		const abnormalRow = screen.getByRole("button", {
-			name: "Codex AgentSession, paused (exited abnormally)",
+		const failedRow = screen.getByRole("button", {
+			name: "Failed Session, failed",
 		});
 		const pausedRow = screen.getByRole("button", {
-			name: "Codex AgentSession, paused",
+			name: "Paused Session, paused",
 		});
 
 		expect(within(runningRow).queryByText("running")).toBeNull();
-		expect(within(openRow).queryByText("open")).toBeNull();
-		expect(within(abnormalRow).queryByText(/paused/)).toBeNull();
+		expect(within(completedRow).queryByText("completed")).toBeNull();
+		expect(within(failedRow).queryByText("failed")).toBeNull();
 		expect(within(pausedRow).queryByText("paused")).toBeNull();
-		expect(within(runningRow).getByTitle("running").firstChild).toHaveClass(
-			"text-blue-600",
-			"dark:text-blue-300",
-			"animate-pulse",
-		);
-		const openIcon = within(openRow).getByTitle("open").firstChild;
-		expect(openIcon).toHaveClass("text-foreground");
-		expect(openIcon).not.toHaveClass("animate-pulse");
 		expect(
-			within(abnormalRow).getByTitle("paused (exited abnormally)").firstChild,
-		).toHaveClass("text-destructive");
-		expect(within(pausedRow).getByTitle("paused").firstChild).toHaveClass(
-			"text-muted-foreground",
-		);
+			within(runningRow).getByTitle("session, running").firstChild,
+		).toHaveClass("text-blue-600", "dark:text-blue-300", "animate-pulse");
+		expect(
+			within(completedRow).getByTitle("session, completed").firstChild,
+		).toHaveClass("text-green-600", "dark:text-green-300");
+		expect(
+			within(failedRow).getByTitle("session, failed").firstChild,
+		).toHaveClass("text-red-600", "dark:text-red-300");
+		expect(
+			within(pausedRow).getByTitle("session, paused").firstChild,
+		).toHaveClass("text-muted-foreground");
 	});
 
 	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "provider-agent-unknown",
+					title: "Claude AgentSession",
+				}),
+			],
+			archivedSessions: [],
+		});
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({
-					nodes: [],
-					sessions: [
-						{
-							id: "provider-agent-unknown",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "open",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-					],
-				});
-			}
 			if (command === "archive_agent_session") {
 				return Promise.resolve("delete_confirmation_required");
 			}
@@ -646,28 +621,16 @@ describe("WorkspaceList", () => {
 	});
 
 	it("Standalone AgentSessionのArchive成功を同じworktreeの表示へ通知する", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "provider-agent-known",
+					title: "Claude AgentSession",
+				}),
+			],
+			archivedSessions: [],
+		});
 		mocks.invoke.mockImplementation((command: string) => {
-			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({
-					nodes: [],
-					sessions: [
-						{
-							id: "provider-agent-known",
-							workspaceIdentity: "/repo/wt",
-							worktreePath: "/repo/wt",
-							provider: "claude",
-							lifecycle: "open",
-							activity: "idle",
-							lastExitAbnormal: false,
-							operations: {
-								canArchive: true,
-								canRestore: false,
-								canDelete: false,
-							},
-						},
-					],
-				});
-			}
 			if (command === "archive_agent_session") {
 				return Promise.resolve("archived");
 			}
@@ -692,66 +655,39 @@ describe("WorkspaceList", () => {
 		window.removeEventListener("agent-session-refresh", refresh);
 	});
 
-	it("Standalone AgentSession一覧を共通snapshotから表示する", async () => {
-		mocks.invoke.mockImplementation((command: string) => {
-			if (command !== "list_workspace_worktree_nodes") {
-				return Promise.resolve(null);
-			}
-			return Promise.resolve({
-				nodes: [],
-				sessions: [
-					{
-						id: "provider-agent-2",
-						workspaceIdentity: "/repo/wt",
-						worktreePath: "/repo/wt",
-						provider: "codex",
-						lifecycle: "open",
-						activity: "idle",
-						lastExitAbnormal: false,
-						operations: {
-							canArchive: true,
-							canRestore: false,
-							canDelete: false,
-						},
-					},
-					{
-						id: "provider-agent-1",
-						workspaceIdentity: "/repo/wt",
-						worktreePath: "/repo/wt",
-						provider: "claude",
-						lifecycle: "open",
-						activity: "idle",
-						lastExitAbnormal: false,
-						operations: {
-							canArchive: true,
-							canRestore: false,
-							canDelete: false,
-						},
-					},
-				],
-			});
+	it("Standalone Session Node一覧を共通snapshotから表示する", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "provider-agent-2",
+					title: "Codex AgentSession",
+				}),
+				standaloneSessionNode({
+					id: "provider-agent-1",
+					title: "Claude AgentSession",
+				}),
+			],
+			archivedSessions: [],
 		});
 		renderWorkspaceList();
 
 		expect(
-			await screen.findByRole("button", {
-				name: "Codex AgentSession, open",
+			screen.getByRole("button", {
+				name: "Codex AgentSession, running",
 			}),
 		).toBeVisible();
-		expect(mocks.invoke).toHaveBeenCalledWith("list_workspace_worktree_nodes", {
-			worktreePath: "/repo/wt",
-		});
+		expect(screen.getByText("Claude AgentSession")).toBeVisible();
 	});
 
-	it("renders an empty backend-owned Workflow branch without Node leaves", () => {
+	it("renders an empty backend-owned Sequence branch without Node leaves", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				{
-					kind: "workflow",
+					kind: "sequence",
 					id: "empty-workflow",
 					title: "Empty workflow",
 					status: "running",
-					capabilities: {
+					workflowCapabilities: {
 						canStop: true,
 						canResume: false,
 						canAbort: true,
@@ -800,12 +736,12 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("shows the backend error reason on an errored session badge", () => {
+	it("shows the backend failed status on a failed session badge", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				{
 					...directNode,
-					status: "error",
+					status: "failed",
 					errorReason: "app server stopped",
 				},
 			],
@@ -813,7 +749,7 @@ describe("WorkspaceList", () => {
 
 		renderWorkspaceList();
 
-		expect(screen.getByTitle("app server stopped")).toBeInTheDocument();
+		expect(screen.getByTitle("session, failed")).toBeInTheDocument();
 	});
 
 	it("toggles Workflow and Fanout branches without changing selection", async () => {
@@ -1119,6 +1055,8 @@ describe("WorkspaceList", () => {
 			status: "completed",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: false },
+			pastAttempts: [],
+			pastAttemptsCollapsed: false,
 			updatedAt: 1,
 		};
 		const occurrenceB: WorkspaceTreeItem = {
@@ -1140,11 +1078,11 @@ describe("WorkspaceList", () => {
 			updatedAt: 4,
 		};
 		const workflow = (children: WorkspaceTreeItem[]): WorkspaceTreeItem => ({
-			kind: "workflow",
+			kind: "sequence",
 			id: "loop-workflow",
 			title: "Loop workflow",
 			status: "running",
-			capabilities: {
+			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
 				canAbort: true,
@@ -1208,21 +1146,72 @@ describe("WorkspaceList", () => {
 		);
 	});
 
+	it("retryの決着済み過去実行を既定で折り畳み、実行順に展開して選択できる", async () => {
+		const user = userEvent.setup();
+		const first = standaloneSessionNode({
+			id: "retry-attempt-first",
+			title: "Review",
+			status: "failed",
+			canArchive: false,
+		});
+		const second = standaloneSessionNode({
+			id: "retry-attempt-second",
+			title: "Review",
+			status: "completed",
+			canArchive: false,
+		});
+		const latest: WorkspaceNode = {
+			...standaloneSessionNode({
+				id: "retry-attempt-latest",
+				title: "Review",
+				status: "running",
+				canArchive: false,
+			}),
+			pastAttempts: [first, second],
+			pastAttemptsCollapsed: true,
+		};
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [latest],
+			archivedSessions: [],
+		});
+		const { onSelectWorktree } = renderWorkspaceList();
+
+		expect(screen.getAllByRole("button", { name: /^Review,/ })).toHaveLength(1);
+		expect(screen.queryByText(/Attempt \d+/)).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", {
+				name: "Show past executions for Review",
+			}),
+		);
+
+		const executions = screen.getAllByRole("button", { name: /^Review,/ });
+		expect(executions.map((row) => row.getAttribute("aria-label"))).toEqual([
+			"Review, failed",
+			"Review, completed",
+			"Review, running",
+		]);
+		await user.click(executions[0]);
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: "retry-attempt-first",
+			},
+		);
+	});
+
 	it("NewSessionはNewWorkflowと同じsubmenuでProviderを選択して作成する", async () => {
 		const user = userEvent.setup();
 		let providerSessionListCalls = 0;
 		const refreshAfterCreate = new Promise(() => {});
-		const initialAttachment = {
-			agentSessionId: "agent-session-1",
-			workspaceIdentity: "/repo/wt",
-			worktreePath: "/repo/wt",
-			provider: "codex" as const,
-		};
 		mocks.invoke.mockImplementation((command) => {
 			if (command === "list_workspace_worktree_nodes") {
 				providerSessionListCalls += 1;
 				return providerSessionListCalls === 1
-					? Promise.resolve({ nodes: [], sessions: [] })
+					? Promise.resolve({ nodes: [], archivedSessions: [] })
 					: refreshAfterCreate;
 			}
 			if (command === "list_available_agent_session_providers") {
@@ -1230,6 +1219,9 @@ describe("WorkspaceList", () => {
 			}
 			if (command === "create_agent_session") {
 				return Promise.resolve("agent-session-1");
+			}
+			if (command === "get_workspace_session_node_id") {
+				return Promise.resolve("agent-session-node-1");
 			}
 			return Promise.resolve(null);
 		});
@@ -1265,10 +1257,15 @@ describe("WorkspaceList", () => {
 				"feature",
 				"repo",
 				{
-					kind: "agent_session",
+					kind: "node",
 					worktreePath: "/repo/wt",
-					agentSessionId: "agent-session-1",
-					initialAttachment,
+					nodeId: "agent-session-node-1",
+					initialSessionAttachment: {
+						agentSessionId: "agent-session-1",
+						workspaceIdentity: "/repo/wt",
+						worktreePath: "/repo/wt",
+						provider: "codex",
+					},
 				},
 			);
 		});
@@ -1375,11 +1372,14 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		const selectedNodeId = "workflow-session-internal-uuid";
 		const archivableTree = recursiveTree.map((item) =>
-			item.kind === "workflow"
+			item.kind === "sequence" && item.workflowCapabilities
 				? {
 						...item,
 						status: "completed" as const,
-						capabilities: { ...item.capabilities, canArchive: true },
+						workflowCapabilities: {
+							...item.workflowCapabilities,
+							canArchive: true,
+						},
 					}
 				: item,
 		);
@@ -1442,11 +1442,14 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		const selectedNodeId = "workflow-session-internal-uuid";
 		const archivableTree = recursiveTree.map((item) =>
-			item.kind === "workflow"
+			item.kind === "sequence" && item.workflowCapabilities
 				? {
 						...item,
 						status: "completed" as const,
-						capabilities: { ...item.capabilities, canArchive: true },
+						workflowCapabilities: {
+							...item.workflowCapabilities,
+							canArchive: true,
+						},
 					}
 				: item,
 		);
@@ -1528,7 +1531,7 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command) => {
 			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({ nodes: [], sessions: [] });
+				return Promise.resolve({ nodes: [], archivedSessions: [] });
 			}
 			if (command === "list_agent_session_history") {
 				return Promise.resolve({
@@ -1543,6 +1546,9 @@ describe("WorkspaceList", () => {
 			}
 			if (command === "resume_agent_session_history_candidate") {
 				return Promise.resolve("agent-session-2");
+			}
+			if (command === "get_workspace_session_node_id") {
+				return Promise.resolve("agent-session-node-2");
 			}
 			return Promise.resolve(null);
 		});
@@ -1575,9 +1581,15 @@ describe("WorkspaceList", () => {
 			"feature",
 			"repo",
 			{
-				kind: "agent_session",
+				kind: "node",
 				worktreePath: "/repo/wt",
-				agentSessionId: "agent-session-2",
+				nodeId: "agent-session-node-2",
+				initialSessionAttachment: {
+					agentSessionId: "agent-session-2",
+					workspaceIdentity: "/repo/wt",
+					worktreePath: "/repo/wt",
+					provider: "codex",
+				},
 			},
 		);
 	});
@@ -1586,7 +1598,7 @@ describe("WorkspaceList", () => {
 		const user = userEvent.setup();
 		mocks.invoke.mockImplementation((command, args?: unknown) => {
 			if (command === "list_workspace_worktree_nodes") {
-				return Promise.resolve({ nodes: [], sessions: [] });
+				return Promise.resolve({ nodes: [], archivedSessions: [] });
 			}
 			if (command === "list_agent_session_history") {
 				const after = (args as { after?: string })?.after;
@@ -1674,5 +1686,67 @@ describe("WorkspaceList", () => {
 			"true",
 		);
 		expect(screen.getByRole("menuitem", { name: "Abort" })).toBeEnabled();
+	});
+
+	it("leaf Node rootからworkflow全体の操作を実行できる", async () => {
+		const user = userEvent.setup();
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				{
+					...standaloneSessionNode({
+						id: "leaf-workflow-execution",
+						title: "Leaf workflow",
+						canArchive: false,
+					}),
+					sessionCapabilities: null,
+					workflowCapabilities: {
+						canStop: true,
+						canResume: false,
+						canAbort: true,
+						canArchive: false,
+					},
+				},
+			],
+			archivedSessions: [],
+		});
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for Leaf workflow" }),
+		);
+		await user.click(screen.getByRole("menuitem", { name: "Stop" }));
+
+		expect(mocks.invoke).toHaveBeenCalledWith("stop_workflow", {
+			executionId: "leaf-workflow-execution",
+		});
+	});
+
+	it("Standalone Session NodeをopaqueなSession参照で削除できる", async () => {
+		const user = userEvent.setup();
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "standalone-node-id",
+					title: "Deletable Session",
+					canArchive: false,
+					canDelete: true,
+					sessionRef: "opaque-session-ref",
+				}),
+			],
+			archivedSessions: [],
+		});
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Delete Deletable Session" }),
+		);
+
+		expect(mocks.invoke).toHaveBeenCalledWith(
+			"delete_agent_session",
+			expect.objectContaining({
+				agentSessionId: "opaque-session-ref",
+				callerRequestId: expect.any(String),
+			}),
+		);
 	});
 });

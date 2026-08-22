@@ -605,6 +605,7 @@ pub struct FailureTreatmentOutcome {
 /// 決める（live 経路では使わない）。
 #[derive(Debug, Clone, PartialEq)]
 struct PendingRestart {
+    node_execution_id: String,
     node_name: String,
     parent_scope_id: Option<String>,
 }
@@ -638,6 +639,9 @@ pub struct WorkflowExecutionView {
     /// アクティブな合成子実行インスタンスのスコープ（開始順。先頭が root）。
     pub scopes: Vec<ScopeRuntime>,
     pub node_executions: Vec<RuntimeNodeExecution>,
+    /// retry で開始された NodeExecution から直前の attempt への関係。
+    /// 永続 snapshot ではなく、live transition または事実 replay から導出する。
+    pub retry_predecessors: HashMap<String, String>,
     pub request: Option<String>,
     pub current_stall_observations: Vec<NodeStallObservation>,
 }
@@ -704,6 +708,7 @@ impl WorkflowExecution {
                 current_session_id: restore.current_session_id,
                 scopes: restore.scopes,
                 node_executions: restore.node_executions,
+                retry_predecessors: HashMap::new(),
                 request: restore.request,
                 current_stall_observations: restore.current_stall_observations,
             },
@@ -1894,6 +1899,9 @@ impl WorkflowExecution {
             timestamp,
             &mut events,
         );
+        self.runtime
+            .retry_predecessors
+            .insert(new_node_execution_id.clone(), node_execution_id.to_string());
         let attempt = self.node_execution(&new_node_execution_id).cloned()?;
         let leaf = self.leaf_start_for(&new_node_execution_id).ok()?;
         Some(RestartedNodeAttempt {
@@ -2435,6 +2443,7 @@ impl WorkflowExecution {
         self.pending_restart =
             self.node_execution(node_execution_id)
                 .map(|target| PendingRestart {
+                    node_execution_id: target.id.clone(),
                     node_name: target.node_name.clone(),
                     parent_scope_id: target
                         .parent
@@ -3277,11 +3286,13 @@ impl WorkflowExecution {
             .cloned()
             .ok_or_else(|| format!("node '{node_name}' is undefined"))?;
         // 直前の NodeRetryRequested に対応する restart の start か。
-        let is_restart = self.pending_restart.take().is_some_and(|pending| {
-            pending.node_name == node_name
+        let retry_predecessor = self.pending_restart.take().and_then(|pending| {
+            (pending.node_name == node_name
                 && pending.parent_scope_id.as_deref()
-                    == parent.as_ref().map(|parent| parent.parent_id.as_str())
+                    == parent.as_ref().map(|parent| parent.parent_id.as_str()))
+            .then_some(pending.node_execution_id)
         });
+        let is_restart = retry_predecessor.is_some();
         // 親スコープの進行を再現する。
         if let Some(parent_ref) = &parent {
             let scope_id = parent_ref.parent_id.clone();
@@ -3376,6 +3387,11 @@ impl WorkflowExecution {
             timestamp,
         )
         .map_err(|reason| format!("node_started was rejected: {reason:?}"))?;
+        if let Some(predecessor) = retry_predecessor {
+            self.runtime
+                .retry_predecessors
+                .insert(node_execution_id.to_string(), predecessor);
+        }
         // 合成子ならスコープを生やす。
         if kind.is_composite_kind() {
             let parent_scope_id = parent.as_ref().map(|parent| parent.parent_id.clone());
@@ -4643,6 +4659,14 @@ mod tests {
         assert_eq!(current.attempt, 2);
         assert_eq!(current.status, RuntimeNodeExecutionStatus::Running);
         assert_eq!(
+            execution
+                .runtime
+                .retry_predecessors
+                .get("node-execution-2")
+                .map(String::as_str),
+            Some(previous_id.as_str())
+        );
+        assert_eq!(
             current.completion_signals,
             NodeCompletionSignalState::Pending
         );
@@ -5205,6 +5229,33 @@ mod tests {
         completed
     }
 
+    fn settle_session_leaf(
+        execution: &mut WorkflowExecution,
+        node_execution_id: &str,
+        new_id: &mut dyn FnMut() -> String,
+        timestamp: f64,
+    ) -> AppliedNodeCompletionHandshake {
+        assert_eq!(
+            execution.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Submit,
+                timestamp,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                node_execution_id,
+                NodeCompletionSignal::Stop,
+                timestamp,
+            ),
+            TransitionOutcome::Applied
+        );
+        execution
+            .apply_node_completion_handshake(node_execution_id, new_id, timestamp)
+            .unwrap()
+    }
+
     #[test]
     fn fanout_child_sequence_runs_recursively_and_completes_bottom_up() {
         let mut execution = tree_execution(vec![
@@ -5301,6 +5352,165 @@ mod tests {
                 "composite instance '{name}' must complete bottom-up"
             );
         }
+    }
+
+    #[test]
+    fn canonical_example_starts_nested_sequence_inside_fanout() {
+        let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../specs/unified-node-model/examples/full-cycle-development.yml");
+        let source = std::fs::read_to_string(source_path).unwrap();
+        let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
+        let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            id: "canonical-example-execution".to_string(),
+            workflow,
+            ..WorkflowExecutionRestore::default()
+        });
+
+        execution
+            .replay_node_started("main", "main", NodeKindName::Sequence, 1, None, 1.0)
+            .unwrap();
+        execution
+            .replay_node_started(
+                "implementation",
+                "implementation",
+                NodeKindName::Sequence,
+                1,
+                Some(ExecutionParentRef::sequence_child("main")),
+                2.0,
+            )
+            .unwrap();
+        execution
+            .replay_node_started(
+                "create-detailed-design",
+                "create_detailed_design",
+                NodeKindName::Session,
+                1,
+                Some(ExecutionParentRef::sequence_child("implementation")),
+                3.0,
+            )
+            .unwrap();
+
+        let tasks = serde_json::json!({
+            "tasks": [
+                {
+                    "task_id": "task-1",
+                    "requirements": [],
+                    "depends_on": [],
+                    "parallel": true,
+                    "files": [],
+                    "outputs": [],
+                    "verify": []
+                },
+                {
+                    "task_id": "task-2",
+                    "requirements": [],
+                    "depends_on": [],
+                    "parallel": true,
+                    "files": [],
+                    "outputs": [],
+                    "verify": []
+                }
+            ]
+        });
+        assert_eq!(
+            execution.record_pending_result(
+                "create-detailed-design",
+                Some("created two tasks".to_string()),
+                Some(tasks),
+                Some("implement-tasks".to_string()),
+                None,
+                4.0,
+            ),
+            TransitionOutcome::Applied
+        );
+
+        let mut new_id = tree_id_source();
+        let applied =
+            settle_session_leaf(&mut execution, "create-detailed-design", &mut new_id, 5.0);
+        assert_eq!(
+            started_names(&applied.events),
+            [
+                "implement_all",
+                "implement_and_verify",
+                "implement_task",
+                "implement_and_verify",
+                "implement_task",
+            ]
+        );
+        let Some(ExecutionAdvanceDecision::StartLeaves(implement_leaves)) = applied.advance else {
+            panic!("canonical example must start one implementation leaf per task");
+        };
+        assert_eq!(implement_leaves.len(), 2);
+
+        let mut verify_leaves = Vec::new();
+        for (index, leaf) in implement_leaves.iter().enumerate() {
+            let applied = settle_session_leaf(
+                &mut execution,
+                &leaf.node_execution_id,
+                &mut new_id,
+                6.0 + index as f64,
+            );
+            let Some(ExecutionAdvanceDecision::StartLeaves(leaves)) = applied.advance else {
+                panic!("implement_and_verify must advance from implement_task to verify_task");
+            };
+            assert_eq!(
+                leaves
+                    .iter()
+                    .map(|leaf| leaf.node_name.as_str())
+                    .collect::<Vec<_>>(),
+                ["verify_task"]
+            );
+            verify_leaves.extend(leaves);
+        }
+
+        let mut final_started = Vec::new();
+        for (index, leaf) in verify_leaves.iter().enumerate() {
+            assert_eq!(
+                execution.record_pending_result(
+                    &leaf.node_execution_id,
+                    Some("verified".to_string()),
+                    Some(serde_json::json!({
+                        "task_id": format!("task-{}", index + 1),
+                        "complete": true,
+                        "reason": "ok"
+                    })),
+                    Some("implement-task-check-result".to_string()),
+                    None,
+                    8.0 + index as f64,
+                ),
+                TransitionOutcome::Applied
+            );
+            let applied = settle_session_leaf(
+                &mut execution,
+                &leaf.node_execution_id,
+                &mut new_id,
+                10.0 + index as f64,
+            );
+            final_started.extend(started_names(&applied.events));
+        }
+
+        assert_eq!(final_started, ["merge_implementations"]);
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .filter(|node| node.node_name == "implement_and_verify")
+                .map(|node| node.status)
+                .collect::<Vec<_>>(),
+            [
+                RuntimeNodeExecutionStatus::Succeeded,
+                RuntimeNodeExecutionStatus::Succeeded,
+            ]
+        );
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.node_name == "implement_all")
+                .expect("canonical fanout must have started")
+                .status,
+            RuntimeNodeExecutionStatus::Succeeded
+        );
     }
 
     #[test]
@@ -6527,6 +6737,14 @@ mod tests {
         assert_eq!(live_sequence, replayed_sequence);
         assert_eq!(replayed_sequence.child_counts.get("flaky"), Some(&2));
         assert_eq!(replayed_sequence.visit_bases.get("flaky"), Some(&0));
+        assert_eq!(
+            live.runtime.retry_predecessors,
+            replayed.runtime.retry_predecessors
+        );
+        assert_eq!(
+            replayed.runtime.retry_predecessors.get(&second),
+            Some(&first)
+        );
 
         // 予算判定の導出も一致する: 次の失敗はどちらも自動 retry できる。
         let mut next_attempt_id = || "next-attempt".to_string();

@@ -78,6 +78,9 @@ pub struct WorkspaceTreeNode {
     pub node_execution_id: Option<String>,
     pub node_name: Option<String>,
     pub attempt: Option<u32>,
+    pub retry_predecessor_id: Option<String>,
+    pub past_attempt_ids: Vec<String>,
+    pub is_retry_history: bool,
     pub completion_signals: NodeCompletionSignalState,
     pub has_artifact: bool,
     pub session_id: Option<String>,
@@ -146,6 +149,11 @@ pub enum WorkspaceStructureFact {
         attempt: u32,
         parent: Option<ExecutionParentRef>,
         timestamp: f64,
+    },
+    NodeRetryLinked {
+        execution_id: String,
+        node_execution_id: String,
+        predecessor_node_execution_id: String,
     },
     NodeAgentBound {
         execution_id: String,

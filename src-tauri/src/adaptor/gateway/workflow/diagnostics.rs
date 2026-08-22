@@ -2099,42 +2099,27 @@ mod tests {
             .join(kind)
     }
 
-    fn full_pipeline_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/full-pipeline.yml")
+    fn canonical_example_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../specs/unified-node-model/examples/full-cycle-development.yml")
     }
 
-    /// 受け入れ基準: 正本 spec の単一定義例を load したとき、ネスト合成子
-    /// （W3 #1463 で解禁済み）への Diagnostic はゼロで、残るのは未解禁分
-    /// （worktree = #85）のみ。
     #[test]
-    fn full_cycle_development_spec_example_leaves_only_unsupported_diagnostics() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../specs/unified-node-model/examples/full-cycle-development.yml");
-        let source = fs::read_to_string(path).unwrap();
+    fn canonical_example_has_zero_diagnostics() {
+        let source = fs::read_to_string(canonical_example_path()).unwrap();
         let diagnosis = diagnose_workflow_source(&source, Some("full-cycle-development"));
 
-        let expected_worktree = ["implement_all", "fix_all"];
-
-        let mut actual: Vec<(&str, &str)> = diagnosis
-            .diagnostics
-            .iter()
-            .map(|item| {
-                (
-                    item.code.as_str(),
-                    item.node_name.as_deref().unwrap_or_default(),
-                )
-            })
-            .collect();
-        actual.sort_unstable();
-        let mut expected: Vec<(&str, &str)> = expected_worktree
-            .iter()
-            .map(|node| ("WFU002", *node))
-            .collect();
-        expected.sort_unstable();
-        assert_eq!(
-            actual, expected,
-            "worktree（#85）以外の Diagnostic が出てはならない: {:?}",
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "canonical example produced diagnostics: {:?}",
             diagnosis.diagnostics
+        );
+        assert_eq!(
+            diagnosis
+                .workflow
+                .expect("zero diagnostics must yield a workflow")
+                .name,
+            "full-cycle-development"
         );
     }
 
@@ -2167,51 +2152,41 @@ mod tests {
     }
 
     #[test]
-    fn full_pipeline_canonical_example_loads_with_zero_diagnostics() {
-        let source_path = full_pipeline_path();
-        let source = fs::read_to_string(&source_path).unwrap();
-        let diagnosis = diagnose_workflow_source(&source, Some("full-pipeline"));
+    fn canonical_example_passes_the_real_loader() {
+        let source = fs::read_to_string(canonical_example_path()).unwrap();
+        let diagnosis = diagnose_workflow_source(&source, Some("full-cycle-development"));
         assert!(
             diagnosis.diagnostics.is_empty(),
-            "canonical full-pipeline example produced diagnostics: {:?}",
+            "canonical example produced diagnostics: {:?}",
             diagnosis.diagnostics
         );
-        assert_eq!(
-            diagnosis
-                .workflow
-                .as_ref()
-                .expect("zero diagnostics must yield a workflow")
-                .name,
-            "full-pipeline"
-        );
+        let definition = diagnosis
+            .workflow
+            .expect("zero diagnostics must yield a workflow");
 
         let tmp = TempDir::new().unwrap();
-        let workflow_path = tmp.path().join("full-pipeline.yml");
+        let workflow_path = tmp.path().join("full-cycle-development.yml");
         fs::write(&workflow_path, source).unwrap();
-        for policy in ["implementing", "reviewing", "triage"] {
-            setup_facet(tmp.path(), "policies", policy, "test policy");
-        }
-        for knowledge in ["releash-review", "releash-thread"] {
-            setup_facet(tmp.path(), "knowledge", knowledge, "test knowledge");
-        }
-        for instruction in [
-            "fix-failing-tests",
-            "review-diff",
-            "apply-review-fixes",
-            "decide-thread-fix",
-            "triage-ship-decision",
-            "summarize-ship",
-            "summarize-failure",
-            "summarize-escalation",
-        ] {
-            setup_facet(tmp.path(), "instructions", instruction, "test instruction");
+        for node in &definition.nodes {
+            let NodeKind::Session(session) = &node.kind else {
+                continue;
+            };
+            if let Some(policy) = &session.facets.policy {
+                setup_facet(tmp.path(), "policies", policy, "test policy");
+            }
+            for knowledge in &session.facets.knowledge {
+                setup_facet(tmp.path(), "knowledge", knowledge, "test knowledge");
+            }
+            if let Some(instruction) = &session.facets.instruction {
+                setup_facet(tmp.path(), "instructions", instruction, "test instruction");
+            }
         }
 
         let workflow =
             crate::adaptor::gateway::workflow::storage::load_workflow(&workflow_path, tmp.path())
-                .expect("canonical full-pipeline example must pass the real loader");
-        assert_eq!(workflow.name, "full-pipeline");
-        assert_eq!(workflow.nodes.len(), 15);
+                .expect("canonical example must pass the real loader");
+        assert_eq!(workflow.name, "full-cycle-development");
+        assert_eq!(workflow.nodes.len(), definition.nodes.len());
     }
 
     #[test]

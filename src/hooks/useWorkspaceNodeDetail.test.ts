@@ -29,7 +29,7 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 		hasArtifact: false,
 		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
-		content: { kind: "agentSession", sessionId: `session-${id}` },
+		content: { kind: "session", sessionId: `session-${id}` },
 	};
 }
 
@@ -40,7 +40,7 @@ function detailWithSession(
 ): WorkspaceNodeDetail {
 	return {
 		...detail(id, title),
-		content: { kind: "agentSession", sessionId },
+		content: { kind: "session", sessionId },
 	};
 }
 
@@ -252,7 +252,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "agentSession",
+				kind: "session",
 				sessionId: "session-a-2",
 			}),
 		);
@@ -265,7 +265,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		expect(result.current.detail?.id).toBe("occurrence-a-2");
 		expect(result.current.detail?.content).toEqual({
-			kind: "agentSession",
+			kind: "session",
 			sessionId: "session-a-2",
 		});
 	});
@@ -286,7 +286,7 @@ describe("useWorkspaceNodeDetail", () => {
 		);
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "agentSession",
+				kind: "session",
 				sessionId: "session-a-1",
 			}),
 		);
@@ -312,7 +312,7 @@ describe("useWorkspaceNodeDetail", () => {
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
-				kind: "agentSession",
+				kind: "session",
 				sessionId: "latest-session-a-1",
 			}),
 		);
@@ -324,7 +324,7 @@ describe("useWorkspaceNodeDetail", () => {
 			await older.promise;
 		});
 		expect(result.current.detail?.content).toEqual({
-			kind: "agentSession",
+			kind: "session",
 			sessionId: "latest-session-a-1",
 		});
 	});

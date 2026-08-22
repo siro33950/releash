@@ -90,10 +90,17 @@ test.describe("Workspace Manager", () => {
 						title: "Direct session",
 						status: "running",
 						contentKind: "session",
-						capabilities: { canApprove: false, canClose: true },
+						capabilities: {
+							canApprove: false,
+							canRetry: false,
+							canClose: true,
+						},
+						pastAttempts: [],
+						pastAttemptsCollapsed: false,
 						updatedAt: 1000,
 					},
 				],
+				archivedSessions: [],
 				preferredNodeId: "node-session-1",
 			},
 		});
@@ -117,11 +124,11 @@ test.describe("Workspace Manager", () => {
 			list_workspace_worktree_nodes: {
 				nodes: [
 					{
-						kind: "workflow",
+						kind: "sequence",
 						id: "workflow-opaque-1",
 						title: "Release workflow",
 						status: "running",
-						capabilities: {
+						workflowCapabilities: {
 							canStop: true,
 							canResume: false,
 							canAbort: true,
@@ -135,12 +142,19 @@ test.describe("Workspace Manager", () => {
 								title: "build",
 								status: "running",
 								contentKind: "session",
-								capabilities: { canApprove: false, canClose: false },
+								capabilities: {
+									canApprove: false,
+									canRetry: false,
+									canClose: false,
+								},
+								pastAttempts: [],
+								pastAttemptsCollapsed: false,
 								updatedAt: 1000,
 							},
 						],
 					},
 				],
+				archivedSessions: [],
 				preferredNodeId: "node-build-opaque",
 			},
 		});
@@ -193,6 +207,22 @@ test.describe("Workspace Manager", () => {
 			),
 			list_available_agent_session_providers: ["codex"],
 			create_agent_session: agentSessionId,
+			get_workspace_session_node_id: agentSessionId,
+			get_workspace_node_detail: {
+				id: agentSessionId,
+				title: "New Session",
+				status: "running",
+				capabilities: {
+					canApprove: false,
+					canRetry: false,
+					canClose: true,
+				},
+				updatedAt: 1000,
+				submitReceived: false,
+				stopReceived: false,
+				hasArtifact: false,
+				content: { kind: "session", sessionId: agentSessionId },
+			},
 			get_agent_session: agentSession(agentSessionId, worktreePath),
 			open_agent_session: "attached",
 		});
@@ -259,7 +289,13 @@ test.describe("Workspace Manager", () => {
 			title: "First workflow Session",
 			status: "running",
 			contentKind: "session",
-			capabilities: { canApprove: false, canClose: false },
+			capabilities: {
+				canApprove: false,
+				canRetry: false,
+				canClose: false,
+			},
+			pastAttempts: [],
+			pastAttemptsCollapsed: false,
 			updatedAt: 1000,
 		};
 		const firstWorkflowSession = agentSession(
@@ -279,6 +315,7 @@ test.describe("Workspace Manager", () => {
 			),
 			list_workspace_worktree_nodes: {
 				nodes: [],
+				archivedSessions: [],
 				preferredNodeId: null,
 			},
 		});
@@ -293,11 +330,11 @@ test.describe("Workspace Manager", () => {
 					{
 						nodes: [
 							{
-								kind: "workflow",
+								kind: "sequence",
 								id: "workflow-first",
 								title: "First workflow",
 								status: "running",
-								capabilities: {
+								workflowCapabilities: {
 									canStop: true,
 									canResume: false,
 									canAbort: true,
@@ -307,6 +344,7 @@ test.describe("Workspace Manager", () => {
 								updatedAt: 1000,
 							},
 						],
+						archivedSessions: [],
 						preferredNodeId: workflowNode.id,
 					},
 				);
@@ -318,8 +356,11 @@ test.describe("Workspace Manager", () => {
 						status: workflowNode.status,
 						capabilities: workflowNode.capabilities,
 						updatedAt: workflowNode.updatedAt,
+						submitReceived: false,
+						stopReceived: false,
+						hasArtifact: false,
 						content: {
-							kind: "agentSession",
+							kind: "session",
 							sessionId: "agent-session-first-workflow",
 						},
 					},
@@ -378,11 +419,11 @@ test.describe("Workspace Manager", () => {
 			list_workspace_worktree_nodes: {
 				nodes: [
 					{
-						kind: "workflow",
+						kind: "sequence",
 						id: "workflow-session-parent",
 						title: "Review workflow",
 						status: "waiting",
-						capabilities: {
+						workflowCapabilities: {
 							canStop: false,
 							canResume: false,
 							canAbort: true,
@@ -396,21 +437,35 @@ test.describe("Workspace Manager", () => {
 								title: "Review changes",
 								status: "waiting",
 								contentKind: "session",
-								capabilities: { canApprove: false, canClose: false },
+								capabilities: {
+									canApprove: false,
+									canRetry: false,
+									canClose: false,
+								},
+								pastAttempts: [],
+								pastAttemptsCollapsed: false,
 								updatedAt: 1000,
 							},
 						],
 					},
 				],
+				archivedSessions: [],
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
 				id: "node-workflow-session",
 				title: "Review changes",
 				status: "waiting",
-				capabilities: { canApprove: false, canClose: false },
+				capabilities: {
+					canApprove: false,
+					canRetry: false,
+					canClose: false,
+				},
 				updatedAt: 1000,
-				content: { kind: "agentSession", sessionId: agentSessionId },
+				submitReceived: false,
+				stopReceived: false,
+				hasArtifact: false,
+				content: { kind: "session", sessionId: agentSessionId },
 			},
 			get_agent_session: agentSession(agentSessionId, worktreePath),
 			open_agent_session: "attached",
@@ -464,11 +519,11 @@ test.describe("Workspace Manager", () => {
 			list_workspace_worktree_nodes: {
 				nodes: [
 					{
-						kind: "workflow",
+						kind: "sequence",
 						id: "workflow-fanout-parent",
 						title: "Fanout workflow",
 						status: "running",
-						capabilities: {
+						workflowCapabilities: {
 							canStop: true,
 							canResume: false,
 							canAbort: true,
@@ -491,8 +546,11 @@ test.describe("Workspace Manager", () => {
 										contentKind: "command",
 										capabilities: {
 											canApprove: false,
+											canRetry: false,
 											canClose: false,
 										},
+										pastAttempts: [],
+										pastAttemptsCollapsed: false,
 										updatedAt: 1000,
 									},
 								],
@@ -500,6 +558,7 @@ test.describe("Workspace Manager", () => {
 						],
 					},
 				],
+				archivedSessions: [],
 				preferredNodeId: null,
 			},
 		});
@@ -530,11 +589,11 @@ test.describe("Workspace Manager", () => {
 			list_workspace_worktree_nodes: {
 				nodes: [
 					{
-						kind: "workflow",
+						kind: "sequence",
 						id: "workflow-command-parent",
 						title: "Deploy workflow",
 						status: "completed",
-						capabilities: {
+						workflowCapabilities: {
 							canStop: false,
 							canResume: false,
 							canAbort: false,
@@ -557,26 +616,34 @@ test.describe("Workspace Manager", () => {
 										contentKind: "command",
 										capabilities: {
 											canApprove: false,
+											canRetry: false,
 											canClose: false,
 										},
+										pastAttempts: [],
+										pastAttemptsCollapsed: false,
 										updatedAt: 1000,
-										nodeExecutionId: "internal-node-execution-uuid",
-										attempt: 4,
 									},
 								],
 							},
 						],
 					},
 				],
+				archivedSessions: [],
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
 				id: "node-command-opaque",
 				title: "Deploy",
 				status: "completed",
-				capabilities: { canApprove: false, canClose: false },
+				capabilities: {
+					canApprove: false,
+					canRetry: false,
+					canClose: false,
+				},
 				updatedAt: 1000,
-				rawCommand: "deploy --token raw-super-secret",
+				submitReceived: false,
+				stopReceived: false,
+				hasArtifact: false,
 				content: {
 					kind: "command",
 					displayCommand: "deploy --token ********",
@@ -632,15 +699,21 @@ test.describe("Workspace Manager", () => {
 					title: "Archive fallback",
 					status: "running",
 					contentKind: "session",
-					capabilities: { canApprove: false, canClose: true },
+					capabilities: {
+						canApprove: false,
+						canRetry: false,
+						canClose: true,
+					},
+					pastAttempts: [],
+					pastAttemptsCollapsed: false,
 					updatedAt: 1000,
 				},
 				{
-					kind: "workflow",
+					kind: "sequence",
 					id: "archivable-workflow",
 					title: "Archivable integration workflow",
 					status: "completed",
-					capabilities: {
+					workflowCapabilities: {
 						canStop: false,
 						canResume: false,
 						canAbort: false,
@@ -654,16 +727,24 @@ test.describe("Workspace Manager", () => {
 							title: "Archive selected",
 							status: "completed",
 							contentKind: "session",
-							capabilities: { canApprove: false, canClose: false },
+							capabilities: {
+								canApprove: false,
+								canRetry: false,
+								canClose: false,
+							},
+							pastAttempts: [],
+							pastAttemptsCollapsed: false,
 							updatedAt: 2000,
 						},
 					],
 				},
 			],
+			archivedSessions: [],
 			preferredNodeId: null,
 		};
 		const reconciledSnapshot = {
 			nodes: [initialSnapshot.nodes[0]],
+			archivedSessions: [],
 			preferredNodeId: fallbackNodeId,
 		};
 		const config = buildMockConfig({
@@ -678,10 +759,17 @@ test.describe("Workspace Manager", () => {
 				id: selectedNodeId,
 				title: "Archive selected",
 				status: "completed",
-				capabilities: { canApprove: false, canClose: false },
+				capabilities: {
+					canApprove: false,
+					canRetry: false,
+					canClose: false,
+				},
 				updatedAt: 2000,
+				submitReceived: false,
+				stopReceived: false,
+				hasArtifact: false,
 				content: {
-					kind: "agentSession",
+					kind: "session",
 					sessionId: "agent-session-archive-selected",
 				},
 			},
@@ -701,7 +789,10 @@ test.describe("Workspace Manager", () => {
 			page.getByRole("button", { name: "Archive selected, completed" }),
 		).toHaveAttribute("aria-current", "page");
 		await page
-			.getByRole("button", { name: "Archivable integration workflow" })
+			.getByRole("button", {
+				name: "Archivable integration workflow",
+				exact: true,
+			})
 			.hover();
 		await page
 			.getByRole("button", { name: "Archive Archivable integration workflow" })
@@ -735,15 +826,21 @@ test.describe("Workspace Manager", () => {
 			title: "Loop step",
 			status: "running",
 			contentKind: "session",
-			capabilities: { canApprove: false, canClose: false },
+			capabilities: {
+				canApprove: false,
+				canRetry: false,
+				canClose: false,
+			},
+			pastAttempts: [],
+			pastAttemptsCollapsed: false,
 			updatedAt: 1000,
 		};
 		const workflowSummary = {
-			kind: "workflow",
+			kind: "sequence",
 			id: "loop-workflow",
 			title: "Loop workflow",
 			status: "running",
-			capabilities: {
+			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
 				canAbort: true,
@@ -758,16 +855,24 @@ test.describe("Workspace Manager", () => {
 			),
 			list_workspace_worktree_nodes: {
 				nodes: [workflowSummary],
+				archivedSessions: [],
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
 				id: "occurrence-a-1",
 				title: "Loop step",
 				status: "running",
-				capabilities: { canApprove: false, canClose: false },
+				capabilities: {
+					canApprove: false,
+					canRetry: false,
+					canClose: false,
+				},
 				updatedAt: 1000,
+				submitReceived: false,
+				stopReceived: false,
+				hasArtifact: false,
 				content: {
-					kind: "agentSession",
+					kind: "session",
 					sessionId: "agent-session-loop-a-1",
 				},
 			},
@@ -829,16 +934,24 @@ test.describe("Workspace Manager", () => {
 							children: [completedFirst, secondOccurrence],
 						},
 					],
+					archivedSessions: [],
 					preferredNodeId: "occurrence-a-2",
 				});
 				internals.setMockResponse("get_workspace_node_detail", {
 					id: "occurrence-a-1",
 					title: "Loop step",
 					status: "completed",
-					capabilities: { canApprove: false, canClose: false },
+					capabilities: {
+						canApprove: false,
+						canRetry: false,
+						canClose: false,
+					},
 					updatedAt: 2000,
+					submitReceived: false,
+					stopReceived: false,
+					hasArtifact: false,
 					content: {
-						kind: "agentSession",
+						kind: "session",
 						sessionId: "agent-session-loop-a-1",
 					},
 				});
@@ -883,10 +996,17 @@ test.describe("Workspace Manager", () => {
 					id: "occurrence-a-2",
 					title: "Loop step",
 					status: "running",
-					capabilities: { canApprove: false, canClose: false },
+					capabilities: {
+						canApprove: false,
+						canRetry: false,
+						canClose: false,
+					},
 					updatedAt: 3000,
+					submitReceived: false,
+					stopReceived: false,
+					hasArtifact: false,
 					content: {
-						kind: "agentSession",
+						kind: "session",
 						sessionId: "agent-session-loop-a-2",
 					},
 				});

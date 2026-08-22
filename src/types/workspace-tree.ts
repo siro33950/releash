@@ -9,12 +9,7 @@ export type CenterSelection =
 			kind: "node";
 			worktreePath: string;
 			nodeId: string;
-	  }
-	| {
-			kind: "agent_session";
-			worktreePath: string;
-			agentSessionId: string;
-			initialAttachment?: AgentSessionLaunchAttachment;
+			initialSessionAttachment?: AgentSessionLaunchAttachment;
 	  }
 	| {
 			kind: "agent_session_launching";
@@ -25,11 +20,9 @@ export type CenterSelection =
 	  };
 
 export type WorkspaceNodeStatus =
-	| "queued"
 	| "running"
 	| "paused"
 	| "failed"
-	| "error"
 	| "waiting"
 	| "interrupted"
 	| "aborted"
@@ -46,6 +39,13 @@ export interface WorkspaceWorkflowCapabilities {
 	canResume: boolean;
 	canAbort: boolean;
 	canArchive: boolean;
+	resumeUnavailableReason?: string | null;
+}
+
+export interface WorkspaceSessionCapabilities {
+	sessionRef: string;
+	canArchive: boolean;
+	canDelete: boolean;
 }
 
 export interface WorkspaceNode {
@@ -56,15 +56,19 @@ export interface WorkspaceNode {
 	errorReason?: string | null;
 	contentKind: "session" | "command";
 	capabilities: WorkspaceNodeCapabilities;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
+	sessionCapabilities?: WorkspaceSessionCapabilities | null;
+	pastAttempts: WorkspaceNode[];
+	pastAttemptsCollapsed: boolean;
 	updatedAt: number;
 }
 
-export interface WorkspaceWorkflow {
-	kind: "workflow";
+export interface WorkspaceSequence {
+	kind: "sequence";
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
-	capabilities: WorkspaceWorkflowCapabilities;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
 	children: WorkspaceTreeItem[];
 	updatedAt: number;
 }
@@ -74,18 +78,19 @@ export interface WorkspaceFanout {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
 	children: WorkspaceTreeItem[];
 	updatedAt: number;
 }
 
 export type WorkspaceTreeItem =
 	| WorkspaceNode
-	| WorkspaceWorkflow
+	| WorkspaceSequence
 	| WorkspaceFanout;
 
 export interface WorkspaceTreeSnapshot {
 	nodes: WorkspaceTreeItem[];
-	sessions?: AgentSessionItem[];
+	archivedSessions: AgentSessionItem[];
 	preferredNodeId?: string | null;
 }
 
@@ -98,8 +103,8 @@ export interface WorkspaceTreeSelectionSnapshot {
 	reconciliation: WorkspaceSelectionReconciliation;
 }
 
-export interface WorkspaceAgentSessionNodeContent {
-	kind: "agentSession";
+export interface WorkspaceSessionNodeContent {
+	kind: "session";
 	sessionId?: string | null;
 }
 
@@ -117,14 +122,13 @@ export interface WorkspaceCommandNodeContent {
 }
 
 export type WorkspaceNodeContent =
-	| WorkspaceAgentSessionNodeContent
+	| WorkspaceSessionNodeContent
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
-	attempt?: number;
 	submitReceived: boolean;
 	stopReceived: boolean;
 	waitingFor?: "submit" | "stop";

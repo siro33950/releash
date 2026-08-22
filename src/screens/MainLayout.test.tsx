@@ -7,7 +7,6 @@ Element.prototype.scrollIntoView = vi.fn();
 
 const mocks = vi.hoisted(() => ({
 	nodeContentViewProps: vi.fn(),
-	agentSessionRouteProps: vi.fn(),
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -105,12 +104,6 @@ vi.mock("@/components/panels/NodeContentView", () => ({
 		);
 	},
 }));
-vi.mock("@/components/panels/AgentSessionPanel", () => ({
-	AgentSessionRoute: (props: unknown) => {
-		mocks.agentSessionRouteProps(props);
-		return <div data-testid="agent-session-route-mock" />;
-	},
-}));
 vi.mock("@/components/panels/ReviewPanel", () => ({
 	ReviewPanel: () => <div data-testid="review-panel-mock" />,
 }));
@@ -193,6 +186,40 @@ describe("MainLayout node-centered workspace", () => {
 		);
 	});
 
+	it("Node選択の初期Session attachmentを中央表示へ渡して消費を通知する", () => {
+		const onCenterSessionAttachmentConsumed = vi.fn();
+		const initialSessionAttachment = {
+			agentSessionId: "agent-session-1",
+			workspaceIdentity: "/managed/wt",
+			worktreePath: "/managed/wt",
+			provider: "codex",
+		};
+		renderMainLayout({
+			centerSelectionByWorktree: {
+				"/managed/wt": {
+					kind: "node",
+					worktreePath: "/managed/wt",
+					nodeId: "session-node-1",
+					initialSessionAttachment,
+				},
+			},
+			onCenterSessionAttachmentConsumed,
+		});
+
+		const calls = mocks.nodeContentViewProps.mock.calls;
+		const props = calls[calls.length - 1]?.[0] as {
+			initialSessionAttachment?: unknown;
+			onInitialSessionConsumed?: (agentSessionId: string) => void;
+		};
+		expect(props.initialSessionAttachment).toEqual(initialSessionAttachment);
+		props.onInitialSessionConsumed?.("agent-session-1");
+		expect(onCenterSessionAttachmentConsumed).toHaveBeenCalledWith(
+			"/managed/wt",
+			"session-node-1",
+			"agent-session-1",
+		);
+	});
+
 	it("app-wide warningをWorkspace外のmain-area内で高さを確保して表示する", () => {
 		renderMainLayout({
 			topBanner: <div role="alert">Provider warning</div>,
@@ -233,34 +260,19 @@ describe("MainLayout node-centered workspace", () => {
 		);
 	});
 
-	it("AgentSession selectionをTerminal routeへ渡す", () => {
-		const initialAttachment = {
-			agentSessionId: "provider-agent-1",
-			workspaceIdentity: "/managed/wt",
-			worktreePath: "/managed/wt",
-			provider: "codex" as const,
-		};
-		const onAgentSessionLaunchConsumed = vi.fn();
+	it("Session作成中だけ一時的なlaunching表示を使う", () => {
 		renderMainLayout({
 			centerSelectionByWorktree: {
 				"/managed/wt": {
-					kind: "agent_session",
+					kind: "agent_session_launching",
 					worktreePath: "/managed/wt",
-					agentSessionId: "provider-agent-1",
-					initialAttachment,
+					provider: "codex",
+					launchToken: "launch-1",
 				},
 			},
-			onAgentSessionLaunchConsumed,
 		});
 
-		expect(screen.getByTestId("agent-session-route-mock")).toBeInTheDocument();
-		expect(mocks.agentSessionRouteProps).toHaveBeenCalledWith(
-			expect.objectContaining({
-				agentSessionId: "provider-agent-1",
-				initialAttachment,
-				onInitialSessionConsumed: onAgentSessionLaunchConsumed,
-			}),
-		);
+		expect(screen.getByTestId("agent-session-launching")).toBeInTheDocument();
 		expect(screen.queryByTestId("node-content-view-mock")).toBeNull();
 	});
 

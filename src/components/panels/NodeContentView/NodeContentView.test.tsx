@@ -42,7 +42,7 @@ function sessionDetail(
 		hasArtifact: false,
 		capabilities: { canApprove: false, canRetry: false, canClose: false },
 		updatedAt: 1,
-		content: { kind: "agentSession", sessionId },
+		content: { kind: "session", sessionId },
 	};
 }
 
@@ -91,7 +91,7 @@ describe("NodeContentView", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("workflow-session", "agent-session-1"),
 			content: {
-				kind: "agentSession",
+				kind: "session",
 				sessionId: "agent-session-1",
 			},
 		} as unknown as WorkspaceNodeDetail;
@@ -103,6 +103,37 @@ describe("NodeContentView", () => {
 			expect.objectContaining({
 				agentSessionId: "agent-session-1",
 				theme: "light",
+			}),
+		);
+	});
+
+	it("created Sessionの既存attachmentを共通Node表示へ引き継ぐ", () => {
+		mocks.detailState.detail = sessionDetail(
+			"created-session",
+			"agent-session-created",
+		);
+		const onInitialSessionConsumed = vi.fn();
+		const initialAttachment = {
+			agentSessionId: "agent-session-created",
+			workspaceIdentity: "/repo",
+			worktreePath: "/repo",
+			provider: "codex",
+		};
+
+		render(
+			<NodeContentView
+				worktreePath="/repo"
+				nodeId="created-session"
+				initialSessionAttachment={initialAttachment}
+				onInitialSessionConsumed={onInitialSessionConsumed}
+			/>,
+		);
+
+		expect(mocks.agentSessionRoute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentSessionId: "agent-session-created",
+				initialAttachment,
+				onInitialSessionConsumed,
 			}),
 		);
 	});
@@ -123,18 +154,17 @@ describe("NodeContentView", () => {
 		);
 	});
 
-	it("shows a queued Session without mounting chat until a session is attached", () => {
+	it("does not mount a Session surface until a session is attached", () => {
 		mocks.detailState.detail = {
-			...sessionDetail("queued", null),
-			status: "queued",
+			...sessionDetail("pending", null),
 		};
-		renderView("queued");
+		renderView("pending");
 
-		expect(screen.getByText("This session has not started yet.")).toBeVisible();
+		expect(screen.getByText("Session unavailable.")).toBeVisible();
 		expect(mocks.agentSessionRoute).not.toHaveBeenCalled();
 	});
 
-	it("reports a missing non-queued Session as unavailable", () => {
+	it("reports a missing Session as unavailable", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("missing", null),
 			status: "failed",
@@ -142,9 +172,6 @@ describe("NodeContentView", () => {
 		renderView("missing");
 
 		expect(screen.getByText("Session unavailable.")).toBeVisible();
-		expect(
-			screen.queryByText("This session has not started yet."),
-		).not.toBeInTheDocument();
 		expect(mocks.agentSessionRoute).not.toHaveBeenCalled();
 	});
 
@@ -185,7 +212,7 @@ describe("NodeContentView", () => {
 		);
 	});
 
-	it("shows the public attempt without exposing internal execution identities", () => {
+	it("does not expose attempt or internal execution identities", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("public-title"),
 			title: "Public title",
@@ -204,22 +231,20 @@ describe("NodeContentView", () => {
 		expect(
 			screen.queryByText("node-execution-internal-uuid"),
 		).not.toBeInTheDocument();
-		expect(screen.getByText(/attempt 3/i)).toBeVisible();
+		expect(screen.queryByText(/attempt 3/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/item 2 child 1/i)).not.toBeInTheDocument();
 		expect(screen.queryByText("checkpoint-internal")).not.toBeInTheDocument();
 	});
 
-	it("uses the Error reason as the Node status tooltip", () => {
+	it("uses the backend status as the Node status tooltip", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("failed-session"),
-			status: "error",
+			status: "failed",
 			errorReason: "Agent process exited unexpectedly",
 		};
 		renderView("failed-session");
 
-		expect(
-			screen.getByTitle("Agent process exited unexpectedly"),
-		).toBeVisible();
+		expect(screen.getByTitle("failed")).toBeVisible();
 	});
 
 	it("falls back to the status as the Node status tooltip", () => {
@@ -267,7 +292,6 @@ describe("NodeContentView", () => {
 		const user = userEvent.setup();
 		mocks.detailState.detail = {
 			...sessionDetail("waiting-stop"),
-			attempt: 2,
 			submitReceived: true,
 			stopReceived: false,
 			waitingFor: "stop",
@@ -283,7 +307,7 @@ describe("NodeContentView", () => {
 		expect(
 			screen.getByText("Submit received · waiting for Stop"),
 		).toBeVisible();
-		expect(screen.getByText("Attempt 2")).toBeVisible();
+		expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument();
 		expect(screen.getByText("Artifact submitted")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Retry" }));
 		expect(mocks.retryWorkspaceNode).toHaveBeenCalledWith({

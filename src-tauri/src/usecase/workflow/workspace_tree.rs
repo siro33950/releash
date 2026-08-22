@@ -20,7 +20,7 @@ fn unix_timestamp_seconds() -> f64 {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceTreeSnapshotDto {
     pub nodes: Vec<WorkspaceTreeItemDto>,
-    pub sessions: Vec<AgentSessionItemDto>,
+    pub archived_sessions: Vec<AgentSessionItemDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_node_id: Option<String>,
 }
@@ -42,7 +42,7 @@ pub(crate) struct WorkspaceSelectionReconciliationDto {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum WorkspaceTreeItemDto {
     Node(WorkspaceNodeDto),
-    Workflow(WorkspaceWorkflowDto),
+    Sequence(WorkspaceSequenceDto),
     Fanout(WorkspaceFanoutDto),
 }
 
@@ -56,7 +56,21 @@ pub(crate) struct WorkspaceNodeDto {
     pub error_reason: Option<String>,
     pub content_kind: &'static str,
     pub capabilities: WorkspaceNodeCapabilitiesDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
+    pub past_attempts: Vec<WorkspaceNodeDto>,
+    pub past_attempts_collapsed: bool,
     pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceSessionCapabilitiesDto {
+    pub session_ref: String,
+    pub can_archive: bool,
+    pub can_delete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -69,11 +83,12 @@ pub(crate) struct WorkspaceNodeCapabilitiesDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWorkflowDto {
+pub(crate) struct WorkspaceSequenceDto {
     pub id: String,
     pub title: String,
     pub status: String,
-    pub capabilities: WorkspaceWorkflowCapabilitiesDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
     pub children: Vec<WorkspaceTreeItemDto>,
     pub updated_at: f64,
 }
@@ -95,6 +110,8 @@ pub(crate) struct WorkspaceFanoutDto {
     pub id: String,
     pub title: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
     pub children: Vec<WorkspaceTreeItemDto>,
     pub updated_at: f64,
 }
@@ -105,8 +122,6 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub id: String,
     pub title: String,
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
     pub submit_received: bool,
     pub stop_received: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,7 +140,6 @@ pub(crate) struct WorkspaceNodeDetailDto {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum WorkspaceNodeContentDto {
     Session(WorkspaceSessionNodeContentDto),
-    AgentSession(WorkspaceSessionNodeContentDto),
     Command(WorkspaceCommandNodeContentDto),
 }
 
@@ -334,9 +348,11 @@ fn reconcile_workspace_tree_selection(
 
 fn workspace_tree_contains_node(nodes: &[WorkspaceTreeItemDto], node_id: &str) -> bool {
     nodes.iter().any(|item| match item {
-        WorkspaceTreeItemDto::Node(node) => node.id == node_id,
-        WorkspaceTreeItemDto::Workflow(workflow) => {
-            workspace_tree_contains_node(&workflow.children, node_id)
+        WorkspaceTreeItemDto::Node(node) => {
+            node.id == node_id || node.past_attempts.iter().any(|past| past.id == node_id)
+        }
+        WorkspaceTreeItemDto::Sequence(sequence) => {
+            workspace_tree_contains_node(&sequence.children, node_id)
         }
         WorkspaceTreeItemDto::Fanout(fanout) => {
             workspace_tree_contains_node(&fanout.children, node_id)
@@ -350,21 +366,22 @@ mod tests {
 
     fn nested_snapshot() -> WorkspaceTreeSnapshotDto {
         WorkspaceTreeSnapshotDto {
-            nodes: vec![WorkspaceTreeItemDto::Workflow(WorkspaceWorkflowDto {
+            nodes: vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
                 id: "workflow".to_string(),
-                title: "Workflow".to_string(),
+                title: "main".to_string(),
                 status: "running".to_string(),
-                capabilities: WorkspaceWorkflowCapabilitiesDto {
+                workflow_capabilities: Some(WorkspaceWorkflowCapabilitiesDto {
                     can_stop: true,
                     can_resume: false,
                     resume_unavailable_reason: None,
                     can_abort: true,
                     can_archive: false,
-                },
+                }),
                 children: vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
                     id: "fanout".to_string(),
                     title: "Fanout".to_string(),
                     status: "running".to_string(),
+                    workflow_capabilities: None,
                     children: vec![WorkspaceTreeItemDto::Node(WorkspaceNodeDto {
                         id: "selected-node".to_string(),
                         title: "Child".to_string(),
@@ -376,13 +393,17 @@ mod tests {
                             can_retry: false,
                             can_close: false,
                         },
+                        workflow_capabilities: None,
+                        session_capabilities: None,
+                        past_attempts: Vec::new(),
+                        past_attempts_collapsed: false,
                         updated_at: 1.0,
                     })],
                     updated_at: 1.0,
                 })],
                 updated_at: 1.0,
             })],
-            sessions: Vec::new(),
+            archived_sessions: Vec::new(),
             preferred_node_id: Some("selected-node".to_string()),
         }
     }

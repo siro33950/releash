@@ -55,8 +55,8 @@ pub async fn list_workspace_worktree_nodes(
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
-    nodes.sessions = nodes
-        .sessions
+    nodes.archived_sessions = nodes
+        .archived_sessions
         .into_iter()
         .map(|item| agent_sessions.with_activity(item))
         .collect();
