@@ -569,7 +569,6 @@ nodes:
       items: create_detailed_design.tasks
     input:
     - spec
-    worktree: isolated
 
   # 部品 sequence: 1 タスクの実装と検証。検証結果がこの Node の Artifact になる。
   implement_and_verify:
@@ -1096,7 +1095,6 @@ nodes:
       items: create_fix_plan.tasks
     input:
     - spec
-    worktree: isolated
 
   # 部品 sequence: 1 修正タスクの実装と検証。検証結果がこの Node の Artifact になる。
   fix_and_verify:

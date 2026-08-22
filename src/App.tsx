@@ -195,9 +195,7 @@ function WorkbenchApp() {
 				if (
 					active?.phase !== "selected" ||
 					active.selection.kind === "agent_session_launching" ||
-					(active.selection.kind === "node"
-						? active.selection.nodeId
-						: active.selection.agentSessionId) !== nodeId
+					active.selection.nodeId !== nodeId
 				) {
 					return current;
 				}
@@ -209,29 +207,30 @@ function WorkbenchApp() {
 		},
 		[],
 	);
-	const handleAgentSessionLaunchConsumed = useCallback(
-		(agentSessionId: string) => {
+	const handleCenterSessionAttachmentConsumed = useCallback(
+		(worktreePath: string, nodeId: string, agentSessionId: string) => {
 			setCenterStateByWorktree((current) => {
-				for (const [worktreePath, state] of Object.entries(current)) {
-					if (
-						state.phase !== "selected" ||
-						state.selection.kind !== "agent_session" ||
-						state.selection.agentSessionId !== agentSessionId ||
-						!state.selection.initialAttachment
-					) {
-						continue;
-					}
-					const selection: CenterSelection = {
-						kind: "agent_session",
-						worktreePath: state.selection.worktreePath,
-						agentSessionId: state.selection.agentSessionId,
-					};
-					return {
-						...current,
-						[worktreePath]: { phase: "selected", selection },
-					};
+				const active = current[worktreePath];
+				if (
+					active?.phase !== "selected" ||
+					active.selection.kind !== "node" ||
+					active.selection.nodeId !== nodeId ||
+					active.selection.initialSessionAttachment?.agentSessionId !==
+						agentSessionId
+				) {
+					return current;
 				}
-				return current;
+				return {
+					...current,
+					[worktreePath]: {
+						phase: "selected",
+						selection: {
+							kind: "node",
+							worktreePath,
+							nodeId,
+						},
+					},
+				};
 			});
 		},
 		[],
@@ -295,8 +294,10 @@ function WorkbenchApp() {
 					</>
 				}
 				centerSelectionByWorktree={centerSelectionByWorktree}
-				onAgentSessionLaunchConsumed={handleAgentSessionLaunchConsumed}
 				onCenterNodeMissing={handleCenterSelectionInvalidated}
+				onCenterSessionAttachmentConsumed={
+					handleCenterSessionAttachmentConsumed
+				}
 			/>
 
 			{/* App Settings */}

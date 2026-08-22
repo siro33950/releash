@@ -32,7 +32,6 @@ interface AgentSessionPanelProps {
 	session: AgentSessionItem | null;
 	initialAttachment?: AgentSessionLaunchAttachment | null;
 	theme?: Theme;
-	onUnavailable?: () => void;
 	onRefresh?: () => void;
 	initiallyAttached?: boolean;
 }
@@ -40,7 +39,6 @@ interface AgentSessionPanelProps {
 interface AgentSessionRouteProps {
 	agentSessionId: string;
 	theme?: Theme;
-	onUnavailable?: () => void;
 	initialAttachment?: AgentSessionLaunchAttachment;
 	onInitialSessionConsumed?: (agentSessionId: string) => void;
 }
@@ -53,7 +51,6 @@ export function AgentSessionPanel({
 	session,
 	initialAttachment,
 	theme,
-	onUnavailable,
 	onRefresh,
 	initiallyAttached = false,
 }: AgentSessionPanelProps) {
@@ -100,10 +97,10 @@ export function AgentSessionPanel({
 					return;
 				case "garbage_collected":
 					setState("gone");
-					onUnavailable?.();
+					return;
 			}
 		},
-		[onRefresh, onUnavailable, worktreePath],
+		[onRefresh, worktreePath],
 	);
 
 	const runLifecycleOperation = useCallback(
@@ -150,13 +147,12 @@ export function AgentSessionPanel({
 			});
 			setState("gone");
 			notifyAgentSessionChanged(session.worktreePath);
-			onUnavailable?.();
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			setActionPending(false);
 		}
-	}, [onUnavailable, session]);
+	}, [session]);
 
 	useEffect(() => {
 		if (!session) return;
@@ -260,7 +256,6 @@ export function AgentSessionPanel({
 export function AgentSessionRoute({
 	agentSessionId,
 	theme,
-	onUnavailable,
 	initialAttachment,
 	onInitialSessionConsumed,
 }: AgentSessionRouteProps) {
@@ -306,7 +301,6 @@ export function AgentSessionRoute({
 				if (!result) {
 					setSession(null);
 					setUnavailable(true);
-					onUnavailable?.();
 					return;
 				}
 				setSession(result);
@@ -319,7 +313,7 @@ export function AgentSessionRoute({
 		return () => {
 			active = false;
 		};
-	}, [agentSessionId, attempt, onUnavailable]);
+	}, [agentSessionId, attempt]);
 
 	if (
 		!unavailable &&
@@ -330,7 +324,6 @@ export function AgentSessionRoute({
 				session={session?.id === agentSessionId ? session : null}
 				initialAttachment={launchAttachment}
 				theme={theme}
-				onUnavailable={onUnavailable}
 				onRefresh={refresh}
 				initiallyAttached={launchAttachment != null}
 			/>

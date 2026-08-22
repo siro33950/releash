@@ -28,6 +28,8 @@ function makeNode(id: string): WorkspaceTreeItem {
 		status: "running",
 		contentKind: "session",
 		capabilities: { canApprove: false, canRetry: false, canClose: true },
+		pastAttempts: [],
+		pastAttemptsCollapsed: false,
 		updatedAt: 1,
 	};
 }
@@ -36,7 +38,7 @@ function makeSnapshot(
 	nodes: WorkspaceTreeItem[],
 	preferredNodeId: string | null = null,
 ): WorkspaceTreeSnapshot {
-	return { nodes, preferredNodeId };
+	return { nodes, archivedSessions: [], preferredNodeId };
 }
 
 function makeSelectionSnapshot(
@@ -370,13 +372,13 @@ describe("useWorkspaceTreeNodes", () => {
 		expect(result.current.nodes).toEqual([makeNode("new")]);
 	});
 
-	it("keeps an empty Workflow branch from the backend snapshot unchanged", async () => {
+	it("keeps an empty Sequence branch from the backend snapshot unchanged", async () => {
 		const emptyWorkflow: WorkspaceTreeItem = {
-			kind: "workflow",
+			kind: "sequence",
 			id: "empty-workflow",
 			title: "Empty workflow",
 			status: "running",
-			capabilities: {
+			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
 				canAbort: true,

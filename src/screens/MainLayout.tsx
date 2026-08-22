@@ -11,7 +11,6 @@ import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { AgentSessionRoute } from "@/components/panels/AgentSessionPanel";
 import { NodeContentView } from "@/components/panels/NodeContentView";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
@@ -47,8 +46,12 @@ interface MainLayoutProps {
 	leftNav: React.ReactNode;
 	topBanner?: React.ReactNode;
 	centerSelectionByWorktree?: Record<string, CenterSelection | null>;
-	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
+	onCenterSessionAttachmentConsumed?: (
+		worktreePath: string,
+		nodeId: string,
+		agentSessionId: string,
+	) => void;
 }
 
 function WorktreeContent({
@@ -62,8 +65,8 @@ function WorktreeContent({
 	rightSlot,
 	togglePanels,
 	centerSelection,
-	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
+	onCenterSessionAttachmentConsumed,
 	initialWorkspaceState,
 	internalStateMapRef,
 }: {
@@ -77,8 +80,12 @@ function WorktreeContent({
 	rightSlot?: React.ReactNode;
 	togglePanels: TogglePanel[];
 	centerSelection: CenterSelection | null;
-	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
+	onCenterSessionAttachmentConsumed?: (
+		worktreePath: string,
+		nodeId: string,
+		agentSessionId: string,
+	) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -141,21 +148,7 @@ function WorktreeContent({
 			{/* Center */}
 			<Panel id="center" defaultSize="50%" minSize="30%">
 				<div className="h-full relative overflow-hidden flex flex-col">
-					{scopedCenterSelection?.kind === "agent_session" ? (
-						<AgentSessionRoute
-							key={scopedCenterSelection.agentSessionId}
-							agentSessionId={scopedCenterSelection.agentSessionId}
-							theme={settings.theme}
-							initialAttachment={scopedCenterSelection.initialAttachment}
-							onInitialSessionConsumed={onAgentSessionLaunchConsumed}
-							onUnavailable={() =>
-								onCenterNodeMissing?.(
-									rootPath,
-									scopedCenterSelection.agentSessionId,
-								)
-							}
-						/>
-					) : scopedCenterSelection?.kind === "agent_session_launching" ? (
+					{scopedCenterSelection?.kind === "agent_session_launching" ? (
 						<div
 							className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-sm"
 							data-testid="agent-session-launching"
@@ -176,6 +169,17 @@ function WorktreeContent({
 							leftPanels={leftPanels}
 							rightSlot={rightSlot}
 							onNodeMissing={onCenterNodeMissing}
+							initialSessionAttachment={
+								scopedCenterSelection?.initialSessionAttachment
+							}
+							onInitialSessionConsumed={(agentSessionId) => {
+								if (!scopedCenterSelection) return;
+								onCenterSessionAttachmentConsumed?.(
+									rootPath,
+									scopedCenterSelection.nodeId,
+									agentSessionId,
+								);
+							}}
 						/>
 					)}
 				</div>
@@ -310,8 +314,12 @@ interface WorktreePaneProps {
 	leftPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
 	centerSelection: CenterSelection | null;
-	onAgentSessionLaunchConsumed?: (agentSessionId: string) => void;
 	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
+	onCenterSessionAttachmentConsumed?: (
+		worktreePath: string,
+		nodeId: string,
+		agentSessionId: string,
+	) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -330,8 +338,8 @@ function WorktreePane({
 	leftPanels,
 	rightSlot,
 	centerSelection,
-	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
+	onCenterSessionAttachmentConsumed,
 	initialWorkspaceState,
 	internalStateMapRef,
 }: WorktreePaneProps) {
@@ -398,8 +406,8 @@ function WorktreePane({
 					rightSlot={rightSlot}
 					togglePanels={togglePanels}
 					centerSelection={centerSelection}
-					onAgentSessionLaunchConsumed={onAgentSessionLaunchConsumed}
 					onCenterNodeMissing={onCenterNodeMissing}
+					onCenterSessionAttachmentConsumed={onCenterSessionAttachmentConsumed}
 					initialWorkspaceState={initialWorkspaceState}
 					internalStateMapRef={internalStateMapRef}
 				/>
@@ -415,8 +423,8 @@ export function MainLayout({
 	leftNav,
 	topBanner,
 	centerSelectionByWorktree,
-	onAgentSessionLaunchConsumed,
 	onCenterNodeMissing,
+	onCenterSessionAttachmentConsumed,
 }: MainLayoutProps) {
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
 	const rightPanelRef = useRef<PanelImperativeHandle>(null);
@@ -597,8 +605,10 @@ export function MainLayout({
 										centerSelection={
 											centerSelectionByWorktree?.[rootPath] ?? null
 										}
-										onAgentSessionLaunchConsumed={onAgentSessionLaunchConsumed}
 										onCenterNodeMissing={onCenterNodeMissing}
+										onCenterSessionAttachmentConsumed={
+											onCenterSessionAttachmentConsumed
+										}
 										initialWorkspaceState={getInitialState(rootPath)}
 										internalStateMapRef={internalStateMapRef}
 									/>

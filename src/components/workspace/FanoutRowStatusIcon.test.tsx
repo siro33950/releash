@@ -5,10 +5,9 @@ import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
 import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
 
 const statuses: WorkspaceNodeStatus[] = [
-	"queued",
 	"running",
+	"paused",
 	"failed",
-	"error",
 	"waiting",
 	"interrupted",
 	"aborted",

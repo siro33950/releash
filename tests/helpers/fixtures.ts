@@ -202,7 +202,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Workspace tree
 	list_workspace_worktree_nodes: {
 		nodes: [],
-		sessions: [],
+		archivedSessions: [],
 		preferredNodeId: null,
 	},
 	list_workspace_workflow_history: [],

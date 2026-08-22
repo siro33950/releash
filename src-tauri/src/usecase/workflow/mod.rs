@@ -52,9 +52,9 @@ pub(crate) use workspace_node_command::{
 pub(crate) use workspace_tree::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
     WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
-    WorkspaceNodeDto, WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto,
-    WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto,
-    WorkspaceWorkflowDto, WorkspaceWorkflowHistoryItemDto,
+    WorkspaceNodeDto, WorkspaceSequenceDto, WorkspaceSessionCapabilitiesDto,
+    WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto, WorkspaceTreeSelectionSnapshotDto,
+    WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 #[derive(Clone)]
@@ -1137,6 +1137,9 @@ mod tests {
             node_execution_id: Some(node_execution_id.to_string()),
             node_name: Some("node".to_string()),
             attempt: Some(1),
+            retry_predecessor_id: None,
+            past_attempt_ids: Vec::new(),
+            is_retry_history: false,
             completion_signals: Default::default(),
             has_artifact: false,
             session_id: None,

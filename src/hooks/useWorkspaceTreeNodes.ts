@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
-import type { AgentSessionItem } from "@/types/agent-session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
@@ -36,7 +35,7 @@ interface WorkspaceTreeState {
 
 interface UseWorkspaceTreeNodesResult {
 	nodes: WorkspaceTreeItem[];
-	sessions: AgentSessionItem[];
+	archivedSessions: WorkspaceTreeSnapshot["archivedSessions"];
 	preferredNodeId: string | null;
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
 	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
@@ -59,7 +58,7 @@ interface WorkspaceTreeRefreshDetail {
 
 const EMPTY_SNAPSHOT: WorkspaceTreeSnapshot = {
 	nodes: [],
-	sessions: [],
+	archivedSessions: [],
 	preferredNodeId: null,
 };
 
@@ -353,7 +352,7 @@ export function useWorkspaceTreeNodes(
 
 	return {
 		nodes: treeState.snapshot.nodes,
-		sessions: treeState.snapshot.sessions ?? [],
+		archivedSessions: treeState.snapshot.archivedSessions,
 		preferredNodeId: treeState.snapshot.preferredNodeId ?? null,
 		workflowHistory: treeState.workflowHistory,
 		reconciliationEvent: treeState.reconciliationEvent,

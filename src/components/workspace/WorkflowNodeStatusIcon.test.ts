@@ -1,74 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { agentSessionIconPresentation } from "./WorkflowNodeStatusIcon";
+import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import {
+	isWorkspaceNodePulseStatus,
+	workflowNodeIconClasses,
+} from "./WorkflowNodeStatusIcon";
 
-describe("agentSessionIconPresentation", () => {
-	it("open＋runningはworkflow node runningと同じblue＋pulseになる", () => {
-		expect(
-			agentSessionIconPresentation({
-				lifecycle: "open",
-				activity: "running",
-				lastExitAbnormal: false,
-			}),
-		).toEqual({
-			className: "text-blue-600 dark:text-blue-300",
-			pulse: true,
-			statusLabel: "running",
-		});
+const statuses: WorkspaceNodeStatus[] = [
+	"running",
+	"paused",
+	"failed",
+	"waiting",
+	"interrupted",
+	"aborted",
+	"completed",
+];
+
+describe("Workspace Node status presentation", () => {
+	it("covers exactly the backend-owned public statuses", () => {
+		expect(Object.keys(workflowNodeIconClasses).sort()).toEqual(
+			[...statuses].sort(),
+		);
 	});
 
-	it("open＋idleはニュートラル色でpulseしない", () => {
-		expect(
-			agentSessionIconPresentation({
-				lifecycle: "open",
-				activity: "idle",
-				lastExitAbnormal: false,
-			}),
-		).toEqual({
-			className: "text-foreground",
-			pulse: false,
-			statusLabel: "open",
-		});
+	it.each(statuses)("defines a color for %s", (status) => {
+		expect(workflowNodeIconClasses[status]).toBeTruthy();
 	});
 
-	it("paused＋異常終了はdestructiveになる", () => {
-		expect(
-			agentSessionIconPresentation({
-				lifecycle: "paused",
-				activity: "idle",
-				lastExitAbnormal: true,
-			}),
-		).toEqual({
-			className: "text-destructive",
-			pulse: false,
-			statusLabel: "paused (exited abnormally)",
-		});
-	});
-
-	it("paused（正常）は非活性のdimになる", () => {
-		expect(
-			agentSessionIconPresentation({
-				lifecycle: "paused",
-				activity: "idle",
-				lastExitAbnormal: false,
-			}),
-		).toEqual({
-			className: "text-muted-foreground",
-			pulse: false,
-			statusLabel: "paused",
-		});
-	});
-
-	it("archivedは非活性のdimになる", () => {
-		expect(
-			agentSessionIconPresentation({
-				lifecycle: "archived",
-				activity: "idle",
-				lastExitAbnormal: false,
-			}),
-		).toEqual({
-			className: "text-muted-foreground",
-			pulse: false,
-			statusLabel: "archived",
-		});
+	it("pulses only running and waiting", () => {
+		for (const status of statuses) {
+			expect(isWorkspaceNodePulseStatus(status)).toBe(
+				status === "running" || status === "waiting",
+			);
+		}
 	});
 });

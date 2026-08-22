@@ -16,6 +16,8 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub workflow_definition: &'a crate::domain::workflow::WorkflowDefinition,
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
+    pub retry_predecessors: &'a std::collections::HashMap<String, String>,
+    pub standalone_session_id: Option<&'a str>,
     pub started_at: f64,
     pub updated_at: f64,
     pub execution: &'a crate::domain::local_event::WorkflowExecutionMetadataRecord,
@@ -37,6 +39,8 @@ pub fn runtime_snapshot_nodes(
         workspace_identity,
         workflow_definition,
         node_executions,
+        retry_predecessors,
+        standalone_session_id,
         started_at,
         updated_at,
         execution,
@@ -68,11 +72,25 @@ pub fn runtime_snapshot_nodes(
             parent: node.parent.clone(),
             timestamp: node.started_at,
         });
-        if let Some(session_id) = &node.session_id {
+        if let Some(predecessor_node_execution_id) = retry_predecessors.get(&node.id) {
+            facts.push(F::NodeRetryLinked {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node.id.clone(),
+                predecessor_node_execution_id: predecessor_node_execution_id.clone(),
+            });
+        }
+        let session_id = node.session_id.as_deref().or_else(|| {
+            (node.parent.is_none()
+                && node.kind == crate::domain::workflow::NodeKindName::Session
+                && node.id == execution_id)
+                .then_some(standalone_session_id)
+                .flatten()
+        });
+        if let Some(session_id) = session_id {
             facts.push(F::NodeAgentBound {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
-                session_id: session_id.clone(),
+                session_id: session_id.to_string(),
                 timestamp: node.started_at,
             });
         }
@@ -296,6 +314,8 @@ mod tests {
             workspace_identity: "/repo",
             workflow_definition: &definition,
             node_executions: &node_executions,
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -351,6 +371,8 @@ mod tests {
             workspace_identity: "/repo",
             workflow_definition: &definition,
             node_executions: &[waiting],
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -369,6 +391,69 @@ mod tests {
         );
         assert!(waiting.has_artifact);
         assert!(waiting.can_retry);
+    }
+
+    #[test]
+    fn explicit_retry_links_group_only_the_retry_chain_in_execution_order() {
+        let mut first = node("first", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        first.attempt = 1;
+        first.completed_at = Some(3.0);
+        let mut second = node("second", EXECUTION_ID, RuntimeNodeExecutionStatus::Failed);
+        second.attempt = 2;
+        second.started_at = 4.0;
+        second.completed_at = Some(5.0);
+        let mut latest = node("latest", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        latest.attempt = 3;
+        latest.started_at = 6.0;
+        let mut loop_visit = node(
+            "same-name-loop-visit",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Succeeded,
+        );
+        loop_visit.attempt = 4;
+        loop_visit.started_at = 7.0;
+        loop_visit.completed_at = Some(8.0);
+        let retry_predecessors = std::collections::HashMap::from([
+            ("second".to_string(), "first".to_string()),
+            ("latest".to_string(), "second".to_string()),
+        ]);
+        let execution = execution();
+
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[first, second, latest, loop_visit],
+            retry_predecessors: &retry_predecessors,
+            standalone_session_id: None,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+        })
+        .unwrap();
+        let by_execution_id = nodes
+            .iter()
+            .filter_map(|node| node.node_execution_id.as_deref().map(|id| (id, node)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let first = by_execution_id["first"];
+        let second = by_execution_id["second"];
+        let latest = by_execution_id["latest"];
+        let loop_visit = by_execution_id["same-name-loop-visit"];
+
+        assert!(first.is_retry_history);
+        assert!(second.is_retry_history);
+        assert!(!latest.is_retry_history);
+        assert!(!loop_visit.is_retry_history);
+        assert_eq!(
+            latest.past_attempt_ids,
+            vec![first.id.clone(), second.id.clone()]
+        );
+        assert!(first.past_attempt_ids.is_empty());
+        assert!(second.past_attempt_ids.is_empty());
+        assert!(loop_visit.past_attempt_ids.is_empty());
     }
 
     #[test]
@@ -416,6 +501,8 @@ mod tests {
             workspace_identity: "/repo",
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -454,6 +541,8 @@ mod tests {
             workspace_identity: "/repo",
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -489,6 +578,8 @@ mod tests {
             workspace_identity: "/repo",
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,

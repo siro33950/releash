@@ -12,7 +12,7 @@ mod value_objects;
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;
-pub use services::WorkspaceTreeVisibilityPolicy;
+pub use services::{WorkspacePublicRoot, WorkspaceTreeVisibilityPolicy};
 pub use value_objects::{
     WorkspaceCommandResult, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus,
     WorkspaceStructureFact, WorkspaceTreeNode,
