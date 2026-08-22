@@ -430,4 +430,43 @@ mod tests {
         assert_eq!(node.node_execution_id.as_deref(), Some("agent-session-1"));
         assert_eq!(node.session_id.as_deref(), Some("agent-session-1"));
     }
+
+    #[tokio::test]
+    async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        let owner = WorkspaceIdentity::new("/repo/.worktrees/feature");
+        let other = WorkspaceIdentity::new("/repo/.worktrees/other");
+        let session = AgentSession::create(
+            "agent-session-1",
+            owner.clone(),
+            owner.as_str(),
+            ProviderKind::Codex,
+            None,
+        )
+        .unwrap();
+        LocalAgentSessionRepository::new(Arc::clone(&store))
+            .create(session, "create-request-1")
+            .await
+            .unwrap();
+        let repository = SqliteWorkspaceTreeRepository::new(store);
+
+        assert!(
+            repository
+                .node_id_for_session(&other, "agent-session-1")
+                .unwrap()
+                .is_none(),
+            "another Worktree must not resolve a public Node id for this Session"
+        );
+        assert!(
+            repository
+                .node_id_for_session(&owner, "unknown-session")
+                .unwrap()
+                .is_none(),
+            "an unknown Session has no execution tree to publish"
+        );
+    }
 }

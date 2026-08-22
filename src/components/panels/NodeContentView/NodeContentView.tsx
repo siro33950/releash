@@ -62,6 +62,7 @@ export function NodeContentView({
 					detail.content.kind === "session" ? (
 						detail.content.sessionId ? (
 							<AgentSessionRoute
+								key={detail.content.sessionId}
 								agentSessionId={detail.content.sessionId}
 								theme={theme}
 								initialAttachment={

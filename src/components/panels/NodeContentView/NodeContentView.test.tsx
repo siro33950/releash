@@ -22,12 +22,18 @@ vi.mock("@/hooks/useWorkspaceNodeDetail", () => ({
 		mocks.approveWorkspaceNode(...args),
 	retryWorkspaceNode: (...args: unknown[]) => mocks.retryWorkspaceNode(...args),
 }));
-vi.mock("@/components/panels/AgentSessionPanel", () => ({
-	AgentSessionRoute: (props: Record<string, unknown>) => {
-		mocks.agentSessionRoute(props);
-		return <div data-testid="agent-session-route" />;
-	},
-}));
+vi.mock("@/components/panels/AgentSessionPanel", async () => {
+	const { useState } = await import("react");
+	return {
+		AgentSessionRoute: (props: Record<string, unknown>) => {
+			// 実装は initialAttachment を mount 時の state として固定するため、
+			// 再マウントされたかどうかを同じ形で観測する。
+			const [mountedAttachment] = useState(props.initialAttachment ?? null);
+			mocks.agentSessionRoute({ ...props, mountedAttachment });
+			return <div data-testid="agent-session-route" />;
+		},
+	};
+});
 
 function sessionDetail(
 	id: string,
@@ -134,6 +140,48 @@ describe("NodeContentView", () => {
 				agentSessionId: "agent-session-created",
 				initialAttachment,
 				onInitialSessionConsumed,
+			}),
+		);
+	});
+
+	it("Session Nodeを切り替えたとき前のNodeのattachmentを持ち越さない", () => {
+		const initialAttachment = {
+			agentSessionId: "agent-session-a",
+			workspaceIdentity: "/repo",
+			worktreePath: "/repo",
+			provider: "codex",
+		};
+		mocks.detailState.detail = sessionDetail("node-a", "agent-session-a");
+
+		const { rerender } = render(
+			<NodeContentView
+				worktreePath="/repo"
+				nodeId="node-a"
+				initialSessionAttachment={initialAttachment}
+			/>,
+		);
+
+		expect(mocks.agentSessionRoute).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				agentSessionId: "agent-session-a",
+				mountedAttachment: initialAttachment,
+			}),
+		);
+
+		mocks.detailState.detail = sessionDetail("node-b", "agent-session-b");
+		rerender(
+			<NodeContentView
+				worktreePath="/repo"
+				nodeId="node-b"
+				initialSessionAttachment={initialAttachment}
+			/>,
+		);
+
+		expect(mocks.agentSessionRoute).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				agentSessionId: "agent-session-b",
+				initialAttachment: undefined,
+				mountedAttachment: null,
 			}),
 		);
 	});
