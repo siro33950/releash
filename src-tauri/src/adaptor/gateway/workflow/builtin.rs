@@ -7,17 +7,19 @@ use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
 
-const BUILTIN_01_AUTHOR_SPEC: &str = include_str!("builtin/01_author-spec.yml");
+const BUILTIN_01_AUTHOR_SPEC: &str = include_str!("../../../../../workflows/01_author-spec.yml");
 const BUILTIN_02_IMPLEMENT_EXISTING_SPEC: &str =
-    include_str!("builtin/02_implement-existing-spec.yml");
-const BUILTIN_03_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
-const BUILTIN_04_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-policy.yml");
+    include_str!("../../../../../workflows/02_implement-existing-spec.yml");
+const BUILTIN_03_FULL_REVIEW: &str = include_str!("../../../../../workflows/03_full-review.yml");
+const BUILTIN_04_REVIEW_FIX_POLICY: &str =
+    include_str!("../../../../../workflows/04_review-fix-policy.yml");
 const BUILTIN_04_REVIEW_FIX_POLICY_MANUAL: &str =
-    include_str!("builtin/04_review-fix-policy-manual.yml");
-const BUILTIN_05_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
-const BUILTIN_06_HANDLE_PR_REVIEW: &str = include_str!("builtin/06_handle-pr-review.yml");
+    include_str!("../../../../../workflows/04_review-fix-policy-manual.yml");
+const BUILTIN_05_REVIEW_FIX: &str = include_str!("../../../../../workflows/05_review-fix.yml");
+const BUILTIN_06_HANDLE_PR_REVIEW: &str =
+    include_str!("../../../../../workflows/06_handle-pr-review.yml");
 const BUILTIN_06_HANDLE_PR_REVIEW_MANUAL: &str =
-    include_str!("builtin/06_handle-pr-review-manual.yml");
+    include_str!("../../../../../workflows/06_handle-pr-review-manual.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -237,254 +239,306 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "coding",
-        content: include_str!("builtin_facets/policies/coding.md"),
+        content: include_str!("../../../../../workflows/facets/policies/coding.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "planning",
-        content: include_str!("builtin_facets/policies/planning.md"),
+        content: include_str!("../../../../../workflows/facets/policies/planning.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "reviewing",
-        content: include_str!("builtin_facets/policies/reviewing.md"),
+        content: include_str!("../../../../../workflows/facets/policies/reviewing.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "reporting",
-        content: include_str!("builtin_facets/policies/reporting.md"),
+        content: include_str!("../../../../../workflows/facets/policies/reporting.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "triage",
-        content: include_str!("builtin_facets/policies/triage.md"),
+        content: include_str!("../../../../../workflows/facets/policies/triage.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "author-spec-governance",
-        content: include_str!("builtin_facets/policies/author-spec-governance.md"),
+        content: include_str!("../../../../../workflows/facets/policies/author-spec-governance.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "releash-thread-cli",
-        content: include_str!("builtin_facets/knowledge/releash-thread-cli.md"),
+        content: include_str!("../../../../../workflows/facets/knowledge/releash-thread-cli.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "implement-task",
-        content: include_str!("builtin_facets/knowledge/implement-task.md"),
+        content: include_str!("../../../../../workflows/facets/knowledge/implement-task.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "spec-behavior",
-        content: include_str!("builtin_facets/knowledge/spec-behavior.md"),
+        content: include_str!("../../../../../workflows/facets/knowledge/spec-behavior.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "spec-design",
-        content: include_str!("builtin_facets/knowledge/spec-design.md"),
+        content: include_str!("../../../../../workflows/facets/knowledge/spec-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "spec-requirements",
-        content: include_str!("builtin_facets/knowledge/spec-requirements.md"),
+        content: include_str!("../../../../../workflows/facets/knowledge/spec-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-consider-spec",
-        content: include_str!("builtin_facets/instructions/author-spec-consider-spec.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-consider-spec.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-final-review",
-        content: include_str!("builtin_facets/instructions/author-spec-final-review.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-final-review.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-intake",
-        content: include_str!("builtin_facets/instructions/author-spec-intake.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/author-spec-intake.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-repair-spec",
-        content: include_str!("builtin_facets/instructions/author-spec-repair-spec.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-repair-spec.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-validate-spec",
-        content: include_str!("builtin_facets/instructions/author-spec-validate-spec.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-validate-spec.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-write-behavior",
-        content: include_str!("builtin_facets/instructions/author-spec-write-behavior.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-write-behavior.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-write-design",
-        content: include_str!("builtin_facets/instructions/author-spec-write-design.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-write-design.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "author-spec-write-requirements",
-        content: include_str!("builtin_facets/instructions/author-spec-write-requirements.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/author-spec-write-requirements.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "create_parallel_tasks",
-        content: include_str!("builtin_facets/instructions/create_parallel_tasks.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/create_parallel_tasks.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "fix-report",
-        content: include_str!("builtin_facets/instructions/fix-report.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/fix-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "implementation-confirmation",
-        content: include_str!("builtin_facets/instructions/implementation-confirmation.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/implementation-confirmation.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "policy-confirmation",
-        content: include_str!("builtin_facets/instructions/policy-confirmation.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/policy-confirmation.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "policy-report",
-        content: include_str!("builtin_facets/instructions/policy-report.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/policy-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-report",
-        content: include_str!("builtin_facets/instructions/review-report.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-report.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "existing-spec-create-fix-plan",
-        content: include_str!("builtin_facets/instructions/existing-spec-create-fix-plan.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/existing-spec-create-fix-plan.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "existing-spec-decide-fix-policy",
-        content: include_str!("builtin_facets/instructions/existing-spec-decide-fix-policy.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/existing-spec-decide-fix-policy.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "existing-spec-decide-fix-policy-manual",
         content: include_str!(
-            "builtin_facets/instructions/existing-spec-decide-fix-policy-manual.md"
+            "../../../../../workflows/facets/instructions/existing-spec-decide-fix-policy-manual.md"
         ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "existing-spec-resolve-request",
-        content: include_str!("builtin_facets/instructions/existing-spec-resolve-request.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/existing-spec-resolve-request.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "implement_fix_plan",
-        content: include_str!("builtin_facets/instructions/implement_fix_plan.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/implement_fix_plan.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "implement_single_task",
-        content: include_str!("builtin_facets/instructions/implement_single_task.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/implement_single_task.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "verify_fixes",
-        content: include_str!("builtin_facets/instructions/verify_fixes.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/verify_fixes.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "verify_implementation",
-        content: include_str!("builtin_facets/instructions/verify_implementation.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/verify_implementation.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-acceptance",
-        content: include_str!("builtin_facets/instructions/review-acceptance.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-acceptance.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-structure",
-        content: include_str!("builtin_facets/instructions/review-structure.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-structure.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-quality",
-        content: include_str!("builtin_facets/instructions/review-quality.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-quality.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-test",
-        content: include_str!("builtin_facets/instructions/review-test.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-test.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-security",
-        content: include_str!("builtin_facets/instructions/review-security.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/review-security.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "review-architecture",
-        content: include_str!("builtin_facets/instructions/review-architecture.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/review-architecture.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "full-review-verify-and-classify",
-        content: include_str!("builtin_facets/instructions/full-review-verify-and-classify.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/full-review-verify-and-classify.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "import_pr_review_comments",
-        content: include_str!("builtin_facets/instructions/import_pr_review_comments.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/import_pr_review_comments.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "decide_pr_review_fix_policy",
-        content: include_str!("builtin_facets/instructions/decide_pr_review_fix_policy.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/decide_pr_review_fix_policy.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "decide_pr_review_fix_policy_manual",
-        content: include_str!("builtin_facets/instructions/decide_pr_review_fix_policy_manual.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/decide_pr_review_fix_policy_manual.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "create_pr_review_fix_plan",
-        content: include_str!("builtin_facets/instructions/create_pr_review_fix_plan.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/create_pr_review_fix_plan.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "report_no_pr_review_comments",
-        content: include_str!("builtin_facets/instructions/report_no_pr_review_comments.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/report_no_pr_review_comments.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "report_incomplete_pr_review",
-        content: include_str!("builtin_facets/instructions/report_incomplete_pr_review.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/report_incomplete_pr_review.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "implement_pr_review_fix_plan",
-        content: include_str!("builtin_facets/instructions/implement_pr_review_fix_plan.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/implement_pr_review_fix_plan.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "verify_pr_review_fixes",
-        content: include_str!("builtin_facets/instructions/verify_pr_review_fixes.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/verify_pr_review_fixes.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "pr_review_confirmation",
-        content: include_str!("builtin_facets/instructions/pr_review_confirmation.md"),
+        content: include_str!(
+            "../../../../../workflows/facets/instructions/pr_review_confirmation.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "finalize_pr_review",
-        content: include_str!("builtin_facets/instructions/finalize_pr_review.md"),
+        content: include_str!("../../../../../workflows/facets/instructions/finalize_pr_review.md"),
     },
 ];
 

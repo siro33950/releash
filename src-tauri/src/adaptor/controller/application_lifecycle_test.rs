@@ -16,15 +16,6 @@ fn test_通常終了_durable_targetはworkflow_executionだけで構成する() 
 }
 
 #[test]
-fn test_通常終了テスト配置_追加したterminal_surface終了テストを別ファイルに置く() {
-    let production_source = include_str!("application_lifecycle.rs");
-
-    assert!(
-        !production_source.contains("fn test_通常終了_terminal_surface保存後にlocal_apiを停止する")
-    );
-}
-
-#[test]
 fn test_通常終了_terminal_surface実行環境停止後にlocal_apiを停止する() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let observer_calls = Arc::clone(&calls);

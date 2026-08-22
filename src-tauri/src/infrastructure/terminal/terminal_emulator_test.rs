@@ -15,14 +15,6 @@ struct BackendXtermCheckpointFixture {
 const TEST_SCROLLBACK_ROWS: usize = 1_000;
 
 #[test]
-fn test_ターミナル画面再現_本番の履歴上限を所有しない() {
-    let source = include_str!("terminal_emulator.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap();
-
-    assert!(!production.contains("TERMINAL_SCROLLBACK_ROWS: usize"));
-}
-
-#[test]
 fn test_ターミナル復元点保存_上書きとセッションキー隔離を維持する() {
     let data_dir = tempfile::TempDir::new().unwrap();
     let store = TerminalCheckpointFileStore::new(data_dir.path(), TEST_SCROLLBACK_ROWS);

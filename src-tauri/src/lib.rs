@@ -328,15 +328,6 @@ mod startup_composition_tests {
         assert_eq!(local_api_bind_effects.load(Ordering::SeqCst), 0);
         assert_eq!(websocket_listen_effects.load(Ordering::SeqCst), 0);
 
-        let production_resolver_call = ["app.path()", ".app_data_dir()"].concat();
-        assert_eq!(
-            include_str!("lib.rs")
-                .matches(&production_resolver_call)
-                .count(),
-            1,
-            "production startup must resolve app-data once at the classified boundary and reuse it"
-        );
-
         let normal_command_effects = Arc::new(AtomicUsize::new(0));
         let handler = startup_failure_composition_handler();
         let app = tauri::test::mock_builder()

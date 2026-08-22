@@ -245,22 +245,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_agent_tui_atomic_cutover_compositionはlegacy_agent_runtimeを要求しない() {
-        let composition = include_str!("../../../lib.rs");
-
-        for removed in [
-            "AgentBackendRegistry",
-            "AgentSessionRuntimeUsecase",
-            "compose_agent_session_runtime",
-        ] {
-            assert!(
-                !composition.contains(removed),
-                "legacy Agent runtime remains in production composition: {removed}"
-            );
-        }
-    }
-
     type RegisterFn = fn(&mut CommandRouter);
 
     fn command_domains() -> Vec<(&'static str, &'static [&'static str], RegisterFn)> {

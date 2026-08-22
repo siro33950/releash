@@ -1,6 +1,6 @@
 # Workflow 定義構文
 
-この文書は Releash が受理する workflow 定義の正本である。YAML と Lua は load 後に同じ `WorkflowDefinition` になり、実行・事実ログ・read model・resume に定義形式の違いは残らない。語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md)、実行モデルは [`workflow-engine-evolution-plan.md`](./workflow-engine-evolution-plan.md) を正とする。完成形の唯一の例は [`../specs/unified-node-model/examples/full-cycle-development.yml`](../specs/unified-node-model/examples/full-cycle-development.yml) である。
+この文書は Releash が受理する workflow 定義の正本である。YAML と Lua は load 後に同じ `WorkflowDefinition` になり、実行・事実ログ・read model・resume に定義形式の違いは残らない。語彙と実行モデルは [`DOMAIN.md`](./DOMAIN.md) を正とする。完成形の唯一の例は [`../../workflows/examples/full-cycle-development.yml`](../../workflows/examples/full-cycle-development.yml) である。
 
 ## 境界
 

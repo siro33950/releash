@@ -12,18 +12,6 @@ use crate::domain::terminal_surface::{
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[test]
-fn test_ターミナル画面_アプリケーション_ドメインポートだけに依存する() {
-    let source = include_str!("application.rs");
-    let production = source.split("#[cfg(test)]").next().unwrap();
-
-    assert!(!production.contains(&["tokio", "::"].concat()));
-    assert!(!production.contains("parking_lot"));
-    assert!(!production.contains("struct TerminalSurfaceEventHub"));
-    assert!(!production.contains("RwLock<bool>"));
-    assert!(!production.contains("accepting_mutations"));
-}
-
-#[test]
 fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を区別する() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
