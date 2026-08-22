@@ -7,57 +7,9 @@
 1. **ドメインとインフラの分離** — ビジネスロジックを Tauri / git2 / file I/O から切り離す
 2. **ファイル分割の徹底** — 単一責務に従ったモジュール構造
 3. **再利用性の向上** — ドメイン層を CLI 等の別エントリポイントから利用可能にする
-4. **API層の分離** — Tauri コマンド / WebSocket ハンドラを薄い入口に閉じ込める
+4. **API層の分離** — Tauri コマンド / local API を薄い入口に閉じ込める
 
-## 参考実装
-
-`no9-monorepo/services/revenue-server` のクリーンアーキテクチャ構成を参考にする。Releash は Tauri + 多様な外部リソース（git2、ファイル、WebSocket、外部API）を扱うため、一部の解釈は本リポジトリ向けに調整している。
-
-## レイヤー構成（単一クレート）
-
-```
-src-tauri/src/
-├── main.rs
-├── lib.rs                              # DI配線（AppState組み立て + manage）
-├── domain/                             # コアビジネスロジック（外部依存なし）
-│   └── <bounded-context>/
-│       ├── entities/                   # エンティティ（1構造体1ファイル）
-│       ├── value_objects/              # 値オブジェクト
-│       ├── repository.rs               # 永続化 trait（domain側で定義）
-│       ├── gateway.rs                  # 外部リソース trait（Streamを返す）
-│       └── services.rs                 # ドメインサービス
-├── usecase/                            # アプリケーションビジネスルール
-│   ├── <domain>_usecase.rs             # Command側
-│   ├── <domain>_query_service.rs       # Query側（CQRS）
-│   └── <domain>_dto.rs
-├── adaptor/                            # インターフェースアダプタ
-│   ├── controller/
-│   │   ├── command/                    # Tauriコマンド（#[tauri::command]）
-│   │   ├── handler/                    # WebSocketハンドラ
-│   │   └── state.rs                    # AppState 構造体（DI受け皿）
-│   ├── gateway/                        # Repository/Service の具体実装
-│   │   └── <domain>/
-│   │       ├── repository_impl.rs
-│   │       ├── query_service_impl.rs
-│   │       ├── service_impl.rs
-│   │       ├── command_models.rs
-│   │       ├── query_models.rs
-│   │       └── service_models.rs
-│   ├── presenter/                      # レスポンス整形
-│   └── protocol/                       # WebSocketメッセージ等（リクエスト／レスポンス型）
-├── infrastructure/                     # 外部世界の都合をその形のまま扱う
-│   ├── file_watcher/                   # ファイル監視
-│   ├── git/                            # git2 クライアント
-│   ├── local_api/                      # ローカル HTTP サーバ / クライアント
-│   ├── platform/                       # OS・Tauri プラットフォーム連携
-│   ├── process/                        # 子プロセス起動と管理
-│   └── telemetry/                      # テレメトリ送出
-└── other/                              # 横断的関心事
-    ├── error.rs                        # AppError（thiserror + serde::Serialize）
-    └── logging/
-```
-
-### 依存方向
+## 依存方向
 
 ```
 infrastructure ← adaptor（controller / gateway / presenter）→ usecase → domain
@@ -92,20 +44,22 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 - Provider lifecycleとProvider availabilityは別の境界である。
 - 旧Agent GUI specは現行正本ではない。
 
-## ドメイン一覧（14個）
+## ドメイン一覧（15個）
 
 | ドメイン | 含まれる責務 |
 |---|---|
 | `code` | ファイル内容（at_ref, at_branch_base, staged）、diff、hunk、patch、staging（差分Approve）、language、file_mention、visible/hidden ranges |
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
-| `workflow` | ワークフロー定義、実行、facet、承認 |
+| `workflow` | 定義、実行木、Artifact、Contract、facet、completion と承認、Diagnostic |
+| `local_event` | 永続 local event store の語彙。store identity、atomic batch、state mutation、query、transaction port |
+| `workspace_tree` | Workspace / Session の bounded な query 集約。canonical な execution / node / session record から復元する |
 | `comment` | diff_comment_store、diff_comment_sender |
 | `agent_session` | AgentSession identity、lifecycle、Provider、Terminal ownership |
 | `terminal_surface` | Terminal の backend 実装（durable terminal surface: PTY runtime lifecycle、attachment、入力 ingress、registry） |
-| `app_config` | 現 config.rs を分解 |
+| `app_config` | アプリ設定、secret、Notion 設定の永続化境界 |
 | `workspace_state` | ワークスペース状態保存 |
+| `app_data_gc` | アプリケーションデータの GC 対象分類（削除済み workspace、再生成可能キャッシュ等） |
 | `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |
-| `remote_access` | vpn_detect、qr_code、tls |
 | `git_host` | GitHub PR/Issue |
 | `notion` | Notion API |
 | `external_editor` | 外部エディタ起動 |
@@ -116,5 +70,5 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 - [USECASE.md](./USECASE.md) — ユースケース層
 - [GATEWAY.md](./GATEWAY.md) — ゲートウェイ層
 - [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) — インフラストラクチャ層
-- [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Tauriコマンド／WebSocketハンドラ）
+- [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Tauriコマンド／local API）
 - [TEST.md](./TEST.md) — テスト方針
