@@ -72,6 +72,3 @@ performance-results/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
-
-# Documents
-docs/specs
