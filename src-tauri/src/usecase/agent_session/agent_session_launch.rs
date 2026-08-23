@@ -17,6 +17,7 @@ use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
 };
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
+use crate::domain::workflow::SessionPermission;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::{
     ProviderHookHealthUsecase, ProviderLifecycleUsecase, ProviderLifecycleUsecaseError,
@@ -39,9 +40,8 @@ pub(crate) struct WorkflowAgentSessionLaunchRequest {
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
-    /// workflow 定義が指定した provider CLI 起動設定（無変換で注入する）。
     pub(crate) model: Option<String>,
-    pub(crate) permission: Option<String>,
+    pub(crate) permission: Option<SessionPermission>,
     pub(crate) workflow_execution_id: String,
     pub(crate) node_execution_id: String,
     pub(crate) initial_instruction: String,

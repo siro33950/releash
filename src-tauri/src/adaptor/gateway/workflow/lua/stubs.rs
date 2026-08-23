@@ -72,6 +72,8 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashCompletion
 ---@class ReleashWorkflow
 
+---@alias ReleashPermission "manual" | "auto" | "bypass" | "read-only"
+
 ---@class ReleashCommandOptions
 ---@field name? string
 ---@field command string
@@ -88,7 +90,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field name? string
 ---@field provider ReleashProvider
 ---@field model? string
----@field permission? string
+---@field permission? ReleashPermission
 ---@field facets? ReleashSessionFacets
 ---@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
@@ -359,6 +361,35 @@ mod tests {
         assert!(releash.contains("---@field workflow fun(options: ReleashWorkflowOptions)"));
         assert!(releash.contains("---@field on_true ReleashNode"));
         assert!(!releash.contains("---@field equals ReleashNode"));
+    }
+
+    #[test]
+    fn test_編集支援生成_permission補完を4値unionに限定する() {
+        // Given
+        let directory = TempDir::new().unwrap();
+
+        // When
+        generate_editor_support(directory.path()).unwrap();
+        let releash = fs::read_to_string(directory.path().join(".releash/releash.lua")).unwrap();
+
+        // Then
+        let permission_aliases = releash
+            .lines()
+            .filter(|line| line.starts_with("---@alias ReleashPermission "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            permission_aliases,
+            vec!["---@alias ReleashPermission \"manual\" | \"auto\" | \"bypass\" | \"read-only\""]
+        );
+
+        let permission_fields = releash
+            .lines()
+            .filter(|line| line.starts_with("---@field permission? "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            permission_fields,
+            vec!["---@field permission? ReleashPermission"]
+        );
     }
 
     #[test]

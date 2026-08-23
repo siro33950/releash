@@ -7,7 +7,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, FacetRefs, FanoutSpec, InputParam, InputSourceRef, ItemsSource,
     NodeCompletion, NodeDefinition, NodeKind, NodeNamespace, OnFailure, Rule, SchemaDef,
-    SequenceSpec, SessionSpec, WorkflowDefinition, MAIN_ENTRY_NODE_NAME,
+    SequenceSpec, SessionPermission, SessionSpec, WorkflowDefinition, MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
     evaluate, LuaData, LuaEvaluationRequest, LuaFailure, LuaHost, LuaHostError, LuaHostHandle,
@@ -84,6 +84,7 @@ pub(crate) struct LuaWorkflowError {
     pub(crate) code: String,
     pub(crate) message: String,
     pub(crate) location: Option<LuaSourceLocation>,
+    pub(crate) field: Option<String>,
 }
 
 impl std::fmt::Display for LuaWorkflowError {
@@ -136,6 +137,7 @@ fn load_lua_workflow_with_limits(
                     source: source_name.to_string(),
                     line: 1,
                 }),
+                field: None,
             }
         })?;
     evaluation.host.build(workflow_index)
@@ -154,6 +156,7 @@ fn map_evaluation_error(error: LuaFailure) -> LuaWorkflowError {
         code: code.to_string(),
         message: error.message,
         location: error.location,
+        field: error.field,
     }
 }
 
@@ -173,7 +176,7 @@ enum NodeDraftKind {
     Session {
         provider: ProviderKind,
         model: Option<String>,
-        permission: Option<String>,
+        permission: Option<SessionPermission>,
         facets: FacetRefs,
     },
     Fanout {
@@ -645,12 +648,19 @@ impl WorkflowLuaHost {
             Some(LuaData::Table(table)) => self.parse_facets(table, &location)?,
             Some(_) => return Err(type_error("facets", "table", &location)),
         };
+        let permission = optional_string(&table, "permission", &location)?
+            .map(|value| {
+                value.parse::<SessionPermission>().map_err(|error| {
+                    host_field_error("WFS002", error.to_string(), location.clone(), "permission")
+                })
+            })
+            .transpose()?;
         let draft = NodeDraft {
             name: optional_string(&table, "name", &location)?,
             kind: NodeDraftKind::Session {
                 provider,
                 model: optional_string(&table, "model", &location)?,
-                permission: optional_string(&table, "permission", &location)?,
+                permission,
                 facets,
             },
             artifact: optional_handle(&table, "artifact", HANDLE_SCHEMA, &location)?,
@@ -1995,18 +2005,20 @@ fn lua_key_as_case(key: &LuaTableKey) -> Option<String> {
 }
 
 fn missing_field(field: &str, location: &LuaSourceLocation) -> LuaHostError {
-    host_error(
+    host_field_error(
         "WFS002",
         format!("missing required field '{field}'"),
         location.clone(),
+        field,
     )
 }
 
 fn type_error(field: &str, expected: &str, location: &LuaSourceLocation) -> LuaHostError {
-    host_error(
+    host_field_error(
         "WFS002",
         format!("field '{field}' must be {expected}"),
         location.clone(),
+        field,
     )
 }
 
@@ -2015,6 +2027,21 @@ fn host_error(code: &str, message: impl Into<String>, location: LuaSourceLocatio
         category: code.to_string(),
         message: message.into(),
         location: Some(location),
+        field: None,
+    }
+}
+
+fn host_field_error(
+    code: &str,
+    message: impl Into<String>,
+    location: LuaSourceLocation,
+    field: &str,
+) -> LuaHostError {
+    LuaHostError {
+        category: code.to_string(),
+        message: message.into(),
+        location: Some(location),
+        field: Some(field.to_string()),
     }
 }
 
@@ -2027,6 +2054,7 @@ fn build_error(
         code: code.to_string(),
         message: message.into(),
         location,
+        field: None,
     }
 }
 
@@ -2107,6 +2135,60 @@ return r.workflow{ name = "review", description = "Review", main = child }
 
         assert_eq!(error.code, "WFS002");
         assert_eq!(error.location.unwrap().line, 3);
+    }
+
+    #[test]
+    fn test_lua_session_permission_4値からworkflow_definitionを構築する() {
+        for (value, expected) in [
+            ("manual", SessionPermission::Manual),
+            ("auto", SessionPermission::Auto),
+            ("bypass", SessionPermission::Bypass),
+            ("read-only", SessionPermission::ReadOnly),
+        ] {
+            let source = format!(
+                r#"
+local r = require("releash")
+return r.workflow{{ name = "review", description = "Review", main = r.session{{ provider = r.provider.claude, permission = "{value}" }} }}
+"#
+            );
+
+            let loaded = load(&source).unwrap();
+            assert_eq!(
+                loaded
+                    .workflow
+                    .node_by_name("main")
+                    .unwrap()
+                    .session()
+                    .unwrap()
+                    .permission,
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn test_lua_session_permission_未知値とprovider固有値をwfs002で拒否する() {
+        for invalid in [
+            "unknown",
+            "acceptEdits",
+            "danger-full-access",
+            "workspace-write",
+            "bypassPermissions",
+            "plan",
+        ] {
+            let source = format!(
+                r#"
+local r = require("releash")
+return r.workflow{{ name = "review", description = "Review", main = r.session{{ provider = r.provider.claude, permission = "{invalid}" }} }}
+"#
+            );
+
+            let error = load(&source).unwrap_err();
+            assert_eq!(error.code, "WFS002");
+            assert_eq!(error.field.as_deref(), Some("permission"));
+            assert!(error.message.contains(invalid));
+            assert_eq!(error.location.unwrap().line, 3);
+        }
     }
 
     #[test]

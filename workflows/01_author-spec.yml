@@ -160,7 +160,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: author-spec-governance
         instruction: author-spec-intake
@@ -173,7 +173,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge: spec-requirements
@@ -185,7 +185,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:
@@ -199,7 +199,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:
@@ -216,7 +216,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:
@@ -239,7 +239,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:
@@ -263,7 +263,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:
@@ -282,7 +282,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: author-spec-governance
         knowledge:

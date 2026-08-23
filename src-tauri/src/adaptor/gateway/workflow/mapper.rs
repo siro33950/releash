@@ -83,7 +83,7 @@ fn domain_kind_to_schema(
                 crate::adaptor::gateway::workflow::schema::SessionSpec {
                     provider: spec.provider,
                     model: spec.model.clone(),
-                    permission: spec.permission.clone(),
+                    permission: spec.permission,
                     facets: domain_facets_to_schema(&spec.facets),
                 },
             )

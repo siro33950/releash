@@ -1,13 +1,13 @@
-/// provider CLI へそのまま渡す起動設定。値域は provider CLI が定め、
-/// Releash は写像・検証を行わない。
+use crate::domain::workflow::SessionPermission;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ProviderLaunchOptions {
     pub(crate) model: Option<String>,
-    pub(crate) permission: Option<String>,
+    pub(crate) permission: Option<SessionPermission>,
 }
 
 impl ProviderLaunchOptions {
-    pub(crate) fn new(model: Option<String>, permission: Option<String>) -> Self {
+    pub(crate) fn new(model: Option<String>, permission: Option<SessionPermission>) -> Self {
         Self { model, permission }
     }
 }

@@ -9,12 +9,11 @@ use crate::usecase::agent_session::{
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
-/// workflow 定義の session 実行設定。値は provider CLI へ無変換で注入される。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkflowSessionLaunchConfig {
     pub(crate) provider: ProviderKind,
     pub(crate) model: Option<String>,
-    pub(crate) permission: Option<String>,
+    pub(crate) permission: Option<crate::domain::workflow::SessionPermission>,
 }
 
 impl WorkflowSessionLaunchConfig {
@@ -22,7 +21,7 @@ impl WorkflowSessionLaunchConfig {
         Self {
             provider: spec.provider,
             model: spec.model.clone(),
-            permission: spec.permission.clone(),
+            permission: spec.permission,
         }
     }
 }

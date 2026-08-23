@@ -138,7 +138,7 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
         schema::NodeKind::Session(spec) => domain::NodeKind::Session(domain::SessionSpec {
             provider: spec.provider,
             model: spec.model.clone(),
-            permission: spec.permission.clone(),
+            permission: spec.permission,
             facets: facet_refs_to_domain(&spec.facets),
         }),
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {

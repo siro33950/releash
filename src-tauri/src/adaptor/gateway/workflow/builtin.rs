@@ -579,6 +579,7 @@ pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::workflow::{NodeKind, SessionPermission};
 
     #[test]
     fn pr_review_import_requires_all_graphql_pages() {
@@ -600,5 +601,30 @@ mod tests {
         let source = builtin_workflow_source("03_full-review").unwrap();
 
         assert!(source.contains("provider: claude"));
+    }
+
+    #[test]
+    fn test_builtin_workflow_8本58sessionのpermissionは全件autoである() {
+        let mut session_count = 0;
+
+        for entry in BUILTINS {
+            let name = entry.filename.strip_suffix(".yml").unwrap();
+            let workflow = load_builtin_workflow_resolved(name).unwrap().unwrap();
+            for node in workflow.nodes {
+                let NodeKind::Session(session) = node.kind else {
+                    continue;
+                };
+                session_count += 1;
+                assert_eq!(
+                    session.permission,
+                    Some(SessionPermission::Auto),
+                    "{}:{}",
+                    entry.filename,
+                    node.name
+                );
+            }
+        }
+
+        assert_eq!(session_count, 58);
     }
 }

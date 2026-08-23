@@ -124,6 +124,7 @@ pub(crate) struct LuaHostError {
     pub(crate) category: String,
     pub(crate) message: String,
     pub(crate) location: Option<LuaSourceLocation>,
+    pub(crate) field: Option<String>,
 }
 
 impl fmt::Display for LuaHostError {
@@ -166,6 +167,7 @@ pub(crate) struct LuaFailure {
     pub(crate) location: Option<LuaSourceLocation>,
     pub(crate) category: Option<String>,
     pub(crate) message: String,
+    pub(crate) field: Option<String>,
 }
 
 impl fmt::Display for LuaFailure {
@@ -255,6 +257,7 @@ pub(crate) fn evaluate<H: LuaHost + 'static>(
             }),
             category: None,
             message: "Lua host state remained referenced after evaluation".to_string(),
+            field: None,
         })?
         .into_inner();
     Ok(LuaEvaluation { value, host })
@@ -269,6 +272,7 @@ fn canonical_workflows_dir(path: &Path) -> Result<PathBuf, LuaFailure> {
             "workflows directory '{}' could not be resolved: {error}",
             path.display()
         ),
+        field: None,
     })
 }
 
@@ -325,6 +329,7 @@ fn install_instruction_limit(lua: &Lua, limit: u64) -> mlua::Result<()> {
                     location: Some(location),
                     category: None,
                     message: format!("Lua instruction limit of {limit} was exceeded"),
+                    field: None,
                 })));
             }
             Ok(VmState::Continue)
@@ -576,6 +581,7 @@ fn host_error_to_mlua(mut error: LuaHostError, fallback: LuaSourceLocation) -> m
         location: error.location,
         category: Some(error.category),
         message: error.message,
+        field: error.field,
     }))
 }
 
@@ -589,6 +595,7 @@ fn callback_failure(
         location,
         category: None,
         message: message.into(),
+        field: None,
     }))
 }
 
@@ -606,6 +613,7 @@ fn map_mlua_error(error: mlua::Error, fallback_source: &str) -> LuaFailure {
             }),
             category: None,
             message,
+            field: None,
         },
         mlua::Error::MemoryError(message) => LuaFailure {
             kind: LuaFailureKind::Evaluation,
@@ -615,6 +623,7 @@ fn map_mlua_error(error: mlua::Error, fallback_source: &str) -> LuaFailure {
             }),
             category: None,
             message: format!("Lua memory limit was exceeded: {message}"),
+            field: None,
         },
         _ => LuaFailure {
             kind: LuaFailureKind::Evaluation,
@@ -624,6 +633,7 @@ fn map_mlua_error(error: mlua::Error, fallback_source: &str) -> LuaFailure {
             }),
             category: None,
             message: display,
+            field: None,
         },
     }
 }
@@ -703,6 +713,7 @@ mod tests {
                 category: "test".to_string(),
                 message: format!("unknown field '{key}'"),
                 location: Some(location),
+                field: None,
             })
         }
     }

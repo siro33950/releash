@@ -2309,7 +2309,8 @@ mod startup_recovery_tests {
     use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::{
         ChildEntry, ExecutionParentRef, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
-        SequenceSpec, SessionSpec, StartedFact, TreeRootFact, WorkflowRootFact,
+        SequenceSpec, SessionPermission, SessionRootFact, SessionSpec, StartedFact, TreeRootFact,
+        WorkflowRootFact,
     };
     use crate::usecase::workflow::runtime_resolver::{
         ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
@@ -2627,6 +2628,81 @@ mod startup_recovery_tests {
             })
             .unwrap();
         assert_eq!(corrupt_lost_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_startup_reconciliation_provider固有permissionのstarted_factをsession_store_errorにする(
+    ) {
+        const TREE_ID: &str = "00000000-0000-4000-8000-000000000004";
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        let fact = NodeFact::Started(StartedFact {
+            parent: None,
+            root: Some(TreeRootFact::Session(SessionRootFact {
+                workspace_identity: "/repo".to_string(),
+                worktree_path: "/repo".to_string(),
+                session: SessionSpec {
+                    provider: ProviderKind::Claude,
+                    model: None,
+                    permission: Some(SessionPermission::Auto),
+                    facets: Default::default(),
+                },
+                created_from: ExecutionOrigin::DesktopUi,
+            })),
+        });
+        let legacy_detail = fact.encode_detail().unwrap().replace(
+            r#""permission":"auto""#,
+            r#""permission":"bypassPermissions""#,
+        );
+        store
+            .append_node_event(
+                NewNodeEventRow {
+                    tree_id: TREE_ID.to_string(),
+                    node_execution_id: TREE_ID.to_string(),
+                    parent_id: None,
+                    node_name: "main".to_string(),
+                    kind: "session".to_string(),
+                    attempt: 1,
+                    event_type: "started".to_string(),
+                    session_id: None,
+                    detail: legacy_detail,
+                },
+                Some(1),
+            )
+            .await
+            .unwrap();
+
+        let history_error = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap_err();
+        assert!(history_error.contains("node fact decode failed"));
+        assert!(history_error.contains("bypassPermissions"));
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let worktree_ledger = Arc::new(
+            crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                store.clone(),
+            ),
+        );
+        app.manage(store);
+        let host = WorkflowRuntimeHost::with_execution_store(
+            Arc::new(UnusedWorkflowResolver),
+            Arc::new(UnusedWorktreeResolver),
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            Arc::new(FailingWorkflowAgentSessions),
+            worktree_ledger,
+            Arc::new(MissingRepoWorktreeInventory),
+        );
+
+        let error = host.reconcile_startup(app.handle()).await.unwrap_err();
+
+        assert!(
+            matches!(error, WorkflowRuntimeError::SessionStore(message) if
+            message.contains("bypassPermissions"))
+        );
     }
 
     #[tokio::test]

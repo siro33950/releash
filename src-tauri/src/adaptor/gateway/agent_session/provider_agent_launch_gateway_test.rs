@@ -11,6 +11,7 @@ use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableReason,
 };
+use crate::domain::workflow::SessionPermission;
 
 fn armed(provider: ProviderKind) -> ArmedProviderLifecycle {
     ArmedProviderLifecycle::new(
@@ -106,25 +107,30 @@ fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で生�
 }
 
 #[test]
-fn test_provider_launch_gateway_modelとpermissionをresume引数より前にcli引数へ注入する() {
+fn test_provider_launch_gateway_modelとauto_permissionをresume引数より前にcli引数へ注入する() {
     let data_dir = tempdir().unwrap();
     let gateway =
         LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
 
-    for (provider, executable, permission_flag, resume_flag) in [
+    for (provider, executable, permission_arguments, resume_flag) in [
         (
             ProviderKind::Claude,
             "/opt/bin/claude",
-            "--permission-mode",
+            &["--permission-mode", "auto"][..],
             "--resume",
         ),
-        (ProviderKind::Codex, "/opt/bin/codex", "--sandbox", "resume"),
+        (
+            ProviderKind::Codex,
+            "/opt/bin/codex",
+            &["--approve-for-me"][..],
+            "resume",
+        ),
     ] {
         let launch = ProviderSessionLaunch::resume("session-1")
             .unwrap()
             .with_options(ProviderLaunchOptions::new(
                 Some("model-x".to_string()),
-                Some("permission-y".to_string()),
+                Some(SessionPermission::Auto),
             ));
         let prepared = gateway
             .prepare(
@@ -144,9 +150,9 @@ fn test_provider_launch_gateway_modelとpermissionをresume引数より前にcli
         );
         assert!(
             arguments
-                .windows(2)
-                .any(|pair| pair == [permission_flag, "permission-y"]),
-            "{provider:?}: permission must be injected verbatim: {arguments:?}"
+                .windows(permission_arguments.len())
+                .any(|window| window == permission_arguments),
+            "{provider:?}: permission must be mapped: {arguments:?}"
         );
         let model_index = arguments
             .iter()
@@ -154,7 +160,7 @@ fn test_provider_launch_gateway_modelとpermissionをresume引数より前にcli
             .unwrap();
         let permission_index = arguments
             .iter()
-            .position(|argument| argument == permission_flag)
+            .position(|argument| argument == permission_arguments[0])
             .unwrap();
         let resume_index = arguments
             .iter()

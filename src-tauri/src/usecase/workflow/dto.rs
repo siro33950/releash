@@ -354,7 +354,7 @@ fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
     SessionSpecDto {
         provider: provider_to_dto(session.provider),
         model: session.model.clone(),
-        permission: session.permission.clone(),
+        permission: session.permission.map(|permission| permission.to_string()),
         facets: facet_refs_to_dto(&session.facets),
     }
 }
@@ -566,6 +566,7 @@ mod tests {
                 name: "review".to_string(),
                 kind: domain::NodeKind::Session(domain::SessionSpec {
                     provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
+                    permission: Some(domain::SessionPermission::ReadOnly),
                     facets: domain::FacetRefs {
                         knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
                         ..Default::default()
@@ -592,6 +593,11 @@ mod tests {
             serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
                 ["provider"],
             serde_json::json!("codex")
+        );
+        assert_eq!(
+            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
+                ["permission"],
+            serde_json::json!("read-only")
         );
     }
 
