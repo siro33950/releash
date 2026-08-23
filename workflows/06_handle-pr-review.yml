@@ -179,7 +179,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -197,7 +197,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reporting
         instruction: report_no_pr_review_comments
@@ -208,7 +208,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: triage
         knowledge: releash-thread-cli
@@ -220,7 +220,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -233,7 +233,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: coding
         knowledge: releash-thread-cli
@@ -246,7 +246,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -266,7 +266,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reporting
         knowledge: releash-thread-cli
@@ -289,7 +289,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reporting
         instruction: report_incomplete_pr_review
@@ -300,7 +300,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: coding
         knowledge: releash-thread-cli

@@ -65,7 +65,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: planning
         instruction: existing-spec-resolve-request
@@ -131,7 +131,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -143,7 +143,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -155,7 +155,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -167,7 +167,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -179,7 +179,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -191,7 +191,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -203,7 +203,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -215,7 +215,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -227,7 +227,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -239,7 +239,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -251,7 +251,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -263,7 +263,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -288,7 +288,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -299,7 +299,7 @@ nodes:
     session:
       provider: codex
       model: gpt-5.6-sol
-      permission: danger-full-access
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread-cli
@@ -317,7 +317,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reporting
         knowledge: releash-thread-cli

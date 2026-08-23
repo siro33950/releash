@@ -11,6 +11,7 @@ use crate::domain::workflow::validation;
 use crate::domain::workflow::validation::{
     InvalidArtifactReferenceKind, InvalidRuleKind, InvalidSchemaKind,
 };
+use crate::domain::workflow::SessionPermission;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -249,17 +250,17 @@ pub(crate) fn diagnose_lua_workflow_source(
             let stage = stage_for_code(&error.code);
             let span = error
                 .location
-                .map(|location| lua_location_span(&location, workflows_dir));
+                .as_ref()
+                .map(|location| lua_location_span(location, workflows_dir));
+            let mut item =
+                DiagnosticItem::new(error.code, Severity::Error, stage, span, error.message)
+                    .workflow(workflow_name_hint.unwrap_or("<unknown>"));
+            if let Some(field) = error.field {
+                item = item.field(field);
+            }
             return WorkflowSourceDiagnostics {
                 workflow: None,
-                diagnostics: vec![DiagnosticItem::new(
-                    error.code,
-                    Severity::Error,
-                    stage,
-                    span,
-                    error.message,
-                )
-                .workflow(workflow_name_hint.unwrap_or("<unknown>"))],
+                diagnostics: vec![item],
             };
         }
     };
@@ -532,13 +533,22 @@ fn parse_shape_diagnostics(
             .get("session")
             .and_then(serde_json::Value::as_object)
         {
+            let session_path = format!("{node_path}.session");
             check_allowed_fields(
                 session,
-                &format!("{node_path}.session"),
+                &session_path,
                 &["provider", "model", "permission", "facets"],
                 span_map,
                 workflow_name,
                 Some(node_name),
+                &mut diagnostics,
+            );
+            check_session_permission(
+                session,
+                &session_path,
+                span_map,
+                workflow_name,
+                node_name,
                 &mut diagnostics,
             );
             if let Some(facets) = session.get("facets").and_then(serde_json::Value::as_object) {
@@ -839,6 +849,17 @@ fn check_child_body_shape(
             );
         }
     }
+    if let Some(session) = body.get("session").and_then(serde_json::Value::as_object) {
+        let session_path = format!("{body_path}.session");
+        check_session_permission(
+            session,
+            &session_path,
+            span_map,
+            workflow_name,
+            node_name,
+            diagnostics,
+        );
+    }
     // インライン宣言（③④）の合成子はネストした children も形状検査する。
     check_composite_shape(
         body,
@@ -848,6 +869,43 @@ fn check_child_body_shape(
         node_name,
         diagnostics,
     );
+}
+
+fn check_session_permission(
+    session: &serde_json::Map<String, serde_json::Value>,
+    session_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    let Some(permission) = session.get("permission") else {
+        return;
+    };
+    let invalid = permission
+        .as_str()
+        .ok_or_else(|| "field 'permission' must be string".to_string())
+        .and_then(|value| {
+            value
+                .parse::<SessionPermission>()
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .err();
+    if let Some(message) = invalid {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span(&format!("{session_path}.permission")),
+                message,
+            )
+            .workflow(workflow_name)
+            .node(node_name)
+            .field("permission"),
+        );
+    }
 }
 
 fn on_failure_shape_is_valid(value: &serde_json::Value) -> bool {
@@ -1995,6 +2053,226 @@ mod tests {
         let facet_dir = dir.join(kind);
         fs::create_dir_all(&facet_dir).unwrap();
         fs::write(facet_dir.join(format!("{key}.md")), content).unwrap();
+    }
+
+    fn permission_yaml(permission: &str) -> String {
+        format!(
+            r#"name: permission
+description: permission contract
+nodes:
+  main:
+    session:
+      provider: claude
+      permission: {permission}
+      facets:
+        instruction: test
+"#
+        )
+    }
+
+    fn permission_lua(permission: &str) -> String {
+        format!(
+            r#"local r = require("releash")
+local f = require("facets")
+return r.workflow{{
+  name = "permission", description = "permission contract",
+  main = r.session{{ provider = r.provider.claude, permission = "{permission}", facets = {{ instruction = f.instruction.test }} }},
+}}
+"#
+        )
+    }
+
+    fn permission_lua_value(permission: &str) -> String {
+        format!(
+            r#"local r = require("releash")
+local f = require("facets")
+return r.workflow{{
+  name = "permission", description = "permission contract",
+  main = r.session{{ provider = r.provider.claude, permission = {permission}, facets = {{ instruction = f.instruction.test }} }},
+}}
+"#
+        )
+    }
+
+    fn inline_child_permission_yaml(permission: &str) -> String {
+        format!(
+            r#"name: permission
+description: permission contract
+nodes:
+  main:
+    sequence:
+      children:
+      - session:
+          provider: claude
+          permission: {permission}
+          facets:
+            instruction: test
+"#
+        )
+    }
+
+    fn named_inline_child_permission_yaml(permission: &str) -> String {
+        format!(
+            r#"name: permission
+description: permission contract
+nodes:
+  main:
+    sequence:
+      children:
+      - review:
+          session:
+            provider: claude
+            permission: {permission}
+            facets:
+              instruction: test
+"#
+        )
+    }
+
+    fn inline_child_permission_lua(permission: &str) -> String {
+        format!(
+            r#"local r = require("releash")
+local f = require("facets")
+local child = r.session{{ provider = r.provider.claude, permission = "{permission}", facets = {{ instruction = f.instruction.test }} }}
+return r.workflow{{
+  name = "permission", description = "permission contract",
+  main = r.sequence{{ children = {{ r.child{{ node = child }} }} }},
+}}
+"#
+        )
+    }
+
+    #[test]
+    fn test_診断_yamlとluaのsession_permission_4値をerrorなしで受理する() {
+        let tmp = TempDir::new().unwrap();
+        setup_facet(tmp.path(), "instructions", "test", "test instruction");
+
+        for permission in ["manual", "auto", "bypass", "read-only"] {
+            let yaml = diagnose_workflow_source(&permission_yaml(permission), Some("permission"));
+            assert!(
+                !yaml.has_errors(),
+                "YAML {permission} produced diagnostics: {:?}",
+                yaml.diagnostics
+            );
+            let lua = diagnose_lua_workflow_source(
+                "permission.lua",
+                &permission_lua(permission),
+                tmp.path(),
+                tmp.path(),
+                Some("permission"),
+            );
+            assert!(
+                !lua.has_errors(),
+                "Lua {permission} produced diagnostics: {:?}",
+                lua.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn test_診断_yamlとluaの不正permissionは同じwfs002でfield位置を示す() {
+        let tmp = TempDir::new().unwrap();
+        setup_facet(tmp.path(), "instructions", "test", "test instruction");
+
+        for invalid in ["unknown", "acceptEdits", "danger-full-access"] {
+            let yaml = diagnose_workflow_source(&permission_yaml(invalid), Some("permission"));
+            let lua = diagnose_lua_workflow_source(
+                "permission.lua",
+                &permission_lua(invalid),
+                tmp.path(),
+                tmp.path(),
+                Some("permission"),
+            );
+            let yaml_item = yaml.diagnostics.first().unwrap();
+            let lua_item = lua.diagnostics.first().unwrap();
+
+            assert_eq!(yaml_item.code, "WFS002");
+            assert_eq!(lua_item.code, yaml_item.code);
+            assert_eq!(yaml_item.stage, DiagnosticStage::ParseShape);
+            assert_eq!(lua_item.stage, yaml_item.stage);
+            assert_eq!(yaml_item.message, lua_item.message);
+            assert_eq!(yaml_item.field.as_deref(), Some("permission"));
+            assert_eq!(lua_item.field, yaml_item.field);
+            assert_eq!(yaml_item.span.as_ref().unwrap().start_line, 7);
+            assert_eq!(lua_item.span.as_ref().unwrap().start_line, 5);
+            assert!(yaml.workflow.is_none());
+            assert!(lua.workflow.is_none());
+        }
+    }
+
+    #[test]
+    fn test_診断_yamlとluaの非文字列permissionは同じwfs002でfield位置を示す() {
+        let tmp = TempDir::new().unwrap();
+        setup_facet(tmp.path(), "instructions", "test", "test instruction");
+
+        let yaml = diagnose_workflow_source(&permission_yaml("5"), Some("permission"));
+        let lua = diagnose_lua_workflow_source(
+            "permission.lua",
+            &permission_lua_value("5"),
+            tmp.path(),
+            tmp.path(),
+            Some("permission"),
+        );
+        let yaml_item = yaml.diagnostics.first().unwrap();
+        let lua_item = lua.diagnostics.first().unwrap();
+
+        assert_eq!(yaml_item.code, "WFS002");
+        assert_eq!(lua_item.code, yaml_item.code);
+        assert_eq!(yaml_item.stage, DiagnosticStage::ParseShape);
+        assert_eq!(lua_item.stage, yaml_item.stage);
+        assert_eq!(yaml_item.message, "field 'permission' must be string");
+        assert_eq!(lua_item.message, yaml_item.message);
+        assert_eq!(yaml_item.field.as_deref(), Some("permission"));
+        assert_eq!(lua_item.field, yaml_item.field);
+        assert!(yaml.workflow.is_none());
+        assert!(lua.workflow.is_none());
+    }
+
+    #[test]
+    fn test_診断_childrenインラインsessionの不正permissionはtop_levelとluaに一致する() {
+        let tmp = TempDir::new().unwrap();
+        setup_facet(tmp.path(), "instructions", "test", "test instruction");
+
+        let top_level =
+            diagnose_workflow_source(&permission_yaml("acceptEdits"), Some("permission"));
+        let inline_child = diagnose_workflow_source(
+            &inline_child_permission_yaml("acceptEdits"),
+            Some("permission"),
+        );
+        let named_inline_child = diagnose_workflow_source(
+            &named_inline_child_permission_yaml("acceptEdits"),
+            Some("permission"),
+        );
+        let lua = diagnose_lua_workflow_source(
+            "permission.lua",
+            &inline_child_permission_lua("acceptEdits"),
+            tmp.path(),
+            tmp.path(),
+            Some("permission"),
+        );
+
+        let top_level_item = top_level.diagnostics.first().unwrap();
+        let inline_child_item = inline_child.diagnostics.first().unwrap();
+        let named_inline_child_item = named_inline_child.diagnostics.first().unwrap();
+        let lua_item = lua.diagnostics.first().unwrap();
+        for item in [inline_child_item, named_inline_child_item, lua_item] {
+            assert_eq!(item.code, top_level_item.code);
+            assert_eq!(item.stage, top_level_item.stage);
+            assert_eq!(item.message, top_level_item.message);
+            assert_eq!(item.field, top_level_item.field);
+        }
+        assert_eq!(inline_child_item.node_name.as_deref(), Some("main"));
+        assert_eq!(inline_child_item.span.as_ref().unwrap().start_line, 9);
+        assert_eq!(named_inline_child_item.node_name.as_deref(), Some("main"));
+        assert_eq!(
+            named_inline_child_item.span.as_ref().unwrap().start_line,
+            10
+        );
+        assert_eq!(lua_item.span.as_ref().unwrap().start_line, 3);
+        assert!(top_level.workflow.is_none());
+        assert!(inline_child.workflow.is_none());
+        assert!(named_inline_child.workflow.is_none());
+        assert!(lua.workflow.is_none());
     }
 
     fn save_workflow_yaml(dir: &Path, wf: &WorkflowDefinitionYaml) {

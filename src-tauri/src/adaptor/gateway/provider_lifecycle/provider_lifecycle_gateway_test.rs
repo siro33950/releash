@@ -10,7 +10,9 @@ use super::{
     LocalProviderLifecycleEventRepository, ProviderLaunchContext, ProviderLaunchSpec,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};
+use crate::domain::agent_session::{
+    ProviderLaunchOptions, ProviderSessionLaunch, ProviderSessionLaunchError,
+};
 use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryError,
@@ -22,6 +24,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
     ProviderLifecycleSlotId,
 };
+use crate::domain::workflow::SessionPermission;
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 
 fn scope() -> ProviderLifecycleScope {
@@ -442,6 +445,124 @@ fn test_provider起動設定_codexの初回指示を起動時promptとして渡�
         process.arguments().last().map(String::as_str),
         Some("Implement the workflow node.")
     );
+}
+
+#[test]
+fn test_provider起動設定_permissionの4値をprovider別引数列へ写像する() {
+    let cases: [(ProviderKind, SessionPermission, &[&str]); 8] = [
+        (
+            ProviderKind::Claude,
+            SessionPermission::Manual,
+            &["--permission-mode", "default"],
+        ),
+        (
+            ProviderKind::Claude,
+            SessionPermission::Auto,
+            &["--permission-mode", "auto"],
+        ),
+        (
+            ProviderKind::Claude,
+            SessionPermission::Bypass,
+            &["--permission-mode", "bypassPermissions"],
+        ),
+        (
+            ProviderKind::Claude,
+            SessionPermission::ReadOnly,
+            &["--permission-mode", "plan"],
+        ),
+        (
+            ProviderKind::Codex,
+            SessionPermission::Manual,
+            &[
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request",
+            ],
+        ),
+        (
+            ProviderKind::Codex,
+            SessionPermission::Auto,
+            &["--approve-for-me"],
+        ),
+        (
+            ProviderKind::Codex,
+            SessionPermission::Bypass,
+            &["--dangerously-bypass-approvals-and-sandbox"],
+        ),
+        (
+            ProviderKind::Codex,
+            SessionPermission::ReadOnly,
+            &["--sandbox", "read-only", "--ask-for-approval", "never"],
+        ),
+    ];
+
+    for (provider, permission, expected_permission_arguments) in cases {
+        let plugin_directory = tempdir().unwrap();
+        let spec = ProviderLaunchSpec::for_provider(
+            provider,
+            context(),
+            "releash",
+            (provider == ProviderKind::Claude).then_some(plugin_directory.path()),
+        )
+        .unwrap();
+        let launch = ProviderSessionLaunch::new_with_initial_instruction("complete-action")
+            .unwrap()
+            .with_options(ProviderLaunchOptions::new(
+                Some("model-x".to_string()),
+                Some(permission),
+            ));
+
+        let process = spec.terminal_process("provider", launch).unwrap();
+        let expected_suffix = ["--model", "model-x"]
+            .into_iter()
+            .chain(expected_permission_arguments.iter().copied())
+            .chain(["complete-action"])
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        assert!(
+            process.arguments().ends_with(&expected_suffix),
+            "{provider:?} {permission}: {:?}",
+            process.arguments()
+        );
+    }
+}
+
+#[test]
+fn test_provider起動設定_permission省略時は権限引数なしでmodelを無変換に保つ() {
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        let plugin_directory = tempdir().unwrap();
+        let spec = ProviderLaunchSpec::for_provider(
+            provider,
+            context(),
+            "releash",
+            (provider == ProviderKind::Claude).then_some(plugin_directory.path()),
+        )
+        .unwrap();
+        let launch = ProviderSessionLaunch::new_with_initial_instruction("complete-action")
+            .unwrap()
+            .with_options(ProviderLaunchOptions::new(
+                Some("provider-model-value".to_string()),
+                None,
+            ));
+
+        let process = spec.terminal_process("provider", launch).unwrap();
+
+        assert!(process.arguments().ends_with(&[
+            "--model".to_string(),
+            "provider-model-value".to_string(),
+            "complete-action".to_string(),
+        ]));
+        assert!(process.arguments().iter().all(|argument| !matches!(
+            argument.as_str(),
+            "--permission-mode"
+                | "--sandbox"
+                | "--ask-for-approval"
+                | "--approve-for-me"
+                | "--dangerously-bypass-approvals-and-sandbox"
+        )));
+    }
 }
 
 #[test]

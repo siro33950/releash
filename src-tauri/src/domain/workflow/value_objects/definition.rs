@@ -288,6 +288,67 @@ impl FacetRefs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SessionPermission {
+    Manual,
+    Auto,
+    Bypass,
+    ReadOnly,
+}
+
+impl SessionPermission {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+            Self::Bypass => "bypass",
+            Self::ReadOnly => "read-only",
+        }
+    }
+}
+
+impl std::fmt::Display for SessionPermission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SessionPermission {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "manual" => Ok(Self::Manual),
+            "auto" => Ok(Self::Auto),
+            "bypass" => Ok(Self::Bypass),
+            "read-only" => Ok(Self::ReadOnly),
+            _ => Err(format!(
+                "invalid session permission '{value}'; expected one of: manual, auto, bypass, read-only"
+            )),
+        }
+    }
+}
+
+impl Serialize for SessionPermission {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionPermission {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSpec {
@@ -299,9 +360,8 @@ pub struct SessionSpec {
     /// provider CLI へそのまま渡す model 指定。値域は provider CLI が定める。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// provider CLI へそのまま渡す permission 指定。値域は provider CLI が定める。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
+    pub permission: Option<SessionPermission>,
     #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
     pub facets: FacetRefs,
 }
@@ -1491,6 +1551,49 @@ pub enum WorkflowSourceFormat {
 #[cfg(test)]
 mod definition_tests {
     use super::*;
+
+    #[test]
+    fn test_session_permission_4値は文字列構築とserdeで同じ値を往復する() {
+        let cases = [
+            ("manual", SessionPermission::Manual),
+            ("auto", SessionPermission::Auto),
+            ("bypass", SessionPermission::Bypass),
+            ("read-only", SessionPermission::ReadOnly),
+        ];
+
+        for (serialized, expected) in cases {
+            assert_eq!(serialized.parse::<SessionPermission>().unwrap(), expected);
+            assert_eq!(expected.as_str(), serialized);
+            assert_eq!(
+                serde_json::to_string(&expected).unwrap(),
+                format!("\"{serialized}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<SessionPermission>(&format!("\"{serialized}\"")).unwrap(),
+                expected
+            );
+            assert_eq!(
+                serde_saphyr::from_str::<SessionPermission>(serialized).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_permission_未知値とprovider固有値は文字列構築とserdeで拒否する() {
+        for invalid in [
+            "unknown",
+            "acceptEdits",
+            "danger-full-access",
+            "workspace-write",
+            "bypassPermissions",
+            "plan",
+        ] {
+            assert!(invalid.parse::<SessionPermission>().is_err());
+            assert!(serde_json::from_str::<SessionPermission>(&format!("\"{invalid}\"")).is_err());
+            assert!(serde_saphyr::from_str::<SessionPermission>(invalid).is_err());
+        }
+    }
 
     // serde_json の直接デシリアライズ（イベント payload 復元経路）は上流に
     // 重複キー拒否が無いため、children エントリ本体の全フィールドが

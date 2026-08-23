@@ -201,7 +201,7 @@ review:
   session:
     provider: claude
     model: claude-opus-4-1
-    permission: read-only
+    permission: auto
     facets:
       policy: reviewing
       knowledge:
@@ -212,9 +212,21 @@ review:
 ```
 
 - `provider`: 必須。`claude` または `codex`。
-- `model` / `permission`: 任意。値を変換せず provider CLI の起動設定として渡す。
+- `model`: 任意。指定した値を変換せず provider CLI の起動設定として渡す。`permission` の指定または省略によって意味は変わらない。
+- `permission`: 任意。Releash が所有する provider 非依存の4値だけを受理し、provider ごとの起動フラグ列へ写像する。
 - `facets`: `policy` / `knowledge` / `instruction` の参照。Session は少なくとも一つの facet 参照を必要とする。
 - `artifact`: Submit に添付できる Artifact の Contract。宣言時は検証済み Artifact を含む Submit だけが有効。
+
+| `permission` | 意味 | claude | codex |
+| --- | --- | --- | --- |
+| `manual` | ツールを使うたびに人間へ確認を求める | `--permission-mode default` | `--sandbox workspace-write --ask-for-approval on-request` |
+| `auto` | 自動レビューを挟んで自動承認する | `--permission-mode auto` | `--approve-for-me` |
+| `bypass` | 確認しない | `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `read-only` | 書き込みを許さない | `--permission-mode plan` | `--sandbox read-only --ask-for-approval never` |
+
+`manual` の確認頻度は provider 間で完全には一致しない。claude の `default` はツールの初回使用ごとに Claude Code が必ず確認を求め、codex の `on-request` は確認が必要かをモデルが判断する。この決定者の差は provider CLI の仕様として受け入れる。
+
+`read-only` では provider CLI の判定方式が異なる。claude の `plan` は完了時の `releash workflow output submit` を拒否するため、Session Node は自動では完了しない。完了させる場合は人間が provider 側で権限を変更する。codex の `read-only` は同じ完了提出を拒否しない。
 
 Session の `completion: auto` は、同一 Node attempt の Submit と provider Stop の二信号が揃ったときに完了する。順序は問わず、一方だけでは完了しない。`completion: approval` は二信号が揃った後に WaitingApproval となり、人間の Approve で完了する。
 

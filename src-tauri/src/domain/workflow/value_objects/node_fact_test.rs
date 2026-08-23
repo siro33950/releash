@@ -225,6 +225,35 @@ mod detail_round_trip_tests {
     }
 
     #[test]
+    fn test_rootのstarted_provider固有permission値はdetail不一致として拒否する() {
+        let fact = NodeFact::Started(StartedFact {
+            parent: None,
+            root: Some(TreeRootFact::Session(SessionRootFact {
+                workspace_identity: "/repo".to_string(),
+                worktree_path: "/repo".to_string(),
+                session: crate::domain::workflow::SessionSpec {
+                    permission: Some(crate::domain::workflow::SessionPermission::Auto),
+                    ..Default::default()
+                },
+                created_from: ExecutionOrigin::DesktopUi,
+            })),
+        });
+        let legacy_detail = fact
+            .encode_detail()
+            .unwrap()
+            .replace(r#""permission":"auto""#, r#""permission":"acceptEdits""#);
+
+        let error = NodeFact::decode("started", &legacy_detail).unwrap_err();
+
+        assert!(matches!(
+            error,
+            NodeFactDecodeError::DetailMismatch { event_type, reason }
+                if event_type == "started"
+                    && reason.contains("invalid session permission 'acceptEdits'")
+        ));
+    }
+
+    #[test]
     fn test_子のstarted_fanout座標つき親参照が往復する() {
         let fact = NodeFact::Started(StartedFact {
             parent: Some(ExecutionParentRef::fanout_child("parent-exec", Some(2), 1)),

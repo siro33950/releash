@@ -87,7 +87,7 @@ nodes:
     session:
       provider: claude
       model: claude-opus-5
-      permission: acceptEdits
+      permission: auto
       facets:
         policy: reviewing
         knowledge: releash-thread

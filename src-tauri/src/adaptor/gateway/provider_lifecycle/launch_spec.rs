@@ -7,6 +7,7 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
 };
 use crate::domain::terminal_surface::TerminalProcessLaunch;
+use crate::domain::workflow::SessionPermission;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum ProviderLaunchSpecError {
@@ -177,15 +178,33 @@ impl ProviderLaunchSpec {
         if let Some(model) = launch.options().model.as_deref() {
             arguments.extend(["--model".to_string(), model.to_string()]);
         }
-        if let Some(permission) = launch.options().permission.as_deref() {
-            match self.provider {
-                ProviderKind::Claude => {
-                    arguments.extend(["--permission-mode".to_string(), permission.to_string()])
+        if let Some(permission) = launch.options().permission {
+            let flags: &'static [&'static str] = match (self.provider, permission) {
+                (ProviderKind::Claude, SessionPermission::Manual) => {
+                    &["--permission-mode", "default"]
                 }
-                ProviderKind::Codex => {
-                    arguments.extend(["--sandbox".to_string(), permission.to_string()])
+                (ProviderKind::Claude, SessionPermission::Auto) => &["--permission-mode", "auto"],
+                (ProviderKind::Claude, SessionPermission::Bypass) => {
+                    &["--permission-mode", "bypassPermissions"]
                 }
-            }
+                (ProviderKind::Claude, SessionPermission::ReadOnly) => {
+                    &["--permission-mode", "plan"]
+                }
+                (ProviderKind::Codex, SessionPermission::Manual) => &[
+                    "--sandbox",
+                    "workspace-write",
+                    "--ask-for-approval",
+                    "on-request",
+                ],
+                (ProviderKind::Codex, SessionPermission::Auto) => &["--approve-for-me"],
+                (ProviderKind::Codex, SessionPermission::Bypass) => {
+                    &["--dangerously-bypass-approvals-and-sandbox"]
+                }
+                (ProviderKind::Codex, SessionPermission::ReadOnly) => {
+                    &["--sandbox", "read-only", "--ask-for-approval", "never"]
+                }
+            };
+            arguments.extend(flags.iter().map(|flag| flag.to_string()));
         }
         if let Some(provider_session_id) = launch.provider_session_id() {
             match self.provider {
