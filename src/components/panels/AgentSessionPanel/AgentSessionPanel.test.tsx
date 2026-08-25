@@ -99,7 +99,7 @@ describe("AgentSessionPanel", () => {
 	});
 
 	it.each([
-		["paused", "Provider session is not running. Resume to retry."],
+		["paused", "Provider session is not running."],
 		["archived", null],
 	] as const)(
 		"Terminalの失敗文言を%s画面へ持ち越さない",
