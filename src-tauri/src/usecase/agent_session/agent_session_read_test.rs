@@ -112,6 +112,7 @@ fn item(id: &str) -> AgentSessionItemDto {
             can_archive: true,
             can_restore: false,
             can_delete: false,
+            can_resume: false,
         },
         activity: AgentSessionActivityDto::Idle,
         last_exit_abnormal: false,

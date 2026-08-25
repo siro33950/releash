@@ -54,7 +54,7 @@ fn install_fixture_executable(
     std::fs::write(
         &executable,
         format!(
-            "#!/bin/sh\ninitial_instruction=\n{initial_instruction_argument}\nif [ -n \"$initial_instruction\" ]; then\n  {{ printf '\\033[200~%s\\033[201~\\n' \"$initial_instruction\"; cat; }} | {command}\nelse\n  {command}\nfi\n"
+            "#!/bin/sh\ntrap '' INT\ninitial_instruction=\n{initial_instruction_argument}\nif [ -n \"$initial_instruction\" ]; then\n  {{ printf '\\033[200~%s\\033[201~\\n' \"$initial_instruction\"; cat; }} | {command}\nelse\n  {command}\nfi\n"
         ),
     )
     .unwrap();
@@ -163,6 +163,28 @@ async fn wait_for_execution_status(
     })
     .await
     .expect("Workflow execution must reach the expected status");
+}
+
+async fn wait_for_agent_session_lifecycle(
+    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    agent_session_id: &str,
+    lifecycle: AcceptanceAgentSessionLifecycle,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if host
+                .agent_session_lifecycle(agent_session_id)
+                .await
+                .unwrap()
+                == Some(lifecycle)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("AgentSession must reach the expected lifecycle");
 }
 
 async fn associate_provider_session(
@@ -380,13 +402,6 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
         );
 
         assert!(host.submit(&first.id).await.is_err());
-        emit_provider_stop(
-            &host,
-            &mut first_terminal,
-            &first_owner,
-            &format!("provider-auto-{index}"),
-        )
-        .await;
         let after_duplicates = host.execution(&execution_id).await.unwrap().unwrap();
         let after_duplicate_leaves = leaf_nodes(&after_duplicates);
         assert_eq!(after_duplicate_leaves.len(), 2);
@@ -468,6 +483,21 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
             AcceptanceNodeExecutionStatus::WaitingApproval
         );
         assert!(waiting.node_executions[0].can_approve);
+        assert_eq!(
+            host.agent_session_lifecycle(&session_id).await.unwrap(),
+            Some(AcceptanceAgentSessionLifecycle::Open)
+        );
+        host.terminal()
+            .write(
+                terminal_owner.clone(),
+                &format!("waiting-approval-follow-up-{index}\r"),
+            )
+            .unwrap();
+        receive_until(
+            &mut terminal,
+            &format!("waiting-approval-follow-up-{index}"),
+        )
+        .await;
         assert!(host
             .approve(&execution_id, "other-node", &node.id)
             .await
@@ -689,7 +719,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入させない() {
+async fn test_atui_042_retryは旧attemptを停止し新attemptのterminalを維持する() {
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("retry-worktree");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -714,6 +744,12 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
     assert!(retryable.node_executions[0].can_retry);
 
     host.retry(&execution_id, &old_attempt.id).await.unwrap();
+    wait_for_agent_session_lifecycle(
+        &host,
+        &old_session_id,
+        AcceptanceAgentSessionLifecycle::Paused,
+    )
+    .await;
     let retried = wait_for_node_count(&host, &execution_id, 2).await;
     let old_history = retried
         .node_executions
@@ -730,37 +766,44 @@ async fn test_atui_042_retryは新attemptと新sessionを作り旧stopを混入�
     assert_eq!(old_history.status, AcceptanceNodeExecutionStatus::Aborted);
     assert!(old_history.submit_received);
     assert!(!old_history.stop_received);
+    assert_eq!(
+        host.agent_session_lifecycle(&old_session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Paused)
+    );
+    assert!(host.terminal().get(old_owner).is_err());
+
     assert_eq!(new_attempt.attempt, 2);
     assert_eq!(new_attempt.status, AcceptanceNodeExecutionStatus::Running);
     assert!(!new_attempt.submit_received);
     assert!(!new_attempt.stop_received);
     assert_ne!(new_attempt.agent_session_id, old_attempt.agent_session_id);
 
-    emit_provider_stop(&host, &mut old_terminal, &old_owner, "provider-retry-old").await;
-    let after_old_stop = host.execution(&execution_id).await.unwrap().unwrap();
-    let current = after_old_stop
-        .node_executions
-        .iter()
-        .find(|node| node.id == new_attempt.id)
-        .unwrap();
-    assert!(!current.submit_received);
-    assert!(!current.stop_received);
-
-    let new_owner = owner(&worktree, new_attempt.agent_session_id.as_deref().unwrap());
+    let new_session_id = new_attempt.agent_session_id.as_deref().unwrap();
+    assert_eq!(
+        host.agent_session_lifecycle(new_session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+    let new_owner = owner(&worktree, new_session_id);
     let mut new_terminal = host
         .terminal()
         .attach("atui-042-retry-new".to_string(), new_owner.clone())
         .unwrap();
     receive_until(&mut new_terminal, "releash-fixture-input-complete-0").await;
-    associate_provider_session(&host, &mut new_terminal, &new_owner, "provider-retry-new").await;
-    host.submit(&new_attempt.id).await.unwrap();
-    emit_provider_stop(&host, &mut new_terminal, &new_owner, "provider-retry-new").await;
-    wait_for_execution_status(
-        &host,
-        &execution_id,
-        AcceptanceWorkflowExecutionStatus::Completed,
-    )
-    .await;
+    host.terminal()
+        .write(new_owner.clone(), "follow-up-after-retry\r")
+        .unwrap();
+    receive_until(&mut new_terminal, "follow-up-after-retry").await;
+    assert!(!host.terminal().get(new_owner).unwrap().is_exited);
+
+    let after_terminal_input = host.execution(&execution_id).await.unwrap().unwrap();
+    let current = after_terminal_input
+        .node_executions
+        .iter()
+        .find(|node| node.id == new_attempt.id)
+        .unwrap();
+    assert_eq!(current.status, AcceptanceNodeExecutionStatus::Running);
+    assert!(!current.submit_received);
+    assert!(!current.stop_received);
     host.shutdown().await.unwrap();
 }
 
@@ -1001,7 +1044,7 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加stopで再進行しない() {
+async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointからresumeできる() {
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("worktree");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -1041,7 +1084,6 @@ async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加
         }),
     )
     .await;
-    host.submit(&node.id).await.unwrap();
     send_hook(
         &host,
         &mut terminal,
@@ -1053,48 +1095,43 @@ async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加
         }),
     )
     .await;
+    host.submit(&node.id).await.unwrap();
     wait_for_execution_status(
         &host,
         &execution_id,
         AcceptanceWorkflowExecutionStatus::Completed,
     )
     .await;
+    wait_for_agent_session_lifecycle(&host, &session_id, AcceptanceAgentSessionLifecycle::Paused)
+        .await;
 
-    let sequence_after_completion = host
-        .terminal()
-        .get(terminal_owner.clone())
-        .unwrap()
-        .terminal_surface
-        .sequence;
-    tokio::task::yield_now().await;
     assert_eq!(
-        host.terminal()
-            .get(terminal_owner.clone())
-            .unwrap()
-            .terminal_surface
-            .sequence,
-        sequence_after_completion,
-        "Workflow completion must not inject another Provider input",
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Paused),
     );
+    assert!(host.terminal().get(terminal_owner.clone()).is_err());
+
+    host.resume_agent_session(&session_id).await.unwrap();
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open),
     );
-    assert!(
-        !host
-            .terminal()
-            .get(terminal_owner.clone())
-            .unwrap()
-            .is_exited
-    );
+    let mut resumed_terminal = host
+        .terminal()
+        .attach(
+            "workflow-completion-resume".to_string(),
+            terminal_owner.clone(),
+        )
+        .unwrap();
+    receive_until(&mut resumed_terminal, "releash-fixture-input-complete-0").await;
 
     host.terminal()
         .write(terminal_owner.clone(), "follow-up-after-completion\r")
         .unwrap();
-    receive_until(&mut terminal, "follow-up-after-completion").await;
+    receive_until(&mut resumed_terminal, "follow-up-after-completion").await;
     send_hook(
         &host,
-        &mut terminal,
+        &mut resumed_terminal,
         &terminal_owner,
         serde_json::json!({
             "session_id": "provider-session-1",
@@ -1115,5 +1152,145 @@ async fn test_atui_042_workflow完了後もagent_sessionとptyを維持し追加
         AcceptanceNodeExecutionStatus::Succeeded
     );
     assert!(!host.terminal().get(terminal_owner).unwrap().is_exited);
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1654_execution_stop中はproviderを残して同じagent_sessionでresumeする() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("stop-resume-worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 4);
+    let execution_id = host
+        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let running = wait_for_node_count(&host, &execution_id, 1).await;
+    let node = running.node_executions[0].clone();
+    let session_id = node.agent_session_id.clone().unwrap();
+    let terminal_owner = owner(&worktree, &session_id);
+    let mut terminal = host
+        .terminal()
+        .attach("issue-1654-stop-resume".to_string(), terminal_owner.clone())
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+
+    host.stop(&execution_id).await.unwrap();
+    let stopped = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(stopped.status, AcceptanceWorkflowExecutionStatus::Running);
+    assert_eq!(
+        stopped.node_executions[0].agent_session_id.as_deref(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+    assert!(
+        !host
+            .terminal()
+            .get(terminal_owner.clone())
+            .unwrap()
+            .is_exited
+    );
+
+    host.resume(&execution_id).await.unwrap();
+    let resumed = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        resumed.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Running
+    );
+    assert_eq!(
+        resumed.node_executions[0].agent_session_id.as_deref(),
+        Some(session_id.as_str())
+    );
+    host.terminal()
+        .write(terminal_owner.clone(), "follow-up-after-workflow-resume\r")
+        .unwrap();
+    receive_until(&mut terminal, "follow-up-after-workflow-resume").await;
+
+    host.abort(&execution_id).await.unwrap();
+    wait_for_execution_status(
+        &host,
+        &execution_id,
+        AcceptanceWorkflowExecutionStatus::Aborted,
+    )
+    .await;
+    wait_for_agent_session_lifecycle(&host, &session_id, AcceptanceAgentSessionLifecycle::Paused)
+        .await;
+    let aborted = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        aborted.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Aborted
+    );
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1654_cap超過回数の終端後もworkflowと手動sessionを起動できる() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("cap-worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 1);
+
+    for index in 0..33 {
+        let execution_id = host
+            .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+            .await
+            .unwrap_or_else(|error| panic!("workflow {index} failed to start: {error}"));
+        let running = wait_for_node_count(&host, &execution_id, 1).await;
+        let node = running.node_executions[0].clone();
+        let session_id = node.agent_session_id.clone().unwrap();
+        host.abort(&execution_id).await.unwrap();
+        wait_for_execution_status(
+            &host,
+            &execution_id,
+            AcceptanceWorkflowExecutionStatus::Aborted,
+        )
+        .await;
+        wait_for_agent_session_lifecycle(
+            &host,
+            &session_id,
+            AcceptanceAgentSessionLifecycle::Paused,
+        )
+        .await;
+        assert_eq!(
+            host.execution(&execution_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .node_executions[0]
+                .status,
+            AcceptanceNodeExecutionStatus::Aborted
+        );
+    }
+
+    let next_execution_id = host
+        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let next = wait_for_node_count(&host, &next_execution_id, 1).await;
+    assert_eq!(
+        next.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Running
+    );
+    let manual_session_id = host
+        .launch_manual_agent_session(
+            &worktree,
+            AcceptanceProvider::Codex,
+            "issue-1654-manual-after-cap",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        host.agent_session_lifecycle(&manual_session_id)
+            .await
+            .unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+
+    host.abort(&next_execution_id).await.unwrap();
     host.shutdown().await.unwrap();
 }

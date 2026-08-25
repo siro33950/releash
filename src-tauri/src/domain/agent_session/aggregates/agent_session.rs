@@ -132,6 +132,13 @@ pub(crate) enum AgentSessionArchiveError {
 pub(crate) enum AgentSessionRecoveryError {
     NotArchived,
     NotPaused,
+    ProviderSessionUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentSessionWorkflowStopError {
+    NotWorkflowOwned,
+    NodeExecutionMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,20 +171,7 @@ pub(crate) struct AgentSessionOperations {
     pub(crate) can_archive: bool,
     pub(crate) can_restore: bool,
     pub(crate) can_delete: bool,
-}
-
-impl AgentSessionOperations {
-    pub(crate) fn for_state(
-        tree_parent: Option<&AgentSessionTreeParent>,
-        lifecycle: AgentSessionLifecycle,
-    ) -> Self {
-        let tree_root = tree_parent.is_none();
-        Self {
-            can_archive: tree_root && lifecycle != AgentSessionLifecycle::Archived,
-            can_restore: tree_root && lifecycle == AgentSessionLifecycle::Archived,
-            can_delete: tree_root && lifecycle == AgentSessionLifecycle::Archived,
-        }
-    }
+    pub(crate) can_resume: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +279,16 @@ impl AgentSession {
         self.lifecycle
     }
 
+    pub(crate) fn operations(&self) -> AgentSessionOperations {
+        let tree_root = self.tree_parent.is_none();
+        AgentSessionOperations {
+            can_archive: tree_root && self.lifecycle != AgentSessionLifecycle::Archived,
+            can_restore: tree_root && self.lifecycle == AgentSessionLifecycle::Archived,
+            can_delete: tree_root && self.lifecycle == AgentSessionLifecycle::Archived,
+            can_resume: self.authorize_resume().is_ok(),
+        }
+    }
+
     pub(crate) fn uncommitted_events(&self) -> &[AgentSessionLifecycleEvent] {
         &self.uncommitted_events
     }
@@ -368,6 +372,9 @@ impl AgentSession {
                 AgentSessionLifecycle::Open if self.provider_session_id.is_some() => {
                     AgentSessionOpenAction::Resume
                 }
+                AgentSessionLifecycle::Open if self.tree_parent.is_some() => {
+                    AgentSessionOpenAction::RemainPaused
+                }
                 AgentSessionLifecycle::Open => AgentSessionOpenAction::GarbageCollect,
             },
         }
@@ -380,7 +387,7 @@ impl AgentSession {
         if self.lifecycle == AgentSessionLifecycle::Archived {
             return AgentSessionProcessExitOutcome::AlreadyArchived;
         }
-        if self.provider_session_id.is_none() {
+        if self.provider_session_id.is_none() && self.tree_parent.is_none() {
             return AgentSessionProcessExitOutcome::GcRequired;
         }
         if self.lifecycle == AgentSessionLifecycle::Paused {
@@ -471,7 +478,15 @@ impl AgentSession {
         if self.lifecycle != AgentSessionLifecycle::Paused {
             return Err(AgentSessionRecoveryError::NotPaused);
         }
-        Ok(())
+        self.provider_session_id_for_recovery().map(|_| ())
+    }
+
+    pub(crate) fn provider_session_id_for_recovery(
+        &self,
+    ) -> Result<&str, AgentSessionRecoveryError> {
+        self.provider_session_id
+            .as_deref()
+            .ok_or(AgentSessionRecoveryError::ProviderSessionUnknown)
     }
 
     pub(crate) fn admit_initial_instruction(
@@ -520,10 +535,46 @@ impl AgentSession {
         if pty_presence != ManagedPtyPresence::ConfirmedAbsent {
             return Err(AgentSessionRemovalError::PtyNotConfirmedAbsent);
         }
+        if self.tree_parent.is_some() {
+            return Err(AgentSessionRemovalError::WorkflowOwned);
+        }
         if self.provider_session_id.is_some() {
             return Err(AgentSessionRemovalError::ProviderSessionKnown);
         }
         Ok(AgentSessionRemovalAuthorization::GarbageCollection)
+    }
+
+    pub(crate) fn authorize_workflow_stop(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<(), AgentSessionWorkflowStopError> {
+        let parent = self
+            .tree_parent
+            .as_ref()
+            .ok_or(AgentSessionWorkflowStopError::NotWorkflowOwned)?;
+        if parent.node_execution_id != node_execution_id {
+            return Err(AgentSessionWorkflowStopError::NodeExecutionMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_workflow_owned(
+        &mut self,
+        node_execution_id: &str,
+    ) -> Result<AgentSessionMutationOutcome, AgentSessionWorkflowStopError> {
+        self.authorize_workflow_stop(node_execution_id)?;
+        if self.lifecycle != AgentSessionLifecycle::Open {
+            return Ok(AgentSessionMutationOutcome::AlreadyApplied);
+        }
+        self.lifecycle = AgentSessionLifecycle::Paused;
+        self.last_exit_abnormal = false;
+        self.last_exit_code = None;
+        self.uncommitted_events
+            .push(AgentSessionLifecycleEvent::LifecycleChanged {
+                lifecycle: AgentSessionLifecycle::Paused,
+                last_exit_abnormal: false,
+            });
+        Ok(AgentSessionMutationOutcome::Applied)
     }
 
     pub(crate) fn authorize_workflow_launch_rollback(

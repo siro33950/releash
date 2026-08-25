@@ -5,7 +5,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
     AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
-    WorkflowAgentSessionLaunchRequest,
+    AgentSessionLifecycleUsecase, WorkflowAgentSessionLaunchRequest,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
@@ -67,6 +67,12 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         node_session_id: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn stop_workflow_agent_session_preserving_checkpoint(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn rollback_workflow_agent_session(
         &self,
         node_session_id: &str,
@@ -78,6 +84,7 @@ pub(crate) struct ProviderWorkflowAgentSessionPort {
     launch: Arc<AgentSessionLaunchUsecase>,
     initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
     interrupt: Arc<AgentSessionInterruptUsecase>,
+    lifecycle: Arc<AgentSessionLifecycleUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
 }
 
@@ -86,12 +93,14 @@ impl ProviderWorkflowAgentSessionPort {
         launch: Arc<AgentSessionLaunchUsecase>,
         initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
         interrupt: Arc<AgentSessionInterruptUsecase>,
+        lifecycle: Arc<AgentSessionLifecycleUsecase>,
         availability: Arc<dyn ProviderAvailabilityReader>,
     ) -> Self {
         Self {
             launch,
             initial_instruction,
             interrupt,
+            lifecycle,
             availability,
         }
     }
@@ -198,6 +207,25 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .map_err(|error| {
                 WorkflowRuntimeError::AgentSession(format!(
                     "interrupt Workflow AgentSession '{node_session_id}': {error:?}"
+                ))
+            })
+    }
+
+    async fn stop_workflow_agent_session_preserving_checkpoint(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.lifecycle
+            .stop_workflow_owned_preserving_checkpoint(
+                node_session_id,
+                node_execution_id,
+                &format!("workflow-node-terminal-stop-{node_execution_id}"),
+            )
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "stop Workflow AgentSession '{node_session_id}' for NodeExecution '{node_execution_id}': {error:?}"
                 ))
             })
     }

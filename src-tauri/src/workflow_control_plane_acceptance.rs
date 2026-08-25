@@ -18,9 +18,13 @@ use crate::domain::workflow::{
     RepositoryWorktreeInventory, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition,
     WorkflowError, WorktreeInventoryGateway,
 };
+use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::terminal_surface::TerminalSurfaceRuntime;
-use crate::usecase::agent_session::AgentSessionUsecase;
+use crate::usecase::agent_session::{
+    AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
+    AgentSessionUsecase,
+};
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
@@ -345,6 +349,8 @@ pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     provider_sessions: Arc<AgentSessionUsecase>,
+    provider_launch: Arc<AgentSessionLaunchUsecase>,
+    provider_lifecycle: Arc<AgentSessionLifecycleUsecase>,
     _runtime: Arc<WorkflowRuntimeUsecase>,
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
@@ -419,6 +425,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             composition.launch.clone(),
             composition.initial_instruction.clone(),
             composition.interrupt.clone(),
+            composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(
                 crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
@@ -475,6 +482,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             provider_sessions: composition.sessions,
+            provider_launch: composition.launch,
+            provider_lifecycle: composition.lifecycle,
             _runtime: runtime,
             local_api,
             local_api_base_url: format!("http://127.0.0.1:{port}"),
@@ -682,6 +691,81 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .ok_or_else(|| "Retry response was not successful".to_string())
     }
 
+    pub async fn abort(&self, execution_id: &str) -> Result<(), String> {
+        let response: MutationResponse = self
+            .post(
+                &format!("/v1/workflow/executions/{execution_id}/abort"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        response
+            .ok
+            .then_some(())
+            .ok_or_else(|| "Abort response was not successful".to_string())
+    }
+
+    pub async fn stop(&self, execution_id: &str) -> Result<(), String> {
+        let response: MutationResponse = self
+            .post(
+                &format!("/v1/workflow/executions/{execution_id}/stop"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        response
+            .ok
+            .then_some(())
+            .ok_or_else(|| "Stop response was not successful".to_string())
+    }
+
+    pub async fn resume(&self, execution_id: &str) -> Result<(), String> {
+        let response: MutationResponse = self
+            .post(
+                &format!("/v1/workflow/executions/{execution_id}/resume"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        response
+            .ok
+            .then_some(())
+            .ok_or_else(|| "Resume response was not successful".to_string())
+    }
+
+    pub async fn launch_manual_agent_session(
+        &self,
+        worktree_path: &str,
+        provider: AcceptanceProvider,
+        caller_request_id: &str,
+    ) -> Result<String, String> {
+        self.provider_launch
+            .launch_standalone(AgentSessionLaunchRequest {
+                workspace: WorkspaceIdentity::new(worktree_path),
+                worktree_path: worktree_path.to_string(),
+                provider: match provider {
+                    AcceptanceProvider::Claude => ProviderKind::Claude,
+                    AcceptanceProvider::Codex => ProviderKind::Codex,
+                },
+                rows: 24,
+                cols: 80,
+                caller_request_id: caller_request_id.to_string(),
+            })
+            .await
+            .map(|session| session.session().id().to_string())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    pub async fn resume_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
+        self.provider_lifecycle
+            .resume(
+                agent_session_id,
+                24,
+                80,
+                &format!("acceptance-resume-{agent_session_id}"),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
     pub async fn agent_session_lifecycle(
         &self,
         agent_session_id: &str,
@@ -749,6 +833,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             provider_sessions,
+            provider_launch,
+            provider_lifecycle,
             _runtime,
             local_api,
             local_api_base_url: _,
@@ -764,7 +850,15 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .await
             .map_err(|error| format!("join local API server: {error}"))?;
         _app.unmanage::<Arc<LocalEventStore>>();
-        drop((local_api, _runtime, provider_sessions, terminal, _app));
+        drop((
+            local_api,
+            _runtime,
+            provider_sessions,
+            provider_launch,
+            provider_lifecycle,
+            terminal,
+            _app,
+        ));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let writer_lock = std::fs::OpenOptions::new()

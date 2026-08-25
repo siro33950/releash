@@ -47,6 +47,10 @@ pub(crate) fn node_outcome_from_advance(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkflowRuntimeEffect {
     BroadcastState,
+    StopWorkflowAgentSession {
+        node_execution_id: String,
+        agent_session_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +130,7 @@ impl PreparedWorkflowTransaction {
     fn from_candidate(
         before: WorkflowExecution,
         after: WorkflowExecution,
-        decision: WorkflowRuntimeDecision,
+        mut decision: WorkflowRuntimeDecision,
     ) -> Result<Self, WorkflowTransactionPreparationError> {
         if before == after
             && decision.outcome == TransitionOutcome::Applied
@@ -134,6 +138,15 @@ impl PreparedWorkflowTransaction {
         {
             return Err(WorkflowTransactionPreparationError::EventWithoutStateChange);
         }
+        decision.effects.extend(
+            after
+                .newly_terminal_sessions_since(&before)
+                .into_iter()
+                .map(|target| WorkflowRuntimeEffect::StopWorkflowAgentSession {
+                    node_execution_id: target.node_execution_id,
+                    agent_session_id: target.agent_session_id,
+                }),
+        );
         Ok(Self {
             before,
             after,
@@ -213,7 +226,25 @@ impl DurableWorkflowTransaction {
 mod tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::TransitionRejection;
-    use crate::domain::workflow::{ExecutionInterruptionReason, RuntimeExecutionState};
+    use crate::domain::workflow::{
+        ExecutionInterruptionReason, NodeExecutionFailureKind, NodeKindName, RuntimeExecutionState,
+    };
+
+    fn execution_with_attached_session() -> WorkflowExecution {
+        let mut execution = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        execution
+            .begin_node_attempt(
+                "session".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution".to_string(),
+                1.0,
+            )
+            .unwrap();
+        execution.attach_node_session("node-execution", "agent-session".to_string(), 1.0);
+        execution
+    }
 
     fn interrupted_event() -> WorkflowEvent {
         WorkflowEvent::ExecutionInterrupted {
@@ -265,6 +296,69 @@ mod tests {
             vec![WorkflowRuntimeEffect::BroadcastState]
         );
         assert_eq!(live.state(), &RuntimeExecutionState::Interrupted);
+    }
+
+    #[test]
+    fn newly_terminal_session_stop_effect_becomes_available_after_persistence() {
+        let mut live = execution_with_attached_session();
+        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+            let outcome = candidate.fail_node_execution(
+                "node-execution",
+                "provider failed".to_string(),
+                NodeExecutionFailureKind::InfrastructureCrash,
+                2.0,
+            );
+            Ok(WorkflowRuntimeDecision {
+                outcome,
+                events: vec![interrupted_event()],
+                effects: vec![WorkflowRuntimeEffect::BroadcastState],
+            })
+        })
+        .unwrap();
+
+        let durable = prepared.persist(&mut live, |_| Ok::<_, ()>(())).unwrap();
+
+        assert_eq!(
+            durable.into_effects(),
+            vec![
+                WorkflowRuntimeEffect::BroadcastState,
+                WorkflowRuntimeEffect::StopWorkflowAgentSession {
+                    node_execution_id: "node-execution".to_string(),
+                    agent_session_id: "agent-session".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn newly_terminal_session_persistence_failure_keeps_active_aggregate() {
+        let mut live = execution_with_attached_session();
+        let prepared = PreparedWorkflowTransaction::observe(&live, |candidate| {
+            let outcome = candidate.fail_node_execution(
+                "node-execution",
+                "provider failed".to_string(),
+                NodeExecutionFailureKind::InfrastructureCrash,
+                2.0,
+            );
+            Ok(WorkflowRuntimeDecision {
+                outcome,
+                events: vec![interrupted_event()],
+                effects: vec![WorkflowRuntimeEffect::BroadcastState],
+            })
+        })
+        .unwrap();
+
+        let result = prepared.persist(&mut live, |_| Err("disk"));
+
+        assert!(matches!(
+            result,
+            Err(WorkflowTransactionCommitError::Persistence("disk"))
+        ));
+        assert!(live
+            .node_execution("node-execution")
+            .unwrap()
+            .status
+            .is_active());
     }
 
     #[test]

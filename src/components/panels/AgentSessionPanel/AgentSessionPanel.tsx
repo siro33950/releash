@@ -60,6 +60,10 @@ export function AgentSessionPanel({
 	const workspaceIdentity =
 		session?.workspaceIdentity ?? initialAttachment?.workspaceIdentity ?? "";
 	const provider = session?.provider ?? initialAttachment?.provider ?? "";
+	const canResume = session?.operations.canResume ?? false;
+	const pausedMessage = canResume
+		? "Provider session is not running. Resume to retry."
+		: "Provider session is not running.";
 	const [state, setState] = useState<PanelState>(
 		initiallyAttached ? "terminal" : "loading",
 	);
@@ -89,7 +93,8 @@ export function AgentSessionPanel({
 					setState("terminal");
 					return;
 				case "paused":
-					setError("Provider session is not running. Resume to retry.");
+					onRefresh?.();
+					setError(pausedMessage);
 					setState("paused");
 					return;
 				case "indeterminate":
@@ -100,7 +105,7 @@ export function AgentSessionPanel({
 					return;
 			}
 		},
-		[onRefresh, worktreePath],
+		[onRefresh, pausedMessage, worktreePath],
 	);
 
 	const runLifecycleOperation = useCallback(
@@ -196,19 +201,21 @@ export function AgentSessionPanel({
 			)}
 			{state === "paused" && !error && (
 				<div role="alert" className="text-destructive">
-					Provider session is not running. Resume to retry.
+					{pausedMessage}
 				</div>
 			)}
 			{state === "loading" && <div>Opening AgentSession...</div>}
 			{state === "paused" && (
 				<>
 					<div className="text-muted-foreground">AgentSession is paused.</div>
-					<Button
-						type="button"
-						onClick={() => void runLifecycleOperation("resume_agent_session")}
-					>
-						Resume
-					</Button>
+					{canResume && (
+						<Button
+							type="button"
+							onClick={() => void runLifecycleOperation("resume_agent_session")}
+						>
+							Resume
+						</Button>
+					)}
 				</>
 			)}
 			{state === "archived" && (

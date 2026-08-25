@@ -36,6 +36,7 @@ pub(crate) struct AgentSessionOperationsDto {
     pub can_archive: bool,
     pub can_restore: bool,
     pub can_delete: bool,
+    pub can_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

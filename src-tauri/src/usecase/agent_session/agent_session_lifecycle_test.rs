@@ -5,8 +5,11 @@ use super::{AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, AgentSessionU
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionLifecycle, ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionTreeParent, ManagedPtyPresence,
     ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::{
@@ -150,6 +153,7 @@ struct LifecycleTerminal {
     presence: Mutex<ManagedPtyPresence>,
     runtime_generation: Mutex<u64>,
     fail_spawn: Mutex<bool>,
+    fail_stop: Mutex<bool>,
     spawn_count: Mutex<usize>,
     first_spawn_entered: Mutex<Option<mpsc::Sender<()>>>,
     first_spawn_release: Mutex<Option<mpsc::Receiver<()>>>,
@@ -217,6 +221,7 @@ impl LifecycleTerminal {
             presence: Mutex::new(presence),
             runtime_generation: Mutex::new(1),
             fail_spawn: Mutex::new(false),
+            fail_stop: Mutex::new(false),
             spawn_count: Mutex::new(0),
             first_spawn_entered: Mutex::new(None),
             first_spawn_release: Mutex::new(None),
@@ -270,6 +275,9 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         owner: &TerminalSurfaceOwner,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
         self.stops.lock().unwrap().push(owner.clone());
+        if *self.fail_stop.lock().unwrap() {
+            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+        }
         *self.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
         Ok(())
     }
@@ -300,6 +308,7 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
 
 struct LifecycleTestContext {
     _directory: tempfile::TempDir,
+    store: Arc<LocalEventStore>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: AgentSessionLifecycleUsecase,
     launches: Arc<RecordingResumeLaunches>,
@@ -339,6 +348,7 @@ fn setup() -> LifecycleTestContext {
     );
     LifecycleTestContext {
         _directory: directory,
+        store,
         sessions,
         lifecycle: usecase,
         launches,
@@ -347,6 +357,292 @@ fn setup() -> LifecycleTestContext {
         hook_health,
         change_notifier,
     }
+}
+
+#[tokio::test]
+async fn test_workflow所有agent_session停止_checkpointとprovider参照を保持してresumeできる() {
+    let LifecycleTestContext {
+        _directory,
+        store,
+        sessions,
+        lifecycle,
+        launches,
+        terminal,
+        provider_lifecycle,
+        ..
+    } = setup();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo/worktree",
+            provider: ProviderKind::Claude,
+            workflow_execution_id: "workflow-1",
+            node_execution_id: "node-1",
+            session_id: "workflow-agent",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    sessions
+        .create(
+            "workflow-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            "create-workflow-agent",
+        )
+        .await
+        .unwrap();
+    sessions
+        .associate_provider_session(
+            "workflow-agent",
+            "provider-1",
+            Some("provider://transcript/1"),
+            "associate-workflow-agent",
+        )
+        .await
+        .unwrap();
+    let scope = ProviderLifecycleScope::new("workflow-agent").unwrap();
+    provider_lifecycle
+        .arm(
+            ProviderLifecycleSlotId::new("workflow-agent-slot").unwrap(),
+            ProviderKind::Claude,
+            scope.clone(),
+        )
+        .await
+        .unwrap();
+
+    lifecycle
+        .stop_workflow_owned_preserving_checkpoint(
+            "workflow-agent",
+            "node-1",
+            "stop-workflow-agent",
+        )
+        .await
+        .unwrap();
+
+    let stopped = sessions.find("workflow-agent").await.unwrap().unwrap();
+    assert_eq!(stopped.session().lifecycle(), AgentSessionLifecycle::Paused);
+    assert!(!stopped.session().last_exit_abnormal());
+    assert_eq!(stopped.session().provider_session_id(), Some("provider-1"));
+    assert_eq!(
+        stopped.session().transcript_ref(),
+        Some("provider://transcript/1")
+    );
+    assert_eq!(
+        *terminal.presence.lock().unwrap(),
+        ManagedPtyPresence::ConfirmedAbsent
+    );
+    assert_eq!(terminal.stops.lock().unwrap().len(), 1);
+    assert!(terminal.deletes.lock().unwrap().is_empty());
+    assert_eq!(
+        launches.cleanups.lock().unwrap().as_slice(),
+        &["workflow-agent"]
+    );
+    assert!(provider_lifecycle
+        .active_launch_id(ProviderKind::Claude, &scope)
+        .await
+        .unwrap()
+        .is_none());
+
+    assert_eq!(
+        lifecycle
+            .resume("workflow-agent", 24, 80, "resume-workflow-agent")
+            .await
+            .unwrap(),
+        AgentSessionOpenOutcome::Resumed
+    );
+    assert_eq!(
+        launches.launches.lock().unwrap().as_slice(),
+        &[ProviderSessionLaunch::resume("provider-1").unwrap()]
+    );
+    assert_eq!(
+        sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Open
+    );
+}
+
+#[tokio::test]
+async fn test_workflow所有agent_session停止_provider未確定でもgcせずpausedで保持する() {
+    let LifecycleTestContext {
+        _directory,
+        store,
+        sessions,
+        lifecycle,
+        terminal,
+        ..
+    } = setup();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo/worktree",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "workflow-1",
+            node_execution_id: "node-1",
+            session_id: "workflow-agent-unknown",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    sessions
+        .create(
+            "workflow-agent-unknown",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Codex,
+            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            "create-workflow-agent-unknown",
+        )
+        .await
+        .unwrap();
+
+    lifecycle
+        .stop_workflow_owned_preserving_checkpoint(
+            "workflow-agent-unknown",
+            "node-1",
+            "stop-workflow-agent-unknown",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        lifecycle
+            .open(
+                "workflow-agent-unknown",
+                24,
+                80,
+                "open-workflow-agent-unknown"
+            )
+            .await
+            .unwrap(),
+        AgentSessionOpenOutcome::Paused
+    );
+    assert_eq!(
+        lifecycle
+            .reconcile_garbage_collection(
+                "workflow-agent-unknown",
+                "reconcile-workflow-agent-unknown",
+            )
+            .await
+            .unwrap(),
+        super::AgentSessionGarbageCollectionOutcome::Retained
+    );
+    let retained = sessions
+        .find("workflow-agent-unknown")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained.session().lifecycle(),
+        AgentSessionLifecycle::Paused
+    );
+    assert!(!retained.session().last_exit_abnormal());
+    assert_eq!(retained.session().provider_session_id(), None);
+    assert!(terminal.deletes.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_workflow所有agent_session停止_ownership不一致と停止失敗ではsettleしない() {
+    let LifecycleTestContext {
+        _directory,
+        store,
+        sessions,
+        lifecycle,
+        launches,
+        terminal,
+        ..
+    } = setup();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo/worktree",
+            provider: ProviderKind::Claude,
+            workflow_execution_id: "workflow-1",
+            node_execution_id: "node-1",
+            session_id: "workflow-agent",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    sessions
+        .create(
+            "workflow-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            "create-workflow-agent",
+        )
+        .await
+        .unwrap();
+    sessions
+        .create(
+            "manual-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            None,
+            "create-manual-agent",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        lifecycle
+            .stop_workflow_owned_preserving_checkpoint(
+                "workflow-agent",
+                "different-node",
+                "stop-wrong-node",
+            )
+            .await
+            .unwrap_err(),
+        super::AgentSessionLifecycleUsecaseError::InvalidOperation
+    );
+    assert_eq!(
+        lifecycle
+            .stop_workflow_owned_preserving_checkpoint(
+                "manual-agent",
+                "node-1",
+                "stop-manual-agent",
+            )
+            .await
+            .unwrap_err(),
+        super::AgentSessionLifecycleUsecaseError::InvalidOperation
+    );
+    assert!(terminal.stops.lock().unwrap().is_empty());
+
+    *terminal.fail_stop.lock().unwrap() = true;
+    assert_eq!(
+        lifecycle
+            .stop_workflow_owned_preserving_checkpoint("workflow-agent", "node-1", "stop-failure",)
+            .await
+            .unwrap_err(),
+        super::AgentSessionLifecycleUsecaseError::TerminalUnavailable
+    );
+    assert_eq!(
+        sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Open
+    );
+    assert!(launches.cleanups.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

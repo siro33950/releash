@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionOpenAction, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionMutationOutcome, AgentSessionOpenAction,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
@@ -282,6 +282,40 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)
     }
 
+    pub(crate) async fn stop_workflow_owned_preserving_checkpoint(
+        &self,
+        agent_session_id: &str,
+        node_execution_id: &str,
+        caller_request_id: &str,
+    ) -> Result<(), AgentSessionLifecycleUsecaseError> {
+        let _operation = self
+            .sessions
+            .lock_operation(agent_session_id)
+            .await
+            .map_err(map_session_error)?;
+        let session = self.required(agent_session_id).await?;
+        session
+            .session()
+            .authorize_workflow_stop(node_execution_id)
+            .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
+        self.terminal
+            .stop_preserving_checkpoint(&session.session().terminal_surface_owner())
+            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+        let outcome = self
+            .sessions
+            .stop_workflow_owned(agent_session_id, node_execution_id, caller_request_id)
+            .await
+            .map_err(map_session_error)?;
+        if outcome == AgentSessionMutationOutcome::Applied {
+            self.change_notifier
+                .agent_session_changed(session.session().worktree_path());
+        }
+        self.release_launch_binding(agent_session_id).await?;
+        self.launch_gateway
+            .cleanup(agent_session_id)
+            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)
+    }
+
     pub(crate) async fn delete(
         &self,
         agent_session_id: &str,
@@ -445,8 +479,8 @@ impl AgentSessionLifecycleUsecase {
         let session = self.required(agent_session_id).await?;
         let provider_session_id = session
             .session()
-            .provider_session_id()
-            .ok_or(AgentSessionLifecycleUsecaseError::InvalidOperation)?;
+            .provider_session_id_for_recovery()
+            .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
         let executable = self
             .availability
             .resolved_executable(session.session().provider())

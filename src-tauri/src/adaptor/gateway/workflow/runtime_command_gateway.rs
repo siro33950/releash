@@ -46,6 +46,8 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
         Arc<crate::usecase::agent_session::AgentSessionInitialInstructionUsecase>,
     pub(crate) agent_session_interrupt:
         Arc<crate::usecase::agent_session::AgentSessionInterruptUsecase>,
+    pub(crate) agent_session_lifecycle:
+        Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>,
     pub(crate) provider_availability:
         Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
     pub(crate) worktree_ledger: Arc<dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository>,
@@ -176,6 +178,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             agent_session_launch,
             agent_session_initial_instruction,
             agent_session_interrupt,
+            agent_session_lifecycle,
             provider_availability,
             worktree_ledger,
             worktree_inventory,
@@ -191,6 +194,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             agent_session_launch,
             agent_session_initial_instruction,
             agent_session_interrupt,
+            agent_session_lifecycle,
             provider_availability,
             worktree_ledger,
             worktree_inventory,
