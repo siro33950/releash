@@ -9,7 +9,8 @@ use crate::adaptor::gateway::workflow::span_map::{DiagnosticSpan, YamlSpanMap};
 use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering;
 use crate::domain::workflow::validation;
 use crate::domain::workflow::validation::{
-    InvalidArtifactReferenceKind, InvalidRuleKind, InvalidSchemaKind,
+    InvalidArtifactReferenceKind, InvalidEnvironmentReferenceKind, InvalidRuleKind,
+    InvalidSchemaKind,
 };
 use crate::domain::workflow::SessionPermission;
 use serde::Serialize;
@@ -434,6 +435,7 @@ fn parse_shape_diagnostics(
                 "session",
                 "fanout",
                 "sequence",
+                "env",
                 "artifact",
                 "input",
                 "completion",
@@ -485,6 +487,15 @@ fn parse_shape_diagnostics(
                 .field("kind"),
             );
         }
+        check_command_env_shape(
+            node_obj,
+            &node_path,
+            node_obj.contains_key("command"),
+            span_map,
+            workflow_name,
+            node_name,
+            &mut diagnostics,
+        );
         if node_name == "request" || crate::domain::workflow::is_reserved_node_name(node_name) {
             diagnostics.push(
                 DiagnosticItem::new(
@@ -640,6 +651,7 @@ const CHILD_ENTRY_BODY_FIELDS: &[&str] = &[
     "session",
     "fanout",
     "sequence",
+    "env",
     "artifact",
     "input",
     "completion",
@@ -807,6 +819,15 @@ fn check_child_body_shape(
         Some(node_name),
         diagnostics,
     );
+    check_command_env_shape(
+        body,
+        body_path,
+        body.contains_key("command"),
+        span_map,
+        workflow_name,
+        node_name,
+        diagnostics,
+    );
     if let Some(rules) = body.get("rules").and_then(serde_json::Value::as_array) {
         check_rules_shape(
             rules,
@@ -905,6 +926,107 @@ fn check_session_permission(
             .node(node_name)
             .field("permission"),
         );
+    }
+}
+
+fn check_command_env_shape(
+    node: &serde_json::Map<String, serde_json::Value>,
+    node_path: &str,
+    is_command: bool,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    let Some(env) = node.get("env") else {
+        return;
+    };
+    let env_path = format!("{node_path}.env");
+    if !is_command {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span(&env_path),
+                "env can only be declared by command nodes",
+            )
+            .workflow(workflow_name)
+            .node(node_name)
+            .field("env"),
+        );
+        return;
+    }
+    let Some(entries) = env.as_object() else {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span(&env_path),
+                "command env must be a mapping of environment variable names to input parameter references",
+            )
+            .workflow(workflow_name)
+            .node(node_name)
+            .field("env"),
+        );
+        return;
+    };
+    for (name, reference) in entries {
+        let entry_path = format!("{env_path}.{name}");
+        if let Err(error) = crate::domain::workflow::EnvironmentVariableName::new(name) {
+            let (code, stage) = match &error {
+                crate::domain::workflow::EnvironmentVariableNameError::Invalid(_) => {
+                    ("WFS006", DiagnosticStage::ParseShape)
+                }
+                crate::domain::workflow::EnvironmentVariableNameError::Reserved(_) => {
+                    ("WFR004", DiagnosticStage::Resolve)
+                }
+            };
+            diagnostics.push(
+                DiagnosticItem::new(
+                    code,
+                    Severity::Error,
+                    stage,
+                    span_map.field_span(&entry_path),
+                    error.to_string(),
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("env"),
+            );
+        }
+        let Some(reference) = reference.as_str() else {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFS002",
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
+                    span_map.field_span(&entry_path),
+                    format!(
+                        "command env '{name}' value must be an input parameter reference string"
+                    ),
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("env"),
+            );
+            continue;
+        };
+        if let Err(error) = crate::domain::workflow::InputParameterRef::new(reference) {
+            diagnostics.push(
+                DiagnosticItem::new(
+                    "WFR003",
+                    Severity::Error,
+                    DiagnosticStage::Resolve,
+                    span_map.field_span(&entry_path),
+                    error,
+                )
+                .workflow(workflow_name)
+                .node(node_name)
+                .field("env"),
+            );
+        }
     }
 }
 
@@ -1100,6 +1222,11 @@ fn validation_error_code_stage(
             InvalidArtifactReferenceKind::UnknownParameter
             | InvalidArtifactReferenceKind::UnknownField
             | InvalidArtifactReferenceKind::InvalidInputRef => "WFR003",
+        },
+        ValidationError::InvalidEnvironmentReference { kind, .. } => match kind {
+            InvalidEnvironmentReferenceKind::UnknownParameter
+            | InvalidEnvironmentReferenceKind::UnknownField
+            | InvalidEnvironmentReferenceKind::InvalidInputRef => "WFR003",
         },
         ValidationError::InvalidArtifactSchema { .. } => "WFT004",
         ValidationError::ReservedArtifactField { .. } => "WFT005",
@@ -1660,6 +1787,9 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         }
         ValidationError::MissingFacet { node } => (Some(node.clone()), Some("facets".to_string())),
         ValidationError::InvalidArtifactReference { .. } => (None, Some("nodes".to_string())),
+        ValidationError::InvalidEnvironmentReference { node, .. } => {
+            (Some(node.clone()), Some("env".to_string()))
+        }
         ValidationError::EmptyCommand { node } => (Some(node.clone()), Some("command".to_string())),
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
         ValidationError::TooManyFanoutChildren { node, .. } => {
@@ -2044,6 +2174,7 @@ mod tests {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: command.to_string(),
+                env: Default::default(),
             }),
             ..NodeDefinition::default()
         }
@@ -4102,6 +4233,343 @@ return r.workflow{
             lua_error.span.as_ref().unwrap().source.as_deref(),
             Some("review.lua")
         );
+    }
+
+    #[test]
+    fn test_command_env_yamlとluaが同じworkflow_definitionになる() {
+        let tmp = TempDir::new().unwrap();
+        let yaml = diagnose_workflow_source(
+            r#"name: env-equivalence
+description: env equivalence
+schemas:
+  document-contract:
+    type: object
+    properties:
+      body: string
+    required:
+      - body
+nodes:
+  main:
+    command: printf
+    input:
+      - document: document-contract
+      - context
+    env:
+      DOC: document
+      BODY: document.body
+      SPEC_DIR: context.spec_dir
+"#,
+            Some("env-equivalence"),
+        );
+        let lua = diagnose_lua_workflow_source(
+            "env-equivalence.lua",
+            r#"local r = require("releash")
+local document_contract = r.schema.object{
+  name = "document-contract",
+  properties = { body = r.schema.string{} },
+  required = { "body" },
+}
+local document = r.input("document", document_contract)
+local context = r.input("context")
+return r.workflow{
+  name = "env-equivalence", description = "env equivalence",
+  main = r.command{
+    command = "printf",
+    input = { document, context },
+    env = { DOC = document, BODY = document.body, SPEC_DIR = context.spec_dir },
+  },
+}
+"#,
+            tmp.path(),
+            tmp.path(),
+            Some("env-equivalence"),
+        );
+
+        assert!(!yaml.has_errors(), "{:?}", yaml.diagnostics);
+        assert!(!lua.has_errors(), "{:?}", lua.diagnostics);
+        assert_eq!(yaml.workflow, lua.workflow);
+    }
+
+    #[test]
+    fn test_command_env_yamlとluaが同じ参照error_codeを返す() {
+        let tmp = TempDir::new().unwrap();
+        let cases = [
+            (
+                "env-not-map",
+                r#"name: env-not-map
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env: document
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+return r.workflow{
+  name = "env-not-map", description = "invalid env",
+  main = r.command{ command = "true", input = { document }, env = document },
+}
+"#,
+                "WFS002",
+            ),
+            (
+                "env-value-not-input",
+                r#"name: env-value-not-input
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env:
+      DOC: 2
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+return r.workflow{
+  name = "env-value-not-input", description = "invalid env",
+  main = r.command{ command = "true", input = { document }, env = { DOC = 2 } },
+}
+"#,
+                "WFS002",
+            ),
+            (
+                "unknown-input",
+                r#"name: unknown-input
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env:
+      DOC: missing
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+local missing = r.input("missing")
+return r.workflow{
+  name = "unknown-input", description = "invalid env",
+  main = r.command{ command = "true", input = { document }, env = { DOC = missing } },
+}
+"#,
+                "WFR003",
+            ),
+            (
+                "nested-field",
+                r#"name: nested-field
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env:
+      DOC: document.body.text
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+return r.workflow{
+  name = "nested-field", description = "invalid env",
+  main = r.command{ command = "true", input = { document }, env = { DOC = document.body.text } },
+}
+"#,
+                "WFR003",
+            ),
+            (
+                "unknown-contract-field",
+                r#"name: unknown-contract-field
+description: invalid env
+schemas:
+  document-contract:
+    type: object
+    properties:
+      body: string
+    required:
+      - body
+nodes:
+  main:
+    command: "true"
+    input:
+      - document: document-contract
+    env:
+      DOC: document.missing
+"#,
+                r#"local r = require("releash")
+local document_contract = r.schema.object{
+  name = "document-contract",
+  properties = { body = r.schema.string{} },
+  required = { "body" },
+}
+local document = r.input("document", document_contract)
+return r.workflow{
+  name = "unknown-contract-field", description = "invalid env",
+  main = r.command{
+    command = "true", input = { document }, env = { DOC = document.missing },
+  },
+}
+"#,
+                "WFR003",
+            ),
+            (
+                "reserved-env",
+                r#"name: reserved-env
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env:
+      RELEASH_WORKTREE_PATH: document
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+return r.workflow{
+  name = "reserved-env", description = "invalid env",
+  main = r.command{
+    command = "true", input = { document },
+    env = { RELEASH_WORKTREE_PATH = document },
+  },
+}
+"#,
+                "WFR004",
+            ),
+            (
+                "invalid-env-name",
+                r#"name: invalid-env-name
+description: invalid env
+nodes:
+  main:
+    command: "true"
+    input:
+      - document
+    env:
+      BAD-NAME: document
+"#,
+                r#"local r = require("releash")
+local document = r.input("document")
+return r.workflow{
+  name = "invalid-env-name", description = "invalid env",
+  main = r.command{
+    command = "true", input = { document }, env = { ["BAD-NAME"] = document },
+  },
+}
+"#,
+                "WFS006",
+            ),
+        ];
+
+        for (name, yaml_source, lua_source, expected_code) in cases {
+            let yaml = diagnose_workflow_source(yaml_source, Some(name));
+            let lua = diagnose_lua_workflow_source(
+                &format!("{name}.lua"),
+                lua_source,
+                tmp.path(),
+                tmp.path(),
+                Some(name),
+            );
+            assert!(yaml.has_errors(), "{name}: {:?}", yaml.diagnostics);
+            assert!(lua.has_errors(), "{name}: {:?}", lua.diagnostics);
+            let expected_stage = expected_stage_for_code(expected_code);
+            assert!(
+                yaml.diagnostics
+                    .iter()
+                    .any(|item| item.code == expected_code && item.stage == expected_stage),
+                "{name}: {:?}",
+                yaml.diagnostics
+            );
+            assert!(
+                lua.diagnostics
+                    .iter()
+                    .any(|item| item.code == expected_code && item.stage == expected_stage),
+                "{name}: {:?}",
+                lua.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_env_command以外のnodeとenvというnode名を拒否する() {
+        let tmp = TempDir::new().unwrap();
+        for (kind, body, lua_node) in [
+            (
+                "session",
+                "session:\n      provider: claude\n    env: {}",
+                "r.session{ provider = r.provider.claude, env = {} }",
+            ),
+            (
+                "fanout",
+                "fanout:\n      children: [worker]\n    env: {}",
+                "r.fanout{ children = {}, env = {} }",
+            ),
+            (
+                "sequence",
+                "sequence:\n      children: [worker]\n    env: {}",
+                "r.sequence{ children = {}, env = {} }",
+            ),
+        ] {
+            let source = format!(
+                "name: {kind}-env\ndescription: invalid env\nnodes:\n  main:\n    {body}\n  worker:\n    command: true\n"
+            );
+            let diagnosis = diagnose_workflow_source(&source, None);
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFS002" && item.field.as_deref() == Some("env")),
+                "{kind}: {:?}",
+                diagnosis.diagnostics
+            );
+            assert!(diagnosis.workflow.is_none());
+
+            let lua = diagnose_lua_workflow_source(
+                &format!("{kind}-env.lua"),
+                &format!(
+                    "local r = require(\"releash\")\nreturn r.workflow{{ name = \"{kind}-env\", description = \"invalid env\", main = {lua_node} }}"
+                ),
+                tmp.path(),
+                tmp.path(),
+                Some(&format!("{kind}-env")),
+            );
+            assert!(
+                lua.diagnostics.iter().any(|item| item.code == "WFS002"),
+                "{kind}: {:?}",
+                lua.diagnostics
+            );
+            assert!(lua.workflow.is_none());
+        }
+
+        for reserved_name in ["env", "session"] {
+            let workflow_name = format!("{reserved_name}-node-name");
+            let node_name = diagnose_workflow_source(
+                &format!(
+                    "name: {workflow_name}\ndescription: reserved node name\nnodes:\n  main:\n    command: true\n  {reserved_name}:\n    command: true\n"
+                ),
+                None,
+            );
+            assert!(node_name.diagnostics.iter().any(|item| {
+                item.code == "WFR004" && item.node_name.as_deref() == Some(reserved_name)
+            }));
+            assert!(node_name.workflow.is_none());
+
+            let lua_node_name = diagnose_lua_workflow_source(
+                &format!("{workflow_name}.lua"),
+                &format!(
+                    "local r = require(\"releash\")\nlocal child = r.command{{ name = \"{reserved_name}\", command = \"true\" }}\nreturn r.workflow{{\n  name = \"{workflow_name}\", description = \"reserved node name\",\n  main = r.sequence{{ children = {{ r.child{{ node = child }} }} }},\n}}\n"
+                ),
+                tmp.path(),
+                tmp.path(),
+                Some(&workflow_name),
+            );
+            assert!(lua_node_name
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "WFR004"));
+            assert!(lua_node_name.workflow.is_none());
+        }
     }
 
     #[test]

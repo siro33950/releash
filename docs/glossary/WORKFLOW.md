@@ -70,7 +70,9 @@ Node 共通 field は kind block と同じ階層に書く。
 ```yaml
 nodes:
   judge:
-    command: "echo '{{ reviews }}' | jq '{all_lgtm: all(.[].lgtm)}'"
+    command: "printf '%s' \"$REVIEWS\" | jq '{all_lgtm: all(.[].lgtm)}'"
+    env:
+      REVIEWS: reviews
     input:
       - reviews: review_verdicts
     artifact: judge_result
@@ -185,14 +187,31 @@ fix_each:
 ### Command
 
 ```yaml
-run_tests:
-  command: "cargo test"
-  artifact: test_result
+materialize_requirements:
+  command: "printf '%s' \"$DOC\" > \"$SPEC_DIR/requirements.md\""
+  env:
+    DOC: doc
+    SPEC_DIR: context.spec_dir
+  input:
+    - doc
+    - context
+```
+
+`artifact` を宣言する Command は、stdout 全体に対応する JSON を出力する。
+
+```yaml
+record_revision:
+  command: 'jq -n --arg revision "$(git rev-parse HEAD)" ''{revision: $revision}'''
+  artifact: revision_info
 ```
 
 `command` は worktree を cwd として shell で一度実行する非空文字列である。結果は `ok`、`exit_code`、`stdout`、`stderr`、`duration` を持つ。`artifact` があれば stdout 全体を JSON として parse・Contract 検証し、予約 field と同じ Object Artifact に合成する。process 起動不能は Node failure、非ゼロ exit codeまたは stdout 検証失敗は `ok: false` の確定結果になる。
 
-テンプレートの `{{ parameter }}` / `{{ parameter.field }}` は Node が宣言した input パラメータを参照する。field を付ける場合はそのパラメータの Contract に存在する1段の field でなければならず、未宣言パラメータ、未知 field、2段以上の path は拒否される。shell quoting は自動で行われないため、信頼できない値を shell syntax へ直接連結しない。
+`env` は任意の map で、`<環境変数名>: <input パラメータ名>` または `<環境変数名>: <input パラメータ名>.<field>` を宣言する。参照先は同じ Command が `input` で宣言したパラメータとその1段の field に限る。map 以外の値、受理形でない参照、未宣言パラメータ、型ありパラメータの Contract に存在しない field、2段以上の field path は load 時に Error Diagnostic になる。`env` は Command だけに宣言でき、ほかの Node 種別での宣言は load 時に Error Diagnostic になる。
+
+環境変数名は `[A-Za-z_][A-Za-z0-9_]*` に一致しなければならない。`RELEASH_` で始まる名前はすべて engine の予約名であり、宣言すると load 時に Error Diagnostic になる。参照した値が string なら文字列をそのまま、string 以外なら compact JSON テキストを子 process の環境変数へ渡す。値にテンプレート展開や shell 解釈は行わない。
+
+テンプレートの `{{ parameter }}` / `{{ parameter.field }}` は Node が宣言した input パラメータを参照する。field を付ける場合はそのパラメータの Contract に存在する1段の field でなければならず、未宣言パラメータ、未知 field、2段以上の path は拒否される。`{{ }}` は shell quoting を自動で行わないため、信頼できない値を shell syntax へ直接連結しない。信頼できない値は `env` で渡し、上の例の `"$DOC"` のように引用付きの shell 変数として参照する。
 
 ### Session
 
@@ -312,7 +331,7 @@ schemas:
 次は Node 名に使えない。
 
 ```text
-command session fanout sequence input artifact completion worktree
+command session fanout sequence input artifact completion env worktree
 inputs rules on_failure items entry output children
 ```
 
@@ -356,7 +375,7 @@ return r.workflow{
 
 | API | 戻り値 |
 | --- | --- |
-| `r.command{ name?, command, artifact?, input?, completion? }` | Node |
+| `r.command{ name?, command, env?, artifact?, input?, completion? }` | Node |
 | `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion? }` | Node |
 | `r.fanout{ name?, children, items?, input?, completion? }` | Node |
 | `r.sequence{ name?, entry?, output?, children, artifact?, input?, completion? }` | Node |
@@ -374,6 +393,22 @@ return r.workflow{
 | `r.schema.array{ name?, items }` | Schema |
 | `r.schema.string{ enum? }` / `boolean()` / `integer()` / `number()` | Schema |
 | `r.workflow{ name, description, main }` | Workflow |
+
+Lua の Command は `env = { <環境変数名> = <Input>, <環境変数名> = <Input>.<field> }` で同じ対応を宣言する。
+
+```lua
+local doc = r.input("doc")
+local context = r.input("context")
+
+local materialize_requirements = r.command{
+  command = [[printf '%s' "$DOC" > "$SPEC_DIR/requirements.md"]],
+  env = {
+    DOC = doc,
+    SPEC_DIR = context.spec_dir,
+  },
+  input = { doc, context },
+}
+```
 
 Node、Input、`r.request`、`r.items` は値参照として配線する。`node.field` は Artifact field の Source になる。children の要素はすべて `r.child{}` で書き、同じ Node 値を複数の child に置くことはできない。部品は Sequence を返す関数として作り、再利用時は関数を再度呼んで独立した Node 群を得る。
 

@@ -1856,6 +1856,7 @@ mod tests {
                     kind: crate::adaptor::gateway::workflow::schema::NodeKind::Command(
                         crate::adaptor::gateway::workflow::schema::CommandSpec {
                             command: "true".to_string(),
+                            env: Default::default(),
                         },
                     ),
                     ..crate::adaptor::gateway::workflow::schema::NodeDefinition::default()

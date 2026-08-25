@@ -75,6 +75,7 @@ fn domain_kind_to_schema(
             crate::adaptor::gateway::workflow::schema::NodeKind::Command(
                 crate::adaptor::gateway::workflow::schema::CommandSpec {
                     command: spec.command.clone(),
+                    env: spec.env.clone(),
                 },
             )
         }

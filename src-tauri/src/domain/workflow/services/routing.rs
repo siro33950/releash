@@ -859,6 +859,7 @@ mod routing_tests {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: "echo hi".to_string(),
+                env: Default::default(),
             }),
             artifact: None,
             input: Vec::new(),

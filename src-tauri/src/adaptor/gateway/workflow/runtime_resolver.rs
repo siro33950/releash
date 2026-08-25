@@ -157,6 +157,7 @@ mod tests {
                 name: "main".to_string(),
                 kind: NodeKind::Command(CommandSpec {
                     command: "true".to_string(),
+                    env: Default::default(),
                 }),
                 ..NodeDefinition::default()
             }],

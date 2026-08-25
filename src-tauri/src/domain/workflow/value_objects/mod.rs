@@ -14,9 +14,10 @@ mod worktree_origin;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
-    is_reserved_node_name, ChildEntry, CommandSpec, EffectiveRules, FacetRefs, FanoutSpec,
-    InputParam, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
-    NodeKindName, NodeNamespace, OnFailure, Rule, SchemaDef, SequenceSpec, SessionPermission,
+    is_reserved_node_name, ChildEntry, CommandSpec, EffectiveRules, EnvironmentVariableName,
+    EnvironmentVariableNameError, FacetRefs, FanoutSpec, InputParam, InputParameterRef,
+    InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, NodeKindName,
+    NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef, SequenceSpec, SessionPermission,
     SessionSpec, WorkflowDefinition, WorkflowSourceFormat, WorkflowSummary, MAIN_ENTRY_NODE_NAME,
     MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };

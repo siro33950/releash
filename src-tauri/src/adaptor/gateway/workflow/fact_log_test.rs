@@ -26,7 +26,17 @@ fn definition() -> WorkflowDefinition {
                 name: "run".to_string(),
                 kind: NodeKind::Command(crate::domain::workflow::CommandSpec {
                     command: "true".to_string(),
+                    env: [(
+                        crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap(),
+                        crate::domain::workflow::InputParameterRef::new("document").unwrap(),
+                    )]
+                    .into_iter()
+                    .collect(),
                 }),
+                input: vec![crate::domain::workflow::InputParam {
+                    name: "document".to_string(),
+                    contract: None,
+                }],
                 ..NodeDefinition::default()
             },
             NodeDefinition {
@@ -741,6 +751,21 @@ mod round_trip_tests {
                 .node_execution("run-exec")
                 .map(|node| node.status),
             Some(RuntimeNodeExecutionStatus::Succeeded)
+        );
+        let TreeRootFact::Workflow(root) = &tree.root else {
+            unreachable!();
+        };
+        assert_eq!(
+            root.definition
+                .node_by_name("run")
+                .and_then(NodeDefinition::command_spec)
+                .and_then(|command| {
+                    command
+                        .env
+                        .get(&crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap())
+                })
+                .map(crate::domain::workflow::InputParameterRef::as_string),
+            Some("document".to_string())
         );
         assert_eq!(
             tree.aggregate
