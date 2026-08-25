@@ -967,11 +967,11 @@ describe("useTerminal", () => {
 		mockChannels[mockChannels.length - 1]?.onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
-			message: "Failed to write to terminal: PTY input queue is full",
+			message: "Terminal input could not be sent. Try again.",
 		});
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
-				"Failed to write to terminal: PTY input queue is full",
+				"Terminal input could not be sent. Try again.",
 			);
 		});
 	});
@@ -998,7 +998,7 @@ describe("useTerminal", () => {
 		mockChannels[0].onmessage({
 			type: "input_unavailable",
 			session_key: "test-uuid-1234",
-			message: "Failed to write to terminal: stale attachment",
+			message: "Terminal input could not be sent. Try again.",
 		});
 
 		await waitFor(() => {
@@ -1009,7 +1009,7 @@ describe("useTerminal", () => {
 			).toHaveLength(2);
 		});
 		expect(onTerminalError).toHaveBeenCalledWith(
-			"Failed to write to terminal: stale attachment",
+			"Terminal input could not be sent. Try again.",
 		);
 		const attachCalls = mockInvoke.mock.calls.filter(
 			([command]) => command === "attach_terminal_surface",
@@ -1022,7 +1022,7 @@ describe("useTerminal", () => {
 			expect.objectContaining({ recovery: true }),
 		);
 		expect(onTerminalError.mock.calls).toEqual([
-			["Failed to write to terminal: stale attachment"],
+			["Terminal input could not be sent. Try again."],
 			[null],
 		]);
 		const secondAttachmentId = (attachCalls[1][1] as { attachmentId: string })
