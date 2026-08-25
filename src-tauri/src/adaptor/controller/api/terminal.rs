@@ -17,6 +17,67 @@ use super::LocalApiState;
 
 const MAX_TERMINAL_REQUEST_BYTES: usize = 64 * 1024;
 
+#[derive(Clone, Copy)]
+enum TerminalWsError {
+    Attach(TerminalWsErrorCode),
+    Write(TerminalWsErrorCode),
+    Resize(TerminalWsErrorCode),
+    InvalidRequest,
+}
+
+impl TerminalWsError {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Attach(_) => "attach_terminal_surface",
+            Self::Write(_) => "write_terminal_surface",
+            Self::Resize(_) => "resize_terminal_surface",
+            Self::InvalidRequest => "terminal_websocket_request",
+        }
+    }
+
+    fn code(self) -> TerminalWsErrorCode {
+        match self {
+            Self::Attach(code) | Self::Write(code) | Self::Resize(code) => code,
+            Self::InvalidRequest => TerminalWsErrorCode::InvalidRequest,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Attach(TerminalWsErrorCode::PtyError) => "Terminal attachment failed. Try again.",
+            Self::Attach(TerminalWsErrorCode::InvalidRequest) => {
+                "Terminal attachment failed because the request is invalid."
+            }
+            Self::Write(TerminalWsErrorCode::PtyError) => {
+                "Terminal input could not be sent. Try again."
+            }
+            Self::Write(TerminalWsErrorCode::InvalidRequest) => {
+                "Terminal input could not be sent because the request is invalid."
+            }
+            Self::Resize(TerminalWsErrorCode::PtyError) => "Terminal resize failed. Try again.",
+            Self::Resize(TerminalWsErrorCode::InvalidRequest) => {
+                "Terminal resize failed because the request is invalid."
+            }
+            Self::InvalidRequest => "Terminal request failed because the request is invalid.",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TerminalWsErrorCode {
+    InvalidRequest,
+    PtyError,
+}
+
+impl TerminalWsErrorCode {
+    fn code(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "INVALID_REQUEST",
+            Self::PtyError => "PTY_ERROR",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TerminalApiDeps {
     application: Arc<TerminalSurfaceApplication>,
@@ -127,16 +188,14 @@ async fn serve_attachment(
 ) {
     let owner = match owner.try_into() {
         Ok(owner) => owner,
-        Err(message) => {
+        Err(cause) => {
             let _ = send_response(
                 sink,
-                &TerminalWsResponseV1::Error {
+                &terminal_ws_error(
                     id,
-                    error: TerminalWsErrorV1 {
-                        code: "INVALID_REQUEST",
-                        message,
-                    },
-                },
+                    TerminalWsError::Attach(TerminalWsErrorCode::InvalidRequest),
+                    cause,
+                ),
             )
             .await;
             return;
@@ -145,16 +204,14 @@ async fn serve_attachment(
     let attachment_id = attachment_id.unwrap_or_else(|| format!("ws-{}", uuid::Uuid::new_v4()));
     let mut attachment = match deps.application.attach(&attachment_id, &owner) {
         Ok(attachment) => attachment,
-        Err(error) => {
+        Err(cause) => {
             let _ = send_response(
                 sink,
-                &TerminalWsResponseV1::Error {
+                &terminal_ws_error(
                     id,
-                    error: TerminalWsErrorV1 {
-                        code: "PTY_ERROR",
-                        message: error.to_string(),
-                    },
-                },
+                    TerminalWsError::Attach(TerminalWsErrorCode::PtyError),
+                    cause.to_string(),
+                ),
             )
             .await;
             return;
@@ -220,24 +277,6 @@ fn handle_attached_request(deps: &TerminalApiDeps, text: &str) -> Option<Termina
         Ok(request) => request,
         Err(error) => return Some(invalid_request(error.to_string())),
     };
-    let error = |operation: &'static str, message: String| {
-        Some(TerminalWsResponseV1::Error {
-            id: operation.to_string(),
-            error: TerminalWsErrorV1 {
-                code: "PTY_ERROR",
-                message,
-            },
-        })
-    };
-    let invalid_owner = |operation: &'static str, message: String| {
-        Some(TerminalWsResponseV1::Error {
-            id: operation.to_string(),
-            error: TerminalWsErrorV1 {
-                code: "INVALID_REQUEST",
-                message,
-            },
-        })
-    };
     match request {
         TerminalWsAttachedRequestV1::Write {
             owner,
@@ -248,7 +287,13 @@ fn handle_attached_request(deps: &TerminalApiDeps, text: &str) -> Option<Termina
         } => {
             let owner = match owner.try_into() {
                 Ok(owner) => owner,
-                Err(message) => return invalid_owner("write", message),
+                Err(cause) => {
+                    return Some(terminal_ws_error(
+                        "write".to_string(),
+                        TerminalWsError::Write(TerminalWsErrorCode::InvalidRequest),
+                        cause,
+                    ));
+                }
             };
             match deps.application.write_attached(
                 &owner,
@@ -258,7 +303,11 @@ fn handle_attached_request(deps: &TerminalApiDeps, text: &str) -> Option<Termina
                 &data,
             ) {
                 Ok(()) => None,
-                Err(cause) => error("write", cause.to_string()),
+                Err(cause) => Some(terminal_ws_error(
+                    "write".to_string(),
+                    TerminalWsError::Write(TerminalWsErrorCode::PtyError),
+                    cause.to_string(),
+                )),
             }
         }
         TerminalWsAttachedRequestV1::Ack {
@@ -272,24 +321,57 @@ fn handle_attached_request(deps: &TerminalApiDeps, text: &str) -> Option<Termina
         TerminalWsAttachedRequestV1::Resize { owner, rows, cols } => {
             let owner = match owner.try_into() {
                 Ok(owner) => owner,
-                Err(message) => return invalid_owner("resize", message),
+                Err(cause) => {
+                    return Some(terminal_ws_error(
+                        "resize".to_string(),
+                        TerminalWsError::Resize(TerminalWsErrorCode::InvalidRequest),
+                        cause,
+                    ));
+                }
             };
             match deps.application.resize(&owner, rows, cols) {
                 Ok(()) => None,
-                Err(cause) => error("resize", cause.to_string()),
+                Err(cause) => Some(terminal_ws_error(
+                    "resize".to_string(),
+                    TerminalWsError::Resize(TerminalWsErrorCode::PtyError),
+                    cause.to_string(),
+                )),
             }
         }
     }
 }
 
-fn invalid_request(message: String) -> TerminalWsResponseV1 {
+fn terminal_ws_error(id: String, error: TerminalWsError, cause: String) -> TerminalWsResponseV1 {
+    let code = error.code();
+    match code {
+        TerminalWsErrorCode::InvalidRequest => log::warn!(
+            "Terminal WebSocket request failed: operation={} code={} cause={}",
+            error.name(),
+            code.code(),
+            cause
+        ),
+        TerminalWsErrorCode::PtyError => log::error!(
+            "Terminal WebSocket request failed: operation={} code={} cause={}",
+            error.name(),
+            code.code(),
+            cause
+        ),
+    }
     TerminalWsResponseV1::Error {
-        id: "invalid".to_string(),
+        id,
         error: TerminalWsErrorV1 {
-            code: "INVALID_REQUEST",
-            message,
+            code: code.code(),
+            message: error.message().to_string(),
         },
     }
+}
+
+fn invalid_request(cause: String) -> TerminalWsResponseV1 {
+    terminal_ws_error(
+        "invalid".to_string(),
+        TerminalWsError::InvalidRequest,
+        cause,
+    )
 }
 
 #[cfg(test)]

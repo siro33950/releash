@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceEventSource,
+    TerminalSurfaceInputUnavailableCause,
 };
 
 use super::TerminalSurfaceEventHub;
@@ -29,7 +30,7 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     });
     hub.publish(TerminalSurfaceEvent::InputUnavailable {
         session_key: "session".to_string(),
-        message: "unavailable".to_string(),
+        cause: TerminalSurfaceInputUnavailableCause::StaleAttachment,
     });
     assert!(matches!(
         global.try_recv(),

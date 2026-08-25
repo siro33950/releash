@@ -9,6 +9,7 @@ import {
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { rehypeSourceLines } from "@/lib/rehypeSourceLines";
 import type { DiffRange, InlineChunk, SplitRow } from "@/types/markdown-diff";
 import type { DiffMode } from "@/types/settings";
@@ -59,10 +60,6 @@ export interface MarkdownDiffViewerProps {
 }
 
 const remarkPlugins = [remarkGfm];
-
-function readModelErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function readModelInputKeyFromArgs(args: ReadModelArgs): ReadModelInputKey {
 	return {
@@ -121,7 +118,7 @@ function useReadModel<T>(
 					setState((prev) => ({
 						status: "error",
 						result: currentReadModelResult(prev.result, inputKey),
-						error: readModelErrorMessage(error),
+						error: getErrorMessage(error),
 					}));
 				}
 			});
@@ -148,7 +145,7 @@ function ReadModelErrorNotice({ message }: { message: string }) {
 			role="alert"
 			className="m-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
 		>
-			Failed to load markdown diff: {message}
+			{message}
 		</div>
 	);
 }

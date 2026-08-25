@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface ProviderAvailabilityItem {
 	provider: string;
@@ -71,7 +72,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 				if (!cancelled) acceptSnapshot(next);
 			})
 			.catch((cause) => {
-				if (!cancelled) setError(String(cause));
+				if (!cancelled) setError(getErrorMessage(cause));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -111,7 +112,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			}
 			acceptSnapshot(latest);
 		} catch (cause) {
-			setError(String(cause));
+			setError(getErrorMessage(cause));
 			throw cause;
 		} finally {
 			setSaving(false);
@@ -131,7 +132,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 				setSnapshot(next);
 				setDrafts(draftsAfterReset(provider, drafts, snapshot, next));
 			} catch (cause) {
-				setError(String(cause));
+				setError(getErrorMessage(cause));
 			} finally {
 				setSaving(false);
 			}
@@ -149,7 +150,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 				),
 			);
 		} catch (cause) {
-			setError(String(cause));
+			setError(getErrorMessage(cause));
 		} finally {
 			setRefreshing(false);
 		}

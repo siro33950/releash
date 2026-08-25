@@ -49,6 +49,7 @@ import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
 import { notifyAgentSessionChanged } from "@/lib/agentSessionEvents";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
 	executeWorkflowAction,
@@ -721,9 +722,7 @@ function WorktreeTreeItem({
 					onSelectWorktree(branch.worktree_path, branch.name, repoName);
 				}
 			} catch (error) {
-				setProviderActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setProviderActionError(getErrorMessage(error));
 			}
 		},
 		[
@@ -769,9 +768,7 @@ function WorktreeTreeItem({
 					onSelectWorktree(branch.worktree_path, branch.name, repoName);
 				}
 			} catch (error) {
-				setProviderActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setProviderActionError(getErrorMessage(error));
 			}
 		},
 		[
@@ -816,9 +813,7 @@ function WorktreeTreeItem({
 					},
 				});
 			} catch (error) {
-				setProviderActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setProviderActionError(getErrorMessage(error));
 			}
 		},
 		[branch.worktree_path, refreshAgentSessions, selectCenter],
@@ -840,9 +835,7 @@ function WorktreeTreeItem({
 		} catch (error) {
 			setProviderHistory([]);
 			setProviderHistoryNextAfter(null);
-			setProviderActionError(
-				error instanceof Error ? error.message : String(error),
-			);
+			setProviderActionError(getErrorMessage(error));
 		} finally {
 			setProviderHistoryLoading(false);
 		}
@@ -864,9 +857,7 @@ function WorktreeTreeItem({
 			setProviderHistoryNextAfter(page?.nextAfter ?? null);
 			setProviderActionError(null);
 		} catch (error) {
-			setProviderActionError(
-				error instanceof Error ? error.message : String(error),
-			);
+			setProviderActionError(getErrorMessage(error));
 		} finally {
 			setProviderHistoryLoading(false);
 		}
@@ -910,9 +901,7 @@ function WorktreeTreeItem({
 					},
 				});
 			} catch (error) {
-				setProviderActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setProviderActionError(getErrorMessage(error));
 			}
 		},
 		[branch.worktree_path, refreshAgentSessions, selectCenter],
@@ -945,7 +934,7 @@ function WorktreeTreeItem({
 					await refreshTree();
 				}
 			} catch (e) {
-				setWorkflowActionError(`Archive workflow failed: ${String(e)}`);
+				setWorkflowActionError(getErrorMessage(e));
 			}
 		},
 		[
@@ -963,9 +952,7 @@ function WorktreeTreeItem({
 				await executeWorkflowAction(action, workflow.id);
 				await refreshTree();
 			} catch (error) {
-				setWorkflowActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setWorkflowActionError(getErrorMessage(error));
 			}
 		},
 		[refreshTree],
@@ -982,9 +969,7 @@ function WorktreeTreeItem({
 			setAvailableProviders(providers ?? []);
 		} catch (error) {
 			setAvailableProviders([]);
-			setProviderActionError(
-				error instanceof Error ? error.message : String(error),
-			);
+			setProviderActionError(getErrorMessage(error));
 		} finally {
 			setProviderMenuLoading(false);
 		}
@@ -1046,7 +1031,7 @@ function WorktreeTreeItem({
 				}
 				void refreshAgentSessions();
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = getErrorMessage(error);
 				setProviderActionError(message);
 				if (isLaunchSelectionCurrent()) {
 					selectCenter({
@@ -1092,7 +1077,7 @@ function WorktreeTreeItem({
 			setWorkflowRequestInput("");
 			await refreshTree();
 		} catch (e) {
-			setWorkflowStartError(String(e));
+			setWorkflowStartError(getErrorMessage(e));
 		} finally {
 			setWorkflowStarting(false);
 		}
@@ -1127,9 +1112,7 @@ function WorktreeTreeItem({
 				);
 				await refreshTree();
 			} catch (error) {
-				setWorkflowActionError(
-					error instanceof Error ? error.message : String(error),
-				);
+				setWorkflowActionError(getErrorMessage(error));
 			}
 		},
 		[branch.worktree_path, refreshTree],

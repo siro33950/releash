@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 let mountedXtermCount = 0;
 let errorHandlersInstalled = false;
@@ -35,13 +36,8 @@ export function reportMountedXtermUnmounted(): void {
 }
 
 function normalizeError(error: unknown): { message: string; stack?: string } {
-	if (error instanceof Error) {
-		return { message: error.message, stack: error.stack };
-	}
-	if (typeof error === "string") {
-		return { message: error };
-	}
-	return { message: String(error) };
+	const stack = error instanceof Error ? error.stack : undefined;
+	return { message: getErrorMessage(error), stack };
 }
 
 export function reportFrontendError(

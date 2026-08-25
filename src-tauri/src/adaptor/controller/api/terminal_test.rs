@@ -440,7 +440,69 @@ async fn test_ターミナル画面接続_不正json_frameにinvalid_requestエ�
     let response = next_json(&mut socket).await;
     assert_eq!(response["status"], "error");
     assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(
+        response["error"]["message"],
+        "Terminal request failed because the request is invalid."
+    );
     fixture.server.abort();
+}
+
+#[test]
+fn test_ターミナル画面接続_全エラー操作が固定した利用者向け文言を返す() {
+    // Given
+    let cases = [
+        (
+            TerminalWsError::Attach(TerminalWsErrorCode::PtyError),
+            "PTY_ERROR",
+            "Terminal attachment failed. Try again.",
+        ),
+        (
+            TerminalWsError::Attach(TerminalWsErrorCode::InvalidRequest),
+            "INVALID_REQUEST",
+            "Terminal attachment failed because the request is invalid.",
+        ),
+        (
+            TerminalWsError::Write(TerminalWsErrorCode::PtyError),
+            "PTY_ERROR",
+            "Terminal input could not be sent. Try again.",
+        ),
+        (
+            TerminalWsError::Write(TerminalWsErrorCode::InvalidRequest),
+            "INVALID_REQUEST",
+            "Terminal input could not be sent because the request is invalid.",
+        ),
+        (
+            TerminalWsError::Resize(TerminalWsErrorCode::PtyError),
+            "PTY_ERROR",
+            "Terminal resize failed. Try again.",
+        ),
+        (
+            TerminalWsError::Resize(TerminalWsErrorCode::InvalidRequest),
+            "INVALID_REQUEST",
+            "Terminal resize failed because the request is invalid.",
+        ),
+        (
+            TerminalWsError::InvalidRequest,
+            "INVALID_REQUEST",
+            "Terminal request failed because the request is invalid.",
+        ),
+    ];
+
+    // When / Then
+    for (error, expected_code, expected_message) in cases {
+        let wire = serde_json::to_value(terminal_ws_error(
+            "test".to_string(),
+            error,
+            "internal cause that must not be displayed".to_string(),
+        ))
+        .unwrap();
+        assert_eq!(wire["error"]["code"], expected_code);
+        assert_eq!(wire["error"]["message"], expected_message);
+        assert!(!wire["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("internal cause"));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

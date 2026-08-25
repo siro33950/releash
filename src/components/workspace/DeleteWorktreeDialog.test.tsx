@@ -178,7 +178,7 @@ describe("DeleteWorktreeDialog", () => {
 		await user.click(deleteButton);
 
 		await waitFor(() => {
-			expect(screen.getByText("Error: Delete failed")).toBeInTheDocument();
+			expect(screen.getByText("Delete failed")).toBeInTheDocument();
 		});
 
 		// Spinner should be gone, button should be re-enabled

@@ -1,6 +1,7 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "error";
 
@@ -78,7 +79,7 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 				});
 				await relaunch();
 			} catch (e) {
-				setError(e instanceof Error ? e.message : String(e));
+				setError(getErrorMessage(e));
 				setStatus("error");
 			}
 		})();

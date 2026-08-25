@@ -6,14 +6,31 @@ import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@/components/panels/TerminalPanel", () => ({
-	TerminalPanel: (props: Record<string, unknown>) => (
-		<div
-			data-testid="provider-terminal"
-			data-initialization={String(props.initialization)}
-			data-auto-focus={String(props.autoFocus)}
-			data-owner={JSON.stringify(props.owner)}
-		/>
-	),
+	TerminalPanel: (props: Record<string, unknown>) => {
+		const onTerminalError = props.onTerminalError as
+			| ((message: string | null) => void)
+			| undefined;
+		return (
+			<div
+				data-testid="provider-terminal"
+				data-initialization={String(props.initialization)}
+				data-auto-focus={String(props.autoFocus)}
+				data-owner={JSON.stringify(props.owner)}
+			>
+				<button
+					type="button"
+					onClick={() =>
+						onTerminalError?.("Terminal resynchronization failed. Try again.")
+					}
+				>
+					Report terminal error
+				</button>
+				<button type="button" onClick={() => onTerminalError?.(null)}>
+					Complete terminal recovery
+				</button>
+			</div>
+		);
+	},
 }));
 
 const mockInvoke = vi.mocked(invoke);
@@ -60,6 +77,56 @@ describe("AgentSessionPanel", () => {
 			sessionId: "agent-session-1",
 		});
 	});
+
+	it("Terminalの失敗文言をalertへ表示し回復成功時に消す", async () => {
+		mockInvoke.mockResolvedValueOnce("attached");
+
+		render(<AgentSessionPanel session={session} />);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Report terminal error" }),
+		);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Terminal resynchronization failed. Try again.",
+		);
+		expect(screen.getByTestId("provider-terminal")).toBeVisible();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Complete terminal recovery" }),
+		);
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it.each([
+		["paused", "Provider session is not running."],
+		["archived", null],
+	] as const)(
+		"Terminalの失敗文言を%s画面へ持ち越さない",
+		async (lifecycle, expectedAlert) => {
+			mockInvoke.mockResolvedValueOnce("attached");
+			const { rerender } = render(<AgentSessionPanel session={session} />);
+			fireEvent.click(
+				await screen.findByRole("button", { name: "Report terminal error" }),
+			);
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Terminal resynchronization failed. Try again.",
+			);
+
+			rerender(<AgentSessionPanel session={{ ...session, lifecycle }} />);
+
+			await waitFor(() => {
+				expect(
+					screen.queryByText("Terminal resynchronization failed. Try again."),
+				).not.toBeInTheDocument();
+			});
+			if (expectedAlert) {
+				expect(screen.getByRole("alert")).toHaveTextContent(expectedAlert);
+			} else {
+				expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			}
+		},
+	);
 
 	it("Pausedは明示Resumeが成功するまでTerminalをattachしない", async () => {
 		mockInvoke.mockResolvedValueOnce("paused").mockResolvedValueOnce("resumed");
@@ -119,6 +186,26 @@ describe("AgentSessionPanel", () => {
 		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
 		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
+
+	it.each([
+		[
+			{
+				code: "AGENT_SESSION_LAUNCH_UNAVAILABLE",
+				message: "backend open failed",
+			},
+			"backend open failed",
+		],
+		["plain open failed", "plain open failed"],
+	])(
+		"open失敗からbackendのmessageだけを表示する",
+		async (rejection, expected) => {
+			mockInvoke.mockRejectedValueOnce(rejection);
+
+			render(<AgentSessionPanel session={session} />);
+
+			expect((await screen.findByRole("alert")).textContent).toBe(expected);
+		},
+	);
 
 	it("Provider CLI終了でbackendがPausedへ更新した場合もerrorとResumeを表示する", async () => {
 		mockInvoke.mockResolvedValueOnce("attached");

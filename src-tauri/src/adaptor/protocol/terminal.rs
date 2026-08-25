@@ -223,13 +223,16 @@ impl From<TerminalSurfaceStreamItem> for TerminalSurfaceStreamItemV1 {
                 exit_code,
                 sequence,
             },
-            TerminalSurfaceStreamItem::InputUnavailable {
-                session_key,
-                message,
-            } => Self::InputUnavailable {
-                session_key,
-                message,
-            },
+            TerminalSurfaceStreamItem::InputUnavailable { session_key, cause } => {
+                log::error!(
+                    "Terminal input unavailable: operation=write_terminal_surface code=PTY_ERROR cause={}",
+                    cause.internal_cause()
+                );
+                Self::InputUnavailable {
+                    session_key,
+                    message: "Terminal input could not be sent. Try again.".to_string(),
+                }
+            }
         }
     }
 }

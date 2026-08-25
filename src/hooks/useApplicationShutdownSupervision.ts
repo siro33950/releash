@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 interface PendingApplicationAttempt {
 	kind: "application_quit";
@@ -92,6 +93,19 @@ function sameState(
 	return JSON.stringify(current) === JSON.stringify(next) ? current : next;
 }
 
+function isInvalidPendingAttemptCursor(
+	error: unknown,
+	cursor: string | null,
+): boolean {
+	return (
+		cursor !== null &&
+		typeof error === "object" &&
+		error !== null &&
+		"type" in error &&
+		error.type === "invalid_request"
+	);
+}
+
 function loadQuitAttempt(): QuitAttemptSnapshot | null {
 	const saved = globalThis.localStorage.getItem(QUIT_ATTEMPT_STORAGE_KEY);
 	if (!saved) return null;
@@ -111,14 +125,23 @@ function loadQuitAttempt(): QuitAttemptSnapshot | null {
 	}
 }
 
-async function loadAttempts(initialCursor: string | null) {
+async function loadAttempts(
+	initialCursor: string | null,
+	onInvalidCursor: () => void,
+) {
 	const entries: PendingApplicationAttempt[] = [];
 	let cursor = initialCursor;
 	for (let page = 0; page < MAX_ATTEMPT_PAGES; page += 1) {
-		const result = await invoke<PendingApplicationAttemptPage>(
-			"list_pending_application_attempts",
-			{ limit: 32, cursor },
-		);
+		let result: PendingApplicationAttemptPage;
+		try {
+			result = await invoke<PendingApplicationAttemptPage>(
+				"list_pending_application_attempts",
+				{ limit: 32, cursor },
+			);
+		} catch (error) {
+			if (isInvalidPendingAttemptCursor(error, cursor)) onInvalidCursor();
+			throw error;
+		}
 		entries.push(...result.entries);
 		cursor = result.next_cursor;
 		if (cursor === null || entries.length >= MAX_ATTEMPTS) break;
@@ -168,8 +191,11 @@ export function useApplicationShutdownSupervision() {
 
 	const refresh = useCallback(async () => {
 		try {
+			const attemptPagePromise = loadAttempts(attemptCursor.current, () => {
+				attemptCursor.current = null;
+			});
 			const [attemptPage, shutdownResult] = await Promise.all([
-				loadAttempts(attemptCursor.current),
+				attemptPagePromise,
 				invoke<CurrentShutdownResult>("get_application_shutdown"),
 			]);
 			attemptCursor.current = attemptPage.nextCursor;
@@ -204,9 +230,8 @@ export function useApplicationShutdownSupervision() {
 				}),
 			);
 		} catch (error) {
-			if (String(error).includes("cursor")) attemptCursor.current = null;
 			setState((current) =>
-				sameState(current, { ...current, error: String(error) }),
+				sameState(current, { ...current, error: getErrorMessage(error) }),
 			);
 		}
 	}, []);

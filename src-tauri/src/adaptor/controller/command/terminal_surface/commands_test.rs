@@ -15,24 +15,175 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 #[test]
-fn test_ターミナル画面生成_上限到達を安定したコマンドコードへ変換する() {
-    let worktree_error = UsecaseError::from(
-        TerminalSurfaceSpawnReservationError::WorktreeCapReached("/repo".to_string()),
-    );
-    let total_error = UsecaseError::from(TerminalSurfaceSpawnReservationError::TotalCapReached);
+fn test_ターミナル画面生成_上限到達を固定したコマンドエラーへ変換する() {
+    // Given
+    let operations = [
+        TerminalCommandOperation::Initialize,
+        TerminalCommandOperation::GetExisting,
+        TerminalCommandOperation::Attach,
+        TerminalCommandOperation::Resynchronize,
+    ];
 
-    assert_eq!(
-        TerminalCommandError::from(worktree_error).code,
-        PTY_ERROR_CODE_CAP_REACHED
+    // When / Then
+    for operation in operations {
+        let command_error = TerminalCommandError::from_usecase(
+            UsecaseError::from(TerminalSurfaceSpawnReservationError::WorktreeCapReached(
+                "/repo".to_string(),
+            )),
+            operation,
+        );
+        assert_eq!(
+            serde_json::to_value(command_error).unwrap(),
+            serde_json::json!({
+                "code": "CAP_REACHED",
+                "message": "Terminal limit reached. Close an open Terminal and try again.",
+            })
+        );
+    }
+    let total_command_error = TerminalCommandError::from_usecase(
+        UsecaseError::from(TerminalSurfaceSpawnReservationError::TotalCapReached),
+        TerminalCommandOperation::Initialize,
     );
     assert_eq!(
-        TerminalCommandError::from(total_error).code,
-        PTY_ERROR_CODE_CAP_REACHED
+        serde_json::to_value(total_command_error).unwrap(),
+        serde_json::json!({
+            "code": "CAP_REACHED",
+            "message": "Terminal limit reached. Close an open Terminal and try again.",
+        })
     );
 }
 
 #[test]
-fn test_ターミナル画面生成_上限以外のspawn失敗を従来の汎用コードへ変換する() {
+fn test_ターミナル接続_recovery指定を初回接続と再同期へ対応づける() {
+    // Given / When / Then
+    assert_eq!(
+        TerminalCommandOperation::attachment(false),
+        TerminalCommandOperation::Attach
+    );
+    assert_eq!(
+        TerminalCommandOperation::attachment(true),
+        TerminalCommandOperation::Resynchronize
+    );
+}
+
+#[test]
+fn test_ターミナル操作_gateway失敗を操作ごとの固定文言へ変換する() {
+    // Given
+    let cases = [
+        (
+            TerminalCommandOperation::Initialize,
+            "Terminal initialization failed. Try again.",
+        ),
+        (
+            TerminalCommandOperation::GetExisting,
+            "Terminal attachment failed. Try again.",
+        ),
+        (
+            TerminalCommandOperation::Attach,
+            "Terminal attachment failed. Try again.",
+        ),
+        (
+            TerminalCommandOperation::Resynchronize,
+            "Terminal resynchronization failed. Try again.",
+        ),
+    ];
+
+    // When / Then
+    for (operation, expected_message) in cases {
+        let command_error = TerminalCommandError::from_usecase(
+            UsecaseError::Gateway("internal PTY failure".to_string()),
+            operation,
+        );
+        assert_eq!(
+            serde_json::to_value(command_error).unwrap(),
+            serde_json::json!({
+                "code": "PTY_ERROR",
+                "message": expected_message,
+            })
+        );
+    }
+}
+
+#[test]
+fn test_ターミナル操作_不正なownerを操作ごとの固定文言へ変換する() {
+    // Given
+    let cases = [
+        (
+            TerminalCommandOperation::Initialize,
+            "Terminal initialization failed because the request is invalid.",
+        ),
+        (
+            TerminalCommandOperation::GetExisting,
+            "Terminal attachment failed because the request is invalid.",
+        ),
+        (
+            TerminalCommandOperation::Attach,
+            "Terminal attachment failed because the request is invalid.",
+        ),
+        (
+            TerminalCommandOperation::Resynchronize,
+            "Terminal resynchronization failed because the request is invalid.",
+        ),
+    ];
+
+    // When / Then
+    for (operation, expected_message) in cases {
+        let command_error = invalid_owner_error(
+            operation,
+            "invalid Terminal Surface owner: empty workspace path".to_string(),
+        );
+        assert_eq!(
+            serde_json::to_value(command_error).unwrap(),
+            serde_json::json!({
+                "code": "INVALID_REQUEST",
+                "message": expected_message,
+            })
+        );
+    }
+}
+
+#[test]
+fn test_ターミナル入力_write失敗をtransport共通の固定文言へ変換する() {
+    // Given / When
+    let gateway_error = terminal_write_error(UsecaseError::Gateway(
+        "Terminal input reorder buffer is full".to_string(),
+    ));
+    let invalid_owner_error = invalid_terminal_write_owner_error(
+        "invalid Terminal Surface owner: empty workspace path".to_string(),
+    );
+
+    // Then
+    assert_eq!(
+        gateway_error,
+        "Terminal input could not be sent. Try again."
+    );
+    assert_eq!(
+        invalid_owner_error,
+        "Terminal input could not be sent because the request is invalid."
+    );
+}
+
+#[test]
+fn test_ターミナル画面変形_resize失敗をtransport共通の固定文言へ変換する() {
+    // Given / When
+    let gateway_error = terminal_resize_error(UsecaseError::Gateway(
+        "Terminal runtime host is not bound".to_string(),
+    ));
+    let invalid_owner_error = invalid_terminal_resize_owner_error(
+        "invalid Terminal Surface owner: empty workspace path".to_string(),
+    );
+
+    // Then
+    assert_eq!(gateway_error, "Terminal resize failed. Try again.");
+    assert_eq!(
+        invalid_owner_error,
+        "Terminal resize failed because the request is invalid."
+    );
+}
+
+#[test]
+fn test_ターミナル画面生成_上限以外のspawn失敗を汎用codeと固定文言へ変換する() {
+    // Given
     let errors = [
         UsecaseError::OwnerConflict,
         UsecaseError::PtySpawn {
@@ -43,11 +194,21 @@ fn test_ターミナル画面生成_上限以外のspawn失敗を従来の汎用
         },
     ];
 
+    // When / Then
     for error in errors {
+        let internal_cause = error.to_string();
+        let command_error =
+            TerminalCommandError::from_usecase(error, TerminalCommandOperation::Initialize);
+        let wire = serde_json::to_value(command_error).unwrap();
+
         assert_eq!(
-            TerminalCommandError::from(error).code,
-            PTY_ERROR_CODE_GENERIC
+            wire,
+            serde_json::json!({
+                "code": "PTY_ERROR",
+                "message": "Terminal initialization failed. Try again.",
+            })
         );
+        assert!(!wire.to_string().contains(&internal_cause));
     }
 }
 

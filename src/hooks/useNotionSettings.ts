@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	NotionPropertyInfo,
 	NotionRepoConfig,
@@ -184,7 +185,7 @@ export function useNotionSettings(
 				updateDraft(repoPath, (d) => ({
 					...d,
 					validating: false,
-					validationStatus: String(e),
+					validationStatus: getErrorMessage(e),
 				}));
 			}
 		},

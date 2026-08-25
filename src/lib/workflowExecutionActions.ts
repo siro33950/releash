@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export type WorkflowExecutionAction = "stop" | "resume" | "abort";
 
@@ -11,12 +12,6 @@ const actionCommand: Record<
 	abort: "abort_workflow",
 };
 
-const actionLabel: Record<WorkflowExecutionAction, string> = {
-	stop: "Stop",
-	resume: "Resume",
-	abort: "Abort",
-};
-
 export async function executeWorkflowAction(
 	action: WorkflowExecutionAction,
 	executionId: string,
@@ -24,6 +19,6 @@ export async function executeWorkflowAction(
 	try {
 		await invoke(actionCommand[action], { executionId });
 	} catch (error) {
-		throw new Error(`${actionLabel[action]} workflow failed: ${String(error)}`);
+		throw new Error(getErrorMessage(error));
 	}
 }

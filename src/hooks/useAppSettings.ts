@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { useCallback, useEffect, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface BackgroundConfig {
 	close_to_tray: boolean;
@@ -42,7 +43,7 @@ export function useBackgroundConfig() {
 				setDraft(cfg);
 			})
 			.catch((e) => {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			})
 			.finally(() => {
 				setLoading(false);
@@ -73,7 +74,7 @@ export function useBackgroundConfig() {
 
 			setConfig({ ...draft });
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 			throw e;
 		} finally {
 			setSaving(false);

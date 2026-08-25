@@ -81,7 +81,22 @@ describe("ReviewThreadHandoffProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" }));
 
 		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Failed to copy Agent instruction: Error: clipboard unavailable",
+			"Failed to copy Agent instruction: clipboard unavailable",
 		);
+	});
+
+	it("handoff生成失敗はbackend文言だけを表示してclipboardを呼ばない", async () => {
+		mocks.invoke.mockRejectedValueOnce({
+			code: "REVIEW_HANDOFF_UNAVAILABLE",
+			message: "Review handoff is unavailable. Try again.",
+		});
+		renderHandoff();
+
+		fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Review handoff is unavailable. Try again.",
+		);
+		expect(mocks.writeText).not.toHaveBeenCalled();
 	});
 });

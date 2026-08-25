@@ -45,6 +45,23 @@ impl fmt::Display for TerminalSurfaceGatewayError {
 impl std::error::Error for TerminalSurfaceGatewayError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalSurfaceInputUnavailableCause {
+    StaleAttachment,
+    PendingCapacityExceeded,
+    RuntimeWriteFailed(String),
+}
+
+impl TerminalSurfaceInputUnavailableCause {
+    pub fn internal_cause(&self) -> &str {
+        match self {
+            Self::StaleAttachment => "Terminal input attachment is no longer active",
+            Self::PendingCapacityExceeded => "Terminal input reorder buffer is full",
+            Self::RuntimeWriteFailed(cause) => cause,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceEvent {
     Output {
         session_key: String,
@@ -65,7 +82,7 @@ pub enum TerminalSurfaceEvent {
     },
     InputUnavailable {
         session_key: String,
-        message: String,
+        cause: TerminalSurfaceInputUnavailableCause,
     },
 }
 

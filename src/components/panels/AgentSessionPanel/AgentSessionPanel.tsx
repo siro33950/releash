@@ -6,6 +6,7 @@ import {
 	notifyAgentSessionChanged,
 	subscribeAgentSessionChanged,
 } from "@/lib/agentSessionEvents";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	AgentSessionItem,
 	AgentSessionLaunchAttachment,
@@ -68,6 +69,7 @@ export function AgentSessionPanel({
 		initiallyAttached ? "terminal" : "loading",
 	);
 	const [error, setError] = useState<string | null>(null);
+	const [terminalError, setTerminalError] = useState<string | null>(null);
 	const [actionPending, setActionPending] = useState(false);
 	const openedSessionIdRef = useRef<string | null>(
 		initiallyAttached ? agentSessionId : null,
@@ -127,7 +129,7 @@ export function AgentSessionPanel({
 				});
 				applyOutcome(outcome);
 			} catch (cause) {
-				setError(cause instanceof Error ? cause.message : String(cause));
+				setError(getErrorMessage(cause));
 				setState(
 					command === "restore_agent_session" ||
 						(command === "open_agent_session" && session.operations.canRestore)
@@ -153,7 +155,7 @@ export function AgentSessionPanel({
 			setState("gone");
 			notifyAgentSessionChanged(session.worktreePath);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			setError(getErrorMessage(cause));
 		} finally {
 			setActionPending(false);
 		}
@@ -177,18 +179,31 @@ export function AgentSessionPanel({
 
 	if (state === "terminal") {
 		return (
-			<TerminalPanel
-				cwd={worktreePath}
-				theme={theme}
-				owner={{
-					kind: "session",
-					workspacePath: workspaceIdentity,
-					sessionId: agentSessionId,
-				}}
-				label={`${provider} AgentSession`}
-				initialization="attach-existing"
-				autoFocus
-			/>
+			<div className="flex h-full flex-col bg-background">
+				{terminalError && (
+					<div
+						role="alert"
+						className="shrink-0 px-3 py-2 text-sm text-destructive"
+					>
+						{terminalError}
+					</div>
+				)}
+				<div className="min-h-0 flex-1">
+					<TerminalPanel
+						cwd={worktreePath}
+						theme={theme}
+						owner={{
+							kind: "session",
+							workspacePath: workspaceIdentity,
+							sessionId: agentSessionId,
+						}}
+						label={`${provider} AgentSession`}
+						onTerminalError={setTerminalError}
+						initialization="attach-existing"
+						autoFocus
+					/>
+				</div>
+			</div>
 		);
 	}
 
@@ -314,7 +329,7 @@ export function AgentSessionRoute({
 			})
 			.catch((cause) => {
 				if (active) {
-					setError(cause instanceof Error ? cause.message : String(cause));
+					setError(getErrorMessage(cause));
 				}
 			});
 		return () => {

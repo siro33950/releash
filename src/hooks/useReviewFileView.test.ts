@@ -87,21 +87,31 @@ describe("useReviewFileView", () => {
 		expect(result.current.error).toBeNull();
 	});
 
-	it("exposes command failures as an explicit error state", async () => {
-		mockInvoke.mockRejectedValue("review target is not in snapshot");
+	it.each([
+		[
+			{
+				code: "REVIEW_FILE_VIEW_UNAVAILABLE",
+				message: "coded review failure",
+			},
+			"coded review failure",
+		],
+		["plain review failure", "plain review failure"],
+	])(
+		"exposes backend message as an explicit error state",
+		async (rejection, expected) => {
+			mockInvoke.mockRejectedValue(rejection);
 
-		const { result } = renderHook(() =>
-			useReviewFileView("/repo", "missing.ts", "head", "changes", 0, 17),
-		);
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-			expect(result.current.error).toBe(
-				"Failed to load diff: review target is not in snapshot",
+			const { result } = renderHook(() =>
+				useReviewFileView("/repo", "missing.ts", "head", "changes", 0, 17),
 			);
-		});
 
-		expect(result.current.view).toBeNull();
-		expect(result.current.hunks).toBeNull();
-	});
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+				expect(result.current.error).toBe(expected);
+			});
+
+			expect(result.current.view).toBeNull();
+			expect(result.current.hunks).toBeNull();
+		},
+	);
 });

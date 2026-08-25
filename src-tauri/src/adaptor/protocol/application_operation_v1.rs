@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 pub(crate) fn decode_nonnegative_i64_decimal(raw: &str) -> Option<i64> {
     if raw.is_empty()
@@ -81,8 +81,39 @@ impl From<crate::domain::local_event::SafeOperationFailure> for SafeOperationFai
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Serialize)]
+struct ApplicationCommandErrorWire<'a> {
+    #[serde(rename = "type")]
+    error_type: &'static str,
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correlation_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<&'a SafeOperationFailureDtoV1>,
+}
+
+impl<'a> ApplicationCommandErrorWire<'a> {
+    fn new(error_type: &'static str, message: &'static str) -> Self {
+        Self {
+            error_type,
+            message,
+            correlation_id: None,
+            failure: None,
+        }
+    }
+
+    fn with_correlation_id(mut self, correlation_id: &'a str) -> Self {
+        self.correlation_id = Some(correlation_id);
+        self
+    }
+
+    fn with_failure(mut self, failure: &'a SafeOperationFailureDtoV1) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum OperationApplicationErrorDtoV1 {
     InvalidRequest,
     PayloadConflict,
@@ -90,8 +121,35 @@ pub(crate) enum OperationApplicationErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for OperationApplicationErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not access application operation history because the request is invalid.",
+            ),
+            Self::PayloadConflict => ApplicationCommandErrorWire::new(
+                "payload_conflict",
+                "The application operation request conflicts with an earlier request. Refresh and try again.",
+            ),
+            Self::ShutdownInProgress => ApplicationCommandErrorWire::new(
+                "shutdown_in_progress",
+                "Releash could not update application operation history while shutdown is in progress. Try again after Releash restarts.",
+            ),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not access application operation history. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ApplicationQuitErrorDtoV1 {
     InvalidRequest,
     PayloadConflict,
@@ -99,8 +157,35 @@ pub(crate) enum ApplicationQuitErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for ApplicationQuitErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not start the application quit because the request is invalid.",
+            ),
+            Self::PayloadConflict => ApplicationCommandErrorWire::new(
+                "payload_conflict",
+                "The application quit request conflicts with an earlier request. Refresh and try again.",
+            ),
+            Self::CapacityExceeded => ApplicationCommandErrorWire::new(
+                "capacity_exceeded",
+                "Releash could not start another application quit. Wait for the current operation and try again.",
+            ),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not complete the application quit. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ApplicationQuitLookupErrorDtoV1 {
     InvalidRequest,
     NotFound,
@@ -110,14 +195,64 @@ pub(crate) enum ApplicationQuitLookupErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for ApplicationQuitLookupErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not check the application quit because the request is invalid.",
+            ),
+            Self::NotFound => ApplicationCommandErrorWire::new(
+                "not_found",
+                "The application quit operation is no longer available.",
+            ),
+            Self::QueryBusy => ApplicationCommandErrorWire::new(
+                "query_busy",
+                "Releash is still checking the application quit. Try again.",
+            ),
+            Self::DeadlineExceeded => ApplicationCommandErrorWire::new(
+                "deadline_exceeded",
+                "Checking the application quit took too long. Try again.",
+            ),
+            Self::StorageUnavailable { failure } => ApplicationCommandErrorWire::new(
+                "storage_unavailable",
+                "Releash could not access the application quit operation. Try again.",
+            )
+            .with_failure(failure),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not check the application quit. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum CurrentShutdownErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for CurrentShutdownErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let Self::Internal { correlation_id } = self;
+        ApplicationCommandErrorWire::new(
+            "internal",
+            "Releash could not check the current application shutdown. Try again.",
+        )
+        .with_correlation_id(correlation_id)
+        .serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ShutdownPlanQueryErrorDtoV1 {
     InvalidRequest,
     NotFound,
@@ -131,20 +266,120 @@ pub(crate) enum ShutdownPlanQueryErrorDtoV1 {
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for ShutdownPlanQueryErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not load the shutdown plan because the request is invalid.",
+            ),
+            Self::NotFound => ApplicationCommandErrorWire::new(
+                "not_found",
+                "The shutdown plan is no longer available.",
+            ),
+            Self::DetailsCompacted => ApplicationCommandErrorWire::new(
+                "details_compacted",
+                "The shutdown plan details are no longer available.",
+            ),
+            Self::CursorMismatch => ApplicationCommandErrorWire::new(
+                "cursor_mismatch",
+                "The shutdown plan changed while it was loading. Reload the plan and try again.",
+            ),
+            Self::CursorExpired => ApplicationCommandErrorWire::new(
+                "cursor_expired",
+                "The shutdown plan page expired. Reload the plan and try again.",
+            ),
+            Self::QueryBusy => ApplicationCommandErrorWire::new(
+                "query_busy",
+                "The shutdown plan is busy. Try again.",
+            ),
+            Self::DeadlineExceeded => ApplicationCommandErrorWire::new(
+                "deadline_exceeded",
+                "Loading the shutdown plan took too long. Try again.",
+            ),
+            Self::ResponseTooLarge => ApplicationCommandErrorWire::new(
+                "response_too_large",
+                "The shutdown plan is too large to load.",
+            ),
+            Self::StorageUnavailable { failure } => ApplicationCommandErrorWire::new(
+                "storage_unavailable",
+                "Releash could not access the shutdown plan. Try again.",
+            )
+            .with_failure(failure),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not load the shutdown plan. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ShutdownDetailsMutationErrorDtoV1 {
     InvalidRequest,
     Internal { correlation_id: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl Serialize for ShutdownDetailsMutationErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not compact the shutdown details because the request is invalid.",
+            ),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not compact the shutdown details. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum RecoveryActionCommandErrorDtoV1 {
     InvalidRequest,
     NotFound,
     StorageUnavailable { failure: SafeOperationFailureDtoV1 },
     Internal { correlation_id: String },
+}
+
+impl Serialize for RecoveryActionCommandErrorDtoV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::InvalidRequest => ApplicationCommandErrorWire::new(
+                "invalid_request",
+                "Releash could not resolve the shutdown target because the request is invalid.",
+            ),
+            Self::NotFound => ApplicationCommandErrorWire::new(
+                "not_found",
+                "The shutdown target action is no longer available. Reload the shutdown plan and try again.",
+            ),
+            Self::StorageUnavailable { failure } => ApplicationCommandErrorWire::new(
+                "storage_unavailable",
+                "Releash could not save the shutdown target action. Try again.",
+            )
+            .with_failure(failure),
+            Self::Internal { correlation_id } => ApplicationCommandErrorWire::new(
+                "internal",
+                "Releash could not resolve the shutdown target action. Try again.",
+            )
+            .with_correlation_id(correlation_id),
+        };
+        wire.serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -323,3 +558,7 @@ fn recovery_classification_label(
         C::Unchanged => "unchanged",
     }
 }
+
+#[cfg(test)]
+#[path = "application_operation_v1_test.rs"]
+mod application_operation_v1_tests;

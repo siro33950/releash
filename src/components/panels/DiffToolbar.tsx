@@ -16,6 +16,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { FileNavigationResult } from "@/hooks/useFileNavigation";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { cn } from "@/lib/utils";
 import type { DiffMode } from "@/types/settings";
 
@@ -61,7 +62,7 @@ export function DiffToolbar({
 		setEditorError(null);
 		invoke("open_in_editor", { filePath }).catch((e) => {
 			console.error("Failed to open in editor:", e);
-			setEditorError(String(e));
+			setEditorError(getErrorMessage(e));
 			if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
 			errorTimerRef.current = setTimeout(() => setEditorError(null), 5000);
 		});

@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { extractTemplateVariables } from "./utils";
 
 export function FacetEditor({
@@ -34,7 +35,7 @@ export function FacetEditor({
 			const rendered = await renderPreview(content, sampleValues);
 			setPreview(rendered);
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			setError(getErrorMessage(e));
 		}
 	}, [content, sampleValues, renderPreview]);
 
@@ -47,7 +48,7 @@ export function FacetEditor({
 				setError(result.error ?? "Save failed");
 			}
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			setError(getErrorMessage(e));
 		} finally {
 			setSaving(false);
 		}

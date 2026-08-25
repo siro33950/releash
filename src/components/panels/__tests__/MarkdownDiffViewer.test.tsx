@@ -37,11 +37,11 @@ function mockReadModel({
 	rows?: SplitRow[];
 	chunks?: InlineChunk[];
 	visibleBlocks?: unknown[];
-	rejectCommands?: Record<string, string>;
+	rejectCommands?: Record<string, unknown>;
 } = {}) {
 	mockInvoke.mockImplementation((command: string) => {
 		if (rejectCommands[command]) {
-			return Promise.reject(new Error(rejectCommands[command]));
+			return Promise.reject(rejectCommands[command]);
 		}
 
 		switch (command) {
@@ -160,11 +160,30 @@ describe("MarkdownDiffViewer", () => {
 			);
 
 			const alert = await screen.findByRole("alert");
-			expect(alert).toHaveTextContent(
-				"Failed to load markdown diff: backend failed",
-			);
+			expect(alert.textContent).toBe("backend failed");
 		},
 	);
+
+	it("shows coded backend read model message without decoration", async () => {
+		mockReadModel({
+			rejectCommands: {
+				compute_markdown_diff_ranges: {
+					code: "MARKDOWN_DIFF_UNAVAILABLE",
+					message: "coded backend failed",
+				},
+			},
+		});
+		render(
+			<MarkdownDiffViewer
+				originalContent="old text"
+				modifiedContent="new text"
+			/>,
+		);
+
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"coded backend failed",
+		);
+	});
 
 	describe("split mode", () => {
 		it("renders grid container with separator", async () => {
@@ -318,9 +337,7 @@ describe("MarkdownDiffViewer", () => {
 				await failedRows.promise.catch(() => {});
 			});
 
-			expect(await screen.findByRole("alert")).toHaveTextContent(
-				"Failed to load markdown diff: B failed",
-			);
+			expect((await screen.findByRole("alert")).textContent).toBe("B failed");
 			expect(screen.queryByText("old A")).not.toBeInTheDocument();
 			expect(screen.queryByText("new A")).not.toBeInTheDocument();
 			expect(
@@ -509,9 +526,7 @@ describe("MarkdownDiffViewer", () => {
 			);
 
 			const alert = await screen.findByRole("alert");
-			expect(alert).toHaveTextContent(
-				"Failed to load markdown diff: visible blocks failed",
-			);
+			expect(alert.textContent).toBe("visible blocks failed");
 			expect(screen.queryByText("No changes")).not.toBeInTheDocument();
 		});
 	});
