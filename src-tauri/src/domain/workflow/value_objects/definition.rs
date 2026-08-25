@@ -15,7 +15,7 @@ pub const MAX_FANOUT_CHILDREN: usize = 64;
 pub const MAIN_ENTRY_NODE_NAME: &str = "main";
 
 /// node 名として使用禁止の予約語（kind 名とフィールド名）。
-pub const RESERVED_NODE_NAMES: [&str; 15] = [
+pub const RESERVED_NODE_NAMES: [&str; 16] = [
     "command",
     "session",
     "fanout",
@@ -23,6 +23,7 @@ pub const RESERVED_NODE_NAMES: [&str; 15] = [
     "input",
     "artifact",
     "completion",
+    "env",
     "worktree",
     "inputs",
     "rules",
@@ -35,6 +36,126 @@ pub const RESERVED_NODE_NAMES: [&str; 15] = [
 
 pub fn is_reserved_node_name(name: &str) -> bool {
     RESERVED_NODE_NAMES.contains(&name)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentVariableNameError {
+    Invalid(String),
+    Reserved(String),
+}
+
+impl std::fmt::Display for EnvironmentVariableNameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(name) => write!(
+                formatter,
+                "environment variable name '{name}' must match [A-Za-z_][A-Za-z0-9_]*"
+            ),
+            Self::Reserved(name) => write!(
+                formatter,
+                "environment variable name '{name}' is reserved for the workflow engine"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EnvironmentVariableNameError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EnvironmentVariableName(String);
+
+impl EnvironmentVariableName {
+    pub fn new(name: impl Into<String>) -> Result<Self, EnvironmentVariableNameError> {
+        let name = name.into();
+        let mut characters = name.chars();
+        let valid = characters
+            .next()
+            .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+            && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
+        if !valid {
+            return Err(EnvironmentVariableNameError::Invalid(name));
+        }
+        if name.starts_with("RELEASH_") {
+            return Err(EnvironmentVariableNameError::Reserved(name));
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for EnvironmentVariableName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvironmentVariableName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputParameterRef {
+    parameter: String,
+    field: Option<String>,
+}
+
+impl InputParameterRef {
+    pub fn new(reference: impl AsRef<str>) -> Result<Self, String> {
+        let reference = reference.as_ref();
+        let Some((parameter, field)) = reference::split_reference(reference) else {
+            return Err(format!(
+                "input parameter reference '{reference}' must be `<parameter>` or `<parameter>.<field>`"
+            ));
+        };
+        Ok(Self {
+            parameter: parameter.to_string(),
+            field: field.map(str::to_string),
+        })
+    }
+
+    pub fn parameter(&self) -> &str {
+        &self.parameter
+    }
+
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    pub fn as_string(&self) -> String {
+        match &self.field {
+            Some(field) => format!("{}.{field}", self.parameter),
+            None => self.parameter.clone(),
+        }
+    }
+}
+
+impl Serialize for InputParameterRef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.as_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for InputParameterRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +370,8 @@ impl NodeKind {
 #[serde(deny_unknown_fields)]
 pub struct CommandSpec {
     pub command: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<EnvironmentVariableName, InputParameterRef>,
 }
 
 /// Node 自身が持つ完了の定義。全 Node 種別で宣言可・省略可。
@@ -817,6 +940,8 @@ struct RawNodeBody {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    env: Option<BTreeMap<EnvironmentVariableName, InputParameterRef>>,
+    #[serde(default)]
     session: Option<SessionSpec>,
     #[serde(default)]
     fanout: Option<RawFanoutSpec>,
@@ -884,7 +1009,8 @@ impl RawChildBody {
     }
 
     fn has_node_fields(&self) -> bool {
-        self.node.artifact.is_some()
+        self.node.env.is_some()
+            || self.node.artifact.is_some()
             || !self.node.input.is_empty()
             || self.node.completion != NodeCompletion::default()
             || self.node.worktree.is_some()
@@ -913,6 +1039,7 @@ where
 
     match key {
         "command" => set_once(map, &mut body.node.command, key),
+        "env" => set_once(map, &mut body.node.env, key),
         "session" => set_once(map, &mut body.node.session, key),
         "fanout" => set_once(map, &mut body.node.fanout, key),
         "sequence" => set_once(map, &mut body.node.sequence, key),
@@ -1192,15 +1319,27 @@ impl CatalogNormalizer {
             )));
         }
         let kind = if let Some(command) = body.command {
-            NodeKind::Command(CommandSpec { command })
+            NodeKind::Command(CommandSpec {
+                command,
+                env: body.env.unwrap_or_default(),
+            })
         } else if let Some(session) = body.session {
+            if body.env.is_some() {
+                return Err(E::custom("env can only be declared by command nodes"));
+            }
             NodeKind::Session(session)
         } else if let Some(fanout) = body.fanout {
+            if body.env.is_some() {
+                return Err(E::custom("env can only be declared by command nodes"));
+            }
             NodeKind::Fanout(FanoutSpec {
                 children: self.normalize_children(&name, fanout.children)?,
                 items: fanout.items,
             })
         } else if let Some(sequence) = body.sequence {
+            if body.env.is_some() {
+                return Err(E::custom("env can only be declared by command nodes"));
+            }
             NodeKind::Sequence(SequenceSpec {
                 entry: sequence.entry,
                 output: sequence.output,
@@ -1281,7 +1420,12 @@ impl Serialize for NodeDefinition {
     {
         let mut map = serializer.serialize_map(None)?;
         match &self.kind {
-            NodeKind::Command(spec) => map.serialize_entry("command", &spec.command)?,
+            NodeKind::Command(spec) => {
+                map.serialize_entry("command", &spec.command)?;
+                if !spec.env.is_empty() {
+                    map.serialize_entry("env", &spec.env)?;
+                }
+            }
             NodeKind::Session(spec) => map.serialize_entry("session", spec)?,
             NodeKind::Fanout(spec) => map.serialize_entry("fanout", spec)?,
             NodeKind::Sequence(spec) => map.serialize_entry("sequence", spec)?,
@@ -1344,8 +1488,12 @@ impl NodeDefinition {
     }
 
     pub fn command(&self) -> Option<&str> {
+        self.command_spec().map(|spec| spec.command.as_str())
+    }
+
+    pub fn command_spec(&self) -> Option<&CommandSpec> {
         match &self.kind {
-            NodeKind::Command(spec) => Some(spec.command.as_str()),
+            NodeKind::Command(spec) => Some(spec),
             _ => None,
         }
     }
@@ -1551,6 +1699,91 @@ pub enum WorkflowSourceFormat {
 #[cfg(test)]
 mod definition_tests {
     use super::*;
+
+    #[test]
+    fn test_環境変数名_形式とengine予約prefixを検証する() {
+        assert_eq!(
+            EnvironmentVariableName::new("DOC_2").unwrap().as_str(),
+            "DOC_2"
+        );
+        assert_eq!(
+            EnvironmentVariableName::new("_DOC").unwrap().as_str(),
+            "_DOC"
+        );
+        assert!(matches!(
+            EnvironmentVariableName::new("2DOC"),
+            Err(EnvironmentVariableNameError::Invalid(_))
+        ));
+        assert!(matches!(
+            EnvironmentVariableName::new("DOC-NAME"),
+            Err(EnvironmentVariableNameError::Invalid(_))
+        ));
+        assert!(matches!(
+            EnvironmentVariableName::new("RELEASH_WORKTREE_PATH"),
+            Err(EnvironmentVariableNameError::Reserved(_))
+        ));
+    }
+
+    #[test]
+    fn test_inputパラメータ参照_パラメータと1段fieldだけを受理する() {
+        let parameter = InputParameterRef::new("document").unwrap();
+        assert_eq!(parameter.parameter(), "document");
+        assert_eq!(parameter.field(), None);
+
+        let field = InputParameterRef::new("document.body").unwrap();
+        assert_eq!(field.parameter(), "document");
+        assert_eq!(field.field(), Some("body"));
+        assert!(InputParameterRef::new("document.body.text").is_err());
+        assert!(InputParameterRef::new("document bad").is_err());
+    }
+
+    #[test]
+    fn test_command_env_空mapを省略し既存snapshotを空mapとして読む() {
+        let snapshot = r#"{
+            "name":"wf",
+            "description":"",
+            "nodes":{"main":{"command":"true"}}
+        }"#;
+
+        let workflow = serde_json::from_str::<WorkflowDefinition>(snapshot).unwrap();
+        let command = workflow.nodes[0].command_spec().unwrap();
+        assert!(command.env.is_empty());
+
+        let serialized = serde_json::to_value(&workflow).unwrap();
+        assert_eq!(serialized["nodes"]["main"]["command"], "true");
+        assert!(serialized["nodes"]["main"].get("env").is_none());
+    }
+
+    #[test]
+    fn test_command_env_宣言をdefinition_snapshotで往復する() {
+        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+            r#"name: wf
+description: test
+nodes:
+  main:
+    command: printf
+    env:
+      DOC: document.body
+    input:
+      - document
+"#,
+        )
+        .unwrap();
+
+        let serialized = serde_json::to_string(&workflow).unwrap();
+        let restored = serde_json::from_str::<WorkflowDefinition>(&serialized).unwrap();
+
+        assert_eq!(restored, workflow);
+        assert_eq!(
+            restored.nodes[0]
+                .command_spec()
+                .unwrap()
+                .env
+                .get(&EnvironmentVariableName::new("DOC").unwrap())
+                .map(InputParameterRef::as_string),
+            Some("document.body".to_string())
+        );
+    }
 
     #[test]
     fn test_session_permission_4値は文字列構築とserdeで同じ値を往復する() {

@@ -61,6 +61,7 @@ fn command_leaf(name: &str) -> NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Command(CommandSpec {
             command: "true".to_string(),
+            env: Default::default(),
         }),
         ..NodeDefinition::default()
     }
@@ -636,16 +637,39 @@ mod failure_tests {
     #[test]
     fn test_on_failure_retry_失敗とretry事実の再実行で完了に到達する() {
         // Given: command が失敗 → retry → 成功した事実列
+        let document = "document body";
+        let mut retried_command = command_leaf("c");
+        retried_command
+            .input
+            .push(crate::domain::workflow::InputParam {
+                name: "document".to_string(),
+                contract: None,
+            });
+        let NodeKind::Command(command) = &mut retried_command.kind else {
+            unreachable!();
+        };
+        command.env = [(
+            crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap(),
+            crate::domain::workflow::InputParameterRef::new("document").unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        let expected_env = command.env.clone();
         let definition = workflow_definition(
             vec![
-                command_leaf("c"),
+                retried_command,
                 session_leaf("b"),
                 sequence_node(
                     "main",
                     vec![
                         ChildEntry {
                             name: "c".to_string(),
-                            inputs: Vec::new(),
+                            inputs: vec![(
+                                "document".to_string(),
+                                crate::domain::workflow::value_objects::InputSourceRef::new(
+                                    "request",
+                                ),
+                            )],
                             rules: None,
                             on_failure: Some(OnFailure::Retry(1)),
                         },
@@ -656,9 +680,14 @@ mod failure_tests {
             "main",
         );
         let mut log = FactLog::new();
+        let mut root = workflow_root(definition);
+        let TreeRootFact::Workflow(workflow) = &mut root else {
+            unreachable!();
+        };
+        workflow.request = document.to_string();
         log.push(
             meta("main-exec", None, "main", NodeKindName::Sequence, 1),
-            started_root(workflow_root(definition)),
+            started_root(root),
         );
         let first = meta("c-exec-1", Some("main-exec"), "c", NodeKindName::Command, 1);
         log.push(
@@ -672,6 +701,38 @@ mod failure_tests {
             second.clone(),
             started_child(ExecutionParentRef::sequence_child("main-exec")),
         );
+
+        // When: retry attempt の Started までを fold する
+        let retried_tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let retried_leaf = retried_tree.aggregate.leaf_start_for("c-exec-2").unwrap();
+
+        // Then: 保存済み定義と再構築 binding から元の env 値を再解決できる
+        assert_eq!(
+            retried_leaf.bindings,
+            vec![(
+                "document".to_string(),
+                serde_json::Value::String(document.to_string()),
+            )]
+        );
+        let TreeRootFact::Workflow(root) = &retried_tree.root else {
+            unreachable!();
+        };
+        let command = root
+            .definition
+            .node_by_name("c")
+            .and_then(NodeDefinition::command_spec)
+            .unwrap();
+        assert_eq!(&command.env, &expected_env);
+        assert_eq!(
+            crate::domain::workflow::services::reference::resolve_command_environment(
+                &command.env,
+                &retried_leaf.bindings,
+            )
+            .unwrap(),
+            vec![("DOC".to_string(), document.to_string())]
+        );
+
+        // Given: retry attempt が成功し、後続 session も完了した事実列
         log.push(second, exited(0));
         let b = meta("b-exec", Some("main-exec"), "b", NodeKindName::Session, 1);
         log.push(

@@ -40,6 +40,7 @@ use crate::domain::workflow::entities::workflow_execution::{
     AppliedAdvance, LeafStart, RuntimeNodeExecutionStatus as NodeExecutionStatus, TransitionOutcome,
 };
 use crate::domain::workflow::services::contract as workflow_contract;
+use crate::domain::workflow::services::reference as workflow_reference;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::RuntimeExecutionState;
@@ -165,8 +166,11 @@ struct CommandArtifact {
     result_summary: String,
 }
 
-fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
-    let mut env = vec![
+fn command_env(
+    input: &CommandExecutionInput,
+    mut definition_env: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    definition_env.extend([
         (
             "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
             input.execution_id.clone(),
@@ -179,11 +183,11 @@ fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
             "RELEASH_WORKTREE_PATH".to_string(),
             input.worktree_path.clone(),
         ),
-    ];
+    ]);
     if let Some(session_id) = input.session_id.as_ref() {
-        env.push(("RELEASH_SESSION_ID".to_string(), session_id.clone()));
+        definition_env.push(("RELEASH_SESSION_ID".to_string(), session_id.clone()));
     }
-    env
+    definition_env
 }
 
 fn new_node_execution_id() -> String {
@@ -1220,28 +1224,39 @@ impl WorkflowRuntimeHost {
                 })?;
             match leaf.kind {
                 NodeKindName::Command => {
-                    let command = node.command().ok_or_else(|| {
+                    let command = node.command_spec().ok_or_else(|| {
                         WorkflowRuntimeError::InvalidState(format!(
                             "node '{}' is not a command",
                             leaf.node_name
                         ))
                     })?;
-                    let rendered =
-                        workflow_prompt::render_parameter_references(command, &leaf.bindings);
-                    command_inputs.push(CommandExecutionInput {
-                        execution_id: execution_id.clone(),
-                        node_execution_id: leaf.node_execution_id.clone(),
-                        node_name: leaf.node_name.clone(),
-                        attempt: attempts_by_id
-                            .get(&leaf.node_execution_id)
-                            .copied()
-                            .unwrap_or(1),
-                        worktree_path: worktree_path.to_string(),
-                        raw_command: Some(rendered),
-                        contract: node.artifact.clone(),
-                        schemas: workflow.schemas.clone(),
-                        session_id: None,
-                    });
+                    let rendered = workflow_prompt::render_parameter_references(
+                        &command.command,
+                        &leaf.bindings,
+                    );
+                    match workflow_reference::resolve_command_environment(
+                        &command.env,
+                        &leaf.bindings,
+                    ) {
+                        Ok(definition_env) => command_inputs.push(Ok(CommandExecutionInput {
+                            execution_id: execution_id.clone(),
+                            node_execution_id: leaf.node_execution_id.clone(),
+                            node_name: leaf.node_name.clone(),
+                            attempt: attempts_by_id
+                                .get(&leaf.node_execution_id)
+                                .copied()
+                                .unwrap_or(1),
+                            worktree_path: worktree_path.to_string(),
+                            raw_command: Some(rendered),
+                            definition_env,
+                            contract: node.artifact.clone(),
+                            schemas: workflow.schemas.clone(),
+                            session_id: None,
+                        })),
+                        Err(error) => {
+                            command_inputs.push(Err((leaf.node_execution_id.clone(), error)))
+                        }
+                    }
                 }
                 NodeKindName::Session => {
                     let (system_prompt, user_message) = workflow_prompt::build_leaf_prompt(
@@ -1431,8 +1446,20 @@ impl WorkflowRuntimeHost {
         drop(activation_guard);
         drop(activation_gate);
         for input in command_inputs {
-            let node_execution_id = input.node_execution_id.clone();
-            if let Err(error) = self.spawn_command_execution(app, input).await {
+            let (node_execution_id, result) = match input {
+                Ok(input) => {
+                    let node_execution_id = input.node_execution_id.clone();
+                    let result = self.spawn_command_execution(app, input).await;
+                    (node_execution_id, result)
+                }
+                Err((node_execution_id, error)) => (
+                    node_execution_id,
+                    Err(WorkflowRuntimeError::SessionStore(format!(
+                        "failed to prepare command environment: {error}"
+                    ))),
+                ),
+            };
+            if let Err(error) = result {
                 self.settle_runtime_failure_for_node(
                     app,
                     worktree_path,
@@ -1483,6 +1510,7 @@ impl WorkflowRuntimeHost {
                 input.node_execution_id
             ))
         })?;
+        let definition_env = std::mem::take(&mut input.definition_env);
         let display_command = {
             let secrets = secret_source::collect_configured_secret_values(app);
             workflow_secret_masker::mask_sensitive_text(&raw_command, &secrets)
@@ -1502,7 +1530,7 @@ impl WorkflowRuntimeHost {
             let spawn_result = workflow_command_runner::spawn_shell_command(
                 &input.worktree_path,
                 &raw_command,
-                command_env(&input),
+                command_env(&input, definition_env),
                 "workflow command",
                 workflow_command_runner::OutputLimit {
                     max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
@@ -2424,6 +2452,151 @@ mod workflow_host_tests {
                 crate::domain::workflow::RepositoryWorktreeInventory::new("/repo", Vec::new()),
             ])
         }
+    }
+
+    #[tokio::test]
+    async fn test_command_env_未束縛inputではprocessを起動せずnode_failureにする() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(store.clone());
+        app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            directory.path().to_path_buf(),
+        ));
+        let host = WorkflowRuntimeHost::with_execution_store(
+            Arc::new(UnusedWorkflowResolver),
+            Arc::new(AcceptingWorktreeResolver),
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            Arc::new(FailingWorkflowAgentSessions),
+            Arc::new(
+                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                    store.clone(),
+                ),
+            ),
+            Arc::new(MissingRepoWorktreeInventory),
+        );
+        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+            r#"name: missing-command-env
+description: missing command env
+nodes:
+  main:
+    command: 'printf spawned > command-spawned.marker'
+    input:
+      - document
+    env:
+      DOCUMENT: document
+"#,
+        )
+        .unwrap();
+
+        let execution_id = host
+            .start_resolved_workflow(
+                app.handle(),
+                workflow,
+                directory.path().to_string_lossy().into_owned(),
+                None,
+                ExecutionOrigin::DesktopUi,
+            )
+            .await
+            .unwrap();
+
+        assert!(!directory.path().join("command-spawned.marker").exists());
+        let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
+        assert_eq!(snapshot.node_executions.len(), 1);
+        assert_eq!(
+            snapshot.node_executions[0].status,
+            NodeExecutionStatus::Failed
+        );
+        let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+        assert!(records.iter().any(|record| matches!(
+            &record.fact,
+            NodeFact::ProcessExited(fact) if fact.failure_reason.is_some()
+        )));
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
+    }
+
+    #[tokio::test]
+    async fn test_command_env_nulによるspawn失敗を既存node_failureにする() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ))
+        .unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(store.clone());
+        app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+            directory.path().to_path_buf(),
+        ));
+        let host = WorkflowRuntimeHost::with_execution_store(
+            Arc::new(UnusedWorkflowResolver),
+            Arc::new(AcceptingWorktreeResolver),
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+            Arc::new(FailingWorkflowAgentSessions),
+            Arc::new(
+                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                    store.clone(),
+                ),
+            ),
+            Arc::new(MissingRepoWorktreeInventory),
+        );
+        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+            r#"name: nul-command-env
+description: nul command env
+nodes:
+  main:
+    sequence:
+      children:
+        - run:
+            inputs:
+              document: request
+  run:
+    command: 'printf spawned > command-spawned.marker'
+    input:
+      - document
+    env:
+      DOCUMENT: document
+"#,
+        )
+        .unwrap();
+
+        let execution_id = host
+            .start_resolved_workflow(
+                app.handle(),
+                workflow,
+                directory.path().to_string_lossy().into_owned(),
+                Some("before\0after".to_string()),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await
+            .unwrap();
+
+        assert!(!directory.path().join("command-spawned.marker").exists());
+        let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
+        assert_eq!(
+            snapshot
+                .node_executions
+                .iter()
+                .find(|node| node.node_name == "run")
+                .map(|node| node.status),
+            Some(NodeExecutionStatus::Failed)
+        );
+        let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+        assert!(records.iter().any(|record| matches!(
+            &record.fact,
+            NodeFact::ProcessExited(fact) if fact.failure_reason.is_some()
+        )));
+        assert!(!records
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
     }
 
     #[async_trait::async_trait]
@@ -3635,16 +3808,101 @@ mod command_env_tests {
             attempt: 1,
             worktree_path: "/repo/worktree".to_string(),
             raw_command: Some("true".to_string()),
+            definition_env: Vec::new(),
             contract: None,
             schemas: BTreeMap::new(),
             session_id: None,
         };
 
-        let env = command_env(&input);
+        let env = command_env(
+            &input,
+            vec![
+                ("DOC".to_string(), "document".to_string()),
+                (
+                    "RELEASH_WORKTREE_PATH".to_string(),
+                    "/definition/attempted-override".to_string(),
+                ),
+            ],
+        );
 
+        assert!(env.contains(&("DOC".to_string(), "document".to_string())));
         assert!(env.contains(&(
             "RELEASH_WORKTREE_PATH".to_string(),
             "/repo/worktree".to_string()
         )));
+        assert_eq!(
+            env.iter()
+                .rev()
+                .find(|(name, _)| name == "RELEASH_WORKTREE_PATH")
+                .map(|(_, value)| value.as_str()),
+            Some("/repo/worktree")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_command_env_yaml定義と束縛から子processへstringとjsonを渡す() {
+        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+            r#"name: env-runtime
+description: env runtime
+nodes:
+  main:
+    command: 'printf "%s\n" "$DOC" "$META" "$COUNT"'
+    input:
+      - document
+      - metadata
+    env:
+      DOC: document
+      META: metadata
+      COUNT: metadata.count
+"#,
+        )
+        .unwrap();
+        let command = workflow.entry_node().unwrap().command_spec().unwrap();
+        let bindings = vec![
+            (
+                "document".to_string(),
+                serde_json::Value::String("plain document".to_string()),
+            ),
+            (
+                "metadata".to_string(),
+                serde_json::json!({"count": 2, "ready": true}),
+            ),
+        ];
+        let definition_env =
+            workflow_reference::resolve_command_environment(&command.env, &bindings).unwrap();
+        let cwd = tempfile::TempDir::new().unwrap();
+        let input = CommandExecutionInput {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
+            node_name: "main".to_string(),
+            attempt: 1,
+            worktree_path: cwd.path().to_string_lossy().into_owned(),
+            raw_command: Some(command.command.clone()),
+            definition_env: Vec::new(),
+            contract: None,
+            schemas: BTreeMap::new(),
+            session_id: None,
+        };
+
+        let output = workflow_command_runner::spawn_shell_command(
+            cwd.path(),
+            &command.command,
+            command_env(&input, definition_env),
+            "workflow command",
+            workflow_command_runner::OutputLimit {
+                max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
+                truncation_marker: workflow_output_limit::TRUNCATION_MARKER,
+            },
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(
+            output.stdout,
+            "plain document\n{\"count\":2,\"ready\":true}\n2\n"
+        );
     }
 }

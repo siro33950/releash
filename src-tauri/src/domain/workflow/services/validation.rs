@@ -22,6 +22,13 @@ pub enum InvalidArtifactReferenceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidEnvironmentReferenceKind {
+    UnknownParameter,
+    UnknownField,
+    InvalidInputRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidRuleKind {
     MultipleDiscriminators,
     MultipleLoopGuards,
@@ -252,6 +259,14 @@ pub enum ValidationError {
         kind: InvalidArtifactReferenceKind,
         reason: String,
     },
+    /// command env が宣言済み input パラメータへ解決できない。
+    InvalidEnvironmentReference {
+        node: String,
+        variable: String,
+        reference: String,
+        kind: InvalidEnvironmentReferenceKind,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -462,6 +477,16 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(f, "Artifact参照 '{reference}' が不正です: {reason}")
             }
+            Self::InvalidEnvironmentReference {
+                node,
+                variable,
+                reference,
+                reason,
+                ..
+            } => write!(
+                f,
+                "command node '{node}' env '{variable}: {reference}' is invalid: {reason}"
+            ),
         }
     }
 }
@@ -499,6 +524,34 @@ fn reference_error_to_validation_error(error: reference::ReferenceResolveError) 
                     .to_string(),
             }
         }
+    }
+}
+
+fn environment_reference_error_to_validation_error(
+    error: reference::CommandEnvironmentReferenceError,
+) -> ValidationError {
+    let (kind, reason) = match error.source {
+        reference::ReferenceResolveError::UnknownParameter { .. } => (
+            InvalidEnvironmentReferenceKind::UnknownParameter,
+            "env references must name an input parameter declared by the same command node"
+                .to_string(),
+        ),
+        reference::ReferenceResolveError::UnknownField { .. } => (
+            InvalidEnvironmentReferenceKind::UnknownField,
+            "unknown field on the input parameter Contract".to_string(),
+        ),
+        reference::ReferenceResolveError::InvalidInputRef { .. }
+        | reference::ReferenceResolveError::ReservedNodeName { .. } => (
+            InvalidEnvironmentReferenceKind::InvalidInputRef,
+            "env references must be `<parameter>` or `<parameter>.<field>`".to_string(),
+        ),
+    };
+    ValidationError::InvalidEnvironmentReference {
+        node: error.node,
+        variable: error.variable,
+        reference: error.reference,
+        kind,
+        reason,
     }
 }
 
@@ -1256,6 +1309,12 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     {
         return Err(reference_error_to_validation_error(err));
     }
+    if let Some(err) = reference::validate_workflow_command_environment_references(workflow)
+        .into_iter()
+        .next()
+    {
+        return Err(environment_reference_error_to_validation_error(err));
+    }
 
     // 重複 node 名を検出する。
     let mut seen_names = HashSet::new();
@@ -1598,6 +1657,11 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
             .into_iter()
             .map(reference_error_to_validation_error),
     );
+    errors.extend(
+        reference::validate_workflow_command_environment_references(workflow)
+            .into_iter()
+            .map(environment_reference_error_to_validation_error),
+    );
 
     // 重複 node 名を検出し、あれば蓄積するが、以降のチェックは続行
     let mut seen_names = HashSet::new();
@@ -1659,6 +1723,7 @@ mod tests {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: command.to_string(),
+                env: Default::default(),
             }),
             artifact: None,
             input: Vec::new(),

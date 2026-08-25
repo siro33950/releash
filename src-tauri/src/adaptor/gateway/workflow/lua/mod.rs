@@ -5,8 +5,9 @@ use serde_json::{Number, Value};
 
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::value_objects::{
-    ChildEntry, CommandSpec, FacetRefs, FanoutSpec, InputParam, InputSourceRef, ItemsSource,
-    NodeCompletion, NodeDefinition, NodeKind, NodeNamespace, OnFailure, Rule, SchemaDef,
+    ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
+    FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
+    NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef,
     SequenceSpec, SessionPermission, SessionSpec, WorkflowDefinition, MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
@@ -172,7 +173,10 @@ struct NodeDraft {
 
 #[derive(Debug, Clone)]
 enum NodeDraftKind {
-    Command(String),
+    Command {
+        command: String,
+        env: Vec<(EnvironmentVariableName, usize)>,
+    },
     Session {
         provider: ProviderKind,
         model: Option<String>,
@@ -232,8 +236,15 @@ struct InputDraft {
 
 #[derive(Debug, Clone)]
 enum SourceDraft {
-    Node { node: usize, fields: Vec<String> },
-    Input { input: usize, fields: Vec<String> },
+    Node {
+        node: usize,
+        fields: Vec<String>,
+    },
+    Input {
+        input: usize,
+        fields: Vec<String>,
+        location: LuaSourceLocation,
+    },
     Request,
     Items,
 }
@@ -558,7 +569,7 @@ impl LuaHost for WorkflowLuaHost {
                 return self.index_input(handle.index, Vec::new(), key, location);
             }
             HANDLE_SOURCE => match self.sources.get(handle.index) {
-                Some(SourceDraft::Input { input, fields }) => {
+                Some(SourceDraft::Input { input, fields, .. }) => {
                     return self.index_input(*input, fields.clone(), key, location);
                 }
                 Some(SourceDraft::Node { node, fields }) if fields.is_empty() => {
@@ -603,12 +614,16 @@ impl WorkflowLuaHost {
         let table = one_table(arguments, &location)?;
         reject_unknown(
             &table,
-            &["name", "command", "artifact", "input", "completion"],
+            &["name", "command", "env", "artifact", "input", "completion"],
             &location,
         )?;
+        let env = self.command_env_sources(&table, &location)?;
         let draft = NodeDraft {
             name: optional_string(&table, "name", &location)?,
-            kind: NodeDraftKind::Command(required_string(&table, "command", &location)?),
+            kind: NodeDraftKind::Command {
+                command: required_string(&table, "command", &location)?,
+                env,
+            },
             artifact: optional_handle(&table, "artifact", HANDLE_SCHEMA, &location)?,
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
@@ -616,6 +631,40 @@ impl WorkflowLuaHost {
             location,
         };
         Ok(push_node(&mut self.nodes, draft))
+    }
+
+    fn command_env_sources(
+        &mut self,
+        table: &LuaTableData,
+        location: &LuaSourceLocation,
+    ) -> Result<Vec<(EnvironmentVariableName, usize)>, LuaHostError> {
+        let values = match table.get_string("env") {
+            None | Some(LuaData::Nil) => return Ok(Vec::new()),
+            Some(LuaData::Table(values)) => values,
+            Some(_) => return Err(type_error("env", "string-keyed table", location)),
+        };
+        let mut env = Vec::new();
+        for (key, value) in &values.entries {
+            self.ensure_arena_budget(location)?;
+            let LuaTableKey::String(key) = key else {
+                return Err(type_error("env", "string-keyed table", location));
+            };
+            let variable = EnvironmentVariableName::new(key.clone()).map_err(|error| {
+                let code = match &error {
+                    EnvironmentVariableNameError::Invalid(_) => "WFS006",
+                    EnvironmentVariableNameError::Reserved(_) => "WFR004",
+                };
+                host_field_error(code, error.to_string(), location.clone(), "env")
+            })?;
+            let source = expect_handle(value, HANDLE_SOURCE)
+                .or_else(|_| self.input_as_source_index(value, location))
+                .map_err(|_| type_error("env", "ReleashInput values", location))?;
+            if !matches!(self.sources.get(source), Some(SourceDraft::Input { .. })) {
+                return Err(type_error("env", "ReleashInput values", location));
+            }
+            env.push((variable, source));
+        }
+        Ok(env)
     }
 
     fn call_session(
@@ -754,6 +803,20 @@ impl WorkflowLuaHost {
                 let source = expect_handle(value, HANDLE_SOURCE)
                     .or_else(|_| self.node_as_source_index(value))
                     .map_err(|_| type_error("items", "Source or literal array", &location))?;
+                if let Some(SourceDraft::Input {
+                    input,
+                    fields,
+                    location: source_location,
+                }) = self.sources.get(source)
+                {
+                    if !fields.is_empty() && self.inputs[*input].contract.is_none() {
+                        return Err(host_error(
+                            "WFR003",
+                            "input does not declare a contract",
+                            source_location.clone(),
+                        ));
+                    }
+                }
                 if !matches!(
                     self.sources.get(source),
                     Some(SourceDraft::Node { fields, .. }) if !fields.is_empty()
@@ -855,7 +918,7 @@ impl WorkflowLuaHost {
                     };
                     let source = expect_handle(value, HANDLE_SOURCE)
                         .or_else(|_| self.node_as_source_index(value))
-                        .or_else(|_| self.input_as_source_index(value))
+                        .or_else(|_| self.input_as_source_index(value, &location))
                         .map_err(|_| type_error("inputs", "Source values", &location))?;
                     result.push((key.clone(), source));
                 }
@@ -888,12 +951,17 @@ impl WorkflowLuaHost {
         Ok(handle(HANDLE_CHILD, index))
     }
 
-    fn input_as_source_index(&mut self, value: &LuaData) -> Result<usize, ()> {
+    fn input_as_source_index(
+        &mut self,
+        value: &LuaData,
+        location: &LuaSourceLocation,
+    ) -> Result<usize, ()> {
         let input = expect_handle(value, HANDLE_INPUT)?;
         let index = self.sources.len();
         self.sources.push(SourceDraft::Input {
             input,
             fields: Vec::new(),
+            location: location.clone(),
         });
         Ok(index)
     }
@@ -1126,7 +1194,7 @@ impl WorkflowLuaHost {
             .ok_or_else(|| missing_field(field, location))?;
         expect_handle(value, HANDLE_SOURCE)
             .or_else(|_| self.node_as_source_index(value))
-            .or_else(|_| self.input_as_source_index(value))
+            .or_else(|_| self.input_as_source_index(value, location))
             .map_err(|_| type_error(field, "Source", location))
     }
 
@@ -1135,7 +1203,7 @@ impl WorkflowLuaHost {
             .nodes
             .get(node)
             .ok_or_else(|| "unknown node handle".to_string())?;
-        if matches!(node.kind, NodeDraftKind::Command(_))
+        if matches!(node.kind, NodeDraftKind::Command { .. })
             && fields.len() == 1
             && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
                 .contains(&fields[0].as_str())
@@ -1163,20 +1231,15 @@ impl WorkflowLuaHost {
             ));
         }
         fields.push(key.to_string());
-        let schema = self
-            .inputs
-            .get(input)
-            .and_then(|input| input.contract)
-            .ok_or_else(|| {
-                host_error(
-                    "WFR003",
-                    "input does not declare a contract",
-                    location.clone(),
-                )
-            })?;
-        self.validate_schema_path(schema, &fields, "input")
-            .map_err(|message| host_error("WFR003", message, location))?;
-        Ok(self.push_source(SourceDraft::Input { input, fields }))
+        if let Some(schema) = self.inputs.get(input).and_then(|input| input.contract) {
+            self.validate_schema_path(schema, &fields, "input")
+                .map_err(|message| host_error("WFR003", message, location.clone()))?;
+        }
+        Ok(self.push_source(SourceDraft::Input {
+            input,
+            fields,
+            location,
+        }))
     }
 
     fn validate_schema_path(
@@ -1323,11 +1386,11 @@ impl WorkflowGraphBuilder {
                     self.namespace
                         .register_explicit(explicit.clone())
                         .map_err(|error| {
-                            build_error(
-                                "WFS006",
-                                error.to_string(),
-                                Some(child_node.location.clone()),
-                            )
+                            let code = match &error {
+                                NodeNamespaceError::Reserved(_) => "WFR004",
+                                NodeNamespaceError::Duplicate(_) => "WFS006",
+                            };
+                            build_error(code, error.to_string(), Some(child_node.location.clone()))
                         })?
                 }
                 None => self
@@ -1353,7 +1416,10 @@ impl WorkflowGraphBuilder {
             .map(|input| self.build_input(*input))
             .collect::<Result<Vec<_>, _>>()?;
         let kind = match draft.kind {
-            NodeDraftKind::Command(command) => NodeKind::Command(CommandSpec { command }),
+            NodeDraftKind::Command { command, env } => NodeKind::Command(CommandSpec {
+                command,
+                env: self.build_command_env(&env)?,
+            }),
             NodeDraftKind::Session {
                 provider,
                 model,
@@ -1577,6 +1643,35 @@ impl WorkflowGraphBuilder {
             .collect()
     }
 
+    fn build_command_env(
+        &self,
+        env: &[(EnvironmentVariableName, usize)],
+    ) -> Result<BTreeMap<EnvironmentVariableName, InputParameterRef>, LuaWorkflowError> {
+        env.iter()
+            .map(|(variable, source)| match self.host.sources.get(*source) {
+                Some(SourceDraft::Input {
+                    input,
+                    fields,
+                    location,
+                }) => {
+                    let mut reference = self.host.inputs[*input].name.clone();
+                    if !fields.is_empty() {
+                        reference.push('.');
+                        reference.push_str(&fields.join("."));
+                    }
+                    InputParameterRef::new(&reference)
+                        .map(|reference| (variable.clone(), reference))
+                        .map_err(|message| build_error("WFR003", message, Some(location.clone())))
+                }
+                _ => Err(build_error(
+                    "WFS002",
+                    "command env values must be ReleashInput values",
+                    None,
+                )),
+            })
+            .collect()
+    }
+
     fn source_ref(
         &self,
         source: usize,
@@ -1594,7 +1689,22 @@ impl WorkflowGraphBuilder {
                 }
                 Ok(raw)
             }
-            Some(SourceDraft::Input { input, fields }) if owner_inputs.contains(input) => {
+            Some(SourceDraft::Input {
+                input,
+                fields,
+                location: source_location,
+            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+                Err(build_error(
+                    "WFR003",
+                    "input does not declare a contract",
+                    Some(source_location.clone()),
+                ))
+            }
+            Some(SourceDraft::Input {
+                input,
+                fields,
+                location: _,
+            }) if owner_inputs.contains(input) => {
                 let mut raw = self.host.inputs[*input].name.clone();
                 if !fields.is_empty() {
                     raw.push('.');
@@ -1675,6 +1785,17 @@ impl WorkflowGraphBuilder {
                 if *node == child_node && !fields.is_empty() =>
             {
                 Ok(fields.join("."))
+            }
+            Some(SourceDraft::Input {
+                input,
+                fields,
+                location: source_location,
+            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+                Err(build_error(
+                    "WFR003",
+                    "input does not declare a contract",
+                    Some(source_location.clone()),
+                ))
             }
             _ => Err(build_error(
                 "WFR003",
@@ -2469,6 +2590,51 @@ return r.workflow{
 
         let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
         assert_eq!(sequence.children[0].inputs[0].1.raw(), "payload.message");
+    }
+
+    #[test]
+    fn rejects_untyped_input_field_in_child_wiring_at_the_index_line() {
+        let error = load(
+            r#"
+local r = require("releash")
+local payload = r.input("payload")
+local leaf = r.command{ command = "echo", input = { r.input("value") } }
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{
+    input = { payload },
+    children = { r.child{ node = leaf, inputs = { value = payload.message } } },
+  },
+}
+"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "WFR003");
+        assert_eq!(error.message, "input does not declare a contract");
+        assert_eq!(error.location.unwrap().line, 9);
+    }
+
+    #[test]
+    fn test_lua_child配線_owner外の型なしinput_fieldをindex行のwfr003で拒否する() {
+        let error = load(
+            r#"
+local r = require("releash")
+local payload = r.input("payload")
+local leaf = r.command{ command = "echo", input = { r.input("value") } }
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{
+    children = { r.child{ node = leaf, inputs = { value = payload.message } } },
+  },
+}
+"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "WFR003");
+        assert_eq!(error.message, "input does not declare a contract");
+        assert_eq!(error.location.unwrap().line, 8);
     }
 
     #[test]

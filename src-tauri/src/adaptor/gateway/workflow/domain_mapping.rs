@@ -134,6 +134,7 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
     match kind {
         schema::NodeKind::Command(spec) => domain::NodeKind::Command(domain::CommandSpec {
             command: spec.command.clone(),
+            env: spec.env.clone(),
         }),
         schema::NodeKind::Session(spec) => domain::NodeKind::Session(domain::SessionSpec {
             provider: spec.provider,

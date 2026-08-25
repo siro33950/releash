@@ -282,4 +282,100 @@ mod tests {
         assert!(output.stdout.len() <= TEST_LIMIT.max_bytes + marker.len());
         assert!(output.stderr.len() <= TEST_LIMIT.max_bytes + marker.len());
     }
+
+    #[tokio::test]
+    async fn test_shell環境変数_引用付き参照は値を再解釈せず元の内容を渡す() {
+        // Given
+        let cwd = TempDir::new().unwrap();
+        let marker = cwd.path().join("must-not-exist");
+        let value = format!(
+            "single' double\" `touch {}`\n$HOME; touch {}",
+            marker.display(),
+            marker.display()
+        );
+
+        // When
+        let output = spawn_shell_command(
+            cwd.path(),
+            "printf '%s' \"$DOC\"",
+            [("DOC".to_string(), value.clone())],
+            TEST_LABEL,
+            TEST_LIMIT,
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+        // Then
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, value);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn test_shell環境変数_引用なし参照でも値のshell構文はcommandにならない() {
+        // Given
+        let cwd = TempDir::new().unwrap();
+        let marker = cwd.path().join("must-not-exist");
+        let value = format!(
+            "one two; touch {} `touch {}`",
+            marker.display(),
+            marker.display()
+        );
+
+        // When
+        let output = spawn_shell_command(
+            cwd.path(),
+            "printf '<%s>\\n' $DOC",
+            [("DOC".to_string(), value)],
+            TEST_LABEL,
+            TEST_LIMIT,
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+        // Then
+        assert_eq!(output.exit_code, 0);
+        assert!(!marker.exists());
+        assert!(output.stdout.contains("<two;>"));
+        assert!(output.stdout.contains("<`touch>"));
+    }
+
+    #[test]
+    fn test_shell環境変数_nulを含む値は既存spawn_errorになる() {
+        let cwd = TempDir::new().unwrap();
+
+        let error = spawn_shell_command(
+            cwd.path(),
+            "true",
+            [("DOC".to_string(), "before\0after".to_string())],
+            TEST_LABEL,
+            TEST_LIMIT,
+        )
+        .err()
+        .expect("NULを含む環境変数ではprocessを起動できない");
+
+        assert!(matches!(error, CommandRunnerError::Spawn(_)));
+    }
+
+    #[test]
+    fn test_shell環境変数_platform上限超過は既存spawn_errorになる() {
+        let cwd = TempDir::new().unwrap();
+        let value = "x".repeat(2 * 1024 * 1024);
+
+        let error = spawn_shell_command(
+            cwd.path(),
+            "true",
+            [("DOC".to_string(), value)],
+            TEST_LABEL,
+            TEST_LIMIT,
+        )
+        .err()
+        .expect("platform上限を超える環境変数ではprocessを起動できない");
+
+        assert!(matches!(error, CommandRunnerError::Spawn(_)));
+    }
 }

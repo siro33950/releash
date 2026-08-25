@@ -39,7 +39,8 @@ pub(crate) fn render_parameter_references(content: &str, bindings: &[(String, Va
     let values = binding_values(bindings);
     replace_template_refs(content, |inner| {
         let (root, field) = reference::split_reference(inner)?;
-        reference::resolve_template_value(root, field, &values).map(value_to_template_string)
+        reference::resolve_template_value(root, field, &values)
+            .map(reference::reference_value_to_string)
     })
 }
 
@@ -69,13 +70,6 @@ pub(crate) fn inject_input_parameters(
         blocks.join("\n\n")
     } else {
         format!("{prompt}\n\n{}", blocks.join("\n\n"))
-    }
-}
-
-fn value_to_template_string(value: Value) -> String {
-    match value {
-        Value::String(value) => value,
-        other => serde_json::to_string(&other).unwrap_or_else(|_| "null".to_string()),
     }
 }
 
@@ -174,4 +168,38 @@ pub(crate) fn build_leaf_prompt(
         node_execution_id,
     );
     Ok((system_prompt, prompt))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_commandテンプレート_既存のparameterとfield展開を維持する() {
+        let bindings = vec![
+            (
+                "document".to_string(),
+                Value::String("it's {{ literal }}".to_string()),
+            ),
+            ("metadata".to_string(), serde_json::json!({"count": 2})),
+        ];
+
+        let rendered = render_parameter_references(
+            "printf '%s' '{{ document }}'; printf '%s' '{{ metadata.count }}'",
+            &bindings,
+        );
+
+        assert_eq!(
+            rendered,
+            "printf '%s' 'it's {{ literal }}'; printf '%s' '2'"
+        );
+    }
+
+    #[test]
+    fn test_commandテンプレート_未解決参照を従来どおり残す() {
+        assert_eq!(
+            render_parameter_references("echo '{{ missing }}'", &[]),
+            "echo '{{ missing }}'"
+        );
+    }
 }

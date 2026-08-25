@@ -77,6 +77,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashCommandOptions
 ---@field name? string
 ---@field command string
+---@field env? table<string, ReleashSource>
 ---@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
@@ -360,6 +361,7 @@ mod tests {
         assert!(releash.contains("---@field sequence fun(options: ReleashSequenceOptions)"));
         assert!(releash.contains("---@field workflow fun(options: ReleashWorkflowOptions)"));
         assert!(releash.contains("---@field on_true ReleashNode"));
+        assert!(releash.contains("---@field env? table<string, ReleashSource>"));
         assert!(!releash.contains("---@field equals ReleashNode"));
     }
 

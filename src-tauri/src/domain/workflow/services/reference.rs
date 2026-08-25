@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ChildEntry, NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition,
+    ChildEntry, EnvironmentVariableName, InputParameterRef, NodeDefinition, NodeKindName,
+    SchemaDef, WorkflowDefinition,
 };
 
 pub const REQUEST_ARTIFACT: &str = "request";
@@ -39,6 +40,37 @@ pub enum ReferenceResolveError {
         value: String,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandEnvironmentReferenceError {
+    pub node: String,
+    pub variable: String,
+    pub reference: String,
+    pub source: ReferenceResolveError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandEnvironmentResolutionError {
+    MissingParameter { reference: String },
+    MissingField { reference: String },
+}
+
+impl std::fmt::Display for CommandEnvironmentResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingParameter { reference } => write!(
+                formatter,
+                "command environment reference '{reference}' has no runtime input binding"
+            ),
+            Self::MissingField { reference } => write!(
+                formatter,
+                "command environment reference '{reference}' has no runtime field value"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommandEnvironmentResolutionError {}
 
 pub fn parse_reference(input: &str) -> Result<ArtifactReference, ReferenceParseError> {
     let trimmed = input.trim();
@@ -104,6 +136,33 @@ pub(crate) fn validate_workflow_reference_diagnostics(
     errors
 }
 
+pub(crate) fn validate_workflow_command_environment_references(
+    workflow: &WorkflowDefinition,
+) -> Vec<CommandEnvironmentReferenceError> {
+    let mut errors = Vec::new();
+    for node in &workflow.nodes {
+        let Some(command) = node.command_spec() else {
+            continue;
+        };
+        for (variable, input_reference) in &command.env {
+            if let Some(source) = validate_input_parameter_reference(
+                node,
+                &workflow.schemas,
+                input_reference.parameter(),
+                input_reference.field(),
+            ) {
+                errors.push(CommandEnvironmentReferenceError {
+                    node: node.name.clone(),
+                    variable: variable.as_str().to_string(),
+                    reference: input_reference.as_string(),
+                    source,
+                });
+            }
+        }
+    }
+    errors
+}
+
 /// 本文（command / facet）の `{{ ... }}` を、その node の input パラメータ宣言と
 /// 突合して検証する。参照できるのはパラメータ名（+ field パス）のみ。
 pub fn validate_template_references_for_node(
@@ -127,26 +186,37 @@ fn validate_node_template_content(
             errors.push(ReferenceResolveError::InvalidInputRef { value: reference });
             continue;
         };
-        let Some(parameter) = node.input_parameter(root) else {
-            errors.push(ReferenceResolveError::UnknownParameter {
-                name: root.to_string(),
-            });
-            continue;
-        };
-        let Some(field) = field else {
-            continue;
-        };
-        // 型あり（Contract 付き）パラメータの field パスは Contract に対して検証する。
-        // 型なしパラメータは供給元の形が実行時に決まるため検証しない。
-        if let Some(contract) = parameter.contract.as_deref() {
-            if !contract_field_available(contract, field, schemas) {
-                errors.push(ReferenceResolveError::UnknownField {
-                    reference: root.to_string(),
-                    field: field.to_string(),
-                });
-            }
+        if let Some(error) = validate_input_parameter_reference(node, schemas, root, field) {
+            errors.push(error);
         }
     }
+}
+
+fn validate_input_parameter_reference(
+    node: &NodeDefinition,
+    schemas: &BTreeMap<String, SchemaDef>,
+    root: &str,
+    field: Option<&str>,
+) -> Option<ReferenceResolveError> {
+    let Some(parameter) = node.input_parameter(root) else {
+        return Some(ReferenceResolveError::UnknownParameter {
+            name: root.to_string(),
+        });
+    };
+    let field = field?;
+    // 型あり（Contract 付き）パラメータの field パスは Contract に対して検証する。
+    // 型なしパラメータは供給元の形が実行時に決まるため検証しない。
+    if parameter
+        .contract
+        .as_deref()
+        .is_some_and(|contract| !contract_field_available(contract, field, schemas))
+    {
+        return Some(ReferenceResolveError::UnknownField {
+            reference: root.to_string(),
+            field: field.to_string(),
+        });
+    }
+    None
 }
 
 /// `root` / `root.field` の分解。形式不正（空・空白・2 段以上の field）は None。
@@ -300,13 +370,47 @@ pub fn resolve_fanout_child_bindings(
 }
 
 /// 束縛済みパラメータ値から `{{ root(.field) }}` を解決する。
-pub fn resolve_template_value(
+pub fn resolve_template_value<'a>(
     root: &str,
     field: Option<&str>,
-    values: &HashMap<String, Value>,
-) -> Option<Value> {
+    values: &'a HashMap<String, Value>,
+) -> Option<&'a Value> {
     let value = values.get(root)?;
-    field_value(value, field).cloned()
+    field_value(value, field)
+}
+
+pub fn resolve_command_environment(
+    env: &BTreeMap<EnvironmentVariableName, InputParameterRef>,
+    bindings: &[(String, Value)],
+) -> Result<Vec<(String, String)>, CommandEnvironmentResolutionError> {
+    let values: HashMap<&str, &Value> = bindings
+        .iter()
+        .map(|(parameter, value)| (parameter.as_str(), value))
+        .collect();
+    env.iter()
+        .map(|(variable, input_reference)| {
+            let value = values.get(input_reference.parameter()).ok_or_else(|| {
+                CommandEnvironmentResolutionError::MissingParameter {
+                    reference: input_reference.as_string(),
+                }
+            })?;
+            let value = field_value(value, input_reference.field()).ok_or_else(|| {
+                CommandEnvironmentResolutionError::MissingField {
+                    reference: input_reference.as_string(),
+                }
+            })?;
+            let value = reference_value_to_string(value);
+            Ok((variable.as_str().to_string(), value))
+        })
+        .collect()
+}
+
+pub fn reference_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        value => serde_json::to_string(value)
+            .expect("serde_json::Value must always serialize to JSON text"),
+    }
 }
 
 fn field_value<'a>(value: &'a Value, field: Option<&str>) -> Option<&'a Value> {
@@ -382,6 +486,7 @@ mod tests {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: command.to_string(),
+                env: Default::default(),
             }),
             artifact: None,
             input: params,
@@ -395,6 +500,20 @@ mod tests {
             name: name.to_string(),
             contract: None,
         }
+    }
+
+    fn command_env(
+        entries: &[(&str, &str)],
+    ) -> BTreeMap<EnvironmentVariableName, InputParameterRef> {
+        entries
+            .iter()
+            .map(|(name, reference)| {
+                (
+                    EnvironmentVariableName::new(*name).unwrap(),
+                    InputParameterRef::new(*reference).unwrap(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -431,6 +550,95 @@ mod tests {
             error,
             ReferenceResolveError::UnknownParameter { name } if name == "item"
         )));
+    }
+
+    #[test]
+    fn test_command環境解決_stringは無変換で非stringはcompact_jsonになる() {
+        let env = command_env(&[
+            ("DOC", "document"),
+            ("META", "metadata"),
+            ("COUNT", "metadata.count"),
+        ]);
+        let bindings = vec![
+            (
+                "document".to_string(),
+                Value::String("{{ untouched }}; `still data`\n$HOME".to_string()),
+            ),
+            (
+                "metadata".to_string(),
+                serde_json::json!({"count": 2, "ready": true}),
+            ),
+        ];
+
+        let resolved = resolve_command_environment(&env, &bindings).unwrap();
+
+        assert!(resolved.contains(&(
+            "DOC".to_string(),
+            "{{ untouched }}; `still data`\n$HOME".to_string()
+        )));
+        assert!(resolved.contains(&(
+            "META".to_string(),
+            r#"{"count":2,"ready":true}"#.to_string()
+        )));
+        assert!(resolved.contains(&("COUNT".to_string(), "2".to_string())));
+    }
+
+    #[test]
+    fn test_command環境解決_束縛またはfieldが無ければ全体を失敗する() {
+        let missing_parameter = command_env(&[("DOC", "document")]);
+        assert!(matches!(
+            resolve_command_environment(&missing_parameter, &[]),
+            Err(CommandEnvironmentResolutionError::MissingParameter { .. })
+        ));
+
+        let missing_field = command_env(&[("DOC", "document.body")]);
+        let bindings = vec![("document".to_string(), serde_json::json!({"title": "x"}))];
+        assert!(matches!(
+            resolve_command_environment(&missing_field, &bindings),
+            Err(CommandEnvironmentResolutionError::MissingField { .. })
+        ));
+    }
+
+    #[test]
+    fn test_command環境参照検証_未宣言inputと型ありinputの未知fieldを拒否する() {
+        let mut node = command_node_with_params(
+            "main",
+            "true",
+            vec![InputParam {
+                name: "document".to_string(),
+                contract: Some("document-contract".to_string()),
+            }],
+        );
+        let NodeKind::Command(command) = &mut node.kind else {
+            unreachable!();
+        };
+        command.env = command_env(&[("UNKNOWN", "missing"), ("FIELD", "document.body")]);
+        let workflow = WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            schemas: [(
+                "document-contract".to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::new(),
+                    required: Default::default(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![node],
+            entry: "main".to_string(),
+            ..Default::default()
+        };
+
+        let errors = validate_workflow_command_environment_references(&workflow);
+
+        assert!(errors.iter().any(|error| matches!(
+            &error.source,
+            ReferenceResolveError::UnknownParameter { .. }
+        )));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.source, ReferenceResolveError::UnknownField { .. })));
     }
 
     #[test]

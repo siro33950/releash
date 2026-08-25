@@ -4486,6 +4486,7 @@ mod tests {
                 kind: crate::domain::workflow::NodeKind::Command(
                     crate::domain::workflow::CommandSpec {
                         command: "true".to_string(),
+                        env: Default::default(),
                     },
                 ),
                 ..Default::default()
@@ -5284,6 +5285,7 @@ mod tests {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
                 command: format!("printf {name}"),
+                env: Default::default(),
             }),
             ..Default::default()
         }
@@ -5324,6 +5326,66 @@ mod tests {
             counter += 1;
             format!("id-{counter}")
         }
+    }
+
+    #[test]
+    fn test_command_env_resumeは保存済み宣言と再構築bindingから値を再解決できる() {
+        let mut command = tree_command_node("run");
+        command.input.push(crate::domain::workflow::InputParam {
+            name: "document".to_string(),
+            contract: None,
+        });
+        let NodeKind::Command(command_spec) = &mut command.kind else {
+            unreachable!();
+        };
+        command_spec.env = [(
+            crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap(),
+            crate::domain::workflow::InputParameterRef::new("document").unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        let mut entry = ChildEntry::reference("run");
+        entry.inputs.push((
+            "document".to_string(),
+            crate::domain::workflow::value_objects::InputSourceRef::new("request"),
+        ));
+        let mut execution =
+            tree_execution(vec![tree_sequence_node("main", None, vec![entry]), command]);
+        execution.request = Some("document body".to_string());
+        let mut new_id = tree_id_source();
+        let started = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartLeaves(leaves) = started.decision else {
+            panic!("command leaf must start");
+        };
+        let original = &leaves[0].node_execution_id;
+        assert_eq!(
+            execution.pause_node_execution(original, 2.0),
+            TransitionOutcome::Applied
+        );
+
+        let restarted = execution
+            .restart_node_attempt_at(
+                original,
+                "resumed-command".to_string(),
+                3.0,
+                NodeRestartMode::CommandResume,
+            )
+            .unwrap();
+
+        assert_eq!(restarted.leaf.bindings, leaves[0].bindings);
+        let command = execution
+            .workflow
+            .node_by_name("run")
+            .and_then(NodeDefinition::command_spec)
+            .unwrap();
+        assert_eq!(
+            crate::domain::workflow::services::reference::resolve_command_environment(
+                &command.env,
+                &restarted.leaf.bindings,
+            )
+            .unwrap(),
+            vec![("DOC".to_string(), "document body".to_string())]
+        );
     }
 
     fn started_names(events: &[WorkflowEvent]) -> Vec<String> {
