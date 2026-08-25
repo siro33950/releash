@@ -24,9 +24,14 @@ export type WorkspaceNodeStatus =
 	| "paused"
 	| "failed"
 	| "waiting"
-	| "interrupted"
 	| "aborted"
 	| "completed";
+
+export type WorkspaceNodeStatusClassification =
+	| "active"
+	| "attention"
+	| "failure"
+	| "idle";
 
 export interface WorkspaceNodeCapabilities {
 	canApprove: boolean;
@@ -52,7 +57,7 @@ export interface WorkspaceNode {
 	kind: "node";
 	id: string;
 	title: string;
-	status: WorkspaceNodeStatus;
+	status: WorkspaceNodeStatusClassification;
 	errorReason?: string | null;
 	contentKind: "session" | "command";
 	capabilities: WorkspaceNodeCapabilities;
@@ -67,7 +72,7 @@ export interface WorkspaceSequence {
 	kind: "sequence";
 	id: string;
 	title: string;
-	status: WorkspaceNodeStatus;
+	status: WorkspaceNodeStatusClassification;
 	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
 	children: WorkspaceTreeItem[];
 	updatedAt: number;
@@ -77,7 +82,7 @@ export interface WorkspaceFanout {
 	kind: "fanout";
 	id: string;
 	title: string;
-	status: WorkspaceNodeStatus;
+	status: WorkspaceNodeStatusClassification;
 	workflowCapabilities?: WorkspaceWorkflowCapabilities | null;
 	children: WorkspaceTreeItem[];
 	updatedAt: number;
@@ -129,6 +134,7 @@ export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	statusClassification: WorkspaceNodeStatusClassification;
 	submitReceived: boolean;
 	stopReceived: boolean;
 	waitingFor?: "submit" | "stop";

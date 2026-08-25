@@ -315,7 +315,7 @@ fn project_tree(
         WorkspaceNodeDto {
             id: public_id,
             title: node.title.clone(),
-            status: node.status.as_public_str().to_string(),
+            status: node.status_classification.as_public_str().to_string(),
             error_reason: node.error_reason.clone(),
             content_kind: if node.kind == WorkspaceNodeKind::WorkflowCommand {
                 "command"
@@ -388,7 +388,7 @@ fn project_tree(
                     vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
                         title: node.title.clone(),
-                        status: node.status.as_public_str().to_string(),
+                        status: node.status_classification.as_public_str().to_string(),
                         workflow_capabilities: root
                             .and_then(|root| root.workflow_capabilities.clone()),
                         children: branch(Some(&node.id), children, hidden, by_id, root_projections),
@@ -400,7 +400,7 @@ fn project_tree(
                     vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
                         title: node.title.clone(),
-                        status: node.status.as_public_str().to_string(),
+                        status: node.status_classification.as_public_str().to_string(),
                         workflow_capabilities: root
                             .and_then(|root| root.workflow_capabilities.clone()),
                         children: branch(Some(&node.id), children, hidden, by_id, root_projections),
@@ -461,6 +461,7 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         id: node.id,
         title: node.title,
         status: node.status.as_public_str().to_string(),
+        status_classification: node.status_classification.as_public_str().to_string(),
         submit_received,
         stop_received,
         waiting_for,
@@ -553,7 +554,9 @@ mod tests {
     use super::*;
     use crate::domain::local_event::WorkflowExecutionMetadataRecord;
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
-    use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceTreeNode};
+    use crate::domain::workspace_tree::{
+        WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
+    };
     use crate::usecase::agent_session::{
         AgentSessionActivityDto, AgentSessionOperationsDto, AgentSessionProviderDto,
     };
@@ -566,6 +569,7 @@ mod tests {
             kind: WorkspaceNodeKind::WorkflowSession,
             title: "Review".to_string(),
             status: WorkspaceNodeStatus::Waiting,
+            status_classification: WorkspaceNodeStatusClassification::Attention,
             error_reason: None,
             updated_at_bits: 1.0f64.to_bits(),
             execution_id: None,
@@ -687,9 +691,12 @@ mod tests {
 
         assert_eq!(json[0]["kind"], "sequence");
         assert_eq!(json[0]["id"], execution_id);
+        assert_eq!(json[0]["status"], "active");
         assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
         assert_eq!(json[0]["children"][0]["kind"], "fanout");
+        assert_eq!(json[0]["children"][0]["status"], "active");
         assert_eq!(json[0]["children"][0]["children"][0]["kind"], "node");
+        assert_eq!(json[0]["children"][0]["children"][0]["status"], "active");
     }
 
     #[test]
@@ -785,6 +792,264 @@ mod tests {
         assert_eq!(detail["waitingFor"], "submit");
         assert_eq!(detail["hasArtifact"], false);
         assert_eq!(detail["capabilities"]["canRetry"], true);
+    }
+
+    #[test]
+    fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返す() {
+        // Given
+        let execution_id = "workflow-execution";
+        let owner = tree_owner(execution_id);
+        let sequence = child_node(
+            "sequence",
+            execution_id,
+            execution_id,
+            WorkspaceNodeKind::Sequence,
+            "main",
+        );
+        let fanout = child_node(
+            "fanout",
+            "sequence",
+            execution_id,
+            WorkspaceNodeKind::Fanout,
+            "reviews",
+        );
+        let mut failed = child_node(
+            "failed",
+            "fanout",
+            execution_id,
+            WorkspaceNodeKind::WorkflowCommand,
+            "lint",
+        );
+        failed.status = WorkspaceNodeStatus::Failed;
+        let tree = WorkspaceTree::restore("/repo", vec![owner, sequence, fanout, failed]).unwrap();
+
+        // When
+        let json = serde_json::to_value(project_tree(
+            &tree,
+            &HashSet::new(),
+            &HashSet::from([execution_id.to_string()]),
+            &[],
+        ))
+        .unwrap();
+
+        // Then
+        for status in [
+            &json[0]["status"],
+            &json[0]["children"][0]["status"],
+            &json[0]["children"][0]["children"][0]["status"],
+        ] {
+            assert_eq!(status, "failure");
+            assert!(![
+                "running",
+                "paused",
+                "failed",
+                "waiting",
+                "aborted",
+                "completed",
+                "interrupted",
+            ]
+            .contains(&status.as_str().unwrap()));
+        }
+    }
+
+    #[test]
+    fn test_workspaceノード詳細契約_詳細状態と4分類を同時に返す() {
+        // Given
+        let cases = [
+            (
+                WorkspaceNodeStatus::Running,
+                WorkspaceNodeStatusClassification::Active,
+                "running",
+                "active",
+            ),
+            (
+                WorkspaceNodeStatus::Paused,
+                WorkspaceNodeStatusClassification::Idle,
+                "paused",
+                "idle",
+            ),
+            (
+                WorkspaceNodeStatus::Failed,
+                WorkspaceNodeStatusClassification::Failure,
+                "failed",
+                "failure",
+            ),
+            (
+                WorkspaceNodeStatus::Waiting,
+                WorkspaceNodeStatusClassification::Attention,
+                "waiting",
+                "attention",
+            ),
+            (
+                WorkspaceNodeStatus::Aborted,
+                WorkspaceNodeStatusClassification::Idle,
+                "aborted",
+                "idle",
+            ),
+            (
+                WorkspaceNodeStatus::Completed,
+                WorkspaceNodeStatusClassification::Idle,
+                "completed",
+                "idle",
+            ),
+        ];
+
+        // When / Then
+        for (status, classification, expected_status, expected_classification) in cases {
+            let mut current = node();
+            current.status = status;
+            current.status_classification = classification;
+            let detail = serde_json::to_value(node_detail(current)).unwrap();
+            assert_eq!(detail["status"], expected_status);
+            assert_eq!(detail["statusClassification"], expected_classification);
+            assert_ne!(detail["status"], "interrupted");
+            assert_ne!(detail["statusClassification"], "interrupted");
+        }
+    }
+
+    #[test]
+    fn test_workspaceツリー契約_recovery_fenceありでも操作capabilityとresume不能理由を維持する() {
+        // Given
+        let execution_id = "workflow-execution";
+        let owner = tree_owner(execution_id);
+        let mut sequence = child_node(
+            "sequence",
+            execution_id,
+            execution_id,
+            WorkspaceNodeKind::Sequence,
+            "main",
+        );
+        sequence.status = WorkspaceNodeStatus::Completed;
+        let mut approval = child_node(
+            "approval",
+            "sequence",
+            execution_id,
+            WorkspaceNodeKind::WorkflowSession,
+            "approval",
+        );
+        approval.status = WorkspaceNodeStatus::Waiting;
+        approval.can_approve = true;
+        let mut failed = child_node(
+            "failed",
+            "sequence",
+            execution_id,
+            WorkspaceNodeKind::WorkflowCommand,
+            "failed",
+        );
+        failed.sibling_order = 1;
+        failed.status = WorkspaceNodeStatus::Failed;
+        failed.can_retry = true;
+        let mut running = child_node(
+            "running",
+            "sequence",
+            execution_id,
+            WorkspaceNodeKind::WorkflowCommand,
+            "running",
+        );
+        running.sibling_order = 2;
+        let mut fenced_paused = child_node(
+            "fenced-paused",
+            "sequence",
+            execution_id,
+            WorkspaceNodeKind::WorkflowSession,
+            "fenced-paused",
+        );
+        fenced_paused.sibling_order = 3;
+        fenced_paused.status = WorkspaceNodeStatus::Paused;
+        fenced_paused.recovery_owner_reason = Some("recovery fence".to_string());
+        let tree = WorkspaceTree::restore(
+            "/repo",
+            vec![owner, sequence, approval, failed, running, fenced_paused],
+        )
+        .unwrap();
+
+        // When
+        let json = serde_json::to_value(project_tree(
+            &tree,
+            &HashSet::new(),
+            &HashSet::from([execution_id.to_string()]),
+            &[],
+        ))
+        .unwrap();
+
+        // Then
+        assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
+        assert_eq!(json[0]["workflowCapabilities"]["canResume"], false);
+        assert_eq!(
+            json[0]["workflowCapabilities"]["resumeUnavailableReason"],
+            "recovery fence"
+        );
+        assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
+        assert_eq!(json[0]["workflowCapabilities"]["canArchive"], false);
+        assert_eq!(json[0]["children"][0]["capabilities"]["canApprove"], true);
+        assert_eq!(json[0]["children"][1]["capabilities"]["canRetry"], true);
+    }
+
+    #[test]
+    fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由を維持する() {
+        // Given
+        let execution_id = "paused-workflow-execution";
+        let owner = tree_owner(execution_id);
+        let mut paused = child_node(
+            "paused",
+            execution_id,
+            execution_id,
+            WorkspaceNodeKind::WorkflowSession,
+            "paused",
+        );
+        paused.status = WorkspaceNodeStatus::Paused;
+        let tree = WorkspaceTree::restore("/repo", vec![owner, paused]).unwrap();
+
+        // When
+        let json = serde_json::to_value(project_tree(
+            &tree,
+            &HashSet::new(),
+            &HashSet::from([execution_id.to_string()]),
+            &[],
+        ))
+        .unwrap();
+
+        // Then
+        assert_eq!(json[0]["status"], "idle");
+        assert_eq!(json[0]["workflowCapabilities"]["canStop"], false);
+        assert_eq!(json[0]["workflowCapabilities"]["canResume"], true);
+        assert!(json[0]["workflowCapabilities"]["resumeUnavailableReason"].is_null());
+    }
+
+    #[test]
+    fn test_workspaceツリー契約_completedでも終了時capabilityを維持する() {
+        // Given
+        let execution_id = "completed-workflow-execution";
+        let mut owner = tree_owner(execution_id);
+        owner.status = WorkspaceNodeStatus::Completed;
+        owner.can_stop = false;
+        owner.can_abort = false;
+        owner.can_archive = true;
+        let mut completed = child_node(
+            "completed",
+            execution_id,
+            execution_id,
+            WorkspaceNodeKind::WorkflowCommand,
+            "completed",
+        );
+        completed.status = WorkspaceNodeStatus::Completed;
+        let tree = WorkspaceTree::restore("/repo", vec![owner, completed]).unwrap();
+
+        // When
+        let json = serde_json::to_value(project_tree(
+            &tree,
+            &HashSet::new(),
+            &HashSet::from([execution_id.to_string()]),
+            &[],
+        ))
+        .unwrap();
+
+        // Then
+        assert_eq!(json[0]["status"], "idle");
+        assert_eq!(json[0]["workflowCapabilities"]["canStop"], false);
+        assert_eq!(json[0]["workflowCapabilities"]["canResume"], false);
+        assert_eq!(json[0]["workflowCapabilities"]["canAbort"], false);
+        assert_eq!(json[0]["workflowCapabilities"]["canArchive"], true);
     }
 
     #[test]

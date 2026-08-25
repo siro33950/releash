@@ -122,6 +122,7 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub id: String,
     pub title: String,
     pub status: String,
+    pub status_classification: String,
     pub submit_received: bool,
     pub stop_received: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,7 +370,7 @@ mod tests {
             nodes: vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
                 id: "workflow".to_string(),
                 title: "main".to_string(),
-                status: "running".to_string(),
+                status: "active".to_string(),
                 workflow_capabilities: Some(WorkspaceWorkflowCapabilitiesDto {
                     can_stop: true,
                     can_resume: false,
@@ -380,12 +381,12 @@ mod tests {
                 children: vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
                     id: "fanout".to_string(),
                     title: "Fanout".to_string(),
-                    status: "running".to_string(),
+                    status: "active".to_string(),
                     workflow_capabilities: None,
                     children: vec![WorkspaceTreeItemDto::Node(WorkspaceNodeDto {
                         id: "selected-node".to_string(),
                         title: "Child".to_string(),
-                        status: "running".to_string(),
+                        status: "active".to_string(),
                         error_reason: None,
                         content_kind: "session",
                         capabilities: WorkspaceNodeCapabilitiesDto {
@@ -428,5 +429,36 @@ mod tests {
             reconciliation.snapshot.preferred_node_id.as_deref(),
             Some("selected-node")
         );
+    }
+
+    #[test]
+    fn test_選択整合契約_返却snapshotの全行が4分類だけを持つ() {
+        fn assert_classifications(items: &[WorkspaceTreeItemDto]) {
+            for item in items {
+                let (status, children) = match item {
+                    WorkspaceTreeItemDto::Node(node) => (node.status.as_str(), None),
+                    WorkspaceTreeItemDto::Sequence(sequence) => {
+                        (sequence.status.as_str(), Some(sequence.children.as_slice()))
+                    }
+                    WorkspaceTreeItemDto::Fanout(fanout) => {
+                        (fanout.status.as_str(), Some(fanout.children.as_slice()))
+                    }
+                };
+                assert!(["active", "attention", "failure", "idle"].contains(&status));
+                assert_ne!(status, "interrupted");
+                if let Some(children) = children {
+                    assert_classifications(children);
+                }
+            }
+        }
+
+        // Given
+        let snapshot = nested_snapshot();
+
+        // When
+        let reconciliation = reconcile_workspace_tree_selection(snapshot, "selected-node");
+
+        // Then
+        assert_classifications(&reconciliation.snapshot.nodes);
     }
 }

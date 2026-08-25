@@ -7,27 +7,30 @@ import {
 	Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import type {
+	WorkspaceNodeStatus,
+	WorkspaceNodeStatusClassification,
+} from "@/types/workspace-tree";
 
-export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
-	running: "text-blue-600 dark:text-blue-300",
-	paused: "text-muted-foreground",
-	failed: "text-red-600 dark:text-red-300",
-	waiting: "text-yellow-600 dark:text-yellow-300",
-	interrupted: "text-orange-600 dark:text-orange-300",
-	aborted: "text-muted-foreground",
-	completed: "text-green-600 dark:text-green-300",
+export const workflowNodeIconClasses: Record<
+	WorkspaceNodeStatusClassification,
+	string
+> = {
+	active: "text-blue-600 dark:text-blue-300",
+	attention: "text-yellow-600 dark:text-yellow-300",
+	failure: "text-red-600 dark:text-red-300",
+	idle: "text-green-600 dark:text-green-300",
 };
 
-/** running / waiting のときにアイコンを pulse させるかの判定。 */
 export function isWorkspaceNodePulseStatus(
-	status: WorkspaceNodeStatus,
+	status: WorkspaceNodeStatusClassification,
 ): boolean {
-	return status === "running" || status === "waiting";
+	return status === "active" || status === "attention";
 }
 
 interface WorkflowNodeStatusIconProps {
 	status: WorkspaceNodeStatus;
+	statusClassification: WorkspaceNodeStatusClassification;
 	containerClassName?: string;
 	iconClassName?: string;
 	circleClassName?: string;
@@ -35,11 +38,12 @@ interface WorkflowNodeStatusIconProps {
 
 export function WorkflowNodeStatusIcon({
 	status,
+	statusClassification,
 	containerClassName,
 	iconClassName = "size-3.5 shrink-0",
 	circleClassName = "size-2.5 shrink-0",
 }: WorkflowNodeStatusIconProps) {
-	const colorClassName = workflowNodeIconClasses[status];
+	const colorClassName = workflowNodeIconClasses[statusClassification];
 	const inheritedColor = containerClassName ? undefined : colorClassName;
 	const baseIconClassName = cn(iconClassName, inheritedColor);
 	const icon =

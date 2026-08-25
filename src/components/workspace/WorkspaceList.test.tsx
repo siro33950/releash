@@ -119,7 +119,7 @@ const directNode: WorkspaceTreeItem = {
 	kind: "node",
 	id: "4f168b74-f9cf-4d51-9970-81ea281bc983",
 	title: "Direct session",
-	status: "running",
+	status: "active",
 	contentKind: "session",
 	capabilities: { canApprove: false, canRetry: false, canClose: true },
 	pastAttempts: [],
@@ -130,7 +130,7 @@ const directNode: WorkspaceTreeItem = {
 function standaloneSessionNode({
 	id,
 	title,
-	status = "running",
+	status = "active",
 	canArchive = true,
 	canDelete = false,
 	sessionRef = id,
@@ -166,7 +166,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 		kind: "sequence",
 		id: "workflow-internal-uuid",
 		title: "Release workflow",
-		status: "running",
+		status: "active",
 		workflowCapabilities: {
 			canStop: true,
 			canResume: false,
@@ -179,7 +179,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				kind: "node",
 				id: "workflow-session-internal-uuid",
 				title: "Prepare",
-				status: "completed",
+				status: "idle",
 				contentKind: "session",
 				capabilities: { canApprove: false, canRetry: false, canClose: false },
 				pastAttempts: [],
@@ -190,7 +190,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				kind: "fanout",
 				id: "fanout-internal-uuid",
 				title: "Review all",
-				status: "running",
+				status: "active",
 				workflowCapabilities: null,
 				updatedAt: 4,
 				children: [
@@ -198,7 +198,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 						kind: "node",
 						id: "fanout-child-internal-uuid",
 						title: "Architecture review",
-						status: "running",
+						status: "active",
 						contentKind: "command",
 						capabilities: {
 							canApprove: false,
@@ -402,6 +402,61 @@ describe("WorkspaceList", () => {
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
 	});
 
+	it("uses the four classification colors and pulse rules for Sequence rows", () => {
+		const cases = [
+			{
+				title: "Active sequence",
+				status: "active",
+				colorClasses: ["text-blue-600", "dark:text-blue-300"],
+				pulses: true,
+			},
+			{
+				title: "Attention sequence",
+				status: "attention",
+				colorClasses: ["text-yellow-600", "dark:text-yellow-300"],
+				pulses: true,
+			},
+			{
+				title: "Failure sequence",
+				status: "failure",
+				colorClasses: ["text-red-600", "dark:text-red-300"],
+				pulses: false,
+			},
+			{
+				title: "Idle sequence",
+				status: "idle",
+				colorClasses: ["text-green-600", "dark:text-green-300"],
+				pulses: false,
+			},
+		] as const;
+		const nodes: WorkspaceTreeItem[] = cases.map(
+			({ title, status }, index) => ({
+				kind: "sequence",
+				id: `sequence-${index}`,
+				title,
+				status,
+				children: [],
+				updatedAt: index,
+			}),
+		);
+		mocks.treeStateOverrides.set("/repo/wt", { nodes });
+
+		renderWorkspaceList();
+
+		for (const { title, colorClasses, pulses } of cases) {
+			const icon = screen
+				.getByRole("button", { name: title })
+				.querySelector("svg.lucide-list-tree");
+			expect(icon).toBeInTheDocument();
+			expect(icon).toHaveClass(...colorClasses);
+			if (pulses) {
+				expect(icon).toHaveClass("animate-pulse");
+			} else {
+				expect(icon).not.toHaveClass("animate-pulse");
+			}
+		}
+	});
+
 	it("backendが絞り込んだStandalone Session Nodeを選択できる", async () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
@@ -417,7 +472,7 @@ describe("WorkspaceList", () => {
 
 		await user.click(
 			screen.getByRole("button", {
-				name: "Claude AgentSession, running",
+				name: "Claude AgentSession, active",
 			}),
 		);
 
@@ -516,63 +571,70 @@ describe("WorkspaceList", () => {
 		});
 	});
 
-	it("Standalone Session Nodeの実行状態はテキストでなくアイコン色で表現する", () => {
+	it("Standalone Session Nodeの4分類は色とpulseで表現する", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				standaloneSessionNode({
-					id: "provider-agent-running",
-					title: "Running Session",
-					status: "running",
+					id: "provider-agent-active",
+					title: "Active Session",
+					status: "active",
 				}),
 				standaloneSessionNode({
-					id: "provider-agent-completed",
-					title: "Completed Session",
-					status: "completed",
+					id: "provider-agent-attention",
+					title: "Attention Session",
+					status: "attention",
 				}),
 				standaloneSessionNode({
-					id: "provider-agent-failed",
-					title: "Failed Session",
-					status: "failed",
+					id: "provider-agent-failure",
+					title: "Failure Session",
+					status: "failure",
 				}),
 				standaloneSessionNode({
-					id: "provider-agent-paused",
-					title: "Paused Session",
-					status: "paused",
+					id: "provider-agent-idle",
+					title: "Idle Session",
+					status: "idle",
 				}),
 			],
 			archivedSessions: [],
 		});
 		renderWorkspaceList();
 
-		const runningRow = screen.getByRole("button", {
-			name: "Running Session, running",
+		const activeRow = screen.getByRole("button", {
+			name: "Active Session, active",
 		});
-		const completedRow = screen.getByRole("button", {
-			name: "Completed Session, completed",
+		const attentionRow = screen.getByRole("button", {
+			name: "Attention Session, attention",
 		});
-		const failedRow = screen.getByRole("button", {
-			name: "Failed Session, failed",
+		const failureRow = screen.getByRole("button", {
+			name: "Failure Session, failure",
 		});
-		const pausedRow = screen.getByRole("button", {
-			name: "Paused Session, paused",
+		const idleRow = screen.getByRole("button", {
+			name: "Idle Session, idle",
 		});
 
-		expect(within(runningRow).queryByText("running")).toBeNull();
-		expect(within(completedRow).queryByText("completed")).toBeNull();
-		expect(within(failedRow).queryByText("failed")).toBeNull();
-		expect(within(pausedRow).queryByText("paused")).toBeNull();
+		expect(within(activeRow).queryByText("active")).toBeNull();
+		expect(within(attentionRow).queryByText("attention")).toBeNull();
+		expect(within(failureRow).queryByText("failure")).toBeNull();
+		expect(within(idleRow).queryByText("idle")).toBeNull();
 		expect(
-			within(runningRow).getByTitle("session, running").firstChild,
+			within(activeRow).getByTitle("session, active").firstChild,
 		).toHaveClass("text-blue-600", "dark:text-blue-300", "animate-pulse");
 		expect(
-			within(completedRow).getByTitle("session, completed").firstChild,
-		).toHaveClass("text-green-600", "dark:text-green-300");
+			within(attentionRow).getByTitle("session, attention").firstChild,
+		).toHaveClass("text-yellow-600", "dark:text-yellow-300", "animate-pulse");
 		expect(
-			within(failedRow).getByTitle("session, failed").firstChild,
+			within(failureRow).getByTitle("session, failure").firstChild,
 		).toHaveClass("text-red-600", "dark:text-red-300");
+		expect(within(idleRow).getByTitle("session, idle").firstChild).toHaveClass(
+			"text-green-600",
+			"dark:text-green-300",
+		);
 		expect(
-			within(pausedRow).getByTitle("session, paused").firstChild,
-		).toHaveClass("text-muted-foreground");
+			within(failureRow).getByTitle("session, failure").firstChild,
+		).not.toHaveClass("animate-pulse");
+		expect(
+			within(idleRow).getByTitle("session, idle").firstChild,
+		).not.toHaveClass("animate-pulse");
 	});
 
 	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
@@ -674,7 +736,7 @@ describe("WorkspaceList", () => {
 
 		expect(
 			screen.getByRole("button", {
-				name: "Codex AgentSession, running",
+				name: "Codex AgentSession, active",
 			}),
 		).toBeVisible();
 		expect(screen.getByText("Claude AgentSession")).toBeVisible();
@@ -687,7 +749,7 @@ describe("WorkspaceList", () => {
 					kind: "sequence",
 					id: "empty-workflow",
 					title: "Empty workflow",
-					status: "running",
+					status: "active",
 					workflowCapabilities: {
 						canStop: true,
 						canResume: false,
@@ -711,11 +773,11 @@ describe("WorkspaceList", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("keeps one familiar content icon per Node and styles it from backend status", () => {
+	it("keeps one familiar content icon per Node and styles it from backend classification", () => {
 		renderWorkspaceList();
 
 		const sessionRow = screen.getByRole("button", {
-			name: "Direct session, running",
+			name: "Direct session, active",
 		});
 		const sessionIcons = sessionRow.querySelectorAll("svg");
 		expect(sessionIcons).toHaveLength(1);
@@ -726,7 +788,7 @@ describe("WorkspaceList", () => {
 		);
 
 		const commandRow = screen.getByRole("button", {
-			name: "Architecture review, running",
+			name: "Architecture review, active",
 		});
 		const commandIcons = commandRow.querySelectorAll("svg");
 		expect(commandIcons).toHaveLength(1);
@@ -737,12 +799,12 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("shows the backend failed status on a failed session badge", () => {
+	it("shows the backend failure classification on a failed session badge", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [
 				{
 					...directNode,
-					status: "failed",
+					status: "failure",
 					errorReason: "app server stopped",
 				},
 			],
@@ -750,7 +812,7 @@ describe("WorkspaceList", () => {
 
 		renderWorkspaceList();
 
-		expect(screen.getByTitle("session, failed")).toBeInTheDocument();
+		expect(screen.getByTitle("session, failure")).toBeInTheDocument();
 	});
 
 	it("toggles Workflow and Fanout branches without changing selection", async () => {
@@ -1053,7 +1115,7 @@ describe("WorkspaceList", () => {
 			kind: "node",
 			id: "occurrence-a-1",
 			title: "A",
-			status: "completed",
+			status: "idle",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: false },
 			pastAttempts: [],
@@ -1075,14 +1137,14 @@ describe("WorkspaceList", () => {
 			...occurrenceA1,
 			id: "occurrence-c-1",
 			title: "C",
-			status: "running",
+			status: "active",
 			updatedAt: 4,
 		};
 		const workflow = (children: WorkspaceTreeItem[]): WorkspaceTreeItem => ({
 			kind: "sequence",
 			id: "loop-workflow",
 			title: "Loop workflow",
-			status: "running",
+			status: "active",
 			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
@@ -1123,13 +1185,13 @@ describe("WorkspaceList", () => {
 			.map((button) => button.getAttribute("aria-label"))
 			.filter((label) => label?.match(/^[ABC],/));
 		expect(executionLabels).toEqual([
-			"A, completed",
-			"B, completed",
-			"A, completed",
-			"C, running",
+			"A, idle",
+			"B, idle",
+			"A, idle",
+			"C, active",
 		]);
 		const [firstA, secondA] = screen.getAllByRole("button", {
-			name: /^A, completed$/,
+			name: /^A, idle$/,
 		});
 		expect(firstA).toHaveAttribute("aria-current", "page");
 		expect(secondA).not.toHaveAttribute("aria-current");
@@ -1152,20 +1214,20 @@ describe("WorkspaceList", () => {
 		const first = standaloneSessionNode({
 			id: "retry-attempt-first",
 			title: "Review",
-			status: "failed",
+			status: "failure",
 			canArchive: false,
 		});
 		const second = standaloneSessionNode({
 			id: "retry-attempt-second",
 			title: "Review",
-			status: "completed",
+			status: "idle",
 			canArchive: false,
 		});
 		const latest: WorkspaceNode = {
 			...standaloneSessionNode({
 				id: "retry-attempt-latest",
 				title: "Review",
-				status: "running",
+				status: "active",
 				canArchive: false,
 			}),
 			pastAttempts: [first, second],
@@ -1187,9 +1249,9 @@ describe("WorkspaceList", () => {
 
 		const executions = screen.getAllByRole("button", { name: /^Review,/ });
 		expect(executions.map((row) => row.getAttribute("aria-label"))).toEqual([
-			"Review, failed",
-			"Review, completed",
-			"Review, running",
+			"Review, failure",
+			"Review, idle",
+			"Review, active",
 		]);
 		await user.click(executions[0]);
 		expect(onSelectWorktree).toHaveBeenLastCalledWith(
@@ -1381,7 +1443,7 @@ describe("WorkspaceList", () => {
 			item.kind === "sequence" && item.workflowCapabilities
 				? {
 						...item,
-						status: "completed" as const,
+						status: "idle" as const,
 						workflowCapabilities: {
 							...item.workflowCapabilities,
 							canArchive: true,
@@ -1451,7 +1513,7 @@ describe("WorkspaceList", () => {
 			item.kind === "sequence" && item.workflowCapabilities
 				? {
 						...item,
-						status: "completed" as const,
+						status: "idle" as const,
 						workflowCapabilities: {
 							...item.workflowCapabilities,
 							canArchive: true,

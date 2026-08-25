@@ -1,13 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 import {
 	isWorkspaceNodePulseStatus,
 	workflowNodeIconClasses,
 } from "./WorkflowNodeStatusIcon";
 
 interface WorkspaceBranchStatusIconProps {
-	status: WorkspaceNodeStatus;
+	status: WorkspaceNodeStatusClassification;
 	icon: LucideIcon;
 	containerClassName?: string;
 	iconClassName?: string;
@@ -20,8 +20,7 @@ export function WorkspaceBranchStatusIcon({
 	containerClassName,
 	iconClassName = "size-3.5 shrink-0",
 }: WorkspaceBranchStatusIconProps) {
-	const colorClassName =
-		workflowNodeIconClasses[status] ?? "text-muted-foreground";
+	const colorClassName = workflowNodeIconClasses[status];
 	const pulseClassName = isWorkspaceNodePulseStatus(status)
 		? "animate-pulse"
 		: undefined;

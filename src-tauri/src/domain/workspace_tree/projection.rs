@@ -163,20 +163,11 @@ pub fn runtime_snapshot_nodes(
     });
     let mut tree = WorkspaceTree::empty(workspace_identity);
     WorkspaceTreeProjector::project(&mut tree, facts).map_err(|error| error.to_string())?;
-    let mut projected = tree
-        .nodes()
+    for runtime in node_executions
         .iter()
-        .filter(|node| node.execution_id.as_deref() == Some(execution_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    for node in &mut projected {
-        let Some(node_execution_id) = node.node_execution_id.as_deref() else {
-            continue;
-        };
-        let Some(runtime) = node_executions
-            .iter()
-            .find(|runtime| runtime.id == node_execution_id)
-        else {
+        .filter(|runtime| runtime.execution_id == execution_id)
+    {
+        let Some(node) = tree.execution_node_mut(execution_id, &runtime.id) else {
             continue;
         };
         node.completion_signals = runtime.completion_signals;
@@ -190,7 +181,14 @@ pub fn runtime_snapshot_nodes(
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
         }
     }
-    Ok(projected)
+    // Runtime overlays refresh classification without changing projected recovery capabilities.
+    tree.recompute_status_classifications();
+    Ok(tree
+        .nodes()
+        .iter()
+        .filter(|node| node.execution_id.as_deref() == Some(execution_id))
+        .cloned()
+        .collect())
 }
 
 fn same_retry_target(
@@ -211,7 +209,9 @@ mod tests {
         ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition,
         NodeExecutionFailureKind, NodeKindName, TokenUsage, WorkflowDefinition,
     };
-    use crate::domain::workspace_tree::WorkspaceNodeStatus;
+    use crate::domain::workspace_tree::{
+        WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
+    };
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000901";
     const OTHER_EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000902";
@@ -257,6 +257,20 @@ mod tests {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
+    }
+
+    fn capability_state(
+        node: &WorkspaceTreeNode,
+    ) -> (bool, bool, bool, bool, bool, bool, Option<&str>) {
+        (
+            node.can_approve,
+            node.can_retry,
+            node.can_stop,
+            node.can_resume,
+            node.can_abort,
+            node.can_archive,
+            node.resume_unavailable_reason.as_deref(),
+        )
     }
 
     #[test]
@@ -599,5 +613,199 @@ mod tests {
             .find(|node| node.node_execution_id.is_none())
             .unwrap();
         assert_eq!(root.resume_unavailable_reason.as_deref(), Some(reason));
+    }
+
+    #[test]
+    fn test_runtime_snapshot分類_runningのstop_receivedをattentionにしてcapabilityを維持する() {
+        // Given
+        let mut sequence = node(
+            "sequence",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Succeeded,
+        );
+        sequence.node_name = "sequence".to_string();
+        sequence.kind = NodeKindName::Sequence;
+        sequence.display_command = None;
+        sequence.completed_at = Some(4.0);
+        let mut stopped_child = node(
+            "stopped-child",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Running,
+        );
+        stopped_child.node_name = "stopped-child".to_string();
+        stopped_child.kind = NodeKindName::Session;
+        stopped_child.display_command = None;
+        stopped_child.parent = Some(crate::domain::workflow::ExecutionParentRef::sequence_child(
+            "sequence",
+        ));
+        stopped_child.completion_signals = NodeCompletionSignalState::StopReceived;
+        let execution = execution();
+        let runtime_nodes = [sequence, stopped_child];
+
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &runtime_nodes,
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+        })
+        .unwrap();
+        let by_execution_id = nodes
+            .iter()
+            .filter_map(|node| node.node_execution_id.as_deref().map(|id| (id, node)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let workflow = nodes
+            .iter()
+            .find(|node| node.node_execution_id.is_none())
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            by_execution_id["stopped-child"].status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
+        assert_eq!(
+            by_execution_id["sequence"].status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
+        assert_eq!(
+            capability_state(by_execution_id["stopped-child"]),
+            (false, true, false, false, false, false, None)
+        );
+        assert_eq!(
+            capability_state(workflow),
+            (false, false, true, false, true, false, None)
+        );
+    }
+
+    #[test]
+    fn test_runtime_snapshot分類_pausedのstop_receivedをidleにしてcapabilityを維持する() {
+        // Given
+        let mut paused = node("paused", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
+        paused.node_name = "paused".to_string();
+        paused.kind = NodeKindName::Session;
+        paused.display_command = None;
+        paused.completion_signals = NodeCompletionSignalState::StopReceived;
+        let execution = execution();
+
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[paused],
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+        })
+        .unwrap();
+        let paused = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("paused"))
+            .unwrap();
+        let workflow = nodes
+            .iter()
+            .find(|node| node.node_execution_id.is_none())
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            paused.status_classification,
+            WorkspaceNodeStatusClassification::Idle
+        );
+        assert_eq!(
+            capability_state(paused),
+            (false, true, false, false, false, false, None)
+        );
+        assert_eq!(
+            capability_state(workflow),
+            (false, false, true, false, true, false, None)
+        );
+    }
+
+    #[test]
+    fn test_runtime_snapshot分類_recovery_fenceをfailureにしてcapabilityを維持する() {
+        // Given
+        let mut fanout = node(
+            "fanout",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Succeeded,
+        );
+        fanout.node_name = "fanout".to_string();
+        fanout.kind = NodeKindName::Fanout;
+        fanout.display_command = None;
+        fanout.completed_at = Some(4.0);
+        let mut recovery = node("recovery", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
+        recovery.node_name = "recovery".to_string();
+        recovery.parent = Some(crate::domain::workflow::ExecutionParentRef::fanout_child(
+            "fanout", None, 0,
+        ));
+        let execution = execution();
+        let runtime_nodes = [fanout, recovery];
+        let recovery_reason = "recovery fence";
+
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &runtime_nodes,
+            retry_predecessors: &std::collections::HashMap::new(),
+            standalone_session_id: None,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[("recovery".to_string(), recovery_reason.to_string())],
+        })
+        .unwrap();
+        let by_execution_id = nodes
+            .iter()
+            .filter_map(|node| node.node_execution_id.as_deref().map(|id| (id, node)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let workflow = nodes
+            .iter()
+            .find(|node| node.node_execution_id.is_none())
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            by_execution_id["recovery"].status_classification,
+            WorkspaceNodeStatusClassification::Failure
+        );
+        assert_eq!(
+            by_execution_id["fanout"].status_classification,
+            WorkspaceNodeStatusClassification::Failure
+        );
+        assert_eq!(
+            capability_state(by_execution_id["recovery"]),
+            (false, false, false, false, false, false, None)
+        );
+        assert_eq!(
+            capability_state(workflow),
+            (
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+                Some(recovery_reason)
+            )
+        );
     }
 }

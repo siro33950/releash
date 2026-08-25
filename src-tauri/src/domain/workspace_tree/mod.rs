@@ -15,5 +15,5 @@ pub use repository::WorkspaceTreeRepository;
 pub use services::{WorkspacePublicRoot, WorkspaceTreeVisibilityPolicy};
 pub use value_objects::{
     WorkspaceCommandResult, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus,
-    WorkspaceStructureFact, WorkspaceTreeNode,
+    WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTreeNode,
 };

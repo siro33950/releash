@@ -1,35 +1,34 @@
 import { describe, expect, it } from "vitest";
-import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 import {
 	isWorkspaceNodePulseStatus,
 	workflowNodeIconClasses,
 } from "./WorkflowNodeStatusIcon";
 
-const statuses: WorkspaceNodeStatus[] = [
-	"running",
-	"paused",
-	"failed",
-	"waiting",
-	"interrupted",
-	"aborted",
-	"completed",
+const classifications: WorkspaceNodeStatusClassification[] = [
+	"active",
+	"attention",
+	"failure",
+	"idle",
 ];
 
 describe("Workspace Node status presentation", () => {
-	it("covers exactly the backend-owned public statuses", () => {
+	it("maps exactly the backend-owned classifications to their colors", () => {
 		expect(Object.keys(workflowNodeIconClasses).sort()).toEqual(
-			[...statuses].sort(),
+			[...classifications].sort(),
 		);
+		expect(workflowNodeIconClasses).toEqual({
+			active: "text-blue-600 dark:text-blue-300",
+			attention: "text-yellow-600 dark:text-yellow-300",
+			failure: "text-red-600 dark:text-red-300",
+			idle: "text-green-600 dark:text-green-300",
+		});
 	});
 
-	it.each(statuses)("defines a color for %s", (status) => {
-		expect(workflowNodeIconClasses[status]).toBeTruthy();
-	});
-
-	it("pulses only running and waiting", () => {
-		for (const status of statuses) {
-			expect(isWorkspaceNodePulseStatus(status)).toBe(
-				status === "running" || status === "waiting",
+	it("pulses only active and attention", () => {
+		for (const classification of classifications) {
+			expect(isWorkspaceNodePulseStatus(classification)).toBe(
+				classification === "active" || classification === "attention",
 			);
 		}
 	});

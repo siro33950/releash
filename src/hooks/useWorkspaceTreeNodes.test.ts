@@ -25,7 +25,7 @@ function makeNode(id: string): WorkspaceTreeItem {
 		kind: "node",
 		id,
 		title: id,
-		status: "running",
+		status: "active",
 		contentKind: "session",
 		capabilities: { canApprove: false, canRetry: false, canClose: true },
 		pastAttempts: [],
@@ -377,7 +377,7 @@ describe("useWorkspaceTreeNodes", () => {
 			kind: "sequence",
 			id: "empty-workflow",
 			title: "Empty workflow",
-			status: "running",
+			status: "active",
 			workflowCapabilities: {
 				canStop: true,
 				canResume: false,
