@@ -150,7 +150,10 @@ function NodeHeader({
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
 			<span title={detail.status}>
-				<WorkflowNodeStatusIcon status={detail.status} />
+				<WorkflowNodeStatusIcon
+					status={detail.status}
+					statusClassification={detail.statusClassification}
+				/>
 			</span>
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}

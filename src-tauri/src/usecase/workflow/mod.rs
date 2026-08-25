@@ -920,6 +920,8 @@ mod tests {
             kind: crate::domain::workspace_tree::WorkspaceNodeKind::WorkflowSession,
             title: "node".to_string(),
             status: crate::domain::workspace_tree::WorkspaceNodeStatus::Running,
+            status_classification:
+                crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Active,
             error_reason: None,
             updated_at_bits: 1.0_f64.to_bits(),
             execution_id: execution_id.map(str::to_string),

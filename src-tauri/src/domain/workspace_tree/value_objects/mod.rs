@@ -37,7 +37,6 @@ pub enum WorkspaceNodeStatus {
     Paused,
     Failed,
     Waiting,
-    Interrupted,
     Aborted,
     Completed,
 }
@@ -49,9 +48,44 @@ impl WorkspaceNodeStatus {
             Self::Paused => "paused",
             Self::Failed => "failed",
             Self::Waiting => "waiting",
-            Self::Interrupted => "interrupted",
             Self::Aborted => "aborted",
             Self::Completed => "completed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceNodeStatusClassification {
+    Active,
+    Attention,
+    Failure,
+    Idle,
+}
+
+impl WorkspaceNodeStatusClassification {
+    pub fn as_public_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Attention => "attention",
+            Self::Failure => "failure",
+            Self::Idle => "idle",
+        }
+    }
+
+    pub(super) fn most_severe(self, other: Self) -> Self {
+        if self.severity() >= other.severity() {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn severity(self) -> u8 {
+        match self {
+            Self::Failure => 3,
+            Self::Attention => 2,
+            Self::Active => 1,
+            Self::Idle => 0,
         }
     }
 }
@@ -72,6 +106,7 @@ pub struct WorkspaceTreeNode {
     pub kind: WorkspaceNodeKind,
     pub title: String,
     pub status: WorkspaceNodeStatus,
+    pub status_classification: WorkspaceNodeStatusClassification,
     pub error_reason: Option<String>,
     pub updated_at_bits: u64,
     pub execution_id: Option<String>,
@@ -119,6 +154,33 @@ impl WorkspaceTreeNode {
         self.kind == WorkspaceNodeKind::Fanout
             && self.sibling_order == INTERNAL_SIBLING_ORDER
             && self.node_execution_id.is_none()
+    }
+
+    pub(super) fn classify_own_status(
+        status: WorkspaceNodeStatus,
+        completion_signals: NodeCompletionSignalState,
+        recovery_fenced: bool,
+    ) -> WorkspaceNodeStatusClassification {
+        if recovery_fenced || status == WorkspaceNodeStatus::Failed {
+            WorkspaceNodeStatusClassification::Failure
+        } else if status == WorkspaceNodeStatus::Waiting
+            || (status == WorkspaceNodeStatus::Running
+                && completion_signals == NodeCompletionSignalState::StopReceived)
+        {
+            WorkspaceNodeStatusClassification::Attention
+        } else if status == WorkspaceNodeStatus::Running {
+            WorkspaceNodeStatusClassification::Active
+        } else {
+            WorkspaceNodeStatusClassification::Idle
+        }
+    }
+
+    pub(super) fn own_status_classification(&self) -> WorkspaceNodeStatusClassification {
+        Self::classify_own_status(
+            self.status,
+            self.completion_signals,
+            self.recovery_owner_reason.is_some(),
+        )
     }
 }
 
@@ -234,3 +296,127 @@ impl std::fmt::Display for WorkspaceTreeError {
 }
 
 impl std::error::Error for WorkspaceTreeError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(
+        status: WorkspaceNodeStatus,
+        completion_signals: NodeCompletionSignalState,
+        recovery_owner_reason: Option<&str>,
+    ) -> WorkspaceTreeNode {
+        WorkspaceTreeNode {
+            id: "node".to_string(),
+            parent_id: Some("workflow".to_string()),
+            sibling_order: 0,
+            kind: WorkspaceNodeKind::WorkflowSession,
+            title: "node".to_string(),
+            status,
+            status_classification: WorkspaceNodeStatusClassification::Idle,
+            error_reason: None,
+            updated_at_bits: 1.0_f64.to_bits(),
+            execution_id: Some("workflow".to_string()),
+            node_execution_id: Some("node-execution".to_string()),
+            node_name: Some("node".to_string()),
+            attempt: Some(1),
+            retry_predecessor_id: None,
+            past_attempt_ids: Vec::new(),
+            is_retry_history: false,
+            completion_signals,
+            has_artifact: false,
+            session_id: None,
+            can_approve: false,
+            can_retry: false,
+            can_close: false,
+            can_stop: false,
+            can_resume: false,
+            recovery_owner_reason: recovery_owner_reason.map(str::to_string),
+            resume_unavailable_reason: None,
+            can_abort: false,
+            can_archive: false,
+            display_command: None,
+            command_result: None,
+            dynamic_fanout: false,
+        }
+    }
+
+    #[test]
+    fn test_詳細状態分類_優先順位と境界の組み合わせを4分類へ写像する() {
+        // Given
+        let cases = [
+            (
+                WorkspaceNodeStatus::Running,
+                NodeCompletionSignalState::Pending,
+                None,
+                WorkspaceNodeStatusClassification::Active,
+            ),
+            (
+                WorkspaceNodeStatus::Running,
+                NodeCompletionSignalState::StopReceived,
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeStatus::Waiting,
+                NodeCompletionSignalState::Pending,
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeStatus::Failed,
+                NodeCompletionSignalState::Pending,
+                None,
+                WorkspaceNodeStatusClassification::Failure,
+            ),
+            (
+                WorkspaceNodeStatus::Paused,
+                NodeCompletionSignalState::StopReceived,
+                None,
+                WorkspaceNodeStatusClassification::Idle,
+            ),
+            (
+                WorkspaceNodeStatus::Completed,
+                NodeCompletionSignalState::Ready,
+                None,
+                WorkspaceNodeStatusClassification::Idle,
+            ),
+            (
+                WorkspaceNodeStatus::Aborted,
+                NodeCompletionSignalState::Pending,
+                None,
+                WorkspaceNodeStatusClassification::Idle,
+            ),
+            (
+                WorkspaceNodeStatus::Paused,
+                NodeCompletionSignalState::StopReceived,
+                Some("recovery fence"),
+                WorkspaceNodeStatusClassification::Failure,
+            ),
+        ];
+
+        // When / Then
+        for (status, signals, recovery_reason, expected) in cases {
+            assert_eq!(
+                node(status, signals, recovery_reason).own_status_classification(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_状態分類の公開値_4分類だけを返す() {
+        // Given
+        let cases = [
+            (WorkspaceNodeStatusClassification::Active, "active"),
+            (WorkspaceNodeStatusClassification::Attention, "attention"),
+            (WorkspaceNodeStatusClassification::Failure, "failure"),
+            (WorkspaceNodeStatusClassification::Idle, "idle"),
+        ];
+
+        // When / Then
+        for (classification, expected) in cases {
+            assert_eq!(classification.as_public_str(), expected);
+        }
+    }
+}

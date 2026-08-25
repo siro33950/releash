@@ -1,7 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
+import type {
+	WorkspaceNodeDetail,
+	WorkspaceNodeStatus,
+	WorkspaceNodeStatusClassification,
+} from "@/types/workspace-tree";
 import { NodeContentView } from "./NodeContentView";
 
 const mocks = vi.hoisted(() => ({
@@ -43,6 +47,7 @@ function sessionDetail(
 		id,
 		title: `Session ${id}`,
 		status: "running",
+		statusClassification: "active",
 		submitReceived: false,
 		stopReceived: false,
 		hasArtifact: false,
@@ -216,6 +221,7 @@ describe("NodeContentView", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("missing", null),
 			status: "failed",
+			statusClassification: "failure",
 		};
 		renderView("missing");
 
@@ -228,6 +234,7 @@ describe("NodeContentView", () => {
 			id: "command-node",
 			title: "Run checks",
 			status: "failed",
+			statusClassification: "failure",
 			submitReceived: false,
 			stopReceived: false,
 			hasArtifact: false,
@@ -288,6 +295,7 @@ describe("NodeContentView", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("failed-session"),
 			status: "failed",
+			statusClassification: "failure",
 			errorReason: "Agent process exited unexpectedly",
 		};
 		renderView("failed-session");
@@ -306,10 +314,89 @@ describe("NodeContentView", () => {
 		expect(screen.getByTitle("running")).toBeVisible();
 	});
 
+	it.each<[WorkspaceNodeStatus, WorkspaceNodeStatusClassification, string]>([
+		["running", "active", "lucide-loader-circle"],
+		["waiting", "attention", "lucide-clock"],
+		["failed", "failure", "lucide-triangle-alert"],
+		["paused", "idle", "lucide-circle"],
+		["completed", "idle", "lucide-circle-check"],
+		["aborted", "idle", "lucide-ban"],
+	])(
+		"uses the existing %s shape and never pulses in the detail pane",
+		(status, statusClassification, expectedShapeClass) => {
+			mocks.detailState.detail = {
+				...sessionDetail(`${status}-shape`),
+				status,
+				statusClassification,
+			};
+
+			renderView(`${status}-shape`);
+
+			const icon = screen.getByTitle(status).querySelector("svg");
+			expect(icon).toHaveClass(expectedShapeClass);
+			expect(icon).not.toHaveClass("animate-pulse");
+		},
+	);
+
+	it.each<
+		[
+			WorkspaceNodeStatus,
+			WorkspaceNodeStatusClassification,
+			string,
+			string,
+			string,
+		]
+	>([
+		[
+			"running",
+			"active",
+			"lucide-loader-circle",
+			"text-blue-600",
+			"dark:text-blue-300",
+		],
+		[
+			"waiting",
+			"attention",
+			"lucide-clock",
+			"text-yellow-600",
+			"dark:text-yellow-300",
+		],
+		[
+			"failed",
+			"failure",
+			"lucide-triangle-alert",
+			"text-red-600",
+			"dark:text-red-300",
+		],
+		[
+			"paused",
+			"idle",
+			"lucide-circle",
+			"text-green-600",
+			"dark:text-green-300",
+		],
+	])(
+		"colors the %s detail shape from the %s classification without pulsing",
+		(status, statusClassification, shapeClass, lightClass, darkClass) => {
+			mocks.detailState.detail = {
+				...sessionDetail(`${statusClassification}-color`),
+				status,
+				statusClassification,
+			};
+
+			renderView(`${statusClassification}-color`);
+
+			const icon = screen.getByTitle(status).querySelector("svg");
+			expect(icon).toHaveClass(shapeClass, lightClass, darkClass);
+			expect(icon).not.toHaveClass("animate-pulse");
+		},
+	);
+
 	it("shows backend-owned error and recovery reasons without deriving them in the TUI", () => {
 		mocks.detailState.detail = {
 			...sessionDetail("paused-session"),
 			status: "paused",
+			statusClassification: "failure",
 			errorReason: "Node activation failed",
 			recoveryReason: "Provider session must be recovered",
 		};

@@ -12,6 +12,7 @@ use super::value_objects::{
     WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceStructureFact,
     WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
 };
+use super::WorkspaceNodeStatusClassification;
 use crate::domain::workflow::{
     ExecutionParentRef, ExecutionStatus, ItemsSource, NodeCompletionSignalState,
     NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
@@ -270,13 +271,21 @@ impl WorkspaceTree {
             })
             .collect::<HashSet<_>>();
         let sibling_order = self.next_sibling_order(None);
+        let status = WorkspaceNodeStatus::Running;
+        let completion_signals = NodeCompletionSignalState::default();
+        let recovery_owner_reason = None;
         self.nodes.push(WorkspaceTreeNode {
             id: execution_id.clone(),
             parent_id: None,
             sibling_order,
             kind: WorkspaceNodeKind::Workflow,
             title: non_empty_or(workflow_name, DEFAULT_WORKFLOW_TITLE),
-            status: WorkspaceNodeStatus::Running,
+            status,
+            status_classification: WorkspaceTreeNode::classify_own_status(
+                status,
+                completion_signals,
+                recovery_owner_reason.is_some(),
+            ),
             error_reason: None,
             updated_at_bits: timestamp.to_bits(),
             execution_id: Some(execution_id.clone()),
@@ -286,7 +295,7 @@ impl WorkspaceTree {
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,
-            completion_signals: Default::default(),
+            completion_signals,
             has_artifact: false,
             session_id: None,
             can_approve: false,
@@ -294,7 +303,7 @@ impl WorkspaceTree {
             can_close: false,
             can_stop: true,
             can_resume: false,
-            recovery_owner_reason: None,
+            recovery_owner_reason,
             resume_unavailable_reason: None,
             can_abort: true,
             can_archive: false,
@@ -306,13 +315,21 @@ impl WorkspaceTree {
         // They preserve dynamic/static fanout identity across later commits
         // without retaining the full Workflow definition.
         for name in dynamic_fanout_names {
+            let status = WorkspaceNodeStatus::Waiting;
+            let completion_signals = NodeCompletionSignalState::default();
+            let recovery_owner_reason = None;
             self.nodes.push(WorkspaceTreeNode {
                 id: dynamic_fanout_sentinel_id(&execution_id, &name),
                 parent_id: Some(execution_id.clone()),
                 sibling_order: INTERNAL_SIBLING_ORDER,
                 kind: WorkspaceNodeKind::Fanout,
                 title: name,
-                status: WorkspaceNodeStatus::Waiting,
+                status,
+                status_classification: WorkspaceTreeNode::classify_own_status(
+                    status,
+                    completion_signals,
+                    recovery_owner_reason.is_some(),
+                ),
                 error_reason: None,
                 updated_at_bits: timestamp.to_bits(),
                 execution_id: Some(execution_id.clone()),
@@ -322,7 +339,7 @@ impl WorkspaceTree {
                 retry_predecessor_id: None,
                 past_attempt_ids: Vec::new(),
                 is_retry_history: false,
-                completion_signals: Default::default(),
+                completion_signals,
                 has_artifact: false,
                 session_id: None,
                 can_approve: false,
@@ -330,7 +347,7 @@ impl WorkspaceTree {
                 can_close: false,
                 can_stop: false,
                 can_resume: false,
-                recovery_owner_reason: None,
+                recovery_owner_reason,
                 resume_unavailable_reason: None,
                 can_abort: false,
                 can_archive: false,
@@ -454,6 +471,9 @@ impl WorkspaceTree {
                 }
             }
         };
+        let status = WorkspaceNodeStatus::Running;
+        let completion_signals = NodeCompletionSignalState::default();
+        let recovery_owner_reason = None;
         self.nodes.push(WorkspaceTreeNode {
             id,
             parent_id: Some(parent_id),
@@ -465,7 +485,12 @@ impl WorkspaceTree {
                 NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
             },
             title: node_name.clone(),
-            status: WorkspaceNodeStatus::Running,
+            status,
+            status_classification: WorkspaceTreeNode::classify_own_status(
+                status,
+                completion_signals,
+                recovery_owner_reason.is_some(),
+            ),
             error_reason: None,
             updated_at_bits: timestamp.to_bits(),
             execution_id: Some(execution_id),
@@ -475,7 +500,7 @@ impl WorkspaceTree {
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,
-            completion_signals: Default::default(),
+            completion_signals,
             has_artifact: false,
             session_id: None,
             can_approve: false,
@@ -483,7 +508,7 @@ impl WorkspaceTree {
             can_close: false,
             can_stop: false,
             can_resume: false,
-            recovery_owner_reason: None,
+            recovery_owner_reason,
             resume_unavailable_reason: None,
             can_abort: false,
             can_archive: false,
@@ -521,39 +546,36 @@ impl WorkspaceTree {
             let Some(children) = by_parent.get(&branch_id) else {
                 continue;
             };
-            let child_status = children
-                .iter()
-                .map(|index| self.nodes[*index].status)
-                .collect::<Vec<_>>();
             let child_updated = children
                 .iter()
                 .map(|index| self.nodes[*index].updated_at_bits)
                 .max_by(|left, right| f64::from_bits(*left).total_cmp(&f64::from_bits(*right)));
-            let current_child_status = children
-                .iter()
-                .max_by_key(|index| self.nodes[**index].sibling_order)
-                .map(|index| self.nodes[*index].status);
             if let Some(branch) = self.nodes.iter_mut().find(|node| node.id == branch_id) {
-                // Sequence branch の status は合成子インスタンス自身の Node イベント
-                // （NodeCompleted / NodeFailed / ApprovalRequested）が正であり、
-                // ここでは子の updated_at 伝播だけを行う。
-                if branch.kind == WorkspaceNodeKind::Fanout {
-                    branch.status = aggregate_status(&child_status, branch.status);
-                } else if branch.kind == WorkspaceNodeKind::Workflow
-                    && !branch.can_archive
-                    && branch.status != WorkspaceNodeStatus::Interrupted
-                {
-                    branch.status = match current_child_status {
-                        Some(WorkspaceNodeStatus::Completed) | None => WorkspaceNodeStatus::Running,
-                        Some(status) => status,
-                    };
-                }
                 if let Some(updated) = child_updated {
                     branch.updated_at_bits = max_f64_bits(branch.updated_at_bits, updated);
                 }
             }
         }
+        self.recompute_status_classifications();
         self.recompute_workflow_recovery_capabilities();
+    }
+
+    pub(super) fn recompute_status_classifications(&mut self) {
+        for node in &mut self.nodes {
+            node.status_classification = node.own_status_classification();
+        }
+        let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if !node.is_internal_rule_record() && !node.is_retry_history {
+                if let Some(parent) = &node.parent_id {
+                    by_parent.entry(parent.clone()).or_default().push(index);
+                }
+            }
+        }
+        let mut visit_state = vec![0_u8; self.nodes.len()];
+        for index in 0..self.nodes.len() {
+            aggregate_status_classification(index, &mut self.nodes, &by_parent, &mut visit_state);
+        }
     }
 
     fn recompute_retry_histories(&mut self) {
@@ -626,7 +648,6 @@ impl WorkspaceTree {
             let Some(workflow) = self.workflow_node(&execution_id) else {
                 continue;
             };
-            let interrupted = workflow.status == WorkspaceNodeStatus::Interrupted;
             let execution_reason = workflow.recovery_owner_reason.clone();
             let waiting_approval = self.nodes.iter().any(|node| {
                 node.execution_id.as_deref() == Some(execution_id.as_str()) && node.can_approve
@@ -656,7 +677,7 @@ impl WorkspaceTree {
                     && node.status == WorkspaceNodeStatus::Paused
             });
             let recovery_fenced = execution_reason.is_some() || !owner_reasons.is_empty();
-            let reason = (interrupted || paused || recovery_fenced)
+            let reason = (paused || recovery_fenced)
                 .then(|| {
                     owner_reasons
                         .into_iter()
@@ -674,9 +695,8 @@ impl WorkspaceTree {
             if let Some(workflow) = self.workflow_node_mut(&execution_id) {
                 workflow.resume_unavailable_reason = reason;
                 workflow.can_stop = can_stop;
-                workflow.can_resume = (interrupted || paused)
-                    && !waiting_approval
-                    && workflow.resume_unavailable_reason.is_none();
+                workflow.can_resume =
+                    paused && !waiting_approval && workflow.resume_unavailable_reason.is_none();
             }
         }
     }
@@ -1007,30 +1027,39 @@ pub(super) fn workflow_status(status: ExecutionStatus) -> WorkspaceNodeStatus {
         #[cfg(test)]
         ExecutionStatus::WaitingApproval => WorkspaceNodeStatus::Waiting,
         #[cfg(test)]
-        ExecutionStatus::Interrupted => WorkspaceNodeStatus::Interrupted,
+        ExecutionStatus::Interrupted => WorkspaceNodeStatus::Paused,
         ExecutionStatus::Completed => WorkspaceNodeStatus::Completed,
         ExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
     }
 }
 
-fn aggregate_status(
-    children: &[WorkspaceNodeStatus],
-    parent: WorkspaceNodeStatus,
-) -> WorkspaceNodeStatus {
-    children
-        .iter()
-        .copied()
-        .chain(std::iter::once(parent))
-        .min_by_key(|status| match status {
-            WorkspaceNodeStatus::Running => 1,
-            WorkspaceNodeStatus::Paused => 2,
-            WorkspaceNodeStatus::Failed => 3,
-            WorkspaceNodeStatus::Waiting => 5,
-            WorkspaceNodeStatus::Interrupted => 6,
-            WorkspaceNodeStatus::Aborted => 7,
-            WorkspaceNodeStatus::Completed => 8,
-        })
-        .unwrap_or(parent)
+fn aggregate_status_classification(
+    index: usize,
+    nodes: &mut [WorkspaceTreeNode],
+    by_parent: &BTreeMap<String, Vec<usize>>,
+    visit_state: &mut [u8],
+) -> WorkspaceNodeStatusClassification {
+    if visit_state[index] != 0 {
+        // A visiting node keeps its own classification until validate() rejects the parent cycle.
+        return nodes[index].status_classification;
+    }
+    visit_state[index] = 1;
+    let node_id = nodes[index].id.clone();
+    let aggregate_children = matches!(
+        nodes[index].kind,
+        WorkspaceNodeKind::Sequence | WorkspaceNodeKind::Fanout
+    );
+    let mut classification = nodes[index].status_classification;
+    for child_index in by_parent.get(&node_id).into_iter().flatten().copied() {
+        let child_classification =
+            aggregate_status_classification(child_index, nodes, by_parent, visit_state);
+        if aggregate_children {
+            classification = classification.most_severe(child_classification);
+        }
+    }
+    nodes[index].status_classification = classification;
+    visit_state[index] = 2;
+    classification
 }
 
 pub(super) fn non_empty_or(value: String, fallback: &str) -> String {
@@ -1225,6 +1254,226 @@ mod tests {
                 worktree: None,
             }],
             entry: "plan".to_string(),
+        }
+    }
+
+    fn parent_ref(kind: NodeKindName, parent_id: &str, child_index: usize) -> ExecutionParentRef {
+        if kind == NodeKindName::Fanout {
+            ExecutionParentRef::fanout_child(parent_id, None, child_index)
+        } else {
+            ExecutionParentRef::sequence_child(parent_id)
+        }
+    }
+
+    fn status_fact(
+        execution_id: &str,
+        node_execution_id: &str,
+        status: WorkspaceNodeStatus,
+        timestamp: f64,
+    ) -> Option<WorkspaceStructureFact> {
+        match status {
+            WorkspaceNodeStatus::Running => None,
+            WorkspaceNodeStatus::Completed => Some(WorkspaceStructureFact::NodeCompleted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.to_string(),
+                timestamp,
+            }),
+            WorkspaceNodeStatus::Waiting => Some(WorkspaceStructureFact::NodeApprovalRequested {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.to_string(),
+                timestamp,
+            }),
+            WorkspaceNodeStatus::Failed | WorkspaceNodeStatus::Aborted => {
+                Some(WorkspaceStructureFact::NodeFailed {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    reason: "test failure".to_string(),
+                    failure_kind: if status == WorkspaceNodeStatus::Aborted {
+                        NodeExecutionFailureKind::UserAbort
+                    } else {
+                        NodeExecutionFailureKind::ValidationFailure
+                    },
+                    timestamp,
+                })
+            }
+            WorkspaceNodeStatus::Paused => None,
+        }
+    }
+
+    fn branch_classification(
+        kind: NodeKindName,
+        parent_status: WorkspaceNodeStatus,
+        child_statuses: &[WorkspaceNodeStatus],
+    ) -> WorkspaceNodeStatusClassification {
+        let execution_id = "00000000-0000-4000-8000-0000000000d1";
+        let mut facts = vec![
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "classification".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "branch".to_string(),
+                node_name: "branch".to_string(),
+                kind,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+        ];
+        for (index, status) in child_statuses.iter().copied().enumerate() {
+            let node_execution_id = format!("child-{index}");
+            facts.push(WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_execution_id.clone(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: Some(parent_ref(kind, "branch", index)),
+                timestamp: 3.0 + index as f64,
+            });
+            if let Some(fact) = status_fact(
+                execution_id,
+                &node_execution_id,
+                status,
+                10.0 + index as f64,
+            ) {
+                facts.push(fact);
+            }
+        }
+        if let Some(fact) = status_fact(execution_id, "branch", parent_status, 20.0) {
+            facts.push(fact);
+        }
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+        tree.nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("branch"))
+            .unwrap()
+            .status_classification
+    }
+
+    #[test]
+    fn test_親分類集約_sequenceとfanoutが同じ重大度順を使う() {
+        // Given
+        let cases: [(
+            WorkspaceNodeStatus,
+            &[WorkspaceNodeStatus],
+            WorkspaceNodeStatusClassification,
+        ); 4] = [
+            (
+                WorkspaceNodeStatus::Completed,
+                &[WorkspaceNodeStatus::Completed],
+                WorkspaceNodeStatusClassification::Idle,
+            ),
+            (
+                WorkspaceNodeStatus::Running,
+                &[WorkspaceNodeStatus::Completed],
+                WorkspaceNodeStatusClassification::Active,
+            ),
+            (
+                WorkspaceNodeStatus::Completed,
+                &[WorkspaceNodeStatus::Running, WorkspaceNodeStatus::Waiting],
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeStatus::Completed,
+                &[
+                    WorkspaceNodeStatus::Running,
+                    WorkspaceNodeStatus::Waiting,
+                    WorkspaceNodeStatus::Failed,
+                ],
+                WorkspaceNodeStatusClassification::Failure,
+            ),
+        ];
+
+        // When / Then
+        for (parent_status, child_statuses, expected) in cases {
+            for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
+                assert_eq!(
+                    branch_classification(kind, parent_status, child_statuses),
+                    expected,
+                    "{kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_親分類集約_子孫のfailureをsequenceとfanoutの祖先まで反映する() {
+        // Given
+        let execution_id = "00000000-0000-4000-8000-0000000000d2";
+        let mut tree = WorkspaceTree::empty("/repo");
+        let facts = [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "classification".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "outer-sequence".to_string(),
+                node_name: "outer".to_string(),
+                kind: NodeKindName::Sequence,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "inner-fanout".to_string(),
+                node_name: "inner".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                parent: Some(ExecutionParentRef::sequence_child("outer-sequence")),
+                timestamp: 3.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "failed-leaf".to_string(),
+                node_name: "leaf".to_string(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: Some(ExecutionParentRef::fanout_child("inner-fanout", None, 0)),
+                timestamp: 4.0,
+            },
+            WorkspaceStructureFact::NodeFailed {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "failed-leaf".to_string(),
+                reason: "test failure".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                timestamp: 5.0,
+            },
+            WorkspaceStructureFact::NodeCompleted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "inner-fanout".to_string(),
+                timestamp: 6.0,
+            },
+            WorkspaceStructureFact::NodeCompleted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "outer-sequence".to_string(),
+                timestamp: 7.0,
+            },
+        ];
+
+        // When
+        WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+
+        // Then
+        for node_execution_id in ["inner-fanout", "outer-sequence"] {
+            assert_eq!(
+                tree.nodes()
+                    .iter()
+                    .find(|node| { node.node_execution_id.as_deref() == Some(node_execution_id) })
+                    .unwrap()
+                    .status_classification,
+                WorkspaceNodeStatusClassification::Failure
+            );
         }
     }
 
@@ -2144,7 +2393,11 @@ mod tests {
         .unwrap();
 
         let workflow = tree.workflow_node(execution_id).unwrap();
-        assert_eq!(workflow.status, WorkspaceNodeStatus::Failed);
+        assert_eq!(workflow.status, WorkspaceNodeStatus::Waiting);
+        assert_eq!(
+            workflow.status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
         assert!(!workflow.can_stop);
         assert!(!workflow.can_resume);
         assert!(workflow.can_abort);
@@ -2158,13 +2411,21 @@ mod tests {
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("checks"))
             .unwrap();
-        assert_eq!(fanout.status, WorkspaceNodeStatus::Failed);
+        assert_eq!(fanout.status, WorkspaceNodeStatus::Completed);
+        assert_eq!(
+            fanout.status_classification,
+            WorkspaceNodeStatusClassification::Failure
+        );
         let waiting = tree
             .nodes()
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("test"))
             .unwrap();
         assert_eq!(waiting.status, WorkspaceNodeStatus::Waiting);
+        assert_eq!(
+            waiting.status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
         assert!(waiting.can_approve);
     }
 

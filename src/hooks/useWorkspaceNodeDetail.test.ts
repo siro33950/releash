@@ -24,6 +24,7 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 		id,
 		title,
 		status: "running",
+		statusClassification: "active",
 		submitReceived: false,
 		stopReceived: false,
 		hasArtifact: false,

@@ -135,7 +135,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 			kind: "node",
 			id: FALLBACK_NODE_ID,
 			title: "Fallback session",
-			status: "running",
+			status: "active",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: true },
 			pastAttempts: [],
@@ -146,7 +146,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 			kind: "sequence",
 			id: "archivable-workflow",
 			title: "Archivable workflow",
-			status: "completed",
+			status: "idle",
 			workflowCapabilities: {
 				canStop: false,
 				canResume: false,
@@ -158,7 +158,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 					kind: "node",
 					id: SELECTED_NODE_ID,
 					title: "Selected workflow Node",
-					status: "completed",
+					status: "idle",
 					contentKind: "session",
 					capabilities: { canApprove: false, canRetry: false, canClose: false },
 					pastAttempts: [],
@@ -179,7 +179,7 @@ const fallbackSnapshot: WorkspaceTreeSnapshot = {
 			kind: "node",
 			id: FALLBACK_NODE_ID,
 			title: "Fallback session",
-			status: "running",
+			status: "active",
 			contentKind: "session",
 			capabilities: { canApprove: false, canRetry: false, canClose: true },
 			pastAttempts: [],
@@ -441,7 +441,7 @@ describe("App Workspace Archive selection reconciliation", () => {
 		);
 
 		await user.click(
-			screen.getByRole("button", { name: "Fallback session, running" }),
+			screen.getByRole("button", { name: "Fallback session, active" }),
 		);
 		await waitFor(() =>
 			expect(screen.getByTestId("center-node")).toHaveTextContent(

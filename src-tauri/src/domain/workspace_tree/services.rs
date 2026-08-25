@@ -88,7 +88,7 @@ impl WorkspaceTreeVisibilityPolicy {
 mod tests {
     use super::*;
     use crate::domain::workflow::NodeCompletionSignalState;
-    use crate::domain::workspace_tree::WorkspaceNodeStatus;
+    use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceNodeStatusClassification};
 
     fn node(
         id: &str,
@@ -104,6 +104,7 @@ mod tests {
             kind,
             title: id.to_string(),
             status: WorkspaceNodeStatus::Running,
+            status_classification: WorkspaceNodeStatusClassification::Active,
             error_reason: None,
             updated_at_bits: 0.0_f64.to_bits(),
             execution_id: execution_id.map(str::to_string),
