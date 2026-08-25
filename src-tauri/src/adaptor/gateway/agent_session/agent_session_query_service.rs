@@ -4,9 +4,7 @@ use super::agent_session_repository::{derive_session, locate_session};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
-use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionLifecycle, AgentSessionOperations,
-};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycle};
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{NodeFact, TreeRootFact};
 use crate::usecase::agent_session::{
@@ -122,7 +120,7 @@ pub(crate) fn workspace_session_items(
 }
 
 pub(crate) fn agent_session_item(session: &AgentSession) -> AgentSessionItemDto {
-    let operations = AgentSessionOperations::for_state(session.tree_parent(), session.lifecycle());
+    let operations = session.operations();
     AgentSessionItemDto {
         id: session.id().to_string(),
         workspace_identity: session.workspace().as_str().to_string(),
@@ -148,6 +146,7 @@ pub(crate) fn agent_session_item(session: &AgentSession) -> AgentSessionItemDto 
             can_archive: operations.can_archive,
             can_restore: operations.can_restore,
             can_delete: operations.can_delete,
+            can_resume: operations.can_resume,
         },
         activity: AgentSessionActivityDto::Idle,
         last_exit_abnormal: session.last_exit_abnormal(),

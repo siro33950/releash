@@ -759,6 +759,7 @@ pub fn run() {
             let agent_session_launch = agent_sessions.launch.clone();
             let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
             let agent_session_interrupt = agent_sessions.interrupt.clone();
+            let agent_session_lifecycle = agent_sessions.lifecycle.clone();
             let agent_session_exit = agent_sessions.exit.clone();
             let provider_availability = agent_sessions.availability_reader.clone();
             let provider_lifecycle_ingress = agent_sessions.lifecycle_ingress.clone();
@@ -782,7 +783,7 @@ pub fn run() {
             app.manage(agent_sessions.hook_health);
             app.manage(agent_sessions.hook_health_read);
             app.manage(agent_sessions.lifecycle_ingress);
-            app.manage(agent_sessions.lifecycle);
+            app.manage(agent_session_lifecycle.clone());
             app.manage(agent_sessions.read);
             app.manage(agent_session_exit);
             app.manage(agent_sessions.provider_availability);
@@ -969,6 +970,7 @@ pub fn run() {
                         agent_session_initial_instruction: agent_session_initial_instruction
                             .clone(),
                         agent_session_interrupt: agent_session_interrupt.clone(),
+                        agent_session_lifecycle: agent_session_lifecycle.clone(),
                         provider_availability: provider_availability.clone(),
                         worktree_ledger: worktree_ledger_repository.clone(),
                         worktree_inventory: worktree_inventory_gateway.clone(),

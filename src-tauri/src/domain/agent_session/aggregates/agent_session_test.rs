@@ -2,6 +2,7 @@ use super::agent_session::{
     AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
     AgentSessionInitialInstructionError, AgentSessionRecoveryError,
     AgentSessionRemovalAuthorization, AgentSessionRemovalError, AgentSessionTreeParentError,
+    AgentSessionWorkflowStopError,
 };
 use super::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
@@ -656,6 +657,62 @@ fn test_agent_session_gc_provider_session_id既知なら拒否する() {
 }
 
 #[test]
+fn test_agent_session_gc_workflow所有ならprovider_session_id未確定でも拒否する() {
+    let session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+    )
+    .unwrap();
+
+    let error = session
+        .authorize_gc(ManagedPtyPresence::ConfirmedAbsent)
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionRemovalError::WorkflowOwned);
+    assert_eq!(
+        session.open_action(ManagedPtyPresence::ConfirmedAbsent),
+        AgentSessionOpenAction::RemainPaused
+    );
+}
+
+#[test]
+fn test_agent_session_workflow停止_所有node_executionとの一致だけを許可する() {
+    let workflow_session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+    )
+    .unwrap();
+    let standalone_session = AgentSession::create(
+        "agent-session-2",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        None,
+    )
+    .unwrap();
+
+    assert!(workflow_session.authorize_workflow_stop("node-1").is_ok());
+    assert_eq!(
+        workflow_session
+            .authorize_workflow_stop("different-node")
+            .unwrap_err(),
+        AgentSessionWorkflowStopError::NodeExecutionMismatch
+    );
+    assert_eq!(
+        standalone_session
+            .authorize_workflow_stop("node-1")
+            .unwrap_err(),
+        AgentSessionWorkflowStopError::NotWorkflowOwned
+    );
+}
+
+#[test]
 fn test_agent_session生成_実行木上の親を固定する() {
     let tree_parent =
         AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap();
@@ -906,6 +963,34 @@ fn test_agent_session_process終了_provider_session_id不明ならgcを要求�
 }
 
 #[test]
+fn test_agent_session_workflow停止_provider未確定でも異常終了にせずpausedへ遷移する() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    let outcome = session.stop_workflow_owned("node-1").unwrap();
+
+    assert_eq!(outcome, AgentSessionMutationOutcome::Applied);
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
+    assert_eq!(session.provider_session_id(), None);
+    assert_eq!(session.transcript_ref(), None);
+    assert!(!session.last_exit_abnormal());
+    assert_eq!(
+        session.uncommitted_events(),
+        &[AgentSessionLifecycleEvent::LifecycleChanged {
+            lifecycle: AgentSessionLifecycle::Paused,
+            last_exit_abnormal: false,
+        }]
+    );
+}
+
+#[test]
 fn test_agent_session関連付け_異なるprovider_session_idへの差し替えを拒否する() {
     let mut session = AgentSession::create(
         "agent-session-1",
@@ -1113,32 +1198,66 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
 }
 
 #[test]
-fn test_agent_session操作表示_tree_parentとlifecycleの規則をdomainだけが決める() {
+fn test_agent_session操作表示_resume可否を含む規則をdomainだけが決める() {
+    let mut standalone = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        None,
+    )
+    .unwrap();
     assert_eq!(
-        AgentSessionOperations::for_state(None, AgentSessionLifecycle::Open),
+        standalone.operations(),
         AgentSessionOperations {
             can_archive: true,
             can_restore: false,
             can_delete: false,
+            can_resume: false,
         }
     );
+
+    standalone
+        .associate_provider_session("provider-session-1", None)
+        .unwrap();
+    standalone.observe_provider_process_exit(Some(0));
     assert_eq!(
-        AgentSessionOperations::for_state(None, AgentSessionLifecycle::Archived),
+        standalone.operations(),
+        AgentSessionOperations {
+            can_archive: true,
+            can_restore: false,
+            can_delete: false,
+            can_resume: true,
+        }
+    );
+
+    standalone.archive().unwrap();
+    assert_eq!(
+        standalone.operations(),
         AgentSessionOperations {
             can_archive: false,
             can_restore: true,
             can_delete: true,
+            can_resume: false,
         }
     );
+
+    let mut workflow_session = AgentSession::create(
+        "workflow-session",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+    )
+    .unwrap();
+    workflow_session.stop_workflow_owned("node-1").unwrap();
     assert_eq!(
-        AgentSessionOperations::for_state(
-            Some(&AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
-            AgentSessionLifecycle::Open,
-        ),
+        workflow_session.operations(),
         AgentSessionOperations {
             can_archive: false,
             can_restore: false,
             can_delete: false,
+            can_resume: false,
         }
     );
 }
@@ -1168,6 +1287,20 @@ fn test_agent_session復帰開始_resumeとrestoreの受理状態をdomainが判
 
     session.observe_provider_process_exit(Some(0));
     assert!(session.authorize_resume().is_ok());
+
+    let mut unknown_provider = AgentSession::create(
+        "workflow-session",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Codex,
+        Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+    )
+    .unwrap();
+    unknown_provider.stop_workflow_owned("node-1").unwrap();
+    assert_eq!(
+        unknown_provider.authorize_resume().unwrap_err(),
+        AgentSessionRecoveryError::ProviderSessionUnknown
+    );
 
     session
         .complete_resume(AgentSessionRecoveryResult::Succeeded)

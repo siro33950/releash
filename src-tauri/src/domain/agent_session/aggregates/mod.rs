@@ -7,12 +7,13 @@ mod provider_registry;
 #[path = "provider_registry_test.rs"]
 mod provider_registry_tests;
 
+#[cfg(test)]
+pub(crate) use agent_session::AgentSessionOperations;
 pub(crate) use agent_session::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
     AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, AgentSessionRemovalAuthorization, AgentSessionTreeParent,
-    ManagedPtyPresence,
+    AgentSessionOpenAction, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    AgentSessionRemovalAuthorization, AgentSessionTreeParent, ManagedPtyPresence,
 };
 #[cfg(test)]
 pub(crate) use provider_registry::ProviderRegistryError;

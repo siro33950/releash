@@ -7,6 +7,9 @@ use super::agent_session_repository::map_commit_batch_error;
 use super::{workspace_session_items, LocalAgentSessionQueryService, LocalAgentSessionRepository};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::fact_log;
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionLifecycle, AgentSessionTreeParent,
 };
@@ -1004,6 +1007,78 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
     assert!(detail.operations.can_archive);
     assert!(!detail.operations.can_restore);
     assert!(!detail.operations.can_delete);
+    assert!(!detail.operations.can_resume);
+}
+
+#[tokio::test]
+async fn test_agent_session_query_service_resume可否をprovider参照の有無から返す() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+
+    for (execution_id, node_execution_id, session_id, provider_session_id) in [
+        ("workflow-unknown", "node-unknown", "session-unknown", None),
+        (
+            "workflow-known",
+            "node-known",
+            "session-known",
+            Some("provider-known"),
+        ),
+    ] {
+        seed_workflow_session_facts(
+            &store,
+            WorkflowSessionFactSeed {
+                workflow_name: "workflow",
+                request: "test",
+                worktree_path: "/repo/worktree",
+                provider: ProviderKind::Codex,
+                workflow_execution_id: execution_id,
+                node_execution_id,
+                session_id,
+                initial_instruction_admitted: true,
+            },
+        )
+        .unwrap();
+        let mut saved = repository
+            .create(
+                AgentSession::create(
+                    session_id,
+                    WorkspaceIdentity::new("/repo"),
+                    "/repo/worktree",
+                    ProviderKind::Codex,
+                    Some(AgentSessionTreeParent::new(execution_id, node_execution_id).unwrap()),
+                )
+                .unwrap(),
+                &format!("create-{session_id}"),
+            )
+            .await
+            .unwrap();
+        if let Some(provider_session_id) = provider_session_id {
+            saved
+                .session_mut()
+                .associate_provider_session(provider_session_id, None)
+                .unwrap();
+            saved = repository
+                .save(saved, &format!("associate-{session_id}"))
+                .await
+                .unwrap();
+        }
+        saved
+            .session_mut()
+            .stop_workflow_owned(node_execution_id)
+            .unwrap();
+        repository
+            .save(saved, &format!("stop-{session_id}"))
+            .await
+            .unwrap();
+    }
+
+    let query_service = LocalAgentSessionQueryService::new(store);
+    let unknown = query_service.get("session-unknown").await.unwrap().unwrap();
+    let known = query_service.get("session-known").await.unwrap().unwrap();
+
+    assert!(!unknown.operations.can_resume);
+    assert!(known.operations.can_resume);
 }
 
 #[tokio::test]
@@ -1045,6 +1120,7 @@ async fn test_workspace共通read_modelは全lifecycleを返す() {
     assert!(!archived.operations.can_archive);
     assert!(archived.operations.can_restore);
     assert!(archived.operations.can_delete);
+    assert!(!archived.operations.can_resume);
 }
 
 #[tokio::test]

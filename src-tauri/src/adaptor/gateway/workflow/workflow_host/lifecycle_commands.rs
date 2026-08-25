@@ -3,7 +3,7 @@
 use super::*;
 
 enum AbortCommit {
-    Aborted { session_ids: Vec<String> },
+    Aborted,
     NotFound,
     AlreadyTerminal,
 }
@@ -78,15 +78,13 @@ impl WorkflowRuntimeHost {
             .commit_abort_workflow_by_execution_id(app, execution_id, expected_node_name)
             .await;
         match abort_result {
-            Ok(AbortCommit::Aborted { session_ids }) => {
+            Ok(AbortCommit::Aborted) => {
                 if activation_was_paused {
                     activation_gate.commit_cancel();
                     activation_guard = Some(activation_gate.lock.lock().await);
                 }
                 let _activation_guard = activation_guard;
-                let terminal_cleanup_result = self
-                    .finish_committed_abort(app, execution_id, &session_ids)
-                    .await;
+                self.finish_committed_abort(app, execution_id).await;
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
                     .await
@@ -95,7 +93,6 @@ impl WorkflowRuntimeHost {
                             "ExecutionStore abort reservation cleanup failed: {error}"
                         ))
                     })?;
-                terminal_cleanup_result?;
                 abort_outcome_to_command_result(AbortOutcome::Aborted, execution_id)
             }
             Ok(AbortCommit::NotFound) => {
@@ -563,22 +560,15 @@ impl WorkflowRuntimeHost {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await?;
-        let (current_node_session_id, active_node_session_ids) = match lookup {
+        match lookup {
             AbortTargetLookup::NotFound => {
                 return Ok(AbortCommit::NotFound);
             }
             AbortTargetLookup::AlreadyTerminal => {
                 return Ok(AbortCommit::AlreadyTerminal);
             }
-            AbortTargetLookup::Active {
-                current_node_session_id,
-                active_node_session_ids,
-            } => (current_node_session_id, active_node_session_ids),
-        };
-        let mut session_ids = current_node_session_id.into_iter().collect::<Vec<_>>();
-        session_ids.extend(active_node_session_ids.into_iter().flatten());
-        session_ids.sort();
-        session_ids.dedup();
+            AbortTargetLookup::Active => {}
+        }
         // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
         //    state を Aborted に遷移させる。競合で terminal 化していた場合は
         //    AlreadyTerminal で返す。
@@ -617,6 +607,7 @@ impl WorkflowRuntimeHost {
             exec.record_aborted_history_for_active_leaves(timestamp);
 
             let _ = exec.transition_aborted();
+            exec.abort_active_node_executions(timestamp);
             exec.clear_node_stalls(timestamp);
             let snapshot_state = RuntimeCommitSnapshot::from_execution(exec)?;
             (snapshot_before, snapshot_state, aborted_node_for_event)
@@ -668,44 +659,27 @@ impl WorkflowRuntimeHost {
             None,
         );
 
-        Ok(AbortCommit::Aborted { session_ids })
+        Ok(AbortCommit::Aborted)
     }
 
     async fn finish_committed_abort<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         execution_id: &str,
-        session_ids: &[String],
-    ) -> Result<(), WorkflowRuntimeError> {
+    ) {
         // ExecutionAborted is durable before this method is called. Runtime activation must be
         // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
             .await;
-        let mut interrupt_failures = Vec::new();
-        for session_id in session_ids {
-            if let Err(error) = self
-                .workflow_agent_sessions
-                .interrupt_workflow_agent_session(session_id)
-                .await
-            {
-                interrupt_failures.push(error.to_string());
-            }
-        }
         self.finalize_terminal_transition_after_required_append(app, execution_id)
             .await;
-        if interrupt_failures.is_empty() {
-            Ok(())
-        } else {
-            Err(WorkflowRuntimeError::AgentSession(
-                interrupt_failures.join("; "),
-            ))
-        }
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
     /// 遷移済みで、`ExecutionAborted` event は必須 append 済み、かつ Execution Store sync も
     /// 完了済みである前提。Workflow refs cleanup / broadcast / in-memory runtime releaseを
-    /// 実行する。AgentSessionとPTYはWorkflow終端後もユーザー操作のため保持する。
+    /// 実行する。終端した Session の AgentSession は required append 後の effect で
+    /// checkpoint を保持したまま停止済みである。
     ///
     /// [04] post-commit 失敗は warn ログのみで command 結果に伝播させない。観測可能な
     /// 事実は既に ExecutionAborted で確定しており、ここでの副作用失敗を command failure に
@@ -747,18 +721,7 @@ impl WorkflowRuntimeHost {
                 if !exec.is_active() {
                     return Ok(AbortTargetLookup::AlreadyTerminal);
                 }
-                let current_node_session_id = exec.current_session_id.clone();
-                let active_node_session_ids = Some(
-                    exec.node_executions
-                        .iter()
-                        .filter(|node| node.status.is_active())
-                        .filter_map(|node| node.session_id.clone())
-                        .collect::<Vec<_>>(),
-                );
-                return Ok(AbortTargetLookup::Active {
-                    current_node_session_id,
-                    active_node_session_ids,
-                });
+                return Ok(AbortTargetLookup::Active);
             }
         }
         if self.has_terminal_execution_record(execution_id).await? {

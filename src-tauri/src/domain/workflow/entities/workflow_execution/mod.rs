@@ -151,6 +151,12 @@ pub struct RuntimeNodeExecutionFailure {
     pub kind: NodeExecutionFailureKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewlyTerminalSession {
+    pub node_execution_id: String,
+    pub agent_session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalAttemptTarget {
     pub node_execution_id: String,
@@ -743,6 +749,31 @@ impl WorkflowExecution {
             .node_executions
             .iter()
             .find(|execution| execution.id == node_execution_id)
+    }
+
+    pub fn newly_terminal_sessions_since(
+        &self,
+        before: &WorkflowExecution,
+    ) -> Vec<NewlyTerminalSession> {
+        if self.id != before.id {
+            return Vec::new();
+        }
+        before
+            .runtime
+            .node_executions
+            .iter()
+            .filter(|node| node.kind == NodeKindName::Session && node.status.is_active())
+            .filter_map(|previous| {
+                let current = self.node_execution(&previous.id)?;
+                if current.status.is_active() {
+                    return None;
+                }
+                Some(NewlyTerminalSession {
+                    node_execution_id: current.id.clone(),
+                    agent_session_id: current.session_id.clone()?,
+                })
+            })
+            .collect()
     }
 
     /// node の親スコープ id（root インスタンスなら None）。
@@ -3991,6 +4022,115 @@ mod tests {
             lifecycle: WorkflowExecution::lifecycle_from_state(state),
             ..WorkflowExecutionRestore::default()
         })
+    }
+
+    #[test]
+    fn newly_terminal_sessions_activeから終端への初回遷移だけを導出する() {
+        for active in [
+            RuntimeNodeExecutionStatus::Running,
+            RuntimeNodeExecutionStatus::Paused,
+            RuntimeNodeExecutionStatus::WaitingApproval,
+        ] {
+            for terminal in [
+                RuntimeNodeExecutionStatus::Succeeded,
+                RuntimeNodeExecutionStatus::Failed,
+                RuntimeNodeExecutionStatus::Aborted,
+            ] {
+                let mut before = restored_execution(RuntimeExecutionState::Running);
+                before
+                    .begin_node_attempt(
+                        "implement".to_string(),
+                        NodeKindName::Session,
+                        1,
+                        None,
+                        "node-execution-1".to_string(),
+                        10.0,
+                    )
+                    .unwrap();
+                before.attach_node_session("node-execution-1", "agent-session-1".to_string(), 11.0);
+                before.node_executions[0].status = active;
+                let mut after = before.clone();
+                after.node_executions[0].status = terminal;
+
+                assert_eq!(
+                    after.newly_terminal_sessions_since(&before),
+                    vec![NewlyTerminalSession {
+                        node_execution_id: "node-execution-1".to_string(),
+                        agent_session_id: "agent-session-1".to_string(),
+                    }],
+                    "{active:?} -> {terminal:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn newly_terminal_sessions_active維持と既終端と非sessionと参照なしを除外する() {
+        let mut before = restored_execution(RuntimeExecutionState::Running);
+        for (id, kind, session_id, status) in [
+            (
+                "running",
+                NodeKindName::Session,
+                Some("running-session"),
+                RuntimeNodeExecutionStatus::Running,
+            ),
+            (
+                "paused",
+                NodeKindName::Session,
+                Some("paused-session"),
+                RuntimeNodeExecutionStatus::Paused,
+            ),
+            (
+                "waiting-approval",
+                NodeKindName::Session,
+                Some("waiting-approval-session"),
+                RuntimeNodeExecutionStatus::WaitingApproval,
+            ),
+            (
+                "terminal",
+                NodeKindName::Session,
+                Some("terminal-session"),
+                RuntimeNodeExecutionStatus::Succeeded,
+            ),
+            (
+                "command",
+                NodeKindName::Command,
+                Some("command-session"),
+                RuntimeNodeExecutionStatus::Running,
+            ),
+            (
+                "unattached",
+                NodeKindName::Session,
+                None,
+                RuntimeNodeExecutionStatus::Running,
+            ),
+        ] {
+            before
+                .begin_node_attempt("implement".to_string(), kind, 1, None, id.to_string(), 10.0)
+                .unwrap();
+            if let Some(session_id) = session_id {
+                before.attach_node_session(id, session_id.to_string(), 11.0);
+            }
+            before
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .status = status;
+        }
+        let mut after = before.clone();
+        for id in ["terminal", "command", "unattached"] {
+            after
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .status = RuntimeNodeExecutionStatus::Aborted;
+        }
+
+        assert!(after.newly_terminal_sessions_since(&before).is_empty());
+        after.id = "different-execution".to_string();
+        assert!(after.newly_terminal_sessions_since(&before).is_empty());
     }
 
     #[test]

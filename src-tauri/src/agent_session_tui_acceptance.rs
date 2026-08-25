@@ -216,6 +216,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 composition.launch.clone(),
                 composition.initial_instruction.clone(),
                 composition.interrupt.clone(),
+                composition.lifecycle.clone(),
                 composition.availability_reader.clone(),
             ));
         terminal.bind_agent_session_activity(composition.activity.clone());

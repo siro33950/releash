@@ -17,10 +17,7 @@ use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 pub(crate) enum AbortTargetLookup {
     NotFound,
     AlreadyTerminal,
-    Active {
-        current_node_session_id: Option<String>,
-        active_node_session_ids: Option<Vec<String>>,
-    },
+    Active,
 }
 
 /// `abort_workflow_by_execution_id` の typed outcome。

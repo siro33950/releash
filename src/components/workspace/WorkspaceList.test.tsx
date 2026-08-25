@@ -449,6 +449,7 @@ describe("WorkspaceList", () => {
 						canArchive: false,
 						canRestore: true,
 						canDelete: true,
+						canResume: false,
 					},
 				},
 			],

@@ -188,6 +188,21 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
+    pub(crate) async fn stop_workflow_owned(
+        &self,
+        agent_session_id: &str,
+        node_execution_id: &str,
+        caller_request_id: &str,
+    ) -> Result<AgentSessionMutationOutcome, AgentSessionUsecaseError> {
+        let mut session = self.required(agent_session_id).await?;
+        let outcome = session
+            .session_mut()
+            .stop_workflow_owned(node_execution_id)
+            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
+        self.save_if_changed(session, caller_request_id).await?;
+        Ok(outcome)
+    }
+
     pub(crate) async fn complete_resume(
         &self,
         agent_session_id: &str,

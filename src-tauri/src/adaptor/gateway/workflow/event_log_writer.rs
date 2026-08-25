@@ -2,6 +2,11 @@ use tauri::Manager;
 
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 
+pub(crate) enum ProviderStopCommitOutcome {
+    Committed,
+    CanonicalFactsCommittedWithProviderLifecycleFailure(String),
+}
+
 fn managed_store<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>, String> {
@@ -28,24 +33,33 @@ pub(crate) fn append_required_events_for_app<R: tauri::Runtime>(
 /// provider Stop の受理: 事実（stop_received 等）を先に追記し、provider lifecycle
 /// event を provider ストリームへ commit する。
 ///
-/// 事実が先である理由: 途中で落ちた場合、事実側が残れば node は完了し（利用者の
-/// 観測として正しい）、provider 側の再配送は同じ事実の重複 append（fold で無害）に
-/// 収束する。逆順は「provider は止まったが node が完了しない」窓を作る。
+/// canonical facts の追記後に provider lifecycle commit が失敗した場合は post-commit
+/// outcome として返す。呼び出し側は warning を記録するが、確定済みの Stop 受理は
+/// 失敗へ戻さない。retry と診断情報の永続化はこの境界では行わない。
 pub(crate) async fn append_provider_stop_for_app<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     events: &[WorkflowEvent],
     provider_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-) -> Result<(), String> {
+) -> Result<ProviderStopCommitOutcome, String> {
     let store = managed_store(app)?;
     crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)?;
     if provider_events.is_empty() {
-        return Ok(());
+        return Ok(ProviderStopCommitOutcome::Committed);
     }
     let repository: std::sync::Arc<
         dyn crate::domain::local_event::LocalEventTransactionRepository,
     > = store.clone();
     let installation_id = store.installation_id().to_string();
-    commit_provider_lifecycle_events(repository, installation_id, provider_events).await
+    Ok(
+        match commit_provider_lifecycle_events(repository, installation_id, provider_events).await {
+            Ok(()) => ProviderStopCommitOutcome::Committed,
+            Err(error) => {
+                ProviderStopCommitOutcome::CanonicalFactsCommittedWithProviderLifecycleFailure(
+                    error,
+                )
+            }
+        },
+    )
 }
 
 async fn commit_provider_lifecycle_events(
