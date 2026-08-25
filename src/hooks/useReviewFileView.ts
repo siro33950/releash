@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { ReviewFileView, ReviewViewport } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
@@ -47,7 +48,7 @@ export function useReviewFileView(
 			.catch((reason: unknown) => {
 				if (requestId !== requestIdRef.current) return;
 				setView(null);
-				setError(`Failed to load diff: ${formatReviewFileViewError(reason)}`);
+				setError(getErrorMessage(reason));
 				setLoading(false);
 			});
 
@@ -84,10 +85,4 @@ export function useReviewFileView(
 		loading,
 		error,
 	};
-}
-
-function formatReviewFileViewError(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	if (typeof error === "string") return error;
-	return String(error);
 }

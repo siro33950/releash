@@ -15,7 +15,8 @@ use crate::domain::terminal_surface::entities::{
 };
 use crate::domain::terminal_surface::gateway::{
     TerminalRuntimeSpawnRequest, TerminalSurfaceEvent, TerminalSurfaceEventSink,
-    TerminalSurfaceGateway, TerminalSurfaceGatewayError, TerminalSurfaceRepository,
+    TerminalSurfaceGateway, TerminalSurfaceGatewayError, TerminalSurfaceInputUnavailableCause,
+    TerminalSurfaceRepository,
 };
 use crate::domain::terminal_surface::{
     TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TerminalSurfaceLifecycleConfig,
@@ -525,11 +526,15 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
             .map(|surface| surface.runtime_generation.value())
     }
 
-    fn publish_input_unavailable(&self, session_key: &str, error: &TerminalSurfaceGatewayError) {
+    fn publish_input_unavailable(
+        &self,
+        session_key: &str,
+        cause: TerminalSurfaceInputUnavailableCause,
+    ) {
         if let Some(event_sink) = &self.event_sink {
             event_sink.publish(TerminalSurfaceEvent::InputUnavailable {
                 session_key: session_key.to_string(),
-                message: format!("Failed to write to terminal: {error}"),
+                cause,
             });
         }
     }
@@ -914,20 +919,19 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
         {
             Ok(ready) => ready,
             Err(TerminalSurfaceInputIngressError::StaleAttachment) => {
-                let error = TerminalSurfaceGatewayError::new(
-                    "Terminal input attachment is no longer active",
-                );
+                let cause = TerminalSurfaceInputUnavailableCause::StaleAttachment;
+                let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
                 drop(ingress);
-                self.publish_input_unavailable(session_key, &error);
+                self.publish_input_unavailable(session_key, cause);
                 return Err(error);
             }
             Err(TerminalSurfaceInputIngressError::PendingCapacityExceeded) => {
-                let error =
-                    TerminalSurfaceGatewayError::new("Terminal input reorder buffer is full");
+                let cause = TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded;
+                let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
                 let should_publish = ingress.record_failure(session_key, attachment_id);
                 drop(ingress);
                 if should_publish {
-                    self.publish_input_unavailable(session_key, &error);
+                    self.publish_input_unavailable(session_key, cause);
                 }
                 return Err(error);
             }
@@ -947,7 +951,12 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
                 let should_publish = ingress.record_failure(session_key, attachment_id);
                 drop(ingress);
                 if should_publish {
-                    self.publish_input_unavailable(session_key, &error);
+                    self.publish_input_unavailable(
+                        session_key,
+                        TerminalSurfaceInputUnavailableCause::RuntimeWriteFailed(
+                            error.message().to_string(),
+                        ),
+                    );
                 }
                 return Err(error);
             }

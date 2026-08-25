@@ -188,4 +188,40 @@ describe("useApplicationShutdownSupervision", () => {
 		expect(calls[1][1].request.request_id).toBe(snapshot.requestId);
 		unmount();
 	});
+
+	it("pending attemptの無効なcursor errorだけをtypeで判定して次回は先頭から読む", async () => {
+		let attemptCalls = 0;
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "list_pending_application_attempts") {
+				attemptCalls += 1;
+				if (attemptCalls === 1) {
+					return Promise.resolve({ entries: [], next_cursor: "stale-cursor" });
+				}
+				if (attemptCalls === 2) {
+					return Promise.reject({ type: "invalid_request" });
+				}
+				return Promise.resolve({ entries: [], next_cursor: null });
+			}
+			if (command === "get_application_shutdown") {
+				return Promise.resolve({ type: "current", plan: null });
+			}
+			return defaultInvoke(command);
+		});
+		const { result, unmount } = renderHook(() =>
+			useApplicationShutdownSupervision(),
+		);
+
+		await waitFor(() => expect(attemptCalls).toBe(2));
+		await act(async () => result.current.refresh());
+
+		const attemptInvocations = mockInvoke.mock.calls.filter(
+			([command]) => command === "list_pending_application_attempts",
+		);
+		expect(attemptInvocations[1][1]).toEqual({
+			limit: 32,
+			cursor: "stale-cursor",
+		});
+		expect(attemptInvocations[2][1]).toEqual({ limit: 32, cursor: null });
+		unmount();
+	});
 });

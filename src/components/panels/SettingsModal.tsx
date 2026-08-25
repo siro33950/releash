@@ -35,6 +35,7 @@ import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type { BranchInfo } from "@/types/git";
@@ -72,7 +73,7 @@ function useWorkflowSettings(open: boolean) {
 				setDraft(normalized);
 			})
 			.catch((e) => {
-				if (!cancelled) setError(String(e));
+				if (!cancelled) setError(getErrorMessage(e));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -91,7 +92,7 @@ function useWorkflowSettings(open: boolean) {
 			await invoke("update_workflow_config", { workflow: draft });
 			setConfig({ ...draft });
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 			throw e;
 		} finally {
 			setSaving(false);
@@ -206,7 +207,7 @@ function useExternalEditorConfig(open: boolean) {
 				setEditors(detected);
 			})
 			.catch((e) => {
-				if (!cancelled) setError(String(e));
+				if (!cancelled) setError(getErrorMessage(e));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -224,7 +225,7 @@ function useExternalEditorConfig(open: boolean) {
 			await invoke("update_external_editor", { editor });
 			setInitialEditor(editor);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 			throw e;
 		}
 	}, [editor]);
@@ -379,7 +380,7 @@ function RepoBaseBranchItem({
 				setInitialBase(base);
 			})
 			.catch((e) => {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			})
 			.finally(() => {
 				setLoading(false);
@@ -485,7 +486,7 @@ function useRepoChanges() {
 				revision: prev.revision + 1,
 			}));
 		} catch (e) {
-			setState((prev) => ({ ...prev, error: String(e) }));
+			setState((prev) => ({ ...prev, error: getErrorMessage(e) }));
 			throw e;
 		}
 	}, [state.pendingBases]);

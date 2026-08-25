@@ -555,8 +555,7 @@ fn test_ターミナル画面入力_連続する入力不能をattachment_stream
         recorded.events.lock().unwrap().as_slice(),
         &[TerminalSurfaceEvent::InputUnavailable {
             session_key: "key".to_string(),
-            message: "Failed to write to terminal: Terminal input reorder buffer is full"
-                .to_string(),
+            cause: TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded,
         }]
     );
 }
@@ -580,8 +579,7 @@ fn test_ターミナル画面入力_失効attachmentのwrite失敗はinput_unava
         recorded.events.lock().unwrap().as_slice(),
         &[TerminalSurfaceEvent::InputUnavailable {
             session_key: "key".to_string(),
-            message: "Failed to write to terminal: Terminal input attachment is no longer active"
-                .to_string(),
+            cause: TerminalSurfaceInputUnavailableCause::StaleAttachment,
         }]
     );
 }

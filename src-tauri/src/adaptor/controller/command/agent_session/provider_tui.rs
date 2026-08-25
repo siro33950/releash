@@ -67,7 +67,7 @@ pub async fn update_provider_executable(
     provider: String,
     executable: String,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
-    let provider = parse_provider(&provider)?;
+    let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability.inner());
     run_provider_availability_blocking(move || {
         availability.update_configured_executable(provider, &executable)
@@ -81,7 +81,7 @@ pub async fn reset_provider_executable(
     availability: State<'_, Arc<ProviderAvailabilityUsecase>>,
     provider: String,
 ) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
-    let provider = parse_provider(&provider)?;
+    let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability.inner());
     run_provider_availability_blocking(move || availability.reset_configured_executable(provider))
         .await
@@ -99,24 +99,179 @@ where
         .map_err(provider_availability_error)
 }
 
+#[derive(Clone, Copy)]
+enum ProviderParseOperation {
+    ConfigureProvider,
+    Start,
+    ResumeHistory,
+}
+
+#[derive(Clone, Copy)]
+enum AgentSessionLaunchOperation {
+    Start,
+    ResumeHistory,
+}
+
+#[derive(Clone, Copy)]
+enum AgentSessionConflictOperation {
+    Start,
+    ResumeHistory,
+    Update,
+}
+
+enum ProviderTuiCodedError {
+    ProviderAvailabilityInvalidExecutable,
+    ProviderAvailabilityConfigUnavailable,
+    ProviderAvailabilityRefreshUnavailable,
+    ProviderAvailabilityCorrupt,
+    AgentSessionInvalidProvider(ProviderParseOperation),
+    AgentSessionProviderUnavailable,
+    AgentSessionInvalidInput(AgentSessionLaunchOperation),
+    AgentSessionConflict(AgentSessionConflictOperation),
+    AgentSessionStorageUnavailable,
+    AgentSessionLaunchUnavailable,
+    AgentSessionTerminalUnavailable,
+    AgentSessionCorrupt,
+    AgentSessionNotFound,
+    AgentSessionInvalidOperation,
+    AgentSessionInvalidRequest,
+    AgentSessionHistoryInvalidRequest,
+    AgentSessionHistoryUnavailable,
+    AgentSessionHistoryCorrupt,
+    ProviderHookHealthInvalidRequest,
+    ProviderHookHealthStorageUnavailable,
+    ProviderHookHealthCorrupt,
+}
+
+fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError {
+    let (code, message) = match error {
+        ProviderTuiCodedError::ProviderAvailabilityInvalidExecutable => (
+            "PROVIDER_AVAILABILITY_INVALID_EXECUTABLE",
+            "Enter a Provider executable command name or path.",
+        ),
+        ProviderTuiCodedError::ProviderAvailabilityConfigUnavailable => (
+            "PROVIDER_AVAILABILITY_CONFIG_UNAVAILABLE",
+            "Releash could not access the Provider executable setting. Try again.",
+        ),
+        ProviderTuiCodedError::ProviderAvailabilityRefreshUnavailable => (
+            "PROVIDER_AVAILABILITY_REFRESH_UNAVAILABLE",
+            "Releash could not refresh Provider CLI availability. Try again.",
+        ),
+        ProviderTuiCodedError::ProviderAvailabilityCorrupt => (
+            "PROVIDER_AVAILABILITY_CORRUPT",
+            "Releash could not read Provider CLI availability. Restart Releash and try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionInvalidProvider(operation) => match operation {
+            ProviderParseOperation::ConfigureProvider => {
+                ("AGENT_SESSION_INVALID_PROVIDER", "Select a valid Provider.")
+            }
+            ProviderParseOperation::Start => (
+                "AGENT_SESSION_INVALID_PROVIDER",
+                "Select a Provider before starting the AgentSession.",
+            ),
+            ProviderParseOperation::ResumeHistory => (
+                "AGENT_SESSION_INVALID_PROVIDER",
+                "Select a Provider before resuming the AgentSession.",
+            ),
+        },
+        ProviderTuiCodedError::AgentSessionProviderUnavailable => (
+            "AGENT_SESSION_PROVIDER_UNAVAILABLE",
+            "The selected Provider is unavailable. Check its executable and try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionInvalidInput(operation) => match operation {
+            AgentSessionLaunchOperation::Start => (
+                "AGENT_SESSION_INVALID_INPUT",
+                "Releash could not start the AgentSession because the request is invalid.",
+            ),
+            AgentSessionLaunchOperation::ResumeHistory => (
+                "AGENT_SESSION_INVALID_INPUT",
+                "Releash could not resume the AgentSession because the request is invalid.",
+            ),
+        },
+        ProviderTuiCodedError::AgentSessionConflict(operation) => match operation {
+            AgentSessionConflictOperation::Start => (
+                "AGENT_SESSION_CONFLICT",
+                "The AgentSession could not be started because the request conflicts with current state or its Provider session is already in use. Refresh and try again.",
+            ),
+            AgentSessionConflictOperation::ResumeHistory => (
+                "AGENT_SESSION_CONFLICT",
+                "The AgentSession could not be resumed because it changed or its Provider session is already in use. Refresh and try again.",
+            ),
+            AgentSessionConflictOperation::Update => (
+                "AGENT_SESSION_CONFLICT",
+                "The AgentSession could not be updated because it changed or its Provider session is already in use. Refresh and try again.",
+            ),
+        },
+        ProviderTuiCodedError::AgentSessionStorageUnavailable => (
+            "AGENT_SESSION_STORAGE_UNAVAILABLE",
+            "Releash could not access saved AgentSession data. Try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionLaunchUnavailable => (
+            "AGENT_SESSION_LAUNCH_UNAVAILABLE",
+            "Releash could not complete the Provider operation for this AgentSession. Try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionTerminalUnavailable => (
+            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
+            "Releash could not complete the Terminal operation for this AgentSession. Try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionCorrupt => (
+            "AGENT_SESSION_CORRUPT",
+            "Releash could not continue because the AgentSession data is invalid.",
+        ),
+        ProviderTuiCodedError::AgentSessionNotFound => (
+            "AGENT_SESSION_NOT_FOUND",
+            "The AgentSession is no longer available.",
+        ),
+        ProviderTuiCodedError::AgentSessionInvalidOperation => (
+            "AGENT_SESSION_INVALID_OPERATION",
+            "This operation is not available for the AgentSession in its current state. Refresh and try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionInvalidRequest => (
+            "AGENT_SESSION_INVALID_REQUEST",
+            "Releash could not load the AgentSession because the request is invalid.",
+        ),
+        ProviderTuiCodedError::AgentSessionHistoryInvalidRequest => (
+            "AGENT_SESSION_HISTORY_INVALID_REQUEST",
+            "Releash could not load AgentSession history because the request is invalid.",
+        ),
+        ProviderTuiCodedError::AgentSessionHistoryUnavailable => (
+            "AGENT_SESSION_HISTORY_UNAVAILABLE",
+            "Releash could not load AgentSession history. Try again.",
+        ),
+        ProviderTuiCodedError::AgentSessionHistoryCorrupt => (
+            "AGENT_SESSION_HISTORY_CORRUPT",
+            "Releash could not load AgentSession history because its saved data is invalid.",
+        ),
+        ProviderTuiCodedError::ProviderHookHealthInvalidRequest => (
+            "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
+            "Releash could not load Provider Hook health because the request is invalid.",
+        ),
+        ProviderTuiCodedError::ProviderHookHealthStorageUnavailable => (
+            "PROVIDER_HOOK_HEALTH_STORAGE_UNAVAILABLE",
+            "Releash could not load Provider Hook health. Try again.",
+        ),
+        ProviderTuiCodedError::ProviderHookHealthCorrupt => (
+            "PROVIDER_HOOK_HEALTH_CORRUPT",
+            "Releash could not load Provider Hook health because its saved data is invalid.",
+        ),
+    };
+    AppError::coded(code, message)
+}
+
 fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppError {
     match error {
-        ProviderAvailabilityUsecaseError::InvalidInput => AppError::coded(
-            "PROVIDER_AVAILABILITY_INVALID_EXECUTABLE",
-            "Provider executable must be a non-empty command name or path",
-        ),
-        ProviderAvailabilityUsecaseError::ConfigUnavailable => AppError::coded(
-            "PROVIDER_AVAILABILITY_CONFIG_UNAVAILABLE",
-            "Provider executable Config is unavailable",
-        ),
-        ProviderAvailabilityUsecaseError::RefreshUnavailable => AppError::coded(
-            "PROVIDER_AVAILABILITY_REFRESH_UNAVAILABLE",
-            "Provider executable search environment refresh failed",
-        ),
-        ProviderAvailabilityUsecaseError::Corrupt => AppError::coded(
-            "PROVIDER_AVAILABILITY_CORRUPT",
-            "Provider availability registry is unavailable",
-        ),
+        ProviderAvailabilityUsecaseError::InvalidInput => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityInvalidExecutable)
+        }
+        ProviderAvailabilityUsecaseError::ConfigUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityConfigUnavailable)
+        }
+        ProviderAvailabilityUsecaseError::RefreshUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityRefreshUnavailable)
+        }
+        ProviderAvailabilityUsecaseError::Corrupt => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityCorrupt)
+        }
     }
 }
 
@@ -131,7 +286,7 @@ pub async fn create_agent_session(
     caller_request_id: String,
 ) -> Result<String, AppError> {
     let command_ingress = Instant::now();
-    let provider = parse_provider(&provider)?;
+    let provider = parse_provider(&provider, ProviderParseOperation::Start)?;
     crate::other::telemetry::record_terminal_launch(
         crate::other::telemetry::TerminalLaunch::CommandIngress,
         command_ingress.elapsed(),
@@ -146,7 +301,7 @@ pub async fn create_agent_session(
             caller_request_id,
         })
         .await
-        .map_err(launch_error)
+        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::Start))
 }
 
 #[tauri::command]
@@ -161,7 +316,7 @@ pub async fn resume_agent_session_history_candidate(
     cols: u16,
     caller_request_id: String,
 ) -> Result<String, AppError> {
-    let provider = parse_provider(&provider)?;
+    let provider = parse_provider(&provider, ProviderParseOperation::ResumeHistory)?;
     let outcome = launch
         .resume_history(AgentSessionHistoryResumeRequest {
             workspace: WorkspaceIdentity::new(workspace_identity),
@@ -173,7 +328,7 @@ pub async fn resume_agent_session_history_candidate(
             caller_request_id,
         })
         .await
-        .map_err(launch_error)?;
+        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::ResumeHistory))?;
     Ok(match outcome {
         crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Open(session)
         | crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Paused(session) => {
@@ -182,13 +337,15 @@ pub async fn resume_agent_session_history_candidate(
     })
 }
 
-fn parse_provider(value: &str) -> Result<ProviderKind, AppError> {
+fn parse_provider(
+    value: &str,
+    operation: ProviderParseOperation,
+) -> Result<ProviderKind, AppError> {
     match value {
         "claude" => Ok(ProviderKind::Claude),
         "codex" => Ok(ProviderKind::Codex),
-        _ => Err(AppError::coded(
-            "AGENT_SESSION_INVALID_PROVIDER",
-            "Provider must be selected explicitly",
+        _ => Err(provider_tui_coded_error(
+            ProviderTuiCodedError::AgentSessionInvalidProvider(operation),
         )),
     }
 }
@@ -359,35 +516,38 @@ impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningResponse {
     }
 }
 
-fn launch_error(error: AgentSessionLaunchUsecaseError) -> AppError {
+fn launch_error(
+    error: AgentSessionLaunchUsecaseError,
+    operation: AgentSessionLaunchOperation,
+) -> AppError {
     match error {
-        AgentSessionLaunchUsecaseError::ProviderUnavailable => AppError::coded(
-            "AGENT_SESSION_PROVIDER_UNAVAILABLE",
-            "Selected Provider is unavailable",
-        ),
-        AgentSessionLaunchUsecaseError::InvalidInput => AppError::coded(
-            "AGENT_SESSION_INVALID_INPUT",
-            "AgentSession launch input is invalid",
-        ),
-        AgentSessionLaunchUsecaseError::Conflict => AppError::coded(
-            "AGENT_SESSION_CONFLICT",
-            "AgentSession conflicts with current state",
-        ),
-        AgentSessionLaunchUsecaseError::StorageUnavailable => AppError::coded(
-            "AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "AgentSession persistence is unavailable",
-        ),
-        AgentSessionLaunchUsecaseError::LaunchUnavailable => AppError::coded(
-            "AGENT_SESSION_LAUNCH_UNAVAILABLE",
-            "Provider launch preparation is unavailable",
-        ),
+        AgentSessionLaunchUsecaseError::ProviderUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionProviderUnavailable)
+        }
+        AgentSessionLaunchUsecaseError::InvalidInput => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionInvalidInput(operation))
+        }
+        AgentSessionLaunchUsecaseError::Conflict => {
+            let operation = match operation {
+                AgentSessionLaunchOperation::Start => AgentSessionConflictOperation::Start,
+                AgentSessionLaunchOperation::ResumeHistory => {
+                    AgentSessionConflictOperation::ResumeHistory
+                }
+            };
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionConflict(operation))
+        }
+        AgentSessionLaunchUsecaseError::StorageUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
+        }
+        AgentSessionLaunchUsecaseError::LaunchUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable)
+        }
         AgentSessionLaunchUsecaseError::TerminalUnavailable
-        | AgentSessionLaunchUsecaseError::TerminalSpawn(_) => AppError::coded(
-            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "AgentSession Terminal Surface is unavailable",
-        ),
+        | AgentSessionLaunchUsecaseError::TerminalSpawn(_) => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable)
+        }
         AgentSessionLaunchUsecaseError::Corrupt => {
-            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
         }
     }
 }
@@ -395,85 +555,71 @@ fn launch_error(error: AgentSessionLaunchUsecaseError) -> AppError {
 fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppError {
     match error {
         AgentSessionLifecycleUsecaseError::NotFound => {
-            AppError::coded("AGENT_SESSION_NOT_FOUND", "AgentSession was not found")
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionNotFound)
         }
-        AgentSessionLifecycleUsecaseError::InvalidOperation => AppError::coded(
-            "AGENT_SESSION_INVALID_OPERATION",
-            "AgentSession operation is not allowed in the current state",
+        AgentSessionLifecycleUsecaseError::InvalidOperation => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionInvalidOperation)
+        }
+        AgentSessionLifecycleUsecaseError::Conflict => provider_tui_coded_error(
+            ProviderTuiCodedError::AgentSessionConflict(AgentSessionConflictOperation::Update),
         ),
-        AgentSessionLifecycleUsecaseError::Conflict => AppError::coded(
-            "AGENT_SESSION_CONFLICT",
-            "AgentSession conflicts with current state",
-        ),
-        AgentSessionLifecycleUsecaseError::StorageUnavailable => AppError::coded(
-            "AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "AgentSession persistence is unavailable",
-        ),
-        AgentSessionLifecycleUsecaseError::LaunchUnavailable => AppError::coded(
-            "AGENT_SESSION_LAUNCH_UNAVAILABLE",
-            "Provider launch preparation is unavailable",
-        ),
-        AgentSessionLifecycleUsecaseError::TerminalUnavailable => AppError::coded(
-            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "AgentSession Terminal Surface is unavailable",
-        ),
+        AgentSessionLifecycleUsecaseError::StorageUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
+        }
+        AgentSessionLifecycleUsecaseError::LaunchUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable)
+        }
+        AgentSessionLifecycleUsecaseError::TerminalUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable)
+        }
         AgentSessionLifecycleUsecaseError::Corrupt => {
-            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
         }
     }
 }
 
 fn read_error(error: AgentSessionReadUsecaseError) -> AppError {
     match error {
-        AgentSessionReadUsecaseError::InvalidRequest => AppError::coded(
-            "AGENT_SESSION_INVALID_REQUEST",
-            "AgentSession read request is invalid",
-        ),
-        AgentSessionReadUsecaseError::StorageUnavailable => AppError::coded(
-            "AGENT_SESSION_STORAGE_UNAVAILABLE",
-            "AgentSession persistence is unavailable",
-        ),
-        AgentSessionReadUsecaseError::TerminalUnavailable => AppError::coded(
-            "AGENT_SESSION_TERMINAL_UNAVAILABLE",
-            "AgentSession Terminal Surface is unavailable",
-        ),
+        AgentSessionReadUsecaseError::InvalidRequest => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionInvalidRequest)
+        }
+        AgentSessionReadUsecaseError::StorageUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
+        }
+        AgentSessionReadUsecaseError::TerminalUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable)
+        }
         AgentSessionReadUsecaseError::Corrupt => {
-            AppError::coded("AGENT_SESSION_CORRUPT", "AgentSession state is corrupt")
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
         }
     }
 }
 
 fn history_error(error: AgentSessionHistoryQueryError) -> AppError {
     match error {
-        AgentSessionHistoryQueryError::InvalidRequest => AppError::coded(
-            "AGENT_SESSION_HISTORY_INVALID_REQUEST",
-            "AgentSession history request is invalid",
-        ),
-        AgentSessionHistoryQueryError::Unavailable => AppError::coded(
-            "AGENT_SESSION_HISTORY_UNAVAILABLE",
-            "AgentSession history is unavailable",
-        ),
-        AgentSessionHistoryQueryError::Corrupt => AppError::coded(
-            "AGENT_SESSION_HISTORY_CORRUPT",
-            "AgentSession history is corrupt",
-        ),
+        AgentSessionHistoryQueryError::InvalidRequest => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryInvalidRequest)
+        }
+        AgentSessionHistoryQueryError::Unavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryUnavailable)
+        }
+        AgentSessionHistoryQueryError::Corrupt => {
+            provider_tui_coded_error(ProviderTuiCodedError::AgentSessionHistoryCorrupt)
+        }
     }
 }
 
 fn hook_health_error(error: ProviderHookHealthUsecaseError) -> AppError {
     match error {
-        ProviderHookHealthUsecaseError::InvalidInput => AppError::coded(
-            "PROVIDER_HOOK_HEALTH_INVALID_REQUEST",
-            "Provider Hook health request is invalid",
-        ),
-        ProviderHookHealthUsecaseError::StorageUnavailable => AppError::coded(
-            "PROVIDER_HOOK_HEALTH_STORAGE_UNAVAILABLE",
-            "Provider Hook health persistence is unavailable",
-        ),
-        ProviderHookHealthUsecaseError::Corrupt => AppError::coded(
-            "PROVIDER_HOOK_HEALTH_CORRUPT",
-            "Provider Hook health state is corrupt",
-        ),
+        ProviderHookHealthUsecaseError::InvalidInput => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthInvalidRequest)
+        }
+        ProviderHookHealthUsecaseError::StorageUnavailable => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthStorageUnavailable)
+        }
+        ProviderHookHealthUsecaseError::Corrupt => {
+            provider_tui_coded_error(ProviderTuiCodedError::ProviderHookHealthCorrupt)
+        }
     }
 }
 

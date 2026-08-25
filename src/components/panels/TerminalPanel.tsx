@@ -37,7 +37,7 @@ export interface TerminalPanelProps {
 	owner?: TerminalSurfaceOwner;
 	label?: string;
 	onTerminalReady?: (sessionKey: string) => void;
-	onTerminalError?: (message: string) => void;
+	onTerminalError?: (message: string | null) => void;
 	shouldKillPendingTerminal?: () => boolean;
 	initialization?: TerminalInitializationMode;
 	autoFocus?: boolean;

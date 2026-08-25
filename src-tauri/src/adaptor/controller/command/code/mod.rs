@@ -45,6 +45,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
 ];
 
 const STALE_REVIEW_GROUP_TARGET_ERROR_CODE: &str = "STALE_REVIEW_GROUP_TARGET";
+const STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE: &str =
+    "The review changed before the operation completed. Reload the review and try again.";
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
     router.register_domain(COMMAND_NAMES, Box::new(invoke_handler()));
@@ -88,8 +90,16 @@ impl From<CodeUsecaseError> for AppError {
     fn from(e: CodeUsecaseError) -> Self {
         let message = e.to_string();
         match &e {
-            CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { .. }) => {
-                AppError::coded(STALE_REVIEW_GROUP_TARGET_ERROR_CODE, message)
+            CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id }) => {
+                log::warn!(
+                    "code command failed: code={} group_id={}",
+                    STALE_REVIEW_GROUP_TARGET_ERROR_CODE,
+                    group_id
+                );
+                AppError::coded(
+                    STALE_REVIEW_GROUP_TARGET_ERROR_CODE,
+                    STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE,
+                )
             }
             _ => AppError::Internal(message),
         }
@@ -136,19 +146,26 @@ mod tests {
     }
 
     #[test]
-    fn stale_review_group_targetは機械可読codeを持つerrorとして返す() {
+    fn test_review_group操作_staleな対象はcodeと利用者向けmessageを持つerrorとして返す() {
+        // Given
+        let internal_group_id = "g:old:0";
         let usecase_err = CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget {
-            group_id: "g:old:0".to_string(),
+            group_id: internal_group_id.to_string(),
         });
+
+        // When
         let app_err = AppError::from(usecase_err);
 
-        assert_eq!(app_err.to_string(), "review group target stale: g:old:0");
+        // Then
+        assert_eq!(app_err.to_string(), STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE);
         assert_eq!(
             serde_json::to_value(&app_err).unwrap(),
             serde_json::json!({
                 "code": STALE_REVIEW_GROUP_TARGET_ERROR_CODE,
-                "message": "review group target stale: g:old:0"
+                "message": STALE_REVIEW_GROUP_TARGET_ERROR_MESSAGE
             })
         );
+        assert!(!app_err.to_string().contains(internal_group_id));
+        assert!(!app_err.to_string().contains("review group target stale"));
     }
 }

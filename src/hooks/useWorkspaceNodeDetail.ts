@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
 
@@ -84,8 +85,7 @@ export function useWorkspaceNodeDetail({
 				})
 				.catch((error) => {
 					if (cancelled || loadSeq !== loadSeqRef.current) return;
-					const message =
-						error instanceof Error ? error.message : String(error);
+					const message = getErrorMessage(error);
 					if (preserveDetail && detailRef.current != null) {
 						setState({
 							detail: detailRef.current,

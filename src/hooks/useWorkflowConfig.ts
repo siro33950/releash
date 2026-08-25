@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkflowDefinitionSummary } from "@/types/workflow";
 
 export function useWorkflowConfig(open: boolean) {
@@ -14,7 +15,7 @@ export function useWorkflowConfig(open: boolean) {
 			const list = await invoke<WorkflowDefinitionSummary[]>("list_workflows");
 			setWorkflows(list);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		} finally {
 			setLoading(false);
 		}
@@ -33,7 +34,7 @@ export function useWorkflowConfig(open: boolean) {
 				await invoke("delete_workflow", { name });
 				await fetchWorkflows();
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			}
 		},
 		[fetchWorkflows],
@@ -44,7 +45,7 @@ export function useWorkflowConfig(open: boolean) {
 		try {
 			await invoke("open_workflow_in_editor", { name });
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		}
 	}, []);
 

@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 // Re-export reducer types used by this hook
 export type GitAction =
@@ -83,7 +84,7 @@ export function useWorktreeGitActions({
 			await stage(rootPath, []);
 			refreshGit();
 		} catch (e) {
-			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
+			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
 	}, [rootPath, stage, refreshGit, dispatchGit]);
 
@@ -92,7 +93,7 @@ export function useWorktreeGitActions({
 			await unstage(rootPath, []);
 			refreshGit();
 		} catch (e) {
-			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
+			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
 	}, [rootPath, unstage, refreshGit, dispatchGit]);
 
@@ -108,7 +109,7 @@ export function useWorktreeGitActions({
 			dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
 			refreshGit();
 		} catch (e) {
-			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
+			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
 	}, [
 		rootPath,

@@ -10,6 +10,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorktreeBranch } from "@/types/git";
 
 interface DeleteWorktreeDialogProps {
@@ -40,7 +41,7 @@ export function DeleteWorktreeDialog({
 			try {
 				await onConfirm(branch, force);
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			} finally {
 				setDeleting(false);
 				deletingRef.current = false;

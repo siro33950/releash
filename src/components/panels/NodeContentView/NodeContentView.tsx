@@ -10,6 +10,7 @@ import {
 	retryWorkspaceNode,
 	useWorkspaceNodeDetail,
 } from "@/hooks/useWorkspaceNodeDetail";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { AgentSessionLaunchAttachment } from "@/types/agent-session";
 import type { Theme } from "@/types/settings";
 import type {
@@ -116,7 +117,7 @@ function NodeHeader({
 			await approveWorkspaceNode({ worktreePath, nodeId: detail.id });
 			setActionError(null);
 		} catch (error) {
-			setActionError(error instanceof Error ? error.message : String(error));
+			setActionError(getErrorMessage(error));
 		} finally {
 			setApproving(false);
 		}
@@ -129,7 +130,7 @@ function NodeHeader({
 			await retryWorkspaceNode({ worktreePath, nodeId: detail.id });
 			setActionError(null);
 		} catch (error) {
-			setActionError(error instanceof Error ? error.message : String(error));
+			setActionError(getErrorMessage(error));
 		} finally {
 			setRetrying(false);
 		}

@@ -73,13 +73,26 @@ describe("telemetry", () => {
 
 	it("frontend error をRustへ送る", () => {
 		const error = new Error("boom");
+		error.stack = "error stack";
 		reportFrontendError(error, "react_error", "component stack");
 		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
 			payload: expect.objectContaining({
 				errorType: "react_error",
 				message: "boom",
-				stack: expect.stringContaining("component stack"),
+				stack: "error stack\ncomponent stack",
 			}),
+		});
+	});
+
+	it("プレーン文字列のfrontend errorをそのままRustへ送る", () => {
+		reportFrontendError("plain failure");
+
+		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
+			payload: {
+				errorType: "frontend_error",
+				message: "plain failure",
+				stack: undefined,
+			},
 		});
 	});
 
@@ -103,13 +116,36 @@ describe("telemetry", () => {
 		installFrontendErrorHandlers();
 		const event = new Event("unhandledrejection") as PromiseRejectionEvent;
 		Object.defineProperty(event, "reason", {
-			value: new Error("promise boom"),
+			value: {
+				code: "AGENT_SESSION_LAUNCH_UNAVAILABLE",
+				message: "coded promise failure",
+			},
 		});
 		window.dispatchEvent(event);
 		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
 			payload: expect.objectContaining({
 				errorType: "unhandled_rejection",
-				message: "promise boom",
+				message: "coded promise failure",
+			}),
+		});
+	});
+
+	it("type tagged errorのmessageをunhandledrejectionからRustへ送る", () => {
+		installFrontendErrorHandlers();
+		const event = new Event("unhandledrejection") as PromiseRejectionEvent;
+		Object.defineProperty(event, "reason", {
+			value: {
+				type: "invalid_request",
+				message:
+					"Releash could not start the application quit because the request is invalid.",
+			},
+		});
+		window.dispatchEvent(event);
+		expect(invoke).toHaveBeenCalledWith("report_frontend_error", {
+			payload: expect.objectContaining({
+				errorType: "unhandled_rejection",
+				message:
+					"Releash could not start the application quit because the request is invalid.",
 			}),
 		});
 	});

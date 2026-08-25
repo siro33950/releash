@@ -31,11 +31,18 @@ describe("executeWorkflowAction", () => {
 		},
 	);
 
-	it("normalizes command errors", async () => {
-		invokeMock.mockRejectedValueOnce("denied");
+	it.each([
+		[{ code: "WORKFLOW_UNAVAILABLE", message: "coded denial" }, "coded denial"],
+		["plain denial", "plain denial"],
+	])("normalizes command errors", async (rejection, expected) => {
+		invokeMock.mockRejectedValueOnce(rejection);
 
-		await expect(
-			executeWorkflowAction("resume", "execution-1"),
-		).rejects.toThrow("Resume workflow failed: denied");
+		try {
+			await executeWorkflowAction("resume", "execution-1");
+			expect.unreachable("workflow action should reject");
+		} catch (error) {
+			expect(error).toBeInstanceOf(Error);
+			expect((error as Error).message).toBe(expected);
+		}
 	});
 });

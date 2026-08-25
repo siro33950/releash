@@ -13,15 +13,70 @@ use crate::usecase::terminal_surface::application::{
 };
 use crate::usecase::terminal_surface::error::UsecaseError;
 
-const PTY_ERROR_CODE_CAP_REACHED: &str = "CAP_REACHED";
-const PTY_ERROR_CODE_GENERIC: &str = "PTY_ERROR";
-const PTY_ERROR_CODE_INVALID_REQUEST: &str = "INVALID_REQUEST";
+#[derive(Clone, Copy)]
+enum TerminalCommandErrorCode {
+    CapReached,
+    PtyError,
+    InvalidRequest,
+}
 
-fn invalid_owner_error(message: String) -> TerminalCommandError {
-    TerminalCommandError {
-        code: PTY_ERROR_CODE_INVALID_REQUEST.to_string(),
-        message,
+impl TerminalCommandErrorCode {
+    fn code(self) -> &'static str {
+        match self {
+            Self::CapReached => "CAP_REACHED",
+            Self::PtyError => "PTY_ERROR",
+            Self::InvalidRequest => "INVALID_REQUEST",
+        }
     }
+}
+
+fn invalid_owner_error(
+    operation: TerminalCommandOperation,
+    internal_cause: String,
+) -> TerminalCommandError {
+    let code = TerminalCommandErrorCode::InvalidRequest;
+    log::warn!(
+        "Terminal command failed: operation={} code={} cause={}",
+        operation.name(),
+        code.code(),
+        internal_cause
+    );
+    TerminalCommandError {
+        code: code.code().to_string(),
+        message: operation.message(code).to_string(),
+    }
+}
+
+fn invalid_terminal_write_owner_error(internal_cause: String) -> String {
+    log::warn!(
+        "Terminal command failed: operation=write_terminal_surface code=INVALID_REQUEST cause={}",
+        internal_cause
+    );
+    "Terminal input could not be sent because the request is invalid.".to_string()
+}
+
+fn terminal_write_error(error: UsecaseError) -> String {
+    log::error!(
+        "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
+        error
+    );
+    "Terminal input could not be sent. Try again.".to_string()
+}
+
+fn invalid_terminal_resize_owner_error(internal_cause: String) -> String {
+    log::warn!(
+        "Terminal command failed: operation=resize_terminal_surface code=INVALID_REQUEST cause={}",
+        internal_cause
+    );
+    "Terminal resize failed because the request is invalid.".to_string()
+}
+
+fn terminal_resize_error(error: UsecaseError) -> String {
+    log::error!(
+        "Terminal command failed: operation=resize_terminal_surface code=PTY_ERROR cause={}",
+        error
+    );
+    "Terminal resize failed. Try again.".to_string()
 }
 
 #[tauri::command(async)]
@@ -116,20 +171,90 @@ pub struct TerminalCommandError {
     pub message: String,
 }
 
-impl From<UsecaseError> for TerminalCommandError {
-    fn from(error: UsecaseError) -> Self {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalCommandOperation {
+    Initialize,
+    GetExisting,
+    Attach,
+    Resynchronize,
+}
+
+impl TerminalCommandOperation {
+    fn attachment(recovery: bool) -> Self {
+        if recovery {
+            Self::Resynchronize
+        } else {
+            Self::Attach
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Initialize => "get_or_spawn_terminal_surface",
+            Self::GetExisting => "get_terminal_surface",
+            Self::Attach => "attach_terminal_surface",
+            Self::Resynchronize => "attach_terminal_surface_recovery",
+        }
+    }
+
+    fn message(self, code: TerminalCommandErrorCode) -> &'static str {
+        match (self, code) {
+            (_, TerminalCommandErrorCode::CapReached) => {
+                "Terminal limit reached. Close an open Terminal and try again."
+            }
+            (Self::Initialize, TerminalCommandErrorCode::PtyError) => {
+                "Terminal initialization failed. Try again."
+            }
+            (Self::Initialize, TerminalCommandErrorCode::InvalidRequest) => {
+                "Terminal initialization failed because the request is invalid."
+            }
+            (Self::GetExisting | Self::Attach, TerminalCommandErrorCode::PtyError) => {
+                "Terminal attachment failed. Try again."
+            }
+            (Self::GetExisting | Self::Attach, TerminalCommandErrorCode::InvalidRequest) => {
+                "Terminal attachment failed because the request is invalid."
+            }
+            (Self::Resynchronize, TerminalCommandErrorCode::PtyError) => {
+                "Terminal resynchronization failed. Try again."
+            }
+            (Self::Resynchronize, TerminalCommandErrorCode::InvalidRequest) => {
+                "Terminal resynchronization failed because the request is invalid."
+            }
+        }
+    }
+}
+
+impl TerminalCommandError {
+    fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
+        let internal_cause = error.to_string();
         let code = match error {
             UsecaseError::PerWorktreeCap { .. } | UsecaseError::TotalCap => {
-                PTY_ERROR_CODE_CAP_REACHED
+                TerminalCommandErrorCode::CapReached
             }
             UsecaseError::Gateway(_)
             | UsecaseError::OwnerConflict
             | UsecaseError::PtySpawn { .. }
-            | UsecaseError::OtherSpawnFailure { .. } => PTY_ERROR_CODE_GENERIC,
+            | UsecaseError::OtherSpawnFailure { .. } => TerminalCommandErrorCode::PtyError,
         };
+        match code {
+            TerminalCommandErrorCode::CapReached => log::warn!(
+                "Terminal command failed: operation={} code={} cause={}",
+                operation.name(),
+                code.code(),
+                internal_cause
+            ),
+            TerminalCommandErrorCode::PtyError | TerminalCommandErrorCode::InvalidRequest => {
+                log::error!(
+                    "Terminal command failed: operation={} code={} cause={}",
+                    operation.name(),
+                    code.code(),
+                    internal_cause
+                )
+            }
+        }
         Self {
-            code: code.to_string(),
-            message: error.to_string(),
+            code: code.code().to_string(),
+            message: operation.message(code).to_string(),
         }
     }
 }
@@ -143,7 +268,9 @@ pub fn write_terminal_surface(
     client_started_at_unix_ms: Option<f64>,
     data: String,
 ) -> Result<(), String> {
-    let owner = owner.try_into()?;
+    let owner = owner
+        .try_into()
+        .map_err(invalid_terminal_write_owner_error)?;
     state
         .terminal_surface
         .write_attached(
@@ -153,7 +280,7 @@ pub fn write_terminal_surface(
             client_started_at_unix_ms,
             &data,
         )
-        .map_err(|error| error.to_string())
+        .map_err(terminal_write_error)
 }
 
 #[tauri::command(async)]
@@ -176,11 +303,13 @@ pub fn resize_terminal_surface(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let owner = owner.try_into()?;
+    let owner = owner
+        .try_into()
+        .map_err(invalid_terminal_resize_owner_error)?;
     state
         .terminal_surface
         .resize(&owner, rows, cols)
-        .map_err(|error| error.to_string())
+        .map_err(terminal_resize_error)
 }
 
 #[tauri::command(async)]
@@ -188,12 +317,16 @@ pub fn get_terminal_surface(
     state: State<'_, AppState>,
     owner: TerminalSurfaceOwnerV1,
 ) -> Result<TerminalSurfaceSummaryV1, TerminalCommandError> {
-    let owner = owner.try_into().map_err(invalid_owner_error)?;
+    let owner = owner
+        .try_into()
+        .map_err(|cause| invalid_owner_error(TerminalCommandOperation::GetExisting, cause))?;
     state
         .terminal_surface
         .get_summary(&owner)
         .map(Into::into)
-        .map_err(TerminalCommandError::from)
+        .map_err(|error| {
+            TerminalCommandError::from_usecase(error, TerminalCommandOperation::GetExisting)
+        })
 }
 
 pub(crate) async fn forward_terminal_surface_attachment<F>(
@@ -217,13 +350,17 @@ pub fn attach_terminal_surface(
     state: State<'_, AppState>,
     attachment_id: String,
     owner: TerminalSurfaceOwnerV1,
+    recovery: bool,
     on_event: Channel<TerminalSurfaceStreamItemV1>,
 ) -> Result<(), TerminalCommandError> {
-    let owner = owner.try_into().map_err(invalid_owner_error)?;
+    let operation = TerminalCommandOperation::attachment(recovery);
+    let owner = owner
+        .try_into()
+        .map_err(|cause| invalid_owner_error(operation, cause))?;
     let application = state.terminal_surface.clone();
     let attachment = application
         .attach(&attachment_id, &owner)
-        .map_err(TerminalCommandError::from)?;
+        .map_err(|error| TerminalCommandError::from_usecase(error, operation))?;
     tauri::async_runtime::spawn(forward_terminal_surface_attachment(
         application,
         attachment_id,
@@ -272,12 +409,16 @@ pub fn get_or_spawn_terminal_surface(
     label: Option<String>,
     startup_command: Option<String>,
 ) -> Result<GetOrSpawnTerminalV1, TerminalCommandError> {
-    let owner = owner.try_into().map_err(invalid_owner_error)?;
+    let owner = owner
+        .try_into()
+        .map_err(|cause| invalid_owner_error(TerminalCommandOperation::Initialize, cause))?;
     state
         .terminal_surface
         .get_or_spawn(rows, cols, cwd, owner, label, startup_command)
         .map(Into::into)
-        .map_err(TerminalCommandError::from)
+        .map_err(|error| {
+            TerminalCommandError::from_usecase(error, TerminalCommandOperation::Initialize)
+        })
 }
 
 #[cfg(test)]

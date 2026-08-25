@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	reportMountedXtermMounted,
 	reportMountedXtermUnmounted,
@@ -37,47 +38,17 @@ interface GetOrSpawnTerminalResult {
 	exit_code: number | null;
 }
 
-interface TauriCommandError {
-	code?: unknown;
-	message?: unknown;
-}
+class TerminalBackendCommandError extends Error {}
 
-const TERMINAL_CAP_REACHED_CODE = "CAP_REACHED";
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function getCommandError(error: unknown): TauriCommandError | null {
-	if (!isObject(error)) return null;
-	return error;
-}
-
-function getErrorMessage(error: unknown): string {
-	const commandError = getCommandError(error);
-	if (typeof commandError?.message === "string") {
-		return commandError.message;
+async function invokeTerminalBackendCommand<T>(
+	command: string,
+	args: Record<string, unknown>,
+): Promise<T> {
+	try {
+		return await invoke<T>(command, args);
+	} catch (error) {
+		throw new TerminalBackendCommandError(getErrorMessage(error));
 	}
-	if (error instanceof Error) {
-		return error.message;
-	}
-	return String(error);
-}
-
-function getErrorCode(error: unknown): string | null {
-	const commandError = getCommandError(error);
-	if (typeof commandError?.code === "string") {
-		return commandError.code;
-	}
-	return null;
-}
-
-function formatTerminalInitError(error: unknown): string {
-	const message = getErrorMessage(error);
-	if (getErrorCode(error) === TERMINAL_CAP_REACHED_CODE) {
-		return `Terminal limit reached: ${message}`;
-	}
-	return `Failed to initialize terminal: ${message}`;
 }
 
 const terminalDarkTheme: ITheme = {
@@ -137,7 +108,7 @@ export interface UseTerminalOptions {
 	owner?: TerminalSurfaceOwner;
 	label?: string;
 	onTerminalReady?: (sessionKey: string) => void;
-	onTerminalError?: (message: string) => void;
+	onTerminalError?: (message: string | null) => void;
 	shouldKillPendingTerminal?: () => boolean;
 	initialization?: TerminalInitializationMode;
 	autoFocus?: boolean;
@@ -306,6 +277,7 @@ export function useTerminal(
 			});
 		};
 		let recoverAttachment: ((failedEpoch?: number) => void) | null = null;
+		let attachmentEpoch = 0;
 		let performanceRequestStartedAt: number | null = null;
 		let firstXtermParsed = false;
 		const performanceProbeActive = isTerminalPerformanceProbeActive();
@@ -370,10 +342,13 @@ export function useTerminal(
 			performanceRequestStartedAt = launchOrigin ?? requestStartedAt;
 			const result =
 				initialization === "attach-existing"
-					? await invoke<GetOrSpawnTerminalResult>("get_terminal_surface", {
-							owner: terminalOwner,
-						})
-					: await invoke<GetOrSpawnTerminalResult>(
+					? await invokeTerminalBackendCommand<GetOrSpawnTerminalResult>(
+							"get_terminal_surface",
+							{
+								owner: terminalOwner,
+							},
+						)
+					: await invokeTerminalBackendCommand<GetOrSpawnTerminalResult>(
 							"get_or_spawn_terminal_surface",
 							{
 								rows,
@@ -437,7 +412,6 @@ export function useTerminal(
 			let hasSnapshot = false;
 			let streamSessionKey = result.session_key;
 			let streamProcessing = Promise.resolve();
-			let attachmentEpoch = 0;
 			let recoveringSinceEpoch: number | null = null;
 			let firstChannelReceived = false;
 			const attachStream = async (recovery: boolean) => {
@@ -466,9 +440,10 @@ export function useTerminal(
 						sequence,
 					}).catch((error) => {
 						if (!isMounted || epoch !== attachmentEpoch) return;
-						const message = `Failed to acknowledge terminal output: ${getErrorMessage(error)}`;
-						console.error(message);
-						onTerminalErrorRef.current?.(message);
+						const message = getErrorMessage(error);
+						const contextualMessage = `Failed to acknowledge terminal output: ${message}`;
+						console.error(contextualMessage);
+						onTerminalErrorRef.current?.(contextualMessage);
 						recoverAttachment?.();
 					});
 				};
@@ -535,9 +510,11 @@ export function useTerminal(
 					}
 					streamProcessing = streamProcessing.then(() =>
 						applyTerminalStreamItem(item, applyContext).catch((error) => {
+							if (!isMounted || epoch !== attachmentEpoch) return;
 							const message = `Failed to apply terminal stream item: ${getErrorMessage(error)}`;
 							console.error(message);
 							onTerminalErrorRef.current?.(message);
+							recoverAttachment?.();
 						}),
 					);
 				};
@@ -561,8 +538,10 @@ export function useTerminal(
 								},
 								onStreamItem: handleStreamItem,
 								onStreamError: (message) => {
+									if (!isMounted || epoch !== attachmentEpoch) return;
 									console.error(message);
 									onTerminalErrorRef.current?.(message);
+									recoverAttachment?.();
 								},
 							},
 						);
@@ -577,9 +556,10 @@ export function useTerminal(
 				if (!nextSocket) {
 					const nextChannel = new Channel<TerminalSurfaceStreamItem>();
 					nextChannel.onmessage = handleStreamItem;
-					await invoke("attach_terminal_surface", {
+					await invokeTerminalBackendCommand("attach_terminal_surface", {
 						owner: terminalOwner,
 						attachmentId: nextAttachmentId,
+						recovery,
 						onEvent: nextChannel,
 					});
 				}
@@ -595,7 +575,7 @@ export function useTerminal(
 					socketsClosedByUs.add(previousSocket);
 					previousSocket.close();
 				} else if (previousAttachmentId) {
-					await invoke("detach_terminal_surface", {
+					await invokeTerminalBackendCommand("detach_terminal_surface", {
 						attachmentId: previousAttachmentId,
 					});
 				}
@@ -614,14 +594,22 @@ export function useTerminal(
 				recoveringSinceEpoch = attemptEpoch;
 				void attempt.then(
 					() => {
-						if (!isMounted) releaseCurrentAttachment();
+						if (!isMounted) {
+							releaseCurrentAttachment();
+							return;
+						}
+						if (attemptEpoch !== attachmentEpoch) return;
+						onTerminalErrorRef.current?.(null);
 					},
 					(error) => {
 						if (recoveringSinceEpoch === attemptEpoch) {
 							recoveringSinceEpoch = null;
 						}
 						if (!isMounted) return;
-						const message = `Failed to resynchronize terminal: ${getErrorMessage(error)}`;
+						const message =
+							error instanceof TerminalBackendCommandError
+								? error.message
+								: `Failed to resynchronize terminal: ${getErrorMessage(error)}`;
 						console.error(message);
 						onTerminalErrorRef.current?.(message);
 					},
@@ -638,7 +626,9 @@ export function useTerminal(
 			]);
 			if (!initialized) return;
 			if (autoFocus) terminal.focus();
-			if (!isMounted || !isRunningRef.current) return;
+			if (!isMounted) return;
+			onTerminalErrorRef.current?.(null);
+			if (!isRunningRef.current) return;
 			onTerminalReadyRef.current?.(streamSessionKey);
 
 			// 初回fit()が不正確だった場合のセーフティネット:
@@ -654,14 +644,17 @@ export function useTerminal(
 		initTerminal().catch((error) => {
 			console.error("Failed to initialize PTY:", error);
 			if (!isMounted) return;
-			const message = formatTerminalInitError(error);
-			terminal.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
+			const message =
+				error instanceof TerminalBackendCommandError
+					? error.message
+					: `Failed to initialize terminal: ${getErrorMessage(error)}`;
 			onTerminalErrorRef.current?.(message);
 		});
 
 		deliverInput = (data: string) => {
 			const activeAttachmentId = attachmentId;
 			if (!activeAttachmentId) return;
+			const writeEpoch = attachmentEpoch;
 			const sequence = inputSequence;
 			inputSequence += 1;
 			const clientStartedAtUnixMs = performanceProbeActive
@@ -695,7 +688,11 @@ export function useTerminal(
 					? {}
 					: { clientStartedAtUnixMs }),
 			}).catch((error) => {
+				if (!isMounted || writeEpoch !== attachmentEpoch) return;
+				const message = getErrorMessage(error);
 				console.error("Failed to dispatch terminal input:", error);
+				onTerminalErrorRef.current?.(message);
+				recoverAttachment?.();
 			});
 		};
 		const dispatchInput = (data: string) => {

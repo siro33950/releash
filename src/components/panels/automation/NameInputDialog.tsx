@@ -10,6 +10,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export function NameInputDialog({
 	open,
@@ -51,7 +52,7 @@ export function NameInputDialog({
 				setError(result.error ?? "Unknown error");
 			}
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			setError(getErrorMessage(e));
 		} finally {
 			setSaving(false);
 		}

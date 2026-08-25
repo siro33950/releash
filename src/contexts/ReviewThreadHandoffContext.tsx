@@ -6,6 +6,7 @@ import {
 	useMemo,
 	useState,
 } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 
 export interface ReviewThreadHandoffFeedback {
 	threadId: string;
@@ -63,11 +64,22 @@ export function ReviewThreadHandoffProvider({
 	);
 	const copyThreadForAgent = useCallback(
 		async (threadId: string) => {
+			let content: string;
 			try {
-				const content = await invoke<string>("build_review_thread_handoff", {
+				content = await invoke<string>("build_review_thread_handoff", {
 					worktreeName,
 					threadId,
 				});
+			} catch (error) {
+				setFeedback({
+					threadId,
+					kind: "error",
+					message: getErrorMessage(error),
+				});
+				return;
+			}
+
+			try {
 				await navigator.clipboard.writeText(content);
 				setFeedback({
 					threadId,
@@ -78,7 +90,7 @@ export function ReviewThreadHandoffProvider({
 				setFeedback({
 					threadId,
 					kind: "error",
-					message: `Failed to copy Agent instruction: ${String(error)}`,
+					message: `Failed to copy Agent instruction: ${getErrorMessage(error)}`,
 				});
 			}
 		},

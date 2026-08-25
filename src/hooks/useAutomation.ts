@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type {
 	DiagnosticReport,
 	FacetKind,
@@ -59,7 +60,7 @@ export function useAutomation(open: boolean) {
 			setWorkflows(wfList);
 			setReport(diagReport);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		} finally {
 			setLoading(false);
 		}
@@ -72,7 +73,7 @@ export function useAutomation(open: boolean) {
 			});
 			setFacets(list);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		}
 	}, []);
 
@@ -81,7 +82,7 @@ export function useAutomation(open: boolean) {
 			const diagReport = await invoke<DiagnosticReport>("diagnose_all_cmd");
 			setReport(diagReport);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		}
 	}, []);
 
@@ -171,13 +172,13 @@ export function useAutomation(open: boolean) {
 					setSelectedWorkflow(wf);
 				} catch (e) {
 					setSelectedWorkflow(null);
-					setError(String(e));
+					setError(getErrorMessage(e));
 					await refreshDiagnostics();
 				}
 			} catch (e) {
 				setSelectedWorkflow(null);
 				setSelectedWorkflowSource(null);
-				setError(String(e));
+				setError(getErrorMessage(e));
 			}
 		},
 		[refreshDiagnostics, workflows],
@@ -208,7 +209,7 @@ export function useAutomation(open: boolean) {
 				return { ok: true as const, workflow };
 			} catch (e) {
 				await refreshDiagnostics();
-				return { ok: false as const, error: String(e) };
+				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
 		[fetchAll, refreshDiagnostics],
@@ -225,7 +226,7 @@ export function useAutomation(open: boolean) {
 				}
 				await fetchAll();
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			}
 		},
 		[fetchAll, selectedWorkflow, selectedWorkflowName],
@@ -241,7 +242,7 @@ export function useAutomation(open: boolean) {
 				await fetchAll();
 				return { ok: true as const };
 			} catch (e) {
-				return { ok: false as const, error: String(e) };
+				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
 		[fetchAll],
@@ -251,7 +252,7 @@ export function useAutomation(open: boolean) {
 		try {
 			await invoke("open_workflow_in_editor", { name });
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		}
 	}, []);
 
@@ -264,7 +265,7 @@ export function useAutomation(open: boolean) {
 			setSelectedFacetKey(key);
 			setSelectedFacetKind(kind);
 		} catch (e) {
-			setError(String(e));
+			setError(getErrorMessage(e));
 		}
 	}, []);
 
@@ -280,7 +281,7 @@ export function useAutomation(open: boolean) {
 				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
 				return { ok: true as const };
 			} catch (e) {
-				return { ok: false as const, error: String(e) };
+				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
 		[fetchFacets, refreshDiagnostics],
@@ -297,7 +298,7 @@ export function useAutomation(open: boolean) {
 				}
 				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			}
 		},
 		[fetchFacets, refreshDiagnostics, selectedFacetKey, selectedFacetKind],
@@ -314,7 +315,7 @@ export function useAutomation(open: boolean) {
 				await Promise.all([fetchFacets(kind), refreshDiagnostics()]);
 				return { ok: true as const };
 			} catch (e) {
-				return { ok: false as const, error: String(e) };
+				return { ok: false as const, error: getErrorMessage(e) };
 			}
 		},
 		[fetchFacets, refreshDiagnostics],
@@ -325,7 +326,7 @@ export function useAutomation(open: boolean) {
 			try {
 				await invoke("open_facet_in_editor", { kind, key });
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 			}
 		},
 		[],
@@ -340,7 +341,7 @@ export function useAutomation(open: boolean) {
 				});
 				return rendered;
 			} catch (e) {
-				setError(String(e));
+				setError(getErrorMessage(e));
 				return content;
 			}
 		},

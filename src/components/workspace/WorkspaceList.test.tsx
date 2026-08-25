@@ -271,7 +271,7 @@ function renderWorkspaceList(
 function mockDeferredProviderCreate() {
 	const deferred: {
 		resolve?: (agentSessionId: string) => void;
-		reject?: (error: Error) => void;
+		reject?: (error: unknown) => void;
 	} = {};
 	mocks.invoke.mockImplementation((command: string) => {
 		if (command === "list_workspace_worktree_nodes") {
@@ -1312,11 +1312,16 @@ describe("WorkspaceList", () => {
 		});
 
 		await act(async () => {
-			createCall.reject?.(new Error("spawn failed"));
+			createCall.reject?.({
+				code: "AGENT_SESSION_LAUNCH_UNAVAILABLE",
+				message: "backend launch failed",
+			});
 		});
 
 		expect(onSelectWorktree).not.toHaveBeenCalled();
-		expect(await screen.findByRole("alert")).toHaveTextContent("spawn failed");
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"backend launch failed",
+		);
 	});
 
 	it("選択が起動中表示のまま作成が失敗した場合は同一launchTokenのエラー表示を再選択する", async () => {
@@ -1332,7 +1337,7 @@ describe("WorkspaceList", () => {
 		>;
 
 		await act(async () => {
-			createCall.reject?.(new Error("spawn failed"));
+			createCall.reject?.("plain launch failed");
 		});
 
 		expect(onSelectWorktree).toHaveBeenLastCalledWith(
@@ -1344,7 +1349,7 @@ describe("WorkspaceList", () => {
 				worktreePath: "/repo/wt",
 				provider: "codex",
 				launchToken: launching.launchToken,
-				error: "spawn failed",
+				error: "plain launch failed",
 			},
 		);
 	});

@@ -20,7 +20,25 @@ vi.mock("react-resizable-panels", () => ({
 }));
 
 vi.mock("@/components/panels/TerminalPanel", () => ({
-	TerminalPanel: () => <div data-testid="terminal-panel" />,
+	TerminalPanel: ({
+		onTerminalError,
+	}: {
+		onTerminalError?: (message: string | null) => void;
+	}) => (
+		<div data-testid="terminal-panel">
+			<button
+				type="button"
+				onClick={() =>
+					onTerminalError?.("Terminal resynchronization failed. Try again.")
+				}
+			>
+				Report terminal error
+			</button>
+			<button type="button" onClick={() => onTerminalError?.(null)}>
+				Complete terminal recovery
+			</button>
+		</div>
+	),
 }));
 
 vi.mock("@/hooks/useDiffComments", () => ({
@@ -48,6 +66,26 @@ describe("RightSidebarBottom", () => {
 
 		expect(screen.getByTestId("panel-terminal")).toBeInTheDocument();
 		expect(screen.getByTestId("resizable-group")).toBeInTheDocument();
+	});
+
+	it("Terminalの失敗文言をalertへ表示し回復成功時に消す", async () => {
+		const user = userEvent.setup();
+		render(<RightSidebarBottom {...defaultProps} />);
+
+		await user.click(
+			screen.getByRole("button", { name: "Report terminal error" }),
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Terminal resynchronization failed. Try again.",
+		);
+		expect(screen.getByTestId("terminal-panel")).toBeVisible();
+
+		await user.click(
+			screen.getByRole("button", { name: "Complete terminal recovery" }),
+		);
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
 	it("should render collapse button with correct aria-label when expanded", () => {

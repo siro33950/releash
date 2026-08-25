@@ -8,6 +8,7 @@ use crate::domain::terminal_surface::entities::{
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventCancellation, TerminalSurfaceEventReceiveError,
     TerminalSurfaceEventSource, TerminalSurfaceEventSubscription, TerminalSurfaceGateway,
+    TerminalSurfaceInputUnavailableCause,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::error::UsecaseError;
@@ -63,7 +64,7 @@ pub(crate) enum TerminalSurfaceStreamItem {
     },
     InputUnavailable {
         session_key: String,
-        message: String,
+        cause: TerminalSurfaceInputUnavailableCause,
     },
 }
 
@@ -168,13 +169,12 @@ impl TerminalSurfaceAttachmentStream {
                         TerminalSurfaceSequenceDecision::Closed => return None,
                     }
                 }
-                Ok(TerminalSurfaceEvent::InputUnavailable {
-                    session_key,
-                    message,
-                }) if session_key == self.session_key => {
+                Ok(TerminalSurfaceEvent::InputUnavailable { session_key, cause })
+                    if session_key == self.session_key =>
+                {
                     return Some(TerminalSurfaceStreamItem::InputUnavailable {
                         session_key,
-                        message,
+                        cause,
                     });
                 }
                 Ok(_) => {}

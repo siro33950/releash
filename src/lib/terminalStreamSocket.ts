@@ -81,7 +81,14 @@ export function openTerminalStreamSocket(
 				return;
 			}
 			if (payload.status === "error") {
-				const message = `Terminal stream error: ${payload.error?.message ?? "unknown"}`;
+				const message = payload.error?.message;
+				if (typeof message !== "string") {
+					console.warn(
+						"Closing terminal stream after an error frame without a backend message",
+					);
+					socket.close();
+					return;
+				}
 				if (!settled) {
 					settled = true;
 					reject(new Error(message));

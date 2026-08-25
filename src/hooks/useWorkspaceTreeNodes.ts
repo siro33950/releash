@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceTreeItem,
@@ -197,7 +198,7 @@ export function useWorkspaceTreeNodes(
 				}));
 			}
 			errorWorktreePathRef.current = worktreePath;
-			setError(String(e));
+			setError(getErrorMessage(e));
 			return null;
 		} finally {
 			if (seq === refreshSeqRef.current) {
