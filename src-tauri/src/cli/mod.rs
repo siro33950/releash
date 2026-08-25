@@ -108,10 +108,12 @@ pub fn run() -> i32 {
         }
     };
     if let Ok(data_dir) = resolve_data_dir() {
-        let _ = crate::infrastructure::local_log::init(
+        if let Err(error) = crate::infrastructure::local_log::init(
             &data_dir,
             crate::infrastructure::local_log::LocalLogProcess::Cli,
-        );
+        ) {
+            eprintln!("{error}");
+        }
     }
     let result =
         match cli.command {
