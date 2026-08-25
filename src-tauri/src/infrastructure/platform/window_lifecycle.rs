@@ -98,7 +98,14 @@ fn show_and_focus_active_surface(
     true
 }
 
+fn flush_local_log_on_exit(event: &tauri::RunEvent, flush: impl FnOnce()) {
+    if matches!(event, tauri::RunEvent::Exit) {
+        flush();
+    }
+}
+
 pub fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
+    flush_local_log_on_exit(&event, || log::logger().flush());
     match event {
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::CloseRequested { api, .. },
@@ -158,12 +165,26 @@ pub fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
 #[cfg(test)]
 mod native_exit_tests {
     use super::{
-        active_window_label, handle_native_exit_requested, native_exit_intent, NativeExitRoute,
-        NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL,
+        active_window_label, flush_local_log_on_exit, handle_native_exit_requested,
+        native_exit_intent, NativeExitRoute, NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL,
     };
     use crate::usecase::shutdown_coordinator::ApplicationQuitIntent;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn exit_event_flushes_local_log_only_at_process_exit() {
+        let flushes = AtomicUsize::new(0);
+        flush_local_log_on_exit(&tauri::RunEvent::Ready, || {
+            flushes.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(flushes.load(Ordering::SeqCst), 0);
+
+        flush_local_log_on_exit(&tauri::RunEvent::Exit, || {
+            flushes.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(flushes.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn native_exit_preserves_signed_code() {

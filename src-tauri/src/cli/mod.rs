@@ -107,6 +107,14 @@ pub fn run() -> i32 {
             return error.exit_code();
         }
     };
+    if let Ok(data_dir) = resolve_data_dir() {
+        if let Err(error) = crate::infrastructure::local_log::init(
+            &data_dir,
+            crate::infrastructure::local_log::LocalLogProcess::Cli,
+        ) {
+            eprintln!("{error}");
+        }
+    }
     let result =
         match cli.command {
             TopCommand::Workflow { command } => resolve_data_dir()
@@ -141,7 +149,9 @@ pub fn run() -> i32 {
                 HookSubcommand::Receive { provider } => hook::cmd_receive(provider),
             },
         };
-    cli_result_exit_code(result)
+    let exit_code = cli_result_exit_code(result);
+    log::logger().flush();
+    exit_code
 }
 
 #[cfg(test)]

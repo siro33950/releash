@@ -8,6 +8,36 @@ pub(crate) enum ProviderAgentTerminalGatewayError {
     Unavailable,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderAgentTerminalSpawnError {
+    PerWorktreeCap { worktree_path: String },
+    TotalCap,
+    OwnerConflict,
+    PtySpawn { error: String },
+    OtherSpawnFailure { error: String },
+}
+
+impl std::fmt::Display for ProviderAgentTerminalSpawnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PerWorktreeCap { worktree_path } => {
+                write!(
+                    formatter,
+                    "kind=per_worktree_cap worktree_path={worktree_path}"
+                )
+            }
+            Self::TotalCap => formatter.write_str("kind=total_cap"),
+            Self::OwnerConflict => formatter.write_str("kind=owner_conflict"),
+            Self::PtySpawn { error } => write!(formatter, "kind=pty_spawn error={error}"),
+            Self::OtherSpawnFailure { error } => {
+                write!(formatter, "kind=other_spawn_failure error={error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderAgentTerminalSpawnError {}
+
 pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
     fn spawn(
         &self,
@@ -16,7 +46,7 @@ pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalGatewayError>;
+    ) -> Result<(), ProviderAgentTerminalSpawnError>;
 
     fn presence(
         &self,

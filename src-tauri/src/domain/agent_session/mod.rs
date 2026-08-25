@@ -31,4 +31,5 @@ pub(crate) use provider_session_ownership::{
 pub(crate) use provider_terminal_gateway::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
+    ProviderAgentTerminalSpawnError,
 };

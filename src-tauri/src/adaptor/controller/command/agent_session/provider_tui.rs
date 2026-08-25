@@ -381,7 +381,8 @@ fn launch_error(error: AgentSessionLaunchUsecaseError) -> AppError {
             "AGENT_SESSION_LAUNCH_UNAVAILABLE",
             "Provider launch preparation is unavailable",
         ),
-        AgentSessionLaunchUsecaseError::TerminalUnavailable => AppError::coded(
+        AgentSessionLaunchUsecaseError::TerminalUnavailable
+        | AgentSessionLaunchUsecaseError::TerminalSpawn(_) => AppError::coded(
             "AGENT_SESSION_TERMINAL_UNAVAILABLE",
             "AgentSession Terminal Surface is unavailable",
         ),

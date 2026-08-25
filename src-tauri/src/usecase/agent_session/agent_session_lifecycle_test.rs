@@ -17,8 +17,8 @@ use crate::domain::agent_session::repository::{
 };
 use crate::domain::agent_session::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
-    ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
+    ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -241,7 +241,7 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         _process: TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+    ) -> Result<(), ProviderAgentTerminalSpawnError> {
         let should_block = {
             let mut spawn_count = self.spawn_count.lock().unwrap();
             *spawn_count += 1;
@@ -256,7 +256,9 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
             }
         }
         if *self.fail_spawn.lock().unwrap() {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+            return Err(ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+                error: "test terminal spawn failure".to_string(),
+            });
         }
         *self.runtime_generation.lock().unwrap() += 1;
         *self.presence.lock().unwrap() = ManagedPtyPresence::Live;

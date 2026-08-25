@@ -32,6 +32,26 @@ fn test_ターミナル画面生成_上限到達を安定したコマンドコ�
 }
 
 #[test]
+fn test_ターミナル画面生成_上限以外のspawn失敗を従来の汎用コードへ変換する() {
+    let errors = [
+        UsecaseError::OwnerConflict,
+        UsecaseError::PtySpawn {
+            error: "openpty failed".to_string(),
+        },
+        UsecaseError::OtherSpawnFailure {
+            error: "checkpoint failed".to_string(),
+        },
+    ];
+
+    for error in errors {
+        assert_eq!(
+            TerminalCommandError::from(error).code,
+            PTY_ERROR_CODE_GENERIC
+        );
+    }
+}
+
+#[test]
 fn test_ターミナル起動性能計測_commandは匿名phaseとdurationだけを返してdrainする() {
     let _guard = crate::other::telemetry::lock_test_telemetry();
     crate::other::telemetry::reset_test_metrics();

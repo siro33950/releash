@@ -633,6 +633,17 @@ pub fn run() {
         .plugin(tauri_plugin_wdio::init())
         .plugin(tauri_plugin_wdio_webdriver::init());
     let builder = builder.setup(move |app| {
+            // data dir 解決を Tauri 側の 1 経路へ統一する。AppHandle を要するため setup 冒頭で登録する。
+            if let Ok(data_dir) =
+                infrastructure::platform::app_data_dir::resolve_data_dir(app.handle())
+            {
+                if let Err(error) = infrastructure::local_log::init(
+                    &data_dir,
+                    infrastructure::local_log::LocalLogProcess::Gui,
+                ) {
+                    eprintln!("{error}");
+                }
+            }
             let failure_exit: Arc<
                 dyn usecase::application_startup::ProcessLocalExitPort,
             > = Arc::new(
