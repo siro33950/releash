@@ -119,8 +119,13 @@ pub struct TerminalCommandError {
 impl From<UsecaseError> for TerminalCommandError {
     fn from(error: UsecaseError) -> Self {
         let code = match error {
-            UsecaseError::CapReached(_) => PTY_ERROR_CODE_CAP_REACHED,
-            UsecaseError::Gateway(_) => PTY_ERROR_CODE_GENERIC,
+            UsecaseError::PerWorktreeCap { .. } | UsecaseError::TotalCap => {
+                PTY_ERROR_CODE_CAP_REACHED
+            }
+            UsecaseError::Gateway(_)
+            | UsecaseError::OwnerConflict
+            | UsecaseError::PtySpawn { .. }
+            | UsecaseError::OtherSpawnFailure { .. } => PTY_ERROR_CODE_GENERIC,
         };
         Self {
             code: code.to_string(),

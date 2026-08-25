@@ -5,7 +5,8 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
     AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
-    AgentSessionLifecycleUsecase, WorkflowAgentSessionLaunchRequest,
+    AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
+    WorkflowAgentSessionLaunchRequest,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
@@ -88,6 +89,15 @@ pub(crate) struct ProviderWorkflowAgentSessionPort {
     availability: Arc<dyn ProviderAvailabilityReader>,
 }
 
+fn activation_error(
+    node_session_id: &str,
+    error: AgentSessionLaunchUsecaseError,
+) -> WorkflowRuntimeError {
+    WorkflowRuntimeError::AgentSession(format!(
+        "activate Workflow AgentSession '{node_session_id}': {error}"
+    ))
+}
+
 impl ProviderWorkflowAgentSessionPort {
     pub(crate) fn new(
         launch: Arc<AgentSessionLaunchUsecase>,
@@ -154,11 +164,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
         self.launch
             .activate_workflow_node(node_session_id)
             .await
-            .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "activate Workflow AgentSession '{node_session_id}': {error:?}"
-                ))
-            })?;
+            .map_err(|error| activation_error(node_session_id, error))?;
         Ok(())
     }
 
@@ -246,5 +252,41 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
                     "rollback unattached Workflow AgentSession '{node_session_id}': {error:?}"
                 ))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
+
+    #[test]
+    fn test_workflow_agent_session_activation_terminal_spawn分類をcontext付きで保持する() {
+        let error = activation_error(
+            "agent-session-1",
+            AgentSessionLaunchUsecaseError::TerminalSpawn(
+                ProviderAgentTerminalSpawnError::PtySpawn {
+                    error: "openpty failed".to_string(),
+                },
+            ),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "activate Workflow AgentSession 'agent-session-1': kind=pty_spawn error=openpty failed"
+        );
+    }
+
+    #[test]
+    fn test_workflow_agent_session_activation_terminal以外の既存表現を維持する() {
+        let error = activation_error(
+            "agent-session-1",
+            AgentSessionLaunchUsecaseError::LaunchUnavailable,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "activate Workflow AgentSession 'agent-session-1': LaunchUnavailable"
+        );
     }
 }

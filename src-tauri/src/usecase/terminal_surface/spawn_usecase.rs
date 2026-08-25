@@ -57,7 +57,9 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         initial_terminal_surface,
     }) {
         manager.rollback_spawn_slot(&reservation);
-        return Err(error.into());
+        return Err(UsecaseError::PtySpawn {
+            error: error.message().to_string(),
+        });
     }
 
     let surface =
@@ -70,14 +72,18 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     if let Err(error) = manager.start_output_reader(runtime_generation) {
         cleanup_failed_spawn(manager, runtime_generation);
         manager.rollback_spawn_slot(&reservation);
-        return Err(error.into());
+        return Err(UsecaseError::OtherSpawnFailure {
+            error: error.message().to_string(),
+        });
     }
     output_reader_ready.finish();
     if let Some(startup_input) = startup_input {
         if let Err(error) = manager.write(&session_key, &startup_input) {
             cleanup_failed_spawn(manager, runtime_generation);
             manager.rollback_spawn_slot(&reservation);
-            return Err(error.into());
+            return Err(UsecaseError::OtherSpawnFailure {
+                error: error.message().to_string(),
+            });
         }
     }
 
@@ -151,9 +157,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
     loop {
         if let Some(surface) = manager.find_summary_by_session_key(&session_key) {
             if surface.owner != owner {
-                return Err(UsecaseError::Gateway(
-                    "Terminal Surface owner identity collision".to_string(),
-                ));
+                return Err(UsecaseError::OwnerConflict);
             }
             return Ok(GetOrSpawnTerminalOutcome {
                 surface,
@@ -170,9 +174,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             ) => {
                 if let Some(surface) = manager.wait_for_spawn_resolution(&session_key) {
                     if surface.owner != owner {
-                        return Err(UsecaseError::Gateway(
-                            "Terminal Surface owner identity collision".to_string(),
-                        ));
+                        return Err(UsecaseError::OwnerConflict);
                     }
                     return Ok(GetOrSpawnTerminalOutcome {
                         surface,
@@ -191,7 +193,9 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             Ok(checkpoint) => checkpoint,
             Err(error) => {
                 manager.rollback_spawn_slot(&reservation);
-                return Err(error.into());
+                return Err(UsecaseError::OtherSpawnFailure {
+                    error: error.message().to_string(),
+                });
             }
         };
         checkpoint_lookup.finish();
@@ -231,13 +235,15 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
     loop {
         if let Some(surface) = manager.find_summary_by_session_key(&session_key) {
             if surface.owner != owner {
-                return Err(UsecaseError::Gateway(
-                    "Terminal Surface owner identity collision".to_string(),
-                ));
+                return Err(UsecaseError::OwnerConflict);
             }
             if surface.process_state.is_exited() {
                 let runtime_generation = surface.runtime_generation.value();
-                manager.wait_runtime_output_drain(runtime_generation)?;
+                manager
+                    .wait_runtime_output_drain(runtime_generation)
+                    .map_err(|error| UsecaseError::OtherSpawnFailure {
+                        error: error.message().to_string(),
+                    })?;
                 manager.remove_surface(runtime_generation);
                 manager.remove_runtime(runtime_generation);
                 continue;
@@ -257,9 +263,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
             ) => {
                 if let Some(surface) = manager.wait_for_spawn_resolution(&session_key) {
                     if surface.owner != owner {
-                        return Err(UsecaseError::Gateway(
-                            "Terminal Surface owner identity collision".to_string(),
-                        ));
+                        return Err(UsecaseError::OwnerConflict);
                     }
                     return Ok(GetOrSpawnTerminalOutcome {
                         surface,
@@ -278,7 +282,9 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
             Ok(checkpoint) => checkpoint,
             Err(error) => {
                 manager.rollback_spawn_slot(&reservation);
-                return Err(error.into());
+                return Err(UsecaseError::OtherSpawnFailure {
+                    error: error.message().to_string(),
+                });
             }
         };
         checkpoint_lookup.finish();

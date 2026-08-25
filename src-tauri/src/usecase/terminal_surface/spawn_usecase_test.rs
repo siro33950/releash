@@ -82,6 +82,13 @@ fn workspace_owner(path: &str) -> TerminalSurfaceOwner {
     TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path)).unwrap()
 }
 
+fn unwrap_spawn_error(result: Result<GetOrSpawnTerminalOutcome, UsecaseError>) -> UsecaseError {
+    match result {
+        Ok(_) => panic!("expected terminal spawn error"),
+        Err(error) => error,
+    }
+}
+
 impl TerminalSurfaceRepository for MockGateway {
     fn find_summary_by_session_key(&self, session_key: &str) -> Option<TerminalSurfaceSummary> {
         self.registry
@@ -487,11 +494,68 @@ fn test_ターミナル画面取得または生成_上限到達時は既存画�
         None,
     );
 
-    assert!(matches!(result, Err(UsecaseError::CapReached(_))));
+    assert_eq!(
+        unwrap_spawn_error(result),
+        UsecaseError::PerWorktreeCap {
+            worktree_path: "/repo".to_string()
+        }
+    );
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 0);
     assert!(gateway.killed.lock().unwrap().is_empty());
     assert!(gateway.snapshot(first).is_some());
     assert!(gateway.snapshot(second).is_some());
+}
+
+#[test]
+fn test_ターミナル画面取得または生成_総数上限到達を分類する() {
+    let gateway = MockGateway::new();
+    gateway.insert_session("key-1", "/repo-1");
+    gateway.insert_session("key-2", "/repo-2");
+    gateway.insert_session("key-3", "/repo-3");
+
+    let result = get_or_spawn(
+        &gateway,
+        24,
+        80,
+        Some("/repo-4".to_string()),
+        workspace_owner("/repo-4"),
+        None,
+    );
+
+    assert_eq!(unwrap_spawn_error(result), UsecaseError::TotalCap);
+}
+
+#[test]
+fn test_ターミナル画面取得または生成_owner衝突を分類する() {
+    let gateway = MockGateway::new();
+    let requested =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "session-1").unwrap();
+    let registered =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/other"), "session-1").unwrap();
+    let runtime_generation = gateway.next_runtime_generation();
+    gateway.registry.lock().unwrap().insert(TerminalSurface {
+        session_key: requested.stable_key(),
+        owner: registered,
+        worktree_path: Some("/repo".to_string()),
+        label: None,
+        runtime_generation: runtime_generation.into(),
+        process_state: crate::domain::terminal_surface::TerminalProcessState::Running,
+        checkpoint: TerminalSurfaceCheckpoint::empty(80, 24),
+        latest_sequence: 0,
+        last_output_at: None,
+    });
+
+    let result = get_or_spawn_with_process(
+        &gateway,
+        24,
+        80,
+        Some("/repo".to_string()),
+        requested,
+        None,
+        TerminalProcessLaunch::new("provider", Vec::new(), Vec::new()).unwrap(),
+    );
+
+    assert_eq!(unwrap_spawn_error(result), UsecaseError::OwnerConflict);
 }
 
 #[test]
@@ -508,7 +572,12 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
         None,
     );
 
-    assert!(matches!(result, Err(UsecaseError::Gateway(_))));
+    assert_eq!(
+        unwrap_spawn_error(result),
+        UsecaseError::PtySpawn {
+            error: "spawn failed".to_string()
+        }
+    );
     gateway.fail_spawn.store(false, Ordering::SeqCst);
 
     let retry = get_or_spawn(
@@ -541,7 +610,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
 
     assert!(matches!(
         result,
-        Err(UsecaseError::Gateway(message)) if message == "checkpoint load failed"
+        Err(UsecaseError::OtherSpawnFailure { error }) if error == "checkpoint load failed"
     ));
     assert!(!gateway
         .registry
@@ -578,7 +647,12 @@ fn test_ターミナル画面生成_出力読取開始失敗時に新規画面�
         None,
     );
 
-    assert!(matches!(result, Err(UsecaseError::Gateway(_))));
+    assert_eq!(
+        unwrap_spawn_error(result),
+        UsecaseError::OtherSpawnFailure {
+            error: "reader failed".to_string()
+        }
+    );
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
     assert!(gateway.snapshot(1).is_none());
@@ -677,7 +751,7 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
 
     assert!(matches!(
         result,
-        Err(UsecaseError::Gateway(message)) if message == "reader failed"
+        Err(UsecaseError::OtherSpawnFailure { error }) if error == "reader failed"
     ));
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);

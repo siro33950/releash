@@ -49,3 +49,20 @@ fn test_agent_session_controller_provider未選択と未知値を起動前に拒
     assert_eq!(missing["code"], "AGENT_SESSION_INVALID_PROVIDER");
     assert_eq!(unknown["code"], "AGENT_SESSION_INVALID_PROVIDER");
 }
+
+#[test]
+fn test_agent_session_controller_terminal_spawn詳細を既存の利用者向けerrorへ変換する() {
+    let error = launch_error(AgentSessionLaunchUsecaseError::TerminalSpawn(
+        crate::domain::agent_session::ProviderAgentTerminalSpawnError::PerWorktreeCap {
+            worktree_path: "/repo/worktree".to_string(),
+        },
+    ));
+    let value = serde_json::to_value(error).unwrap();
+
+    assert_eq!(value["code"], "AGENT_SESSION_TERMINAL_UNAVAILABLE");
+    assert_eq!(
+        value["message"],
+        "AgentSession Terminal Surface is unavailable"
+    );
+    assert!(!value.to_string().contains("/repo/worktree"));
+}

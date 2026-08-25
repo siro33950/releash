@@ -602,6 +602,12 @@ where
 pub fn run() {
     let startup_started = Instant::now();
     other::telemetry::set_startup_origin(startup_started);
+    if let Ok(aliases) = infrastructure::platform::path_aliases::PathAliases::from_runtime(None) {
+        let _ = infrastructure::local_log::init(
+            &aliases.releash().data_dir,
+            infrastructure::local_log::LocalLogProcess::Gui,
+        );
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let provider_initial_search_path =

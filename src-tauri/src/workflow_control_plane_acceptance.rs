@@ -362,6 +362,28 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         config: AgentSessionTuiAcceptanceConfig,
         app: tauri::App<R>,
     ) -> Result<Self, String> {
+        Self::start_with_terminal_lifecycle_limits(config, app, None)
+    }
+
+    #[doc(hidden)]
+    pub fn start_with_terminal_caps(
+        config: AgentSessionTuiAcceptanceConfig,
+        app: tauri::App<R>,
+        per_worktree_cap: usize,
+        max_panes_total: usize,
+    ) -> Result<Self, String> {
+        Self::start_with_terminal_lifecycle_limits(
+            config,
+            app,
+            Some((per_worktree_cap, max_panes_total)),
+        )
+    }
+
+    fn start_with_terminal_lifecycle_limits(
+        config: AgentSessionTuiAcceptanceConfig,
+        app: tauri::App<R>,
+        terminal_caps: Option<(usize, usize)>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
@@ -373,10 +395,20 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             config.data_dir.clone(),
         ));
 
-        let terminal = TerminalSurfaceRuntime::new_with_data_dir(
-            app.handle().clone(),
-            config.data_dir.clone(),
-        );
+        let terminal = match terminal_caps {
+            Some((per_worktree_cap, max_panes_total)) => {
+                TerminalSurfaceRuntime::new_with_data_dir_and_lifecycle_limits(
+                    app.handle().clone(),
+                    config.data_dir.clone(),
+                    per_worktree_cap,
+                    max_panes_total,
+                )
+            }
+            None => TerminalSurfaceRuntime::new_with_data_dir(
+                app.handle().clone(),
+                config.data_dir.clone(),
+            ),
+        };
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
 			store: store.clone(),
 			data_dir: config.data_dir.clone(),

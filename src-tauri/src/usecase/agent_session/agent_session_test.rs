@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, Once};
 use std::time::Duration;
 
 use super::{
@@ -18,8 +18,8 @@ use crate::domain::agent_session::repository::{
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
-    ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
+    ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -36,6 +36,86 @@ struct FailingSaveRepository {
     create_calls: AtomicUsize,
     atomic_create_calls: AtomicUsize,
     launch_lifecycle_events: Mutex<Vec<ScopedProviderLifecycleEvent>>,
+}
+
+struct CapturingLogger {
+    messages: Mutex<Vec<String>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Error
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(record.args().to_string());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static CAPTURING_LOGGER: CapturingLogger = CapturingLogger {
+    messages: Mutex::new(Vec::new()),
+};
+static CAPTURING_LOGGER_INIT: Once = Once::new();
+
+fn install_capturing_logger() {
+    CAPTURING_LOGGER_INIT.call_once(|| {
+        log::set_logger(&CAPTURING_LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+fn captured_terminal_spawn_failure(agent_session_id: &str) -> Option<String> {
+    CAPTURING_LOGGER
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| {
+            message.contains("AgentSession terminal spawn failed")
+                && message.contains(agent_session_id)
+        })
+        .cloned()
+}
+
+#[test]
+fn test_agent_session_terminal_spawn_error_記録用kindとpayloadを表示する() {
+    let cases = [
+        (
+            ProviderAgentTerminalSpawnError::PerWorktreeCap {
+                worktree_path: "/repo/worktree".to_string(),
+            },
+            "kind=per_worktree_cap worktree_path=/repo/worktree",
+        ),
+        (ProviderAgentTerminalSpawnError::TotalCap, "kind=total_cap"),
+        (
+            ProviderAgentTerminalSpawnError::OwnerConflict,
+            "kind=owner_conflict",
+        ),
+        (
+            ProviderAgentTerminalSpawnError::PtySpawn {
+                error: "openpty failed".to_string(),
+            },
+            "kind=pty_spawn error=openpty failed",
+        ),
+        (
+            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+                error: "checkpoint failed".to_string(),
+            },
+            "kind=other_spawn_failure error=checkpoint failed",
+        ),
+    ];
+
+    for (error, expected) in cases {
+        assert_eq!(error.to_string(), expected);
+    }
 }
 
 impl FailingSaveRepository {
@@ -388,7 +468,7 @@ struct RecordedTerminalSpawn {
 #[derive(Default)]
 struct RecordingTerminal {
     spawns: Mutex<Vec<RecordedTerminalSpawn>>,
-    fail_spawn: Mutex<bool>,
+    spawn_error: Mutex<Option<ProviderAgentTerminalSpawnError>>,
     fail_delete: Mutex<bool>,
     deletes: Mutex<usize>,
 }
@@ -409,7 +489,7 @@ impl ProviderAgentTerminalGateway for BlockingLaunchTerminal {
         _process: TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+    ) -> Result<(), ProviderAgentTerminalSpawnError> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         let entered = self.spawn_entered.lock().unwrap().take();
         if let Some(entered) = entered {
@@ -467,9 +547,9 @@ impl ProviderAgentTerminalGateway for RecordingTerminal {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        if *self.fail_spawn.lock().unwrap() {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+        if let Some(error) = self.spawn_error.lock().unwrap().clone() {
+            return Err(error);
         }
         self.spawns.lock().unwrap().push(RecordedTerminalSpawn {
             owner,
@@ -1135,6 +1215,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
 
 #[tokio::test]
 async fn test_agent_session_history_resumeは新しいsessionを作り失敗時もidを保持する() {
+    install_capturing_logger();
     let directory = tempfile::tempdir().unwrap();
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
@@ -1157,7 +1238,10 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     });
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.fail_spawn.lock().unwrap() = true;
+    *terminal.spawn_error.lock().unwrap() =
+        Some(ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+            error: "checkpoint restore failed".to_string(),
+        });
     let hook_health = hook_health_usecase();
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
@@ -1205,8 +1289,11 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     );
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &[expected_id]
+        std::slice::from_ref(&expected_id)
     );
+    let record = captured_terminal_spawn_failure(&expected_id).unwrap();
+    assert!(record.contains("kind=other_spawn_failure"));
+    assert!(record.contains("error=checkpoint restore failed"));
 }
 
 #[tokio::test]
@@ -1699,6 +1786,7 @@ async fn test_provider_agent_workflow_session_launch_activate後のrollbackで�
 
 #[tokio::test]
 async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrollbackする() {
+    install_capturing_logger();
     let directory = tempfile::tempdir().unwrap();
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
@@ -1711,7 +1799,9 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.fail_spawn.lock().unwrap() = true;
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PerWorktreeCap {
+        worktree_path: "/repo/worktree".to_string(),
+    });
     let hook_health = hook_health_usecase();
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
@@ -1744,18 +1834,26 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalUnavailable
+        AgentSessionLaunchUsecaseError::TerminalSpawn(
+            ProviderAgentTerminalSpawnError::PerWorktreeCap {
+                worktree_path: "/repo/worktree".to_string()
+            }
+        )
     );
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
-        &[expected_id]
+        std::slice::from_ref(&expected_id)
     );
+    let record = captured_terminal_spawn_failure(&expected_id).unwrap();
+    assert!(record.contains("kind=per_worktree_cap"));
+    assert!(record.contains("worktree_path=/repo/worktree"));
 }
 
 #[tokio::test]
-async fn test_agent_session_launch_rollbackのterminal削除失敗でも後続cleanupが走り一次原因を返す() {
+async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除失敗でも後続cleanupが走り一次原因を返す(
+) {
     let directory = tempfile::tempdir().unwrap();
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
@@ -1804,6 +1902,71 @@ async fn test_agent_session_launch_rollbackのterminal削除失敗でも後続cl
     assert_eq!(
         result.unwrap_err(),
         AgentSessionLaunchUsecaseError::LaunchUnavailable
+    );
+    assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+    let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
+    assert_eq!(
+        launch_gateway.cleanups.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert!(sessions.find(&expected_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失敗でも後続cleanupが走り一次原因を返す(
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+        crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
+    )));
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PtySpawn {
+        error: "openpty failed".to_string(),
+    });
+    *terminal.fail_delete.lock().unwrap() = true;
+    let usecase = AgentSessionLaunchUsecase::new(
+        sessions.clone(),
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            Arc::new(RecordingLifecycleEvents::default()),
+        )),
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
+        launch_gateway.clone(),
+        terminal.clone(),
+        Arc::new(FixedHistory {
+            entries: Vec::new(),
+        }),
+        hook_health_usecase(),
+    );
+
+    let result = usecase
+        .launch_standalone(AgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            rows: 24,
+            cols: 80,
+            caller_request_id: "rollback-spawn-delete-failure-1".to_string(),
+        })
+        .await;
+
+    assert_eq!(
+        result.unwrap_err(),
+        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::PtySpawn {
+            error: "openpty failed".to_string()
+        })
     );
     assert_eq!(*terminal.deletes.lock().unwrap(), 1);
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();

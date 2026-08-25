@@ -39,7 +39,6 @@ impl Default for TerminalSurfaceRegistry {
 }
 
 impl TerminalSurfaceRegistry {
-    #[cfg(test)]
     pub fn with_config(config: TerminalSurfaceLifecycleConfig) -> Self {
         Self {
             config,

@@ -2,6 +2,7 @@ use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
+    ProviderAgentTerminalSpawnError,
 };
 use crate::domain::terminal_surface::{
     TerminalActivity, TerminalProcessLaunch, TerminalSurfaceOwner,
@@ -9,6 +10,21 @@ use crate::domain::terminal_surface::{
 use crate::usecase::terminal_surface::application::{
     OwnedTerminalSummaryLookup, TerminalSurfaceApplication,
 };
+use crate::usecase::terminal_surface::error::UsecaseError;
+
+fn map_spawn_error(error: UsecaseError) -> ProviderAgentTerminalSpawnError {
+    match error {
+        UsecaseError::PerWorktreeCap { worktree_path } => {
+            ProviderAgentTerminalSpawnError::PerWorktreeCap { worktree_path }
+        }
+        UsecaseError::TotalCap => ProviderAgentTerminalSpawnError::TotalCap,
+        UsecaseError::OwnerConflict => ProviderAgentTerminalSpawnError::OwnerConflict,
+        UsecaseError::PtySpawn { error } => ProviderAgentTerminalSpawnError::PtySpawn { error },
+        UsecaseError::Gateway(error) | UsecaseError::OtherSpawnFailure { error } => {
+            ProviderAgentTerminalSpawnError::OtherSpawnFailure { error }
+        }
+    }
+}
 
 impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
     fn spawn(
@@ -18,7 +34,7 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+    ) -> Result<(), ProviderAgentTerminalSpawnError> {
         self.get_or_spawn_process(
             rows,
             cols,
@@ -28,7 +44,7 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
             process,
         )
         .map(|_| ())
-        .map_err(|_| ProviderAgentTerminalGatewayError::Unavailable)
+        .map_err(map_spawn_error)
     }
 
     fn presence(

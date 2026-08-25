@@ -10,8 +10,8 @@ use crate::domain::agent_session::aggregates::{
 use crate::domain::agent_session::repository::VersionedAgentSession;
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, ProviderAgentLaunchGateway,
-    ProviderAgentLaunchGatewayError, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
-    ProviderSessionLaunch,
+    ProviderAgentLaunchGatewayError, ProviderAgentTerminalGateway, ProviderAgentTerminalSpawnError,
+    ProviderAvailabilityReader, ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
@@ -67,7 +67,7 @@ pub(crate) enum AgentSessionHistoryResumeOutcome {
     Paused(VersionedAgentSession),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionLaunchUsecaseError {
     ProviderUnavailable,
     InvalidInput,
@@ -75,8 +75,20 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
     StorageUnavailable,
     LaunchUnavailable,
     TerminalUnavailable,
+    TerminalSpawn(ProviderAgentTerminalSpawnError),
     Corrupt,
 }
+
+impl std::fmt::Display for AgentSessionLaunchUsecaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TerminalSpawn(error) => error.fmt(formatter),
+            _ => write!(formatter, "{self:?}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentSessionLaunchUsecaseError {}
 
 impl From<ProviderLifecycleUsecaseError> for AgentSessionLaunchUsecaseError {
     fn from(error: ProviderLifecycleUsecaseError) -> Self {
@@ -596,20 +608,17 @@ impl AgentSessionLaunchUsecase {
             executable: _,
         } = durable;
         let initial_hook_warning = prepared.initial_hook_warning();
-        if self
-            .terminal
-            .spawn(
-                created.session().terminal_surface_owner(),
-                created.session().worktree_path(),
-                prepared.into_process(),
-                rows,
-                cols,
-            )
-            .is_err()
-        {
+        if let Err(error) = self.terminal.spawn(
+            created.session().terminal_surface_owner(),
+            created.session().worktree_path(),
+            prepared.into_process(),
+            rows,
+            cols,
+        ) {
+            record_terminal_spawn_failure(created.session().id(), &error);
             self.rollback_failed_new_launch_preserving_cause(&created, &armed, &caller_request_id)
                 .await;
-            return Err(AgentSessionLaunchUsecaseError::TerminalUnavailable);
+            return Err(AgentSessionLaunchUsecaseError::TerminalSpawn(error));
         }
         self.record_hook_launch(
             created.session().provider(),
@@ -704,17 +713,14 @@ impl AgentSessionLaunchUsecase {
             }
         };
         let initial_hook_warning = prepared.initial_hook_warning();
-        if self
-            .terminal
-            .spawn(
-                associated.session().terminal_surface_owner(),
-                associated.session().worktree_path(),
-                prepared.into_process(),
-                request.rows,
-                request.cols,
-            )
-            .is_err()
-        {
+        if let Err(error) = self.terminal.spawn(
+            associated.session().terminal_surface_owner(),
+            associated.session().worktree_path(),
+            prepared.into_process(),
+            request.rows,
+            request.cols,
+        ) {
+            record_terminal_spawn_failure(&agent_session_id, &error);
             self.cleanup_failed_history_resume(&request, &agent_session_id, &armed)
                 .await?;
             return self.pause_history_resume(&request, &agent_session_id).await;
@@ -879,6 +885,10 @@ impl AgentSessionLaunchUsecase {
         tasks.retain(|task| !task.is_finished());
         tasks.push(task);
     }
+}
+
+fn record_terminal_spawn_failure(agent_session_id: &str, error: &ProviderAgentTerminalSpawnError) {
+    log::error!("AgentSession terminal spawn failed agent_session_id={agent_session_id} {error}");
 }
 
 async fn wait_for_activation(mut completion: watch::Receiver<bool>) -> bool {

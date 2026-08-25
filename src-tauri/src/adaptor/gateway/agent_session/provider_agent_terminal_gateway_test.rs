@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::ProviderAgentTerminalGateway;
+use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
 use crate::domain::terminal_surface::{
@@ -39,6 +40,56 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
         gateway.insert_surface(surface);
     }
     TerminalSurfaceApplication::new(gateway, Arc::new(TerminalSurfaceEventHub::new()))
+}
+
+#[test]
+fn test_provider_agent_terminal_spawn_error_5分類とpayloadを保持する() {
+    let cases = [
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::PerWorktreeCap {
+                worktree_path: "/repo/worktree".to_string(),
+            },
+            ProviderAgentTerminalSpawnError::PerWorktreeCap {
+                worktree_path: "/repo/worktree".to_string(),
+            },
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::TotalCap,
+            ProviderAgentTerminalSpawnError::TotalCap,
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::OwnerConflict,
+            ProviderAgentTerminalSpawnError::OwnerConflict,
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::PtySpawn {
+                error: "openpty failed".to_string(),
+            },
+            ProviderAgentTerminalSpawnError::PtySpawn {
+                error: "openpty failed".to_string(),
+            },
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::OtherSpawnFailure {
+                error: "checkpoint failed".to_string(),
+            },
+            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+                error: "checkpoint failed".to_string(),
+            },
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::Gateway(
+                "runtime is shutting down".to_string(),
+            ),
+            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+                error: "runtime is shutting down".to_string(),
+            },
+        ),
+    ];
+
+    for (source, expected) in cases {
+        assert_eq!(super::map_spawn_error(source), expected);
+    }
 }
 
 #[test]

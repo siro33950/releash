@@ -72,6 +72,23 @@ fn host(
     root: &Path,
     input_lines: usize,
 ) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
+    configured_host(root, input_lines, None)
+}
+
+fn host_with_terminal_caps(
+    root: &Path,
+    input_lines: usize,
+    per_worktree_cap: usize,
+    max_panes_total: usize,
+) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
+    configured_host(root, input_lines, Some((per_worktree_cap, max_panes_total)))
+}
+
+fn configured_host(
+    root: &Path,
+    input_lines: usize,
+    terminal_caps: Option<(usize, usize)>,
+) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = install_fixture_executable(
@@ -89,18 +106,26 @@ fn host(
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
-    WorkflowControlPlaneAcceptanceHost::start(
-        AgentSessionTuiAcceptanceConfig {
-            data_dir: root.join("releash-data"),
-            claude_executable: Some(claude),
-            codex_executable: Some(codex),
-            provider_search_path: None,
-            provider_refresh_search_path: None,
-            claude_config_dir: root.join("claude-home"),
-            codex_home: root.join("codex-home"),
-        },
-        app,
-    )
+    let config = AgentSessionTuiAcceptanceConfig {
+        data_dir: root.join("releash-data"),
+        claude_executable: Some(claude),
+        codex_executable: Some(codex),
+        provider_search_path: None,
+        provider_refresh_search_path: None,
+        claude_config_dir: root.join("claude-home"),
+        codex_home: root.join("codex-home"),
+    };
+    match terminal_caps {
+        Some((per_worktree_cap, max_panes_total)) => {
+            WorkflowControlPlaneAcceptanceHost::start_with_terminal_caps(
+                config,
+                app,
+                per_worktree_cap,
+                max_panes_total,
+            )
+        }
+        None => WorkflowControlPlaneAcceptanceHost::start(config, app),
+    }
     .unwrap()
 }
 
@@ -267,6 +292,47 @@ fn leaf_nodes(execution: &AcceptanceWorkflowExecution) -> Vec<AcceptanceNodeExec
 enum SignalOrder {
     SubmitThenStop,
     StopThenSubmit,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_workflow_terminal_spawn失敗を実行収束経路からprocess_exited_failure_reasonへ保存する()
+{
+    // Given
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("terminal-spawn-failure-worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host_with_terminal_caps(root.path(), 1, 0, 64);
+
+    // When
+    let execution_id = host
+        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let process_exited = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let events = host.workflow_log(&execution_id).await.unwrap();
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| event["event"] == "process_exited")
+            {
+                return event;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ProcessExitedFact must be appended");
+
+    // Then
+    assert_eq!(process_exited["kind"], "session");
+    let failure_reason = process_exited["failureReason"].as_str().unwrap();
+    assert!(failure_reason.contains("workflow runtime activation failed"));
+    assert!(failure_reason.contains("activate Workflow AgentSession 'agent-session-"));
+    assert!(failure_reason.contains("kind=per_worktree_cap"));
+    assert!(failure_reason.contains(&format!("worktree_path={worktree}")));
+
+    host.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
