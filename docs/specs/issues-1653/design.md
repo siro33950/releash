@@ -24,7 +24,9 @@ terminal spawn失敗の分類は、既に発生源で区別されている`Termi
 
 ローカルファイルloggerの構築と`log` facadeへの登録は、新設する`src-tauri/src/infrastructure/local_log.rs`が所有する。ファイル出力、rotation、プロセス間の排他をOS資源として扱う責務であり、`docs/architecture/INFRASTRUCTURE.md`の境界に従う。
 
-loggerはTauriの`AppHandle`に依存しない形で構築する。`src-tauri/src/main.rs`は引数がある場合にTauri builderを構築せずCLIへ分岐するため、Tauri pluginとしてだけ登録するとCLIプロセスの出力先が無いままになる。GUIプロセスは`src-tauri/src/lib.rs`がcomposition rootとして既存のapplication setupより前に登録し、CLIプロセスは`src-tauri/src/cli/mod.rs`の`run`がsubcommand dispatchより前に登録する。これによりsetup内およびその後の既存`log::warn!`／`log::error!`と、CLI経路の同じ呼び出しが同じloggerを使う。各プロセスは自分が解決したdata dir配下へ書き、GUIは`PathAliases::from_runtime(None)`によるTauri側のdata dir、CLIは`RELEASH_DATA_DIR`を優先する`resolve_data_dir`の結果を使う。既定の起動経路では同じdata dirを解決して同一ファイルを共有するが、CLI起動時に任意の`RELEASH_DATA_DIR`を明示した場合は別の出力先になる。
+loggerはTauri pluginとして登録しない。`src-tauri/src/main.rs`は引数がある場合にTauri builderを構築せずCLIへ分岐するため、plugin登録だけではCLIプロセスの出力先が無いままになる。GUIプロセスは`src-tauri/src/lib.rs`がcomposition rootとしてapplication setupの冒頭で登録し、CLIプロセスは`src-tauri/src/cli/mod.rs`の`run`がsubcommand dispatchより前に登録する。これによりsetup内およびその後の既存`log::warn!`／`log::error!`と、CLI経路の同じ呼び出しが同じloggerを使う。
+
+出力先は各プロセスがそのプロセスのdata dirを解決する既存の経路に従う。GUIは`infrastructure/platform/app_data_dir.rs`の`resolve_data_dir`が返すTauri解決のdata dirを使い、event store、terminal checkpoint、子プロセスへ伝搬する`RELEASH_DATA_DIR`と同じ値になる。この解決は`AppHandle`を要するため、GUIのlogger登録はsetupより前へ移せない。CLIは`RELEASH_DATA_DIR`を優先する`cli/common.rs`の`resolve_data_dir`の結果を使う。GUIが子プロセスへ自分のdata dirを伝搬するため既定の起動経路では同一ファイルを共有するが、CLI起動時に任意の`RELEASH_DATA_DIR`を明示した場合は別の出力先になる。
 
 ### Interface
 
@@ -73,7 +75,7 @@ terminal spawn失敗時は、発生源のtyped errorをAgentSession側のspawn e
 - 同じdata dirを解決したGUIプロセスとCLIプロセスは同じファイルを共有する。各プロセスのbounded channelと専用writer threadがfile I/Oを所有し、`log::Log::log`はrecordを非ブロッキングでenqueueする。queue満杯時は新しいrecordを捨て、drain再開後のrecordに破棄件数を示す。`log::Log::flush`はそれ以前に受理したrecordのdrain完了を待ち、CLIは`run`の戻り際にflushする。data dirとlogsディレクトリの生成、書き込み、rotationはwriter threadで初回record処理時に行い、初期化時にはfile I/Oを行わない。
 - 同一ファイルに対する書き込みとrotationは、writer threadが`fs2`のblocking exclusive lockを取得してprocess間で直列化する。`local_event_store`はforegroundのopen処理で単一writer所有権の競合を即時に返す必要があるため`try_lock_exclusive`を使う一方、local loggerは呼び出し側から分離したwriter thread内で一時的なfile操作を順番に完了させるためblocking lockを使う。
 - rotationはrecordを書き込んだ後にactive fileが10 MiBを超えていた場合、次のrecordに備えて行う。1 recordを複数fileへ分割せずJSON行境界を保つため、1ファイルの最大サイズは10 MiBに直近record 1件分を加えた値となる。active fileを含む最大5ファイルの世代上限は厳密に守る。
-- loggerはGUIではTauri application setupより前、CLIではsubcommand dispatchより前に登録する。既存のOTLP trace／metrics／crash logs providerとは接続せず、`infrastructure/telemetry/`の送信条件と内容を変更しない。
+- loggerはGUIではTauri application setupの冒頭、CLIではsubcommand dispatchより前に登録する。既存のOTLP trace／metrics／crash logs providerとは接続せず、`infrastructure/telemetry/`の送信条件と内容を変更しない。
 
 デプロイ先、署名、Tauri capability、frontend packageは変更しない。
 
