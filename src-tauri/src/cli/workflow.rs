@@ -11,6 +11,31 @@ use crate::adaptor::protocol::workflow::{ExecutionStatusView, WorkflowExecutionV
 /// `releash workflow` の Agent-facing command / query 集合。
 #[derive(Subcommand, Debug)]
 pub(super) enum WorkflowSubcommand {
+    /// workflow 定義と Facet を診断する。
+    #[command(long_about = "workflow 定義と Facet を診断する。\n\n\
+対象 directory:\n\
+  --dir <PATH> で指定した directory を workflow source directory として扱う。\n\
+  Facet base は <PATH>/facets が directory ならそこを使い、無ければ <PATH> を使う。\n\
+  指定 directory 配下の workflow 定義を起点に、参照される Facet までを判定範囲とする。\n\
+  --dir を省略した場合は、適用済み Workflow の config directory を対象にする。\n\n\
+出力形式:\n\
+  既定は 1 診断 1 行の human-readable 形式で、末尾に severity 別の件数を出す。\n\
+  --json を付けると、UI が受け取るものと同じ診断結果 JSON をそのまま出力する。\n\n\
+終了コード:\n\
+  0  severity error の診断が 0 件\n\
+  3  severity error の診断が 1 件以上\n\
+  1  command 自体の失敗（Releash アプリ未起動、I/O 失敗、serialize 失敗）\n\
+  2  引数が不正\n\
+  4  対象 directory が存在しない\n\n\
+この command は Releash アプリの起動を必要とする。")]
+    Diagnostics {
+        /// 診断対象 directory。Facet base は facets/ があればそこを、無ければこの directory を使う。省略時は適用済み config directory。
+        #[arg(long, value_name = "PATH")]
+        dir: Option<std::path::PathBuf>,
+        /// 診断結果 JSON をそのまま出力する。
+        #[arg(long)]
+        json: bool,
+    },
     /// 指定 execution の現在 read model を表示する。
     Status {
         execution_id: String,

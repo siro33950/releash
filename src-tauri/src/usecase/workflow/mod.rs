@@ -35,7 +35,7 @@ use crate::domain::workflow::{
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
-    WorkflowDiagnosticsGateway, WorkflowSourceSaveError,
+    WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -63,6 +63,7 @@ pub(crate) struct WorkflowReadUsecase {
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     output: WorkflowOutputUsecase,
     worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
+    diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
 }
 
 impl WorkflowReadUsecase {
@@ -71,13 +72,22 @@ impl WorkflowReadUsecase {
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         secrets: std::sync::Arc<dyn SecretSourceGateway>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+        diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     ) -> Self {
         Self {
             output: WorkflowOutputUsecase::new(query.clone(), secrets),
             query,
             worktrees,
             workspace_query,
+            diagnostics,
         }
+    }
+
+    pub(crate) fn diagnose_all(
+        &self,
+        target: WorkflowDiagnosticsTarget,
+    ) -> Result<serde_json::Value, WorkflowError> {
+        self.diagnostics.diagnose_all(target)
     }
 
     pub(crate) fn list_workflow_summaries(
@@ -177,7 +187,6 @@ pub struct WorkflowUsecase {
     output: WorkflowOutputUsecase,
     worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
     editors: std::sync::Arc<dyn ExternalEditorGateway>,
-    diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
     execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
@@ -209,6 +218,7 @@ impl WorkflowUsecase {
             output: output.clone(),
             worktrees: worktrees.clone(),
             workspace_query: workspace_query.clone(),
+            diagnostics,
         };
         Self {
             query,
@@ -217,7 +227,6 @@ impl WorkflowUsecase {
             output,
             worktrees,
             editors,
-            diagnostics,
             config_paths,
             execution_archives,
             workspace_nodes,
@@ -458,8 +467,11 @@ impl WorkflowUsecase {
         self.editors.open_facet(kind.dir_name(), key)
     }
 
-    pub fn diagnose_all(&self) -> Result<serde_json::Value, WorkflowError> {
-        self.diagnostics.diagnose_all()
+    pub fn diagnose_all(
+        &self,
+        target: WorkflowDiagnosticsTarget,
+    ) -> Result<serde_json::Value, WorkflowError> {
+        self.read.diagnose_all(target)
     }
 
     pub fn automation_config_dir(&self) -> Result<String, WorkflowError> {
@@ -503,7 +515,8 @@ mod tests {
     };
     use crate::usecase::workflow::ports::{
         ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
-        WorkflowEventDraft, WorkflowEventRepository, WorkflowExecutionProjectionRepository,
+        WorkflowDiagnosticsTarget, WorkflowEventDraft, WorkflowEventRepository,
+        WorkflowExecutionProjectionRepository,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -767,10 +780,23 @@ mod tests {
         }
     }
 
-    struct FakeDiagnosticsGateway;
+    #[derive(Default)]
+    struct FakeDiagnosticsGateway {
+        targets: Mutex<Vec<WorkflowDiagnosticsTarget>>,
+    }
+
+    impl FakeDiagnosticsGateway {
+        fn targets(&self) -> Vec<WorkflowDiagnosticsTarget> {
+            self.targets.lock().unwrap().clone()
+        }
+    }
 
     impl WorkflowDiagnosticsGateway for FakeDiagnosticsGateway {
-        fn diagnose_all(&self) -> Result<serde_json::Value, WorkflowError> {
+        fn diagnose_all(
+            &self,
+            target: WorkflowDiagnosticsTarget,
+        ) -> Result<serde_json::Value, WorkflowError> {
+            self.targets.lock().unwrap().push(target);
             Ok(serde_json::json!({"items": [], "workflowSummaries": {}}))
         }
     }
@@ -796,6 +822,7 @@ mod tests {
         editors: Arc<FakeExternalEditorGateway>,
         definitions: Arc<FakeDefinitionRepository>,
         definition_sources: Arc<FakeDefinitionSourceGateway>,
+        diagnostics: Arc<FakeDiagnosticsGateway>,
         workspace_nodes: Arc<FakeWorkspaceTreeRepository>,
         _workspace_root: tempfile::TempDir,
     }
@@ -873,6 +900,7 @@ mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let editors = Arc::new(FakeExternalEditorGateway::default());
+            let diagnostics = Arc::new(FakeDiagnosticsGateway::default());
             let workspace_nodes = Arc::new(FakeWorkspaceTreeRepository::default());
             let workspace_root = tempfile::tempdir().unwrap();
             let workspace_query =
@@ -891,7 +919,7 @@ mod tests {
                 facets.clone(),
                 Arc::new(FakeManagedWorktreeGateway),
                 editors.clone(),
-                Arc::new(FakeDiagnosticsGateway),
+                diagnostics.clone(),
                 Arc::new(FakeConfigPathGateway),
                 Arc::new(FakeSecretSourceGateway),
                 Arc::new(NoopArchiveRepository),
@@ -903,6 +931,7 @@ mod tests {
                 editors,
                 definitions,
                 definition_sources,
+                diagnostics,
                 workspace_nodes,
                 _workspace_root: workspace_root,
             }
@@ -1226,11 +1255,48 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_and_config_path_delegate_to_gateways() {
+    fn test_診断usecase_指定directoryをgatewayへ渡す() {
+        // Given
+        let fixture = Fixture::new();
+        let path = std::path::PathBuf::from("/tmp/custom-workflows");
+
+        // When
+        let report = fixture
+            .usecase
+            .diagnose_all(WorkflowDiagnosticsTarget::Directory(path.clone()))
+            .unwrap();
+
+        // Then
+        assert_eq!(report["items"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            fixture.diagnostics.targets(),
+            vec![WorkflowDiagnosticsTarget::Directory(path)]
+        );
+    }
+
+    #[test]
+    fn test_診断usecase_適用済みdirectoryをgatewayへ渡す() {
+        // Given
         let fixture = Fixture::new();
 
-        let report = fixture.usecase.diagnose_all().unwrap();
+        // When
+        let report = fixture
+            .usecase
+            .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
+            .unwrap();
+
+        // Then
         assert_eq!(report["items"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            fixture.diagnostics.targets(),
+            vec![WorkflowDiagnosticsTarget::AppliedConfigDirectory]
+        );
+    }
+
+    #[test]
+    fn config_path_delegates_to_gateway() {
+        let fixture = Fixture::new();
+
         assert_eq!(
             fixture.usecase.automation_config_dir().unwrap(),
             "/automation"

@@ -1,42 +1,8 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
 use serde_saphyr::granit_parser::{Event, Parser, ScanError, Span as ParserSpan};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct DiagnosticSpan {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<String>,
-    pub(crate) start_line: usize,
-    pub(crate) start_col: usize,
-    pub(crate) end_line: usize,
-    pub(crate) end_col: usize,
-}
-
-impl DiagnosticSpan {
-    pub(crate) fn from_location(location: serde_saphyr::Location) -> Self {
-        let line = usize::try_from(location.line()).unwrap_or(usize::MAX);
-        let col = usize::try_from(location.column()).unwrap_or(usize::MAX);
-        Self {
-            source: None,
-            start_line: line,
-            start_col: col,
-            end_line: line,
-            end_col: col.saturating_add(1),
-        }
-    }
-
-    pub(crate) fn from_scan_error(error: &ScanError) -> Self {
-        let marker = error.marker();
-        Self {
-            source: None,
-            start_line: marker.line(),
-            start_col: marker.col() + 1,
-            end_line: marker.line(),
-            end_col: marker.col() + 2,
-        }
-    }
-}
+use crate::adaptor::protocol::workflow::DiagnosticSpan;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct YamlSpanMap {

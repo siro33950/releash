@@ -5,6 +5,7 @@ fn test_cli長文help_対応中のagent向けcommandだけを表示する() {
     let help = render_long_help();
     for command in [
         "$ releash workflow --help",
+        "$ releash workflow diagnostics --help",
         "$ releash workflow status --help",
         "$ releash workflow output submit --help",
         "$ releash workflow output get --help",
@@ -22,6 +23,15 @@ fn test_cli長文help_対応中のagent向けcommandだけを表示する() {
 fn test_clicommand整理_保持対象workflowとreview_commandを受理する() {
     let execution_id = "550e8400-e29b-41d4-a716-446655440000";
     for argv in [
+        vec!["releash", "workflow", "diagnostics"],
+        vec![
+            "releash",
+            "workflow",
+            "diagnostics",
+            "--dir",
+            "/tmp/x",
+            "--json",
+        ],
         vec!["releash", "workflow", "status", execution_id],
         vec![
             "releash",
@@ -49,6 +59,39 @@ fn test_clicommand整理_保持対象workflowとreview_commandを受理する() 
         assert!(
             Cli::try_parse_from(argv.clone()).is_ok(),
             "supported command failed to parse: {argv:?}"
+        );
+    }
+}
+
+#[test]
+fn test_診断cli_helpに対象と出力と終了コードを記載する() {
+    // Given
+    let mut command = Cli::command();
+
+    // When
+    let help = command
+        .find_subcommand_mut("workflow")
+        .unwrap()
+        .find_subcommand_mut("diagnostics")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    // Then
+    for expected in [
+        "--dir",
+        "--json",
+        "適用済み Workflow の config directory",
+        "終了コード",
+        "0  severity error の診断が 0 件",
+        "3  severity error の診断が 1 件以上",
+        "1  command 自体の失敗",
+        "2  引数が不正",
+        "4  対象 directory が存在しない",
+    ] {
+        assert!(
+            help.contains(expected),
+            "missing diagnostics help: {expected}"
         );
     }
 }

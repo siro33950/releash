@@ -109,7 +109,9 @@ impl LocalApiHttpClient {
         query: &[(&str, &str)],
     ) -> Result<T, LocalApiClientError> {
         let mut url = self.endpoint(segments)?;
-        url.query_pairs_mut().extend_pairs(query.iter().copied());
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query.iter().copied());
+        }
         self.send(self.client.get(url))
     }
 

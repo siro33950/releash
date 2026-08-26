@@ -98,6 +98,17 @@ impl LocalApiClient {
         Ok(response.into())
     }
 
+    /// workflow diagnostics を local API 経由で取得する。診断結果 DTO をそのまま返す。
+    pub(super) fn workflow_diagnostics(
+        &self,
+        dir: Option<&str>,
+    ) -> Result<serde_json::Value, ApiRequestError> {
+        let query: Vec<(&str, &str)> = dir.into_iter().map(|dir| ("dir", dir)).collect();
+        self.transport
+            .get_json(&["v1", "workflow", "diagnostics"], &query)
+            .map_err(ApiRequestError::from)
+    }
+
     pub(super) fn receive_provider_lifecycle(
         &self,
         request: &ProviderLifecycleReceiveRequest,
@@ -123,18 +134,34 @@ pub(super) fn read_with_fallback<T>(
     }
 }
 
+/// アプリ起動を要する mutation。local API へ到達できない場合は
+/// 「アプリ起動が必要」失敗になる。
 pub(super) fn mutation<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
 ) -> Result<T, CliError> {
-    match mutation_classified(data_dir, api_request) {
+    require_running(request_classified(data_dir, api_request))
+}
+
+/// アプリ起動を要する read-only query。fallback を持たず、失敗表現は
+/// mutation と同じにする。read と mutation を別入口に保つのは、file_direct が
+/// 定める「read だけが fallback を持てる」区別を呼び出し側で崩さないためである。
+pub(super) fn read_without_fallback<T>(
+    data_dir: &Path,
+    api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
+) -> Result<T, CliError> {
+    require_running(request_classified(data_dir, api_request))
+}
+
+fn require_running<T>(result: Result<T, ApiRequestError>) -> Result<T, CliError> {
+    match result {
         Ok(value) => Ok(value),
         Err(ApiRequestError::Unavailable) => Err(app_must_be_running_error()),
         Err(ApiRequestError::Cli(error)) => Err(error),
     }
 }
 
-pub(super) fn mutation_classified<T>(
+pub(super) fn request_classified<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
 ) -> Result<T, ApiRequestError> {

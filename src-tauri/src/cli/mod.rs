@@ -5,17 +5,22 @@
 
 mod api_client;
 mod common;
+mod diagnostics;
 mod file_direct;
 mod hook;
 mod output;
 mod review;
+#[cfg(test)]
+mod test_helpers;
 mod workflow;
 
 use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
-use common::{cli_result_exit_code, resolve_data_dir, resolve_existing_data_dir, CliError};
+use common::{
+    cli_result_exit_code, resolve_data_dir, resolve_existing_data_dir, CliError, CliSuccess,
+};
 use output::OutputSubcommand;
 use review::ReviewSubcommand;
 use workflow::WorkflowSubcommand;
@@ -115,13 +120,16 @@ pub fn run() -> i32 {
             eprintln!("{error}");
         }
     }
-    let result =
-        match cli.command {
-            TopCommand::Workflow { command } => resolve_data_dir()
+    let result = match cli.command {
+        TopCommand::Workflow { command } => {
+            resolve_data_dir()
                 .map_err(CliError::Other)
                 .and_then(|data_dir| match command {
+                    WorkflowSubcommand::Diagnostics { dir, json } => {
+                        diagnostics::cmd_diagnostics(&data_dir, dir, json)
+                    }
                     WorkflowSubcommand::Status { execution_id, json } => {
-                        workflow::cmd_status(&data_dir, &execution_id, json)
+                        workflow::cmd_status(&data_dir, &execution_id, json).map(CliSuccess::ok)
                     }
                     WorkflowSubcommand::Output { command } => match command {
                         OutputSubcommand::Submit {
@@ -135,20 +143,23 @@ pub fn run() -> i32 {
                             contract.as_deref(),
                             json,
                             file,
-                        ),
+                        )
+                        .map(CliSuccess::ok),
                         OutputSubcommand::Get {
                             execution_id,
                             node,
                             json,
-                        } => output::cmd_output_get(&data_dir, &execution_id, &node, json),
+                        } => output::cmd_output_get(&data_dir, &execution_id, &node, json)
+                            .map(CliSuccess::ok),
                     },
-                }),
-            TopCommand::Review { command } => resolve_existing_data_dir()
-                .and_then(|data_dir| review::cmd_review(&data_dir, command)),
-            TopCommand::Hook { command } => match command {
-                HookSubcommand::Receive { provider } => hook::cmd_receive(provider),
-            },
-        };
+                })
+        }
+        TopCommand::Review { command } => resolve_existing_data_dir()
+            .and_then(|data_dir| review::cmd_review(&data_dir, command).map(CliSuccess::ok)),
+        TopCommand::Hook { command } => match command {
+            HookSubcommand::Receive { provider } => hook::cmd_receive(provider).map(CliSuccess::ok),
+        },
+    };
     let exit_code = cli_result_exit_code(result);
     log::logger().flush();
     exit_code

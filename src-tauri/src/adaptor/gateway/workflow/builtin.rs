@@ -5,6 +5,7 @@ use super::domain_mapping::workflow_definition_to_domain;
 use super::facet::{self, FacetError, FacetKind};
 use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
+use crate::adaptor::protocol::workflow::DiagnosticItem;
 use crate::domain::workflow::validation::{self, ValidationError};
 
 const BUILTIN_01_AUTHOR_SPEC: &str = include_str!("../../../../../workflows/01_author-spec.yml");
@@ -87,7 +88,7 @@ pub enum BuiltinError {
     },
     Diagnostics {
         filename: &'static str,
-        diagnostics: Vec<diagnostics::DiagnosticItem>,
+        diagnostics: Vec<DiagnosticItem>,
     },
     Validation {
         filename: &'static str,
