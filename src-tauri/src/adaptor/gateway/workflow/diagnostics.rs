@@ -1490,12 +1490,11 @@ fn diagnose_with_scope(
         let summaries = facet::list_facet_summaries(*kind, facets_base_dir).unwrap_or_default();
         for summary in &summaries {
             let facet_id = format!("{}/{}", kind.canonical_name(), summary.key);
-            if scope == DiagnosticScope::ReachableFromDirectory
-                && !all_facet_keys.contains(&facet_id)
-            {
-                continue;
-            }
             if scope == DiagnosticScope::ReachableFromDirectory {
+                if !all_facet_keys.contains(&facet_id) {
+                    continue;
+                }
+                // 到達した Facet は diagnostic が 0 件でも判定対象だったことを summary に残す。
                 facet_summaries.entry(facet_id.clone()).or_default();
             }
 
@@ -1597,19 +1596,27 @@ fn collect_reachable_facet_keys(
 ) -> HashSet<String> {
     let mut checked = HashSet::new();
     let mut existing = HashSet::new();
-    let result = try_for_each_workflow_facet_ref(workflow, |kind, key| {
+    for_each_workflow_facet_ref(workflow, |kind, key| {
         let facet_id = format!("{}/{}", kind.canonical_name(), key);
         if checked.insert(facet_id.clone())
             && matches!(facet::facet_exists(kind, key, base_dir), Ok(true))
         {
             existing.insert(facet_id);
         }
-        Ok::<(), Infallible>(())
     });
-    match result {
-        Ok(()) => existing,
-        Err(never) => match never {},
-    }
+    existing
+}
+
+/// 失敗しない走査。`try_for_each_workflow_facet_ref` と同じ順序で参照を訪れる。
+fn for_each_workflow_facet_ref(
+    workflow: &WorkflowDefinitionYaml,
+    mut visit: impl FnMut(FacetKind, &str),
+) {
+    try_for_each_workflow_facet_ref(workflow, |kind, key| {
+        visit(kind, key);
+        Ok::<(), Infallible>(())
+    })
+    .unwrap();
 }
 
 fn try_for_each_workflow_facet_ref<E>(

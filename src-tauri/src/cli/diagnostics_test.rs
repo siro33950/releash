@@ -288,6 +288,11 @@ fn test_診断_cli経路は列挙不能なdirectoryの指定をcommand失敗に�
     let unreadable = target_parent.path().join("unreadable");
     std::fs::create_dir(&unreadable).unwrap();
     std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&unreadable).is_ok() {
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("skipping unreadable directory test because this process can read mode 0o000");
+        return;
+    }
     let _host = start_host(
         client_data.path(),
         query_data.path(),

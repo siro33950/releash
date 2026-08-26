@@ -158,6 +158,13 @@ mod tests {
         let unreadable = configured.path().join("unreadable");
         std::fs::create_dir(&unreadable).unwrap();
         std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&unreadable).is_ok() {
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!(
+                "skipping unreadable directory test because this process can read mode 0o000"
+            );
+            return;
+        }
 
         // When
         let result = WorkflowDiagnosticsFileGateway::new(configured.path(), configured.path())

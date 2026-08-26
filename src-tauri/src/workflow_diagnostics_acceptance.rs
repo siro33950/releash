@@ -279,6 +279,8 @@ impl WorkflowDiagnosticsAcceptanceHost {
         }
         let response = reqwest::Client::builder()
             .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(1))
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .map_err(|error| error.to_string())?
             .get(url)

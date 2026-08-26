@@ -492,6 +492,13 @@ mod tests {
         let unreadable = data.path().join("unreadable");
         std::fs::create_dir(&unreadable).unwrap();
         std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&unreadable).is_ok() {
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!(
+                "skipping unreadable directory test because this process can read mode 0o000"
+            );
+            return;
+        }
         let (router, _, _) = test_router(data.path(), "secret");
         let encoded_dir: String =
             url::form_urlencoded::byte_serialize(unreadable.as_os_str().as_encoded_bytes())
