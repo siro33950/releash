@@ -137,9 +137,15 @@ fn owner(worktree_path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
 }
 
 async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let mut output = String::new();
-        while !output.contains(needle) {
+    receive_until_all(attachment, &[needle]).await;
+}
+
+/// 1 つの accumulator で全 needle を待つ。複数の期待出力が同じ Snapshot や
+/// 同じ出力 batch に載って届いても取りこぼさない。
+async fn receive_until_all(attachment: &mut TerminalSurfaceWireAttachment, needles: &[&str]) {
+    let mut output = String::new();
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        while !needles.iter().all(|needle| output.contains(needle)) {
             match attachment.next().await.expect("Terminal Surface stream") {
                 TerminalSurfaceStreamItemV1::Snapshot { surface } => {
                     output.push_str(&surface.terminal_surface.replay)
@@ -149,8 +155,10 @@ async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &
             }
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}"));
+    .await;
+    if result.is_err() {
+        panic!("timed out waiting for {needles:?}; received: {output:?}");
+    }
 }
 
 async fn send_hook(
@@ -165,7 +173,23 @@ async fn send_hook(
             &format!("releash-fixture-hook-json:{payload}\r"),
         )
         .unwrap();
-    receive_until(terminal, "releash-fixture-lifecycle-command-result:").await;
+    // node を終端させる Stop では、commit 後の停止 effect が結果行の出力より先に
+    // PTY を閉じることがある。stream 終了は commit 完了の証拠なので同期完了として扱う。
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut output = String::new();
+        while !output.contains("releash-fixture-lifecycle-command-result:") {
+            match terminal.next().await {
+                Some(TerminalSurfaceStreamItemV1::Snapshot { surface }) => {
+                    output.push_str(&surface.terminal_surface.replay)
+                }
+                Some(TerminalSurfaceStreamItemV1::Output { data, .. }) => output.push_str(&data),
+                Some(_) => {}
+                None => return,
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for the lifecycle command result"));
 }
 
 async fn wait_for_execution_status(
@@ -286,6 +310,33 @@ fn leaf_nodes(execution: &AcceptanceWorkflowExecution) -> Vec<AcceptanceNodeExec
         })
         .cloned()
         .collect()
+}
+
+async fn wait_for_leaf_session_attachment(
+    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    execution_id: &str,
+    leaf_index: usize,
+) -> String {
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let execution = host.execution(execution_id).await.unwrap().unwrap();
+            if let Some(agent_session_id) = leaf_nodes(&execution)
+                .get(leaf_index)
+                .and_then(|leaf| leaf.agent_session_id.clone())
+            {
+                return agent_session_id;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match result {
+        Ok(agent_session_id) => agent_session_id,
+        Err(_) => panic!(
+            "Leaf {leaf_index} must attach an AgentSession: {:?}",
+            host.execution(execution_id).await
+        ),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -462,10 +513,14 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
             advanced_leaves[1].status,
             AcceptanceNodeExecutionStatus::Running
         );
-        assert_ne!(
-            advanced_leaves[0].agent_session_id,
-            advanced_leaves[1].agent_session_id
-        );
+        let next_session_id = wait_for_leaf_session_attachment(&host, &execution_id, 1).await;
+        assert_ne!(next_session_id, first_session_id);
+        wait_for_agent_session_lifecycle(
+            &host,
+            &first_session_id,
+            AcceptanceAgentSessionLifecycle::Paused,
+        )
+        .await;
 
         assert!(host.submit(&first.id).await.is_err());
         let after_duplicates = host.execution(&execution_id).await.unwrap().unwrap();
@@ -1189,12 +1244,20 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
             terminal_owner.clone(),
         )
         .unwrap();
-    receive_until(&mut resumed_terminal, "releash-fixture-input-complete-0").await;
-
+    // 復元画面の replay は resumed fixture の起動出力で上書きされ得るため、
+    // 同期は「resumed fixture が実際に入力を消費すること」で取る。echo と marker は
+    // 同じ Snapshot / 出力 batch に載って届き得るため 1 回の accumulator で両方待つ。
     host.terminal()
         .write(terminal_owner.clone(), "follow-up-after-completion\r")
         .unwrap();
-    receive_until(&mut resumed_terminal, "follow-up-after-completion").await;
+    receive_until_all(
+        &mut resumed_terminal,
+        &[
+            "follow-up-after-completion",
+            "releash-fixture-input-complete-0",
+        ],
+    )
+    .await;
     send_hook(
         &host,
         &mut resumed_terminal,
