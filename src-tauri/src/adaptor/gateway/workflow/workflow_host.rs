@@ -1078,7 +1078,7 @@ impl WorkflowRuntimeHost {
         };
         let effects = durable.into_effects();
         drop(executions);
-        self.execute_committed_runtime_effects(effects).await;
+        self.spawn_committed_runtime_effects(effects);
         if let Err(error) = self.sync_state_after_required_event_commit(&snapshot).await {
             log::warn!(
                 "workflow {execution_id}: derived execution projection refresh failed after control-plane commit: {error}"
@@ -1087,7 +1087,34 @@ impl WorkflowRuntimeHost {
         Ok(snapshot)
     }
 
-    async fn execute_committed_runtime_effects(&self, effects: Vec<WorkflowRuntimeEffect>) {
+    /// durable commit 済みの runtime effect を detached task で実行する。
+    ///
+    /// provider Stop 受理経路は同一 AgentSession の operation lock と provider
+    /// lifecycle slot lock を保持したまま commit するため、Session 停止 effect を
+    /// 同じ call stack で実行すると lock を再取得して deadlock する。
+    fn spawn_committed_runtime_effects(&self, effects: Vec<WorkflowRuntimeEffect>) {
+        let stops: Vec<WorkflowRuntimeEffect> = effects
+            .into_iter()
+            .filter(|effect| {
+                matches!(
+                    effect,
+                    WorkflowRuntimeEffect::StopWorkflowAgentSession { .. }
+                )
+            })
+            .collect();
+        if stops.is_empty() {
+            return;
+        }
+        let sessions = self.workflow_agent_sessions.clone();
+        tokio::spawn(async move {
+            Self::run_committed_runtime_effects(sessions, stops).await;
+        });
+    }
+
+    async fn run_committed_runtime_effects(
+        sessions: Arc<dyn WorkflowAgentSessionPort>,
+        effects: Vec<WorkflowRuntimeEffect>,
+    ) {
         for effect in effects {
             let WorkflowRuntimeEffect::StopWorkflowAgentSession {
                 node_execution_id,
@@ -1096,8 +1123,7 @@ impl WorkflowRuntimeHost {
             else {
                 continue;
             };
-            if let Err(error) = self
-                .workflow_agent_sessions
+            if let Err(error) = sessions
                 .stop_workflow_agent_session_preserving_checkpoint(
                     &agent_session_id,
                     &node_execution_id,
@@ -2061,7 +2087,7 @@ impl WorkflowRuntimeHost {
             }
         };
 
-        self.execute_committed_runtime_effects(effects).await;
+        self.spawn_committed_runtime_effects(effects);
 
         if let Err(e) = self
             .sync_state_after_required_event_commit(snapshot_for_commit)
@@ -2839,6 +2865,76 @@ nodes:
             }
         }
 
+        struct NeverResolvingStopWorkflowAgentSessions;
+
+        #[async_trait::async_trait]
+        impl WorkflowAgentSessionPort for NeverResolvingStopWorkflowAgentSessions {
+            fn is_provider_available(&self, _provider: ProviderKind) -> bool {
+                true
+            }
+
+            async fn prepare_workflow_agent_session(
+                &self,
+                _worktree_path: &str,
+                _config: WorkflowSessionLaunchConfig,
+                _workflow_execution_id: &str,
+                _node_execution_id: &str,
+                _initial_instruction: &str,
+            ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+                Ok(NodeSessionInfo {
+                    id: EFFECT_AGENT_SESSION_ID.to_string(),
+                })
+            }
+
+            async fn activate_workflow_agent_session(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn confirm_workflow_agent_session_attachment(
+                &self,
+                _node_session_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn dispatch_initial_instruction(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn interrupt_workflow_agent_session(
+                &self,
+                _node_session_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn stop_workflow_agent_session_preserving_checkpoint(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+
+            async fn rollback_workflow_agent_session(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+        }
+
         struct RuntimeEffectFixture {
             app: tauri::App<tauri::test::MockRuntime>,
             store: Arc<LocalEventStore>,
@@ -2866,6 +2962,24 @@ nodes:
             completion: NodeCompletion,
             stop_fails: bool,
         ) -> RuntimeEffectFixture {
+            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sessions: Arc<dyn WorkflowAgentSessionPort> =
+                Arc::new(RecordingWorkflowAgentSessions {
+                    stop_calls: stop_calls.clone(),
+                    failing_agent_session_id: if stop_fails {
+                        EFFECT_AGENT_SESSION_ID.to_string()
+                    } else {
+                        String::new()
+                    },
+                });
+            runtime_effect_fixture_with_sessions(completion, sessions, stop_calls).await
+        }
+
+        async fn runtime_effect_fixture_with_sessions(
+            completion: NodeCompletion,
+            sessions: Arc<dyn WorkflowAgentSessionPort>,
+            stop_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        ) -> RuntimeEffectFixture {
             let directory = tempfile::tempdir().unwrap();
             let fault = Arc::new(FaultInjector::new());
             let mut config = LocalEventStoreConfig::production(directory.path().to_path_buf());
@@ -2878,19 +2992,11 @@ nodes:
             app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
                 directory.path().to_path_buf(),
             ));
-            let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
-            Arc::new(RecordingWorkflowAgentSessions {
-                stop_calls: stop_calls.clone(),
-                failing_agent_session_id: if stop_fails {
-                    EFFECT_AGENT_SESSION_ID.to_string()
-                } else {
-                    String::new()
-                },
-            }),
+            sessions,
             Arc::new(
                 crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
                     store.clone(),
@@ -3103,7 +3209,20 @@ nodes:
                 .status
         }
 
-        fn assert_single_terminal_stop(fixture: &RuntimeEffectFixture) {
+        async fn wait_for_single_terminal_stop(fixture: &RuntimeEffectFixture) {
+            let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if !fixture.stop_calls.lock().unwrap().is_empty() {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+            assert!(
+                observed.is_ok(),
+                "terminal stop effect must run after durable commit"
+            );
             assert_eq!(
                 fixture.stop_calls.lock().unwrap().as_slice(),
                 &[(
@@ -3144,7 +3263,7 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Succeeded
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
             let page = fixture
                 .store
                 .load_stream(LoadStreamRequest {
@@ -3182,11 +3301,11 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Succeeded
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
         }
 
         #[tokio::test]
-        async fn test_session終端_停止後に後続sessionをactivateする() {
+        async fn test_session終端_後続activateを停止完了に依存させず両方を実行する() {
             // Given
             let fixture = sequential_runtime_effect_fixture().await;
             fixture.calls.lock().unwrap().clear();
@@ -3227,18 +3346,67 @@ nodes:
                 .find(|node| node.node_name == "agent-two")
                 .unwrap();
             assert_eq!(second.status, NodeExecutionStatus::Running);
+            let activate = RuntimeEffectCall::Activate {
+                node_execution_id: second.id.clone(),
+                agent_session_id: second.session_id.clone().unwrap(),
+            };
+            assert!(
+                fixture.calls.lock().unwrap().contains(&activate),
+                "Submit acceptance must activate the next Session without waiting for the stop effect"
+            );
+            let expected_stop = RuntimeEffectCall::Stop {
+                node_execution_id: fixture.first_node_execution_id.clone(),
+                agent_session_id: fixture.first_agent_session_id.clone(),
+            };
+            let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if fixture.calls.lock().unwrap().contains(&expected_stop) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+            assert!(
+                observed.is_ok(),
+                "terminal stop effect must run after durable commit"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_provider_stop受理_停止effect未完了でもcommitと後続処理が完了する() {
+            // Given
+            let fixture = runtime_effect_fixture_with_sessions(
+                NodeCompletion::Auto,
+                Arc::new(NeverResolvingStopWorkflowAgentSessions),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+            )
+            .await;
+            fixture
+                .control_plane
+                .submit_output(SubmitOutputCommand {
+                    node_execution_id: fixture.node_execution_id.clone(),
+                    artifact: None,
+                })
+                .await
+                .unwrap();
+
+            // When
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                fixture
+                    .control_plane
+                    .record_provider_stop(provider_stop_command(&fixture), Vec::new()),
+            )
+            .await;
+
+            // Then
+            let result =
+                result.expect("provider Stop acceptance must not block on the session stop effect");
+            assert!(result.is_ok(), "unexpected provider Stop error: {result:?}");
             assert_eq!(
-                fixture.calls.lock().unwrap().as_slice(),
-                &[
-                    RuntimeEffectCall::Stop {
-                        node_execution_id: fixture.first_node_execution_id.clone(),
-                        agent_session_id: fixture.first_agent_session_id.clone(),
-                    },
-                    RuntimeEffectCall::Activate {
-                        node_execution_id: second.id.clone(),
-                        agent_session_id: second.session_id.clone().unwrap(),
-                    },
-                ]
+                persisted_node_status(&fixture),
+                NodeExecutionStatus::Succeeded
             );
         }
 
@@ -3263,7 +3431,7 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Succeeded
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
 
             // When
             let result = fixture
@@ -3277,7 +3445,7 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Succeeded
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
         }
 
         #[tokio::test]
@@ -3329,7 +3497,7 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Succeeded
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
         }
 
         #[tokio::test]
@@ -3369,7 +3537,7 @@ nodes:
                     .status,
                 NodeExecutionStatus::Failed
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
         }
 
         #[tokio::test]
@@ -3389,44 +3557,32 @@ nodes:
                 persisted_node_status(&fixture),
                 NodeExecutionStatus::Aborted
             );
-            assert_single_terminal_stop(&fixture);
+            wait_for_single_terminal_stop(&fixture).await;
         }
 
         #[tokio::test]
         async fn test_committed_runtime_effects_停止失敗後も残りのagent_sessionを停止する() {
-            let directory = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                directory.path().to_path_buf(),
-            ))
-            .unwrap();
             let stop_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let host = WorkflowRuntimeHost::with_execution_store(
-            Arc::new(UnusedWorkflowResolver),
-            Arc::new(UnusedWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
-            Arc::new(RecordingWorkflowAgentSessions {
-                stop_calls: stop_calls.clone(),
-                failing_agent_session_id: "agent-session-1".to_string(),
-            }),
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store,
-                ),
-            ),
-            Arc::new(MissingRepoWorktreeInventory),
-        );
+            let sessions: Arc<dyn WorkflowAgentSessionPort> =
+                Arc::new(RecordingWorkflowAgentSessions {
+                    stop_calls: stop_calls.clone(),
+                    failing_agent_session_id: "agent-session-1".to_string(),
+                });
 
-            host.execute_committed_runtime_effects(vec![
-                WorkflowRuntimeEffect::BroadcastState,
-                WorkflowRuntimeEffect::StopWorkflowAgentSession {
-                    node_execution_id: "node-1".to_string(),
-                    agent_session_id: "agent-session-1".to_string(),
-                },
-                WorkflowRuntimeEffect::StopWorkflowAgentSession {
-                    node_execution_id: "node-2".to_string(),
-                    agent_session_id: "agent-session-2".to_string(),
-                },
-            ])
+            WorkflowRuntimeHost::run_committed_runtime_effects(
+                sessions,
+                vec![
+                    WorkflowRuntimeEffect::BroadcastState,
+                    WorkflowRuntimeEffect::StopWorkflowAgentSession {
+                        node_execution_id: "node-1".to_string(),
+                        agent_session_id: "agent-session-1".to_string(),
+                    },
+                    WorkflowRuntimeEffect::StopWorkflowAgentSession {
+                        node_execution_id: "node-2".to_string(),
+                        agent_session_id: "agent-session-2".to_string(),
+                    },
+                ],
+            )
             .await;
 
             assert_eq!(
