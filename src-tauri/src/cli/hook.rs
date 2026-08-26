@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use super::api_client::{mutation_classified, ApiRequestError};
+use super::api_client::{request_classified, ApiRequestError};
 use super::common::{cli_error_stderr, resolve_data_dir, CliError};
 use super::HookProvider;
 use crate::adaptor::gateway::provider_lifecycle::{
@@ -93,7 +93,7 @@ fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, Cl
         signal,
     };
     let data_dir = resolve_data_dir().map_err(CliError::Other)?;
-    let response = mutation_classified(&data_dir, |client| {
+    let response = request_classified(&data_dir, |client| {
         client.receive_provider_lifecycle(&request)
     })
     .map_err(|error| {

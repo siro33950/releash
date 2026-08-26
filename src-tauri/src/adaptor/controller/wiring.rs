@@ -296,6 +296,10 @@ pub(crate) fn build_canonical_workflow_read_usecase(
         workflows_dir.clone(),
         workflows_dir.clone(),
     ));
+    let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
+        workflows_dir.clone(),
+        workflows_dir.clone(),
+    ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
     let events = Arc::new(WorkflowEventLogRepository::with_read_store(
         local_event_store.clone(),
@@ -320,10 +324,13 @@ pub(crate) fn build_canonical_workflow_read_usecase(
         worktrees,
         secrets,
         workspace_query,
+        diagnostics,
     ))
 }
 
-fn build_workflow_services_with_gateways(
+/// gateway を呼び出し側から差し替えられる workflow composition。production 配線と
+/// acceptance harness の双方がこの一箇所を通る。
+pub(crate) fn build_workflow_services_with_gateways(
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
@@ -421,6 +428,32 @@ pub(crate) fn spawn_startup_app_data_gc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_診断read_usecase_適用済みdirectoryを診断する() {
+        // Given
+        let data = tempfile::tempdir().unwrap();
+        let workflows = tempfile::tempdir().unwrap();
+        let _store =
+            LocalEventStore::open(LocalEventStoreConfig::production(data.path().to_path_buf()))
+                .unwrap();
+        std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
+        let read = build_canonical_workflow_read_usecase(
+            data.path(),
+            Some(workflows.path().to_path_buf()),
+        )
+        .unwrap();
+
+        // When
+        let report = read
+            .diagnose_all(
+                crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::AppliedConfigDirectory,
+            )
+            .unwrap();
+
+        // Then
+        assert!(report["workflow_summaries"]["configured"].is_object());
+    }
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
         use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};

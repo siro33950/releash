@@ -15,6 +15,17 @@ pub fn facets_base_dir() -> PathBuf {
     storage::workflows_dir()
 }
 
+/// workflow source directory から authoring layout の Facet base を解決する。
+/// `<dir>/facets` が directory ならそれを使い、無ければ従来 layout の `<dir>` を使う。
+pub(crate) fn resolve_facets_base_dir(workflow_source_dir: &Path) -> PathBuf {
+    let canonical_dir = workflow_source_dir.join("facets");
+    if canonical_dir.is_dir() {
+        canonical_dir
+    } else {
+        workflow_source_dir.to_path_buf()
+    }
+}
+
 #[derive(Debug)]
 pub enum FacetError {
     InvalidKey { key: String },

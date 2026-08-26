@@ -3,6 +3,7 @@ use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
 use super::schema::{Summary, WorkflowDefinitionYaml};
+use crate::adaptor::protocol::workflow::{DiagnosticItem, DiagnosticStage, Severity};
 use crate::domain::workflow::validation::{self, ValidationError};
 use crate::domain::workflow::WorkflowSourceFormat;
 use serde::Serialize;
@@ -15,7 +16,7 @@ pub enum StorageError {
     Io(std::io::Error),
     YamlDeserialize(serde_saphyr::Error),
     YamlSerialize(serde_saphyr::ser::Error),
-    Diagnostics(Vec<diagnostics::DiagnosticItem>),
+    Diagnostics(Vec<DiagnosticItem>),
     Validation(ValidationError),
     FacetResolution(facet::FacetError),
     NotFound { name: String },
@@ -155,10 +156,10 @@ pub fn parse_workflow_source(
         return Err(StorageError::Diagnostics(diagnosis.diagnostics));
     }
     let mut workflow = diagnosis.workflow.ok_or_else(|| {
-        StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+        StorageError::Diagnostics(vec![DiagnosticItem::new(
             "WFS001",
-            diagnostics::Severity::Error,
-            diagnostics::DiagnosticStage::ParseShape,
+            Severity::Error,
+            DiagnosticStage::ParseShape,
             None,
             "workflow source could not be parsed",
         )])
@@ -259,10 +260,10 @@ pub(crate) fn diagnose_workflow_file(
         None => {
             return diagnostics::WorkflowSourceDiagnostics {
                 workflow: None,
-                diagnostics: vec![diagnostics::DiagnosticItem::new(
+                diagnostics: vec![DiagnosticItem::new(
                     "WFS002",
-                    diagnostics::Severity::Error,
-                    diagnostics::DiagnosticStage::ParseShape,
+                    Severity::Error,
+                    DiagnosticStage::ParseShape,
                     None,
                     format!("unsupported workflow source extension: {}", path.display()),
                 )],
@@ -293,10 +294,10 @@ pub fn load_workflow(
         return Err(StorageError::Diagnostics(diagnosis.diagnostics));
     }
     let mut workflow = diagnosis.workflow.ok_or_else(|| {
-        StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+        StorageError::Diagnostics(vec![DiagnosticItem::new(
             "WFS001",
-            diagnostics::Severity::Error,
-            diagnostics::DiagnosticStage::ParseShape,
+            Severity::Error,
+            DiagnosticStage::ParseShape,
             None,
             "workflow source could not be parsed",
         )])
@@ -390,10 +391,10 @@ pub(crate) fn list_workflows_with_facets(
             });
         }
         let mut workflow = diagnosis.workflow.ok_or_else(|| {
-            StorageError::Diagnostics(vec![diagnostics::DiagnosticItem::new(
+            StorageError::Diagnostics(vec![DiagnosticItem::new(
                 "WFS001",
-                diagnostics::Severity::Error,
-                diagnostics::DiagnosticStage::ParseShape,
+                Severity::Error,
+                DiagnosticStage::ParseShape,
                 None,
                 "workflow source could not be parsed",
             )])
@@ -430,7 +431,7 @@ fn validate_workflow_definition(workflow: &WorkflowDefinitionYaml) -> Result<(),
     let diagnostics = diagnostics::diagnose_workflow_definition(workflow, None);
     if diagnostics
         .iter()
-        .any(|item| item.severity == diagnostics::Severity::Error)
+        .any(|item| item.severity == Severity::Error)
     {
         return Err(StorageError::Diagnostics(diagnostics));
     }
@@ -445,7 +446,7 @@ pub(crate) fn resolve_and_validate_workflow_facets(
         diagnostics::diagnose_workflow_facet_references(workflow, facets_base_dir)?;
     if reference_diagnostics
         .iter()
-        .any(|item| item.severity == diagnostics::Severity::Error)
+        .any(|item| item.severity == Severity::Error)
     {
         return Err(StorageError::Diagnostics(reference_diagnostics));
     }
@@ -496,15 +497,13 @@ pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageE
             name: name.to_string(),
         }),
         [path] => Ok(path.clone()),
-        _ => Err(StorageError::Diagnostics(vec![
-            diagnostics::DiagnosticItem::new(
-                "WFS006",
-                diagnostics::Severity::Error,
-                diagnostics::DiagnosticStage::ParseShape,
-                None,
-                format!("workflow name '{name}' is duplicated"),
-            ),
-        ])),
+        _ => Err(StorageError::Diagnostics(vec![DiagnosticItem::new(
+            "WFS006",
+            Severity::Error,
+            DiagnosticStage::ParseShape,
+            None,
+            format!("workflow name '{name}' is duplicated"),
+        )])),
     }
 }
 

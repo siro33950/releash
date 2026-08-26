@@ -9,6 +9,8 @@ mod other;
 pub mod provider_lifecycle_acceptance;
 #[cfg(debug_assertions)]
 pub mod workflow_control_plane_acceptance;
+#[cfg(debug_assertions)]
+pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         TerminalSurfaceEventFault, TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,

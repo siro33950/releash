@@ -80,8 +80,40 @@ pub trait ExternalEditorGateway: Send + Sync {
     fn open_facet(&self, kind: &str, key: &str) -> Result<(), WorkflowError>;
 }
 
+/// workflow diagnostics の診断対象。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowDiagnosticsTarget {
+    /// 適用済み Workflow の config directory。実際の path は gateway 実装が所有する。
+    AppliedConfigDirectory,
+    /// 呼び出し時に指定された workflow source directory。Facet base は gateway が解決する。
+    Directory(std::path::PathBuf),
+}
+
+impl WorkflowDiagnosticsTarget {
+    /// 入口（Tauri command / local API）が受け取る optional な directory 文字列を対象へ写す。
+    /// 絶対 path であることだけを検証する。空文字列と空白のみの文字列も相対 path として
+    /// 弾かれる。前後の空白は path の一部として保持する（空白を含む directory 名は正当で
+    /// あり、trim すると実在する対象を診断できなくなる）。対象 directory の実在検査は
+    /// filesystem I/O を所有する gateway が行う。
+    pub fn from_optional_directory(dir: Option<String>) -> Result<Self, WorkflowError> {
+        let Some(dir) = dir else {
+            return Ok(Self::AppliedConfigDirectory);
+        };
+        let path = std::path::PathBuf::from(&dir);
+        if !path.is_absolute() {
+            return Err(WorkflowError::Validation(format!(
+                "diagnostics target directory must be an absolute path: {dir}"
+            )));
+        }
+        Ok(Self::Directory(path))
+    }
+}
+
 pub trait WorkflowDiagnosticsGateway: Send + Sync {
-    fn diagnose_all(&self) -> Result<serde_json::Value, WorkflowError>;
+    fn diagnose_all(
+        &self,
+        target: WorkflowDiagnosticsTarget,
+    ) -> Result<serde_json::Value, WorkflowError>;
 }
 
 pub trait WorkflowConfigPathGateway: Send + Sync {
@@ -194,4 +226,91 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowRuntimeStateGateway
         + WorkflowRuntimeShutdownGateway
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_診断対象_directory省略時は適用済みconfigになる() {
+        // Given
+        let directory = None;
+
+        // When
+        let target = WorkflowDiagnosticsTarget::from_optional_directory(directory).unwrap();
+
+        // Then
+        assert_eq!(target, WorkflowDiagnosticsTarget::AppliedConfigDirectory);
+    }
+
+    #[test]
+    fn test_診断対象_空directoryを拒否する() {
+        // Given
+        let directories = [String::new(), "   ".to_string()];
+
+        // When
+        let targets = directories
+            .map(|directory| WorkflowDiagnosticsTarget::from_optional_directory(Some(directory)));
+
+        // Then
+        assert!(targets
+            .into_iter()
+            .all(|target| matches!(target, Err(WorkflowError::Validation(_)))));
+    }
+
+    #[test]
+    fn test_診断対象_相対directoryを拒否する() {
+        // Given
+        let directory = "workflows".to_string();
+
+        // When
+        let target = WorkflowDiagnosticsTarget::from_optional_directory(Some(directory));
+
+        // Then
+        assert!(matches!(target, Err(WorkflowError::Validation(_))));
+    }
+
+    #[test]
+    fn test_診断対象_先頭空白付き相対directoryを拒否する() {
+        // Given
+        let directory = " workflows".to_string();
+
+        // When
+        let target = WorkflowDiagnosticsTarget::from_optional_directory(Some(directory));
+
+        // Then
+        assert!(matches!(target, Err(WorkflowError::Validation(_))));
+    }
+
+    #[test]
+    fn test_診断対象_絶対directoryを受理する() {
+        // Given
+        let directory = "/tmp/x".to_string();
+
+        // When
+        let target = WorkflowDiagnosticsTarget::from_optional_directory(Some(directory)).unwrap();
+
+        // Then
+        assert_eq!(
+            target,
+            WorkflowDiagnosticsTarget::Directory(PathBuf::from("/tmp/x"))
+        );
+    }
+
+    #[test]
+    fn test_診断対象_絶対directoryの末尾空白を保持する() {
+        // Given
+        let directory = "/tmp/workflows ".to_string();
+
+        // When
+        let target = WorkflowDiagnosticsTarget::from_optional_directory(Some(directory)).unwrap();
+
+        // Then
+        assert_eq!(
+            target,
+            WorkflowDiagnosticsTarget::Directory(PathBuf::from("/tmp/workflows "))
+        );
+    }
 }

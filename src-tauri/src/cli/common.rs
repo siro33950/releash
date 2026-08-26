@@ -1,10 +1,36 @@
 use std::path::{Path, PathBuf};
 
-pub(super) fn cli_result_exit_code(result: Result<String, CliError>) -> i32 {
+/// 診断 error が 1 件以上検出されたことを表す終了コード。
+/// command 自体の失敗（1 = Other / 2 = InvalidInput / 4 = NotFound）と区別する。
+pub(super) const DIAGNOSTIC_ERRORS_EXIT_CODE: i32 = 3;
+
+/// CLI の成功結果。stdout と、その結果が表す終了コードの組。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct CliSuccess {
+    pub(super) stdout: String,
+    pub(super) exit_code: i32,
+}
+
+impl CliSuccess {
+    /// 終了コード 0 の成功。
+    pub(super) fn ok(stdout: String) -> Self {
+        Self {
+            stdout,
+            exit_code: 0,
+        }
+    }
+
+    /// 処理は成功したが、結果の内容が非 zero 終了を表す場合。
+    pub(super) fn with_exit_code(stdout: String, exit_code: i32) -> Self {
+        Self { stdout, exit_code }
+    }
+}
+
+pub(super) fn cli_result_exit_code(result: Result<CliSuccess, CliError>) -> i32 {
     match result {
-        Ok(stdout) => {
-            print!("{stdout}");
-            0
+        Ok(success) => {
+            print!("{}", success.stdout);
+            success.exit_code
         }
         Err(error) => {
             eprintln!("{}", cli_error_stderr(&error));
@@ -388,7 +414,14 @@ mod tests {
 
     #[test]
     fn exit_code_mapping_is_stable() {
-        assert_eq!(cli_result_exit_code(Ok(String::new())), 0);
+        assert_eq!(cli_result_exit_code(Ok(CliSuccess::ok(String::new()))), 0);
+        assert_eq!(
+            cli_result_exit_code(Ok(CliSuccess::with_exit_code(
+                String::new(),
+                DIAGNOSTIC_ERRORS_EXIT_CODE,
+            ))),
+            3
+        );
         assert_eq!(
             cli_error_exit_code(&CliError::InvalidInput("bad".to_string())),
             2
