@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::adaptor::gateway::local_api::LocalApiClientGateway;
 use crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::PROVIDER_LIFECYCLE_EVENT_TYPE;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::{
@@ -21,7 +22,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason,
 };
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
-use crate::infrastructure::local_api::{LocalApiHttpClient, LocalApiServer, LocalApiServerBinding};
+use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
@@ -481,7 +482,7 @@ impl ProviderLifecycleAcceptanceHost {
             reason: protocol_unavailable_reason(reason),
         };
         let response = tokio::task::spawn_blocking(move || {
-            let client = LocalApiHttpClient::discover(&data_dir)
+            let client = LocalApiClientGateway::discover(&data_dir)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "local API discovery is unavailable".to_string())?;
             client

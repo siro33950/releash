@@ -4,10 +4,10 @@ use super::common::CliError;
 use crate::adaptor::controller::api::protocol::{
     GetArtifactResponse, MutationResponse, SubmitOutputRequest,
 };
+use crate::adaptor::gateway::local_api::{LocalApiClientError, LocalApiClientGateway};
 use crate::adaptor::protocol::provider_lifecycle::{
     ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
 };
-use crate::infrastructure::local_api::{LocalApiClientError, LocalApiHttpClient};
 use crate::usecase::workflow::WorkflowGetOutputResult;
 
 #[derive(Debug)]
@@ -36,14 +36,14 @@ impl From<LocalApiClientError> for ApiRequestError {
 
 #[derive(Debug, Clone)]
 pub(super) struct LocalApiClient {
-    transport: LocalApiHttpClient,
+    transport: LocalApiClientGateway,
 }
 
 impl LocalApiClient {
     fn discover(data_dir: &Path) -> Result<Option<Self>, CliError> {
-        LocalApiHttpClient::discover(data_dir)
+        LocalApiClientGateway::discover(data_dir)
             .map(|client| client.map(|transport| Self { transport }))
-            .map_err(|error| CliError::Other(error.to_string()))
+            .map_err(discovery_error)
     }
 
     pub(super) fn execution_status(
@@ -117,6 +117,10 @@ impl LocalApiClient {
             .post_json(&["v1", "provider-lifecycle", "signals"], request)
             .map_err(ApiRequestError::from)
     }
+}
+
+fn discovery_error(error: LocalApiClientError) -> CliError {
+    CliError::Other(error.to_string())
 }
 
 pub(super) fn read_with_fallback<T>(

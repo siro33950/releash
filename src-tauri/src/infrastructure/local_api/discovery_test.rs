@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn test_process開始時刻参照_現在processの生値を返す() {
+    // Given
+    let pid = std::process::id();
+
+    // When
+    let result = lookup_process_start_time(pid);
+
+    // Then
+    assert!(result.process_list_available);
+    assert!(result.start_time.is_some_and(|start_time| start_time != 0));
+    assert_eq!(process_start_time(pid), result.start_time);
+}
+
+#[test]
+fn test_process開始時刻参照_対象不在でもprocess一覧の参照結果を返す() {
+    // Given / When
+    let result = lookup_process_start_time(u32::MAX);
+
+    // Then
+    assert!(result.process_list_available);
+    assert_eq!(result.start_time, None);
+}
+
+#[test]
 fn test_local_api_discovery_所有fileを非公開権限で作成して削除する() {
     let directory = tempfile::tempdir().unwrap();
     let discovery = LocalApiDiscovery {

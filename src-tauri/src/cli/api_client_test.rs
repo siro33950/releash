@@ -8,6 +8,7 @@ use crate::adaptor::gateway::workflow::schema::{
     CommandSpec, NodeDefinition, NodeKind, WorkflowDefinitionYaml,
 };
 use crate::adaptor::gateway::workflow::storage;
+use crate::cli::common::{cli_error_exit_code, cli_error_stderr};
 use crate::cli::test_helpers::try_start_local_api_test_host;
 use crate::cli::{output, workflow};
 use crate::infrastructure::local_api::{local_api_discovery_path, process_start_time};
@@ -273,5 +274,24 @@ fn test_local_api読取_不正discoveryでfallbackしない() {
     );
     assert!(
         matches!(result, Err(CliError::Other(message)) if message.contains("discovery file が不正"))
+    );
+}
+
+#[test]
+fn test_local_api_discovery_process情報参照不能をcatch_allで終了コード1にする() {
+    // Given / When
+    let error = discovery_error(LocalApiClientError::ProcessInformationUnavailable);
+
+    // Then
+    assert_eq!(
+        error,
+        CliError::Other(
+            "プロセス情報を参照できないため、local API の接続先を確認できませんでした".to_string()
+        )
+    );
+    assert_eq!(cli_error_exit_code(&error), 1);
+    assert_eq!(
+        cli_error_stderr(&error),
+        "error: プロセス情報を参照できないため、local API の接続先を確認できませんでした"
     );
 }

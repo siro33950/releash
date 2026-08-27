@@ -44,7 +44,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 - Provider lifecycleとProvider availabilityは別の境界である。
 - 旧Agent GUI specは現行正本ではない。
 
-## ドメイン一覧（15個）
+## ドメイン一覧（16個）
 
 | ドメイン | 含まれる責務 |
 |---|---|
@@ -52,6 +52,7 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
 | `workflow` | 定義、実行木、Artifact、Contract、facet、completion と承認、Diagnostic |
 | `local_event` | 永続 local event store の語彙。store identity、atomic batch、state mutation、query、transaction port |
+| `local_api_discovery` | local API discovery の内容、プロセス観測、接続先観測に基づく受理・拒否判定 |
 | `workspace_tree` | Workspace / Session の bounded な query 集約。canonical な execution / node / session record から復元する |
 | `comment` | diff_comment_store、diff_comment_sender |
 | `agent_session` | AgentSession identity、lifecycle、Provider、Terminal ownership |
