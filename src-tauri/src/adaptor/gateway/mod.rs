@@ -5,6 +5,7 @@ pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
+pub(crate) mod local_api;
 pub(crate) mod local_event_store;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle;

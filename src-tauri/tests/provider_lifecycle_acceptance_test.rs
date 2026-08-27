@@ -950,7 +950,7 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
             None,
             before,
             &run,
-            "不正または古い",
+            "別のインスタンスを指しているか、古くなっています",
         )
         .await;
         let stale_request = stale_request.join().unwrap();

@@ -2,9 +2,13 @@ mod client;
 mod discovery;
 mod server;
 
-pub(crate) use client::{LocalApiClientError, LocalApiHttpClient};
+pub(crate) use client::{
+    read_local_api_discovery, LocalApiDiscoveryReadError, LocalApiHttpClient,
+    LocalApiIdentityRequestError, LocalApiTransportError,
+};
 pub(crate) use discovery::{
-    local_api_discovery_path, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
+    local_api_discovery_path, lookup_process_start_time, process_start_time, LocalApiDiscovery,
+    LocalApiDiscoveryFile, ProcessStartTimeLookup,
 };
 #[cfg(debug_assertions)]
 pub(crate) use server::LocalApiServer;
