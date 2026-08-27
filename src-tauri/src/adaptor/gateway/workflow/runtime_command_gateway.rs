@@ -379,6 +379,37 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
             .map_err(workflow_runtime_error_to_workflow_error)
     }
 
+    async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        self.driver
+            .reserve_started_execution_tree(tree_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn register_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        self.driver
+            .register_started_execution_tree(&self.app, tree_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), WorkflowError> {
+        self.driver
+            .release_started_execution_tree_reservation(tree_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
+    async fn release_deleted_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        self.driver
+            .release_deleted_execution_tree(tree_id)
+            .await
+            .map_err(workflow_runtime_error_to_workflow_error)
+    }
+
     async fn approval_persisted(
         &self,
         execution_id: &str,

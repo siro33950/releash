@@ -143,37 +143,26 @@ impl IsolatedWorktreeLedgerRepository for NodeEventIsolatedWorktreeLedgerReposit
 mod tests {
     use super::*;
     use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
+    use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
-    use crate::domain::workflow::{
-        ExecutionOrigin, NodeKindName, SessionRootFact, SessionSpec, StartedFact, TreeRootFact,
-    };
+    use crate::domain::workflow::SessionExecutionTreeRootFacts;
 
     fn meta() -> NodeFactMeta {
-        NodeFactMeta {
-            tree_id: "tree-1".to_string(),
-            node_execution_id: "node-1".to_string(),
-            parent_id: None,
-            node_name: "chat".to_string(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-        }
+        SessionExecutionTreeRootFacts::new("node-1", "/repo", "/repo", ProviderKind::Codex)
+            .unwrap()
+            .meta
     }
 
     fn seed(store: &Arc<LocalEventStore>) {
         let meta = meta();
-        fact_log::append_single_fact(
+        let root_facts =
+            SessionExecutionTreeRootFacts::new("node-1", "/repo", "/repo", ProviderKind::Codex)
+                .unwrap();
+        fact_log::append_fact_batch_for_seed(
             store,
-            &meta,
-            &NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Session(SessionRootFact {
-                    workspace_identity: "/repo".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    session: SessionSpec::default(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                })),
-            }),
+            &root_facts.into_facts(),
             1,
+            "worktree-ledger-session-root",
         )
         .unwrap();
         fact_log::append_single_fact(
@@ -184,7 +173,7 @@ mod tests {
                 worktree_path: "/repo-worktrees/.releash-isolated/node-1-a1".to_string(),
                 branch: "releash/isolated/node-1-a1".to_string(),
             }),
-            2,
+            3,
         )
         .unwrap();
     }
@@ -205,13 +194,13 @@ mod tests {
         assert!(first
             .snapshot()
             .unwrap()
-            .recovery_cause_for_node("tree-1", "node-1")
+            .recovery_cause_for_node("node-1", "node-1")
             .is_some());
 
         let restarted = NodeEventIsolatedWorktreeLedgerRepository::new(store);
         let snapshot = restarted.snapshot().unwrap();
         let cause = snapshot
-            .recovery_cause_for_node("tree-1", "node-1")
+            .recovery_cause_for_node("node-1", "node-1")
             .unwrap();
         assert_eq!(
             cause.to_string(),

@@ -180,15 +180,17 @@ mod vocabulary_tests {
 
 mod detail_round_trip_tests {
     use super::*;
-    use crate::domain::workflow::{NodeDefinition, WorkflowDefinition};
+    use crate::domain::workflow::{
+        ExecutionTreeLaunch, NodeDefinition, NodeKind, WorkflowDefinition,
+    };
 
     #[test]
     fn test_rootのstarted_workflow構成が定義snapshotごと往復する() {
         // Given: workflow 木の root started
         let fact = NodeFact::Started(StartedFact {
             parent: None,
-            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                workflow_name: "review".to_string(),
+            root: Some(TreeRootFact {
+                workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "please review".to_string(),
@@ -203,7 +205,8 @@ mod detail_round_trip_tests {
                     }],
                     entry: "main".to_string(),
                 },
-            })),
+                launched_as: ExecutionTreeLaunch::Workflow,
+            }),
         });
 
         // When / Then: 往復で同値
@@ -212,32 +215,35 @@ mod detail_round_trip_tests {
 
     #[test]
     fn test_rootのstarted_単独session構成が往復する() {
-        let fact = NodeFact::Started(StartedFact {
-            parent: None,
-            root: Some(TreeRootFact::Session(SessionRootFact {
-                workspace_identity: "/repo".to_string(),
-                worktree_path: "/repo".to_string(),
-                session: crate::domain::workflow::SessionSpec::default(),
-                created_from: ExecutionOrigin::DesktopUi,
-            })),
-        });
+        let fact =
+            SessionExecutionTreeRootFacts::new("session-1", "/repo", "/repo", ProviderKind::Codex)
+                .unwrap()
+                .started;
+        let detail = fact.encode_detail().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&detail).unwrap()["root"]["definition"]
+                ["entry"],
+            "session"
+        );
         assert_eq!(round_trip(fact.clone()), fact);
     }
 
     #[test]
     fn test_rootのstarted_provider固有permission値はdetail不一致として拒否する() {
-        let fact = NodeFact::Started(StartedFact {
-            parent: None,
-            root: Some(TreeRootFact::Session(SessionRootFact {
-                workspace_identity: "/repo".to_string(),
-                worktree_path: "/repo".to_string(),
-                session: crate::domain::workflow::SessionSpec {
-                    permission: Some(crate::domain::workflow::SessionPermission::Auto),
-                    ..Default::default()
-                },
-                created_from: ExecutionOrigin::DesktopUi,
-            })),
-        });
+        let mut fact =
+            SessionExecutionTreeRootFacts::new("session-1", "/repo", "/repo", ProviderKind::Codex)
+                .unwrap()
+                .started;
+        let NodeFact::Started(StartedFact {
+            root: Some(root), ..
+        }) = &mut fact
+        else {
+            unreachable!();
+        };
+        let NodeKind::Session(spec) = &mut root.definition.nodes[0].kind else {
+            unreachable!();
+        };
+        spec.permission = Some(crate::domain::workflow::SessionPermission::Auto);
         let legacy_detail = fact
             .encode_detail()
             .unwrap()
@@ -296,5 +302,102 @@ mod detail_round_trip_tests {
             request_id: Some("req-1".to_string()),
         });
         assert_eq!(round_trip(fact.clone()), fact);
+    }
+}
+
+mod session_execution_tree_root_facts_tests {
+    use super::*;
+
+    #[test]
+    fn test_session実行木root構築_session_node一個のcanonical事実を返す() {
+        let session_id = "session-1";
+
+        let facts = SessionExecutionTreeRootFacts::new(
+            session_id,
+            "workspace-1",
+            "/repo",
+            ProviderKind::Claude,
+        )
+        .unwrap();
+
+        assert_eq!(facts.meta.tree_id, session_id);
+        assert_eq!(facts.meta.node_execution_id, session_id);
+        assert_eq!(facts.meta.parent_id, None);
+        assert_eq!(facts.meta.node_name, "session");
+        assert_eq!(facts.meta.kind, NodeKindName::Session);
+        assert_eq!(facts.meta.attempt, 1);
+        let NodeFact::Started(StartedFact {
+            parent: None,
+            root: Some(root),
+        }) = &facts.started
+        else {
+            panic!("started root fact expected");
+        };
+        assert_eq!(root.launched_as, ExecutionTreeLaunch::Session);
+        assert_eq!(root.definition.nodes.len(), 1);
+        assert_eq!(root.definition.entry, "session");
+        assert_eq!(root.definition.nodes[0].name, "session");
+        assert_eq!(root.definition.nodes[0].completion, NodeCompletion::Auto);
+        assert!(matches!(
+            root.definition.nodes[0].kind,
+            NodeKind::Session(SessionSpec {
+                provider: ProviderKind::Claude,
+                ..
+            })
+        ));
+        assert_eq!(
+            facts.attached,
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: session_id.to_string(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_session実行木root構築_空入力と空白だけの入力を各項目で拒否する() {
+        // When / Then
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new("", "workspace-1", "/repo", ProviderKind::Claude)
+                .unwrap_err(),
+            SessionExecutionTreeRootFactsError::SessionId
+        );
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new(" \t", "workspace-1", "/repo", ProviderKind::Claude)
+                .unwrap_err(),
+            SessionExecutionTreeRootFactsError::SessionId
+        );
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new("session-1", "", "/repo", ProviderKind::Claude)
+                .unwrap_err(),
+            SessionExecutionTreeRootFactsError::WorkspaceIdentity
+        );
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new("session-1", " \t", "/repo", ProviderKind::Claude)
+                .unwrap_err(),
+            SessionExecutionTreeRootFactsError::WorkspaceIdentity
+        );
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new(
+                "session-1",
+                "workspace-1",
+                "",
+                ProviderKind::Claude,
+            )
+            .unwrap_err(),
+            SessionExecutionTreeRootFactsError::WorktreePath
+        );
+        assert_eq!(
+            SessionExecutionTreeRootFacts::new(
+                "session-1",
+                "workspace-1",
+                " \t",
+                ProviderKind::Claude,
+            )
+            .unwrap_err(),
+            SessionExecutionTreeRootFactsError::WorktreePath
+        );
     }
 }

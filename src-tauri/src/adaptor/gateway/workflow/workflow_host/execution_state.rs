@@ -20,12 +20,6 @@ macro_rules! domain_workflow_execution {
 }
 pub(crate) use domain_workflow_execution;
 
-/// session_id → execution_id reverse index value.
-#[derive(Clone)]
-pub(crate) struct SessionWorkflowRef {
-    pub(crate) execution_id: String,
-}
-
 impl WorkflowExecutionAggregate {
     pub(crate) fn is_terminal(&self) -> bool {
         self.is_finished()

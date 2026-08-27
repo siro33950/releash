@@ -23,9 +23,9 @@ pub(crate) fn seed_workflow_session_facts(
     seed: WorkflowSessionFactSeed<'_>,
 ) -> Result<(), String> {
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
-        NodeKindName, SequenceSpec, SessionAttachedFact, SessionSpec, StartedFact, TreeRootFact,
-        WorkflowDefinition, WorkflowRootFact,
+        ChildEntry, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeDefinition,
+        NodeFact, NodeFactMeta, NodeKind, NodeKindName, SequenceSpec, SessionAttachedFact,
+        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition,
     };
 
     if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)?.is_empty() {
@@ -42,7 +42,7 @@ pub(crate) fn seed_workflow_session_facts(
                 kind: NodeKind::Sequence(SequenceSpec {
                     entry: None,
                     output: None,
-                    children: Vec::new(),
+                    children: vec![ChildEntry::reference("impl")],
                 }),
                 artifact: None,
                 input: Vec::new(),
@@ -86,13 +86,18 @@ pub(crate) fn seed_workflow_session_facts(
         &root_meta,
         &NodeFact::Started(StartedFact {
             parent: None,
-            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                workflow_name: seed.workflow_name.to_string(),
+            root: Some(TreeRootFact {
+                workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(
+                    seed.worktree_path,
+                )
+                .as_str()
+                .to_string(),
                 worktree_path: seed.worktree_path.to_string(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: seed.request.to_string(),
                 definition,
-            })),
+                launched_as: ExecutionTreeLaunch::Workflow,
+            }),
         }),
         1,
     )?;

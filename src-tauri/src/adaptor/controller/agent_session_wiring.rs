@@ -17,12 +17,14 @@ use crate::usecase::agent_session::{
     AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
     AgentSessionInterruptUsecase, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
     AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionUsecase,
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, ProviderAvailabilityUsecase,
+    ProviderAvailabilityUsecaseError, StartedExecutionTreeRegistrar,
+    StartedExecutionTreeRegistrationError,
 };
 use crate::usecase::provider_lifecycle::{
+    ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase,
-    ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase, ProviderWorkflowStopCommand,
-    ProviderWorkflowStopTransaction,
+    ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
@@ -54,30 +56,114 @@ pub(crate) struct AgentSessionComposition {
     pub(crate) read: Arc<AgentSessionReadUsecase>,
     pub(crate) provider_availability: Arc<ProviderAvailabilityUsecase>,
     pub(crate) availability_reader: Arc<dyn ProviderAvailabilityReader>,
-    pub(crate) workflow_stops: Arc<DeferredProviderWorkflowStopTransaction>,
+    pub(crate) execution_tree_stops: Arc<DeferredProviderExecutionTreeStopTransaction>,
+    pub(crate) execution_tree_registrations: Arc<DeferredStartedExecutionTreeRegistrar>,
 }
 
-pub(crate) struct DeferredProviderWorkflowStopTransaction {
-    target: std::sync::RwLock<Option<Arc<dyn ProviderWorkflowStopTransaction>>>,
+pub(crate) struct DeferredStartedExecutionTreeRegistrar {
+    target: std::sync::RwLock<Option<std::sync::Weak<dyn StartedExecutionTreeRegistrar>>>,
 }
 
-impl DeferredProviderWorkflowStopTransaction {
+impl DeferredStartedExecutionTreeRegistrar {
     fn new() -> Self {
         Self {
             target: std::sync::RwLock::new(None),
         }
     }
 
-    pub(crate) fn bind(&self, target: Arc<dyn ProviderWorkflowStopTransaction>) {
-        *self.target.write().expect("workflow Stop router poisoned") = Some(target);
+    pub(crate) fn bind(&self, target: Arc<dyn StartedExecutionTreeRegistrar>) {
+        *self
+            .target
+            .write()
+            .expect("execution tree registrar poisoned") = Some(Arc::downgrade(&target));
     }
 }
 
 #[async_trait::async_trait]
-impl ProviderWorkflowStopTransaction for DeferredProviderWorkflowStopTransaction {
+impl StartedExecutionTreeRegistrar for DeferredStartedExecutionTreeRegistrar {
+    async fn reserve_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| StartedExecutionTreeRegistrationError::Corrupt)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
+        target.reserve_started_execution_tree(tree_id).await
+    }
+
+    async fn register_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| StartedExecutionTreeRegistrationError::Corrupt)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
+        target.register_started_execution_tree(tree_id).await
+    }
+
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| StartedExecutionTreeRegistrationError::Corrupt)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(StartedExecutionTreeRegistrationError::Unavailable)?;
+        target
+            .release_started_execution_tree_reservation(tree_id)
+            .await
+    }
+
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        let target = self
+            .target
+            .read()
+            .map_err(|_| ExecutionTreeCacheReleaseError::Corrupt)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(ExecutionTreeCacheReleaseError::Unavailable)?;
+        target.release_deleted_execution_tree(tree_id).await
+    }
+}
+
+pub(crate) struct DeferredProviderExecutionTreeStopTransaction {
+    target: std::sync::RwLock<Option<Arc<dyn ProviderExecutionTreeStopTransaction>>>,
+}
+
+impl DeferredProviderExecutionTreeStopTransaction {
+    fn new() -> Self {
+        Self {
+            target: std::sync::RwLock::new(None),
+        }
+    }
+
+    pub(crate) fn bind(&self, target: Arc<dyn ProviderExecutionTreeStopTransaction>) {
+        *self
+            .target
+            .write()
+            .expect("execution tree Stop router poisoned") = Some(target);
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderExecutionTreeStopTransaction for DeferredProviderExecutionTreeStopTransaction {
     async fn commit_provider_stop(
         &self,
-        command: ProviderWorkflowStopCommand,
+        command: ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
     ) -> Result<(), ProviderLifecycleIngressUsecaseError> {
         let target = self
@@ -114,13 +200,14 @@ pub(crate) fn compose_agent_sessions(
             input.data_dir.clone(),
         )),
     ));
-    let workflow_stops = Arc::new(DeferredProviderWorkflowStopTransaction::new());
+    let execution_tree_stops = Arc::new(DeferredProviderExecutionTreeStopTransaction::new());
+    let execution_tree_registrations = Arc::new(DeferredStartedExecutionTreeRegistrar::new());
     let lifecycle_ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
         provider_lifecycle.clone(),
         sessions.clone(),
         hook_health.clone(),
         session_repository.clone(),
-        workflow_stops.clone(),
+        execution_tree_stops.clone(),
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
@@ -138,23 +225,26 @@ pub(crate) fn compose_agent_sessions(
     let history_read = Arc::new(AgentSessionHistoryReadUsecase::new(Arc::new(
         LocalAgentSessionHistoryQueryService::new(history_gateway.clone(), session_repository),
     )));
-    let launch = Arc::new(AgentSessionLaunchUsecase::new(
-        sessions.clone(),
-        provider_lifecycle.clone(),
+    let provider_runtime = ProviderAgentRuntime::new(
         availability_reader.clone(),
         launch_gateway.clone(),
         input.terminal.clone(),
+    );
+    let launch = Arc::new(AgentSessionLaunchUsecase::new(
+        sessions.clone(),
+        provider_lifecycle.clone(),
+        provider_runtime.clone(),
         history_gateway,
         hook_health.clone(),
+        execution_tree_registrations.clone(),
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         provider_lifecycle.clone(),
-        launch_gateway,
-        availability_reader.clone(),
-        input.terminal.clone(),
+        provider_runtime,
         hook_health.clone(),
         input.change_notifier.clone(),
+        execution_tree_registrations.clone(),
     ));
     let query: Arc<dyn AgentSessionQueryService> =
         Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));
@@ -197,6 +287,7 @@ pub(crate) fn compose_agent_sessions(
         read,
         provider_availability,
         availability_reader,
-        workflow_stops,
+        execution_tree_stops,
+        execution_tree_registrations,
     })
 }

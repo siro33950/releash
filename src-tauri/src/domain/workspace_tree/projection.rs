@@ -17,7 +17,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
     pub retry_predecessors: &'a std::collections::HashMap<String, String>,
-    pub standalone_session_id: Option<&'a str>,
+    pub accepts_explicit_retry: bool,
     pub started_at: f64,
     pub updated_at: f64,
     pub execution: &'a crate::domain::local_event::WorkflowExecutionMetadataRecord,
@@ -40,7 +40,7 @@ pub fn runtime_snapshot_nodes(
         workflow_definition,
         node_executions,
         retry_predecessors,
-        standalone_session_id,
+        accepts_explicit_retry,
         started_at,
         updated_at,
         execution,
@@ -79,14 +79,7 @@ pub fn runtime_snapshot_nodes(
                 predecessor_node_execution_id: predecessor_node_execution_id.clone(),
             });
         }
-        let session_id = node.session_id.as_deref().or_else(|| {
-            (node.parent.is_none()
-                && node.kind == crate::domain::workflow::NodeKindName::Session
-                && node.id == execution_id)
-                .then_some(standalone_session_id)
-                .flatten()
-        });
-        if let Some(session_id) = session_id {
+        if let Some(session_id) = node.session_id.as_deref() {
             facts.push(F::NodeAgentBound {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
@@ -173,6 +166,7 @@ pub fn runtime_snapshot_nodes(
         node.completion_signals = runtime.completion_signals;
         node.has_artifact = runtime.artifact.is_some();
         node.can_retry = node.recovery_owner_reason.is_none()
+            && accepts_explicit_retry
             && runtime.can_retry()
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
@@ -329,7 +323,7 @@ mod tests {
             workflow_definition: &definition,
             node_executions: &node_executions,
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -384,9 +378,9 @@ mod tests {
             workflow_name: "workflow",
             workspace_identity: "/repo",
             workflow_definition: &definition,
-            node_executions: &[waiting],
+            node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -395,16 +389,33 @@ mod tests {
         })
         .unwrap();
 
-        let waiting = nodes
+        let waiting_node = nodes
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("waiting-submit"))
             .unwrap();
         assert_eq!(
-            waiting.completion_signals,
+            waiting_node.completion_signals,
             NodeCompletionSignalState::SubmitReceived
         );
-        assert!(waiting.has_artifact);
-        assert!(waiting.can_retry);
+        assert!(waiting_node.has_artifact);
+        assert!(waiting_node.can_retry);
+
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "session",
+            workspace_identity: "/repo",
+            workflow_definition: &definition,
+            node_executions: &[waiting.clone()],
+            retry_predecessors: &std::collections::HashMap::new(),
+            accepts_explicit_retry: false,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+        })
+        .unwrap();
+        assert!(!nodes[0].can_retry);
     }
 
     #[test]
@@ -440,7 +451,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[first, second, latest, loop_visit],
             retry_predecessors: &retry_predecessors,
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -516,7 +527,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -556,7 +567,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -593,7 +604,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -650,7 +661,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -704,7 +715,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[paused],
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
@@ -765,7 +776,7 @@ mod tests {
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
-            standalone_session_id: None,
+            accepts_explicit_retry: true,
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,

@@ -1,7 +1,11 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use super::{AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, AgentSessionUsecase};
+use super::{
+    AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, AgentSessionUsecase,
+    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, StartedExecutionTreeRegistrar,
+    StartedExecutionTreeRegistrationError,
+};
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
@@ -9,8 +13,8 @@ use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionTreeParent, ManagedPtyPresence,
-    ResolvedProviderExecutable,
+    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionTreeLocation,
+    ManagedPtyPresence, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -30,9 +34,46 @@ use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwne
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::{ProviderHookHealthUsecase, ProviderLifecycleUsecase};
 
+fn session_location(id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::session_tree_root(id).unwrap()
+}
+
+fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
+}
+
 #[derive(Default)]
 struct RecordingChangeNotifier {
     notified: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct RecordingExecutionTrees {
+    releases: Mutex<Vec<String>>,
+    release_error: Mutex<Option<ExecutionTreeCacheReleaseError>>,
+}
+
+#[async_trait::async_trait]
+impl StartedExecutionTreeRegistrar for RecordingExecutionTrees {
+    async fn register_started_execution_tree(
+        &self,
+        _tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        Ok(())
+    }
+
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        self.releases.lock().unwrap().push(tree_id.to_string());
+        self.release_error
+            .lock()
+            .unwrap()
+            .as_ref()
+            .copied()
+            .map_or(Ok(()), Err)
+    }
 }
 
 impl crate::usecase::agent_session::AgentSessionChangeNotifier for RecordingChangeNotifier {
@@ -318,6 +359,7 @@ struct LifecycleTestContext {
     provider_lifecycle: Arc<ProviderLifecycleUsecase>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     change_notifier: Arc<RecordingChangeNotifier>,
+    execution_trees: Arc<RecordingExecutionTrees>,
 }
 
 fn setup() -> LifecycleTestContext {
@@ -339,14 +381,18 @@ fn setup() -> LifecycleTestContext {
         MemoryHookHealthRepository::default(),
     )));
     let change_notifier = Arc::new(RecordingChangeNotifier::default());
+    let execution_trees = Arc::new(RecordingExecutionTrees::default());
     let usecase = AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         lifecycle.clone(),
-        launches.clone(),
-        Arc::new(AlwaysProviderAvailable),
-        terminal.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(AlwaysProviderAvailable),
+            launches.clone(),
+            terminal.clone(),
+        ),
         hook_health.clone(),
         change_notifier.clone(),
+        execution_trees.clone(),
     );
     LifecycleTestContext {
         _directory: directory,
@@ -358,6 +404,7 @@ fn setup() -> LifecycleTestContext {
         provider_lifecycle: lifecycle,
         hook_health,
         change_notifier,
+        execution_trees,
     }
 }
 
@@ -393,7 +440,7 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            workflow_location("workflow-1", "node-1"),
             "create-workflow-agent",
         )
         .await
@@ -418,7 +465,7 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
         .unwrap();
 
     lifecycle
-        .stop_workflow_owned_preserving_checkpoint(
+        .stop_for_terminal_execution_tree_node_preserving_checkpoint(
             "workflow-agent",
             "node-1",
             "stop-workflow-agent",
@@ -474,6 +521,83 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
 }
 
 #[tokio::test]
+async fn test_session起動木node終端停止_checkpoint保持とlaunch資源解放まで行う() {
+    let LifecycleTestContext {
+        _directory,
+        sessions,
+        lifecycle,
+        launches,
+        terminal,
+        provider_lifecycle,
+        ..
+    } = setup();
+    sessions
+        .create(
+            "standalone-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("standalone-agent"),
+            "create-standalone-agent",
+        )
+        .await
+        .unwrap();
+    sessions
+        .associate_provider_session(
+            "standalone-agent",
+            "provider-standalone",
+            Some("provider://transcript/standalone"),
+            "associate-standalone-agent",
+        )
+        .await
+        .unwrap();
+    let scope = ProviderLifecycleScope::new("standalone-agent").unwrap();
+    provider_lifecycle
+        .arm(
+            ProviderLifecycleSlotId::new("standalone-agent-slot").unwrap(),
+            ProviderKind::Claude,
+            scope.clone(),
+        )
+        .await
+        .unwrap();
+
+    lifecycle
+        .stop_for_terminal_execution_tree_node_preserving_checkpoint(
+            "standalone-agent",
+            "standalone-agent",
+            "stop-standalone-agent",
+        )
+        .await
+        .unwrap();
+
+    let stopped = sessions.find("standalone-agent").await.unwrap().unwrap();
+    assert_eq!(stopped.session().lifecycle(), AgentSessionLifecycle::Paused);
+    assert!(!stopped.session().last_exit_abnormal());
+    assert_eq!(
+        stopped.session().provider_session_id(),
+        Some("provider-standalone")
+    );
+    assert_eq!(
+        stopped.session().transcript_ref(),
+        Some("provider://transcript/standalone")
+    );
+    assert_eq!(
+        *terminal.presence.lock().unwrap(),
+        ManagedPtyPresence::ConfirmedAbsent
+    );
+    assert_eq!(terminal.stops.lock().unwrap().len(), 1);
+    assert_eq!(
+        launches.cleanups.lock().unwrap().as_slice(),
+        &["standalone-agent"]
+    );
+    assert!(provider_lifecycle
+        .active_launch_id(ProviderKind::Claude, &scope)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn test_workflow所有agent_session停止_provider未確定でもgcせずpausedで保持する() {
     let LifecycleTestContext {
         _directory,
@@ -503,14 +627,14 @@ async fn test_workflow所有agent_session停止_provider未確定でもgcせずp
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            workflow_location("workflow-1", "node-1"),
             "create-workflow-agent-unknown",
         )
         .await
         .unwrap();
 
     lifecycle
-        .stop_workflow_owned_preserving_checkpoint(
+        .stop_for_terminal_execution_tree_node_preserving_checkpoint(
             "workflow-agent-unknown",
             "node-1",
             "stop-workflow-agent-unknown",
@@ -555,7 +679,7 @@ async fn test_workflow所有agent_session停止_provider未確定でもgcせずp
 }
 
 #[tokio::test]
-async fn test_workflow所有agent_session停止_ownership不一致と停止失敗ではsettleしない() {
+async fn test_実行木node終端停止_node不一致と停止失敗ではsettleしない() {
     let LifecycleTestContext {
         _directory,
         store,
@@ -585,7 +709,7 @@ async fn test_workflow所有agent_session停止_ownership不一致と停止失�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            Some(AgentSessionTreeParent::new("workflow-1", "node-1").unwrap()),
+            workflow_location("workflow-1", "node-1"),
             "create-workflow-agent",
         )
         .await
@@ -596,7 +720,7 @@ async fn test_workflow所有agent_session停止_ownership不一致と停止失�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("manual-agent"),
             "create-manual-agent",
         )
         .await
@@ -604,7 +728,7 @@ async fn test_workflow所有agent_session停止_ownership不一致と停止失�
 
     assert_eq!(
         lifecycle
-            .stop_workflow_owned_preserving_checkpoint(
+            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
                 "workflow-agent",
                 "different-node",
                 "stop-wrong-node",
@@ -615,7 +739,7 @@ async fn test_workflow所有agent_session停止_ownership不一致と停止失�
     );
     assert_eq!(
         lifecycle
-            .stop_workflow_owned_preserving_checkpoint(
+            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
                 "manual-agent",
                 "node-1",
                 "stop-manual-agent",
@@ -629,7 +753,11 @@ async fn test_workflow所有agent_session停止_ownership不一致と停止失�
     *terminal.fail_stop.lock().unwrap() = true;
     assert_eq!(
         lifecycle
-            .stop_workflow_owned_preserving_checkpoint("workflow-agent", "node-1", "stop-failure",)
+            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
+                "workflow-agent",
+                "node-1",
+                "stop-failure",
+            )
             .await
             .unwrap_err(),
         super::AgentSessionLifecycleUsecaseError::TerminalUnavailable
@@ -656,6 +784,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
         launches,
         terminal,
         provider_lifecycle,
+        execution_trees,
         ..
     } = setup();
     sessions
@@ -664,7 +793,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-1"),
             "create-1",
         )
         .await
@@ -705,6 +834,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
         lifecycle.archive("agent-1", "archive-1").await.unwrap(),
         AgentSessionArchiveOutcome::Archived
     );
+    assert!(execution_trees.releases.lock().unwrap().is_empty());
     assert_eq!(terminal.stops.lock().unwrap().len(), 1);
     assert_eq!(
         launches.cleanups.lock().unwrap().as_slice(),
@@ -758,10 +888,15 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
             .unwrap(),
         AgentSessionOpenOutcome::Restored
     );
+    assert!(execution_trees.releases.lock().unwrap().is_empty());
     lifecycle.archive("agent-1", "archive-2").await.unwrap();
     lifecycle.delete("agent-1", "delete-1").await.unwrap();
     assert!(sessions.find("agent-1").await.unwrap().is_none());
     assert_eq!(terminal.deletes.lock().unwrap().len(), 1);
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        &["agent-1"]
+    );
     assert_eq!(
         launches.cleanups.lock().unwrap().as_slice(),
         &["agent-1", "agent-1", "agent-1", "agent-1", "agent-1"]
@@ -786,7 +921,7 @@ async fn test_agent_session_lifecycle_unknown_idのprocess_exitをgcする() {
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-gc"),
             "create-gc",
         )
         .await
@@ -837,7 +972,7 @@ async fn test_agent_session_open_liveと生死不明では既存状態を破壊�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-open"),
             "create-open",
         )
         .await
@@ -879,7 +1014,7 @@ async fn test_agent_session_open_known_idを自動resumeし失敗時はpausedに
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-known"),
             "create-known",
         )
         .await
@@ -931,7 +1066,7 @@ async fn test_agent_session_open_pausedは明示resumeを待ちunknown_idはgc�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-paused"),
             "create-paused",
         )
         .await
@@ -961,7 +1096,7 @@ async fn test_agent_session_open_pausedは明示resumeを待ちunknown_idはgc�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-orphan"),
             "create-orphan",
         )
         .await
@@ -983,6 +1118,7 @@ async fn test_agent_session_gc再照合は確定不在かつunknown_idだけを�
         sessions,
         lifecycle,
         terminal,
+        execution_trees,
         ..
     } = setup();
     sessions
@@ -991,7 +1127,7 @@ async fn test_agent_session_gc再照合は確定不在かつunknown_idだけを�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-reconcile"),
             "create-reconcile",
         )
         .await
@@ -1016,6 +1152,99 @@ async fn test_agent_session_gc再照合は確定不在かつunknown_idだけを�
         super::AgentSessionGarbageCollectionOutcome::GarbageCollected
     );
     assert!(sessions.find("agent-reconcile").await.unwrap().is_none());
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        &["agent-reconcile"]
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_delete_execution_cache解放失敗でも削除を完了する() {
+    let LifecycleTestContext {
+        _directory,
+        sessions,
+        lifecycle,
+        execution_trees,
+        ..
+    } = setup();
+    sessions
+        .create(
+            "agent-delete-release-failure",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("agent-delete-release-failure"),
+            "create-delete-release-failure",
+        )
+        .await
+        .unwrap();
+    sessions
+        .associate_provider_session(
+            "agent-delete-release-failure",
+            "provider-delete-release-failure",
+            None,
+            "associate-delete-release-failure",
+        )
+        .await
+        .unwrap();
+    lifecycle
+        .archive(
+            "agent-delete-release-failure",
+            "archive-delete-release-failure",
+        )
+        .await
+        .unwrap();
+    *execution_trees.release_error.lock().unwrap() =
+        Some(ExecutionTreeCacheReleaseError::Unavailable);
+
+    lifecycle
+        .delete("agent-delete-release-failure", "delete-release-failure")
+        .await
+        .unwrap();
+
+    assert!(sessions
+        .find("agent-delete-release-failure")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn test_agent_session_gc_execution_cache解放失敗でも削除を完了する() {
+    let LifecycleTestContext {
+        _directory,
+        sessions,
+        lifecycle,
+        terminal,
+        execution_trees,
+        ..
+    } = setup();
+    sessions
+        .create(
+            "agent-gc-release-failure",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("agent-gc-release-failure"),
+            "create-gc-release-failure",
+        )
+        .await
+        .unwrap();
+    *terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+    *execution_trees.release_error.lock().unwrap() = Some(ExecutionTreeCacheReleaseError::Corrupt);
+
+    assert_eq!(
+        lifecycle
+            .reconcile_garbage_collection("agent-gc-release-failure", "gc-release-failure",)
+            .await
+            .unwrap(),
+        super::AgentSessionGarbageCollectionOutcome::GarbageCollected
+    );
+    assert!(sessions
+        .find("agent-gc-release-failure")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -1034,7 +1263,7 @@ async fn test_agent_session_resume_codexでも既知の配送失敗がなけれ�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-hook"),
             "create-hook",
         )
         .await
@@ -1076,7 +1305,7 @@ async fn test_agent_session_resume_spawn失敗時は未起動launchのhook警告
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-hook-spawn-failure"),
             "create-hook-spawn-failure",
         )
         .await
@@ -1134,7 +1363,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        None,
+        session_location("agent-save-failure"),
         "create-save-failure",
     )
     .await
@@ -1165,11 +1394,14 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
     let lifecycle = AgentSessionLifecycleUsecase::new(
         sessions,
         provider_lifecycle,
-        launches.clone(),
-        Arc::new(AlwaysProviderAvailable),
-        terminal.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(AlwaysProviderAvailable),
+            launches.clone(),
+            terminal.clone(),
+        ),
         hook_health,
         Arc::new(RecordingChangeNotifier::default()),
+        Arc::new(RecordingExecutionTrees::default()),
     );
 
     assert_eq!(
@@ -1205,7 +1437,7 @@ async fn test_agent_session_resume_残存bindingを解放して単一launchに�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-stale-binding"),
             "create-stale-binding",
         )
         .await
@@ -1261,7 +1493,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-concurrent-resume"),
             "create-concurrent-resume",
         )
         .await
@@ -1297,13 +1529,16 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions,
         provider_lifecycle,
-        launches,
-        Arc::new(AlwaysProviderAvailable),
-        terminal.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(AlwaysProviderAvailable),
+            launches,
+            terminal.clone(),
+        ),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
+        Arc::new(RecordingExecutionTrees::default()),
     ));
 
     let first = tokio::spawn({
@@ -1365,7 +1600,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-resume-archive"),
             "create-resume-archive",
         )
         .await
@@ -1397,13 +1632,16 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         provider_lifecycle,
-        launches,
-        Arc::new(AlwaysProviderAvailable),
-        terminal.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(AlwaysProviderAvailable),
+            launches,
+            terminal.clone(),
+        ),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
+        Arc::new(RecordingExecutionTrees::default()),
     ));
 
     let resume = tokio::spawn({
@@ -1465,7 +1703,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-concurrent-open"),
             "create-concurrent-open",
         )
         .await
@@ -1491,13 +1729,16 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(NoopLifecycleEvents),
         )),
-        Arc::new(RecordingResumeLaunches::default()),
-        Arc::new(AlwaysProviderAvailable),
-        terminal.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(AlwaysProviderAvailable),
+            Arc::new(RecordingResumeLaunches::default()),
+            terminal.clone(),
+        ),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
         Arc::new(RecordingChangeNotifier::default()),
+        Arc::new(RecordingExecutionTrees::default()),
     ));
 
     let first = tokio::spawn({
@@ -1547,7 +1788,7 @@ async fn test_agent_session_restore中のdeleteは復帰完了後の状態で拒
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-restore-delete"),
             "create-restore-delete",
         )
         .await
@@ -1629,7 +1870,7 @@ async fn test_agent_session_exit_open待機中に旧世代になったexitを反
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-open-stale-exit"),
             "create-open-stale-exit",
         )
         .await
@@ -1702,6 +1943,7 @@ async fn test_agent_session_archive縮退delete中のopenはdelete完了後に�
         sessions,
         lifecycle,
         terminal,
+        execution_trees,
         ..
     } = setup();
     sessions
@@ -1710,7 +1952,7 @@ async fn test_agent_session_archive縮退delete中のopenはdelete完了後に�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-fallback-delete-open"),
             "create-fallback-delete-open",
         )
         .await
@@ -1755,6 +1997,10 @@ async fn test_agent_session_archive縮退delete中のopenはdelete完了後に�
     release_sender.send(()).unwrap();
     fallback_delete.await.unwrap().unwrap();
     assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        &["agent-fallback-delete-open"]
+    );
+    assert_eq!(
         open.await.unwrap().unwrap_err(),
         super::AgentSessionLifecycleUsecaseError::NotFound
     );
@@ -1781,7 +2027,7 @@ async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通知�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-notify"),
             "create-notify",
         )
         .await

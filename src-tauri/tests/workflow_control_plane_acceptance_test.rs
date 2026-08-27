@@ -13,7 +13,7 @@ use releash_lib::terminal_surface::{
 };
 use releash_lib::workflow_control_plane_acceptance::{
     AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
-    AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus,
+    AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus, AcceptanceWorkspaceNodeStatus,
     WorkflowControlPlaneAcceptanceHost,
 };
 
@@ -925,6 +925,223 @@ async fn test_atui_042_retryは旧attemptを停止し新attemptのterminalを維
     assert_eq!(current.status, AcceptanceNodeExecutionStatus::Running);
     assert!(!current.submit_received);
     assert!(!current.stop_received);
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資源を解放する() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("standalone-session-tree");
+    let provider_launch_root = root.path().join("releash-data/provider-launches");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 4);
+    let session_id = host
+        .launch_manual_agent_session(
+            &worktree,
+            AcceptanceProvider::Claude,
+            "issue-1696-standalone",
+        )
+        .await
+        .unwrap();
+    let terminal_owner = owner(&worktree, &session_id);
+    let mut terminal = host
+        .terminal()
+        .attach("issue-1696-standalone".to_string(), terminal_owner.clone())
+        .unwrap();
+    host.terminal()
+        .write(terminal_owner.clone(), "standalone-input\r")
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(&host, &mut terminal, &terminal_owner, "provider-issue-1696").await;
+    assert!(host
+        .agent_session_has_active_launch_binding(&session_id)
+        .await
+        .unwrap());
+    assert_eq!(host.active_provider_process_count(), 1);
+    assert!(provider_launch_root.read_dir().unwrap().next().is_some());
+    host.submit(&session_id).await.unwrap();
+    let before_retry = host.execution_direct(&session_id).await.unwrap().unwrap();
+    assert_eq!(before_retry.node_executions.len(), 1);
+    assert!(before_retry.node_executions[0].submit_received);
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+
+    let local_api_error = host.retry(&session_id, &session_id).await.unwrap_err();
+    assert!(
+        local_api_error.starts_with("HTTP 400:"),
+        "{local_api_error}"
+    );
+    assert_eq!(
+        host.execution_direct(&session_id).await.unwrap().unwrap(),
+        before_retry
+    );
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+
+    let tauri_error = host
+        .retry_workspace_node_from_tauri(&worktree, &session_id)
+        .await
+        .unwrap_err();
+    assert!(
+        tauri_error.contains("invalid execution_id"),
+        "{tauri_error}"
+    );
+    assert_eq!(
+        host.execution_direct(&session_id).await.unwrap().unwrap(),
+        before_retry
+    );
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+
+    emit_provider_stop(&host, &mut terminal, &terminal_owner, "provider-issue-1696").await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let paused = host.agent_session_lifecycle(&session_id).await.unwrap()
+                == Some(AcceptanceAgentSessionLifecycle::Paused);
+            let binding_released = !host
+                .agent_session_has_active_launch_binding(&session_id)
+                .await
+                .unwrap();
+            let launch_resources_released = provider_launch_root
+                .read_dir()
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true);
+            if paused
+                && binding_released
+                && launch_resources_released
+                && host.active_provider_process_count() == 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Submit と Stop の完了後に AgentSession の起動資源が解放される");
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Paused)
+    );
+    assert!(host.terminal().get(terminal_owner).is_err());
+    assert!(!host
+        .agent_session_has_active_launch_binding(&session_id)
+        .await
+        .unwrap());
+    assert!(provider_launch_root
+        .read_dir()
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(true));
+    assert_eq!(host.active_provider_process_count(), 0);
+
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届きattentionになる() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("standalone-archive-restore");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 4);
+    let session_id = host
+        .launch_manual_agent_session(
+            &worktree,
+            AcceptanceProvider::Codex,
+            "issue-1696-archive-restore",
+        )
+        .await
+        .unwrap();
+    let terminal_owner = owner(&worktree, &session_id);
+    let mut terminal = host
+        .terminal()
+        .attach(
+            "issue-1696-archive-restore".to_string(),
+            terminal_owner.clone(),
+        )
+        .unwrap();
+    host.terminal()
+        .write(terminal_owner.clone(), "archive-restore-input\r")
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1696-archive-restore",
+    )
+    .await;
+
+    host.archive_agent_session(&session_id).await.unwrap();
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Archived)
+    );
+    assert!(host.execution_direct(&session_id).await.unwrap().is_some());
+    host.restore_agent_session(&session_id).await.unwrap();
+    assert_eq!(
+        host.agent_session_lifecycle(&session_id).await.unwrap(),
+        Some(AcceptanceAgentSessionLifecycle::Open)
+    );
+    let mut restored_terminal = host
+        .terminal()
+        .attach(
+            "issue-1696-archive-restore-restored".to_string(),
+            terminal_owner.clone(),
+        )
+        .unwrap();
+    receive_until(&mut restored_terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(
+        &host,
+        &mut restored_terminal,
+        &terminal_owner,
+        "provider-issue-1696-archive-restore",
+    )
+    .await;
+    let process_exited_count = host
+        .execution_fact_event_types(&session_id)
+        .unwrap()
+        .iter()
+        .filter(|event| event.as_str() == "process_exited")
+        .count();
+
+    emit_provider_stop(
+        &host,
+        &mut restored_terminal,
+        &terminal_owner,
+        "provider-issue-1696-archive-restore",
+    )
+    .await;
+
+    let execution = host.execution_direct(&session_id).await.unwrap().unwrap();
+    assert_eq!(
+        execution.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::Running
+    );
+    assert!(
+        execution.node_executions[0].stop_received,
+        "facts after restored Stop: {:?}",
+        host.execution_fact_event_types(&session_id).unwrap()
+    );
+    assert_eq!(
+        host.workspace_node_status(&session_id).unwrap(),
+        Some(AcceptanceWorkspaceNodeStatus::Attention)
+    );
+    assert_eq!(
+        host.execution_fact_event_types(&session_id)
+            .unwrap()
+            .iter()
+            .filter(|event| event.as_str() == "process_exited")
+            .count(),
+        process_exited_count
+    );
+
     host.shutdown().await.unwrap();
 }
 

@@ -7,6 +7,7 @@ mod provider_launch_gateway;
 mod provider_session_ownership;
 mod provider_terminal_gateway;
 pub mod repository;
+pub(crate) mod services;
 
 pub(crate) use launch_identity::launch_resource_id;
 

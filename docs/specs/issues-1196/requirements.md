@@ -15,7 +15,7 @@ terminal 化した workflow run の `WorkflowExecution` 本体を runtime の `e
 - 親 ISSUE #1191 の広域調査で特定した無制限増大経路の一つ（候補 C10）。#1191 本体（A群: 振る舞い不変・低リスクな純粋削減）から分離し、解放/復元の設計判断を要するため別 ISSUE（本 #1196）とした。詳細は `docs/specs/issues-1191/design.md`（候補 C10）を参照。
 - workflow runtime の `executions`（`run_id -> WorkflowExecution` の `Mutex<HashMap<String, WorkflowExecution>>`）は、terminal 化（Completed / Failed / Aborted）後も `WorkflowExecution` 本体を通常経路では削除しない。
   - 定義: `src-tauri/src/adaptor/gateway/workflow/runtime_engine_impl.rs` L161-167 付近。
-  - terminal 経路（L1948-1966 / L2730-2741 / L3316-3329 付近）は step session 解放・`session_workflow_refs` の cleanup・状態 broadcast のみを行い、`executions` からの削除は行わない。
+  - terminal 経路（L1948-1966 / L2730-2741 / L3316-3329 付近）は step session 解放・Session 逆引きの cleanup・状態 broadcast のみを行い、`executions` からの削除は行わない。
   - `execs.remove` は起動失敗系（RunStarted ログ書き込み失敗時のロールバック、L652 付近）でのみ呼ばれる。
 - `WorkflowExecution` は `step_history` / `step_outputs` / `workflow_variables` / `workflow_definition` を保持し、`to_snapshot()` / `to_workflow_state()` でも全フィールドを clone するため、run が大きいほど常駐量と状態 emit 時のピークが増える。
 - 旧バージョン（v0.3.53）の `workflow/engine.rs` にも同型の `executions` map と cleanup-only な terminal 経路が存在するため、これは v0.3.55 だけの新規混入ではなく、workflow 利用時の構造的問題である。

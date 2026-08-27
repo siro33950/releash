@@ -241,4 +241,4 @@ usecase が永続状態と runtime 状態の更新を確定した後に公開状
 - **永続化 mapper 互換性**: `workflow_runs/` JSON と event log 形状を維持しつつ domain model を分離するため、`command_models` mapper の欠落は run 復元・履歴・CLI 観測の回帰につながる。
 - **event projection の二重実装回避**: engine と CLI 双方が event から状態を再構成する（`reconstruct_state_from_events`）。README.md「同じ操作の実装は1つに集約」に従い、projection と read model 構築を gateway/query 側の単一経路に集約する。
 - **既存 edge case の扱い**: desktop / remote / CLI で behavior の範囲に意味論を揃える方針のため、旧実装固有の edge case をすべて保存するわけではない。既存テストが旧 edge case を固定している場合、仕様として残すか旧実装由来として整理するか判断する。
-- **WorkflowEngine 状態の分解**: in-memory `executions` / `session_workflow_refs` / `run_store` は永続状態と transient runtime state が同居している。domain Entity（永続意味論）と gateway の transient state（in-memory index）への分離境界を #1033 / #1036 で誤ると、active run 解決（`find_by_worktree` 系）の挙動回帰につながる。
+- **WorkflowEngine 状態の分解**: in-memory `executions` / Session 逆引き / `run_store` は永続状態と transient runtime state が同居している。domain Entity（永続意味論）と gateway の transient state（in-memory index）への分離境界を #1033 / #1036 で誤ると、active run 解決（`find_by_worktree` 系）の挙動回帰につながる。

@@ -82,6 +82,13 @@ mod tests {
             unreachable!()
         }
 
+        async fn register_started_execution_tree(
+            &self,
+            _tree_id: &str,
+        ) -> Result<(), WorkflowError> {
+            unreachable!()
+        }
+
         async fn approval_persisted(
             &self,
             _execution_id: &str,

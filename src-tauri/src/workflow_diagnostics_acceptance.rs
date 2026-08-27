@@ -173,6 +173,10 @@ impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
         Ok(())
     }
 
+    async fn register_started_execution_tree(&self, _tree_id: &str) -> Result<(), WorkflowError> {
+        Err(unsupported_runtime_operation())
+    }
+
     async fn approval_persisted(
         &self,
         _execution_id: &str,

@@ -5,6 +5,7 @@ use super::{
     AgentSessionGarbageCollectionPort, AgentSessionItemDto, AgentSessionLifecycleDto,
     AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto, AgentSessionProviderDto,
     AgentSessionQueryError, AgentSessionQueryService, AgentSessionReadUsecase,
+    AgentSessionTreeLocationDto,
 };
 use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
 use crate::domain::terminal_surface::{TerminalActivity, TerminalSurfaceOwner};
@@ -104,7 +105,10 @@ fn item(id: &str) -> AgentSessionItemDto {
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo/worktree".to_string(),
         provider: AgentSessionProviderDto::Claude,
-        tree_parent: None,
+        tree_location: AgentSessionTreeLocationDto {
+            tree_id: id.to_string(),
+            node_execution_id: id.to_string(),
+        },
         lifecycle: AgentSessionLifecycleDto::Open,
         provider_session_id: None,
         transcript_ref: None,

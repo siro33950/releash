@@ -261,6 +261,11 @@ impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
         Err(unavailable_workflow_runtime())
     }
 
+    async fn register_started_execution_tree(&self, _tree_id: &str) -> Result<(), WorkflowError> {
+        self.record_command();
+        Err(unavailable_workflow_runtime())
+    }
+
     async fn approval_persisted(
         &self,
         _execution_id: &str,

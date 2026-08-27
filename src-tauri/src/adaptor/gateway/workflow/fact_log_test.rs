@@ -6,7 +6,7 @@ use crate::domain::workflow::services::fact_replay::fold_execution_tree;
 use crate::domain::workflow::value_objects::ContractViolationRecord;
 use crate::domain::workflow::{
     ChildEntry, ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeKind,
-    RuntimeExecutionState, SequenceSpec, WorkflowDefinition,
+    RuntimeExecutionState, SequenceSpec, SessionExecutionTreeRootFacts, WorkflowDefinition,
 };
 
 const TREE: &str = "00000000-0000-4000-8000-00000000e001";
@@ -113,9 +113,9 @@ mod mapping_tests {
         assert_eq!(rows[0].row.event_type, "started");
         assert_eq!(rows[0].row.node_execution_id, "main-exec");
         assert!(rows[0].row.parent_id.is_none());
-        assert!(rows[0].row.detail.contains("\"tree\":\"workflow\""));
+        assert!(rows[0].row.detail.contains("\"launchedAs\":\"workflow\""));
         assert_eq!(rows[1].row.parent_id.as_deref(), Some("main-exec"));
-        assert!(!rows[1].row.detail.contains("\"tree\""));
+        assert!(!rows[1].row.detail.contains("\"launchedAs\""));
     }
 
     #[test]
@@ -295,11 +295,18 @@ mod mapping_tests {
 
 mod reconciliation_tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
     use crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
+    use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+    use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
     use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
     use crate::domain::workflow::{
         IsolatedWorktreeLedgerRepository, RepositoryWorktreeInventory, RuntimeExecutionState,
+    };
+    use crate::domain::workspace_tree::{
+        WorkspaceIdentity, WorkspaceNodeStatusClassification, WorkspaceTreeRepository,
     };
 
     fn open_store() -> (tempfile::TempDir, std::sync::Arc<LocalEventStore>) {
@@ -320,6 +327,67 @@ mod reconciliation_tests {
 
     fn row_count(store: &std::sync::Arc<LocalEventStore>) -> usize {
         read_tree_records(store, TREE).unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn test_session起動由来のstop受信済みnodeをreconcileしてもattentionを維持する() {
+        let (_root, store) = open_store();
+        let session_id = "agent-session-restart";
+        LocalAgentSessionRepository::new(store.clone())
+            .create(
+                AgentSession::create(
+                    session_id,
+                    WorkspaceIdentity::new("/repo"),
+                    "/repo",
+                    crate::domain::provider_lifecycle::ProviderKind::Codex,
+                    AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                )
+                .unwrap(),
+                "create-restart-session",
+            )
+            .await
+            .unwrap();
+        append_facts_for_events(
+            &store,
+            &[WorkflowEvent::NodeStopReceived {
+                execution_id: session_id.to_string(),
+                node_execution_id: session_id.to_string(),
+                timestamp: 2.0,
+            }],
+        )
+        .unwrap();
+        assert!(!read_tree_records(&store, session_id)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+
+        let mut new_id = test_id_source();
+        let reconciliation = reconcile_tree_pass(&store, session_id, 10.0, &mut new_id, None)
+            .unwrap()
+            .unwrap();
+
+        assert!(reconciliation.leaves.is_empty());
+        assert_eq!(
+            reconciliation
+                .folded
+                .aggregate
+                .node_execution(session_id)
+                .unwrap()
+                .completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived
+        );
+        assert!(!read_tree_records(&store, session_id)
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+        let node = SqliteWorkspaceTreeRepository::new(store)
+            .load_node(&WorkspaceIdentity::new("/repo"), session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            node.status_classification,
+            WorkspaceNodeStatusClassification::Attention
+        );
     }
 
     /// ISSUE 受け入れ基準: 任意の時点で kill しても、再起動後の reconciliation が
@@ -649,6 +717,36 @@ mod reconciliation_tests {
 mod round_trip_tests {
     use super::*;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
+    #[test]
+    fn test_session起動由来seedはrootとattachmentを同じdurable_batchで記録する() {
+        // Given: Session 起動由来の木を構成する root と attachment
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let session_id = "agent-session-seed-atomic";
+        let facts = SessionExecutionTreeRootFacts::new(
+            session_id,
+            "workspace-1",
+            "/repo/.worktrees/feature",
+            crate::domain::provider_lifecycle::ProviderKind::Codex,
+        )
+        .unwrap()
+        .into_facts();
+        store.fault_injector().arm_fail_after_participant_write(1);
+
+        // When: root 書き込み直後に batch を失敗させる
+        let failed = append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic");
+
+        // Then: root だけの中間状態は durable にならず、同じ batch を再試行できる
+        assert!(failed.is_err());
+        assert!(read_tree_records(&store, session_id).unwrap().is_empty());
+        append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic").unwrap();
+        let records = read_tree_records(&store, session_id).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].fact.event_type(), "started");
+        assert_eq!(records[1].fact.event_type(), "session_attached");
+    }
 
     /// エンジンが発するイベント列を写像して append した事実ログが、
     /// fold で同じ実行木として導出されることの統合確認。
@@ -752,9 +850,7 @@ mod round_trip_tests {
                 .map(|node| node.status),
             Some(RuntimeNodeExecutionStatus::Succeeded)
         );
-        let TreeRootFact::Workflow(root) = &tree.root else {
-            unreachable!();
-        };
+        let root = &tree.root;
         assert_eq!(
             root.definition
                 .node_by_name("run")

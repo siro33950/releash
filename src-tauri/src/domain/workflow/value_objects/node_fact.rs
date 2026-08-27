@@ -10,9 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::provider_lifecycle::ProviderKind;
+
 use super::{
-    ContractViolationRecord, ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind,
-    NodeKindName, SessionSpec, TokenUsage, WorkflowDefinition,
+    ContractViolationRecord, ExecutionOrigin, ExecutionParentRef, NodeCompletion, NodeDefinition,
+    NodeExecutionFailureKind, NodeKind, NodeKindName, SessionSpec, TokenUsage, WorkflowDefinition,
 };
 
 #[cfg(test)]
@@ -93,38 +95,119 @@ pub struct StartedFact {
 
 /// 木の実行構成。root node の started に記録され、fold が木全体を導出する
 /// 唯一の入力になる（定義 snapshot / worktree 参照 / 実行設定）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "tree")]
-pub enum TreeRootFact {
-    Workflow(WorkflowRootFact),
-    Session(SessionRootFact),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTreeLaunch {
+    Workflow,
+    Session,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkflowRootFact {
-    pub workflow_name: String,
-    /// 実行木が所属する worktree（正規化済みパス。workspace の同定もこの値）。
+pub struct TreeRootFact {
+    /// workspace の同定子。terminal surface の owner 鍵になるため、呼び出し側が
+    /// 指定した値を保持し、worktree_path から復元時に導出しない。
+    pub workspace_identity: String,
+    /// 実行木が所属する worktree の正規化済みパス。
     pub worktree_path: String,
     #[serde(with = "execution_origin_serde")]
     pub created_from: ExecutionOrigin,
     pub request: String,
+    #[serde(with = "workflow_definition_snapshot_serde")]
     pub definition: WorkflowDefinition,
+    pub launched_as: ExecutionTreeLaunch,
 }
 
-/// 単独 Session（定義なし1ノード木）の実行構成。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRootFact {
-    /// session が属する workspace の同定子（呼び出し側が指定した値を往復させる。
-    /// terminal surface の owner 鍵になるため worktree_path から導出しない）。
-    pub workspace_identity: String,
-    /// 実行木が所属する worktree（正規化済みパス）。
-    pub worktree_path: String,
-    /// session の実行設定（provider / model / permission）。
-    pub session: SessionSpec,
-    #[serde(with = "execution_origin_serde")]
-    pub created_from: ExecutionOrigin,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionExecutionTreeRootFactsError {
+    SessionId,
+    WorkspaceIdentity,
+    WorktreePath,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionExecutionTreeRootFacts {
+    pub meta: NodeFactMeta,
+    pub started: NodeFact,
+    pub attached: NodeFact,
+}
+
+impl SessionExecutionTreeRootFacts {
+    pub fn new(
+        session_id: impl Into<String>,
+        workspace_identity: impl Into<String>,
+        worktree_path: impl Into<String>,
+        provider: ProviderKind,
+    ) -> Result<Self, SessionExecutionTreeRootFactsError> {
+        let session_id = session_id.into();
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Err(SessionExecutionTreeRootFactsError::SessionId);
+        }
+        let workspace_identity = workspace_identity.into();
+        if workspace_identity.trim().is_empty() {
+            return Err(SessionExecutionTreeRootFactsError::WorkspaceIdentity);
+        }
+        let worktree_path = worktree_path.into();
+        if worktree_path.trim().is_empty() {
+            return Err(SessionExecutionTreeRootFactsError::WorktreePath);
+        }
+        let node_name = "session".to_string();
+        let meta = NodeFactMeta {
+            tree_id: session_id.to_string(),
+            node_execution_id: session_id.to_string(),
+            parent_id: None,
+            node_name: node_name.clone(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+        };
+        Ok(Self {
+            meta,
+            started: NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(TreeRootFact {
+                    workspace_identity,
+                    worktree_path,
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition: WorkflowDefinition {
+                        name: node_name.clone(),
+                        description: String::new(),
+                        builtin: false,
+                        schemas: Default::default(),
+                        nodes: vec![NodeDefinition {
+                            name: node_name.clone(),
+                            kind: NodeKind::Session(SessionSpec {
+                                provider,
+                                model: None,
+                                permission: None,
+                                facets: Default::default(),
+                            }),
+                            artifact: None,
+                            input: Vec::new(),
+                            completion: NodeCompletion::Auto,
+                            worktree: None,
+                        }],
+                        entry: node_name,
+                    },
+                    launched_as: ExecutionTreeLaunch::Session,
+                }),
+            }),
+            attached: NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: session_id.to_string(),
+                provider_session_id: None,
+                transcript_ref: None,
+                initial_instruction_admitted: false,
+            }),
+        })
+    }
+
+    pub fn into_facts(self) -> [(NodeFactMeta, NodeFact); 2] {
+        [
+            (self.meta.clone(), self.started),
+            (self.meta, self.attached),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,5 +416,47 @@ mod execution_origin_serde {
     {
         let value = String::deserialize(deserializer)?;
         ExecutionOrigin::from_public_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+mod workflow_definition_snapshot_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::WorkflowDefinition;
+
+    pub(super) fn serialize<S>(
+        definition: &WorkflowDefinition,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut value = serde_json::to_value(definition).map_err(serde::ser::Error::custom)?;
+        let fields = value
+            .as_object_mut()
+            .ok_or_else(|| serde::ser::Error::custom("workflow definition must be an object"))?;
+        fields.insert(
+            "entry".to_string(),
+            serde_json::Value::String(definition.entry.clone()),
+        );
+        value.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<WorkflowDefinition, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let fields = value
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("workflow definition must be an object"))?;
+        let entry = fields
+            .remove("entry")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| serde::de::Error::custom("workflow definition entry is required"))?;
+        let mut definition: WorkflowDefinition =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        definition.entry = entry;
+        Ok(definition)
     }
 }

@@ -7,13 +7,17 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
-use crate::domain::agent_session::aggregates::AgentSessionTreeParent;
+use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
 use crate::domain::agent_session::{
     ProviderAgentTerminalGatewayError, ProviderAgentTerminalInputGateway,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+
+fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
+}
 
 /// workflow engine が所有する実行木を模して、session が attach 済みの
 /// node を持つ tree を node_events に seed する。
@@ -85,7 +89,7 @@ async fn test_agent_session_initial_instruction_session操作lock解放後に送
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
+            workflow_location("workflow-execution-1", "node-execution-1"),
             "create-workflow-locked",
         )
         .await
@@ -152,7 +156,7 @@ async fn test_agent_session_initial_instruction_delivery不明でも永続化後
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            Some(AgentSessionTreeParent::new("workflow-execution-1", "node-execution-1").unwrap()),
+            workflow_location("workflow-execution-1", "node-execution-1"),
             "create-workflow",
         )
         .await

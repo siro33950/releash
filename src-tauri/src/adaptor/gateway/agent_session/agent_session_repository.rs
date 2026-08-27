@@ -3,15 +3,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+use super::session_facts::{locate_session, SessionLocation};
 use crate::adaptor::gateway::local_event_store::writer::PreparedNodeEvent;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log;
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionLifecycle, AgentSessionLifecycleEvent,
-    AgentSessionRemovalAuthorization, AgentSessionTreeParent,
+    AgentSessionRemovalAuthorization,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
+};
+use crate::domain::agent_session::services::{
+    derive_agent_session_fields, DerivedAgentSessionFields,
 };
 use crate::domain::agent_session::{
     AgentSessionHistoryGatewayError, AgentSessionOwnershipQuery, ProviderSessionOwnership,
@@ -28,8 +32,8 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::{
-    ExecutionOrigin, NodeFact, NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact,
-    SessionAttachedFact, SessionRootFact, StartedFact, TreeRootFact,
+    ExecutionTreeLaunch, NodeFact, NodeFactRecord, ProcessExitedFact, SessionAttachedFact,
+    SessionExecutionTreeRootFacts,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
@@ -46,16 +50,6 @@ pub(crate) struct LocalAgentSessionRepository {
     store: Arc<LocalEventStore>,
 }
 
-/// session の事実が載る木上の位置。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionLocation {
-    pub(crate) tree_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) parent_id: Option<String>,
-    pub(crate) node_name: String,
-    pub(crate) attempt: u32,
-}
-
 pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRepositoryError {
     match error {
         CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. } => {
@@ -67,19 +61,6 @@ pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRep
         CommitBatchError::CapacityExceeded
         | CommitBatchError::SequenceExhausted
         | CommitBatchError::Corrupt { .. } => AgentSessionRepositoryError::Corrupt,
-    }
-}
-
-impl SessionLocation {
-    fn meta(&self) -> NodeFactMeta {
-        NodeFactMeta {
-            tree_id: self.tree_id.clone(),
-            node_execution_id: self.node_execution_id.clone(),
-            parent_id: self.parent_id.clone(),
-            node_name: self.node_name.clone(),
-            kind: NodeKindName::Session,
-            attempt: self.attempt,
-        }
     }
 }
 
@@ -102,6 +83,7 @@ impl LocalAgentSessionRepository {
             &fact_log::FactLogReadBackend::Live(Arc::clone(&self.store)),
             session_id,
         )
+        .map_err(|_| AgentSessionRepositoryError::Unavailable)
     }
 
     fn session_event_rows(
@@ -359,7 +341,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         ) {
             return Err(AgentSessionRepositoryError::InvalidRequest);
         }
-        if session.tree_parent().is_none() {
+        if session.tree_location().launched_as() == ExecutionTreeLaunch::Session {
             if let Some(location) = self.locate(session.id())? {
                 let expected_id = crate::domain::agent_session::launch_resource_id(
                     "agent-session",
@@ -375,6 +357,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 if existing.session().workspace() != session.workspace()
                     || existing.session().worktree_path() != session.worktree_path()
                     || existing.session().provider() != session.provider()
+                    || existing.session().tree_location() != session.tree_location()
                 {
                     return Err(AgentSessionRepositoryError::Conflict);
                 }
@@ -394,7 +377,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 return Ok(existing);
             }
         }
-        if session.tree_parent().is_some() {
+        if session.tree_location().launched_as() == ExecutionTreeLaunch::Workflow {
             let lifecycle_stream = StreamId::provider_lifecycle(session.id())
                 .map_err(|_| AgentSessionRepositoryError::InvalidRequest)?;
             let persisted = self
@@ -410,6 +393,21 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 .value()
                 > 0;
             if persisted {
+                let existing = if let Some(location) = self.locate(session.id())? {
+                    let records = fact_log::read_tree_records(&self.store, &location.tree_id)
+                        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                    let existing = derive_session(session.id(), &location, &records)?;
+                    if existing.session().workspace() != session.workspace()
+                        || existing.session().worktree_path() != session.worktree_path()
+                        || existing.session().provider() != session.provider()
+                        || existing.session().tree_location() != session.tree_location()
+                    {
+                        return Err(AgentSessionRepositoryError::Conflict);
+                    }
+                    Some(existing)
+                } else {
+                    None
+                };
                 let rearm_request_id = format!(
                     "{caller_request_id}.rearm.{}",
                     lifecycle_binding_identity(&lifecycle_events)
@@ -423,62 +421,27 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                     "rearm",
                 )
                 .await?;
-                return Ok(VersionedAgentSession::restored(session, 1));
+                return Ok(existing.unwrap_or_else(|| VersionedAgentSession::restored(session, 1)));
             }
         }
-        let initial_instruction_admitted = domain_events.iter().any(|event| {
-            matches!(
-                event,
-                AgentSessionLifecycleEvent::InitialInstructionAdmitted
-            )
-        });
         let mut node_events = Vec::new();
-        if session.tree_parent().is_none() {
-            let meta = NodeFactMeta {
-                tree_id: session.id().to_string(),
-                node_execution_id: session.id().to_string(),
-                parent_id: None,
-                node_name: "session".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-            };
-            let fact = NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Session(SessionRootFact {
-                    workspace_identity: session.workspace().as_str().to_string(),
-                    worktree_path: session.worktree_path().to_string(),
-                    session: crate::domain::workflow::SessionSpec {
-                        provider: session.provider(),
-                        model: None,
-                        permission: None,
-                        facets: Default::default(),
-                    },
-                    created_from: ExecutionOrigin::DesktopUi,
-                })),
-            });
-            let pending = fact_log::pending_single_fact(&meta, &fact, now_ms())
-                .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
-            node_events.push(PreparedNodeEvent {
-                row: pending.row,
-                timestamp_ms: pending.timestamp_ms,
-                expect_tree_absent: true,
-            });
-        }
-        if initial_instruction_admitted && session.tree_parent().is_none() {
-            let location = SessionLocation {
-                tree_id: session.id().to_string(),
-                node_execution_id: session.id().to_string(),
-                parent_id: None,
-                node_name: "session".to_string(),
-                attempt: 1,
-            };
-            node_events.extend(self.session_event_rows(
-                &location,
+        if session.tree_location().launched_as() == ExecutionTreeLaunch::Session {
+            let root_facts = SessionExecutionTreeRootFacts::new(
                 session.id(),
-                &session,
-                &[AgentSessionLifecycleEvent::InitialInstructionAdmitted],
-                None,
-            )?);
+                session.workspace().as_str(),
+                session.worktree_path(),
+                session.provider(),
+            )
+            .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
+            for (index, (meta, fact)) in root_facts.into_facts().into_iter().enumerate() {
+                let pending = fact_log::pending_single_fact(&meta, &fact, now_ms())
+                    .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
+                node_events.push(PreparedNodeEvent {
+                    row: pending.row,
+                    timestamp_ms: pending.timestamp_ms,
+                    expect_tree_absent: index == 0,
+                });
+            }
         }
         self.commit_provider_batch(
             session.id(),
@@ -527,10 +490,10 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             return Err(AgentSessionRepositoryError::InvalidRequest);
         }
         let session = session.into_session();
-        if session.tree_parent().is_some() {
+        if session.tree_location().launched_as() == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionRepositoryError::InvalidRequest);
         }
-        let tree_id = session.id().to_string();
+        let tree_id = session.tree_location().tree_id().to_string();
         let mut removal = AgentSessionRemovalMutation {
             node_event_tree_id: tree_id,
             ownership_projection_id: None,
@@ -755,116 +718,34 @@ impl LocalAgentSessionRepository {
     }
 }
 
-/// session の位置解決: 単独 session は自分の木の root、workflow の子は
-/// attach された node。
-pub(crate) fn locate_session(
-    backend: &fact_log::FactLogReadBackend,
-    session_id: &str,
-) -> Result<Option<SessionLocation>, AgentSessionRepositoryError> {
-    let records = fact_log::read_tree_records_from(backend, session_id)
-        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-    if let Some(first) = records.first() {
-        if matches!(
-            &first.fact,
-            NodeFact::Started(started) if matches!(started.root, Some(TreeRootFact::Session(_)))
-        ) {
-            return Ok(Some(SessionLocation {
-                tree_id: first.meta.tree_id.clone(),
-                node_execution_id: first.meta.node_execution_id.clone(),
-                parent_id: None,
-                node_name: first.meta.node_name.clone(),
-                attempt: first.meta.attempt,
-            }));
-        }
-    }
-    let Some((tree_id, node_execution_id)) = fact_log::find_session_attachment(backend, session_id)
-        .map_err(|_| AgentSessionRepositoryError::Unavailable)?
-    else {
-        return Ok(None);
-    };
-    let records = fact_log::read_tree_records_from(backend, &tree_id)
-        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-    let Some(row) = records
-        .iter()
-        .find(|record| record.meta.node_execution_id == node_execution_id)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(SessionLocation {
-        tree_id,
-        node_execution_id,
-        parent_id: row.meta.parent_id.clone(),
-        node_name: row.meta.node_name.clone(),
-        attempt: row.meta.attempt,
-    }))
-}
-
 /// 事実行列から AgentSession を導出する。
-pub(crate) fn derive_session(
+fn derive_session(
     session_id: &str,
     location: &SessionLocation,
     records: &[NodeFactRecord],
 ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
-    let root = records
-        .first()
-        .and_then(|record| match &record.fact {
-            NodeFact::Started(started) => started.root.as_ref(),
-            _ => None,
-        })
-        .ok_or(AgentSessionRepositoryError::Corrupt)?;
-    let (workspace_identity, worktree_path, provider, tree_parent) = match root {
-        TreeRootFact::Session(session_root) => (
-            session_root.workspace_identity.clone(),
-            session_root.worktree_path.clone(),
-            session_root.session.provider,
-            None,
-        ),
-        TreeRootFact::Workflow(workflow_root) => {
-            let provider = workflow_root
-                .definition
-                .node_by_name(&location.node_name)
-                .and_then(|node| match &node.kind {
-                    crate::domain::workflow::NodeKind::Session(spec) => Some(spec.provider),
-                    _ => None,
-                })
-                .ok_or(AgentSessionRepositoryError::Corrupt)?;
-            let tree_parent = AgentSessionTreeParent::new(
-                location.tree_id.clone(),
-                location.node_execution_id.clone(),
-            )
-            .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
-            (
-                // workflow 木は workspace を持たない（workspace = 正規化 worktree）。
-                WorkspaceIdentity::new(&workflow_root.worktree_path)
-                    .as_str()
-                    .to_string(),
-                workflow_root.worktree_path.clone(),
-                provider,
-                Some(tree_parent),
-            )
-        }
-    };
-
-    // 状態導出の規則は domain（fact_replay）が所有する。
-    let view = crate::domain::workflow::services::fact_replay::derive_session_facts(
+    let DerivedAgentSessionFields {
+        tree_location,
+        provider,
+        workspace_identity,
+        worktree_path,
+        lifecycle,
+        session_facts: view,
+    } = derive_agent_session_fields(
         records,
+        &location.tree_id,
         &location.node_execution_id,
+        &location.node_name,
         session_id,
-    );
-    let lifecycle = if view.archived {
-        AgentSessionLifecycle::Archived
-    } else if view.exited {
-        AgentSessionLifecycle::Paused
-    } else {
-        AgentSessionLifecycle::Open
-    };
+    )
+    .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
 
     let mut session = AgentSession::create(
         session_id,
         WorkspaceIdentity::new(&workspace_identity),
-        worktree_path.clone(),
+        worktree_path,
         provider,
-        tree_parent,
+        tree_location,
     )
     .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
     session.take_uncommitted_events();

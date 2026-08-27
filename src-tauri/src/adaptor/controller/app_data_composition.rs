@@ -258,15 +258,17 @@ mod tests {
                 if let Some(action) = action {
                     match action {
                         OwnerQueryAction::AppendFacts(facts) => {
-                            for (meta, fact) in facts {
-                                crate::adaptor::gateway::workflow::fact_log::append_single_fact(
-                                    &self.inner,
-                                    &meta,
-                                    &fact,
-                                    1,
-                                )
-                                .expect("fact appended after candidate planning");
-                            }
+                            let seed_identity = facts
+                                .first()
+                                .map(|(meta, _)| meta.tree_id.as_str())
+                                .unwrap_or("owner-race-empty");
+                            crate::adaptor::gateway::workflow::fact_log::append_fact_batch_for_seed(
+                                &self.inner,
+                                &facts,
+                                1,
+                                seed_identity,
+                            )
+                            .expect("facts appended after candidate planning");
                             self.committed_action_count.fetch_add(1, Ordering::SeqCst);
                         }
                         OwnerQueryAction::FailRevalidation => {
@@ -296,29 +298,16 @@ mod tests {
         crate::domain::workflow::NodeFactMeta,
         crate::domain::workflow::NodeFact,
     )> {
-        use crate::domain::workflow::{
-            ExecutionOrigin, NodeFact, NodeFactMeta, NodeKindName, SessionRootFact, SessionSpec,
-            StartedFact, TreeRootFact,
-        };
-        vec![(
-            NodeFactMeta {
-                tree_id: session_id.to_string(),
-                node_execution_id: session_id.to_string(),
-                parent_id: None,
-                node_name: "session".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-            },
-            NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Session(SessionRootFact {
-                    workspace_identity: worktree_path.to_string(),
-                    worktree_path: worktree_path.to_string(),
-                    session: SessionSpec::default(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                })),
-            }),
-        )]
+        crate::domain::workflow::SessionExecutionTreeRootFacts::new(
+            session_id,
+            worktree_path,
+            worktree_path,
+            crate::domain::provider_lifecycle::ProviderKind::Claude,
+        )
+        .unwrap()
+        .into_facts()
+        .into_iter()
+        .collect()
     }
 
     fn workflow_root_facts(
@@ -329,9 +318,9 @@ mod tests {
         crate::domain::workflow::NodeFact,
     )> {
         use crate::domain::workflow::{
-            ExecutionOrigin, NodeCompletion, NodeDefinition, NodeFact, NodeFactMeta, NodeKind,
-            NodeKindName, SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition,
-            WorkflowRootFact,
+            ExecutionOrigin, ExecutionTreeLaunch, NodeCompletion, NodeDefinition, NodeFact,
+            NodeFactMeta, NodeKind, NodeKindName, SessionSpec, StartedFact, TreeRootFact,
+            WorkflowDefinition,
         };
         vec![(
             NodeFactMeta {
@@ -344,8 +333,8 @@ mod tests {
             },
             NodeFact::Started(StartedFact {
                 parent: None,
-                root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                    workflow_name: "wf".to_string(),
+                root: Some(TreeRootFact {
+                    workspace_identity: worktree_path.to_string(),
                     worktree_path: worktree_path.to_string(),
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
@@ -364,7 +353,8 @@ mod tests {
                         }],
                         entry: "main".to_string(),
                     },
-                })),
+                    launched_as: ExecutionTreeLaunch::Workflow,
+                }),
             }),
         )]
     }

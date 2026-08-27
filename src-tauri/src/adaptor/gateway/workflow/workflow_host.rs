@@ -50,7 +50,7 @@ use crate::domain::workflow::{
     ContractValidationResult, FailureClassification, FailureDisposition, NodeExecutionFailureKind,
     SchemaDef as DomainSchemaDef,
 };
-use crate::domain::workflow::{NodeKindName, WorkflowDefinition};
+use crate::domain::workflow::{ExecutionTreeLaunch, NodeKindName, WorkflowDefinition};
 use crate::infrastructure::process::command_runner::{
     self as workflow_command_runner, ActiveCommandHandle, CommandRunOutput, CommandRunnerError,
 };
@@ -68,8 +68,8 @@ use crate::usecase::workflow::runtime_resolver::{
 };
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 use crate::usecase::workflow::runtime_start_guard as workflow_runtime_start_guard;
-use execution_registry::{find_any_by_worktree, find_by_worktree};
-use execution_state::{DomainWorkflowExecution, SessionWorkflowRef};
+use execution_registry::find_any_by_worktree;
+use execution_state::DomainWorkflowExecution;
 use node_settings::WorkflowDefaults;
 use output_limit as workflow_output_limit;
 use prompt_rendering as workflow_prompt;
@@ -93,8 +93,8 @@ pub struct WorkflowRuntimeHost {
     /// `worktree_path` は `DomainWorkflowExecution.worktree_path` 属性として保持し、
     /// `worktree_path → execution_id` の補助解決は Execution Store の secondary index 経由で行う。
     executions: Arc<Mutex<HashMap<String, DomainWorkflowExecution>>>,
-    /// session_id（親・ステップ・並列子） → SessionWorkflowRef のマッピング
-    session_workflow_refs: Arc<Mutex<HashMap<String, SessionWorkflowRef>>>,
+    /// create commit 前の Session 実行木を startup reconciliation から保護する予約。
+    execution_tree_reservations: Arc<Mutex<HashSet<String>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
     execution_facet_contents: Arc<Mutex<HashMap<String, WorkflowFacetContents>>>,
     /// execution_id → runtime activation serialization lock.
@@ -297,6 +297,91 @@ impl WorkflowRuntimeHost {
         self.executions.lock().await.get(execution_id).cloned()
     }
 
+    pub(crate) async fn reserve_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        let mut reservations = self.execution_tree_reservations.lock().await;
+        if self.executions.lock().await.contains_key(tree_id) {
+            return Ok(());
+        }
+        reservations.insert(tree_id.to_string());
+        Ok(())
+    }
+
+    pub(crate) async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.execution_tree_reservations
+            .lock()
+            .await
+            .remove(tree_id);
+        Ok(())
+    }
+
+    async fn execution_tree_is_registered_or_reserved(&self, tree_id: &str) -> bool {
+        let reservations = self.execution_tree_reservations.lock().await;
+        self.executions.lock().await.contains_key(tree_id) || reservations.contains(tree_id)
+    }
+
+    pub(crate) async fn register_started_execution_tree<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        tree_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        if self.executions.lock().await.contains_key(tree_id) {
+            return Ok(());
+        }
+        let store = app
+            .try_state::<std::sync::Arc<
+                crate::adaptor::gateway::local_event_store::LocalEventStore,
+            >>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| {
+                WorkflowRuntimeError::SessionStore(
+                    "workflow SQLite event authority is not managed".to_string(),
+                )
+            })?;
+        let backend = workflow_fact_log::FactLogReadBackend::Live(store);
+        let folded = workflow_fact_log::fold_tree_from(&backend, tree_id)
+            .map_err(WorkflowRuntimeError::SessionStore)?
+            .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(tree_id.to_string()))?;
+        if !folded.aggregate.is_active() {
+            return Err(WorkflowRuntimeError::InvalidState(format!(
+                "execution tree '{tree_id}' is not active"
+            )));
+        }
+        if folded.aggregate.launched_as == ExecutionTreeLaunch::Workflow {
+            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
+            let metadata = WorkflowExecutionMetadata {
+                execution_id: model.id.clone(),
+                workflow_name: model.workflow_name.clone(),
+                status: model.status,
+                worktree_path: model.worktree_path.clone(),
+                current_node: model.current_node.clone(),
+                created_from: model.created_from,
+                started_at: model.started_at,
+                updated_at: model.updated_at,
+                completed_at: model.completed_at,
+                error_reason: model.error_reason.clone(),
+                interruption_reason: model.interruption_reason,
+                resume_from_node: model.resume_from_node.clone(),
+                total_token_usage: model.total_token_usage.clone(),
+            };
+            self.execution_store
+                .register_active_execution(metadata)
+                .await
+                .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
+        }
+        let mut executions = self.executions.lock().await;
+        if executions.contains_key(tree_id) {
+            return Ok(());
+        }
+        executions.insert(tree_id.to_string(), folded.aggregate);
+        Ok(())
+    }
+
     pub(crate) async fn commit_workflow_control_plane<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -366,7 +451,7 @@ impl WorkflowRuntimeHost {
     ) -> Self {
         Self {
             executions: Arc::new(Mutex::new(HashMap::new())),
-            session_workflow_refs: Arc::new(Mutex::new(HashMap::new())),
+            execution_tree_reservations: Arc::new(Mutex::new(HashSet::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
@@ -520,6 +605,7 @@ impl WorkflowRuntimeHost {
             request,
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
+            launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
         };
 
         let mut execs = self.executions.lock().await;
@@ -568,8 +654,6 @@ impl WorkflowRuntimeHost {
         &self,
         app: &tauri::AppHandle<R>,
     ) -> Result<(), WorkflowRuntimeError> {
-        use crate::domain::workflow::TreeRootFact;
-
         let _reconcile_guard = self.startup_recovery_lock.lock().await;
         let Some(store) = app.try_state::<std::sync::Arc<
             crate::adaptor::gateway::local_event_store::LocalEventStore,
@@ -592,7 +676,10 @@ impl WorkflowRuntimeHost {
             .map_err(WorkflowRuntimeError::SessionStore)?;
         let mut first_recovery_error = None;
         for tree_id in tree_ids {
-            if self.executions.lock().await.contains_key(&tree_id) {
+            if self
+                .execution_tree_is_registered_or_reserved(&tree_id)
+                .await
+            {
                 continue;
             }
             let now = current_timestamp();
@@ -622,16 +709,14 @@ impl WorkflowRuntimeHost {
             };
             let folded = reconciliation.folded;
             let pending_leaves = reconciliation.leaves;
-            if !matches!(folded.root, TreeRootFact::Workflow(_)) {
-                continue;
-            }
             if !folded.aggregate.is_active() {
                 continue;
             }
             // 導出状態を engine の作業状態（in-memory・非永続）として登録する。
-            let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
             let worktree_path = folded.aggregate.worktree_path.clone();
-            if model.status.is_active() {
+            if folded.aggregate.launched_as == ExecutionTreeLaunch::Workflow {
+                let model =
+                    crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
                 let metadata = WorkflowExecutionMetadata {
                     execution_id: model.id.clone(),
                     workflow_name: model.workflow_name.clone(),
@@ -679,28 +764,14 @@ impl WorkflowRuntimeHost {
                 let mut executions = self.executions.lock().await;
                 executions.insert(tree_id.clone(), folded.aggregate.clone());
             }
-            {
-                let mut refs = self.session_workflow_refs.lock().await;
-                for node in &folded.aggregate.node_executions {
-                    if let Some(session_id) = &node.session_id {
-                        refs.insert(
-                            session_id.clone(),
-                            SessionWorkflowRef {
-                                execution_id: tree_id.clone(),
-                            },
-                        );
-                    }
-                }
-            }
             // 4) 未起動または前進で生まれた leaf を起動する。失敗した tree は
             //    registry から戻し、次の reconciliation 呼び出しで再試行できるようにする。
             if !pending_leaves.is_empty() {
-                if let Err(error) = self.start_leaves(app, &worktree_path, pending_leaves).await {
+                if let Err(error) = self
+                    .start_leaves(app, &tree_id, &worktree_path, pending_leaves)
+                    .await
+                {
                     self.executions.lock().await.remove(&tree_id);
-                    self.session_workflow_refs
-                        .lock()
-                        .await
-                        .retain(|_, reference| reference.execution_id != tree_id);
                     first_recovery_error.get_or_insert(error);
                     continue;
                 }
@@ -833,8 +904,6 @@ impl WorkflowRuntimeHost {
         }
 
         // [04] post-commit: broadcast。ExecutionStarted は append 済みのため command は既に受理。
-        // session_workflow_refs への登録は node session 起動時（start_node_session /
-        // start_fanout_children）で行う。
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
 
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
@@ -843,7 +912,10 @@ impl WorkflowRuntimeHost {
         if let crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartLeaves(leaves) =
             applied.decision
         {
-            if let Err(e) = self.start_leaves(app, &worktree_path, leaves).await {
+            if let Err(e) = self
+                .start_leaves(app, &execution_id, &worktree_path, leaves)
+                .await
+            {
                 if let Err(settle_error) = self
                     .settle_runtime_failure(app, &worktree_path, &execution_id, &e)
                     .await
@@ -1003,6 +1075,7 @@ impl WorkflowRuntimeHost {
         let current = executions
             .get_mut(execution_id)
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+        let launched_as = current.launched_as;
         let persisted = transaction
             .persist_async(current, |events| async move {
                 if provider_events.is_empty() {
@@ -1063,9 +1136,12 @@ impl WorkflowRuntimeHost {
                     }
                 };
                 drop(executions);
-                if let Some(refreshed_snapshot) = refreshed_snapshot {
+                if launched_as == ExecutionTreeLaunch::Workflow {
+                    let Some(refreshed_snapshot) = refreshed_snapshot else {
+                        return Err(WorkflowRuntimeError::SessionStore(error));
+                    };
                     if let Err(refresh_error) = self
-                        .sync_state_after_required_event_commit(&refreshed_snapshot)
+                        .sync_state_after_required_event_commit(launched_as, &refreshed_snapshot)
                         .await
                     {
                         log::error!(
@@ -1079,10 +1155,15 @@ impl WorkflowRuntimeHost {
         let effects = durable.into_effects();
         drop(executions);
         self.spawn_committed_runtime_effects(effects);
-        if let Err(error) = self.sync_state_after_required_event_commit(&snapshot).await {
-            log::warn!(
-                "workflow {execution_id}: derived execution projection refresh failed after control-plane commit: {error}"
-            );
+        if launched_as == ExecutionTreeLaunch::Workflow {
+            if let Err(error) = self
+                .sync_state_after_required_event_commit(launched_as, &snapshot)
+                .await
+            {
+                log::warn!(
+                    "workflow {execution_id}: derived execution projection refresh failed after control-plane commit: {error}"
+                );
+            }
         }
         Ok(snapshot)
     }
@@ -1124,7 +1205,7 @@ impl WorkflowRuntimeHost {
                 continue;
             };
             if let Err(error) = sessions
-                .stop_workflow_agent_session_preserving_checkpoint(
+                .stop_agent_session_for_terminal_node_preserving_checkpoint(
                     &agent_session_id,
                     &node_execution_id,
                 )
@@ -1155,9 +1236,13 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    async fn cleanup_session_workflow_refs_by_execution_id(&self, execution_id: &str) {
-        let mut map = self.session_workflow_refs.lock().await;
-        map.retain(|_, r| r.execution_id != execution_id);
+    pub(crate) async fn release_deleted_execution_tree(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.executions.lock().await.remove(execution_id);
+        self.release_execution_facet_contents(execution_id).await;
+        Ok(())
     }
 
     async fn recovery_effects_suppressed(&self, execution_id: &str) -> bool {
@@ -1177,6 +1262,19 @@ impl WorkflowRuntimeHost {
         execs
             .get(execution_id)
             .and_then(|execution| RuntimeCommitSnapshot::from_execution(execution).ok())
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) async fn acceptance_state_by_execution_id(
+        &self,
+        execution_id: &str,
+    ) -> Option<crate::domain::workflow::WorkflowRuntimeSnapshot> {
+        let execs = self.executions.lock().await;
+        execs.get(execution_id)
+            .and_then(|execution| RuntimeCommitSnapshot::from_execution(execution).ok())
+            .map(
+                crate::usecase::workflow::runtime_snapshot::runtime_commit_snapshot_to_domain_snapshot,
+            )
     }
 
     async fn release_execution_facet_contents(&self, execution_id: &str) {
@@ -1211,25 +1309,26 @@ impl WorkflowRuntimeHost {
     async fn start_leaves<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
+        execution_id: &str,
         worktree_path: &str,
         leaves: Vec<LeafStart>,
     ) -> Result<(), WorkflowRuntimeError> {
         if leaves.is_empty() {
             return Ok(());
         }
-        let (execution_id, workflow, attempts_by_id) = {
+        let (workflow, attempts_by_id) = {
             let executions = self.executions.lock().await;
-            let (execution_id, exec) =
-                find_by_worktree(&executions, worktree_path).ok_or_else(|| {
-                    WorkflowRuntimeError::ExecutionNotFound(worktree_path.to_string())
-                })?;
+            let exec = executions
+                .get(execution_id)
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
             let attempts_by_id: HashMap<String, u32> = exec
                 .node_executions
                 .iter()
                 .map(|execution| (execution.id.clone(), execution.attempt))
                 .collect();
-            (execution_id.clone(), exec.workflow.clone(), attempts_by_id)
+            (exec.workflow.clone(), attempts_by_id)
         };
+        let execution_id = execution_id.to_string();
         let activation_gate = self.runtime_activation_gate(&execution_id).await;
         let activation_guard = activation_gate.lock.lock().await;
         let facet_contents = self
@@ -1324,7 +1423,7 @@ impl WorkflowRuntimeHost {
         // Session を先に全 prepare し、SessionAttached を一括 commit してから activate する。
         let mut session_setups: Vec<(String, String)> = Vec::with_capacity(session_plans.len());
         for (node_execution_id, launch_config, initial_instruction) in session_plans {
-            match self
+            let prepared = self
                 .workflow_agent_sessions
                 .prepare_workflow_agent_session(
                     worktree_path,
@@ -1333,15 +1432,9 @@ impl WorkflowRuntimeHost {
                     &node_execution_id,
                     &initial_instruction,
                 )
-                .await
-            {
+                .await;
+            match prepared {
                 Ok(session) => {
-                    self.session_workflow_refs.lock().await.insert(
-                        session.id.clone(),
-                        SessionWorkflowRef {
-                            execution_id: execution_id.clone(),
-                        },
-                    );
                     session_setups.push((node_execution_id, session.id));
                 }
                 Err(launch_error) => {
@@ -1354,44 +1447,7 @@ impl WorkflowRuntimeHost {
                 }
             }
         }
-        let mut activated_sessions = Vec::with_capacity(session_setups.len());
-        for (node_execution_id, session_id) in &session_setups {
-            match run_runtime_activation(
-                &activation_gate,
-                &execution_id,
-                "session",
-                self.workflow_agent_sessions
-                    .activate_workflow_agent_session(session_id, node_execution_id),
-            )
-            .await
-            {
-                Ok(()) => activated_sessions.push((node_execution_id.clone(), session_id.clone())),
-                Err(error) => {
-                    self.session_workflow_refs.lock().await.remove(session_id);
-                    if let Err(settlement_error) = self
-                        .settle_runtime_failure_for_node(
-                            app,
-                            worktree_path,
-                            &execution_id,
-                            node_execution_id,
-                            &error,
-                        )
-                        .await
-                    {
-                        return match self.rollback_prepared_sessions(&session_setups).await {
-                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
-                                format!("{settlement_error}; rollback failed: {rollback_error}"),
-                            )),
-                            None => Err(settlement_error),
-                        };
-                    }
-                    log::warn!(
-                        "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
-                    );
-                }
-            }
-        }
-        if !activated_sessions.is_empty() {
+        if !session_setups.is_empty() {
             let timestamp = current_timestamp();
             let commit_result: Result<RuntimeCommitSnapshot, WorkflowRuntimeError> = async {
                 let (snapshot_before, snapshot, events) = {
@@ -1401,7 +1457,7 @@ impl WorkflowRuntimeHost {
                     })?;
                     let snapshot_before = execution.clone();
                     let mut events = Vec::new();
-                    for (node_execution_id, session_id) in &activated_sessions {
+                    for (node_execution_id, session_id) in &session_setups {
                         if execution.attach_node_session(
                             node_execution_id,
                             session_id.clone(),
@@ -1433,7 +1489,7 @@ impl WorkflowRuntimeHost {
                 self.commit_required_events(
                     app,
                     RequiredEventCommit {
-                            execution_id: &execution_id,
+                        execution_id: &execution_id,
                         snapshot_for_commit: &snapshot,
                         snapshot_before,
                         execution_store_snapshot_before,
@@ -1448,7 +1504,7 @@ impl WorkflowRuntimeHost {
             let snapshot = match commit_result {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    return match self.rollback_prepared_sessions(&activated_sessions).await {
+                    return match self.rollback_prepared_sessions(&session_setups).await {
                         Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
                             "{error}; rollback failed: {rollback_error}"
                         ))),
@@ -1457,16 +1513,52 @@ impl WorkflowRuntimeHost {
                 }
             };
             workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
-            for (_, session_id) in &activated_sessions {
-                if let Err(error) = self
-                    .workflow_agent_sessions
-                    .confirm_workflow_agent_session_attachment(session_id)
-                    .await
-                {
+        }
+        let mut activated_sessions = Vec::with_capacity(session_setups.len());
+        for (node_execution_id, session_id) in &session_setups {
+            match run_runtime_activation(
+                &activation_gate,
+                &execution_id,
+                "session",
+                self.workflow_agent_sessions
+                    .activate_workflow_agent_session(session_id, node_execution_id),
+            )
+            .await
+            {
+                Ok(()) => activated_sessions.push((node_execution_id.clone(), session_id.clone())),
+                Err(error) => {
+                    if let Err(settlement_error) = self
+                        .settle_runtime_failure_for_node(
+                            app,
+                            worktree_path,
+                            &execution_id,
+                            node_execution_id,
+                            &error,
+                        )
+                        .await
+                    {
+                        return match self.rollback_prepared_sessions(&session_setups).await {
+                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
+                                format!("{settlement_error}; rollback failed: {rollback_error}"),
+                            )),
+                            None => Err(settlement_error),
+                        };
+                    }
                     log::warn!(
-                        "workflow {execution_id}: failed to release attached AgentSession '{session_id}' launch state: {error}"
+                        "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
                     );
                 }
+            }
+        }
+        for (_, session_id) in &activated_sessions {
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .confirm_workflow_agent_session_attachment(session_id)
+                .await
+            {
+                log::warn!(
+                    "workflow {execution_id}: failed to release attached AgentSession '{session_id}' launch state: {error}"
+                );
             }
         }
         drop(activation_guard);
@@ -1506,12 +1598,6 @@ impl WorkflowRuntimeHost {
         &self,
         session_setups: &[(String, String)],
     ) -> Option<WorkflowRuntimeError> {
-        {
-            let mut refs = self.session_workflow_refs.lock().await;
-            for (_, session_id) in session_setups {
-                refs.remove(session_id);
-            }
-        }
         let mut rollback_failure = None;
         for (node_execution_id, session_id) in session_setups {
             if let Err(error) = self
@@ -1991,8 +2077,12 @@ impl WorkflowRuntimeHost {
     /// Execution Store metadata はその projection として同期する。
     async fn sync_state_after_required_event_commit(
         &self,
+        launched_as: ExecutionTreeLaunch,
         snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowRuntimeError> {
+        if launched_as != ExecutionTreeLaunch::Workflow {
+            return Ok(());
+        }
         let execution_id = snapshot.execution_id.clone();
         workflow_runtime_commit::sync_execution_store_from_snapshot(
             &self.execution_store,
@@ -2031,7 +2121,7 @@ impl WorkflowRuntimeHost {
         // If another mutation already won, this stale commit emits no fact and performs no
         // rollback. On append failure, restore the driver snapshot before releasing the mutex so
         // no concurrent mutation can observe or overwrite the failed pre-commit state.
-        let append_result = {
+        let (append_result, launched_as) = {
             let mut executions = self.executions.lock().await;
             let Some(current) = executions.get_mut(execution_id) else {
                 return Err(RequiredEventCommitFailure::BeforeDurableAppend(
@@ -2047,6 +2137,7 @@ impl WorkflowRuntimeHost {
                     )),
                 ));
             }
+            let launched_as = current.launched_as;
             let transaction = match PreparedWorkflowTransaction::capture_applied(
                 snapshot_before.clone(),
                 current.clone(),
@@ -2063,7 +2154,7 @@ impl WorkflowRuntimeHost {
                 }
             };
             *current = snapshot_before;
-            transaction
+            let append_result = transaction
                 .persist(current, |events| self.write_log_required_batch(app, events))
                 .map(|durable| durable.into_effects())
                 .map_err(|error| match error {
@@ -2071,7 +2162,8 @@ impl WorkflowRuntimeHost {
                         "workflow transaction candidate became stale".to_string()
                     }
                     WorkflowTransactionCommitError::Persistence(error) => error,
-                })
+                });
+            (append_result, launched_as)
         };
         let effects = match append_result {
             Ok(effects) => effects,
@@ -2090,7 +2182,7 @@ impl WorkflowRuntimeHost {
         self.spawn_committed_runtime_effects(effects);
 
         if let Err(e) = self
-            .sync_state_after_required_event_commit(snapshot_for_commit)
+            .sync_state_after_required_event_commit(launched_as, snapshot_for_commit)
             .await
         {
             // Required events are the SQLite commit authority.  The
@@ -2104,7 +2196,7 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    /// [04] post-commit phase: cleanup_refs + broadcast. Every required
+    /// [04] post-commit phase: broadcast and runtime release. Every required
     /// transition/terminal event is already in the canonical commit; this
     /// phase contains only derived notifications and in-memory cleanup.
     async fn finalize_after_commit<R: tauri::Runtime>(
@@ -2118,10 +2210,6 @@ impl WorkflowRuntimeHost {
             snapshot.state,
             RuntimeExecutionState::Completed | RuntimeExecutionState::Aborted
         );
-        if is_finished {
-            self.cleanup_session_workflow_refs_by_execution_id(&execution_id)
-                .await;
-        }
         workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone()).await;
         if is_finished {
             self.release_terminal_execution(&execution_id).await;
@@ -2354,7 +2442,10 @@ impl WorkflowRuntimeHost {
         match outcome {
             NodeOutcome::Persist(_) => Ok(()),
             NodeOutcome::StartLeaves(snapshot, leaves) => {
-                if let Err(e) = Box::pin(self.start_leaves(app, worktree_path, leaves)).await {
+                if let Err(e) =
+                    Box::pin(self.start_leaves(app, &snapshot.execution_id, worktree_path, leaves))
+                        .await
+                {
                     if let Err(settle_error) = Box::pin(self.settle_runtime_failure(
                         app,
                         worktree_path,
@@ -2391,11 +2482,15 @@ impl WorkflowRuntimeHost {
 #[cfg(test)]
 mod workflow_host_tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
     use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
     use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::node_session_boundary::NodeSessionInfo;
     use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
+    use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
+    use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+    use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::local_event::{
         LoadStreamRequest, LocalEventTransactionRepository, StreamId,
     };
@@ -2403,11 +2498,15 @@ mod workflow_host_tests {
         ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
     };
     use crate::domain::workflow::{
-        ChildEntry, ExecutionParentRef, FacetRefs, NodeCompletion, NodeDefinition, NodeFact,
-        NodeFactMeta, NodeKind, SequenceSpec, SessionPermission, SessionRootFact, SessionSpec,
-        StartedFact, TreeRootFact, WorkflowRootFact,
+        ChildEntry, ExecutionParentRef, ExecutionTreeLaunch, FacetRefs, NodeCompletion,
+        NodeDefinition, NodeFact, NodeFactMeta, NodeKind, SequenceSpec,
+        SessionExecutionTreeRootFacts, SessionPermission, SessionSpec, StartedFact, TreeRootFact,
+        WorkflowDefinition,
     };
-    use crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand;
+    use crate::domain::workspace_tree::{
+        WorkspaceIdentity, WorkspaceNodeStatusClassification, WorkspaceTreeRepository,
+    };
+    use crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand;
     use crate::usecase::workflow::command::{ApprovalCommand, SubmitOutputCommand};
     use crate::usecase::workflow::control_plane::WorkflowControlPlaneUsecase;
     use crate::usecase::workflow::runtime_resolver::{
@@ -2462,6 +2561,7 @@ mod workflow_host_tests {
 
     struct RecordingWorkflowAgentSessions {
         stop_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        prepare_calls: Arc<std::sync::Mutex<Vec<(String, String, WorkflowSessionLaunchConfig)>>>,
         failing_agent_session_id: String,
     }
 
@@ -2675,7 +2775,7 @@ nodes:
             unreachable!()
         }
 
-        async fn stop_workflow_agent_session_preserving_checkpoint(
+        async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
             &self,
             _node_session_id: &str,
             _node_execution_id: &str,
@@ -2704,11 +2804,16 @@ nodes:
             async fn prepare_workflow_agent_session(
                 &self,
                 _worktree_path: &str,
-                _config: WorkflowSessionLaunchConfig,
-                _workflow_execution_id: &str,
-                _node_execution_id: &str,
+                config: WorkflowSessionLaunchConfig,
+                workflow_execution_id: &str,
+                node_execution_id: &str,
                 _initial_instruction: &str,
             ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+                self.prepare_calls.lock().unwrap().push((
+                    workflow_execution_id.to_string(),
+                    node_execution_id.to_string(),
+                    config,
+                ));
                 Ok(NodeSessionInfo {
                     id: EFFECT_AGENT_SESSION_ID.to_string(),
                 })
@@ -2745,7 +2850,7 @@ nodes:
                 Ok(())
             }
 
-            async fn stop_workflow_agent_session_preserving_checkpoint(
+            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
                 &self,
                 node_session_id: &str,
                 node_execution_id: &str,
@@ -2759,6 +2864,117 @@ nodes:
                         "intentional stop failure".to_string(),
                     ));
                 }
+                Ok(())
+            }
+
+            async fn rollback_workflow_agent_session(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+        }
+
+        struct StopDuringActivationWorkflowAgentSessions {
+            control_plane: tokio::sync::Mutex<Option<Arc<WorkflowControlPlaneUsecase>>>,
+            execution_id: std::sync::Mutex<Option<String>>,
+            activation_count: std::sync::atomic::AtomicUsize,
+            confirmation_count: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl WorkflowAgentSessionPort for StopDuringActivationWorkflowAgentSessions {
+            fn is_provider_available(&self, _provider: ProviderKind) -> bool {
+                true
+            }
+
+            async fn prepare_workflow_agent_session(
+                &self,
+                _worktree_path: &str,
+                _config: WorkflowSessionLaunchConfig,
+                workflow_execution_id: &str,
+                _node_execution_id: &str,
+                _initial_instruction: &str,
+            ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
+                *self.execution_id.lock().unwrap() = Some(workflow_execution_id.to_string());
+                Ok(NodeSessionInfo {
+                    id: EFFECT_AGENT_SESSION_ID.to_string(),
+                })
+            }
+
+            async fn activate_workflow_agent_session(
+                &self,
+                node_session_id: &str,
+                node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                self.activation_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let control_plane = self
+                    .control_plane
+                    .lock()
+                    .await
+                    .clone()
+                    .expect("control plane is bound before activation");
+                let execution_id = self
+                    .execution_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("execution id is recorded during prepare");
+                control_plane
+                    .record_provider_stop(
+                        ProviderExecutionTreeStopCommand {
+                            agent_session_id: node_session_id.to_string(),
+                            tree_id: execution_id,
+                            node_execution_id: node_execution_id.to_string(),
+                            binding_id: "binding-stop-during-activation".to_string(),
+                        },
+                        Vec::new(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        WorkflowRuntimeError::InvalidState(format!(
+                            "provider Stop during activation was rejected: {error}"
+                        ))
+                    })
+            }
+
+            async fn confirm_workflow_agent_session_attachment(
+                &self,
+                _node_session_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                assert_eq!(
+                    self.activation_count
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                self.confirmation_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn dispatch_initial_instruction(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+                _instruction: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn interrupt_workflow_agent_session(
+                &self,
+                _node_session_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
+                Ok(())
+            }
+
+            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
+                &self,
+                _node_session_id: &str,
+                _node_execution_id: &str,
+            ) -> Result<(), WorkflowRuntimeError> {
                 Ok(())
             }
 
@@ -2844,7 +3060,7 @@ nodes:
                 Ok(())
             }
 
-            async fn stop_workflow_agent_session_preserving_checkpoint(
+            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
                 &self,
                 node_session_id: &str,
                 node_execution_id: &str,
@@ -2917,7 +3133,7 @@ nodes:
                 Ok(())
             }
 
-            async fn stop_workflow_agent_session_preserving_checkpoint(
+            async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
                 &self,
                 _node_session_id: &str,
                 _node_execution_id: &str,
@@ -2966,6 +3182,7 @@ nodes:
             let sessions: Arc<dyn WorkflowAgentSessionPort> =
                 Arc::new(RecordingWorkflowAgentSessions {
                     stop_calls: stop_calls.clone(),
+                    prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
                     failing_agent_session_id: if stop_fails {
                         EFFECT_AGENT_SESSION_ID.to_string()
                     } else {
@@ -3187,10 +3404,12 @@ nodes:
             }
         }
 
-        fn provider_stop_command(fixture: &RuntimeEffectFixture) -> ProviderWorkflowStopCommand {
-            ProviderWorkflowStopCommand {
+        fn provider_stop_command(
+            fixture: &RuntimeEffectFixture,
+        ) -> ProviderExecutionTreeStopCommand {
+            ProviderExecutionTreeStopCommand {
                 agent_session_id: EFFECT_AGENT_SESSION_ID.to_string(),
-                workflow_execution_id: fixture.execution_id.clone(),
+                tree_id: fixture.execution_id.clone(),
                 node_execution_id: fixture.node_execution_id.clone(),
                 binding_id: "binding-effect-test".to_string(),
             }
@@ -3207,6 +3426,606 @@ nodes:
                 .find(|node| node.id == fixture.node_execution_id)
                 .unwrap()
                 .status
+        }
+
+        #[tokio::test]
+        async fn test_deleted実行木解放_executions_cacheを除去する() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            assert!(fixture
+                .host
+                .executions
+                .lock()
+                .await
+                .contains_key(&fixture.execution_id));
+            fixture
+                .host
+                .release_deleted_execution_tree(&fixture.execution_id)
+                .await
+                .unwrap();
+
+            assert!(!fixture
+                .host
+                .executions
+                .lock()
+                .await
+                .contains_key(&fixture.execution_id));
+        }
+
+        #[tokio::test]
+        async fn test_登録済みworkflow実行木の予約はno_opになる() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+
+            fixture
+                .host
+                .reserve_started_execution_tree(&fixture.execution_id)
+                .await
+                .unwrap();
+
+            assert!(!fixture
+                .host
+                .execution_tree_reservations
+                .lock()
+                .await
+                .contains(&fixture.execution_id));
+            assert!(fixture
+                .host
+                .executions
+                .lock()
+                .await
+                .contains_key(&fixture.execution_id));
+        }
+
+        #[tokio::test]
+        async fn test_started実行木登録_store未管理ならsession_storeを返す() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let unmanaged_app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+
+            let error = fixture
+                .host
+                .register_started_execution_tree(unmanaged_app.handle(), "unmanaged-tree")
+                .await
+                .unwrap_err();
+
+            assert!(matches!(error, WorkflowRuntimeError::SessionStore(_)));
+        }
+
+        #[tokio::test]
+        async fn test_started実行木登録_tree不在ならexecution_not_foundを返す() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let missing_tree_id = "missing-started-tree";
+
+            let error = fixture
+                .host
+                .register_started_execution_tree(fixture.app.handle(), missing_tree_id)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                WorkflowRuntimeError::ExecutionNotFound(tree_id) if tree_id == missing_tree_id
+            ));
+        }
+
+        #[tokio::test]
+        async fn test_started実行木登録_inactive_treeならinvalid_stateを返す() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let session_id = "inactive-started-tree";
+            LocalAgentSessionRepository::new(fixture.store.clone())
+                .create(
+                    AgentSession::create(
+                        session_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-inactive-started-tree",
+                )
+                .await
+                .unwrap();
+            workflow_fact_log::append_facts_for_events(
+                &fixture.store,
+                &[WorkflowEvent::ExecutionAborted {
+                    execution_id: session_id.to_string(),
+                    aborted_node: None,
+                    timestamp: 2.0,
+                }],
+            )
+            .unwrap();
+
+            let error = fixture
+                .host
+                .register_started_execution_tree(fixture.app.handle(), session_id)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(error, WorkflowRuntimeError::InvalidState(_)));
+        }
+
+        #[tokio::test]
+        async fn test_session実行木予約中のreconciliationは喪失を記録せず登録後のstopを保持する() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let session_id = "agent-session-reserved-before-commit";
+            fixture
+                .host
+                .reserve_started_execution_tree(session_id)
+                .await
+                .unwrap();
+            LocalAgentSessionRepository::new(fixture.store.clone())
+                .create(
+                    AgentSession::create(
+                        session_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-reserved-before-commit",
+                )
+                .await
+                .unwrap();
+
+            fixture
+                .host
+                .reconcile_startup(fixture.app.handle())
+                .await
+                .unwrap();
+
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            assert!(!records
+                .iter()
+                .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+            fixture
+                .host
+                .register_started_execution_tree(fixture.app.handle(), session_id)
+                .await
+                .unwrap();
+            fixture
+                .host
+                .release_started_execution_tree_reservation(session_id)
+                .await
+                .unwrap();
+            assert!(fixture
+                .host
+                .execution_tree_reservations
+                .lock()
+                .await
+                .is_empty());
+
+            fixture
+                .control_plane
+                .record_provider_stop(
+                    ProviderExecutionTreeStopCommand {
+                        agent_session_id: session_id.to_string(),
+                        tree_id: session_id.to_string(),
+                        node_execution_id: session_id.to_string(),
+                        binding_id: "binding-reserved-before-commit".to_string(),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            assert!(records
+                .iter()
+                .any(|record| matches!(record.fact, NodeFact::StopReceived(_))));
+            let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());
+            let folded = workflow_fact_log::fold_tree_from(&backend, session_id)
+                .unwrap()
+                .unwrap();
+            let node = folded
+                .aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == session_id)
+                .unwrap();
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            );
+            assert_eq!(node.status, NodeExecutionStatus::Running);
+            let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
+                .load_node_by_node_execution_id(session_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                workspace_node.status_classification,
+                WorkspaceNodeStatusClassification::Attention
+            );
+
+            let restarted = WorkflowRuntimeHost::with_execution_store(
+                Arc::new(UnusedWorkflowResolver),
+                Arc::new(UnusedWorktreeResolver),
+                Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                Arc::new(FailingWorkflowAgentSessions),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                        fixture.store.clone(),
+                    ),
+                ),
+                Arc::new(MissingRepoWorktreeInventory),
+            );
+            restarted
+                .reconcile_startup(fixture.app.handle())
+                .await
+                .unwrap();
+
+            let restarted_fold = workflow_fact_log::fold_tree_from(&backend, session_id)
+                .unwrap()
+                .unwrap();
+            let restarted_node = restarted_fold
+                .aggregate
+                .node_executions
+                .iter()
+                .find(|node| node.id == session_id)
+                .unwrap();
+            assert_eq!(
+                restarted_node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            );
+            assert_eq!(
+                SqliteWorkspaceTreeRepository::new(fixture.store.clone())
+                    .load_node_by_node_execution_id(session_id)
+                    .unwrap()
+                    .unwrap()
+                    .status_classification,
+                WorkspaceNodeStatusClassification::Attention
+            );
+            assert!(
+                !workflow_fact_log::read_tree_records(&fixture.store, session_id)
+                    .unwrap()
+                    .iter()
+                    .any(|record| matches!(record.fact, NodeFact::ProcessExited(_)))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_session実行木登録失敗後に予約を解放するとreconciliation対象へ戻る() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let session_id = "agent-session-registration-failed";
+            fixture
+                .host
+                .reserve_started_execution_tree(session_id)
+                .await
+                .unwrap();
+            LocalAgentSessionRepository::new(fixture.store.clone())
+                .create(
+                    AgentSession::create(
+                        session_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-registration-failed",
+                )
+                .await
+                .unwrap();
+            let unmanaged_app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            assert!(fixture
+                .host
+                .register_started_execution_tree(unmanaged_app.handle(), session_id)
+                .await
+                .is_err());
+
+            fixture
+                .host
+                .release_started_execution_tree_reservation(session_id)
+                .await
+                .unwrap();
+            fixture
+                .host
+                .reconcile_startup(fixture.app.handle())
+                .await
+                .unwrap();
+
+            let records = workflow_fact_log::read_tree_records(&fixture.store, session_id).unwrap();
+            assert!(records
+                .iter()
+                .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
+        }
+
+        #[tokio::test]
+        async fn test_session起動_provider起動時にはattach済みでstop_receivedになる() {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                directory.path().to_path_buf(),
+            ))
+            .unwrap();
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            app.manage(store.clone());
+            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                directory.path().to_path_buf(),
+            ));
+            let sessions = Arc::new(StopDuringActivationWorkflowAgentSessions {
+                control_plane: tokio::sync::Mutex::new(None),
+                execution_id: std::sync::Mutex::new(None),
+                activation_count: std::sync::atomic::AtomicUsize::new(0),
+                confirmation_count: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+                Arc::new(UnusedWorkflowResolver),
+                Arc::new(AcceptingWorktreeResolver),
+                Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                sessions.clone(),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                        store.clone(),
+                    ),
+                ),
+                Arc::new(MissingRepoWorktreeInventory),
+            ));
+            let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
+            let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
+                app.handle().clone(),
+                host.clone(),
+                repository,
+                store.installation_id().to_string(),
+            ));
+            *sessions.control_plane.lock().await =
+                Some(Arc::new(WorkflowControlPlaneUsecase::new(gateway)));
+            let workflow = WorkflowDefinition {
+                name: "stop-during-activation".to_string(),
+                description: String::new(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: vec![NodeDefinition {
+                    name: "main".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
+                        provider: ProviderKind::Codex,
+                        model: None,
+                        permission: None,
+                        facets: FacetRefs {
+                            instruction: Some("policy-confirmation".to_string()),
+                            ..FacetRefs::default()
+                        },
+                    }),
+                    artifact: None,
+                    input: Vec::new(),
+                    completion: NodeCompletion::Auto,
+                    worktree: None,
+                }],
+                entry: "main".to_string(),
+            };
+
+            // When
+            let execution_id = host
+                .start_resolved_workflow(
+                    app.handle(),
+                    workflow,
+                    EFFECT_WORKTREE_PATH.to_string(),
+                    None,
+                    ExecutionOrigin::DesktopUi,
+                )
+                .await
+                .unwrap();
+
+            // Then
+            let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
+            let node = snapshot
+                .node_executions
+                .iter()
+                .find(|node| node.node_name == "main")
+                .unwrap();
+            assert_eq!(
+                node.status,
+                NodeExecutionStatus::Running,
+                "unexpected activation failure: {:?}",
+                node.failure
+            );
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            );
+            assert_eq!(node.session_id.as_deref(), Some(EFFECT_AGENT_SESSION_ID));
+            assert_eq!(
+                sessions
+                    .confirmation_count
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+            let attached_seq = records
+                .iter()
+                .find_map(|record| match &record.fact {
+                    NodeFact::SessionAttached(attached)
+                        if attached.session_id == EFFECT_AGENT_SESSION_ID =>
+                    {
+                        Some(record.seq)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let stop_seq = records
+                .iter()
+                .find_map(|record| {
+                    matches!(record.fact, NodeFact::StopReceived(_)).then_some(record.seq)
+                })
+                .unwrap();
+            assert!(attached_seq < stop_seq);
+        }
+
+        #[tokio::test]
+        async fn test_provider_stopはlaunch区分の異なる実行木で同じsignal遷移になる() {
+            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let standalone_id = "agent-session-standalone-stop";
+            LocalAgentSessionRepository::new(fixture.store.clone())
+                .create(
+                    AgentSession::create(
+                        standalone_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(standalone_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-standalone-stop",
+                )
+                .await
+                .unwrap();
+            fixture
+                .host
+                .register_started_execution_tree(fixture.app.handle(), standalone_id)
+                .await
+                .unwrap();
+
+            fixture
+                .control_plane
+                .record_provider_stop(
+                    ProviderExecutionTreeStopCommand {
+                        agent_session_id: standalone_id.to_string(),
+                        tree_id: standalone_id.to_string(),
+                        node_execution_id: standalone_id.to_string(),
+                        binding_id: "binding-standalone-stop".to_string(),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                .await
+                .unwrap();
+
+            let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());
+            for (tree_id, node_execution_id) in [
+                (standalone_id, standalone_id),
+                (
+                    fixture.execution_id.as_str(),
+                    fixture.node_execution_id.as_str(),
+                ),
+            ] {
+                let folded = workflow_fact_log::fold_tree_from(&backend, tree_id)
+                    .unwrap()
+                    .unwrap();
+                let node = folded
+                    .aggregate
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == node_execution_id)
+                    .unwrap();
+                assert_eq!(
+                    node.completion_signals,
+                    crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                );
+                assert_eq!(node.status, NodeExecutionStatus::Running);
+            }
+        }
+
+        #[tokio::test]
+        async fn test_session起動由来のactive木と同一worktreeでworkflowを起動できる() {
+            // Given: 同じ worktree に active な Session 起動由来の木が登録されている
+            let directory = tempfile::tempdir().unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                directory.path().to_path_buf(),
+            ))
+            .unwrap();
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            app.manage(store.clone());
+            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                directory.path().to_path_buf(),
+            ));
+            let session_id = "agent-session-workflow-coexistence";
+            LocalAgentSessionRepository::new(store.clone())
+                .create(
+                    AgentSession::create(
+                        session_id,
+                        WorkspaceIdentity::new(EFFECT_WORKTREE_PATH),
+                        EFFECT_WORKTREE_PATH,
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-session-workflow-coexistence",
+                )
+                .await
+                .unwrap();
+            let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+                Arc::new(UnusedWorkflowResolver),
+                Arc::new(AcceptingWorktreeResolver),
+                Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                Arc::new(RecordingWorkflowAgentSessions {
+                    stop_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    failing_agent_session_id: String::new(),
+                }),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                        store,
+                    ),
+                ),
+                Arc::new(MissingRepoWorktreeInventory),
+            ));
+            host.register_started_execution_tree(app.handle(), session_id)
+                .await
+                .unwrap();
+            let workflow = WorkflowDefinition {
+                name: "coexisting-workflow".to_string(),
+                description: String::new(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: vec![NodeDefinition {
+                    name: "main".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
+                        provider: ProviderKind::Codex,
+                        model: None,
+                        permission: None,
+                        facets: FacetRefs {
+                            instruction: Some("policy-confirmation".to_string()),
+                            ..FacetRefs::default()
+                        },
+                    }),
+                    artifact: None,
+                    input: Vec::new(),
+                    completion: NodeCompletion::Auto,
+                    worktree: None,
+                }],
+                entry: "main".to_string(),
+            };
+
+            // When: workflow の実行として同じ worktree に木を起こす
+            let workflow_id = host
+                .start_resolved_workflow(
+                    app.handle(),
+                    workflow.clone(),
+                    EFFECT_WORKTREE_PATH.to_string(),
+                    None,
+                    ExecutionOrigin::DesktopUi,
+                )
+                .await
+                .unwrap();
+
+            // Then: cache は両方を保持し、workflow registry は workflow だけを保持する
+            assert!(host.get_state_by_execution_id(session_id).await.is_some());
+            assert!(host.get_state_by_execution_id(&workflow_id).await.is_some());
+            assert_eq!(host.execution_store.list_active().await.unwrap().len(), 1);
+            let second = host
+                .start_resolved_workflow(
+                    app.handle(),
+                    workflow,
+                    EFFECT_WORKTREE_PATH.to_string(),
+                    None,
+                    ExecutionOrigin::DesktopUi,
+                )
+                .await;
+            assert!(matches!(
+                second,
+                Err(WorkflowRuntimeError::AlreadyActive(_))
+            ));
         }
 
         async fn wait_for_single_terminal_stop(fixture: &RuntimeEffectFixture) {
@@ -3312,9 +4131,9 @@ nodes:
             fixture
                 .control_plane
                 .record_provider_stop(
-                    ProviderWorkflowStopCommand {
+                    ProviderExecutionTreeStopCommand {
                         agent_session_id: fixture.first_agent_session_id.clone(),
-                        workflow_execution_id: fixture.execution_id.clone(),
+                        tree_id: fixture.execution_id.clone(),
                         node_execution_id: fixture.first_node_execution_id.clone(),
                         binding_id: "binding-order-test".to_string(),
                     },
@@ -3566,6 +4385,7 @@ nodes:
             let sessions: Arc<dyn WorkflowAgentSessionPort> =
                 Arc::new(RecordingWorkflowAgentSessions {
                     stop_calls: stop_calls.clone(),
+                    prepare_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
                     failing_agent_session_id: "agent-session-1".to_string(),
                 });
 
@@ -3597,6 +4417,79 @@ nodes:
 
     mod startup_recovery_tests {
         use super::*;
+
+        #[tokio::test]
+        async fn test_startup_reconciliation_stop受信済みsession木をcacheへ載せてleafを再起動しない(
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                directory.path().to_path_buf(),
+            ))
+            .unwrap();
+            let session_id = "agent-session-startup";
+            LocalAgentSessionRepository::new(store.clone())
+                .create(
+                    AgentSession::create(
+                        session_id,
+                        WorkspaceIdentity::new("/repo/session-startup"),
+                        "/repo/session-startup",
+                        ProviderKind::Codex,
+                        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+                    )
+                    .unwrap(),
+                    "create-startup-session",
+                )
+                .await
+                .unwrap();
+            workflow_fact_log::append_facts_for_events(
+                &store,
+                &[WorkflowEvent::NodeStopReceived {
+                    execution_id: session_id.to_string(),
+                    node_execution_id: session_id.to_string(),
+                    timestamp: 2.0,
+                }],
+            )
+            .unwrap();
+            let before = workflow_fact_log::read_tree_records(&store, session_id)
+                .unwrap()
+                .len();
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            app.manage(store.clone());
+            let host = WorkflowRuntimeHost::with_execution_store(
+                Arc::new(UnusedWorkflowResolver),
+                Arc::new(UnusedWorktreeResolver),
+                Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                Arc::new(FailingWorkflowAgentSessions),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                        store.clone(),
+                    ),
+                ),
+                Arc::new(MissingRepoWorktreeInventory),
+            );
+
+            host.reconcile_startup(app.handle()).await.unwrap();
+
+            let snapshot = host.get_state_by_execution_id(session_id).await.unwrap();
+            let node = snapshot
+                .node_executions
+                .iter()
+                .find(|node| node.id == session_id)
+                .unwrap();
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            );
+            assert_eq!(
+                workflow_fact_log::read_tree_records(&store, session_id)
+                    .unwrap()
+                    .len(),
+                before
+            );
+            assert!(host.execution_store.list_active().await.unwrap().is_empty());
+        }
 
         fn append_started_session_tree(
             store: &Arc<LocalEventStore>,
@@ -3651,13 +4544,14 @@ nodes:
                 &root_meta,
                 &NodeFact::Started(StartedFact {
                     parent: None,
-                    root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                        workflow_name: definition.name.clone(),
+                    root: Some(TreeRootFact {
+                        workspace_identity: worktree_path.to_string(),
                         worktree_path: worktree_path.to_string(),
                         created_from: ExecutionOrigin::DesktopUi,
                         request: String::new(),
                         definition,
-                    })),
+                        launched_as: ExecutionTreeLaunch::Workflow,
+                    }),
                 }),
                 timestamp_ms,
             )
@@ -3805,20 +4699,20 @@ nodes:
                 directory.path().to_path_buf(),
             ))
             .unwrap();
-            let fact = NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Session(SessionRootFact {
-                    workspace_identity: "/repo".to_string(),
-                    worktree_path: "/repo".to_string(),
-                    session: SessionSpec {
-                        provider: ProviderKind::Claude,
-                        model: None,
-                        permission: Some(SessionPermission::Auto),
-                        facets: Default::default(),
-                    },
-                    created_from: ExecutionOrigin::DesktopUi,
-                })),
-            });
+            let mut fact =
+                SessionExecutionTreeRootFacts::new(TREE_ID, "/repo", "/repo", ProviderKind::Claude)
+                    .unwrap()
+                    .started;
+            let NodeFact::Started(StartedFact {
+                root: Some(root), ..
+            }) = &mut fact
+            else {
+                unreachable!();
+            };
+            let NodeKind::Session(spec) = &mut root.definition.nodes[0].kind else {
+                unreachable!();
+            };
+            spec.permission = Some(SessionPermission::Auto);
             let legacy_detail = fact.encode_detail().unwrap().replace(
                 r#""permission":"auto""#,
                 r#""permission":"bypassPermissions""#,
@@ -3829,7 +4723,7 @@ nodes:
                         tree_id: TREE_ID.to_string(),
                         node_execution_id: TREE_ID.to_string(),
                         parent_id: None,
-                        node_name: "main".to_string(),
+                        node_name: "session".to_string(),
                         kind: "session".to_string(),
                         attempt: 1,
                         event_type: "started".to_string(),

@@ -22,9 +22,9 @@ pub(crate) use hook_health::{
     ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
 };
 pub(crate) use ingress::{
+    ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecase,
     ProviderLifecycleIngressUsecaseError, ProviderSessionStartTransaction,
-    ProviderWorkflowStopCommand, ProviderWorkflowStopTransaction,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

@@ -165,6 +165,15 @@ mod tests {
             ))
         }
 
+        async fn register_started_execution_tree(
+            &self,
+            _tree_id: &str,
+        ) -> Result<(), WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
         async fn approval_persisted(
             &self,
             _execution_id: &str,
