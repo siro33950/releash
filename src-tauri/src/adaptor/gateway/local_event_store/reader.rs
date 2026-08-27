@@ -898,7 +898,7 @@ fn canonical_runtime_owner_snapshot(
 ) -> Result<Vec<CanonicalRuntimeOwnerView>, LocalEventQueryError> {
     use crate::adaptor::gateway::workflow::fact_log::record_from_row;
     use crate::domain::workflow::services::fact_replay;
-    use crate::domain::workflow::{NodeFact, TreeRootFact};
+    use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact};
 
     if limit == 0 || limit > MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT {
         return Err(LocalEventQueryError::InvalidRequest);
@@ -918,31 +918,41 @@ fn canonical_runtime_owner_snapshot(
             continue;
         };
         match &started.root {
-            Some(TreeRootFact::Session(session_root)) => {
+            Some(tree_root) if tree_root.launched_as == ExecutionTreeLaunch::Session => {
+                let Some(session_id) = records.iter().find_map(|record| match &record.fact {
+                    NodeFact::SessionAttached(attached)
+                        if record.meta.node_execution_id == root.node_execution_id =>
+                    {
+                        Some(attached.session_id.as_str())
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
                 let view = fact_replay::derive_session_facts(
                     &records,
                     &root.node_execution_id,
-                    &root.tree_id,
+                    session_id,
                 );
                 if view.is_open() {
                     owners.push(CanonicalRuntimeOwnerView::AgentSession {
-                        worktree_path: session_root.worktree_path.clone(),
+                        worktree_path: tree_root.worktree_path.clone(),
                         active: true,
                     });
                 }
             }
-            Some(TreeRootFact::Workflow(workflow_root)) => {
+            Some(tree_root) if tree_root.launched_as == ExecutionTreeLaunch::Workflow => {
                 let folded = fact_replay::fold_execution_tree(&root.tree_id, &records)
                     .map_err(|_| LocalEventQueryError::InvalidRequest)?
                     .ok_or(LocalEventQueryError::InvalidRequest)?;
                 let read_model = fact_replay::derive_read_model(&folded);
                 if read_model.status.is_active() {
                     owners.push(CanonicalRuntimeOwnerView::ActiveWorkflow {
-                        worktree_path: workflow_root.worktree_path.clone(),
+                        worktree_path: tree_root.worktree_path.clone(),
                     });
                 }
             }
-            None => {}
+            Some(_) | None => {}
         }
         if owners.len() > limit {
             return Err(LocalEventQueryError::ResponseTooLarge);
@@ -2227,9 +2237,11 @@ mod canonical_runtime_owner_snapshot_tests {
     use crate::adaptor::gateway::local_event_store::schema::{
         initialize_schema, InitialStoreMetadata,
     };
+    use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::{
-        ExecutionOrigin, NodeCompletion, NodeDefinition, NodeFact, NodeKind, SessionRootFact,
-        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition, WorkflowRootFact,
+        ExecutionOrigin, ExecutionTreeLaunch, NodeCompletion, NodeDefinition, NodeFact, NodeKind,
+        SessionAttachedFact, SessionExecutionTreeRootFacts, SessionSpec, StartedFact, TreeRootFact,
+        WorkflowDefinition,
     };
 
     fn connection_with_node_events() -> Connection {
@@ -2250,13 +2262,24 @@ mod canonical_runtime_owner_snapshot_tests {
     }
 
     fn insert_root(connection: &Connection, tree_id: &str, fact: &NodeFact) {
+        let node_name = match fact {
+            NodeFact::Started(StartedFact {
+                root: Some(root), ..
+            }) => root.definition.entry.as_str(),
+            _ => panic!("root fact must contain a definition"),
+        };
         connection
             .execute(
                 "INSERT INTO node_events (
                     tree_id, seq, node_execution_id, parent_id, node_name, kind,
                     attempt, event_type, detail, timestamp
-                 ) VALUES (?1, 1, ?1, NULL, 'main', 'session', 1, ?2, ?3, 1)",
-                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+                 ) VALUES (?1, 1, ?1, NULL, ?2, 'session', 1, ?3, ?4, 1)",
+                params![
+                    tree_id,
+                    node_name,
+                    fact.event_type(),
+                    fact.encode_detail().unwrap()
+                ],
             )
             .expect("insert root fact");
     }
@@ -2267,17 +2290,49 @@ mod canonical_runtime_owner_snapshot_tests {
                 "INSERT INTO node_events (
                     tree_id, seq, node_execution_id, parent_id, node_name, kind,
                     attempt, event_type, detail, timestamp
-                 ) VALUES (?1, 2, ?1, NULL, 'main', 'session', 1, ?2, ?3, 2)",
+                 ) VALUES (?1, 2, ?1, NULL, 'session', 'session', 1, ?2, ?3, 2)",
                 params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
             )
             .expect("insert second fact");
     }
 
+    fn insert_third_fact(connection: &Connection, tree_id: &str, fact: &NodeFact) {
+        connection
+            .execute(
+                "INSERT INTO node_events (
+                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
+                    attempt, event_type, detail, timestamp
+                 ) VALUES (?1, 3, ?1, NULL, 'session', 'session', 1, ?2, ?3, 3)",
+                params![tree_id, fact.event_type(), fact.encode_detail().unwrap()],
+            )
+            .expect("insert third fact");
+    }
+
+    fn session_root(session_id: &str, workspace_identity: &str, worktree_path: &str) -> NodeFact {
+        SessionExecutionTreeRootFacts::new(
+            session_id,
+            workspace_identity,
+            worktree_path,
+            ProviderKind::Codex,
+        )
+        .unwrap()
+        .started
+    }
+
+    fn session_attached(session_id: &str) -> NodeFact {
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: session_id.to_string(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        })
+    }
+
     fn workflow_root(worktree_path: &str) -> NodeFact {
         NodeFact::Started(StartedFact {
             parent: None,
-            root: Some(TreeRootFact::Workflow(WorkflowRootFact {
-                workflow_name: "wf".to_string(),
+            root: Some(TreeRootFact {
+                workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
@@ -2296,7 +2351,8 @@ mod canonical_runtime_owner_snapshot_tests {
                     }],
                     entry: "main".to_string(),
                 },
-            })),
+                launched_as: ExecutionTreeLaunch::Workflow,
+            }),
         })
     }
 
@@ -2331,15 +2387,16 @@ mod canonical_runtime_owner_snapshot_tests {
         insert_root(
             &connection,
             "agent-session-1",
-            &NodeFact::Started(StartedFact {
-                parent: None,
-                root: Some(TreeRootFact::Session(SessionRootFact {
-                    workspace_identity: "/snapshot/worktree-a".to_string(),
-                    worktree_path: "/snapshot/worktree-a".to_string(),
-                    session: SessionSpec::default(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                })),
-            }),
+            &session_root(
+                "agent-session-1",
+                "/snapshot/worktree-a",
+                "/snapshot/worktree-a",
+            ),
+        );
+        insert_second_fact(
+            &connection,
+            "agent-session-1",
+            &session_attached("agent-session-1"),
         );
 
         let owners =
@@ -2371,17 +2428,10 @@ mod canonical_runtime_owner_snapshot_tests {
             insert_root(
                 &connection,
                 session_id,
-                &NodeFact::Started(StartedFact {
-                    parent: None,
-                    root: Some(TreeRootFact::Session(SessionRootFact {
-                        workspace_identity: "/snapshot".to_string(),
-                        worktree_path: format!("/snapshot/{session_id}"),
-                        session: SessionSpec::default(),
-                        created_from: ExecutionOrigin::DesktopUi,
-                    })),
-                }),
+                &session_root(session_id, "/snapshot", &format!("/snapshot/{session_id}")),
             );
-            insert_second_fact(&connection, session_id, &NodeFact::ArchiveRequested);
+            insert_second_fact(&connection, session_id, &session_attached(session_id));
+            insert_third_fact(&connection, session_id, &NodeFact::ArchiveRequested);
         }
 
         let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();

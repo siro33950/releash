@@ -47,7 +47,8 @@ pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
     ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeActionResolver,
-    WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
+    WorkspaceNodeApprovalTarget, WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget,
+    WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,

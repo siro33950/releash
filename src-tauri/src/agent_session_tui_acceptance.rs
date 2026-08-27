@@ -14,7 +14,13 @@ use crate::adaptor::gateway::workflow::node_session_boundary::{
 use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
+use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
+use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
+use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::{
+    RepositoryWorktreeInventory, WorkflowDefinition, WorkflowError, WorktreeInventoryGateway,
+};
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
 use crate::usecase::agent_session::{
@@ -22,6 +28,11 @@ use crate::usecase::agent_session::{
     AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionReadUsecase,
 };
 use crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase;
+use crate::usecase::workflow::runtime_resolver::{
+    ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
+    WorkflowDefinitionResolverError,
+};
+use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 struct AcceptanceSearchPathSource(std::ffi::OsString);
@@ -64,7 +75,7 @@ pub enum AcceptanceAgentSessionLifecycle {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AcceptanceAgentSessionTreeParent {
+pub struct AcceptanceAgentSessionTreeLocation {
     pub tree_id: String,
     pub node_execution_id: String,
 }
@@ -75,7 +86,7 @@ pub struct AcceptanceAgentSession {
     pub id: String,
     pub provider: AcceptanceProvider,
     pub lifecycle: AcceptanceAgentSessionLifecycle,
-    pub tree_parent: Option<AcceptanceAgentSessionTreeParent>,
+    pub tree_location: AcceptanceAgentSessionTreeLocation,
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
 }
@@ -121,6 +132,37 @@ pub enum AcceptanceOpenOutcome {
     GarbageCollected,
 }
 
+struct AcceptanceUnusedWorkflowDefinitionResolver;
+
+#[async_trait::async_trait]
+impl WorkflowDefinitionResolver for AcceptanceUnusedWorkflowDefinitionResolver {
+    async fn resolve(
+        &self,
+        workflow_name: &str,
+    ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+        Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
+            "agent-session acceptance host does not start workflow '{workflow_name}'"
+        )))
+    }
+}
+
+struct AcceptanceManagedWorktreeResolver;
+
+#[async_trait::async_trait]
+impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
+    async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError> {
+        Ok(worktree_path)
+    }
+}
+
+struct AcceptanceWorktreeInventory;
+
+impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
+    fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
+        Ok(Vec::new())
+    }
+}
+
 pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     _app: tauri::App<R>,
     window: tauri::WebviewWindow<R>,
@@ -128,6 +170,7 @@ pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     terminal: TerminalSurfaceRuntime,
+    _runtime: Arc<WorkflowRuntimeUsecase>,
     workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
     local_api: std::sync::Mutex<Arc<LocalApiServer>>,
     local_api_data_dir: PathBuf,
@@ -152,7 +195,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let data_dir = config.data_dir.clone();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
             store: store.clone(),
-            data_dir: config.data_dir,
+            data_dir: data_dir.clone(),
             provider_executable_config: Arc::new(
                 crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
                     config.claude_executable.as_ref().map(|path| path.to_string_lossy().into_owned()),
@@ -219,6 +262,48 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                 composition.lifecycle.clone(),
                 composition.availability_reader.clone(),
             ));
+        app.manage(store.clone());
+        let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                    store.clone(),
+                ),
+                Arc::new(
+                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                        data_dir.clone(),
+                    ),
+                ),
+            );
+        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
+        let installation_id = store.installation_id().to_string();
+        let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
+            Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
+            Arc::new(AcceptanceManagedWorktreeResolver),
+            Some(data_dir.clone()),
+            workspace_query,
+            composition.launch.clone(),
+            composition.initial_instruction.clone(),
+            composition.interrupt.clone(),
+            composition.lifecycle.clone(),
+            composition.availability_reader.clone(),
+            Arc::new(
+                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                    store.clone(),
+                ),
+            ),
+            Arc::new(AcceptanceWorktreeInventory),
+        ));
+        let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
+            app.handle().clone(),
+            driver,
+            repository,
+            installation_id,
+        ));
+        let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
+        composition.execution_tree_stops.bind(runtime.clone());
+        composition
+            .execution_tree_registrations
+            .bind(runtime.clone());
         terminal.bind_agent_session_activity(composition.activity.clone());
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
@@ -248,6 +333,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             terminal,
+            _runtime: runtime,
             workflow_agent_sessions,
             local_api: std::sync::Mutex::new(local_api),
             local_api_data_dir: data_dir,
@@ -326,6 +412,24 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         node_execution_id: &str,
         initial_instruction: &str,
     ) -> Result<String, String> {
+        let seeded_session_id = crate::domain::agent_session::launch_resource_id(
+            "agent-session",
+            &format!("workflow-node-launch-{node_execution_id}"),
+        )
+        .ok_or_else(|| "failed to derive acceptance AgentSession id".to_string())?;
+        seed_workflow_session_facts(
+            &self.store,
+            WorkflowSessionFactSeed {
+                workflow_name: "acceptance-workflow",
+                request: "acceptance",
+                worktree_path,
+                provider: provider_kind(provider),
+                workflow_execution_id,
+                node_execution_id,
+                session_id: &seeded_session_id,
+                initial_instruction_admitted: true,
+            },
+        )?;
         let session = self
             .workflow_agent_sessions
             .prepare_workflow_agent_session(
@@ -341,19 +445,9 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             )
             .await
             .map_err(|error| format!("{error:?}"))?;
-        seed_workflow_session_facts(
-            &self.store,
-            WorkflowSessionFactSeed {
-                workflow_name: "acceptance-workflow",
-                request: "acceptance",
-                worktree_path,
-                provider: provider_kind(provider),
-                workflow_execution_id,
-                node_execution_id,
-                session_id: &session.id,
-                initial_instruction_admitted: true,
-            },
-        )?;
+        if session.id != seeded_session_id {
+            return Err("workflow AgentSession id differs from seeded attachment".to_string());
+        }
         self.workflow_agent_sessions
             .activate_workflow_agent_session(&session.id, node_execution_id)
             .await
@@ -406,6 +500,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             exit_observer,
             exit_observer_cancellation,
             terminal,
+            _runtime,
             workflow_agent_sessions,
             local_api,
             local_api_data_dir: _,
@@ -440,8 +535,10 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
         app.unmanage::<Arc<AgentSessionReadUsecase>>();
         app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
+        app.unmanage::<Arc<LocalEventStore>>();
         drop((
             local_api,
+            _runtime,
             workflow_agent_sessions,
             provider_lifecycle_ingress,
             terminal,

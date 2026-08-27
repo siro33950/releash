@@ -5,9 +5,11 @@ use std::time::Duration;
 use super::{
     AgentSessionHistoryResumeOutcome, AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest,
     AgentSessionLaunchUsecase, AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecase,
-    AgentSessionUsecase, AgentSessionUsecaseError, WorkflowAgentSessionLaunchRequest,
+    AgentSessionUsecase, AgentSessionUsecaseError, ExecutionTreeCacheReleaseError,
+    ProviderAgentRuntime, StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
+    WorkflowAgentSessionLaunchRequest,
 };
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeParent};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
 use crate::domain::agent_session::aggregates::{
     AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionProcessExitOutcome,
     AgentSessionRecoveryResult, ManagedPtyPresence, ResolvedProviderExecutable,
@@ -31,11 +33,87 @@ use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwne
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::{ProviderHookHealthUsecase, ProviderLifecycleUsecase};
 
+fn session_location(id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::session_tree_root(id).unwrap()
+}
+
+fn provider_runtime(
+    availability: Arc<dyn ProviderAvailabilityReader>,
+    launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
+    terminal: Arc<dyn ProviderAgentTerminalGateway>,
+) -> ProviderAgentRuntime {
+    ProviderAgentRuntime::new(availability, launch_gateway, terminal)
+}
+
+fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
+}
+
+#[derive(Default)]
+struct RecordingStartedExecutionTrees {
+    reservations: Mutex<Vec<String>>,
+    tree_ids: Mutex<Vec<String>>,
+    failure: Option<StartedExecutionTreeRegistrationError>,
+    reservation_releases: Mutex<Vec<String>>,
+    releases: Mutex<Vec<String>>,
+    release_failure: Mutex<Option<ExecutionTreeCacheReleaseError>>,
+}
+
+#[async_trait::async_trait]
+impl StartedExecutionTreeRegistrar for RecordingStartedExecutionTrees {
+    async fn reserve_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        self.reservations.lock().unwrap().push(tree_id.to_string());
+        Ok(())
+    }
+
+    async fn register_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        self.tree_ids.lock().unwrap().push(tree_id.to_string());
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        self.reservation_releases
+            .lock()
+            .unwrap()
+            .push(tree_id.to_string());
+        Ok(())
+    }
+
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        self.releases.lock().unwrap().push(tree_id.to_string());
+        match *self.release_failure.lock().unwrap() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+fn started_execution_trees() -> Arc<RecordingStartedExecutionTrees> {
+    Arc::new(RecordingStartedExecutionTrees::default())
+}
+
 struct FailingSaveRepository {
     stored: Mutex<Option<VersionedAgentSession>>,
     create_calls: AtomicUsize,
     atomic_create_calls: AtomicUsize,
+    atomic_create_failure: Mutex<Option<AgentSessionRepositoryError>>,
     launch_lifecycle_events: Mutex<Vec<ScopedProviderLifecycleEvent>>,
+    remove_failure: Mutex<Option<AgentSessionRepositoryError>>,
 }
 
 struct CapturingLogger {
@@ -125,7 +203,9 @@ impl FailingSaveRepository {
             stored: Mutex::new(Some(VersionedAgentSession::restored(session, 1))),
             create_calls: AtomicUsize::new(0),
             atomic_create_calls: AtomicUsize::new(0),
+            atomic_create_failure: Mutex::new(None),
             launch_lifecycle_events: Mutex::new(Vec::new()),
+            remove_failure: Mutex::new(None),
         }
     }
 
@@ -155,6 +235,9 @@ impl AgentSessionRepository for FailingSaveRepository {
         _caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         self.atomic_create_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = self.atomic_create_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
         self.launch_lifecycle_events
             .lock()
             .unwrap()
@@ -186,7 +269,11 @@ impl AgentSessionRepository for FailingSaveRepository {
         _authorization: crate::domain::agent_session::aggregates::AgentSessionRemovalAuthorization,
         _caller_request_id: &str,
     ) -> Result<(), AgentSessionRepositoryError> {
-        unreachable!()
+        if let Some(error) = self.remove_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
+        *self.stored.lock().unwrap() = None;
+        Ok(())
     }
 }
 
@@ -197,7 +284,7 @@ async fn test_agent_session_usecase選択されたproviderでstandalone_session�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -210,14 +297,17 @@ async fn test_agent_session_usecase選択されたproviderでstandalone_session�
             WorkspaceIdentity::new("/repo"),
             "/repo/.worktrees/feature",
             ProviderKind::Codex,
-            None,
+            session_location("agent-session-1"),
             "create-request-1",
         )
         .await
         .unwrap();
 
     assert_eq!(created.session().provider(), ProviderKind::Codex);
-    assert_eq!(created.session().tree_parent(), None);
+    assert_eq!(
+        created.session().tree_location(),
+        &session_location("agent-session-1")
+    );
     assert_eq!(created.revision(), 1);
 }
 
@@ -228,7 +318,7 @@ async fn test_agent_session_usecase永続化失敗で共有状態を進めない
         WorkspaceIdentity::new("/repo"),
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
-        None,
+        session_location("agent-session-1"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(session));
@@ -617,6 +707,24 @@ fn launch_usecase_with_hook_health(
     terminal: Arc<RecordingTerminal>,
     hook_health: Arc<ProviderHookHealthUsecase>,
 ) -> AgentSessionLaunchUsecase {
+    launch_usecase_with_tree_registrar(
+        repository,
+        availability,
+        launch_gateway,
+        terminal,
+        hook_health,
+        started_execution_trees(),
+    )
+}
+
+fn launch_usecase_with_tree_registrar(
+    repository: Arc<FailingSaveRepository>,
+    availability: Arc<FixedAvailability>,
+    launch_gateway: Arc<RecordingLaunchGateway>,
+    terminal: Arc<RecordingTerminal>,
+    hook_health: Arc<ProviderHookHealthUsecase>,
+    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
+) -> AgentSessionLaunchUsecase {
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
             crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
@@ -626,13 +734,12 @@ fn launch_usecase_with_hook_health(
     AgentSessionLaunchUsecase::new(
         Arc::new(AgentSessionUsecase::new(repository)),
         lifecycle,
-        availability,
-        launch_gateway,
-        terminal,
+        provider_runtime(availability, launch_gateway, terminal),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health,
+        execution_trees,
     )
 }
 
@@ -665,7 +772,7 @@ async fn test_agent_session_launch_利用可能な選択providerをterminal_root
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -676,11 +783,14 @@ async fn test_agent_session_launch_利用可能な選択providerをterminal_root
     });
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    let usecase = launch_usecase(
+    let execution_trees = started_execution_trees();
+    let usecase = launch_usecase_with_tree_registrar(
         repository,
         availability.clone(),
         launch_gateway.clone(),
         terminal.clone(),
+        hook_health_usecase(),
+        execution_trees.clone(),
     );
 
     let launched = usecase
@@ -713,6 +823,161 @@ async fn test_agent_session_launch_利用可能な選択providerをterminal_root
     assert_eq!(spawns[0].worktree_path, "/repo/.worktrees/feature");
     assert_eq!(spawns[0].process.executable(), "/opt/bin/provider");
     assert_eq!((spawns[0].rows, spawns[0].cols), (30, 120));
+    assert_eq!(
+        execution_trees.reservations.lock().unwrap().as_slice(),
+        &[expected_id.to_string()]
+    );
+    assert_eq!(
+        execution_trees.tree_ids.lock().unwrap().as_slice(),
+        &[expected_id.to_string()]
+    );
+    assert_eq!(
+        execution_trees
+            .reservation_releases
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[expected_id.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_launch_create_commit失敗でも実行木予約を解放する() {
+    let seed = AgentSession::create(
+        "seed",
+        WorkspaceIdentity::new("/seed"),
+        "/seed",
+        ProviderKind::Claude,
+        session_location("seed"),
+    )
+    .unwrap();
+    let repository = Arc::new(FailingSaveRepository::new(seed));
+    *repository.stored.lock().unwrap() = None;
+    *repository.atomic_create_failure.lock().unwrap() =
+        Some(AgentSessionRepositoryError::Unavailable);
+    let execution_trees = started_execution_trees();
+    let usecase = launch_usecase_with_tree_registrar(
+        repository,
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
+        Arc::new(RecordingLaunchGateway::default()),
+        Arc::new(RecordingTerminal::default()),
+        hook_health_usecase(),
+        execution_trees.clone(),
+    );
+
+    let error = usecase
+        .launch_standalone(AgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            rows: 24,
+            cols: 80,
+            caller_request_id: "create-commit-failure".to_string(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionLaunchUsecaseError::StorageUnavailable);
+    let expected_id = execution_trees.reservations.lock().unwrap()[0].clone();
+    assert!(execution_trees.tree_ids.lock().unwrap().is_empty());
+    assert_eq!(
+        execution_trees
+            .reservation_releases
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_launch_実行木登録失敗ではcreateと起動資源をrollbackする() {
+    let seed = AgentSession::create(
+        "seed",
+        WorkspaceIdentity::new("/seed"),
+        "/seed",
+        ProviderKind::Claude,
+        session_location("seed"),
+    )
+    .unwrap();
+    let repository = Arc::new(FailingSaveRepository::new(seed));
+    *repository.stored.lock().unwrap() = None;
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+    let execution_trees = Arc::new(RecordingStartedExecutionTrees {
+        failure: Some(StartedExecutionTreeRegistrationError::Unavailable),
+        ..RecordingStartedExecutionTrees::default()
+    });
+    let usecase = AgentSessionLaunchUsecase::new(
+        Arc::new(AgentSessionUsecase::new(repository.clone())),
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            lifecycle_events.clone(),
+        )),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
+        Arc::new(FixedHistory { entries: Vec::new() }),
+        hook_health_usecase(),
+        execution_trees.clone(),
+    );
+
+    let error = usecase
+        .launch_standalone(AgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            rows: 24,
+            cols: 80,
+            caller_request_id: "registration-failure".to_string(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionLaunchUsecaseError::StorageUnavailable);
+    assert!(repository.stored.lock().unwrap().is_none());
+    assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
+    let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
+    assert_eq!(
+        execution_trees.reservations.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees
+            .reservation_releases
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        launch_gateway.cleanups.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+    assert!(launch_gateway.launches.lock().unwrap().is_empty());
+    assert!(terminal.spawns.lock().unwrap().is_empty());
+    assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.clone().into_parts().1,
+            crate::domain::provider_lifecycle::ProviderLifecycleEvent::BindingExpired { .. }
+        )
+    }));
 }
 
 #[tokio::test]
@@ -722,7 +987,7 @@ async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepo
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -736,16 +1001,19 @@ async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepo
             ),
             lifecycle_events.clone(),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        Arc::new(RecordingLaunchGateway::default()),
-        Arc::new(RecordingTerminal::default()),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            Arc::new(RecordingTerminal::default()),
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health_usecase(),
+        started_execution_trees(),
     );
 
     usecase
@@ -773,7 +1041,7 @@ async fn test_agent_session_launch_hookwarning保存完了を待たずpty起動�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -833,7 +1101,7 @@ async fn test_agent_session_launch_利用不可providerではsessionもptyも作
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -890,7 +1158,7 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -912,16 +1180,19 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        Arc::new(RecordingLaunchGateway::default()),
-        terminal,
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            terminal,
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health_usecase(),
+        started_execution_trees(),
     ));
 
     let first = tokio::spawn(
@@ -950,7 +1221,7 @@ async fn test_agent_session_launch_完了済みrequest_id再送は再作成せ�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -990,7 +1261,7 @@ async fn test_agent_session_launch_異なるrequest_idは別のsessionを作成�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -1031,7 +1302,7 @@ async fn test_agent_session_launch_失敗結果も記録し同一request_id再�
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -1077,7 +1348,7 @@ async fn test_agent_session_launch_起動panic後はin_flightに残さず同一r
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -1093,13 +1364,16 @@ async fn test_agent_session_launch_起動panic後はin_flightに残さず同一r
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        availability.clone(),
-        Arc::new(RecordingLaunchGateway::default()),
-        Arc::new(RecordingTerminal::default()),
+        provider_runtime(
+            availability.clone(),
+            Arc::new(RecordingLaunchGateway::default()),
+            Arc::new(RecordingTerminal::default()),
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health_usecase(),
+        started_execution_trees(),
     ));
 
     let first = Arc::clone(&usecase)
@@ -1148,16 +1422,19 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
         sessions.clone(),
         provider_lifecycle.clone(),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launches.clone(),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launches.clone(),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health.clone(),
+        started_execution_trees(),
     ));
     struct NoopChangeNotifier;
     impl crate::usecase::agent_session::AgentSessionChangeNotifier for NoopChangeNotifier {
@@ -1166,14 +1443,17 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         sessions.clone(),
         provider_lifecycle,
-        launches.clone(),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launches.clone(),
+            terminal.clone(),
+        ),
         hook_health,
         Arc::new(NoopChangeNotifier),
+        started_execution_trees(),
     ));
 
     let launching = tokio::spawn(async move {
@@ -1214,6 +1494,167 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
 }
 
 #[tokio::test]
+async fn test_agent_session_history_resume_実行木登録失敗ではcreateをrollbackする() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+        crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+    )));
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    let execution_trees = Arc::new(RecordingStartedExecutionTrees {
+        failure: Some(StartedExecutionTreeRegistrationError::Unavailable),
+        ..RecordingStartedExecutionTrees::default()
+    });
+    let usecase = AgentSessionLaunchUsecase::new(
+        sessions.clone(),
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            Arc::new(RecordingLifecycleEvents::default()),
+        )),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
+        Arc::new(FixedHistory {
+            entries: vec![AgentSessionHistoryMetadata {
+                provider: ProviderKind::Codex,
+                provider_session_id: "provider-registration-failure".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                updated_at_ms: 10,
+            }],
+        }),
+        hook_health_usecase(),
+        execution_trees.clone(),
+    );
+
+    let error = usecase
+        .resume_history(AgentSessionHistoryResumeRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            provider_session_id: "provider-registration-failure".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "history-registration-failure".to_string(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionLaunchUsecaseError::StorageUnavailable);
+    let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
+    assert_eq!(
+        execution_trees.reservations.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees
+            .reservation_releases
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert!(sessions.find(&expected_id).await.unwrap().is_none());
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert!(launch_gateway.launches.lock().unwrap().is_empty());
+    assert!(launch_gateway.cleanups.lock().unwrap().is_empty());
+    assert!(terminal.spawns.lock().unwrap().is_empty());
+    assert_eq!(*terminal.deletes.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn test_agent_session_history_resume_同一要求の再送は既存sessionへ収束する() {
+    // Given: provider history に再開対象が存在する
+    let directory = tempfile::tempdir().unwrap();
+    let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+        crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+    )));
+    let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    let usecase = AgentSessionLaunchUsecase::new(
+        sessions,
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            lifecycle_events,
+        )),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            terminal.clone(),
+        ),
+        Arc::new(FixedHistory {
+            entries: vec![AgentSessionHistoryMetadata {
+                provider: ProviderKind::Claude,
+                provider_session_id: "provider-history-idempotent".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                updated_at_ms: 10,
+            }],
+        }),
+        hook_health_usecase(),
+        started_execution_trees(),
+    );
+    let request = AgentSessionHistoryResumeRequest {
+        workspace: WorkspaceIdentity::new("/repo"),
+        worktree_path: "/repo/worktree".to_string(),
+        provider: ProviderKind::Claude,
+        provider_session_id: "provider-history-idempotent".to_string(),
+        rows: 24,
+        cols: 80,
+        caller_request_id: "history-resume-idempotent".to_string(),
+    };
+
+    // When: 同じ履歴 resume 要求を二度送る
+    let first = usecase.resume_history(request.clone()).await.unwrap();
+    let second = usecase.resume_history(request.clone()).await.unwrap();
+
+    // Then: どちらも caller request から導出した同じ既存 Session を返す
+    let AgentSessionHistoryResumeOutcome::Open(first) = first else {
+        panic!("first history resume must keep the session open");
+    };
+    let AgentSessionHistoryResumeOutcome::Open(second) = second else {
+        panic!("repeated history resume must keep the session open");
+    };
+    let expected_id = crate::domain::agent_session::launch_resource_id(
+        "agent-session",
+        &request.caller_request_id,
+    )
+    .unwrap();
+    assert_eq!(first.session().id(), expected_id);
+    assert_eq!(second.session().id(), expected_id);
+    assert_eq!(
+        second.session().provider_session_id(),
+        Some(request.provider_session_id.as_str())
+    );
+    assert_eq!(terminal.spawns.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn test_agent_session_history_resumeは新しいsessionを作り失敗時もidを保持する() {
     install_capturing_logger();
     let directory = tempfile::tempdir().unwrap();
@@ -1243,12 +1684,11 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
             error: "checkpoint restore failed".to_string(),
         });
     let hook_health = hook_health_usecase();
+    let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
         lifecycle,
-        availability,
-        launch_gateway.clone(),
-        terminal,
+        provider_runtime(availability, launch_gateway.clone(), terminal),
         Arc::new(FixedHistory {
             entries: vec![AgentSessionHistoryMetadata {
                 provider: ProviderKind::Codex,
@@ -1258,6 +1698,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
             }],
         }),
         hook_health,
+        execution_trees.clone(),
     );
 
     let outcome = usecase
@@ -1291,6 +1732,22 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
         launch_gateway.cleanups.lock().unwrap().as_slice(),
         std::slice::from_ref(&expected_id)
     );
+    assert_eq!(
+        execution_trees.tree_ids.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees.reservations.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees
+            .reservation_releases
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();
     assert!(record.contains("kind=other_spawn_failure"));
     assert!(record.contains("error=checkpoint restore failed"));
@@ -1317,12 +1774,14 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
         lifecycle,
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        Arc::new(RecordingLaunchGateway::default()),
-        Arc::new(RecordingTerminal::default()),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            Arc::new(RecordingTerminal::default()),
+        ),
         Arc::new(FixedHistory {
             entries: vec![AgentSessionHistoryMetadata {
                 provider: ProviderKind::Codex,
@@ -1332,6 +1791,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
             }],
         }),
         hook_health_usecase(),
+        started_execution_trees(),
     );
 
     let outcome = usecase
@@ -1387,7 +1847,7 @@ async fn test_agent_session_usecase_process_exit_resume_archive_deleteを永続�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Claude,
-            None,
+            session_location("agent-session-1"),
             "create-1",
         )
         .await
@@ -1461,7 +1921,7 @@ async fn test_agent_session_usecase_id不明archiveは確認後deleteへ縮退�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-session-unknown"),
             "create-unknown",
         )
         .await
@@ -1500,7 +1960,7 @@ async fn test_agent_session_usecase_gcはpty不在確定時だけunknown_idを�
             WorkspaceIdentity::new("/repo"),
             "/repo/worktree",
             ProviderKind::Codex,
-            None,
+            session_location("agent-session-gc"),
             "create-gc",
         )
         .await
@@ -1551,14 +2011,17 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launch_gateway.clone(),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory { entries: Vec::new() }),
         hook_health_usecase(),
+        started_execution_trees(),
     );
 
     let launched = usecase
@@ -1579,8 +2042,8 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
         .unwrap();
 
     assert_eq!(
-        launched.session().tree_parent(),
-        Some(&AgentSessionTreeParent::new("workflow-1", "node-1").unwrap())
+        launched.session().tree_location(),
+        &workflow_location("workflow-1", "node-1")
     );
     assert_eq!(
         launch_gateway.launches.lock().unwrap().as_slice(),
@@ -1596,7 +2059,11 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
         .activate_workflow_node(launched.session().id())
         .await
         .unwrap();
-    assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
+    {
+        let spawns = terminal.spawns.lock().unwrap();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!((spawns[0].rows, spawns[0].cols), (24, 80));
+    }
     usecase
         .confirm_workflow_node_attachment(launched.session().id())
         .await
@@ -1638,14 +2105,17 @@ async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        Arc::new(RecordingLaunchGateway::default()),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory { entries: Vec::new() }),
         hook_health_usecase(),
+        started_execution_trees(),
     ));
     let first = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -1736,14 +2206,17 @@ async fn test_provider_agent_workflow_session_launch_activate後のrollbackで�
             ),
             lifecycle_events.clone(),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launch_gateway.clone(),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory { entries: Vec::new() }),
         hook_health_usecase(),
+        started_execution_trees(),
     );
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -1803,6 +2276,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
         worktree_path: "/repo/worktree".to_string(),
     });
     let hook_health = hook_health_usecase();
+    let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
@@ -1811,14 +2285,17 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launch_gateway.clone(),
-        terminal,
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal,
+        ),
         Arc::new(FixedHistory { entries: Vec::new() }),
         hook_health,
+        execution_trees.clone(),
     );
 
     let result = usecase
@@ -1846,6 +2323,10 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
         launch_gateway.cleanups.lock().unwrap().as_slice(),
         std::slice::from_ref(&expected_id)
     );
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();
     assert!(record.contains("kind=per_worktree_cap"));
     assert!(record.contains("worktree_path=/repo/worktree"));
@@ -1868,6 +2349,9 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
     *launch_gateway.fail_prepare.lock().unwrap() = true;
     let terminal = Arc::new(RecordingTerminal::default());
     *terminal.fail_delete.lock().unwrap() = true;
+    let execution_trees = started_execution_trees();
+    *execution_trees.release_failure.lock().unwrap() =
+        Some(ExecutionTreeCacheReleaseError::Unavailable);
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
@@ -1876,16 +2360,19 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launch_gateway.clone(),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health_usecase(),
+        execution_trees.clone(),
     );
 
     let result = usecase
@@ -1907,6 +2394,10 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert_eq!(
         launch_gateway.cleanups.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
         std::slice::from_ref(&expected_id)
     );
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
@@ -1931,6 +2422,9 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
         error: "openpty failed".to_string(),
     });
     *terminal.fail_delete.lock().unwrap() = true;
+    let execution_trees = started_execution_trees();
+    *execution_trees.release_failure.lock().unwrap() =
+        Some(ExecutionTreeCacheReleaseError::Corrupt);
     let usecase = AgentSessionLaunchUsecase::new(
         sessions.clone(),
         Arc::new(ProviderLifecycleUsecase::new(
@@ -1939,16 +2433,19 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        Arc::new(FixedAvailability {
-            available: true,
-            checks: Mutex::new(Vec::new()),
-        }),
-        launch_gateway.clone(),
-        terminal.clone(),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
         Arc::new(FixedHistory {
             entries: Vec::new(),
         }),
         hook_health_usecase(),
+        execution_trees.clone(),
     );
 
     let result = usecase
@@ -1974,7 +2471,56 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
         launch_gateway.cleanups.lock().unwrap().as_slice(),
         std::slice::from_ref(&expected_id)
     );
+    assert_eq!(
+        execution_trees.releases.lock().unwrap().as_slice(),
+        std::slice::from_ref(&expected_id)
+    );
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_agent_session_launch_prepare失敗時のrollbackでgc失敗なら実行木を解放しない() {
+    let seed = AgentSession::create(
+        "seed",
+        WorkspaceIdentity::new("/seed"),
+        "/seed",
+        ProviderKind::Claude,
+        session_location("seed"),
+    )
+    .unwrap();
+    let repository = Arc::new(FailingSaveRepository::new(seed));
+    *repository.stored.lock().unwrap() = None;
+    *repository.remove_failure.lock().unwrap() = Some(AgentSessionRepositoryError::Unavailable);
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    *launch_gateway.fail_prepare.lock().unwrap() = true;
+    let execution_trees = started_execution_trees();
+    let usecase = launch_usecase_with_tree_registrar(
+        repository.clone(),
+        Arc::new(FixedAvailability {
+            available: true,
+            checks: Mutex::new(Vec::new()),
+        }),
+        launch_gateway,
+        Arc::new(RecordingTerminal::default()),
+        hook_health_usecase(),
+        execution_trees.clone(),
+    );
+
+    let error = usecase
+        .launch_standalone(AgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            rows: 24,
+            cols: 80,
+            caller_request_id: "rollback-gc-failure".to_string(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionLaunchUsecaseError::LaunchUnavailable);
+    assert!(repository.stored.lock().unwrap().is_some());
+    assert!(execution_trees.releases.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1984,7 +2530,7 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
         WorkspaceIdentity::new("/seed"),
         "/seed",
         ProviderKind::Claude,
-        None,
+        session_location("seed"),
     )
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(seed));
@@ -2004,11 +2550,10 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
-        availability,
-        launch_gateway.clone(),
-        terminal.clone(),
+        provider_runtime(availability, launch_gateway.clone(), terminal.clone()),
         Arc::new(FixedHistory { entries: Vec::new() }),
         hook_health.clone(),
+        started_execution_trees(),
     );
 
     let launched = usecase

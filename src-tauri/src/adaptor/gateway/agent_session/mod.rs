@@ -6,6 +6,7 @@ mod provider_agent_launch_gateway;
 mod provider_agent_terminal_gateway;
 mod provider_availability_gateway;
 mod provider_executable_config_repository;
+mod session_facts;
 pub(crate) use agent_session_history_gateway::LocalAgentSessionHistoryGateway;
 pub(crate) use agent_session_history_query_service::LocalAgentSessionHistoryQueryService;
 pub(crate) use agent_session_query_service::workspace_session_items;

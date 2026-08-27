@@ -41,7 +41,7 @@ impl WorkflowRuntimeHost {
         let timestamp = current_timestamp();
 
         // spawn 成功後の実在する副作用だけを事実として追記する。
-        let (snapshot, worktree_path) = {
+        let (snapshot, worktree_path, launched_as) = {
             let mut executions = self.executions.lock().await;
             let Some(execution) = executions.get_mut(&input.execution_id) else {
                 return Ok(false);
@@ -85,10 +85,14 @@ impl WorkflowRuntimeHost {
                     "command spawned event append failed: {error}"
                 )));
             }
-            (snapshot, execution.worktree_path.clone())
+            (
+                snapshot,
+                execution.worktree_path.clone(),
+                execution.launched_as,
+            )
         };
 
-        self.sync_state_after_required_event_commit(&snapshot)
+        self.sync_state_after_required_event_commit(launched_as, &snapshot)
             .await?;
         self.finalize_after_commit(app, &snapshot, &worktree_path)
             .await;

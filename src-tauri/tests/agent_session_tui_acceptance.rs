@@ -7,7 +7,7 @@ use std::time::Duration;
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releash_lib::agent_session_tui_acceptance::{
     product_agent_session_invoke_handler, AcceptanceAgentSessionLifecycle,
-    AcceptanceAgentSessionTreeParent, AcceptanceArchiveOutcome, AcceptanceHookWarning,
+    AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome, AcceptanceHookWarning,
     AcceptanceOpenOutcome, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
@@ -684,7 +684,7 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .launch_workflow(
             &workspace,
             AcceptanceProvider::Codex,
-            "atui-025-workflow",
+            "00000000-0000-4000-8000-000000000025",
             "atui-025-node",
             "verify shared registry",
         )
@@ -715,7 +715,7 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .launch_workflow(
             &workspace,
             AcceptanceProvider::Codex,
-            "atui-025-workflow-unavailable",
+            "00000000-0000-4000-8000-000000000026",
             "atui-025-node-unavailable",
             "must be rejected before creation",
         )
@@ -1035,6 +1035,13 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             .launch_standalone("workspace-1", &workspace, provider, 24, 80, "launch")
             .await
             .unwrap();
+        assert_eq!(
+            host.get(&session_id).await.unwrap().unwrap().tree_location,
+            AcceptanceAgentSessionTreeLocation {
+                tree_id: session_id.clone(),
+                node_execution_id: session_id.clone(),
+            }
+        );
         let terminal_owner = owner("workspace-1", &session_id);
         let mut attached = host
             .terminal()
@@ -1102,7 +1109,7 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
         .launch_workflow(
             &workspace,
             AcceptanceProvider::Claude,
-            "workflow-execution-1",
+            "00000000-0000-4000-8000-000000001696",
             "node-execution-1",
             "system policy\n\nimplement once",
         )
@@ -1123,11 +1130,11 @@ async fn test_atui_030_workflow初期指示は一度だけで追加質問もterm
         .unwrap();
 
     assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().tree_parent,
-        Some(AcceptanceAgentSessionTreeParent {
-            tree_id: "workflow-execution-1".to_string(),
+        host.get(&session_id).await.unwrap().unwrap().tree_location,
+        AcceptanceAgentSessionTreeLocation {
+            tree_id: "00000000-0000-4000-8000-000000001696".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-        })
+        }
     );
     assert!(
         !host

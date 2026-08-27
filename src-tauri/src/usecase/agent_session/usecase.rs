@@ -30,8 +30,7 @@ pub(crate) struct AgentSessionCreateRequest {
     pub(crate) workspace: WorkspaceIdentity,
     pub(crate) worktree_path: String,
     pub(crate) provider: ProviderKind,
-    pub(crate) tree_parent:
-        Option<crate::domain::agent_session::aggregates::AgentSessionTreeParent>,
+    pub(crate) tree_location: crate::domain::agent_session::aggregates::AgentSessionTreeLocation,
     pub(crate) admit_initial_instruction: bool,
 }
 
@@ -75,7 +74,7 @@ impl AgentSessionUsecase {
         workspace: WorkspaceIdentity,
         worktree_path: &str,
         provider: ProviderKind,
-        tree_parent: Option<crate::domain::agent_session::aggregates::AgentSessionTreeParent>,
+        tree_location: crate::domain::agent_session::aggregates::AgentSessionTreeLocation,
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionUsecaseError> {
         let session = AgentSession::create(
@@ -83,7 +82,7 @@ impl AgentSessionUsecase {
             workspace,
             worktree_path,
             provider,
-            tree_parent,
+            tree_location,
         )
         .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         self.repository
@@ -103,7 +102,7 @@ impl AgentSessionUsecase {
             request.workspace,
             &request.worktree_path,
             request.provider,
-            request.tree_parent,
+            request.tree_location,
         )
         .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         if request.admit_initial_instruction {
@@ -188,7 +187,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn stop_workflow_owned(
+    pub(crate) async fn stop_for_terminal_execution_tree_node(
         &self,
         agent_session_id: &str,
         node_execution_id: &str,
@@ -197,7 +196,7 @@ impl AgentSessionUsecase {
         let mut session = self.required(agent_session_id).await?;
         let outcome = session
             .session_mut()
-            .stop_workflow_owned(node_execution_id)
+            .stop_for_terminal_execution_tree_node(node_execution_id)
             .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         self.save_if_changed(session, caller_request_id).await?;
         Ok(outcome)

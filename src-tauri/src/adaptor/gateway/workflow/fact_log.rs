@@ -16,11 +16,12 @@ use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::{
-    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, NodeFact, NodeFactMeta,
-    NodeFactRecord, NodeKindName, ProcessExitedFact, SessionAttachedFact, StartedFact,
-    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact, WorkflowEvent,
-    WorkflowRootFact,
+    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact,
+    NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact, SessionAttachedFact,
+    StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
+    WorkflowEvent,
 };
+use crate::domain::workspace_tree::WorkspaceIdentity;
 
 const MAX_RECONCILIATION_ADVANCE_ROUNDS: usize = 4_096;
 
@@ -107,7 +108,7 @@ fn fact_rows_for_events(
 ) -> Result<Vec<PendingFactRow>, String> {
     let mut rows: Vec<PendingFactRow> = Vec::new();
     let mut batch_meta: HashMap<String, FactRowMeta> = HashMap::new();
-    let mut pending_root: Option<WorkflowRootFact> = None;
+    let mut pending_root: Option<TreeRootFact> = None;
 
     let mut resolve = |batch_meta: &HashMap<String, FactRowMeta>,
                        node_execution_id: &str|
@@ -125,19 +126,19 @@ fn fact_rows_for_events(
         let timestamp = event.timestamp();
         match event {
             WorkflowEvent::ExecutionStarted {
-                workflow_name,
                 worktree_path,
                 created_from,
                 request,
                 definition,
                 ..
             } => {
-                pending_root = Some(WorkflowRootFact {
-                    workflow_name: workflow_name.clone(),
+                pending_root = Some(TreeRootFact {
+                    workspace_identity: WorkspaceIdentity::new(worktree_path).as_str().to_string(),
                     worktree_path: worktree_path.clone(),
                     created_from: *created_from,
                     request: request.clone(),
                     definition: definition.clone(),
+                    launched_as: ExecutionTreeLaunch::Workflow,
                 });
             }
             WorkflowEvent::NodeStarted {
@@ -156,7 +157,7 @@ fn fact_rows_for_events(
                     attempt: *attempt,
                 };
                 let root = if parent.is_none() {
-                    pending_root.take().map(TreeRootFact::Workflow)
+                    pending_root.take()
                 } else {
                     None
                 };
@@ -447,6 +448,94 @@ pub(crate) fn append_pending_rows_blocking(
             })
             .join()
             .map_err(|_| "node fact append worker panicked".to_string())?
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn append_fact_batch_for_seed(
+    store: &Arc<LocalEventStore>,
+    facts: &[(NodeFactMeta, NodeFact)],
+    first_timestamp_ms: i64,
+    seed_identity: &str,
+) -> Result<(), String> {
+    use crate::adaptor::gateway::local_event_store::writer::PreparedNodeEvent;
+    use crate::domain::local_event::{
+        CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
+    };
+    use sha2::{Digest, Sha256};
+
+    if facts.is_empty() {
+        return Ok(());
+    }
+    let mut canonical = Vec::new();
+    let mut node_events = Vec::with_capacity(facts.len());
+    for (index, (meta, fact)) in facts.iter().enumerate() {
+        let timestamp_ms = first_timestamp_ms.saturating_add(i64::try_from(index).unwrap_or(0));
+        let pending = pending_single_fact(meta, fact, timestamp_ms)?;
+        for value in [
+            pending.row.tree_id.as_bytes(),
+            pending.row.node_execution_id.as_bytes(),
+            pending
+                .row
+                .parent_id
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+            pending.row.node_name.as_bytes(),
+            pending.row.kind.as_bytes(),
+            pending.row.event_type.as_bytes(),
+            pending.row.detail.as_bytes(),
+        ] {
+            canonical.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            canonical.extend_from_slice(value);
+        }
+        canonical.extend_from_slice(&pending.row.attempt.to_be_bytes());
+        canonical.extend_from_slice(&timestamp_ms.to_be_bytes());
+        node_events.push(PreparedNodeEvent {
+            row: pending.row,
+            timestamp_ms,
+            expect_tree_absent: index == 0,
+        });
+    }
+    let payload_hash: [u8; 32] = Sha256::digest(&canonical).into();
+    let commit_digest = Sha256::digest(
+        [
+            b"node-fact-seed/v1\0".as_slice(),
+            seed_identity.as_bytes(),
+            b"\0",
+            canonical.as_slice(),
+        ]
+        .concat(),
+    );
+    let commit_id = CommitIdentity::parse(&hex::encode(commit_digest))
+        .map_err(|error| format!("node fact seed commit identity is invalid: {error}"))?;
+    let batch = LocalAtomicBatch {
+        commit_id,
+        idempotency: IdempotencyBinding {
+            installation_id: store.installation_id().to_string(),
+            operation_kind: CommitOperationKind::UserMutation,
+            idempotency_key: format!("node-fact-seed.{}", hex::encode(payload_hash)),
+            payload_hash,
+        },
+        expected_heads: Vec::new(),
+        events: Vec::new(),
+        state_mutations: Vec::new(),
+    };
+    let store = Arc::clone(store);
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("failed to create fact seed runtime: {error}"))?;
+                runtime
+                    .block_on(store.commit_batch_with_node_events(batch, node_events))
+                    .map(|_| ())
+                    .map_err(|error| format!("node fact seed batch failed: {error}"))
+            })
+            .join()
+            .map_err(|_| "node fact seed worker panicked".to_string())?
     })
 }
 
@@ -774,8 +863,8 @@ pub(crate) fn reconcile_tree_pass(
     Ok(Some(TreeReconciliation { folded, leaves }))
 }
 
-/// worktree（= workspace identity）に root を植えた木の識別子と root 事実
-/// （root started の追記順）。`worktree_path` が None なら全木。
+/// worktree に root を植えた木の識別子と root 事実（root started の追記順）。
+/// `worktree_path` が None なら全木。
 ///
 /// 絞り込みは detail JSON を Rust で読む（SQL に判定規則を持ち込まない）。
 pub(crate) fn list_tree_roots(
@@ -801,11 +890,7 @@ pub(crate) fn list_tree_roots(
         let Some(root) = &started.root else {
             continue;
         };
-        let root_worktree = match root {
-            crate::domain::workflow::TreeRootFact::Workflow(workflow) => &workflow.worktree_path,
-            crate::domain::workflow::TreeRootFact::Session(session) => &session.worktree_path,
-        };
-        if worktree_path.is_none_or(|wanted| wanted == root_worktree) {
+        if worktree_path.is_none_or(|wanted| wanted == root.worktree_path) {
             roots.push((row.tree_id, root.clone()));
         }
     }

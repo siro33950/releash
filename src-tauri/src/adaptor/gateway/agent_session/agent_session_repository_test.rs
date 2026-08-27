@@ -11,7 +11,7 @@ use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
 use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionLifecycle, AgentSessionTreeParent,
+    AgentSession, AgentSessionLifecycle, AgentSessionTreeLocation,
 };
 use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::agent_session::AgentSessionOwnershipQuery;
@@ -21,7 +21,7 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::{
-    ExecutionOrigin, NodeFact, NodeKindName, SessionRootFact, TreeRootFact,
+    ExecutionOrigin, ExecutionTreeLaunch, NodeFact, NodeKindName, TreeRootFact,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{AgentSessionLifecycleDto, AgentSessionQueryService};
@@ -36,6 +36,14 @@ fn open_store(directory: &TempDir) -> Arc<LocalEventStore> {
 
 fn new_repository(store: &Arc<LocalEventStore>) -> LocalAgentSessionRepository {
     LocalAgentSessionRepository::new(store.clone())
+}
+
+fn session_location(id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::session_tree_root(id).unwrap()
+}
+
+fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
 }
 
 #[test]
@@ -54,13 +62,13 @@ fn test_agent_session_repository_commit_errorの非競合障害をcorruptに分�
     }
 }
 
-fn parentless_session(id: &str, worktree_path: &str, provider: ProviderKind) -> AgentSession {
+fn standalone_session(id: &str, worktree_path: &str, provider: ProviderKind) -> AgentSession {
     AgentSession::create(
         id,
         WorkspaceIdentity::new(worktree_path),
         worktree_path,
         provider,
-        None,
+        session_location(id),
     )
     .unwrap()
 }
@@ -91,7 +99,7 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-1",
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
@@ -105,7 +113,7 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     assert_eq!(saved.revision(), 1);
     assert!(saved.session().uncommitted_events().is_empty());
     let records = fact_log::read_tree_records(&store, "agent-session-1").unwrap();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 2);
     let record = &records[0];
     assert_eq!(record.meta.tree_id, "agent-session-1");
     assert_eq!(record.meta.node_execution_id, "agent-session-1");
@@ -117,19 +125,26 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
         panic!("session root row must be a started fact: {record:?}");
     };
     assert_eq!(started.parent, None);
-    let Some(TreeRootFact::Session(SessionRootFact {
-        workspace_identity,
-        worktree_path,
-        session,
-        created_from,
-    })) = &started.root
-    else {
+    let Some(root) = &started.root else {
         panic!("session root fact must carry the session tree root: {started:?}");
     };
-    assert_eq!(workspace_identity, "/repo/.worktrees/feature");
-    assert_eq!(worktree_path, "/repo/.worktrees/feature");
+    assert_eq!(root.workspace_identity, "/repo/.worktrees/feature");
+    assert_eq!(root.worktree_path, "/repo/.worktrees/feature");
+    assert_eq!(root.launched_as, ExecutionTreeLaunch::Session);
+    assert_eq!(root.created_from, ExecutionOrigin::DesktopUi);
+    let session = root
+        .definition
+        .node_by_name("session")
+        .and_then(crate::domain::workflow::NodeDefinition::session)
+        .unwrap();
     assert_eq!(session.provider, ProviderKind::Codex);
-    assert_eq!(*created_from, ExecutionOrigin::DesktopUi);
+    assert!(matches!(
+        &records[1].fact,
+        NodeFact::SessionAttached(attached)
+            if attached.session_id == "agent-session-1"
+                && attached.provider_session_id.is_none()
+                && attached.transcript_ref.is_none()
+    ));
     drop(repository);
     drop(store);
 
@@ -140,7 +155,7 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
         .unwrap()
         .unwrap();
 
-    assert_eq!(loaded.revision(), 1);
+    assert_eq!(loaded.revision(), 2);
     assert_eq!(loaded.session().id(), "agent-session-1");
     assert_eq!(
         loaded.session().workspace().as_str(),
@@ -148,7 +163,10 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     );
     assert_eq!(loaded.session().worktree_path(), "/repo/.worktrees/feature");
     assert_eq!(loaded.session().provider(), ProviderKind::Codex);
-    assert_eq!(loaded.session().tree_parent(), None);
+    assert_eq!(
+        loaded.session().tree_location(),
+        &session_location("agent-session-1")
+    );
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Open);
     assert!(loaded.session().uncommitted_events().is_empty());
 }
@@ -164,7 +182,7 @@ async fn test_agent_session_repository_workspace同定子はworktreeと独立に
         WorkspaceIdentity::new("workspace-1"),
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
-        None,
+        session_location("agent-session-ws"),
     )
     .unwrap();
     repository
@@ -187,7 +205,7 @@ async fn test_agent_session_repository_同一idの再createを拒否する() {
     let repository = new_repository(&store);
     repository
         .create(
-            parentless_session("agent-session-1", "/repo", ProviderKind::Codex),
+            standalone_session("agent-session-1", "/repo", ProviderKind::Codex),
             "create-request-1",
         )
         .await
@@ -195,7 +213,7 @@ async fn test_agent_session_repository_同一idの再createを拒否する() {
 
     let error = repository
         .create(
-            parentless_session("agent-session-1", "/repo", ProviderKind::Codex),
+            standalone_session("agent-session-1", "/repo", ProviderKind::Codex),
             "create-request-2",
         )
         .await
@@ -205,7 +223,10 @@ async fn test_agent_session_repository_同一idの再createを拒否する() {
         error,
         crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict
     );
-    assert_eq!(tree_event_types(&store, "agent-session-1"), ["started"]);
+    assert_eq!(
+        tree_event_types(&store, "agent-session-1"),
+        ["started", "session_attached"]
+    );
 }
 
 #[tokio::test]
@@ -218,7 +239,7 @@ async fn test_agent_session_repository_workflow子sessionのcreateは木に行�
         WorkspaceIdentity::new("/repo"),
         "/repo",
         ProviderKind::Codex,
-        Some(AgentSessionTreeParent::new("workflow-1", "node-execution-1").unwrap()),
+        workflow_location("workflow-1", "node-execution-1"),
     )
     .unwrap();
     session.admit_initial_instruction().unwrap();
@@ -249,7 +270,7 @@ async fn test_agent_session_repository_attach前に再起動したworkflow子ses
             WorkspaceIdentity::new("/repo"),
             "/repo",
             ProviderKind::Codex,
-            Some(AgentSessionTreeParent::new("workflow-1", "node-execution-1").unwrap()),
+            workflow_location("workflow-1", "node-execution-1"),
         )
         .unwrap();
         session.admit_initial_instruction().unwrap();
@@ -303,7 +324,7 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-1",
         "/repo/.worktrees/feature",
         ProviderKind::Claude,
@@ -324,7 +345,12 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
     assert!(updated.session().uncommitted_events().is_empty());
     assert_eq!(
         tree_event_types(&store, "agent-session-1"),
-        ["started", "session_attached", "process_exited"]
+        [
+            "started",
+            "session_attached",
+            "session_attached",
+            "process_exited"
+        ]
     );
     drop(repository);
     drop(store);
@@ -336,7 +362,7 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
         .unwrap()
         .unwrap();
 
-    assert_eq!(loaded.revision(), 3);
+    assert_eq!(loaded.revision(), 4);
     assert_eq!(
         loaded.session().provider_session_id(),
         Some("provider-session-1")
@@ -356,7 +382,7 @@ async fn test_agent_session_repository_異常exitをfailure付きprocess_exited�
     let repository = new_repository(&store);
     let mut saved = repository
         .create(
-            parentless_session("agent-session-abnormal", "/repo", ProviderKind::Codex),
+            standalone_session("agent-session-abnormal", "/repo", ProviderKind::Codex),
             "create-request-1",
         )
         .await
@@ -391,7 +417,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
     let repository = new_repository(&store);
     let mut saved = repository
         .create(
-            parentless_session("agent-session-flow", "/repo", ProviderKind::Claude),
+            standalone_session("agent-session-flow", "/repo", ProviderKind::Claude),
             "create-request-1",
         )
         .await
@@ -448,6 +474,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         [
             "started",
             "session_attached",
+            "session_attached",
             "process_exited",
             "resume_requested",
             "archive_requested",
@@ -461,12 +488,12 @@ async fn test_agent_session_repository同じprovider_session_idの同時所有�
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = Arc::new(new_repository(&store));
-    let first = parentless_session(
+    let first = standalone_session(
         "agent-session-1",
         "/repo/.worktrees/first",
         ProviderKind::Codex,
     );
-    let second = parentless_session(
+    let second = standalone_session(
         "agent-session-2",
         "/repo/.worktrees/second",
         ProviderKind::Codex,
@@ -528,7 +555,7 @@ async fn test_agent_session_repository削除で木の行を物理削除しprovid
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let first = parentless_session(
+    let first = standalone_session(
         "agent-session-1",
         "/repo/.worktrees/first",
         ProviderKind::Claude,
@@ -571,7 +598,7 @@ async fn test_agent_session_repository削除で木の行を物理削除しprovid
     assert!(ownership_page.events.is_empty());
     assert_eq!(ownership_page.head.value(), 0);
 
-    let second = parentless_session(
+    let second = standalone_session(
         "agent-session-2",
         "/repo/.worktrees/second",
         ProviderKind::Claude,
@@ -596,7 +623,7 @@ async fn test_agent_session_repository削除失敗時に木とprovider所有権�
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-atomic-delete",
         "/repo/.worktrees/atomic-delete",
         ProviderKind::Claude,
@@ -668,7 +695,7 @@ async fn test_agent_session_repository永続化失敗時に所有権も導出状
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-1",
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
@@ -690,10 +717,10 @@ async fn test_agent_session_repository永続化失敗時に所有権も導出状
         crate::domain::agent_session::repository::AgentSessionRepositoryError::Unavailable
     );
     let unchanged = repository.find("agent-session-1").await.unwrap().unwrap();
-    assert_eq!(unchanged.revision(), 1);
+    assert_eq!(unchanged.revision(), 2);
     assert_eq!(unchanged.session().provider_session_id(), None);
 
-    let second = parentless_session(
+    let second = standalone_session(
         "agent-session-2",
         "/repo/.worktrees/second",
         ProviderKind::Codex,
@@ -711,7 +738,7 @@ async fn test_agent_session_repository_session_startをlifecycleと原子的に�
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-atomic",
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
@@ -801,7 +828,7 @@ async fn test_agent_session_repository_単独rootとprovider_lifecycleを原子�
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let session = parentless_session(
+    let session = standalone_session(
         "agent-session-create-atomic",
         "/repo/.worktrees/feature",
         ProviderKind::Codex,
@@ -848,7 +875,7 @@ async fn test_agent_session_repository_単独rootとprovider_lifecycleを原子�
 
     repository
         .create_with_lifecycle_events(
-            parentless_session(
+            standalone_session(
                 "agent-session-create-atomic",
                 "/repo/.worktrees/feature",
                 ProviderKind::Codex,
@@ -879,7 +906,8 @@ async fn test_agent_session_repository_単独rootとprovider_lifecycleを原子�
 }
 
 #[tokio::test]
-async fn test_agent_session_repository_同じlaunch要求を再起動後に再armする() {
+async fn test_agent_session_repository_session起動由来の同一要求を既存sessionへ再armする() {
+    // Given: caller request から導出した id の Session が provider history と紐付いている
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
@@ -901,24 +929,47 @@ async fn test_agent_session_repository_同じlaunch要求を再起動後に再ar
         )]
     };
 
-    repository
+    let mut created = repository
         .create_with_lifecycle_events(
-            parentless_session(&session_id, "/repo", ProviderKind::Codex),
+            standalone_session(&session_id, "/repo", ProviderKind::Codex),
             lifecycle("binding-1"),
             caller_request_id,
         )
         .await
         .unwrap();
+    created
+        .session_mut()
+        .associate_provider_session("provider-history-1", None)
+        .unwrap();
     repository
+        .save(created, "standalone-restart-request.associate")
+        .await
+        .unwrap();
+
+    // When: 同じ caller request で Session の create を再送する
+    let rearmed = repository
         .create_with_lifecycle_events(
-            parentless_session(&session_id, "/repo", ProviderKind::Codex),
+            standalone_session(&session_id, "/repo", ProviderKind::Codex),
             lifecycle("binding-2"),
             caller_request_id,
         )
         .await
         .unwrap();
 
-    assert_eq!(tree_event_types(&store, &session_id), ["started"]);
+    // Then: provider history と紐付いた既存 Session を返し、rearm の lifecycle event を追記する
+    assert_eq!(rearmed.session().id(), session_id);
+    assert_eq!(
+        rearmed.session().provider_session_id(),
+        Some("provider-history-1")
+    );
+    assert_eq!(
+        rearmed.session().tree_location(),
+        &session_location(&session_id)
+    );
+    assert_eq!(
+        tree_event_types(&store, &session_id),
+        ["started", "session_attached", "session_attached"]
+    );
     let stream = store
         .load_stream(crate::domain::local_event::LoadStreamRequest {
             stream_id: crate::domain::local_event::StreamId::provider_lifecycle(&session_id)
@@ -929,6 +980,178 @@ async fn test_agent_session_repository_同じlaunch要求を再起動後に再ar
         .await
         .unwrap();
     assert_eq!(stream.events.len(), 2);
+    assert!(matches!(
+        &stream.events[1].event,
+        crate::domain::local_event::LoadedDomainEvent::Known(event)
+            if matches!(
+                event.as_ref(),
+                crate::domain::local_event::LocalDomainEvent::ProviderLifecycle(
+                    ProviderLifecycleEvent::BindingArmed { binding_id, .. }
+                ) if binding_id == "binding-2"
+            )
+    ));
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_workflow起動由来sessionをsession起動要求で再armしない() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let caller_request_id = "launch-origin-collision";
+    let session_id =
+        crate::domain::agent_session::launch_resource_id("agent-session", caller_request_id)
+            .unwrap();
+    let lifecycle = |binding: &str| {
+        let scope = ProviderLifecycleScope::new(&session_id).unwrap();
+        vec![ScopedProviderLifecycleEvent::new(
+            scope.clone(),
+            ProviderLifecycleEvent::binding_armed(
+                "launch-origin-slot",
+                binding,
+                ProviderKind::Codex,
+                scope,
+            )
+            .unwrap(),
+        )]
+    };
+    let workflow_session = AgentSession::create(
+        &session_id,
+        WorkspaceIdentity::new("/repo"),
+        "/repo",
+        ProviderKind::Codex,
+        workflow_location("workflow-1", "workflow-node-1"),
+    )
+    .unwrap();
+    repository
+        .create_with_lifecycle_events(workflow_session, lifecycle("binding-1"), caller_request_id)
+        .await
+        .unwrap();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "work",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "workflow-1",
+            node_execution_id: "workflow-node-1",
+            session_id: &session_id,
+            initial_instruction_admitted: false,
+        },
+    )
+    .unwrap();
+
+    let error = repository
+        .create_with_lifecycle_events(
+            standalone_session(&session_id, "/repo", ProviderKind::Codex),
+            lifecycle("binding-2"),
+            caller_request_id,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict
+    );
+    let stream = store
+        .load_stream(crate::domain::local_event::LoadStreamRequest {
+            stream_id: crate::domain::local_event::StreamId::provider_lifecycle(&session_id)
+                .unwrap(),
+            after: None,
+            limit: 16,
+        })
+        .await
+        .unwrap();
+    assert_eq!(stream.events.len(), 1);
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_workflow起動由来sessionのtree所在不一致を再armしない() {
+    for (requested_tree_id, requested_node_execution_id) in [
+        ("workflow-2", "workflow-node-1"),
+        ("workflow-1", "workflow-node-2"),
+    ] {
+        let directory = TempDir::new().unwrap();
+        let store = open_store(&directory);
+        let repository = new_repository(&store);
+        let session_id = "workflow-location-rearm";
+        let lifecycle = |binding: &str| {
+            let scope = ProviderLifecycleScope::new(session_id).unwrap();
+            vec![ScopedProviderLifecycleEvent::new(
+                scope.clone(),
+                ProviderLifecycleEvent::binding_armed(
+                    "workflow-location-slot",
+                    binding,
+                    ProviderKind::Codex,
+                    scope,
+                )
+                .unwrap(),
+            )]
+        };
+        let existing = AgentSession::create(
+            session_id,
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Codex,
+            workflow_location("workflow-1", "workflow-node-1"),
+        )
+        .unwrap();
+        repository
+            .create_with_lifecycle_events(
+                existing,
+                lifecycle("binding-1"),
+                "workflow-location-request",
+            )
+            .await
+            .unwrap();
+        seed_workflow_session_facts(
+            &store,
+            WorkflowSessionFactSeed {
+                workflow_name: "workflow",
+                request: "work",
+                worktree_path: "/repo",
+                provider: ProviderKind::Codex,
+                workflow_execution_id: "workflow-1",
+                node_execution_id: "workflow-node-1",
+                session_id,
+                initial_instruction_admitted: false,
+            },
+        )
+        .unwrap();
+        let requested = AgentSession::create(
+            session_id,
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Codex,
+            workflow_location(requested_tree_id, requested_node_execution_id),
+        )
+        .unwrap();
+
+        let error = repository
+            .create_with_lifecycle_events(
+                requested,
+                lifecycle("binding-2"),
+                "workflow-location-request",
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            crate::domain::agent_session::repository::AgentSessionRepositoryError::Conflict
+        );
+        let stream = store
+            .load_stream(crate::domain::local_event::LoadStreamRequest {
+                stream_id: crate::domain::local_event::StreamId::provider_lifecycle(session_id)
+                    .unwrap(),
+                after: None,
+                limit: 16,
+            })
+            .await
+            .unwrap();
+        assert_eq!(stream.events.len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -943,7 +1166,7 @@ async fn test_workspace共通read_modelは同じworkspaceのsessionをid昇順�
     ] {
         repository
             .create(
-                parentless_session(id, worktree, ProviderKind::Codex),
+                standalone_session(id, worktree, ProviderKind::Codex),
                 &format!("create-{id}"),
             )
             .await
@@ -975,7 +1198,7 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
     let repository = new_repository(&store);
     repository
         .create(
-            parentless_session(
+            standalone_session(
                 "agent-session-detail",
                 "/repo/worktree",
                 ProviderKind::Claude,
@@ -998,12 +1221,25 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
 
     assert_eq!(detail.id, "agent-session-detail");
     assert_eq!(blocking_detail, detail);
+    assert_eq!(detail.workspace_identity, "/repo/worktree");
     assert_eq!(detail.worktree_path, "/repo/worktree");
     assert_eq!(
         detail.provider,
         crate::usecase::agent_session::AgentSessionProviderDto::Claude
     );
-    assert_eq!(detail.tree_parent, None);
+    assert_eq!(detail.tree_location.tree_id, "agent-session-detail");
+    assert_eq!(
+        detail.tree_location.node_execution_id,
+        "agent-session-detail"
+    );
+    assert_eq!(detail.lifecycle, AgentSessionLifecycleDto::Open);
+    assert_eq!(detail.provider_session_id, None);
+    assert_eq!(detail.transcript_ref, None);
+    assert_eq!(
+        detail.activity,
+        crate::usecase::agent_session::AgentSessionActivityDto::Idle
+    );
+    assert!(!detail.last_exit_abnormal);
     assert!(detail.operations.can_archive);
     assert!(!detail.operations.can_restore);
     assert!(!detail.operations.can_delete);
@@ -1046,7 +1282,7 @@ async fn test_agent_session_query_service_resume可否をprovider参照の有無
                     WorkspaceIdentity::new("/repo"),
                     "/repo/worktree",
                     ProviderKind::Codex,
-                    Some(AgentSessionTreeParent::new(execution_id, node_execution_id).unwrap()),
+                    workflow_location(execution_id, node_execution_id),
                 )
                 .unwrap(),
                 &format!("create-{session_id}"),
@@ -1065,7 +1301,7 @@ async fn test_agent_session_query_service_resume可否をprovider参照の有無
         }
         saved
             .session_mut()
-            .stop_workflow_owned(node_execution_id)
+            .stop_for_terminal_execution_tree_node(node_execution_id)
             .unwrap();
         repository
             .save(saved, &format!("stop-{session_id}"))
@@ -1078,7 +1314,13 @@ async fn test_agent_session_query_service_resume可否をprovider参照の有無
     let known = query_service.get("session-known").await.unwrap().unwrap();
 
     assert!(!unknown.operations.can_resume);
+    assert!(!unknown.operations.can_archive);
+    assert!(!unknown.operations.can_restore);
+    assert!(!unknown.operations.can_delete);
     assert!(known.operations.can_resume);
+    assert!(!known.operations.can_archive);
+    assert!(!known.operations.can_restore);
+    assert!(!known.operations.can_delete);
 }
 
 #[tokio::test]
@@ -1086,8 +1328,8 @@ async fn test_workspace共通read_modelは全lifecycleを返す() {
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    for id in ["open-session", "archived-session"] {
-        let session = parentless_session(id, "/repo", ProviderKind::Claude);
+    for id in ["open-session", "paused-session", "archived-session"] {
+        let session = standalone_session(id, "/repo", ProviderKind::Claude);
         let mut saved = repository
             .create(session, &format!("create-{id}"))
             .await
@@ -1100,18 +1342,44 @@ async fn test_workspace共通read_modelは全lifecycleを返す() {
             .save(saved, &format!("associate-{id}"))
             .await
             .unwrap();
-        if id == "archived-session" {
-            saved.session_mut().archive().unwrap();
-            repository.save(saved, "archive-session").await.unwrap();
+        match id {
+            "paused-session" => {
+                saved.session_mut().observe_provider_process_exit(Some(0));
+                repository.save(saved, "pause-session").await.unwrap();
+            }
+            "archived-session" => {
+                saved.session_mut().archive().unwrap();
+                repository.save(saved, "archive-session").await.unwrap();
+            }
+            _ => {}
         }
     }
     let items = workspace_session_items(
         &fact_log::FactLogReadBackend::Live(store),
-        &["open-session".to_string(), "archived-session".to_string()],
+        &[
+            "open-session".to_string(),
+            "paused-session".to_string(),
+            "archived-session".to_string(),
+        ],
         "/repo",
     )
     .unwrap();
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3);
+    let open = items.iter().find(|item| item.id == "open-session").unwrap();
+    assert_eq!(open.lifecycle, AgentSessionLifecycleDto::Open);
+    assert!(open.operations.can_archive);
+    assert!(!open.operations.can_restore);
+    assert!(!open.operations.can_delete);
+    assert!(!open.operations.can_resume);
+    let paused = items
+        .iter()
+        .find(|item| item.id == "paused-session")
+        .unwrap();
+    assert_eq!(paused.lifecycle, AgentSessionLifecycleDto::Paused);
+    assert!(paused.operations.can_archive);
+    assert!(!paused.operations.can_restore);
+    assert!(!paused.operations.can_delete);
+    assert!(paused.operations.can_resume);
     let archived = items
         .iter()
         .find(|item| item.id == "archived-session")
@@ -1130,7 +1398,7 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
     let repository = new_repository(&store);
     repository
         .create(
-            parentless_session("standalone-session", "/repo", ProviderKind::Claude),
+            standalone_session("standalone-session", "/repo", ProviderKind::Claude),
             "create-standalone",
         )
         .await
@@ -1146,22 +1414,21 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
     };
     let workflow_root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
-        root: Some(TreeRootFact::Workflow(
-            crate::domain::workflow::WorkflowRootFact {
-                workflow_name: "wf".to_string(),
-                worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: "please work".to_string(),
-                definition: crate::domain::workflow::WorkflowDefinition {
-                    name: "wf".to_string(),
-                    description: String::new(),
-                    builtin: false,
-                    schemas: Default::default(),
-                    nodes: Vec::new(),
-                    entry: "main".to_string(),
-                },
+        root: Some(TreeRootFact {
+            workspace_identity: "/repo".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::DesktopUi,
+            request: "please work".to_string(),
+            definition: crate::domain::workflow::WorkflowDefinition {
+                name: "wf".to_string(),
+                description: String::new(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: Vec::new(),
+                entry: "main".to_string(),
             },
-        )),
+            launched_as: ExecutionTreeLaunch::Workflow,
+        }),
     });
     fact_log::append_single_fact(&store, &workflow_meta, &workflow_root, 1).unwrap();
     let items = workspace_session_items(
@@ -1189,33 +1456,32 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
     };
     let root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
-        root: Some(TreeRootFact::Workflow(
-            crate::domain::workflow::WorkflowRootFact {
-                workflow_name: "workflow".to_string(),
-                worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: String::new(),
-                definition: crate::domain::workflow::WorkflowDefinition {
-                    name: "workflow".to_string(),
-                    description: String::new(),
-                    builtin: false,
-                    schemas: Default::default(),
-                    nodes: vec![crate::domain::workflow::NodeDefinition {
-                        name: "session".to_string(),
-                        kind: crate::domain::workflow::NodeKind::Session(
-                            crate::domain::workflow::SessionSpec {
-                                provider: ProviderKind::Codex,
-                                model: None,
-                                permission: None,
-                                facets: Default::default(),
-                            },
-                        ),
-                        ..Default::default()
-                    }],
-                    entry: "session".to_string(),
-                },
+        root: Some(TreeRootFact {
+            workspace_identity: "/repo".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::DesktopUi,
+            request: String::new(),
+            definition: crate::domain::workflow::WorkflowDefinition {
+                name: "workflow".to_string(),
+                description: String::new(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: vec![crate::domain::workflow::NodeDefinition {
+                    name: "session".to_string(),
+                    kind: crate::domain::workflow::NodeKind::Session(
+                        crate::domain::workflow::SessionSpec {
+                            provider: ProviderKind::Codex,
+                            model: None,
+                            permission: None,
+                            facets: Default::default(),
+                        },
+                    ),
+                    ..Default::default()
+                }],
+                entry: "session".to_string(),
             },
-        )),
+            launched_as: ExecutionTreeLaunch::Workflow,
+        }),
     });
     fact_log::append_single_fact(&store, &meta, &root, 1).unwrap();
     fact_log::append_single_fact(

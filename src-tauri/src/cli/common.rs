@@ -179,33 +179,18 @@ pub(in crate::cli) mod test_support {
             "claude" => crate::domain::provider_lifecycle::ProviderKind::Claude,
             _ => crate::domain::provider_lifecycle::ProviderKind::Codex,
         };
-        let meta = crate::domain::workflow::NodeFactMeta {
-            tree_id: session_id.to_string(),
-            node_execution_id: session_id.to_string(),
-            parent_id: None,
-            node_name: "session".to_string(),
-            kind: crate::domain::workflow::NodeKindName::Session,
-            attempt: 1,
-        };
-        let root =
-            crate::domain::workflow::NodeFact::Started(crate::domain::workflow::StartedFact {
-                parent: None,
-                root: Some(crate::domain::workflow::TreeRootFact::Session(
-                    crate::domain::workflow::SessionRootFact {
-                        workspace_identity: "/repo".to_string(),
-                        worktree_path: "/repo".to_string(),
-                        session: crate::domain::workflow::SessionSpec {
-                            provider,
-                            model: None,
-                            permission: None,
-                            facets: Default::default(),
-                        },
-                        created_from: ExecutionOrigin::DesktopUi,
-                    },
-                )),
-            });
-        crate::adaptor::gateway::workflow::fact_log::append_single_fact(&store, &meta, &root, 1)
-            .unwrap();
+        let root_facts = crate::domain::workflow::SessionExecutionTreeRootFacts::new(
+            session_id, "/repo", "/repo", provider,
+        )
+        .unwrap();
+        let meta = root_facts.meta.clone();
+        crate::adaptor::gateway::workflow::fact_log::append_fact_batch_for_seed(
+            &store,
+            &root_facts.into_facts(),
+            1,
+            &format!("cli-review-session-{session_id}"),
+        )
+        .unwrap();
         let lifecycle_fact = match lifecycle {
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open => None,
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Paused => {
@@ -224,7 +209,7 @@ pub(in crate::cli) mod test_support {
         };
         if let Some(fact) = lifecycle_fact {
             crate::adaptor::gateway::workflow::fact_log::append_single_fact(
-                &store, &meta, &fact, 2,
+                &store, &meta, &fact, 3,
             )
             .unwrap();
         }

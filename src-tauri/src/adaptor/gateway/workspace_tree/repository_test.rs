@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::store::LocalEventStoreConfig;
-use crate::domain::agent_session::aggregates::AgentSession;
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
 use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::value_objects::EffectiveRules;
@@ -956,7 +956,7 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
         workspace.clone(),
         workspace.as_str(),
         ProviderKind::Codex,
-        None,
+        AgentSessionTreeLocation::session_tree_root("agent-session-1").unwrap(),
     )
     .unwrap();
     LocalAgentSessionRepository::new(Arc::clone(&store))
@@ -981,6 +981,58 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
     );
     assert_eq!(node.node_execution_id.as_deref(), Some("agent-session-1"));
     assert_eq!(node.session_id.as_deref(), Some("agent-session-1"));
+    assert!(!node.can_retry);
+}
+
+#[tokio::test]
+async fn test_workspace_tree_repository_workspace同定子がworktreeと異なるsession木を解決する() {
+    // Given: workspace identity と worktree path が異なる Session 起動由来の木
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-1");
+    LocalAgentSessionRepository::new(Arc::clone(&store))
+        .create(
+            AgentSession::create(
+                "agent-session-workspace-identity",
+                workspace.clone(),
+                "/repo/.worktrees/feature",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root("agent-session-workspace-identity")
+                    .unwrap(),
+            )
+            .unwrap(),
+            "create-workspace-identity-session",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+
+    // When: workspace identity から木、Session の公開 node、詳細を引く
+    let trees = repository
+        .folded_workspace_trees(workspace.as_str())
+        .unwrap();
+    let node_id = repository
+        .node_id_for_session(&workspace, "agent-session-workspace-identity")
+        .unwrap()
+        .unwrap();
+    let node = repository.load_node(&workspace, &node_id).unwrap().unwrap();
+
+    // Then: worktree path ではなく root の workspace identity で一貫して解決する
+    assert_eq!(trees.len(), 1);
+    assert_eq!(trees[0].0.root.workspace_identity, "workspace-1");
+    assert_eq!(trees[0].0.root.worktree_path, "/repo/.worktrees/feature");
+    assert_eq!(node_id, "agent-session-workspace-identity");
+    assert_eq!(
+        node.node_execution_id.as_deref(),
+        Some("agent-session-workspace-identity")
+    );
+    assert_eq!(
+        node.session_id.as_deref(),
+        Some("agent-session-workspace-identity")
+    );
 }
 
 #[tokio::test]
@@ -997,7 +1049,7 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
         owner.clone(),
         owner.as_str(),
         ProviderKind::Codex,
-        None,
+        AgentSessionTreeLocation::session_tree_root("agent-session-1").unwrap(),
     )
     .unwrap();
     LocalAgentSessionRepository::new(Arc::clone(&store))

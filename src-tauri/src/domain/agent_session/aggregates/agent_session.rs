@@ -1,6 +1,7 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::repository::normalize_repo_path;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
+use crate::domain::workflow::ExecutionTreeLaunch;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub(crate) enum AgentSessionLifecycleEvent {
         workspace: WorkspaceIdentity,
         worktree_path: String,
         provider: ProviderKind,
-        tree_parent: Option<AgentSessionTreeParent>,
+        tree_location: AgentSessionTreeLocation,
     },
     ProviderSessionAssociated {
         provider_session_id: String,
@@ -30,42 +31,119 @@ pub(crate) enum AgentSessionLifecycleEvent {
     InitialInstructionAdmitted,
 }
 
-/// 実行木上の親 node への参照。
-///
-/// 親を持つ session は workflow の子 node として実行されており、明示 start /
-/// archive / delete の対象にならない。区別は出所の種別ではなく実行木上の
-/// 位置（親の有無）で決まる。
+/// AgentSession が属する実行木と NodeExecution の必須の所在。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionTreeParent {
-    pub(crate) tree_id: String,
-    pub(crate) node_execution_id: String,
+pub(crate) struct AgentSessionTreeLocation {
+    tree_id: String,
+    node_execution_id: String,
+    launched_as: ExecutionTreeLaunch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionTreeParentError {
+pub(crate) enum AgentSessionTreeLocationError {
     EmptyTreeId,
     EmptyNodeExecutionId,
+    SessionTreeRootIdentityMismatch,
 }
 
-impl AgentSessionTreeParent {
-    pub(crate) fn new(
+impl AgentSessionTreeLocation {
+    pub(crate) fn session_tree_root(
+        agent_session_id: impl Into<String>,
+    ) -> Result<Self, AgentSessionTreeLocationError> {
+        let agent_session_id = agent_session_id.into();
+        let agent_session_id = agent_session_id.trim();
+        if agent_session_id.is_empty() {
+            return Err(AgentSessionTreeLocationError::EmptyTreeId);
+        }
+        Ok(Self {
+            tree_id: agent_session_id.to_string(),
+            node_execution_id: agent_session_id.to_string(),
+            launched_as: ExecutionTreeLaunch::Session,
+        })
+    }
+
+    pub(crate) fn for_agent_session(
         tree_id: impl Into<String>,
         node_execution_id: impl Into<String>,
-    ) -> Result<Self, AgentSessionTreeParentError> {
+        launched_as: ExecutionTreeLaunch,
+        agent_session_id: &str,
+    ) -> Result<Self, AgentSessionTreeLocationError> {
+        let tree_id = tree_id.into();
+        let node_execution_id = node_execution_id.into();
+        Self::validate_session_root_identity(
+            &tree_id,
+            &node_execution_id,
+            launched_as,
+            agent_session_id,
+        )?;
+        Self::new(tree_id, node_execution_id, launched_as)
+    }
+
+    pub(crate) fn workflow_node(
+        tree_id: impl Into<String>,
+        node_execution_id: impl Into<String>,
+    ) -> Result<Self, AgentSessionTreeLocationError> {
+        Self::new(tree_id, node_execution_id, ExecutionTreeLaunch::Workflow)
+    }
+
+    fn new(
+        tree_id: impl Into<String>,
+        node_execution_id: impl Into<String>,
+        launched_as: ExecutionTreeLaunch,
+    ) -> Result<Self, AgentSessionTreeLocationError> {
         let tree_id = tree_id.into();
         let tree_id = tree_id.trim();
         if tree_id.is_empty() {
-            return Err(AgentSessionTreeParentError::EmptyTreeId);
+            return Err(AgentSessionTreeLocationError::EmptyTreeId);
         }
         let node_execution_id = node_execution_id.into();
         let node_execution_id = node_execution_id.trim();
         if node_execution_id.is_empty() {
-            return Err(AgentSessionTreeParentError::EmptyNodeExecutionId);
+            return Err(AgentSessionTreeLocationError::EmptyNodeExecutionId);
         }
         Ok(Self {
             tree_id: tree_id.to_string(),
             node_execution_id: node_execution_id.to_string(),
+            launched_as,
         })
+    }
+
+    fn validate_agent_session_identity(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<(), AgentSessionTreeLocationError> {
+        Self::validate_session_root_identity(
+            &self.tree_id,
+            &self.node_execution_id,
+            self.launched_as,
+            agent_session_id,
+        )
+    }
+
+    fn validate_session_root_identity(
+        tree_id: &str,
+        node_execution_id: &str,
+        launched_as: ExecutionTreeLaunch,
+        agent_session_id: &str,
+    ) -> Result<(), AgentSessionTreeLocationError> {
+        if launched_as == ExecutionTreeLaunch::Session
+            && (tree_id != agent_session_id || node_execution_id != agent_session_id)
+        {
+            return Err(AgentSessionTreeLocationError::SessionTreeRootIdentityMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn tree_id(&self) -> &str {
+        &self.tree_id
+    }
+
+    pub(crate) fn node_execution_id(&self) -> &str {
+        &self.node_execution_id
+    }
+
+    pub(crate) fn launched_as(&self) -> ExecutionTreeLaunch {
+        self.launched_as
     }
 }
 
@@ -74,6 +152,7 @@ pub(crate) enum AgentSessionCreationError {
     Identity,
     Workspace,
     Worktree,
+    SessionTreeRootIdentityMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +175,7 @@ pub(crate) enum AgentSessionInitialInstructionOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionInitialInstructionError {
-    /// 親を持たない（= workflow の子でない）session に初回指示は無い。
-    WithoutTreeParent,
+    NotWorkflowOwned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,14 +208,14 @@ pub(crate) enum AgentSessionArchiveError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionRecoveryError {
+    WorkflowOwned,
     NotArchived,
     NotPaused,
     ProviderSessionUnknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionWorkflowStopError {
-    NotWorkflowOwned,
+pub(crate) enum AgentSessionExecutionTreeNodeStopError {
     NodeExecutionMismatch,
 }
 
@@ -174,9 +252,25 @@ pub(crate) struct AgentSessionOperations {
     pub(crate) can_resume: bool,
 }
 
+pub(crate) fn derive_agent_session_operations(
+    launched_as: ExecutionTreeLaunch,
+    archived: bool,
+    exited: bool,
+    provider_session_known: bool,
+) -> AgentSessionOperations {
+    let user_owned = launched_as == ExecutionTreeLaunch::Session;
+    let paused = !archived && exited;
+    AgentSessionOperations {
+        can_archive: user_owned && !archived,
+        can_restore: user_owned && archived,
+        can_delete: user_owned && archived,
+        can_resume: paused && provider_session_known,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionRemovalError {
-    WithoutTreeParent,
+    NotWorkflowOwned,
     WorkflowOwned,
     NotArchived,
     ProviderSessionKnown,
@@ -189,7 +283,7 @@ pub(crate) struct AgentSession {
     workspace: WorkspaceIdentity,
     worktree_path: String,
     provider: ProviderKind,
-    tree_parent: Option<AgentSessionTreeParent>,
+    tree_location: AgentSessionTreeLocation,
     lifecycle: AgentSessionLifecycle,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
@@ -205,12 +299,15 @@ impl AgentSession {
         workspace: WorkspaceIdentity,
         worktree_path: impl Into<String>,
         provider: ProviderKind,
-        tree_parent: Option<AgentSessionTreeParent>,
+        tree_location: AgentSessionTreeLocation,
     ) -> Result<Self, AgentSessionCreationError> {
         let id = id.into();
         if id.trim().is_empty() {
             return Err(AgentSessionCreationError::Identity);
         }
+        tree_location
+            .validate_agent_session_identity(&id)
+            .map_err(|_| AgentSessionCreationError::SessionTreeRootIdentityMismatch)?;
         if workspace.as_str().trim().is_empty() {
             return Err(AgentSessionCreationError::Workspace);
         }
@@ -224,14 +321,14 @@ impl AgentSession {
             workspace: workspace.clone(),
             worktree_path: worktree_path.clone(),
             provider,
-            tree_parent: tree_parent.clone(),
+            tree_location: tree_location.clone(),
         };
         Ok(Self {
             id,
             workspace,
             worktree_path,
             provider,
-            tree_parent,
+            tree_location,
             lifecycle: AgentSessionLifecycle::Open,
             provider_session_id: None,
             transcript_ref: None,
@@ -271,22 +368,22 @@ impl AgentSession {
         self.provider
     }
 
-    pub(crate) fn tree_parent(&self) -> Option<&AgentSessionTreeParent> {
-        self.tree_parent.as_ref()
+    pub(crate) fn tree_location(&self) -> &AgentSessionTreeLocation {
+        &self.tree_location
     }
 
     pub(crate) fn lifecycle(&self) -> AgentSessionLifecycle {
         self.lifecycle
     }
 
+    #[cfg(test)]
     pub(crate) fn operations(&self) -> AgentSessionOperations {
-        let tree_root = self.tree_parent.is_none();
-        AgentSessionOperations {
-            can_archive: tree_root && self.lifecycle != AgentSessionLifecycle::Archived,
-            can_restore: tree_root && self.lifecycle == AgentSessionLifecycle::Archived,
-            can_delete: tree_root && self.lifecycle == AgentSessionLifecycle::Archived,
-            can_resume: self.authorize_resume().is_ok(),
-        }
+        derive_agent_session_operations(
+            self.tree_location.launched_as,
+            self.lifecycle == AgentSessionLifecycle::Archived,
+            self.lifecycle == AgentSessionLifecycle::Paused,
+            self.provider_session_id.is_some(),
+        )
     }
 
     pub(crate) fn uncommitted_events(&self) -> &[AgentSessionLifecycleEvent] {
@@ -354,6 +451,7 @@ impl AgentSession {
         self.initial_instruction_admitted
     }
 
+    #[cfg(test)]
     pub(crate) fn last_exit_abnormal(&self) -> bool {
         self.last_exit_abnormal
     }
@@ -372,7 +470,9 @@ impl AgentSession {
                 AgentSessionLifecycle::Open if self.provider_session_id.is_some() => {
                     AgentSessionOpenAction::Resume
                 }
-                AgentSessionLifecycle::Open if self.tree_parent.is_some() => {
+                AgentSessionLifecycle::Open
+                    if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow =>
+                {
                     AgentSessionOpenAction::RemainPaused
                 }
                 AgentSessionLifecycle::Open => AgentSessionOpenAction::GarbageCollect,
@@ -387,7 +487,9 @@ impl AgentSession {
         if self.lifecycle == AgentSessionLifecycle::Archived {
             return AgentSessionProcessExitOutcome::AlreadyArchived;
         }
-        if self.provider_session_id.is_none() && self.tree_parent.is_none() {
+        if self.provider_session_id.is_none()
+            && self.tree_location.launched_as == ExecutionTreeLaunch::Session
+        {
             return AgentSessionProcessExitOutcome::GcRequired;
         }
         if self.lifecycle == AgentSessionLifecycle::Paused {
@@ -407,7 +509,7 @@ impl AgentSession {
     pub(crate) fn archive(
         &mut self,
     ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
-        if self.tree_parent.is_some() {
+        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionArchiveError::WorkflowOwned);
         }
         if self.lifecycle == AgentSessionLifecycle::Archived {
@@ -468,6 +570,9 @@ impl AgentSession {
     }
 
     pub(crate) fn authorize_restore(&self) -> Result<(), AgentSessionRecoveryError> {
+        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
+            return Err(AgentSessionRecoveryError::WorkflowOwned);
+        }
         if self.lifecycle != AgentSessionLifecycle::Archived {
             return Err(AgentSessionRecoveryError::NotArchived);
         }
@@ -492,8 +597,8 @@ impl AgentSession {
     pub(crate) fn admit_initial_instruction(
         &mut self,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
-        if self.tree_parent.is_none() {
-            return Err(AgentSessionInitialInstructionError::WithoutTreeParent);
+        if self.tree_location.launched_as != ExecutionTreeLaunch::Workflow {
+            return Err(AgentSessionInitialInstructionError::NotWorkflowOwned);
         }
         if self.initial_instruction_admitted {
             return Ok(AgentSessionInitialInstructionOutcome::AlreadyAdmitted);
@@ -507,7 +612,7 @@ impl AgentSession {
     pub(crate) fn authorize_delete(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if self.tree_parent.is_some() {
+        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionRemovalError::WorkflowOwned);
         }
         if self.lifecycle != AgentSessionLifecycle::Archived {
@@ -519,7 +624,7 @@ impl AgentSession {
     pub(crate) fn authorize_archive_fallback_delete(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if self.tree_parent.is_some() {
+        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionRemovalError::WorkflowOwned);
         }
         if self.provider_session_id.is_some() {
@@ -535,7 +640,7 @@ impl AgentSession {
         if pty_presence != ManagedPtyPresence::ConfirmedAbsent {
             return Err(AgentSessionRemovalError::PtyNotConfirmedAbsent);
         }
-        if self.tree_parent.is_some() {
+        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
             return Err(AgentSessionRemovalError::WorkflowOwned);
         }
         if self.provider_session_id.is_some() {
@@ -544,25 +649,21 @@ impl AgentSession {
         Ok(AgentSessionRemovalAuthorization::GarbageCollection)
     }
 
-    pub(crate) fn authorize_workflow_stop(
+    pub(crate) fn authorize_execution_tree_node_stop(
         &self,
         node_execution_id: &str,
-    ) -> Result<(), AgentSessionWorkflowStopError> {
-        let parent = self
-            .tree_parent
-            .as_ref()
-            .ok_or(AgentSessionWorkflowStopError::NotWorkflowOwned)?;
-        if parent.node_execution_id != node_execution_id {
-            return Err(AgentSessionWorkflowStopError::NodeExecutionMismatch);
+    ) -> Result<(), AgentSessionExecutionTreeNodeStopError> {
+        if self.tree_location.node_execution_id != node_execution_id {
+            return Err(AgentSessionExecutionTreeNodeStopError::NodeExecutionMismatch);
         }
         Ok(())
     }
 
-    pub(crate) fn stop_workflow_owned(
+    pub(crate) fn stop_for_terminal_execution_tree_node(
         &mut self,
         node_execution_id: &str,
-    ) -> Result<AgentSessionMutationOutcome, AgentSessionWorkflowStopError> {
-        self.authorize_workflow_stop(node_execution_id)?;
+    ) -> Result<AgentSessionMutationOutcome, AgentSessionExecutionTreeNodeStopError> {
+        self.authorize_execution_tree_node_stop(node_execution_id)?;
         if self.lifecycle != AgentSessionLifecycle::Open {
             return Ok(AgentSessionMutationOutcome::AlreadyApplied);
         }
@@ -580,8 +681,8 @@ impl AgentSession {
     pub(crate) fn authorize_workflow_launch_rollback(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
-        if self.tree_parent.is_none() {
-            return Err(AgentSessionRemovalError::WithoutTreeParent);
+        if self.tree_location.launched_as != ExecutionTreeLaunch::Workflow {
+            return Err(AgentSessionRemovalError::NotWorkflowOwned);
         }
         Ok(AgentSessionRemovalAuthorization::WorkflowLaunchRollback)
     }

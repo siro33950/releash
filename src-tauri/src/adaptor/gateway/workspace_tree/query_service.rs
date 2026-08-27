@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::SqliteWorkspaceTreeRepository;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
-    ExecutionStatusFilter, TreeRootFact, WorkflowError, WorkflowExecutionArchiveRepository,
+    ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionArchiveRepository,
     WorkflowExecutionSummary, WorkflowPageRequest, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 use crate::domain::workspace_tree::{
@@ -62,7 +62,7 @@ impl SqliteWorkspaceQueryService {
         .map_err(WorkflowError::external)?;
         let mut records = Vec::new();
         for (tree_id, root) in tree_roots {
-            if !matches!(root, TreeRootFact::Workflow(_)) {
+            if root.launched_as != ExecutionTreeLaunch::Workflow {
                 continue;
             }
             let Some((folded, record)) =
@@ -70,7 +70,7 @@ impl SqliteWorkspaceQueryService {
             else {
                 continue;
             };
-            debug_assert!(matches!(folded.root, TreeRootFact::Workflow(_)));
+            debug_assert_eq!(folded.root.launched_as, ExecutionTreeLaunch::Workflow);
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
                 Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),
@@ -116,14 +116,11 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .unwrap_or_else(|| WorkspaceTree::empty(workspace_identity.as_str()));
         let session_tree_ids = folded
             .iter()
-            .filter_map(|(tree, _)| match &tree.root {
-                TreeRootFact::Session(root)
-                    if root.workspace_identity == workspace_identity.as_str() =>
-                {
-                    Some(tree.aggregate.id.clone())
-                }
-                _ => None,
+            .filter(|(tree, _)| {
+                tree.root.launched_as == ExecutionTreeLaunch::Session
+                    && tree.root.workspace_identity == workspace_identity.as_str()
             })
+            .map(|(tree, _)| tree.aggregate.id.clone())
             .collect::<Vec<_>>();
         let session_items = crate::adaptor::gateway::agent_session::workspace_session_items(
             &self.repository.fact_backend(),
@@ -135,7 +132,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         })?;
         let workflow_execution_ids = folded
             .iter()
-            .filter(|(tree, _)| matches!(tree.root, TreeRootFact::Workflow(_)))
+            .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
             .map(|(tree, _)| tree.aggregate.id.clone())
             .collect::<HashSet<_>>();
         let execution_ids = workflow_execution_ids.iter().cloned().collect::<Vec<_>>();
@@ -213,7 +210,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         self.repository
             .folded_tree(execution_id)
             .map_err(query_error)?
-            .filter(|(folded, _)| matches!(folded.root, TreeRootFact::Workflow(_)))
+            .filter(|(folded, _)| folded.root.launched_as == ExecutionTreeLaunch::Workflow)
             .map(|(_, record)| execution_summary(record))
             .transpose()
     }

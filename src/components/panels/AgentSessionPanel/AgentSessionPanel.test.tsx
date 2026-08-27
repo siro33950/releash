@@ -39,6 +39,10 @@ const session = {
 	workspaceIdentity: "/repo",
 	worktreePath: "/repo/worktree",
 	provider: "claude" as const,
+	treeLocation: {
+		treeId: "agent-session-1",
+		nodeExecutionId: "agent-session-1",
+	},
 	lifecycle: "open" as const,
 	activity: "idle" as const,
 	lastExitAbnormal: false,

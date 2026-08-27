@@ -189,7 +189,8 @@ mod tests {
         let events = repo.read(&execution_id).unwrap();
 
         assert_eq!(events[0].event_kind, "started");
-        assert_eq!(events[0].payload["root"]["workflowName"], "wf");
+        assert_eq!(events[0].payload["root"]["definition"]["name"], "wf");
+        assert_eq!(events[0].payload["root"]["launchedAs"], "workflow");
         assert_eq!(events[0].payload["root"]["request"], "ship it");
     }
 

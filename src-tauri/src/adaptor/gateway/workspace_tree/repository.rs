@@ -7,7 +7,6 @@ use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadata
 #[cfg(test)]
 use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
 use crate::domain::workflow::services::fact_replay::{self, FoldedTree};
-use crate::domain::workflow::TreeRootFact;
 use crate::domain::workspace_tree::{
     RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
     WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
@@ -46,16 +45,18 @@ impl SqliteWorkspaceTreeRepository {
         }
     }
 
-    /// workspace（= worktree）に root を植えた全実行木の fold と metadata。
+    /// workspace identity が一致する全実行木の fold と metadata。
     pub(super) fn folded_workspace_trees(
         &self,
         workspace: &str,
     ) -> Result<Vec<(FoldedTree, WorkflowExecutionMetadataRecord)>, LocalEventQueryError> {
         let backend = self.fact_backend();
-        let tree_ids =
-            fact_log::list_tree_ids(&backend, Some(workspace)).map_err(fold_query_error)?;
+        let tree_roots = fact_log::list_tree_roots(&backend, None).map_err(fold_query_error)?;
         let mut trees = Vec::new();
-        for tree_id in tree_ids {
+        for (tree_id, root) in tree_roots {
+            if root.workspace_identity != workspace {
+                continue;
+            }
             let Some(folded) =
                 fact_log::fold_tree_from(&backend, &tree_id).map_err(fold_query_error)?
             else {
@@ -104,8 +105,7 @@ impl SqliteWorkspaceTreeRepository {
             workflow_definition: &folded.aggregate.workflow,
             node_executions: &folded.aggregate.node_executions,
             retry_predecessors: &folded.aggregate.retry_predecessors,
-            standalone_session_id: matches!(&folded.root, TreeRootFact::Session(_))
-                .then_some(folded.aggregate.id.as_str()),
+            accepts_explicit_retry: folded.aggregate.accepts_explicit_retry(),
             started_at: folded.aggregate.started_at,
             updated_at: folded.aggregate.updated_at,
             execution: record,
@@ -176,7 +176,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let Some((folded, record)) = self.folded_tree(&tree_id)? else {
             return Ok(None);
         };
-        let workspace = record.worktree_path.clone();
+        let workspace = folded.root.workspace_identity.clone();
         Ok(Self::tree_nodes(&workspace, &folded, &record)?
             .into_iter()
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
@@ -189,30 +189,15 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
     ) -> Result<Option<String>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
         let backend = self.fact_backend();
-        let attachment =
-            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?;
-        let Some((tree_id, node_execution_id)) = attachment else {
-            let Some((folded, record)) = self.folded_tree(session_id)? else {
-                return Ok(None);
-            };
-            if !matches!(&folded.root, TreeRootFact::Session(_))
-                || record.worktree_path != workspace
-            {
-                return Ok(None);
-            }
-            let nodes = Self::tree_nodes(&workspace, &folded, &record)?;
-            let Some(root) = WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
-            else {
-                return Ok(None);
-            };
-            return Ok((root.node().session_id.as_deref() == Some(session_id)
-                || root.node().node_execution_id.as_deref() == Some(session_id))
-            .then(|| folded.aggregate.id.clone()));
+        let Some((tree_id, node_execution_id)) =
+            fact_log::find_session_attachment(&backend, session_id).map_err(fold_query_error)?
+        else {
+            return Ok(None);
         };
         let Some((folded, record)) = self.folded_tree(&tree_id)? else {
             return Ok(None);
         };
-        if record.worktree_path != workspace {
+        if folded.root.workspace_identity != workspace {
             return Ok(None);
         }
         let nodes = Self::tree_nodes(&workspace, &folded, &record)?;

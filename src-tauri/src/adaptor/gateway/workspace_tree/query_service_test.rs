@@ -1,6 +1,17 @@
 use super::*;
+use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
+use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+use crate::adaptor::gateway::workflow::test_support::{
+    seed_workflow_session_facts, WorkflowSessionFactSeed,
+};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::{
+    ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowExecutionArchiveSnapshot,
+    WorkflowExecutionId,
+};
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
@@ -8,6 +19,151 @@ use crate::usecase::agent_session::{
     AgentSessionActivityDto, AgentSessionOperationsDto, AgentSessionProviderDto,
 };
 
+struct EmptyArchives;
+
+impl WorkflowExecutionArchiveRepository for EmptyArchives {
+    fn archive_manual(
+        &self,
+        _execution_id: &WorkflowExecutionId,
+        _archived_at: f64,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn restore_manual(
+        &self,
+        _execution_id: &WorkflowExecutionId,
+        _restored_at: f64,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn manual_archive_snapshot_for(
+        &self,
+        _execution_ids: &[String],
+    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
+        Ok(WorkflowExecutionArchiveSnapshot {
+            records: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分ける() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "workflow-tree",
+            node_execution_id: "workflow-node",
+            session_id: "workflow-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    LocalAgentSessionRepository::new(store.clone())
+        .create(
+            AgentSession::create(
+                "standalone-session",
+                WorkspaceIdentity::new("/repo"),
+                "/repo",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root("standalone-session").unwrap(),
+            )
+            .unwrap(),
+            "standalone-create",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query =
+        SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
+
+    let workflow_ids = query
+        .execution_summaries(Some(&WorkspaceIdentity::new("/repo")), None, None)
+        .unwrap()
+        .into_iter()
+        .map(|summary| summary.execution_id)
+        .collect::<Vec<_>>();
+    let tree_ids = repository
+        .folded_workspace_trees("/repo")
+        .unwrap()
+        .into_iter()
+        .map(|(tree, _)| tree.aggregate.id.clone())
+        .collect::<Vec<_>>();
+    let session_ids = crate::adaptor::gateway::agent_session::workspace_session_items(
+        &repository.fact_backend(),
+        &tree_ids,
+        "/repo",
+    )
+    .unwrap()
+    .into_iter()
+    .map(|session| session.id)
+    .collect::<Vec<_>>();
+
+    assert_eq!(workflow_ids, ["workflow-tree"]);
+    assert_eq!(session_ids, ["standalone-session"]);
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsessionを一覧と行に含める() {
+    // Given: workspace identity と worktree path が異なる Session 起動由来の木
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-1");
+    LocalAgentSessionRepository::new(store.clone())
+        .create(
+            AgentSession::create(
+                "standalone-session",
+                workspace.clone(),
+                "/repo/.worktrees/feature",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root("standalone-session").unwrap(),
+            )
+            .unwrap(),
+            "standalone-create",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query =
+        SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
+
+    // When: workspace identity から snapshot と Session 一覧を取得する
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let tree_ids = repository
+        .folded_workspace_trees(workspace.as_str())
+        .unwrap()
+        .into_iter()
+        .map(|(tree, _)| tree.aggregate.id.clone())
+        .collect::<Vec<_>>();
+    let sessions = crate::adaptor::gateway::agent_session::workspace_session_items(
+        &repository.fact_backend(),
+        &tree_ids,
+        workspace.as_str(),
+    )
+    .unwrap();
+
+    // Then: root の workspace identity を共通の対象キーとして解決する
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, "standalone-session");
+    assert_eq!(snapshot.nodes.len(), 1);
+    assert!(matches!(
+        &snapshot.nodes[0],
+        WorkspaceTreeItemDto::Node(node) if node.id == "standalone-session"
+    ));
+}
 fn node() -> WorkspaceTreeNode {
     WorkspaceTreeNode {
         id: "node".to_string(),
@@ -86,7 +242,10 @@ fn open_session(id: &str) -> AgentSessionItemDto {
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
         provider: AgentSessionProviderDto::Codex,
-        tree_parent: None,
+        tree_location: crate::usecase::agent_session::AgentSessionTreeLocationDto {
+            tree_id: id.to_string(),
+            node_execution_id: id.to_string(),
+        },
         lifecycle: AgentSessionLifecycleDto::Open,
         provider_session_id: None,
         transcript_ref: None,

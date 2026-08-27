@@ -96,7 +96,7 @@ impl WorkflowRuntimeUsecase {
 
     pub(crate) async fn record_provider_stop(
         &self,
-        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
     ) -> Result<(), WorkflowError> {
         self.control_plane
@@ -161,12 +161,12 @@ impl super::WorkspaceNodeWorkflowCommandExecutor for WorkflowRuntimeUsecase {
 }
 
 #[async_trait::async_trait]
-impl crate::usecase::provider_lifecycle::ProviderWorkflowStopTransaction
+impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
     for WorkflowRuntimeUsecase
 {
     async fn commit_provider_stop(
         &self,
-        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
     ) -> Result<(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError> {
         self.record_provider_stop(command, lifecycle_events)
@@ -189,6 +189,81 @@ impl crate::usecase::provider_lifecycle::ProviderWorkflowStopTransaction
                     crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Corrupt
                 }
             })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::usecase::agent_session::StartedExecutionTreeRegistrar for WorkflowRuntimeUsecase {
+    async fn reserve_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
+        self.runtime
+            .reserve_started_execution_tree(tree_id)
+            .await
+            .map_err(map_started_execution_tree_error)
+    }
+
+    async fn register_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
+        self.runtime
+            .register_started_execution_tree(tree_id)
+            .await
+            .map_err(map_started_execution_tree_error)
+    }
+
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::usecase::agent_session::StartedExecutionTreeRegistrationError> {
+        self.runtime
+            .release_started_execution_tree_reservation(tree_id)
+            .await
+            .map_err(map_started_execution_tree_error)
+    }
+
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), crate::usecase::agent_session::ExecutionTreeCacheReleaseError> {
+        self.runtime
+            .release_deleted_execution_tree(tree_id)
+            .await
+            .map_err(|error| match error {
+                WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Unavailable
+                }
+                WorkflowError::Validation(_)
+                | WorkflowError::InvalidState(_)
+                | WorkflowError::NotFound(_)
+                | WorkflowError::UnauthorizedApprovalTarget(_)
+                | WorkflowError::Conflict(_)
+                | WorkflowError::CorruptStoredState(_)
+                | WorkflowError::IncompatibleStoredEvent(_) => {
+                    crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Corrupt
+                }
+            })
+    }
+}
+
+fn map_started_execution_tree_error(
+    error: WorkflowError,
+) -> crate::usecase::agent_session::StartedExecutionTreeRegistrationError {
+    match error {
+        WorkflowError::StorageUnavailable { .. } | WorkflowError::External(_) => {
+            crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Unavailable
+        }
+        WorkflowError::Validation(_)
+        | WorkflowError::InvalidState(_)
+        | WorkflowError::NotFound(_)
+        | WorkflowError::UnauthorizedApprovalTarget(_)
+        | WorkflowError::Conflict(_)
+        | WorkflowError::CorruptStoredState(_)
+        | WorkflowError::IncompatibleStoredEvent(_) => {
+            crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Corrupt
+        }
     }
 }
 
@@ -303,6 +378,15 @@ mod tests {
         }
 
         async fn recover_active_executions(&self) -> Result<(), WorkflowError> {
+            Err(WorkflowError::external(
+                "control plane is not used by this test",
+            ))
+        }
+
+        async fn register_started_execution_tree(
+            &self,
+            _tree_id: &str,
+        ) -> Result<(), WorkflowError> {
             Err(WorkflowError::external(
                 "control plane is not used by this test",
             ))

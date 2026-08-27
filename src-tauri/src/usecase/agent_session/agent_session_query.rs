@@ -7,10 +7,10 @@ pub(crate) enum AgentSessionProviderDto {
     Codex,
 }
 
-/// 実行木上の親 node への参照（親を持つ session は workflow の子）。
+/// AgentSession が属する実行木と NodeExecution の所在。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionTreeParentDto {
+pub(crate) struct AgentSessionTreeLocationDto {
     pub tree_id: String,
     pub node_execution_id: String,
 }
@@ -46,7 +46,7 @@ pub(crate) struct AgentSessionItemDto {
     pub workspace_identity: String,
     pub worktree_path: String,
     pub provider: AgentSessionProviderDto,
-    pub tree_parent: Option<AgentSessionTreeParentDto>,
+    pub tree_location: AgentSessionTreeLocationDto,
     pub lifecycle: AgentSessionLifecycleDto,
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,

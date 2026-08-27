@@ -23,7 +23,9 @@ pub(crate) use agent_session_interrupt::AgentSessionInterruptUsecase;
 pub(crate) use agent_session_launch::AgentSessionLaunchUsecaseError;
 pub(crate) use agent_session_launch::{
     AgentSessionHistoryResumeOutcome, AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest,
-    AgentSessionLaunchUsecase, WorkflowAgentSessionLaunchRequest,
+    AgentSessionLaunchUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
+    StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
+    WorkflowAgentSessionLaunchRequest,
 };
 pub(crate) use agent_session_lifecycle::{
     AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecase,
@@ -32,7 +34,7 @@ pub(crate) use agent_session_lifecycle::{
 pub(crate) use agent_session_query::{
     AgentSessionActivityDto, AgentSessionItemDto, AgentSessionLifecycleDto,
     AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionQueryError,
-    AgentSessionQueryService, AgentSessionTreeParentDto,
+    AgentSessionQueryService, AgentSessionTreeLocationDto,
 };
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;

@@ -13,7 +13,10 @@ use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::usecase::provider_lifecycle::ProviderHookHealthUsecase;
 use crate::usecase::provider_lifecycle::{ProviderLifecycleUsecase, ProviderLifecycleUsecaseError};
 
-use super::{AgentSessionChangeNotifier, AgentSessionUsecase, AgentSessionUsecaseError};
+use super::{
+    AgentSessionChangeNotifier, AgentSessionUsecase, AgentSessionUsecaseError,
+    ProviderAgentRuntime, StartedExecutionTreeRegistrar,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionOpenOutcome {
@@ -50,18 +53,23 @@ pub(crate) struct AgentSessionLifecycleUsecase {
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
     change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
 }
 
 impl AgentSessionLifecycleUsecase {
     pub(crate) fn new(
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
-        launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
-        availability: Arc<dyn ProviderAvailabilityReader>,
-        terminal: Arc<dyn ProviderAgentTerminalGateway>,
+        provider_runtime: ProviderAgentRuntime,
         hook_health: Arc<ProviderHookHealthUsecase>,
         change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+        execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
     ) -> Self {
+        let ProviderAgentRuntime {
+            availability,
+            launch_gateway,
+            terminal,
+        } = provider_runtime;
         Self {
             sessions,
             lifecycle,
@@ -70,6 +78,7 @@ impl AgentSessionLifecycleUsecase {
             terminal,
             hook_health,
             change_notifier,
+            execution_trees,
         }
     }
 
@@ -111,9 +120,11 @@ impl AgentSessionLifecycleUsecase {
                     .await
             }
             AgentSessionOpenAction::GarbageCollect => {
+                let tree_id = session.session().tree_location().tree_id().to_string();
                 self.remove_gc(
                     session.session().terminal_surface_owner(),
                     agent_session_id,
+                    &tree_id,
                     caller_request_id,
                 )
                 .await?;
@@ -282,7 +293,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)
     }
 
-    pub(crate) async fn stop_workflow_owned_preserving_checkpoint(
+    pub(crate) async fn stop_for_terminal_execution_tree_node_preserving_checkpoint(
         &self,
         agent_session_id: &str,
         node_execution_id: &str,
@@ -296,14 +307,18 @@ impl AgentSessionLifecycleUsecase {
         let session = self.required(agent_session_id).await?;
         session
             .session()
-            .authorize_workflow_stop(node_execution_id)
+            .authorize_execution_tree_node_stop(node_execution_id)
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
         self.terminal
             .stop_preserving_checkpoint(&session.session().terminal_surface_owner())
             .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
         let outcome = self
             .sessions
-            .stop_workflow_owned(agent_session_id, node_execution_id, caller_request_id)
+            .stop_for_terminal_execution_tree_node(
+                agent_session_id,
+                node_execution_id,
+                caller_request_id,
+            )
             .await
             .map_err(map_session_error)?;
         if outcome == AgentSessionMutationOutcome::Applied {
@@ -328,11 +343,12 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         let session = self.required(agent_session_id).await?;
         let owner = session.session().terminal_surface_owner();
+        let tree_id = session.session().tree_location().tree_id().to_string();
         session
             .session()
             .authorize_delete()
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
-        self.remove_explicit(owner, agent_session_id, caller_request_id)
+        self.remove_explicit(owner, agent_session_id, &tree_id, caller_request_id)
             .await
     }
 
@@ -348,6 +364,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         let session = self.required(agent_session_id).await?;
         let owner = session.session().terminal_surface_owner();
+        let tree_id = session.session().tree_location().tree_id().to_string();
         session
             .session()
             .authorize_archive_fallback_delete()
@@ -362,7 +379,9 @@ impl AgentSessionLifecycleUsecase {
         self.sessions
             .confirm_archive_fallback_delete(agent_session_id, caller_request_id)
             .await
-            .map_err(map_session_error)
+            .map_err(map_session_error)?;
+        self.release_deleted_execution_tree(&tree_id).await;
+        Ok(())
     }
 
     pub(crate) async fn observe_process_exit(
@@ -434,6 +453,7 @@ impl AgentSessionLifecycleUsecase {
         }
         let session = self.required(agent_session_id).await?;
         let owner = session.session().terminal_surface_owner();
+        let tree_id = session.session().tree_location().tree_id().to_string();
         let presence = self
             .terminal
             .presence(&owner)
@@ -441,7 +461,7 @@ impl AgentSessionLifecycleUsecase {
         if presence != ManagedPtyPresence::ConfirmedAbsent {
             return Err(AgentSessionLifecycleUsecaseError::InvalidOperation);
         }
-        self.remove_gc(owner, agent_session_id, caller_request_id)
+        self.remove_gc(owner, agent_session_id, &tree_id, caller_request_id)
             .await
     }
 
@@ -457,6 +477,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         let session = self.required(agent_session_id).await?;
         let owner = session.session().terminal_surface_owner();
+        let tree_id = session.session().tree_location().tree_id().to_string();
         let presence = self
             .terminal
             .presence(&owner)
@@ -464,7 +485,7 @@ impl AgentSessionLifecycleUsecase {
         if session.session().authorize_gc(presence).is_err() {
             return Ok(AgentSessionGarbageCollectionOutcome::Retained);
         }
-        self.remove_gc(owner, agent_session_id, caller_request_id)
+        self.remove_gc(owner, agent_session_id, &tree_id, caller_request_id)
             .await?;
         Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
     }
@@ -565,6 +586,7 @@ impl AgentSessionLifecycleUsecase {
         &self,
         owner: TerminalSurfaceOwner,
         agent_session_id: &str,
+        tree_id: &str,
         caller_request_id: &str,
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
         self.terminal
@@ -577,7 +599,9 @@ impl AgentSessionLifecycleUsecase {
         self.sessions
             .delete(agent_session_id, caller_request_id)
             .await
-            .map_err(map_session_error)
+            .map_err(map_session_error)?;
+        self.release_deleted_execution_tree(tree_id).await;
+        Ok(())
     }
 
     async fn rollback_spawned_resume(
@@ -616,6 +640,7 @@ impl AgentSessionLifecycleUsecase {
         &self,
         owner: TerminalSurfaceOwner,
         agent_session_id: &str,
+        tree_id: &str,
         caller_request_id: &str,
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
         self.terminal
@@ -632,7 +657,19 @@ impl AgentSessionLifecycleUsecase {
                 caller_request_id,
             )
             .await
-            .map_err(map_session_error)
+            .map_err(map_session_error)?;
+        self.release_deleted_execution_tree(tree_id).await;
+        Ok(())
+    }
+
+    async fn release_deleted_execution_tree(&self, tree_id: &str) {
+        if let Err(error) = self
+            .execution_trees
+            .release_deleted_execution_tree(tree_id)
+            .await
+        {
+            log::warn!("failed to release deleted execution tree from runtime cache: {error:?}");
+        }
     }
 
     async fn release_launch_binding(

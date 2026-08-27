@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
+    ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase, ProviderLifecycleUsecase,
-    ProviderSessionStartTransaction, ProviderWorkflowStopCommand, ProviderWorkflowStopTransaction,
+    ProviderSessionStartTransaction,
 };
 use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeParent};
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
 };
@@ -18,6 +19,14 @@ use crate::domain::provider_lifecycle::{
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::AgentSessionUsecase;
+
+fn session_location(id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::session_tree_root(id).unwrap()
+}
+
+fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
+    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
+}
 
 struct MemoryAgentSessions {
     stored: Mutex<VersionedAgentSession>,
@@ -97,17 +106,17 @@ impl ProviderSessionStartTransaction for MemoryAgentSessions {
 struct MemoryWorkflowStops {
     commits: Mutex<
         Vec<(
-            ProviderWorkflowStopCommand,
+            ProviderExecutionTreeStopCommand,
             Vec<ScopedProviderLifecycleEvent>,
         )>,
     >,
 }
 
 #[async_trait::async_trait]
-impl ProviderWorkflowStopTransaction for MemoryWorkflowStops {
+impl ProviderExecutionTreeStopTransaction for MemoryWorkflowStops {
     async fn commit_provider_stop(
         &self,
-        command: ProviderWorkflowStopCommand,
+        command: ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), super::ProviderLifecycleIngressUsecaseError> {
         self.commits
@@ -183,7 +192,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        Some(AgentSessionTreeParent::new("workflow-1", "node-execution-1").unwrap()),
+        workflow_location("workflow-1", "node-execution-1"),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -248,7 +257,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
         let commits = transaction.commits.lock().unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].0.agent_session_id, "agent-workflow-stop");
-        assert_eq!(commits[0].0.workflow_execution_id, "workflow-1");
+        assert_eq!(commits[0].0.tree_id, "workflow-1");
         assert_eq!(commits[0].0.node_execution_id, "node-execution-1");
         assert_eq!(commits[0].0.binding_id, armed.binding_id());
         assert_eq!(commits[0].1.len(), 1);
@@ -340,13 +349,13 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
 }
 
 #[tokio::test]
-async fn standalone_stop_does_not_enter_the_workflow_transaction() {
+async fn standalone_stop_uses_the_same_execution_tree_transaction() {
     let mut session = AgentSession::create(
         "agent-standalone-stop",
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        None,
+        session_location("agent-standalone-stop"),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -408,7 +417,11 @@ async fn standalone_stop_does_not_enter_the_workflow_transaction() {
         .unwrap();
 
     assert_eq!(result, ProviderLifecycleIngressResult::Applied);
-    assert!(transaction.commits.lock().unwrap().is_empty());
+    let commits = transaction.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].0.agent_session_id, "agent-standalone-stop");
+    assert_eq!(commits[0].0.tree_id, "agent-standalone-stop");
+    assert_eq!(commits[0].0.node_execution_id, "agent-standalone-stop");
 }
 
 #[tokio::test]
@@ -418,7 +431,7 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        None,
+        session_location("agent-1"),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -501,7 +514,7 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        None,
+        session_location("agent-1"),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -579,7 +592,7 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Codex,
-        None,
+        session_location("agent-consistent"),
     )
     .unwrap();
     session.take_uncommitted_events();
@@ -658,7 +671,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
         WorkspaceIdentity::new("/repo"),
         "/repo/worktree",
         ProviderKind::Claude,
-        None,
+        session_location("agent-locked"),
     )
     .unwrap();
     session.take_uncommitted_events();

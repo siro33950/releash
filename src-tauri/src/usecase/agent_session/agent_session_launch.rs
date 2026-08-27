@@ -5,7 +5,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionTreeParent, ManagedPtyPresence, ResolvedProviderExecutable,
+    AgentSessionTreeLocation, ManagedPtyPresence, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::repository::VersionedAgentSession;
 use crate::domain::agent_session::{
@@ -77,6 +77,73 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
     TerminalUnavailable,
     TerminalSpawn(ProviderAgentTerminalSpawnError),
     Corrupt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartedExecutionTreeRegistrationError {
+    Unavailable,
+    Corrupt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionTreeCacheReleaseError {
+    Unavailable,
+    Corrupt,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait StartedExecutionTreeRegistrar: Send + Sync {
+    /// これから起こす実行木の識別子を engine に予約し、reconciliation の対象外にする。
+    async fn reserve_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        let _ = tree_id;
+        Ok(())
+    }
+
+    async fn register_started_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError>;
+
+    /// 本登録または launch 失敗後に、reconciliation からの除外を終了する。
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), StartedExecutionTreeRegistrationError> {
+        let _ = tree_id;
+        Ok(())
+    }
+
+    async fn release_deleted_execution_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), ExecutionTreeCacheReleaseError> {
+        let _ = tree_id;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderAgentRuntime {
+    pub(super) availability: Arc<dyn ProviderAvailabilityReader>,
+    pub(super) launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
+    pub(super) terminal: Arc<dyn ProviderAgentTerminalGateway>,
+}
+
+impl ProviderAgentRuntime {
+    pub(crate) fn new(
+        availability: Arc<dyn ProviderAvailabilityReader>,
+        launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
+        terminal: Arc<dyn ProviderAgentTerminalGateway>,
+    ) -> Self {
+        Self {
+            availability,
+            launch_gateway,
+            terminal,
+        }
+    }
 }
 
 impl std::fmt::Display for AgentSessionLaunchUsecaseError {
@@ -169,6 +236,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     history: Arc<dyn AgentSessionHistoryGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
+    execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
     activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
@@ -178,7 +246,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
 #[derive(Clone)]
 enum WorkflowLaunchActivation {
     Activating(watch::Receiver<bool>),
-    Activated(VersionedAgentSession),
+    Activated(Box<VersionedAgentSession>),
 }
 
 struct PreparedAgentSessionLaunch {
@@ -200,12 +268,16 @@ impl AgentSessionLaunchUsecase {
     pub(crate) fn new(
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
-        availability: Arc<dyn ProviderAvailabilityReader>,
-        launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
-        terminal: Arc<dyn ProviderAgentTerminalGateway>,
+        provider_runtime: ProviderAgentRuntime,
         history: Arc<dyn AgentSessionHistoryGateway>,
         hook_health: Arc<ProviderHookHealthUsecase>,
+        execution_trees: Arc<dyn StartedExecutionTreeRegistrar>,
     ) -> Self {
+        let ProviderAgentRuntime {
+            availability,
+            launch_gateway,
+            terminal,
+        } = provider_runtime;
         Self {
             sessions,
             lifecycle,
@@ -214,6 +286,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
             history,
             hook_health,
+            execution_trees,
             standalone_requests: Mutex::new(StandaloneLaunchRequestRegistry::default()),
             pending_workflow_launches: Mutex::new(HashMap::new()),
             activated_workflow_launches: Arc::new(Mutex::new(HashMap::new())),
@@ -270,8 +343,15 @@ impl AgentSessionLaunchUsecase {
         request: AgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
+        let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
+            .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
         let pending = self
-            .prepare_new_session(agent_session_id, request, None, ProviderSessionLaunch::New)
+            .prepare_new_session(
+                agent_session_id,
+                request,
+                tree_location,
+                ProviderSessionLaunch::New,
+            )
             .await?;
         self.spawn_prepared(pending).await
     }
@@ -314,10 +394,11 @@ impl AgentSessionLaunchUsecase {
         &self,
         request: WorkflowAgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
-        let tree_parent =
-            AgentSessionTreeParent::new(&request.workflow_execution_id, &request.node_execution_id)
-                .map(Some)
-                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
+        let tree_location = AgentSessionTreeLocation::workflow_node(
+            &request.workflow_execution_id,
+            &request.node_execution_id,
+        )
+        .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
         let agent_session_id = issue_agent_session_id(&request.caller_request_id)?;
         let launch =
             ProviderSessionLaunch::new_with_initial_instruction(request.initial_instruction)
@@ -337,7 +418,7 @@ impl AgentSessionLaunchUsecase {
                     cols: request.cols,
                     caller_request_id: request.caller_request_id,
                 },
-                tree_parent,
+                tree_location,
                 launch,
             )
             .await?;
@@ -398,7 +479,7 @@ impl AgentSessionLaunchUsecase {
         };
         self.activated_workflow_launches.lock().await.insert(
             agent_session_id.to_string(),
-            WorkflowLaunchActivation::Activated(activated.clone()),
+            WorkflowLaunchActivation::Activated(Box::new(activated.clone())),
         );
         let _ = completion_tx.send(true);
         let launches = Arc::clone(&self.activated_workflow_launches);
@@ -414,7 +495,7 @@ impl AgentSessionLaunchUsecase {
         &self,
         agent_session_id: String,
         request: AgentSessionLaunchRequest,
-        tree_parent: Option<AgentSessionTreeParent>,
+        tree_location: AgentSessionTreeLocation,
         launch: ProviderSessionLaunch,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
         let availability_and_lock = crate::other::telemetry::start_terminal_launch_phase(
@@ -433,10 +514,12 @@ impl AgentSessionLaunchUsecase {
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(&agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
+        let tree_id = tree_location.tree_id().to_string();
+        self.reserve_created_tree(&tree_id).await?;
         let durable_create = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::DurableCreateCommit,
         );
-        let (armed, created) = self
+        let create_result = self
             .lifecycle
             .arm_with_commit(slot_id, request.provider, scope, |lifecycle_events| async {
                 self.sessions
@@ -446,7 +529,7 @@ impl AgentSessionLaunchUsecase {
                             workspace: request.workspace.clone(),
                             worktree_path: request.worktree_path.clone(),
                             provider: request.provider,
-                            tree_parent,
+                            tree_location,
                             admit_initial_instruction: launch.initial_instruction().is_some(),
                         },
                         lifecycle_events,
@@ -455,8 +538,25 @@ impl AgentSessionLaunchUsecase {
                     .await
                     .map_err(map_session_error)
             })
-            .await?;
+            .await;
         durable_create.finish();
+        let (armed, created) = match create_result {
+            Ok(created) => created,
+            Err(error) => {
+                self.release_created_tree_reservation_preserving_cause(&tree_id)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.register_created_tree(&created).await {
+            self.rollback_failed_new_launch_preserving_cause(
+                &created,
+                &armed,
+                &request.caller_request_id,
+            )
+            .await;
+            return Err(error);
+        }
         let durable = DurableAgentSessionLaunch {
             operation,
             created,
@@ -471,6 +571,55 @@ impl AgentSessionLaunchUsecase {
             launch,
         )
         .await
+    }
+
+    async fn register_created_tree(
+        &self,
+        created: &VersionedAgentSession,
+    ) -> Result<(), AgentSessionLaunchUsecaseError> {
+        let tree_id = created.session().tree_location().tree_id();
+        let registration = self
+            .execution_trees
+            .register_started_execution_tree(created.session().tree_location().tree_id())
+            .await
+            .map_err(map_execution_tree_registration_error);
+        let release = self
+            .execution_trees
+            .release_started_execution_tree_reservation(tree_id)
+            .await
+            .map_err(map_execution_tree_registration_error);
+        match (registration, release) {
+            (Ok(()), release) => release,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(release_error)) => {
+                log::warn!(
+                    "failed to release AgentSession execution tree reservation without masking registration failure: {release_error:?}"
+                );
+                Err(error)
+            }
+        }
+    }
+
+    async fn reserve_created_tree(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), AgentSessionLaunchUsecaseError> {
+        self.execution_trees
+            .reserve_started_execution_tree(tree_id)
+            .await
+            .map_err(map_execution_tree_registration_error)
+    }
+
+    async fn release_created_tree_reservation_preserving_cause(&self, tree_id: &str) {
+        if let Err(error) = self
+            .execution_trees
+            .release_started_execution_tree_reservation(tree_id)
+            .await
+        {
+            log::warn!(
+                "failed to release AgentSession execution tree reservation without masking launch failure: {error:?}"
+            );
+        }
     }
 
     pub(crate) async fn rollback_workflow_node(
@@ -489,7 +638,7 @@ impl AgentSessionLaunchUsecase {
                 match launches.get(agent_session_id).cloned() {
                     Some(WorkflowLaunchActivation::Activated(session)) => {
                         launches.remove(agent_session_id);
-                        break Some(session);
+                        break Some(*session);
                     }
                     Some(WorkflowLaunchActivation::Activating(completion)) if pending.is_none() => {
                         Some(completion)
@@ -665,17 +814,38 @@ impl AgentSessionLaunchUsecase {
             .lock_operation(&agent_session_id)
             .await
             .map_err(map_session_error)?;
-        self.sessions
+        let tree_location = AgentSessionTreeLocation::session_tree_root(&agent_session_id)
+            .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)?;
+        let tree_id = tree_location.tree_id().to_string();
+        self.reserve_created_tree(&tree_id).await?;
+        let create_result = self
+            .sessions
             .create(
                 &agent_session_id,
                 request.workspace.clone(),
                 &request.worktree_path,
                 request.provider,
-                None,
-                &format!("{}.create", request.caller_request_id),
+                tree_location,
+                &request.caller_request_id,
             )
             .await
-            .map_err(map_session_error)?;
+            .map_err(map_session_error);
+        let created = match create_result {
+            Ok(created) => created,
+            Err(error) => {
+                self.release_created_tree_reservation_preserving_cause(&tree_id)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.register_created_tree(&created).await {
+            self.rollback_failed_history_registration_preserving_cause(
+                &created,
+                &request.caller_request_id,
+            )
+            .await;
+            return Err(error);
+        }
         let associated = self
             .sessions
             .associate_provider_session(
@@ -765,6 +935,37 @@ impl AgentSessionLaunchUsecase {
         Ok(())
     }
 
+    async fn rollback_failed_history_registration_preserving_cause(
+        &self,
+        created: &VersionedAgentSession,
+        caller_request_id: &str,
+    ) {
+        let session_result = self
+            .sessions
+            .garbage_collect(
+                created.session().id(),
+                ManagedPtyPresence::ConfirmedAbsent,
+                &format!("{caller_request_id}.rollback"),
+            )
+            .await
+            .map_err(map_session_error);
+        if let Err(rollback_error) = session_result {
+            log::warn!(
+                "failed to roll back AgentSession history resume after execution tree registration failure: {rollback_error:?}"
+            );
+            return;
+        }
+        if let Err(error) = self
+            .execution_trees
+            .release_deleted_execution_tree(created.session().tree_location().tree_id())
+            .await
+        {
+            log::warn!(
+                "failed to release deleted AgentSession execution tree after history resume rollback: {error:?}"
+            );
+        }
+    }
+
     async fn pause_history_resume(
         &self,
         request: &AgentSessionHistoryResumeRequest,
@@ -832,6 +1033,17 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error);
+        if session_result.is_ok() {
+            if let Err(error) = self
+                .execution_trees
+                .release_deleted_execution_tree(created.session().tree_location().tree_id())
+                .await
+            {
+                log::warn!(
+                    "failed to release deleted AgentSession execution tree after launch rollback: {error:?}"
+                );
+            }
+        }
         terminal_result?;
         lifecycle_result?;
         launch_result?;
@@ -930,6 +1142,17 @@ fn map_launch_error(error: ProviderAgentLaunchGatewayError) -> AgentSessionLaunc
         ProviderAgentLaunchGatewayError::Unavailable => {
             AgentSessionLaunchUsecaseError::LaunchUnavailable
         }
+    }
+}
+
+fn map_execution_tree_registration_error(
+    error: StartedExecutionTreeRegistrationError,
+) -> AgentSessionLaunchUsecaseError {
+    match error {
+        StartedExecutionTreeRegistrationError::Unavailable => {
+            AgentSessionLaunchUsecaseError::StorageUnavailable
+        }
+        StartedExecutionTreeRegistrationError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
 }
 

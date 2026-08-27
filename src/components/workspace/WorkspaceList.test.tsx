@@ -497,6 +497,10 @@ describe("WorkspaceList", () => {
 					workspaceIdentity: "/repo/wt",
 					worktreePath: "/repo/wt",
 					provider: "claude",
+					treeLocation: {
+						treeId: "provider-agent-archived",
+						nodeExecutionId: "provider-agent-archived",
+					},
 					lifecycle: "archived",
 					activity: "idle",
 					lastExitAbnormal: false,

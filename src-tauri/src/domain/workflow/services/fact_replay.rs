@@ -12,10 +12,9 @@ use crate::domain::workflow::entities::workflow_execution::{
 };
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
-    Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot, NodeCompletion,
-    NodeCompletionSignal, NodeDefinition, NodeExecution, NodeExecutionFailure,
-    NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKind,
-    NodeKindName, RuntimeExecutionState, SessionRootFact, TreeRootFact, WorkflowDefinition,
+    Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot, NodeCompletionSignal, NodeExecution,
+    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord,
+    NodeKindName, RuntimeExecutionState, TreeRootFact,
     WorkflowExecution as WorkflowExecutionReadModel,
 };
 
@@ -62,7 +61,7 @@ pub fn fold_execution_tree(
 
     let isolated_worktrees = IsolatedWorktreeLedgerSnapshot::from_records(records)?;
     let started_at = timestamp_of(first);
-    let mut aggregate = restore_aggregate(tree_id, &root, first, started_at);
+    let mut aggregate = restore_aggregate(tree_id, &root, started_at);
 
     for record in records {
         apply_record(&mut aggregate, record)
@@ -169,53 +168,20 @@ fn read_model_node(
 fn restore_aggregate(
     tree_id: &str,
     root: &TreeRootFact,
-    first: &NodeFactRecord,
     started_at: f64,
 ) -> WorkflowExecutionAggregate {
-    let (definition, worktree_path, created_from, request) = match root {
-        TreeRootFact::Workflow(workflow) => (
-            workflow.definition.clone(),
-            workflow.worktree_path.clone(),
-            workflow.created_from,
-            (!workflow.request.is_empty()).then(|| workflow.request.clone()),
-        ),
-        TreeRootFact::Session(session) => (
-            standalone_session_definition(&first.meta.node_name, session),
-            session.worktree_path.clone(),
-            session.created_from,
-            None,
-        ),
-    };
     WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
         id: tree_id.to_string(),
-        workflow: definition,
+        workflow: root.definition.clone(),
         workflow_defaults: WorkflowDefaults,
-        worktree_path,
-        created_from,
+        worktree_path: root.worktree_path.clone(),
+        launched_as: root.launched_as,
+        created_from: root.created_from,
         started_at,
         updated_at: started_at,
-        request,
+        request: (!root.request.is_empty()).then(|| root.request.clone()),
         ..WorkflowExecutionRestore::default()
     })
-}
-
-/// 単独 Session は「session node 1つの定義」として同じ fold に載る。
-fn standalone_session_definition(node_name: &str, session: &SessionRootFact) -> WorkflowDefinition {
-    WorkflowDefinition {
-        name: node_name.to_string(),
-        description: String::new(),
-        builtin: false,
-        schemas: Default::default(),
-        nodes: vec![NodeDefinition {
-            name: node_name.to_string(),
-            kind: NodeKind::Session(session.session.clone()),
-            artifact: None,
-            input: Vec::new(),
-            completion: NodeCompletion::Auto,
-            worktree: None,
-        }],
-        entry: node_name.to_string(),
-    }
 }
 
 fn apply_record(

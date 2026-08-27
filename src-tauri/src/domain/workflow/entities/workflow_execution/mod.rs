@@ -16,9 +16,9 @@ use crate::domain::workflow::services::{
     reference as workflow_reference, routing as workflow_routing, transition as workflow_transition,
 };
 use crate::domain::workflow::value_objects::{
-    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, NodeCompletionSignal,
-    NodeCompletionSignalState, NodeDefinition, NodeExecutionFailureKind, NodeHistoryEntry,
-    NodeKindName, OnFailure, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
+    ExecutionInterruptionReason, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch,
+    NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeExecutionFailureKind,
+    NodeHistoryEntry, NodeKindName, OnFailure, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
     WorkflowDefinition,
 };
 use crate::domain::workflow::FailureDisposition;
@@ -379,6 +379,7 @@ pub struct WorkflowExecutionRestore {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
     pub started_at: f64,
@@ -408,6 +409,7 @@ impl Default for WorkflowExecutionRestore {
             node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
+            launched_as: ExecutionTreeLaunch::Workflow,
             created_from: ExecutionOrigin::DesktopUi,
             error_reason: None,
             started_at: 0.0,
@@ -637,6 +639,7 @@ pub struct WorkflowExecutionView {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
     pub started_at: f64,
@@ -707,6 +710,7 @@ impl WorkflowExecution {
                 node_history: restore.node_history,
                 workflow_defaults: restore.workflow_defaults,
                 worktree_path: restore.worktree_path,
+                launched_as: restore.launched_as,
                 created_from: restore.created_from,
                 error_reason: restore.error_reason,
                 started_at: restore.started_at,
@@ -749,6 +753,10 @@ impl WorkflowExecution {
             .node_executions
             .iter()
             .find(|execution| execution.id == node_execution_id)
+    }
+
+    pub fn accepts_explicit_retry(&self) -> bool {
+        self.runtime.launched_as == ExecutionTreeLaunch::Workflow
     }
 
     pub fn newly_terminal_sessions_since(
@@ -1860,6 +1868,9 @@ impl WorkflowExecution {
         timestamp: f64,
         mode: NodeRestartMode,
     ) -> Option<RestartedNodeAttempt> {
+        if mode == NodeRestartMode::ExplicitRetry && !self.accepts_explicit_retry() {
+            return None;
+        }
         let admission = match mode {
             NodeRestartMode::ExplicitRetry => RuntimeNodeExecution::can_retry,
             NodeRestartMode::CommandResume => RuntimeNodeExecution::can_restart_paused_command,
@@ -4900,6 +4911,68 @@ mod tests {
             failed.node_executions()[0].status,
             RuntimeNodeExecutionStatus::Failed
         );
+    }
+
+    #[test]
+    fn test_workflow_execution_session起動木はexplicit_retryを受理しない() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.launched_as = ExecutionTreeLaunch::Session;
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "session-root".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Stop,
+            11.0,
+        );
+        let before = execution.clone();
+
+        let restarted = execution.restart_node_attempt_at(
+            &node_execution_id,
+            "retry-attempt".to_string(),
+            12.0,
+            NodeRestartMode::ExplicitRetry,
+        );
+
+        assert!(restarted.is_none());
+        assert_eq!(execution, before);
+    }
+
+    #[test]
+    fn test_workflow_execution_session起動木でもcommand_resumeを受理する() {
+        let mut execution = tree_execution(vec![tree_command_node("command")]);
+        execution.launched_as = ExecutionTreeLaunch::Session;
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "command".to_string(),
+                NodeKindName::Command,
+                1,
+                None,
+                "session-command".to_string(),
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.pause_node_execution(&node_execution_id, 11.0),
+            TransitionOutcome::Applied
+        );
+
+        let restarted = execution.restart_node_attempt_at(
+            &node_execution_id,
+            "resumed-command".to_string(),
+            12.0,
+            NodeRestartMode::CommandResume,
+        );
+
+        assert!(restarted.is_some());
+        assert_eq!(execution.node_executions().len(), 2);
     }
 
     #[test]

@@ -388,6 +388,13 @@ pub(crate) mod test_support {
             Ok(())
         }
 
+        async fn register_started_execution_tree(
+            &self,
+            _tree_id: &str,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
         async fn approval_persisted(
             &self,
             _execution_id: &str,

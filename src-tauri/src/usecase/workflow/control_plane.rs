@@ -46,6 +46,26 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 
     async fn recover_active_executions(&self) -> Result<(), WorkflowError>;
 
+    async fn reserve_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        let _ = tree_id;
+        Ok(())
+    }
+
+    async fn register_started_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError>;
+
+    async fn release_started_execution_tree_reservation(
+        &self,
+        tree_id: &str,
+    ) -> Result<(), WorkflowError> {
+        let _ = tree_id;
+        Ok(())
+    }
+
+    async fn release_deleted_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
+        let _ = tree_id;
+        Ok(())
+    }
+
     /// 対象 node への承認が既に事実として永続化されているか（approval の冪等判定）。
     async fn approval_persisted(
         &self,
@@ -413,7 +433,7 @@ impl WorkflowControlPlaneUsecase {
 
     pub(crate) async fn record_provider_stop(
         &self,
-        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), WorkflowError> {
         super::command::retry_control_plane_conflicts(|| {
@@ -424,19 +444,13 @@ impl WorkflowControlPlaneUsecase {
 
     async fn record_provider_stop_once(
         &self,
-        command: crate::usecase::provider_lifecycle::ProviderWorkflowStopCommand,
+        command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
     ) -> Result<(), WorkflowError> {
-        let mut active = self
-            .runtime
-            .load_active_execution(&command.workflow_execution_id)
-            .await?;
+        let mut active = self.runtime.load_active_execution(&command.tree_id).await?;
         if active.is_none() {
             self.runtime.recover_active_executions().await?;
-            active = self
-                .runtime
-                .load_active_execution(&command.workflow_execution_id)
-                .await?;
+            active = self.runtime.load_active_execution(&command.tree_id).await?;
         }
         let Some(current) = active else {
             if lifecycle_events.is_empty() {
@@ -444,7 +458,7 @@ impl WorkflowControlPlaneUsecase {
             }
             return Err(WorkflowError::NotFound(format!(
                 "Workflow execution not found: {}",
-                command.workflow_execution_id
+                command.tree_id
             )));
         };
         let timestamp = self.runtime.current_timestamp();
@@ -456,7 +470,7 @@ impl WorkflowControlPlaneUsecase {
         ) {
             Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied) => {
                 vec![WorkflowEvent::NodeStopReceived {
-                    execution_id: command.workflow_execution_id.clone(),
+                    execution_id: command.tree_id.clone(),
                     node_execution_id: command.node_execution_id.clone(),
                     timestamp,
                 }]
@@ -468,7 +482,7 @@ impl WorkflowControlPlaneUsecase {
             Err(ProviderStopRejection::NodeExecutionNotFound) => {
                 return Err(WorkflowError::invalid_state(format!(
                     "node execution '{}' is not part of workflow '{}'",
-                    command.node_execution_id, command.workflow_execution_id
+                    command.node_execution_id, command.tree_id
                 )))
             }
             Err(ProviderStopRejection::SessionDoesNotOwnAttempt) => {
@@ -504,7 +518,7 @@ impl WorkflowControlPlaneUsecase {
         let snapshot = self
             .runtime
             .commit_control_plane(WorkflowControlPlaneCommit {
-                execution_id: command.workflow_execution_id,
+                execution_id: command.tree_id,
                 before: current,
                 after: candidate,
                 workflow_events,

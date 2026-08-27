@@ -68,7 +68,7 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         node_session_id: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
-    async fn stop_workflow_agent_session_preserving_checkpoint(
+    async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
@@ -217,13 +217,13 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             })
     }
 
-    async fn stop_workflow_agent_session_preserving_checkpoint(
+    async fn stop_agent_session_for_terminal_node_preserving_checkpoint(
         &self,
         node_session_id: &str,
         node_execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         self.lifecycle
-            .stop_workflow_owned_preserving_checkpoint(
+            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
                 node_session_id,
                 node_execution_id,
                 &format!("workflow-node-terminal-stop-{node_execution_id}"),

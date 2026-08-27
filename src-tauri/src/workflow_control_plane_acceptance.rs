@@ -12,13 +12,15 @@ use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
 use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
 use crate::domain::local_event::LocalEventTransactionRepository;
-use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleScope};
 use crate::domain::workflow::{
-    ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeDefinition, NodeKind,
-    RepositoryWorktreeInventory, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition,
-    WorkflowError, WorktreeInventoryGateway,
+    ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeCompletionSignalState, NodeDefinition,
+    NodeExecutionStatus, NodeKind, NodeKindName, RepositoryWorktreeInventory,
+    RuntimeExecutionState, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowError,
+    WorkflowRuntimeSnapshot, WorktreeInventoryGateway,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTreeRepository};
 use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
 use crate::terminal_surface::TerminalSurfaceRuntime;
 use crate::usecase::agent_session::{
@@ -29,7 +31,10 @@ use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
 };
-use crate::usecase::workflow::WorkflowRuntimeUsecase;
+use crate::usecase::workflow::{
+    WorkflowRuntimeUsecase, WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget,
+};
 
 pub use crate::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
@@ -73,6 +78,14 @@ pub enum AcceptanceNodeKind {
     Session,
     Fanout,
     Sequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptanceWorkspaceNodeStatus {
+    Active,
+    Attention,
+    Failure,
+    Idle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +341,33 @@ struct AcceptanceManagedWorktreeResolver;
 
 struct AcceptanceWorktreeInventory;
 
+struct AcceptanceWorkspaceNodeActionResolver;
+
+impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
+    fn resolve_approval_target(
+        &self,
+        _worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceNodeApprovalTarget, WorkflowError> {
+        Ok(WorkspaceNodeApprovalTarget {
+            execution_id: node_id.to_string(),
+            node_name: "session".to_string(),
+            node_execution_id: node_id.to_string(),
+        })
+    }
+
+    fn resolve_retry_target(
+        &self,
+        _worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceNodeRetryTarget, WorkflowError> {
+        Ok(WorkspaceNodeRetryTarget {
+            execution_id: node_id.to_string(),
+            node_execution_id: node_id.to_string(),
+        })
+    }
+}
+
 impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
     fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
         Ok(Vec::new())
@@ -350,7 +390,9 @@ pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     provider_sessions: Arc<AgentSessionUsecase>,
     provider_launch: Arc<AgentSessionLaunchUsecase>,
+    provider_launch_bindings: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
     provider_lifecycle: Arc<AgentSessionLifecycleUsecase>,
+    runtime_driver: Arc<WorkflowRuntimeHost>,
     _runtime: Arc<WorkflowRuntimeUsecase>,
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
@@ -468,12 +510,20 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),
-            driver,
+            driver.clone(),
             repository,
             installation_id,
         ));
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(gateway));
-        composition.workflow_stops.bind(runtime.clone());
+        let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(
+            Arc::new(AcceptanceWorkspaceNodeActionResolver),
+            runtime.clone(),
+        ));
+        app.manage(workspace_node_commands.clone());
+        composition.execution_tree_stops.bind(runtime.clone());
+        composition
+            .execution_tree_registrations
+            .bind(runtime.clone());
 
         let workflows_dir = config.data_dir.join("acceptance-workflows");
         std::fs::create_dir_all(&workflows_dir).map_err(|error| error.to_string())?;
@@ -515,7 +565,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             exit_observer_cancellation,
             provider_sessions: composition.sessions,
             provider_launch: composition.launch,
+            provider_launch_bindings: composition.provider_lifecycle,
             provider_lifecycle: composition.lifecycle,
+            runtime_driver: driver,
             _runtime: runtime,
             local_api,
             local_api_base_url: format!("http://127.0.0.1:{port}"),
@@ -650,6 +702,17 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .await
     }
 
+    pub async fn execution_direct(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<AcceptanceWorkflowExecution>, String> {
+        Ok(self
+            .runtime_driver
+            .acceptance_state_by_execution_id(execution_id)
+            .await
+            .map(acceptance_execution_from_runtime))
+    }
+
     pub async fn submit(&self, node_execution_id: &str) -> Result<(), String> {
         let response: MutationResponse = self
             .post(
@@ -721,6 +784,19 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .ok
             .then_some(())
             .ok_or_else(|| "Retry response was not successful".to_string())
+    }
+
+    pub async fn retry_workspace_node_from_tauri(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+    ) -> Result<(), String> {
+        crate::adaptor::controller::command::workspace_tree::retry_workspace_node(
+            self._app.state::<Arc<WorkspaceNodeCommandUsecase>>(),
+            worktree_path.to_string(),
+            node_id.to_string(),
+        )
+        .await
     }
 
     pub async fn abort(&self, execution_id: &str) -> Result<(), String> {
@@ -798,6 +874,76 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .map_err(|error| format!("{error:?}"))
     }
 
+    pub async fn archive_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
+        self.provider_lifecycle
+            .archive(
+                agent_session_id,
+                &format!("acceptance-archive-{agent_session_id}"),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    pub async fn restore_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
+        self.provider_lifecycle
+            .restore(
+                agent_session_id,
+                24,
+                80,
+                &format!("acceptance-restore-{agent_session_id}"),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    pub fn workspace_node_status(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<Option<AcceptanceWorkspaceNodeStatus>, String> {
+        let store = self
+            ._app
+            .try_state::<Arc<LocalEventStore>>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
+        let repository =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
+        repository
+            .load_node_by_node_execution_id(node_execution_id)
+            .map_err(|error| error.to_string())
+            .map(|node| {
+                node.map(|node| match node.status_classification {
+                    WorkspaceNodeStatusClassification::Active => {
+                        AcceptanceWorkspaceNodeStatus::Active
+                    }
+                    WorkspaceNodeStatusClassification::Attention => {
+                        AcceptanceWorkspaceNodeStatus::Attention
+                    }
+                    WorkspaceNodeStatusClassification::Failure => {
+                        AcceptanceWorkspaceNodeStatus::Failure
+                    }
+                    WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
+                })
+            })
+    }
+
+    pub fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {
+        let store = self
+            ._app
+            .try_state::<Arc<LocalEventStore>>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
+        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, tree_id)
+            .map(|records| {
+                records
+                    .into_iter()
+                    .map(|record| record.fact.event_type().to_string())
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn agent_session_lifecycle(
         &self,
         agent_session_id: &str,
@@ -812,6 +958,39 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             AgentSessionLifecycle::Paused => AcceptanceAgentSessionLifecycle::Paused,
             AgentSessionLifecycle::Archived => AcceptanceAgentSessionLifecycle::Archived,
         }))
+    }
+
+    pub async fn agent_session_has_active_launch_binding(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<bool, String> {
+        let session = self
+            .provider_sessions
+            .find(agent_session_id)
+            .await
+            .map_err(|error| format!("{error:?}"))?
+            .ok_or_else(|| format!("AgentSession '{agent_session_id}' not found"))?;
+        let scope =
+            ProviderLifecycleScope::new(agent_session_id).map_err(|error| error.to_string())?;
+        self.provider_launch_bindings
+            .active_launch_id(session.session().provider(), &scope)
+            .await
+            .map(|slot| slot.is_some())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    pub fn active_provider_process_count(&self) -> usize {
+        self.terminal
+            .application()
+            .summaries()
+            .into_iter()
+            .filter(|surface| {
+                matches!(
+                    surface.owner,
+                    crate::domain::terminal_surface::TerminalSurfaceOwner::Session { .. }
+                ) && !surface.process_state.is_exited()
+            })
+            .count()
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
@@ -866,7 +1045,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             exit_observer_cancellation,
             provider_sessions,
             provider_launch,
+            provider_launch_bindings,
             provider_lifecycle,
+            runtime_driver,
             _runtime,
             local_api,
             local_api_base_url: _,
@@ -881,13 +1062,16 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             .shutdown_and_wait()
             .await
             .map_err(|error| format!("join local API server: {error}"))?;
+        _app.unmanage::<Arc<WorkspaceNodeCommandUsecase>>();
         _app.unmanage::<Arc<LocalEventStore>>();
         drop((
             local_api,
             _runtime,
             provider_sessions,
             provider_launch,
+            provider_launch_bindings,
             provider_lifecycle,
+            runtime_driver,
             terminal,
             _app,
         ));
@@ -907,6 +1091,68 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         .await
         .map_err(|_| "timed out waiting for Local Event Store shutdown".to_string())??;
         Ok(())
+    }
+}
+
+fn acceptance_execution_from_runtime(
+    snapshot: WorkflowRuntimeSnapshot,
+) -> AcceptanceWorkflowExecution {
+    AcceptanceWorkflowExecution {
+        id: snapshot.execution_id,
+        status: match snapshot.state {
+            RuntimeExecutionState::Running => AcceptanceWorkflowExecutionStatus::Running,
+            #[cfg(test)]
+            RuntimeExecutionState::WaitingApproval => {
+                AcceptanceWorkflowExecutionStatus::WaitingApproval
+            }
+            RuntimeExecutionState::Completed => AcceptanceWorkflowExecutionStatus::Completed,
+            RuntimeExecutionState::Aborted => AcceptanceWorkflowExecutionStatus::Aborted,
+            #[cfg(test)]
+            RuntimeExecutionState::Interrupted => AcceptanceWorkflowExecutionStatus::Interrupted,
+        },
+        node_executions: snapshot
+            .node_executions
+            .into_iter()
+            .map(|node| {
+                let can_retry = node.can_retry();
+                AcceptanceNodeExecution {
+                    id: node.id,
+                    node_name: node.node_name,
+                    kind: match node.kind {
+                        NodeKindName::Command => AcceptanceNodeKind::Command,
+                        NodeKindName::Session => AcceptanceNodeKind::Session,
+                        NodeKindName::Fanout => AcceptanceNodeKind::Fanout,
+                        NodeKindName::Sequence => AcceptanceNodeKind::Sequence,
+                    },
+                    attempt: node.attempt,
+                    status: match node.status {
+                        NodeExecutionStatus::Running => AcceptanceNodeExecutionStatus::Running,
+                        NodeExecutionStatus::Paused => AcceptanceNodeExecutionStatus::Paused,
+                        NodeExecutionStatus::WaitingApproval => {
+                            AcceptanceNodeExecutionStatus::WaitingApproval
+                        }
+                        NodeExecutionStatus::Succeeded => AcceptanceNodeExecutionStatus::Succeeded,
+                        NodeExecutionStatus::Failed => AcceptanceNodeExecutionStatus::Failed,
+                        NodeExecutionStatus::Aborted => AcceptanceNodeExecutionStatus::Aborted,
+                    },
+                    agent_session_id: node.session_id,
+                    submit_received: matches!(
+                        node.completion_signals,
+                        NodeCompletionSignalState::SubmitReceived
+                            | NodeCompletionSignalState::Ready
+                    ),
+                    stop_received: matches!(
+                        node.completion_signals,
+                        NodeCompletionSignalState::StopReceived | NodeCompletionSignalState::Ready
+                    ),
+                    can_approve: node.status == NodeExecutionStatus::WaitingApproval,
+                    can_retry,
+                    has_artifact: node.artifact.is_some(),
+                    artifact: node.artifact.map(|artifact| artifact.value),
+                    failure_reason: node.failure.map(|failure| failure.reason),
+                }
+            })
+            .collect(),
     }
 }
 

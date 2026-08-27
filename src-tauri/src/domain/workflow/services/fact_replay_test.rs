@@ -1,12 +1,15 @@
 use super::*;
+use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
 use crate::domain::workflow::{
-    ApprovalGrantedFact, ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, FanoutSpec,
-    NodeCompletion, NodeFactMeta, NodeKind, OnFailure, RuntimeExecutionState, SequenceSpec,
-    SessionAttachedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, WorkflowRootFact,
+    ApprovalGrantedFact, ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef,
+    ExecutionTreeLaunch, FanoutSpec, NodeCompletion, NodeDefinition, NodeFactMeta, NodeKind,
+    OnFailure, RuntimeExecutionState, SequenceSpec, SessionAttachedFact,
+    SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
+    WorkflowDefinition,
 };
 
-const TREE: &str = "tree-1";
+const TREE: &str = "root-exec";
 
 struct FactLog {
     seq: i64,
@@ -102,22 +105,26 @@ fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefin
 }
 
 fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
-    TreeRootFact::Workflow(WorkflowRootFact {
-        workflow_name: definition.name.clone(),
+    TreeRootFact {
+        workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Cli,
         request: "please work".to_string(),
         definition,
-    })
+        launched_as: ExecutionTreeLaunch::Workflow,
+    }
 }
 
 fn session_root() -> TreeRootFact {
-    TreeRootFact::Session(SessionRootFact {
-        workspace_identity: "/repo".to_string(),
-        worktree_path: "/repo".to_string(),
-        session: crate::domain::workflow::SessionSpec::default(),
-        created_from: ExecutionOrigin::DesktopUi,
-    })
+    let NodeFact::Started(StartedFact {
+        root: Some(root), ..
+    }) = SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex)
+        .unwrap()
+        .started
+    else {
+        unreachable!();
+    };
+    root
 }
 
 fn started_root(root: TreeRootFact) -> NodeFact {
@@ -193,7 +200,7 @@ mod standalone_session_tests {
     fn test_単独session_startedの追記だけで1ノードの実行木として導出される() {
         // Given: 単独 session の root started のみ
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta, attached("session-1"));
 
@@ -207,14 +214,14 @@ mod standalone_session_tests {
             node_status(&tree, "root-exec"),
             RuntimeNodeExecutionStatus::Running
         );
-        assert!(matches!(tree.root, TreeRootFact::Session(_)));
+        assert_eq!(tree.root.launched_as, ExecutionTreeLaunch::Session);
     }
 
     #[test]
     fn test_単独session_submitとstopの二信号で完了が導出される() {
         // Given: 完了二信号まで揃った事実列（遷移イベントは存在しない）
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
         log.push(root_meta.clone(), submit());
@@ -232,10 +239,48 @@ mod standalone_session_tests {
     }
 
     #[test]
+    fn test_単独session_stop後のprocess_exitはrunningとstop_receivedを維持する() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), stop());
+        log.push(root_meta, process_lost());
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let node = tree.aggregate.node_execution("root-exec").unwrap();
+
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived
+        );
+    }
+
+    #[test]
+    fn test_単独session_process_exit後のstopはpausedへsignalだけを記録する() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), process_lost());
+        log.push(root_meta, stop());
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let node = tree.aggregate.node_execution("root-exec").unwrap();
+
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Paused);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::StopReceived
+        );
+    }
+
+    #[test]
     fn test_単独session_stopが運ぶ結果summaryがread_modelへ導出される() {
         // Given: 親スコープを持たない root leaf の stop が result summary を運ぶ
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), submit());
         log.push(
@@ -264,7 +309,7 @@ mod standalone_session_tests {
     #[test]
     fn test_単独session_archiveとrestoreが最終状態として導出される() {
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), NodeFact::ArchiveRequested);
         assert!(super::derive_session_facts(&log.records, "root-exec", "root-exec").archived);
@@ -276,7 +321,7 @@ mod standalone_session_tests {
     #[test]
     fn test_単独session_process_exitの状態と異常終了を導出する() {
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
         log.push(root_meta.clone(), exited(0));
@@ -305,6 +350,34 @@ mod standalone_session_tests {
         let failed = super::derive_session_facts(&log.records, "root-exec", "session-1");
         assert!(failed.last_exit_abnormal);
     }
+
+    #[test]
+    fn test_provider参照なしのattachは確定済みprovider参照を上書きしない() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(
+            root_meta.clone(),
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "session-1".to_string(),
+                provider_session_id: Some("provider-session-1".to_string()),
+                transcript_ref: Some("provider://transcript/1".to_string()),
+                initial_instruction_admitted: false,
+            }),
+        );
+        log.push(root_meta, attached("session-1"));
+
+        let view = super::derive_session_facts(&log.records, "root-exec", "session-1");
+
+        assert_eq!(
+            view.provider_session_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(
+            view.transcript_ref.as_deref(),
+            Some("provider://transcript/1")
+        );
+    }
 }
 
 mod isolated_worktree_ledger_tests {
@@ -315,7 +388,7 @@ mod isolated_worktree_ledger_tests {
     #[test]
     fn test_隔離worktree出自は事実の再decode後も同じ台帳へ導出される() {
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
         log.push(
@@ -681,10 +754,7 @@ mod failure_tests {
         );
         let mut log = FactLog::new();
         let mut root = workflow_root(definition);
-        let TreeRootFact::Workflow(workflow) = &mut root else {
-            unreachable!();
-        };
-        workflow.request = document.to_string();
+        root.request = document.to_string();
         log.push(
             meta("main-exec", None, "main", NodeKindName::Sequence, 1),
             started_root(root),
@@ -714,9 +784,7 @@ mod failure_tests {
                 serde_json::Value::String(document.to_string()),
             )]
         );
-        let TreeRootFact::Workflow(root) = &retried_tree.root else {
-            unreachable!();
-        };
+        let root = &retried_tree.root;
         let command = root
             .definition
             .node_by_name("c")
@@ -846,7 +914,7 @@ mod paused_tests {
     fn test_paused_プロセス喪失は導出でありpause事実は存在しない() {
         // Given: 二信号未揃いのままプロセスが消えた session
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
         log.push(root_meta.clone(), process_lost());
@@ -878,7 +946,7 @@ mod abort_tests {
     #[test]
     fn test_abort_指示の事実だけで中止が導出される() {
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
         log.push(root_meta, NodeFact::AbortRequested);
@@ -902,7 +970,7 @@ mod retroactive_interpretation_tests {
     #[test]
     fn test_遡及_完了は記録ではなくfold時点の規則による導出である() {
         let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "chat", NodeKindName::Session, 1);
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), submit());
         log.push(root_meta, stop());
@@ -933,7 +1001,7 @@ mod input_validation_tests {
     fn test_別のtreeの行が混ざった入力は拒否する() {
         let mut log = FactLog::new();
         log.push(
-            meta("root-exec", None, "chat", NodeKindName::Session, 1),
+            meta("root-exec", None, "session", NodeKindName::Session, 1),
             started_root(session_root()),
         );
         assert!(fold_execution_tree("other-tree", &log.records).is_err());
@@ -943,7 +1011,7 @@ mod input_validation_tests {
     fn test_先頭がstartedではない事実列を拒否する() {
         let mut log = FactLog::new();
         log.push(
-            meta("root-exec", None, "chat", NodeKindName::Session, 1),
+            meta("root-exec", None, "session", NodeKindName::Session, 1),
             submit(),
         );
 
@@ -954,7 +1022,7 @@ mod input_validation_tests {
     fn test_先頭startedがrootを持たない事実列を拒否する() {
         let mut log = FactLog::new();
         log.push(
-            meta("root-exec", None, "chat", NodeKindName::Session, 1),
+            meta("root-exec", None, "session", NodeKindName::Session, 1),
             NodeFact::Started(StartedFact {
                 parent: None,
                 root: None,

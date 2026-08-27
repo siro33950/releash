@@ -677,7 +677,7 @@ impl WorkflowRuntimeHost {
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
     /// 遷移済みで、`ExecutionAborted` event は必須 append 済み、かつ Execution Store sync も
-    /// 完了済みである前提。Workflow refs cleanup / broadcast / in-memory runtime releaseを
+    /// 完了済みである前提。broadcast / in-memory runtime releaseを
     /// 実行する。終端した Session の AgentSession は required append 後の effect で
     /// checkpoint を保持したまま停止済みである。
     ///
@@ -705,8 +705,6 @@ impl WorkflowRuntimeHost {
             (snapshot, exec.worktree_path.clone())
         };
 
-        self.cleanup_session_workflow_refs_by_execution_id(execution_id)
-            .await;
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
         self.release_terminal_execution(execution_id).await;
     }

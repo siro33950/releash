@@ -520,10 +520,10 @@ mod tests {
                 workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: AgentSessionProviderDto::Claude,
-                tree_parent: Some(crate::usecase::agent_session::AgentSessionTreeParentDto {
+                tree_location: crate::usecase::agent_session::AgentSessionTreeLocationDto {
                     tree_id: "workflow-1".to_string(),
                     node_execution_id: "node-1".to_string(),
-                }),
+                },
                 lifecycle: AgentSessionLifecycleDto::Open,
                 provider_session_id: None,
                 transcript_ref: None,

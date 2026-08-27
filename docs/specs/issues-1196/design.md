@@ -8,7 +8,7 @@ workflow runtime（`WorkflowRuntimeService`）は `executions: Mutex<HashMap<Str
 
 本設計の方針は次の 2 点に集約される。
 
-1. **即時解放**: terminal 化と同時に、当該 run を `executions` map から `remove` する。terminal 化の副作用（step session release・`session_workflow_refs` cleanup・状態 broadcast）が完了し、broadcast 用 snapshot を取り終えた直後に削除する。削除は冪等とし、全 terminal sink に共通ヘルパとして適用する。
+1. **即時解放**: terminal 化と同時に、当該 run を `executions` map から `remove` する。terminal 化の副作用（step session release・Session 逆引き cleanup・状態 broadcast）が完了し、broadcast 用 snapshot を取り終えた直後に削除する。削除は冪等とし、全 terminal sink に共通ヘルパとして適用する。
 2. **読み取り経路の不変性保証**: 履歴問い合わせ・状態問い合わせが解放後も同一結果を返すことを保証する。履歴問い合わせは既に Event Log / State Projection（永続化）から供給されており map に依存しないため影響を受けない。Aborted run では terminal 解放後も中断 step の `session_id` 等を復元できるよう、`RunAborted` event に optional な中断 step snapshot を持たせ、projection 境界で read model に変換する。`get_state_by_run_id`（gateway）は run_id のみを受ける live active 用 API に留め、terminal run の状態取得は controller 側で `worktree_path` 認可を通る `get_workflow_run_state` に寄せる。
 
 この方針により「terminal run の本体が常駐し続けない」かつ「履歴問い合わせ・active run 進行という外部観測可能な振る舞いが不変」を両立する。
@@ -96,7 +96,7 @@ Run Store schema と永続化ファイル配置は変更しない。Event Log sc
 
 1. step / abort / state 設定の各経路で terminal status を確定。
 2. required event を append commit（既存）。Aborted run では、commit 前に中断 step の snapshot を作成し、`RunAborted.aborted_step` として append する。
-3. step session release・`session_workflow_refs` cleanup（既存）。
+3. step session release・Session 逆引き cleanup（既存）。
 4. broadcast 用 snapshot を取得済みの状態で `broadcast_state`（既存）。
 5. **（追加）`release_terminal_execution(run_id)` を呼び、map から本体を除去。**
 
@@ -111,7 +111,7 @@ Run Store schema と永続化ファイル配置は変更しない。Event Log sc
 ### 競合・並列
 
 - terminal 化と状態問い合わせがほぼ同時の場合: map 取得が削除前なら live 値、削除後なら再構築値を返す。いずれも同一の terminal 状態であり不整合は生じない（behavior: terminal 化直後の状態問い合わせで不整合が生じない）。
-- 複数 run の並列 terminal 化: 削除は run_id 単位で独立。`cleanup_session_workflow_refs_by_run_id` も run_id 主語のため他 run の refs を巻き込まない。active run の進行は他 run の解放の影響を受けない。
+- 複数 run の並列 terminal 化: 削除は run_id 単位で独立。Session 逆引き cleanup も run_id 主語のため他 run の refs を巻き込まない。active run の進行は他 run の解放の影響を受けない。
 - terminal run の後からの再開（CLI dispatch `ensure_execution_loaded_for_external`）: 当該経路は `validate_run_record_for_external_restore` で terminal run を `InvalidState("already terminal")` として拒否する（実装確認済み）。したがって即時解放した terminal run が CLI dispatch 経由で map へ恒久再挿入されることはなく、解放方針と整合する。
 
 ## エラー処理

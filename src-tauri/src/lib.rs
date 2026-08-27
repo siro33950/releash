@@ -776,7 +776,9 @@ pub fn run() {
             let agent_session_exit = agent_sessions.exit.clone();
             let provider_availability = agent_sessions.availability_reader.clone();
             let provider_lifecycle_ingress = agent_sessions.lifecycle_ingress.clone();
-            let provider_workflow_stops = agent_sessions.workflow_stops.clone();
+            let provider_execution_tree_stops = agent_sessions.execution_tree_stops.clone();
+            let started_execution_tree_registrations =
+                agent_sessions.execution_tree_registrations.clone();
             terminal_surface_runtime
                 .bind_agent_session_activity(agent_sessions.activity.clone());
             let provider_agent_terminal_events = terminal_surface.subscribe_events();
@@ -1003,7 +1005,8 @@ pub fn run() {
                     workflow_runtime_usecase.clone(),
                 ),
             ));
-            provider_workflow_stops.bind(workflow_runtime_usecase.clone());
+            provider_execution_tree_stops.bind(workflow_runtime_usecase.clone());
+            started_execution_tree_registrations.bind(workflow_runtime_usecase.clone());
             let pending_workflow_recovery = workflow_runtime_usecase.clone();
             tauri::async_runtime::spawn(async move {
                 run_startup_recovery(
