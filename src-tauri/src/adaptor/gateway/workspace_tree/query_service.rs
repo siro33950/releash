@@ -299,6 +299,7 @@ fn project_tree(
     fn node_dto(
         node: &WorkspaceTreeNode,
         public_id: String,
+        public_title: String,
         workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
         session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
         by_id: &HashMap<&str, &WorkspaceTreeNode>,
@@ -307,11 +308,11 @@ fn project_tree(
             .past_attempt_ids
             .iter()
             .filter_map(|id| by_id.get(id.as_str()).copied())
-            .map(|past| node_dto(past, past.id.clone(), None, None, by_id))
+            .map(|past| node_dto(past, past.id.clone(), past.title.clone(), None, None, by_id))
             .collect::<Vec<_>>();
         WorkspaceNodeDto {
             id: public_id,
-            title: node.title.clone(),
+            title: public_title,
             status: node.status_classification.as_public_str().to_string(),
             error_reason: node.error_reason.clone(),
             content_kind: if node.kind == WorkspaceNodeKind::WorkflowCommand {
@@ -335,6 +336,7 @@ fn project_tree(
     #[derive(Clone)]
     struct RootProjection {
         public_id: String,
+        public_title: String,
         workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
         session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
     }
@@ -351,6 +353,7 @@ fn project_tree(
                 root.node().id.as_str(),
                 RootProjection {
                     public_id: root.public_id().to_string(),
+                    public_title: root.public_title().to_string(),
                     workflow_capabilities: is_workflow.then(|| workflow_capabilities(root.owner())),
                     session_capabilities: root_session.map(|session| {
                         WorkspaceSessionCapabilitiesDto {
@@ -384,7 +387,8 @@ fn project_tree(
                     let root = root_projections.get(node.id.as_str());
                     vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
-                        title: node.title.clone(),
+                        title: root
+                            .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
                         status: node.status_classification.as_public_str().to_string(),
                         workflow_capabilities: root
                             .and_then(|root| root.workflow_capabilities.clone()),
@@ -396,7 +400,8 @@ fn project_tree(
                     let root = root_projections.get(node.id.as_str());
                     vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
-                        title: node.title.clone(),
+                        title: root
+                            .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
                         status: node.status_classification.as_public_str().to_string(),
                         workflow_capabilities: root
                             .and_then(|root| root.workflow_capabilities.clone()),
@@ -409,6 +414,7 @@ fn project_tree(
                     vec![WorkspaceTreeItemDto::Node(node_dto(
                         node,
                         root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
+                        root.map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
                         root.and_then(|root| root.workflow_capabilities.clone()),
                         root.and_then(|root| root.session_capabilities.clone()),
                         by_id,

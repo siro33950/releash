@@ -46,6 +46,10 @@ impl<'a> WorkspacePublicRoot<'a> {
             .expect("a Workflow root owner must have an execution id")
     }
 
+    pub fn public_title(&self) -> &'a str {
+        self.owner.title.as_str()
+    }
+
     fn from_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Option<Self> {
         owner.execution_id.as_ref()?;
         let node = nodes
@@ -222,5 +226,33 @@ mod tests {
 
         assert_eq!(by_execution, by_node);
         assert!(WorkspacePublicRoot::for_node(&nodes, "child").is_none());
+    }
+
+    #[test]
+    fn test_public_root表示名_public_root_nodeではなくownerのtitleを返す() {
+        // Given
+        let mut owner = node(
+            "owner",
+            None,
+            0,
+            WorkspaceNodeKind::Workflow,
+            Some("execution"),
+        );
+        owner.title = "01_author-spec".to_string();
+        let mut public_root = node(
+            "root",
+            Some("owner"),
+            0,
+            WorkspaceNodeKind::Sequence,
+            Some("execution"),
+        );
+        public_root.title = "main".to_string();
+        let nodes = vec![owner, public_root];
+
+        // When
+        let public_root = WorkspacePublicRoot::for_execution(&nodes, "execution").unwrap();
+
+        // Then
+        assert_eq!(public_root.public_title(), "01_author-spec");
     }
 }
