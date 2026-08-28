@@ -147,7 +147,6 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 - `git2` の `UnbornBranch`: `repo.head()` が `ErrorCode::UnbornBranch` を返す場合の分岐が要る。
 - `git apply --cached`: パッチのベースはステージング状態にする。HEAD ベースだとコンテキストが一致しない。
 - worktree をリポジトリルート内に作らない。Biome が nested config で失敗する。
-- `docs/specs` は `.gitignore` に入っているが、既存のファイルは tracked のまま残っている。新規に作った spec だけが ignore される。
 
 ## レビュー観点
 
