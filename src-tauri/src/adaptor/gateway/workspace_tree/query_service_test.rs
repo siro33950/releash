@@ -10,7 +10,7 @@ use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowExecutionArchiveSnapshot,
-    WorkflowExecutionId,
+    WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
 };
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
@@ -45,6 +45,44 @@ impl WorkflowExecutionArchiveRepository for EmptyArchives {
         Ok(WorkflowExecutionArchiveSnapshot {
             records: Vec::new(),
         })
+    }
+}
+
+struct ArchivedExecution {
+    execution_id: String,
+    archived_at: f64,
+}
+
+impl WorkflowExecutionArchiveRepository for ArchivedExecution {
+    fn archive_manual(
+        &self,
+        _execution_id: &WorkflowExecutionId,
+        _archived_at: f64,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn restore_manual(
+        &self,
+        _execution_id: &WorkflowExecutionId,
+        _restored_at: f64,
+    ) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
+    fn manual_archive_snapshot_for(
+        &self,
+        execution_ids: &[String],
+    ) -> Result<WorkflowExecutionArchiveSnapshot, WorkflowError> {
+        let records = execution_ids
+            .contains(&self.execution_id)
+            .then(|| WorkflowExecutionManualArchiveRecord {
+                execution_id: self.execution_id.clone(),
+                archived_at: self.archived_at,
+            })
+            .into_iter()
+            .collect();
+        Ok(WorkflowExecutionArchiveSnapshot { records })
     }
 }
 
@@ -164,6 +202,153 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
         WorkspaceTreeItemDto::Node(node) if node.id == "standalone-session"
     ));
 }
+
+#[test]
+fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名が一致する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let execution_id = "00000000-0000-4000-8000-000000001662";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "01_author-spec",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: execution_id,
+            node_execution_id: "workflow-node",
+            session_id: "workflow-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let tree_query =
+        SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
+    let history_query = SqliteWorkspaceQueryService::with_repository(
+        repository,
+        Arc::new(ArchivedExecution {
+            execution_id: execution_id.to_string(),
+            archived_at: 10.0,
+        }),
+    );
+
+    // When
+    let snapshot = tree_query
+        .workspace_tree(&WorkspaceIdentity::new("/repo"))
+        .unwrap();
+    let history = history_query
+        .workflow_history(&WorkspaceIdentity::new("/repo"))
+        .unwrap();
+    let tree_json = serde_json::to_value(snapshot.nodes).unwrap();
+    let tree_title = tree_json[0]["title"].as_str().unwrap();
+
+    // Then
+    assert_eq!(tree_title, "01_author-spec");
+    assert_ne!(tree_title, "main");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].execution_id, execution_id);
+    assert_eq!(history[0].title, tree_title);
+}
+
+#[tokio::test]
+async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表示名はsessionを保つ() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("/repo");
+    let execution_id = "standalone-session";
+    LocalAgentSessionRepository::new(store.clone())
+        .create(
+            AgentSession::create(
+                execution_id,
+                workspace.clone(),
+                workspace.as_str(),
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(execution_id).unwrap(),
+            )
+            .unwrap(),
+            "standalone-create",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+
+    // When
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let detail = query
+        .node_detail(&workspace, execution_id)
+        .unwrap()
+        .unwrap();
+    let tree_json = serde_json::to_value(snapshot.nodes).unwrap();
+
+    // Then
+    assert_eq!(tree_json[0]["title"], "session");
+    assert_eq!(detail.title, "session");
+}
+
+#[test]
+fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitleを保つ() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("/repo");
+    let execution_id = "00000000-0000-4000-8000-000000001663";
+    let child_execution_id = "workflow-node";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "01_author-spec",
+            request: "test",
+            worktree_path: workspace.as_str(),
+            provider: ProviderKind::Codex,
+            workflow_execution_id: execution_id,
+            node_execution_id: child_execution_id,
+            session_id: "workflow-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query =
+        SqliteWorkspaceQueryService::with_repository(repository.clone(), Arc::new(EmptyArchives));
+    let root_node = repository
+        .load_node(&workspace, execution_id)
+        .unwrap()
+        .unwrap();
+    let child_node = repository
+        .load_node_by_node_execution_id(child_execution_id)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let root_detail = query
+        .node_detail(&workspace, execution_id)
+        .unwrap()
+        .unwrap();
+    let child_detail = query
+        .node_detail(&workspace, &child_node.id)
+        .unwrap()
+        .unwrap();
+
+    // Then
+    assert_eq!(root_node.title, "main");
+    assert_eq!(root_detail.title, root_node.title);
+    assert_eq!(child_node.title, "impl");
+    assert_eq!(child_detail.title, child_node.title);
+}
+
 fn node() -> WorkspaceTreeNode {
     WorkspaceTreeNode {
         id: "node".to_string(),
@@ -213,6 +398,12 @@ fn tree_owner(execution_id: &str) -> WorkspaceTreeNode {
     owner.can_approve = false;
     owner.can_stop = true;
     owner.can_abort = true;
+    owner
+}
+
+fn tree_owner_with_title(execution_id: &str, title: &str) -> WorkspaceTreeNode {
+    let mut owner = tree_owner(execution_id);
+    owner.title = title.to_string();
     owner
 }
 
@@ -332,6 +523,7 @@ fn standalone_session_is_a_public_node_root_with_backend_lifecycle_capabilities(
     assert_eq!(json[0]["contentKind"], "session");
     assert_eq!(json[0]["sessionCapabilities"]["sessionRef"], "session-ref");
     assert_eq!(json[0]["sessionCapabilities"]["canArchive"], true);
+    assert_eq!(json[0]["sessionCapabilities"]["canDelete"], false);
     assert!(json[0]["workflowCapabilities"].is_null());
 }
 
@@ -359,6 +551,170 @@ fn leaf_workflow_root_keeps_workflow_capabilities_on_the_node() {
     assert_eq!(json[0]["kind"], "node");
     assert_eq!(json[0]["id"], execution_id);
     assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
+}
+
+fn assert_public_root_title(kind: WorkspaceNodeKind) {
+    // Given
+    let execution_id = "workflow-execution";
+    let owner = tree_owner_with_title(execution_id, "01_author-spec");
+    let public_root = child_node("root", execution_id, execution_id, kind, "main");
+    let tree = WorkspaceTree::restore("/repo", vec![owner, public_root]).unwrap();
+
+    // When
+    let json = serde_json::to_value(project_tree(
+        &tree,
+        &HashSet::new(),
+        &HashSet::from([execution_id.to_string()]),
+        &[],
+    ))
+    .unwrap();
+
+    // Then
+    assert_eq!(json[0]["title"], "01_author-spec");
+    assert_ne!(json[0]["title"], "main");
+}
+
+#[test]
+fn test_workspaceツリー投影_sequenceのpublic_root表示名にworkflow名を返す() {
+    assert_public_root_title(WorkspaceNodeKind::Sequence);
+}
+
+#[test]
+fn test_workspaceツリー投影_fanoutのpublic_root表示名にworkflow名を返す() {
+    assert_public_root_title(WorkspaceNodeKind::Fanout);
+}
+
+#[test]
+fn test_workspaceツリー投影_sessionのpublic_root表示名にworkflow名を返す() {
+    assert_public_root_title(WorkspaceNodeKind::WorkflowSession);
+}
+
+#[test]
+fn test_workspaceツリー投影_commandのpublic_root表示名にworkflow名を返す() {
+    assert_public_root_title(WorkspaceNodeKind::WorkflowCommand);
+}
+
+#[test]
+fn test_workspaceツリー投影_異なるworkflow名の複数実行を表示名で判別できる() {
+    // Given
+    let execution_a = "execution-a";
+    let execution_b = "execution-b";
+    let owner_a = tree_owner_with_title(execution_a, "01_author-spec");
+    let owner_b = tree_owner_with_title(execution_b, "03_full-review");
+    let root_a = child_node(
+        "root-a",
+        execution_a,
+        execution_a,
+        WorkspaceNodeKind::Sequence,
+        "main",
+    );
+    let root_b = child_node(
+        "root-b",
+        execution_b,
+        execution_b,
+        WorkspaceNodeKind::Sequence,
+        "main",
+    );
+    let tree = WorkspaceTree::restore("/repo", vec![owner_a, root_a, owner_b, root_b]).unwrap();
+
+    // When
+    let json = serde_json::to_value(project_tree(
+        &tree,
+        &HashSet::new(),
+        &HashSet::from([execution_a.to_string(), execution_b.to_string()]),
+        &[],
+    ))
+    .unwrap();
+
+    // Then
+    let row_a = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == execution_a)
+        .unwrap();
+    let row_b = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == execution_b)
+        .unwrap();
+    assert_eq!(row_a["title"], "01_author-spec");
+    assert_eq!(row_b["title"], "03_full-review");
+    assert_ne!(row_a["title"], row_b["title"]);
+}
+
+#[test]
+fn test_workspaceツリー投影_public_root以外はnode名を表示名に保つ() {
+    // Given
+    let execution_id = "workflow-execution";
+    let owner = tree_owner_with_title(execution_id, "01_author-spec");
+    let public_root = child_node(
+        "root",
+        execution_id,
+        execution_id,
+        WorkspaceNodeKind::Sequence,
+        "main",
+    );
+    let child_sequence = child_node(
+        "child-sequence",
+        "root",
+        execution_id,
+        WorkspaceNodeKind::Sequence,
+        "prepare",
+    );
+    let mut child_fanout = child_node(
+        "child-fanout",
+        "root",
+        execution_id,
+        WorkspaceNodeKind::Fanout,
+        "reviews",
+    );
+    child_fanout.sibling_order = 1;
+    let mut child_session = child_node(
+        "child-session",
+        "root",
+        execution_id,
+        WorkspaceNodeKind::WorkflowSession,
+        "author",
+    );
+    child_session.sibling_order = 2;
+    let mut child_command = child_node(
+        "child-command",
+        "root",
+        execution_id,
+        WorkspaceNodeKind::WorkflowCommand,
+        "lint",
+    );
+    child_command.sibling_order = 3;
+    let tree = WorkspaceTree::restore(
+        "/repo",
+        vec![
+            owner,
+            public_root,
+            child_sequence,
+            child_fanout,
+            child_session,
+            child_command,
+        ],
+    )
+    .unwrap();
+
+    // When
+    let json = serde_json::to_value(project_tree(
+        &tree,
+        &HashSet::new(),
+        &HashSet::from([execution_id.to_string()]),
+        &[],
+    ))
+    .unwrap();
+
+    // Then
+    assert_eq!(json[0]["title"], "01_author-spec");
+    assert_eq!(json[0]["children"][0]["title"], "prepare");
+    assert_eq!(json[0]["children"][1]["title"], "reviews");
+    assert_eq!(json[0]["children"][2]["title"], "author");
+    assert_eq!(json[0]["children"][3]["title"], "lint");
 }
 
 #[test]
