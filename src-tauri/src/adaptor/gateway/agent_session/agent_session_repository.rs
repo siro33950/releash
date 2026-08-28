@@ -32,8 +32,8 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::{
-    ExecutionTreeLaunch, NodeFact, NodeFactRecord, ProcessExitedFact, SessionAttachedFact,
-    SessionExecutionTreeRootFacts,
+    AgentActivityObservedFact, ExecutionTreeLaunch, NodeFact, NodeFactRecord, ProcessExitedFact,
+    SessionAttachedFact, SessionExecutionTreeRootFacts,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
@@ -140,6 +140,11 @@ impl LocalAgentSessionRepository {
                     ),
                     AgentSessionLifecycle::Archived => NodeFact::ArchiveRequested,
                 },
+                AgentSessionLifecycleEvent::ActivityObserved { activity } => {
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: *activity,
+                    })
+                }
             };
             let pending = fact_log::pending_single_fact(&meta, &fact, timestamp_ms)
                 .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
@@ -470,6 +475,33 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         derive_session(session_id, &location, &records).map(Some)
     }
 
+    async fn find_for_activity(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError> {
+        if session_id.trim().is_empty() {
+            return Err(AgentSessionRepositoryError::InvalidRequest);
+        }
+        let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
+        let Some(attachment) = fact_log::find_session_attachment_record(&backend, session_id)
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        let location = SessionLocation::from_meta(&attachment.meta);
+        let root = fact_log::read_tree_root_from(&backend, &location.tree_id)
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .ok_or(AgentSessionRepositoryError::Corrupt)?;
+        let activity =
+            fact_log::read_latest_activity_record_for_node(&backend, &location.node_execution_id)
+                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+        let mut records = vec![root, attachment];
+        records.extend(activity);
+        records.sort_by_key(|record| record.seq);
+        records.dedup_by_key(|record| record.seq);
+        derive_session(session_id, &location, &records).map(Some)
+    }
+
     async fn save(
         &self,
         session: VersionedAgentSession,
@@ -477,6 +509,44 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         self.commit_session_started(session, Vec::new(), caller_request_id)
             .await
+    }
+
+    async fn save_activity(
+        &self,
+        session: VersionedAgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        if caller_request_id.trim().is_empty() {
+            return Err(AgentSessionRepositoryError::InvalidRequest);
+        }
+        let previous_revision = session.revision();
+        let mut session = session.into_session();
+        let pending = session.take_uncommitted_events();
+        if !matches!(
+            pending.as_slice(),
+            [AgentSessionLifecycleEvent::ActivityObserved { .. }]
+        ) {
+            return Err(AgentSessionRepositoryError::InvalidRequest);
+        }
+        let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
+        let attachment = fact_log::find_session_attachment_record(&backend, session.id())
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .ok_or(AgentSessionRepositoryError::Conflict)?;
+        let location = SessionLocation::from_meta(&attachment.meta);
+        let rows = self.session_event_rows(&location, session.id(), &session, &pending, None)?;
+        self.commit_provider_batch(
+            session.id(),
+            Vec::new(),
+            None,
+            rows,
+            caller_request_id,
+            "activity",
+        )
+        .await?;
+        Ok(VersionedAgentSession::restored(
+            session,
+            previous_revision.saturating_add(1),
+        ))
     }
 
     async fn remove(
@@ -759,7 +829,7 @@ fn derive_session(
         let _ = session.admit_initial_instruction();
         session.take_uncommitted_events();
     }
-    session.restore_derived_lifecycle(lifecycle, view.last_exit_abnormal);
+    session.restore_derived_lifecycle(lifecycle, view.last_exit_abnormal, view.activity);
     let revision = records.last().map(|record| record.seq).unwrap_or(0);
     let revision = u64::try_from(revision).map_err(|_| AgentSessionRepositoryError::Corrupt)?;
     Ok(VersionedAgentSession::restored(session, revision))

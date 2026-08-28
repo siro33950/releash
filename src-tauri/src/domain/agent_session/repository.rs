@@ -58,11 +58,26 @@ pub trait AgentSessionRepository: Send + Sync {
         session_id: &str,
     ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError>;
 
+    async fn find_for_activity(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<VersionedAgentSession>, AgentSessionRepositoryError> {
+        self.find(session_id).await
+    }
+
     async fn save(
         &self,
         session: VersionedAgentSession,
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError>;
+
+    async fn save_activity(
+        &self,
+        session: VersionedAgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        self.save(session, caller_request_id).await
+    }
 
     async fn remove(
         &self,

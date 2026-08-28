@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
-use crate::usecase::agent_session::AgentSessionReadUsecase;
 use crate::usecase::workflow::{
     ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
     WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
@@ -44,23 +43,16 @@ pub(crate) fn invoke_handler(
 #[tauri::command]
 pub async fn list_workspace_worktree_nodes(
     app_state: State<'_, AppState>,
-    agent_sessions: State<'_, Arc<AgentSessionReadUsecase>>,
     worktree_path: String,
 ) -> Result<WorkspaceTreeSnapshotDto, String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
-    let mut nodes = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         workflow_usecase
             .list_workspace_tree_nodes(&worktree_path)
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
-    nodes.archived_sessions = nodes
-        .archived_sessions
-        .into_iter()
-        .map(|item| agent_sessions.with_activity(item))
-        .collect();
-    Ok(nodes)
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]

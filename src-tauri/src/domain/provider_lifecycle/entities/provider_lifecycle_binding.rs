@@ -135,6 +135,11 @@ impl ProviderLifecycleBinding {
                 transcript_ref,
                 reason,
             } => self.observe_stop_failure(provider_session_id, transcript_ref, reason),
+            ProviderLifecycleSignalKind::ActivityObserved {
+                provider_session_id,
+                transcript_ref,
+                activity: _,
+            } => self.observe_activity(provider_session_id, transcript_ref),
         }
     }
 
@@ -242,6 +247,21 @@ impl ProviderLifecycleBinding {
             reason,
         });
         ProviderLifecycleOutcome::Applied(events)
+    }
+
+    fn observe_activity(
+        &mut self,
+        provider_session_id: String,
+        transcript_ref: Option<String>,
+    ) -> ProviderLifecycleOutcome {
+        if let Err(rejection) = self.ensure_session(&provider_session_id) {
+            return ProviderLifecycleOutcome::Rejected(rejection);
+        }
+        match self.transcript_events(transcript_ref) {
+            Ok(events) if events.is_empty() => ProviderLifecycleOutcome::Duplicate,
+            Ok(events) => ProviderLifecycleOutcome::Applied(events),
+            Err(rejection) => ProviderLifecycleOutcome::Rejected(rejection),
+        }
     }
 
     fn ensure_session(&self, provider_session_id: &str) -> Result<(), ProviderLifecycleRejection> {

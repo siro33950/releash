@@ -533,7 +533,6 @@ mod tests {
                     can_delete: false,
                     can_resume: false,
                 },
-                activity: crate::usecase::agent_session::AgentSessionActivityDto::Idle,
                 last_exit_abnormal: false,
             }),
         )

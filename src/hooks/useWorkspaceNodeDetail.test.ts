@@ -116,7 +116,9 @@ describe("useWorkspaceNodeDetail", () => {
 			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
 		);
 
-		await waitFor(() => expect(mockListen).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1),
+		);
 		expect(mockInvoke).not.toHaveBeenCalled();
 
 		currentDetail = detailWithSession(
@@ -151,6 +153,63 @@ describe("useWorkspaceNodeDetail", () => {
 		await waitFor(() =>
 			expect(result.current.detail?.title).toBe("workflow refresh"),
 		);
+	});
+
+	it("reloads for a matching agent session event", async () => {
+		responses.push(detail("node", "first"), detail("node", "activity refresh"));
+		const { result } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("first"));
+		await waitFor(() =>
+			expect(listeners["agent-session-changed"]?.length).toBe(1),
+		);
+
+		act(() => {
+			listeners["agent-session-changed"][0]({
+				payload: { worktreePath: "/repo" } as never,
+			});
+		});
+
+		await waitFor(() =>
+			expect(result.current.detail?.title).toBe("activity refresh"),
+		);
+	});
+
+	it("reloads for an unscoped agent session event", async () => {
+		responses.push(detail("node", "first"), detail("node", "unscoped refresh"));
+		const { result } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("first"));
+
+		act(() => {
+			listeners["agent-session-changed"][0]({ payload: {} as never });
+		});
+
+		await waitFor(() =>
+			expect(result.current.detail?.title).toBe("unscoped refresh"),
+		);
+	});
+
+	it("does not reload for an agent session event from another Worktree", async () => {
+		responses.push(detail("node", "first"), detail("node", "unexpected"));
+		const { result } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("first"));
+
+		act(() => {
+			listeners["agent-session-changed"][0]({
+				payload: { worktreePath: "/other" } as never,
+			});
+		});
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(result.current.detail?.title).toBe("first");
 	});
 
 	it("keeps current detail during background refresh", async () => {

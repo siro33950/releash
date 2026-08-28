@@ -588,6 +588,30 @@ mod mapping_tests {
     }
 
     #[test]
+    fn test_写像_sessionのruntime失敗はprocess_exitと別の事実になる() {
+        let events = vec![
+            node_started("s-exec", "agent", NodeKindName::Session, None, 1.0),
+            WorkflowEvent::NodeFailed {
+                execution_id: TREE.to_string(),
+                node_execution_id: "s-exec".to_string(),
+                node_name: "agent".to_string(),
+                attempt: 1,
+                reason: "activation failed".to_string(),
+                failure_kind:
+                    crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+                retry_count: None,
+                timestamp: 2.0,
+            },
+        ];
+
+        let rows = fact_rows_for_events(&events, no_lookup, no_lookup).unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].row.event_type, "runtime_failure_observed");
+        assert!(rows[1].row.detail.contains("activation failed"));
+    }
+
+    #[test]
     fn test_写像_合成子の成果と完了は行にならない() {
         let events = vec![
             node_started("fan-exec", "main", NodeKindName::Fanout, None, 1.0),
@@ -960,10 +984,10 @@ mod reconciliation_tests {
         assert_eq!(row_count(&store), count_after_third);
     }
 
-    /// kill 点: 実行中プロセスごと落ちた場合。喪失の観測が追記され Paused が
+    /// kill 点: 実行中プロセスごと落ちた場合。喪失の観測が追記され Failed が
     /// 導出される（復旧専用の遷移イベントは書かれない）。
     #[test]
-    fn test_再入_実行中プロセスの喪失を観測として追記しpausedを導出する() {
+    fn test_再入_実行中プロセスの喪失を観測として追記しfailedを導出する() {
         let (_root, store) = open_store();
         append_facts_for_events(
             &store,
@@ -992,7 +1016,7 @@ mod reconciliation_tests {
             .unwrap()
             .unwrap();
 
-        // Then: process_exited（喪失）が追記され、node は Paused・木は Running
+        // Then: process_exited（喪失）が追記され、node は Failed・木は Running
         assert!(outcome.leaves.is_empty());
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.last().unwrap().fact.event_type(), "process_exited");
@@ -1002,14 +1026,14 @@ mod reconciliation_tests {
                 .aggregate
                 .node_execution("a-exec")
                 .map(|node| node.status),
-            Some(RuntimeNodeExecutionStatus::Paused)
+            Some(RuntimeNodeExecutionStatus::Failed)
         );
         assert_eq!(
             *outcome.folded.aggregate.state(),
             RuntimeExecutionState::Running
         );
 
-        // 冪等: Paused は喪失対象でないため2周目は何も追記しない
+        // 冪等: Failed は喪失対象でないため2周目は何も追記しない
         let count = row_count(&store);
         let mut new_id = test_id_source();
         reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)

@@ -1,13 +1,8 @@
 use std::sync::Arc;
 
-use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
-use crate::domain::terminal_surface::{TerminalActivity, TerminalSurfaceOwner};
-use crate::domain::workspace_tree::WorkspaceIdentity;
-
 use super::{
-    AgentSessionActivityDto, AgentSessionGarbageCollectionOutcome, AgentSessionItemDto,
-    AgentSessionLifecycleDto, AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError,
-    AgentSessionQueryError, AgentSessionQueryService,
+    AgentSessionGarbageCollectionOutcome, AgentSessionItemDto, AgentSessionLifecycleUsecase,
+    AgentSessionLifecycleUsecaseError, AgentSessionQueryError, AgentSessionQueryService,
 };
 
 #[async_trait::async_trait]
@@ -46,19 +41,16 @@ pub(crate) enum AgentSessionReadUsecaseError {
 pub(crate) struct AgentSessionReadUsecase {
     query: Arc<dyn AgentSessionQueryService>,
     garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
-    terminal: Arc<dyn ProviderAgentTerminalObservationGateway>,
 }
 
 impl AgentSessionReadUsecase {
     pub(crate) fn new(
         query: Arc<dyn AgentSessionQueryService>,
         garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
-        terminal: Arc<dyn ProviderAgentTerminalObservationGateway>,
     ) -> Self {
         Self {
             query,
             garbage_collection,
-            terminal,
         }
     }
 
@@ -79,41 +71,15 @@ impl AgentSessionReadUsecase {
             .reconcile_garbage_collection(agent_session_id, &gc_request_id())
             .await
         {
-            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {
-                Ok(Some(self.with_activity(item)))
-            }
+            Ok(AgentSessionGarbageCollectionOutcome::Retained) => Ok(Some(item)),
             Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
             | Err(AgentSessionLifecycleUsecaseError::NotFound) => Ok(self
                 .query
                 .get(agent_session_id)
                 .await
-                .map_err(map_query_error)?
-                .map(|item| self.with_activity(item))),
+                .map_err(map_query_error)?),
             Err(error) => Err(map_lifecycle_error(error)),
         }
-    }
-
-    /// open の session は terminal gateway の activity 分類を参照する。
-    /// paused / archived は常に idle。
-    pub(crate) fn with_activity(&self, mut item: AgentSessionItemDto) -> AgentSessionItemDto {
-        item.activity = match item.lifecycle {
-            AgentSessionLifecycleDto::Open => {
-                match TerminalSurfaceOwner::session(
-                    WorkspaceIdentity::new(item.workspace_identity.clone()),
-                    &item.id,
-                ) {
-                    Ok(owner) => match self.terminal.session_activity(&owner) {
-                        TerminalActivity::Running => AgentSessionActivityDto::Running,
-                        TerminalActivity::Idle => AgentSessionActivityDto::Idle,
-                    },
-                    Err(_) => AgentSessionActivityDto::Idle,
-                }
-            }
-            AgentSessionLifecycleDto::Paused | AgentSessionLifecycleDto::Archived => {
-                AgentSessionActivityDto::Idle
-            }
-        };
-        item
     }
 }
 

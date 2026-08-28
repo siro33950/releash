@@ -274,6 +274,25 @@ async fn emit_provider_stop(
     .await;
 }
 
+async fn emit_provider_working(
+    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    terminal: &mut TerminalSurfaceWireAttachment,
+    owner: &TerminalSurfaceOwnerV1,
+    provider_session_id: &str,
+) {
+    send_hook(
+        host,
+        terminal,
+        owner,
+        serde_json::json!({
+            "session_id": provider_session_id,
+            "transcript_path": format!("provider://fixture/{provider_session_id}"),
+            "hook_event_name": "UserPromptSubmit"
+        }),
+    )
+    .await;
+}
+
 async fn wait_for_node_count(
     host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
     execution_id: &str,
@@ -346,8 +365,7 @@ enum SignalOrder {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_workflow_terminal_spawn失敗を実行収束経路からprocess_exited_failure_reasonへ保存する()
-{
+async fn test_workflow_terminal_spawn失敗を実行収束経路からruntime_failureへ保存する() {
     // Given
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("terminal-spawn-failure-worktree");
@@ -360,12 +378,12 @@ async fn test_workflow_terminal_spawn失敗を実行収束経路からprocess_ex
         .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
         .await
         .unwrap();
-    let process_exited = tokio::time::timeout(Duration::from_secs(10), async {
+    let runtime_failure = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let events = host.workflow_log(&execution_id).await.unwrap();
             if let Some(event) = events
                 .into_iter()
-                .find(|event| event["event"] == "process_exited")
+                .find(|event| event["event"] == "runtime_failure_observed")
             {
                 return event;
             }
@@ -373,11 +391,11 @@ async fn test_workflow_terminal_spawn失敗を実行収束経路からprocess_ex
         }
     })
     .await
-    .expect("ProcessExitedFact must be appended");
+    .expect("RuntimeFailureObservedFact must be appended");
 
     // Then
-    assert_eq!(process_exited["kind"], "session");
-    let failure_reason = process_exited["failureReason"].as_str().unwrap();
+    assert_eq!(runtime_failure["kind"], "session");
+    let failure_reason = runtime_failure["reason"].as_str().unwrap();
     assert!(failure_reason.contains("workflow runtime activation failed"));
     assert!(failure_reason.contains("activate Workflow AgentSession 'agent-session-"));
     assert!(failure_reason.contains("kind=per_worktree_cap"));
@@ -823,7 +841,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
         assert_eq!(
             recovered.node_executions[0].status,
             match signal {
-                SignalOrder::SubmitThenStop => AcceptanceNodeExecutionStatus::Paused,
+                SignalOrder::SubmitThenStop => AcceptanceNodeExecutionStatus::Failed,
                 SignalOrder::StopThenSubmit => AcceptanceNodeExecutionStatus::Running,
             }
         );
@@ -1140,6 +1158,181 @@ async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届
             .filter(|event| event.as_str() == "process_exited")
             .count(),
         process_exited_count
+    );
+
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの分類と事実を更新する() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("repeated-stop-activity");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 8);
+    let execution_id = host
+        .start_auto_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let running = wait_for_node_count(&host, &execution_id, 1).await;
+    let node = running.node_executions[0].clone();
+    let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
+    let mut terminal = host
+        .terminal()
+        .attach(
+            "issue-1700-repeated-stop".to_string(),
+            terminal_owner.clone(),
+        )
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1700-repeated-stop",
+    )
+    .await;
+
+    for expected_stop_count in 1..=3 {
+        emit_provider_working(
+            &host,
+            &mut terminal,
+            &terminal_owner,
+            "provider-issue-1700-repeated-stop",
+        )
+        .await;
+        assert_eq!(
+            host.workspace_node_status(&node.id).unwrap(),
+            Some(AcceptanceWorkspaceNodeStatus::Active)
+        );
+        assert_eq!(
+            host.workspace_node_detail_status(&worktree, &node.id)
+                .unwrap()
+                .as_deref(),
+            Some("active")
+        );
+
+        emit_provider_stop(
+            &host,
+            &mut terminal,
+            &terminal_owner,
+            "provider-issue-1700-repeated-stop",
+        )
+        .await;
+        let after_stop = host.execution(&execution_id).await.unwrap().unwrap();
+        assert_eq!(
+            after_stop.node_executions[0].status,
+            AcceptanceNodeExecutionStatus::Running
+        );
+        assert!(after_stop.node_executions[0].stop_received);
+        assert!(!after_stop.node_executions[0].submit_received);
+        assert_eq!(
+            host.workspace_node_status(&node.id).unwrap(),
+            Some(AcceptanceWorkspaceNodeStatus::Attention)
+        );
+        assert_eq!(
+            host.workspace_node_detail_status(&worktree, &node.id)
+                .unwrap()
+                .as_deref(),
+            Some("attention")
+        );
+        assert_eq!(
+            host.execution_fact_event_types(&execution_id)
+                .unwrap()
+                .iter()
+                .filter(|event| event.as_str() == "stop_received")
+                .count(),
+            expected_stop_count
+        );
+    }
+
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattentionへ戻す() {
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("waiting-approval-repeated-stop");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 5);
+    let execution_id = host
+        .start_approval_workflow(&worktree, AcceptanceProvider::Claude)
+        .await
+        .unwrap();
+    let running = wait_for_node_count(&host, &execution_id, 1).await;
+    let node = running.node_executions[0].clone();
+    let terminal_owner = owner(&worktree, node.agent_session_id.as_deref().unwrap());
+    let mut terminal = host
+        .terminal()
+        .attach(
+            "issue-1700-waiting-approval-stop".to_string(),
+            terminal_owner.clone(),
+        )
+        .unwrap();
+    receive_until(&mut terminal, "releash-fixture-input-complete-0").await;
+    associate_provider_session(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1700-waiting-approval",
+    )
+    .await;
+    host.submit(&node.id).await.unwrap();
+    emit_provider_stop(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1700-waiting-approval",
+    )
+    .await;
+    let waiting = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        waiting.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::WaitingApproval
+    );
+
+    emit_provider_working(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1700-waiting-approval",
+    )
+    .await;
+    assert_eq!(
+        host.workspace_node_status(&node.id).unwrap(),
+        Some(AcceptanceWorkspaceNodeStatus::Active)
+    );
+    emit_provider_stop(
+        &host,
+        &mut terminal,
+        &terminal_owner,
+        "provider-issue-1700-waiting-approval",
+    )
+    .await;
+
+    let after_second_stop = host.execution(&execution_id).await.unwrap().unwrap();
+    assert_eq!(
+        after_second_stop.node_executions[0].status,
+        AcceptanceNodeExecutionStatus::WaitingApproval
+    );
+    assert_eq!(
+        host.workspace_node_status(&node.id).unwrap(),
+        Some(AcceptanceWorkspaceNodeStatus::Attention)
+    );
+    assert_eq!(
+        host.workspace_node_detail_status(&worktree, &node.id)
+            .unwrap()
+            .as_deref(),
+        Some("attention")
+    );
+    assert_eq!(
+        host.execution_fact_event_types(&execution_id)
+            .unwrap()
+            .iter()
+            .filter(|event| event.as_str() == "stop_received")
+            .count(),
+        2
     );
 
     host.shutdown().await.unwrap();

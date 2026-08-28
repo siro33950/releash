@@ -37,17 +37,8 @@ pub(crate) fn locate_session(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<SessionLocation>, String> {
-    let Some((tree_id, node_execution_id)) =
-        fact_log::find_session_attachment(backend, session_id)?
-    else {
+    let Some(record) = fact_log::find_session_attachment_record(backend, session_id)? else {
         return Ok(None);
     };
-    let records = fact_log::read_tree_records_from(backend, &tree_id)?;
-    let Some(row) = records
-        .iter()
-        .find(|record| record.meta.node_execution_id == node_execution_id)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(SessionLocation::from_meta(&row.meta)))
+    Ok(Some(SessionLocation::from_meta(&record.meta)))
 }

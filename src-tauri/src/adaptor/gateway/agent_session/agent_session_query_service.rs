@@ -11,9 +11,9 @@ use crate::domain::agent_session::services::derive_agent_session_fields;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact, NodeFactRecord};
 use crate::usecase::agent_session::{
-    AgentSessionActivityDto, AgentSessionItemDto, AgentSessionLifecycleDto,
-    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionQueryError,
-    AgentSessionQueryService, AgentSessionTreeLocationDto,
+    AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionOperationsDto,
+    AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
+    AgentSessionTreeLocationDto,
 };
 
 /// 統一 Node 事実ログから session を読む query service。
@@ -174,7 +174,6 @@ fn agent_session_item_from_facts(
             can_delete: operations.can_delete,
             can_resume: operations.can_resume,
         },
-        activity: AgentSessionActivityDto::Idle,
         last_exit_abnormal: view.last_exit_abnormal,
     })
 }

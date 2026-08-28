@@ -10,6 +10,10 @@ use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
     ProviderLaunchContext, ProviderLaunchSpec,
 };
+use crate::adaptor::protocol::provider_lifecycle::{
+    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
+    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
+};
 use crate::domain::local_event::{
     LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, LocalEventTransactionRepository,
     StreamId,
@@ -33,6 +37,19 @@ fn test_hook受信_上限を超えるstdinを拒否する() {
             "Provider lifecycle payload exceeds the 65536 byte limit".to_string()
         )
     );
+}
+
+#[test]
+fn test_hook受信_cli入口はpayload不正や配送失敗でも空jsonを返す() {
+    assert_eq!(
+        complete_receive(Err(CliError::InvalidInput("invalid payload".to_string()))).unwrap(),
+        "{}"
+    );
+    assert_eq!(
+        complete_receive(Err(CliError::Other("rejected".to_string()))).unwrap(),
+        "{}"
+    );
+    assert_eq!(complete_receive(Ok("{}".to_string())).unwrap(), "{}");
 }
 
 #[test]
@@ -253,6 +270,20 @@ fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除�
         "slot-1",
     )
     .unwrap();
+    let activity_payload = br#"{
+        "session_id":"claude-session-1",
+        "transcript_path":"provider://claude/transcript",
+        "cwd":"/workspace",
+        "hook_event_name":"PermissionRequest",
+        "tool_name":"Bash"
+    }"#;
+
+    assert_eq!(
+        receive_from(Cursor::new(activity_payload), HookProvider::Claude).unwrap(),
+        "{}"
+    );
+    assert!(marker.exists());
+
     let stop_payload = br#"{
         "session_id":"claude-session-1",
         "transcript_path":"provider://claude/transcript",
@@ -285,5 +316,144 @@ fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除�
         .count();
     assert_eq!(provider_events, 3);
 
+    server.shutdown();
+}
+
+#[test]
+fn test_hook受信_両providerの活動eventを期待するactivityとしてlocal_apiへ送る() {
+    let _lock = TEST_ENV_LOCK.lock();
+    let data = TempDir::new().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let binding = LocalApiServerBinding::bind(data.path().to_path_buf()).unwrap();
+    let requests = Arc::new(std::sync::Mutex::new(
+        Vec::<ProviderLifecycleReceiveRequest>::new(),
+    ));
+    let route_requests = requests.clone();
+    let router = axum::Router::new().route(
+        "/v1/provider-lifecycle/signals",
+        axum::routing::post(
+            move |axum::Json(request): axum::Json<ProviderLifecycleReceiveRequest>| {
+                let route_requests = route_requests.clone();
+                async move {
+                    route_requests.lock().unwrap().push(request);
+                    axum::Json(ProviderLifecycleReceiveResponse::Applied)
+                }
+            },
+        ),
+    );
+    let server = binding.start(router, runtime.handle());
+    let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", data.path());
+    let _slot_id =
+        EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-awaiting-answer");
+    let _binding_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_BINDING_ID",
+        "binding-awaiting-answer",
+    );
+    let _capability = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_CAPABILITY",
+        "capability-awaiting-answer",
+    );
+    let _agent_session_id = EnvVarGuard::set_value(
+        "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID",
+        "agent-session-awaiting-answer",
+    );
+    let cases = [
+        (
+            HookProvider::Claude,
+            ProviderLifecycleProvider::Claude,
+            ProviderActivityRequest::AwaitingAnswer,
+            serde_json::json!({
+                "session_id": "claude-session-1",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash"
+            }),
+        ),
+        (
+            HookProvider::Claude,
+            ProviderLifecycleProvider::Claude,
+            ProviderActivityRequest::AwaitingAnswer,
+            serde_json::json!({
+                "session_id": "claude-session-1",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "AskUserQuestion"
+            }),
+        ),
+        (
+            HookProvider::Codex,
+            ProviderLifecycleProvider::Codex,
+            ProviderActivityRequest::AwaitingAnswer,
+            serde_json::json!({
+                "session_id": "codex-session-1",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash"
+            }),
+        ),
+        (
+            HookProvider::Codex,
+            ProviderLifecycleProvider::Codex,
+            ProviderActivityRequest::AwaitingAnswer,
+            serde_json::json!({
+                "session_id": "codex-session-1",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "request_user_input"
+            }),
+        ),
+        (
+            HookProvider::Claude,
+            ProviderLifecycleProvider::Claude,
+            ProviderActivityRequest::Working,
+            serde_json::json!({
+                "session_id": "claude-session-1",
+                "hook_event_name": "UserPromptSubmit"
+            }),
+        ),
+        (
+            HookProvider::Claude,
+            ProviderLifecycleProvider::Claude,
+            ProviderActivityRequest::Working,
+            serde_json::json!({
+                "session_id": "claude-session-1",
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash"
+            }),
+        ),
+        (
+            HookProvider::Codex,
+            ProviderLifecycleProvider::Codex,
+            ProviderActivityRequest::Working,
+            serde_json::json!({
+                "session_id": "codex-session-1",
+                "hook_event_name": "UserPromptSubmit"
+            }),
+        ),
+        (
+            HookProvider::Codex,
+            ProviderLifecycleProvider::Codex,
+            ProviderActivityRequest::Working,
+            serde_json::json!({
+                "session_id": "codex-session-1",
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash"
+            }),
+        ),
+    ];
+
+    for (provider, _, _, payload) in &cases {
+        assert_eq!(
+            receive_from(Cursor::new(serde_json::to_vec(payload).unwrap()), *provider,).unwrap(),
+            "{}"
+        );
+    }
+
+    let recorded = requests.lock().unwrap();
+    assert_eq!(recorded.len(), cases.len());
+    for (request, (_, expected_provider, expected_activity, _)) in recorded.iter().zip(cases) {
+        assert_eq!(request.provider, expected_provider);
+        let ProviderLifecycleSignalRequest::ActivityObserved { activity, .. } = &request.signal
+        else {
+            panic!("activity event must reach the local API as ActivityObserved");
+        };
+        assert_eq!(*activity, expected_activity);
+    }
     server.shutdown();
 }

@@ -4,6 +4,7 @@ use super::super::{
     ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
     ProviderLifecycleUnavailableReason,
 };
+use crate::domain::workflow::AgentSessionActivity;
 
 fn scope(session_id: &str) -> ProviderLifecycleScope {
     ProviderLifecycleScope::new(session_id).unwrap()
@@ -31,6 +32,18 @@ fn stop(provider: ProviderKind) -> ProviderLifecycleSignal {
         scope("agent-session-1"),
         "provider-session-1",
         Some("provider://transcript/1"),
+    )
+    .unwrap()
+}
+
+fn activity(provider: ProviderKind, activity: AgentSessionActivity) -> ProviderLifecycleSignal {
+    ProviderLifecycleSignal::activity_observed(
+        "binding-1",
+        provider,
+        scope("agent-session-1"),
+        "provider-session-1",
+        Some("provider://transcript/1"),
+        activity,
     )
     .unwrap()
 }
@@ -224,6 +237,124 @@ fn test_providerライフサイクル受信_同一agent_sessionの後続stopも�
         ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::StopObserved {
             binding_id: "binding-1".to_string(),
         }])
+    );
+}
+
+#[test]
+fn test_providerライフサイクル受信_活動観測はsessionを検証してlifecycle事実を作らない() {
+    let mut binding = binding(ProviderKind::Codex);
+    assert_eq!(
+        binding.observe(activity(ProviderKind::Codex, AgentSessionActivity::Working,)),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::SessionNotAssociated)
+    );
+    binding.observe(session_start(ProviderKind::Codex));
+
+    for observed in [
+        AgentSessionActivity::Working,
+        AgentSessionActivity::AwaitingAnswer,
+        AgentSessionActivity::AwaitingInstruction,
+    ] {
+        assert_eq!(
+            binding.observe(activity(ProviderKind::Codex, observed)),
+            ProviderLifecycleOutcome::Duplicate
+        );
+    }
+    assert_eq!(binding.provider_session_id(), Some("provider-session-1"));
+    assert_eq!(binding.transcript_ref(), Some("provider://transcript/1"));
+}
+
+#[test]
+fn test_providerライフサイクル受信_活動観測は未設定transcriptだけを関連付ける() {
+    let mut binding = binding(ProviderKind::Claude);
+    binding.observe(
+        ProviderLifecycleSignal::session_started(
+            "binding-1",
+            ProviderKind::Claude,
+            scope("agent-session-1"),
+            "provider-session-1",
+            None,
+        )
+        .unwrap(),
+    );
+
+    let outcome = binding.observe(activity(
+        ProviderKind::Claude,
+        AgentSessionActivity::Working,
+    ));
+
+    assert_eq!(
+        outcome,
+        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::TranscriptAssociated {
+            binding_id: "binding-1".to_string(),
+            transcript_ref: "provider://transcript/1".to_string(),
+        }])
+    );
+    assert_eq!(binding.transcript_ref(), Some("provider://transcript/1"));
+}
+
+#[test]
+fn test_providerライフサイクル受信_活動観測もbinding_provider_scope_session不一致を拒否する() {
+    let mut binding = binding(ProviderKind::Claude);
+    binding.observe(session_start(ProviderKind::Claude));
+    let signal = |binding_id: &str,
+                  provider: ProviderKind,
+                  candidate_scope: ProviderLifecycleScope,
+                  provider_session_id: &str| {
+        ProviderLifecycleSignal::activity_observed(
+            binding_id,
+            provider,
+            candidate_scope,
+            provider_session_id,
+            Some("provider://transcript/1"),
+            AgentSessionActivity::Working,
+        )
+        .unwrap()
+    };
+
+    assert_eq!(
+        binding.observe(signal(
+            "binding-2",
+            ProviderKind::Claude,
+            scope("agent-session-1"),
+            "provider-session-1",
+        )),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingMismatch)
+    );
+    assert_eq!(
+        binding.observe(signal(
+            "binding-1",
+            ProviderKind::Codex,
+            scope("agent-session-1"),
+            "provider-session-1",
+        )),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ProviderMismatch)
+    );
+    assert_eq!(
+        binding.observe(signal(
+            "binding-1",
+            ProviderKind::Claude,
+            scope("agent-session-2"),
+            "provider-session-1",
+        )),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ScopeMismatch)
+    );
+    assert_eq!(
+        binding.observe(signal(
+            "binding-1",
+            ProviderKind::Claude,
+            scope("agent-session-1"),
+            "provider-session-2",
+        )),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ProviderSessionMismatch)
+    );
+
+    binding.expire();
+    assert_eq!(
+        binding.observe(activity(
+            ProviderKind::Claude,
+            AgentSessionActivity::Working,
+        )),
+        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired)
     );
 }
 

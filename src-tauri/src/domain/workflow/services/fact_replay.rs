@@ -6,16 +6,18 @@
 //! derive 系メソッドだけが知る。規則の変更は過去ログの解釈に遡及する
 //! （「当時完了と判定した」という記録は持たない。許容済みトレードオフ）。
 
+use std::collections::HashMap;
+
 use crate::domain::workflow::entities::workflow_execution::{
     RuntimeNodeExecution, RuntimeNodeExecutionStatus, WorkflowDefaults,
     WorkflowExecution as WorkflowExecutionAggregate, WorkflowExecutionRestore,
 };
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
-    Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot, NodeCompletionSignal, NodeExecution,
-    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord,
-    NodeKindName, RuntimeExecutionState, TreeRootFact,
-    WorkflowExecution as WorkflowExecutionReadModel,
+    AgentSessionActivity, Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot,
+    NodeCompletionSignal, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
+    NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKindName, RuntimeExecutionState,
+    TreeRootFact, WorkflowExecution as WorkflowExecutionReadModel,
 };
 
 #[cfg(test)]
@@ -30,6 +32,8 @@ pub struct FoldedTree {
     pub root: TreeRootFact,
     /// 同じ tree の純粋事実から復元した隔離 worktree 台帳。
     pub isolated_worktrees: IsolatedWorktreeLedgerSnapshot,
+    /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
+    pub session_activities: HashMap<String, AgentSessionActivity>,
 }
 
 /// 1 tree 分の事実行列から実行木の状態を導出する。
@@ -62,16 +66,24 @@ pub fn fold_execution_tree(
     let isolated_worktrees = IsolatedWorktreeLedgerSnapshot::from_records(records)?;
     let started_at = timestamp_of(first);
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
+    let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
 
     for record in records {
         apply_record(&mut aggregate, record)
             .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+        if record.meta.kind == NodeKindName::Session {
+            let activity = session_activities
+                .entry(record.meta.node_execution_id.clone())
+                .or_default();
+            *activity = activity.after_fact(&record.fact);
+        }
     }
 
     Ok(Some(FoldedTree {
         aggregate,
         root,
         isolated_worktrees,
+        session_activities,
     }))
 }
 
@@ -228,7 +240,7 @@ fn apply_record(
                     }
                     aggregate.derive_leaf_completed(id, timestamp)
                 }
-                Some(code) => aggregate.derive_leaf_failed(
+                Some(code) => aggregate.derive_leaf_process_exit_failed(
                     id,
                     fact.failure_reason
                         .clone()
@@ -244,24 +256,37 @@ fn apply_record(
                 }
             },
             NodeKindName::Session => {
-                // プロセスが消えた session は中断（Paused の導出）。ただし
-                // Stop 受信済みで Submit を待つだけの node は対話プロセスに
-                // 依存しないため中断しない。決着済み node への遅延事実も無視。
-                let should_pause = aggregate.node_execution(id).is_some_and(|node| {
-                    node.status.is_active()
-                        && matches!(
-                            node.completion_signals,
-                            crate::domain::workflow::NodeCompletionSignalState::Pending
-                                | crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
-                        )
-                });
-                if should_pause {
-                    let _ = aggregate.pause_node_execution(id, timestamp);
+                // プロセスが消えた session は正常終了なら中断、異常終了なら失敗。
+                // 決着済み node への遅延事実だけを無視する。
+                let should_apply = aggregate
+                    .node_execution(id)
+                    .is_some_and(|node| node.status.is_active());
+                if should_apply {
+                    if fact.is_abnormal() {
+                        let reason = fact.failure_reason.clone().unwrap_or_else(|| {
+                            fact.exit_code.map_or_else(
+                                || "provider process was lost".to_string(),
+                                |code| format!("provider process exited with status {code}"),
+                            )
+                        });
+                        aggregate.derive_leaf_process_exit_failed(
+                            id,
+                            reason,
+                            fact.failure_kind
+                                .unwrap_or(NodeExecutionFailureKind::InfrastructureCrash),
+                            timestamp,
+                        )?;
+                    } else {
+                        let _ = aggregate.derive_session_process_exit(id, timestamp);
+                    }
                 }
                 Ok(())
             }
             NodeKindName::Fanout | NodeKindName::Sequence => Ok(()),
         },
+        NodeFact::RuntimeFailureObserved(fact) => {
+            aggregate.derive_leaf_failed(id, fact.reason.clone(), fact.failure_kind, timestamp)
+        }
         NodeFact::SubmitReceived(_) => {
             let _ = aggregate.record_node_completion_signal(
                 id,
@@ -309,7 +334,8 @@ fn apply_record(
             let _ = aggregate.replay_aborted_at(timestamp);
             Ok(())
         }
-        NodeFact::ArchiveRequested
+        NodeFact::AgentActivityObserved(_)
+        | NodeFact::ArchiveRequested
         | NodeFact::RestoreRequested
         | NodeFact::IsolatedWorktreeCreated(_)
         | NodeFact::IsolatedWorktreeReleased
@@ -329,6 +355,7 @@ pub struct SessionFactsView {
     /// 後続の restore が無い archive_requested。
     pub archived: bool,
     pub last_exit_abnormal: bool,
+    pub activity: AgentSessionActivity,
 }
 
 impl SessionFactsView {
@@ -349,6 +376,7 @@ pub fn derive_session_facts(
         if record.meta.node_execution_id != node_execution_id {
             continue;
         }
+        view.activity = view.activity.after_fact(&record.fact);
         match &record.fact {
             NodeFact::SessionAttached(fact) if fact.session_id == session_id => {
                 if fact.provider_session_id.is_some() {
@@ -368,8 +396,6 @@ pub fn derive_session_facts(
         }
     }
     view.exited = exited.is_some();
-    view.last_exit_abnormal = exited.is_some_and(|fact| {
-        fact.exit_code != Some(0) || fact.failure_reason.is_some() || fact.failure_kind.is_some()
-    });
+    view.last_exit_abnormal = exited.is_some_and(|fact| fact.is_abnormal());
     view
 }

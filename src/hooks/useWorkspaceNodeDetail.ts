@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
+import { subscribeAgentSessionChanged } from "@/lib/agentSessionEvents";
 import { getErrorMessage } from "@/lib/errorMessage";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type { WorkspaceNodeDetail } from "@/types/workspace-tree";
@@ -112,6 +113,13 @@ export function useWorkspaceNodeDetail({
 		};
 
 		window.addEventListener("workspace-tree-refresh", handleRefresh);
+		const unsubscribeAgentSessions = subscribeAgentSessionChanged(
+			({ worktreePath: changedWorktreePath }) => {
+				if (cancelled) return;
+				if (changedWorktreePath && changedWorktreePath !== worktreePath) return;
+				load(true);
+			},
+		);
 
 		const setup = async () => {
 			const nextUnlistenWorkflow =
@@ -138,6 +146,7 @@ export function useWorkspaceNodeDetail({
 		return () => {
 			cancelled = true;
 			window.removeEventListener("workspace-tree-refresh", handleRefresh);
+			unsubscribeAgentSessions();
 			unlistenWorkflow?.();
 		};
 	}, [nodeId, worktreePath]);

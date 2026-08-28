@@ -952,6 +952,7 @@ mod tests {
             status: crate::domain::workspace_tree::WorkspaceNodeStatus::Running,
             status_classification:
                 crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Active,
+            activity: Some(crate::domain::workflow::AgentSessionActivity::AwaitingInstruction),
             error_reason: None,
             updated_at_bits: 1.0_f64.to_bits(),
             execution_id: execution_id.map(str::to_string),
@@ -969,6 +970,7 @@ mod tests {
             can_close: false,
             can_stop: false,
             can_resume: false,
+            resume_eligible: false,
             recovery_owner_reason: None,
             resume_unavailable_reason: None,
             can_abort: false,

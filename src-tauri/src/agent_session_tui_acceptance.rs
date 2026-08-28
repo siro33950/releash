@@ -304,7 +304,6 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         composition
             .execution_tree_registrations
             .bind(runtime.clone());
-        terminal.bind_agent_session_activity(composition.activity.clone());
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
         let exit_observer = tauri::async_runtime::spawn(

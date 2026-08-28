@@ -15,9 +15,41 @@ use crate::domain::local_event::{
     StreamId,
 };
 use crate::domain::provider_lifecycle::{
-    ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
+    ArmedProviderLifecycle, ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleScope,
+    ProviderLifecycleSignal, ProviderLifecycleSignalKind, ProviderLifecycleSlotId,
+    ProviderLifecycleUnavailableObservation,
 };
-use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
+use crate::domain::workflow::AgentSessionActivity;
+use crate::usecase::provider_lifecycle::{
+    ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase,
+};
+
+#[derive(Default)]
+struct RecordingProviderLifecycleIngress {
+    signals: std::sync::Mutex<Vec<ProviderLifecycleSignal>>,
+}
+
+#[async_trait::async_trait]
+impl ProviderLifecycleIngressPort for RecordingProviderLifecycleIngress {
+    async fn receive(
+        &self,
+        _slot_id: &ProviderLifecycleSlotId,
+        _capability: &str,
+        signal: ProviderLifecycleSignal,
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        self.signals.lock().unwrap().push(signal);
+        Ok(ProviderLifecycleIngressResult::Applied)
+    }
+
+    async fn report_unavailable(
+        &self,
+        _slot_id: &ProviderLifecycleSlotId,
+        _capability: &str,
+        _observation: ProviderLifecycleUnavailableObservation,
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        unreachable!()
+    }
+}
 
 fn receive_payload(armed: &ArmedProviderLifecycle) -> serde_json::Value {
     let provider = match armed.provider() {
@@ -150,6 +182,45 @@ async fn test_providerライフサイクルapi_認証済みrequestをusecaseへ�
 
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(response, serde_json::json!({"status": "applied"}));
+}
+
+#[tokio::test]
+async fn test_providerライフサイクルapi_awaiting_answerをactivity_observedへ変換する() {
+    let directory = TempDir::new().unwrap();
+    let ingress = Arc::new(RecordingProviderLifecycleIngress::default());
+    let router = test_support::test_router_with_provider_lifecycle(
+        directory.path(),
+        "secret",
+        ingress.clone(),
+    );
+    let request = serde_json::json!({
+        "slot_id": "slot-1",
+        "binding_id": "binding-1",
+        "capability": "capability-1",
+        "provider": "claude",
+        "agent_session_id": "agent-session-1",
+        "signal": {
+            "event": "activity_observed",
+            "provider_session_id": "claude-session-1",
+            "transcript_ref": "provider://claude/transcript",
+            "activity": "awaiting_answer"
+        }
+    });
+
+    let (status, response) =
+        test_support::send_json(&router, "/v1/provider-lifecycle/signals", request).await;
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(response, serde_json::json!({"status": "applied"}));
+    let signals = ingress.signals.lock().unwrap();
+    assert_eq!(signals.len(), 1);
+    assert!(matches!(
+        signals[0].clone().into_kind(),
+        ProviderLifecycleSignalKind::ActivityObserved {
+            activity: AgentSessionActivity::AwaitingAnswer,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

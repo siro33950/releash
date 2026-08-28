@@ -504,12 +504,11 @@ mod tests {
             runtime_projection.node_executions[1].status,
             NodeExecutionStatus::Failed
         );
-        // fold（事実ログ）は D1a により process_exited を再開可能な中断として
-        // 導出する（Failed は live の観測・Paused は永続からの導出）。
+        // fold（事実ログ）も異常終了を Failed として導出する。
         assert_eq!(event_projection.status, ExecutionStatus::Running);
         assert_eq!(
             event_projection.node_executions[1].status,
-            NodeExecutionStatus::Paused
+            NodeExecutionStatus::Failed
         );
         assert_eq!(event_projection.completed_at, None);
         assert_eq!(runtime_projection.completed_at, None);

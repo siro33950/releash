@@ -140,6 +140,28 @@ pub(crate) fn latest_row_for_node(
     rows.next().transpose()
 }
 
+pub(crate) fn latest_row_for_node_with_event_types(
+    connection: &Connection,
+    node_execution_id: &str,
+    event_types: &[&str],
+) -> Result<Option<NodeEventRow>, rusqlite::Error> {
+    if event_types.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = (2..event_types.len() + 2)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events
+         WHERE node_execution_id = ?1 AND event_type IN ({placeholders})
+         ORDER BY seq DESC LIMIT 1",
+    ))?;
+    let parameters = std::iter::once(node_execution_id).chain(event_types.iter().copied());
+    let mut rows = statement.query_map(rusqlite::params_from_iter(parameters), row_from_sql)?;
+    rows.next().transpose()
+}
+
 /// First row of one tree (the root started fact).
 pub(crate) fn first_row_of_tree(
     connection: &Connection,

@@ -1,7 +1,7 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::repository::normalize_repo_path;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
-use crate::domain::workflow::ExecutionTreeLaunch;
+use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch, ProcessExitedFact};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +27,9 @@ pub(crate) enum AgentSessionLifecycleEvent {
     LifecycleChanged {
         lifecycle: AgentSessionLifecycle,
         last_exit_abnormal: bool,
+    },
+    ActivityObserved {
+        activity: AgentSessionActivity,
     },
     InitialInstructionAdmitted,
 }
@@ -285,6 +288,7 @@ pub(crate) struct AgentSession {
     provider: ProviderKind,
     tree_location: AgentSessionTreeLocation,
     lifecycle: AgentSessionLifecycle,
+    activity: AgentSessionActivity,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
@@ -330,6 +334,7 @@ impl AgentSession {
             provider,
             tree_location,
             lifecycle: AgentSessionLifecycle::Open,
+            activity: AgentSessionActivity::AwaitingInstruction,
             provider_session_id: None,
             transcript_ref: None,
             initial_instruction_admitted: false,
@@ -339,17 +344,19 @@ impl AgentSession {
         })
     }
 
-    /// 事実ログから導出済みの lifecycle と異常終了状態だけを復元する。
+    /// 事実ログから導出済みの lifecycle、異常終了状態、活動状態を復元する。
     /// provider session 参照など、別の事実から復元する属性は変更しない。
     pub(crate) fn restore_derived_lifecycle(
         &mut self,
         lifecycle: AgentSessionLifecycle,
         last_exit_abnormal: bool,
+        activity: AgentSessionActivity,
     ) {
         debug_assert!(self.uncommitted_events.is_empty());
         self.lifecycle = lifecycle;
         self.last_exit_abnormal = last_exit_abnormal;
         self.last_exit_code = None;
+        self.activity = activity;
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -374,6 +381,24 @@ impl AgentSession {
 
     pub(crate) fn lifecycle(&self) -> AgentSessionLifecycle {
         self.lifecycle
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activity(&self) -> AgentSessionActivity {
+        self.activity
+    }
+
+    pub(crate) fn observe_activity(
+        &mut self,
+        activity: AgentSessionActivity,
+    ) -> AgentSessionMutationOutcome {
+        if self.activity == activity {
+            return AgentSessionMutationOutcome::AlreadyApplied;
+        }
+        self.activity = activity;
+        self.uncommitted_events
+            .push(AgentSessionLifecycleEvent::ActivityObserved { activity });
+        AgentSessionMutationOutcome::Applied
     }
 
     #[cfg(test)]
@@ -496,7 +521,14 @@ impl AgentSession {
             return AgentSessionProcessExitOutcome::AlreadyPaused;
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
-        self.last_exit_abnormal = exit_code != Some(0);
+        self.activity = AgentSessionActivity::AwaitingInstruction;
+        self.last_exit_abnormal = ProcessExitedFact {
+            exit_code,
+            result_summary: None,
+            failure_reason: None,
+            failure_kind: None,
+        }
+        .is_abnormal();
         self.last_exit_code = exit_code;
         self.uncommitted_events
             .push(AgentSessionLifecycleEvent::LifecycleChanged {
@@ -542,6 +574,7 @@ impl AgentSession {
                         lifecycle: AgentSessionLifecycle::Open,
                         last_exit_abnormal: false,
                     });
+                let _ = self.observe_activity(AgentSessionActivity::AwaitingInstruction);
                 Ok(AgentSessionMutationOutcome::Applied)
             }
             AgentSessionRecoveryResult::Failed => Ok(AgentSessionMutationOutcome::AlreadyApplied),
@@ -563,6 +596,7 @@ impl AgentSession {
                         lifecycle: AgentSessionLifecycle::Open,
                         last_exit_abnormal: false,
                     });
+                let _ = self.observe_activity(AgentSessionActivity::AwaitingInstruction);
                 Ok(AgentSessionMutationOutcome::Applied)
             }
             AgentSessionRecoveryResult::Failed => Ok(AgentSessionMutationOutcome::AlreadyApplied),
@@ -668,6 +702,7 @@ impl AgentSession {
             return Ok(AgentSessionMutationOutcome::AlreadyApplied);
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
+        self.activity = AgentSessionActivity::AwaitingInstruction;
         self.last_exit_abnormal = false;
         self.last_exit_code = None;
         self.uncommitted_events

@@ -12,9 +12,6 @@ use crate::domain::terminal_surface::TerminalSurfaceLifecycleConfig;
 
 pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
-    activity_tap: Arc<
-        crate::adaptor::controller::agent_session_activity_observer::AgentSessionActivityEventTap,
-    >,
 }
 
 pub struct TerminalSurfaceWireAttachment {
@@ -128,21 +125,16 @@ impl TerminalSurfaceRuntime {
     ) -> Self {
         let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
             .disable_terminal_journal;
-        let activity_tap = Arc::new(
-            crate::adaptor::controller::agent_session_activity_observer::AgentSessionActivityEventTap::new(
-                event_sink,
-            ),
-        );
         let gateway = Arc::new(match lifecycle_config {
             Some(lifecycle_config) => crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink_and_lifecycle_config(
                     app,
-                    activity_tap.clone(),
+                    event_sink.clone(),
                     journal_enabled,
                     lifecycle_config,
                 ),
             None => crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
                     app,
-                    activity_tap.clone(),
+                    event_sink,
                     journal_enabled,
                 ),
         });
@@ -152,7 +144,6 @@ impl TerminalSurfaceRuntime {
                     gateway, event_hub,
                 ),
             ),
-            activity_tap,
         }
     }
 
@@ -160,16 +151,6 @@ impl TerminalSurfaceRuntime {
         &self,
     ) -> Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication> {
         Arc::clone(&self.application)
-    }
-
-    /// AgentSession activity usecase を terminal event tap へ後結合する。
-    /// terminal 側 composition が provider AgentSession composition より先に
-    /// 完了するため、bind でサイクルを断つ。
-    pub(crate) fn bind_agent_session_activity(
-        &self,
-        activity: Arc<crate::usecase::agent_session::AgentSessionActivityUsecase>,
-    ) {
-        self.activity_tap.bind(activity);
     }
 
     pub fn get_or_spawn(

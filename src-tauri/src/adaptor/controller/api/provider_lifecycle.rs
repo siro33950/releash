@@ -15,9 +15,9 @@ use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
 
 use super::error::ApiError;
 use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderLifecycleProvider, ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
-    ProviderLifecycleSignalRequest, ProviderLifecycleUnavailableReasonRequest,
-    ProviderLifecycleUnavailableRequest,
+    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
+    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
+    ProviderLifecycleUnavailableReasonRequest, ProviderLifecycleUnavailableRequest,
 };
 #[derive(Clone)]
 struct ProviderLifecycleApiState {
@@ -93,6 +93,28 @@ async fn receive(
             provider_session_id,
             transcript_ref.as_deref(),
             reason,
+        ),
+        ProviderLifecycleSignalRequest::ActivityObserved {
+            provider_session_id,
+            transcript_ref,
+            activity,
+        } => ProviderLifecycleSignal::activity_observed(
+            &payload.binding_id,
+            provider,
+            scope,
+            provider_session_id,
+            transcript_ref.as_deref(),
+            match activity {
+                ProviderActivityRequest::Working => {
+                    crate::domain::workflow::AgentSessionActivity::Working
+                }
+                ProviderActivityRequest::AwaitingAnswer => {
+                    crate::domain::workflow::AgentSessionActivity::AwaitingAnswer
+                }
+                ProviderActivityRequest::AwaitingInstruction => {
+                    crate::domain::workflow::AgentSessionActivity::AwaitingInstruction
+                }
+            },
         ),
     }
     .map_err(|error| ApiError::invalid_request(error.to_string()))?;

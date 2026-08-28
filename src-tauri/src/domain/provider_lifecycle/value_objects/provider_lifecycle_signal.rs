@@ -1,5 +1,6 @@
 use super::super::ProviderLifecycleInputError;
 use super::{ProviderKind, ProviderLifecycleScope};
+use crate::domain::workflow::AgentSessionActivity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderLifecycleSignal {
@@ -23,6 +24,11 @@ pub(crate) enum ProviderLifecycleSignalKind {
         provider_session_id: String,
         transcript_ref: Option<String>,
         reason: String,
+    },
+    ActivityObserved {
+        provider_session_id: String,
+        transcript_ref: Option<String>,
+        activity: AgentSessionActivity,
     },
 }
 
@@ -79,6 +85,26 @@ impl ProviderLifecycleSignal {
                 provider_session_id: non_empty(provider_session_id.into(), "provider_session_id")?,
                 transcript_ref: optional_non_empty(transcript_ref, "transcript_ref")?,
                 reason: non_empty(reason.into(), "reason")?,
+            },
+        )
+    }
+
+    pub(crate) fn activity_observed(
+        binding_id: impl Into<String>,
+        provider: ProviderKind,
+        scope: ProviderLifecycleScope,
+        provider_session_id: impl Into<String>,
+        transcript_ref: Option<&str>,
+        activity: AgentSessionActivity,
+    ) -> Result<Self, ProviderLifecycleInputError> {
+        Self::new(
+            binding_id,
+            provider,
+            scope,
+            ProviderLifecycleSignalKind::ActivityObserved {
+                provider_session_id: non_empty(provider_session_id.into(), "provider_session_id")?,
+                transcript_ref: optional_non_empty(transcript_ref, "transcript_ref")?,
+                activity,
             },
         )
     }

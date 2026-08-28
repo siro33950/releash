@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::workflow::{
-    ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeFactRecord, ProcessExitedFact,
-    SessionExecutionTreeRootFacts,
+    AgentActivityObservedFact, AgentSessionActivity, ExecutionTreeLaunch, NodeFact, NodeFactMeta,
+    NodeFactRecord, ProcessExitedFact, SessionExecutionTreeRootFacts,
 };
 
 fn session_records() -> Vec<NodeFactRecord> {
@@ -52,6 +52,26 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
     assert_eq!(open.worktree_path, "/repo");
     assert_eq!(open.lifecycle, AgentSessionLifecycle::Open);
     assert!(!open.session_facts.exited);
+    assert_eq!(
+        open.session_facts.activity,
+        AgentSessionActivity::AwaitingInstruction
+    );
+
+    push_fact(
+        &mut records,
+        meta.clone(),
+        NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::Working,
+        }),
+    );
+    let working =
+        derive_agent_session_fields(&records, "session-1", "session-1", "session", "session-1")
+            .unwrap();
+    assert_eq!(working.lifecycle, AgentSessionLifecycle::Open);
+    assert_eq!(
+        working.session_facts.activity,
+        AgentSessionActivity::Working
+    );
 
     push_fact(
         &mut records,
@@ -68,6 +88,10 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
             .unwrap();
     assert_eq!(paused.lifecycle, AgentSessionLifecycle::Paused);
     assert!(paused.session_facts.exited);
+    assert_eq!(
+        paused.session_facts.activity,
+        AgentSessionActivity::AwaitingInstruction
+    );
 
     push_fact(&mut records, meta, NodeFact::ArchiveRequested);
     let archived =

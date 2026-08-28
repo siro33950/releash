@@ -1,12 +1,14 @@
 use super::*;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
+use crate::domain::workflow::entities::workflow_execution::{
+    RuntimeNodeExecutionFailureOrigin, RuntimeNodeExecutionStatus,
+};
 use crate::domain::workflow::{
-    ApprovalGrantedFact, ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef,
-    ExecutionTreeLaunch, FanoutSpec, NodeCompletion, NodeDefinition, NodeFactMeta, NodeKind,
-    OnFailure, RuntimeExecutionState, SequenceSpec, SessionAttachedFact,
-    SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
-    WorkflowDefinition,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ChildEntry, CommandSpec,
+    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec, NodeCompletion,
+    NodeDefinition, NodeFactMeta, NodeKind, OnFailure, RuntimeExecutionState,
+    RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact, SessionExecutionTreeRootFacts,
+    StartedFact, StopReceivedFact, SubmitReceivedFact, WorkflowDefinition,
 };
 
 const TREE: &str = "root-exec";
@@ -239,26 +241,110 @@ mod standalone_session_tests {
     }
 
     #[test]
-    fn test_単独session_stop後のprocess_exitはrunningとstop_receivedを維持する() {
-        let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
-        log.push(root_meta.clone(), started_root(session_root()));
-        log.push(root_meta.clone(), attached("session-1"));
-        log.push(root_meta.clone(), stop());
-        log.push(root_meta, process_lost());
+    fn test_単独session_活動事実はsubmitとstopの完了条件を変えない() {
+        // Given: 活動事実を完了信号の前後へ挟んだ事実列
+        let cases = [
+            (
+                vec![
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::Working,
+                    }),
+                    submit(),
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::AwaitingAnswer,
+                    }),
+                ],
+                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived,
+                RuntimeNodeExecutionStatus::Running,
+                RuntimeExecutionState::Running,
+                AgentSessionActivity::AwaitingAnswer,
+            ),
+            (
+                vec![
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::Working,
+                    }),
+                    stop(),
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::AwaitingAnswer,
+                    }),
+                ],
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived,
+                RuntimeNodeExecutionStatus::Running,
+                RuntimeExecutionState::Running,
+                AgentSessionActivity::AwaitingAnswer,
+            ),
+            (
+                vec![
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::Working,
+                    }),
+                    submit(),
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::AwaitingAnswer,
+                    }),
+                    stop(),
+                    NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                        activity: AgentSessionActivity::Working,
+                    }),
+                ],
+                crate::domain::workflow::NodeCompletionSignalState::Ready,
+                RuntimeNodeExecutionStatus::Succeeded,
+                RuntimeExecutionState::Completed,
+                AgentSessionActivity::Working,
+            ),
+        ];
 
-        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-        let node = tree.aggregate.node_execution("root-exec").unwrap();
+        for (facts, expected_signals, expected_status, expected_state, expected_activity) in cases {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            for fact in facts {
+                log.push(root_meta.clone(), fact);
+            }
 
-        assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
-        assert_eq!(
-            node.completion_signals,
-            crate::domain::workflow::NodeCompletionSignalState::StopReceived
-        );
+            // When: 事実列を実行木へ fold する
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let node = tree.aggregate.node_execution("root-exec").unwrap();
+
+            // Then: 完了は二信号だけで決まり、活動状態は最後の観測を保つ
+            assert_eq!(node.completion_signals, expected_signals);
+            assert_eq!(node.status, expected_status);
+            assert_eq!(*tree.aggregate.state(), expected_state);
+            assert_eq!(
+                tree.session_activities.get("root-exec"),
+                Some(&expected_activity)
+            );
+        }
     }
 
     #[test]
-    fn test_単独session_process_exit後のstopはpausedへsignalだけを記録する() {
+    fn test_単独session_stop後のprocess_exitは未決着nodeに正常と異常を適用する() {
+        for (fact, expected) in [
+            (exited(0), RuntimeNodeExecutionStatus::Paused),
+            (process_lost(), RuntimeNodeExecutionStatus::Failed),
+        ] {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta.clone(), stop());
+            log.push(root_meta, fact);
+
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+            let node = tree.aggregate.node_execution("root-exec").unwrap();
+
+            assert_eq!(node.status, expected);
+            assert_eq!(
+                node.completion_signals,
+                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            );
+        }
+    }
+
+    #[test]
+    fn test_単独session_異常process_exit後のstopはfailedへ決着済みのため無視する() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
@@ -269,10 +355,30 @@ mod standalone_session_tests {
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         let node = tree.aggregate.node_execution("root-exec").unwrap();
 
-        assert_eq!(node.status, RuntimeNodeExecutionStatus::Paused);
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Failed);
         assert_eq!(
             node.completion_signals,
-            crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            crate::domain::workflow::NodeCompletionSignalState::Pending
+        );
+    }
+
+    #[test]
+    fn test_単独session_完了後に遅着した異常process_exitを無視する() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), submit());
+        log.push(root_meta.clone(), stop());
+        log.push(root_meta, process_lost());
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let node = tree.aggregate.node_execution("root-exec").unwrap();
+
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(
+            node.completion_signals,
+            crate::domain::workflow::NodeCompletionSignalState::Ready
         );
     }
 
@@ -349,6 +455,81 @@ mod standalone_session_tests {
         );
         let failed = super::derive_session_facts(&log.records, "root-exec", "session-1");
         assert!(failed.last_exit_abnormal);
+    }
+
+    #[test]
+    fn test_単独session_活動状態を初期値と最後の観測から導出しprocess_exitで戻す() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+
+        let initial = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            initial.session_activities.get("root-exec"),
+            Some(&AgentSessionActivity::AwaitingInstruction)
+        );
+
+        log.push(
+            root_meta.clone(),
+            NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                activity: AgentSessionActivity::Working,
+            }),
+        );
+        log.push(
+            root_meta.clone(),
+            NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                activity: AgentSessionActivity::AwaitingAnswer,
+            }),
+        );
+        let waiting = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            waiting.session_activities.get("root-exec"),
+            Some(&AgentSessionActivity::AwaitingAnswer)
+        );
+        assert_eq!(
+            derive_session_facts(&log.records, "root-exec", "session-1").activity,
+            AgentSessionActivity::AwaitingAnswer
+        );
+
+        log.push(root_meta, exited(0));
+        let exited = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            exited.session_activities.get("root-exec"),
+            Some(&AgentSessionActivity::AwaitingInstruction)
+        );
+        assert_eq!(
+            derive_session_facts(&log.records, "root-exec", "session-1").activity,
+            AgentSessionActivity::AwaitingInstruction
+        );
+    }
+
+    #[test]
+    fn test_単独session_process_exitの正常終了はpausedで異常終了はfailedになる() {
+        for (fact, expected) in [
+            (exited(0), RuntimeNodeExecutionStatus::Paused),
+            (exited(1), RuntimeNodeExecutionStatus::Failed),
+            (process_lost(), RuntimeNodeExecutionStatus::Failed),
+            (
+                NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
+                    exit_code: Some(0),
+                    result_summary: None,
+                    failure_reason: Some("provider failure".to_string()),
+                    failure_kind: None,
+                }),
+                RuntimeNodeExecutionStatus::Failed,
+            ),
+        ] {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta, fact);
+
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+            assert_eq!(node_status(&tree, "root-exec"), expected);
+        }
     }
 
     #[test]
@@ -702,6 +883,90 @@ mod approval_tests {
             RuntimeExecutionState::Completed
         );
     }
+
+    #[test]
+    fn test_approval_正常なprocess_exit後も承認待ちを維持し活動だけを待機へ戻す() {
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(approval_definition())),
+        );
+        let node = meta(
+            "r-exec",
+            Some("main-exec"),
+            "reviewed",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            node.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        log.push(node.clone(), attached("session-1"));
+        log.push(
+            node.clone(),
+            NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                activity: AgentSessionActivity::Working,
+            }),
+        );
+        log.push(node.clone(), submit());
+        log.push(node.clone(), stop());
+        log.push(node, exited(0));
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        assert_eq!(
+            node_status(&tree, "r-exec"),
+            RuntimeNodeExecutionStatus::WaitingApproval
+        );
+        assert_eq!(
+            derive_session_facts(&log.records, "r-exec", "session-1").activity,
+            AgentSessionActivity::AwaitingInstruction
+        );
+    }
+
+    #[test]
+    fn test_approval_承認待ちの異常process_exitはfailedになる() {
+        for process_exit in [exited(1), process_lost()] {
+            // Given: completion: approval の Session Node が承認待ちに到達した事実列
+            let mut log = FactLog::new();
+            log.push(
+                meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+                started_root(workflow_root(approval_definition())),
+            );
+            let node = meta(
+                "r-exec",
+                Some("main-exec"),
+                "reviewed",
+                NodeKindName::Session,
+                1,
+            );
+            log.push(
+                node.clone(),
+                started_child(ExecutionParentRef::sequence_child("main-exec")),
+            );
+            log.push(node.clone(), attached("session-1"));
+            log.push(node.clone(), submit());
+            log.push(node.clone(), stop());
+            assert_eq!(
+                node_status(
+                    &fold_execution_tree(TREE, &log.records).unwrap().unwrap(),
+                    "r-exec",
+                ),
+                RuntimeNodeExecutionStatus::WaitingApproval
+            );
+
+            // When: exit code 非0または process lost を適用する
+            log.push(node, process_exit);
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+            // Then: 承認待ちも異常終了では Failed になる
+            assert_eq!(
+                node_status(&tree, "r-exec"),
+                RuntimeNodeExecutionStatus::Failed
+            );
+        }
+    }
 }
 
 mod failure_tests {
@@ -911,13 +1176,13 @@ mod paused_tests {
     use super::*;
 
     #[test]
-    fn test_paused_プロセス喪失は導出でありpause事実は存在しない() {
-        // Given: 二信号未揃いのままプロセスが消えた session
+    fn test_paused_正常終了は導出でありpause事実は存在しない() {
+        // Given: 二信号未揃いのままプロセスが正常終了した session
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
         log.push(root_meta.clone(), started_root(session_root()));
         log.push(root_meta.clone(), attached("session-1"));
-        log.push(root_meta.clone(), process_lost());
+        log.push(root_meta.clone(), exited(0));
 
         // When / Then: Paused は process_exited と二信号未揃いからの純導出
         let paused = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
@@ -936,6 +1201,116 @@ mod paused_tests {
         assert_eq!(
             node_status(&resumed, "root-exec"),
             RuntimeNodeExecutionStatus::Running
+        );
+    }
+
+    #[test]
+    fn test_failed_session_resume_requestedで同じattemptをrunningへ戻す() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), process_lost());
+
+        let failed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            node_status(&failed, "root-exec"),
+            RuntimeNodeExecutionStatus::Failed
+        );
+        let failed_node = failed.aggregate.node_execution("root-exec").unwrap();
+        assert!(failed_node.can_resume());
+        assert_eq!(
+            failed_node.failure.as_ref().map(|failure| failure.origin),
+            Some(RuntimeNodeExecutionFailureOrigin::ProviderProcessExit)
+        );
+
+        log.push(root_meta, NodeFact::ResumeRequested);
+        let resumed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let node = resumed.aggregate.node_execution("root-exec").unwrap();
+
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Running);
+        assert_eq!(node.attempt, 1);
+        assert_eq!(node.failure, None);
+    }
+
+    #[test]
+    fn test_runtime失敗のsessionはfailedでもresume対象にならずsession参照を要求しない() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(
+            root_meta.clone(),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "activation failed".to_string(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            }),
+        );
+
+        let failed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let node = failed.aggregate.node_execution("root-exec").unwrap();
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Failed);
+        assert_eq!(node.session_id, None);
+        assert_eq!(
+            node.failure.as_ref().map(|failure| failure.origin),
+            Some(RuntimeNodeExecutionFailureOrigin::Runtime)
+        );
+        assert!(!node.can_resume());
+
+        log.push(root_meta, NodeFact::ResumeRequested);
+        let resumed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            node_status(&resumed, "root-exec"),
+            RuntimeNodeExecutionStatus::Failed
+        );
+    }
+}
+
+mod command_process_exit_tests {
+    use super::*;
+
+    #[test]
+    fn test_command_process_exit_exit_codeで完了失敗中断を導出する() {
+        for (fact, expected) in [
+            (exited(0), RuntimeNodeExecutionStatus::Succeeded),
+            (exited(1), RuntimeNodeExecutionStatus::Failed),
+            (process_lost(), RuntimeNodeExecutionStatus::Paused),
+        ] {
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "command", NodeKindName::Command, 1);
+            log.push(
+                root_meta.clone(),
+                started_root(workflow_root(workflow_definition(
+                    vec![command_leaf("command")],
+                    "command",
+                ))),
+            );
+            log.push(root_meta, fact);
+
+            let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+            assert_eq!(node_status(&tree, "root-exec"), expected);
+        }
+    }
+
+    #[test]
+    fn test_failed_command_resume_requestedではfailedのままにする() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "command", NodeKindName::Command, 1);
+        log.push(
+            root_meta.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![command_leaf("command")],
+                "command",
+            ))),
+        );
+        log.push(root_meta.clone(), exited(1));
+        log.push(root_meta, NodeFact::ResumeRequested);
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        assert_eq!(
+            node_status(&tree, "root-exec"),
+            RuntimeNodeExecutionStatus::Failed
         );
     }
 }

@@ -779,8 +779,6 @@ pub fn run() {
             let provider_execution_tree_stops = agent_sessions.execution_tree_stops.clone();
             let started_execution_tree_registrations =
                 agent_sessions.execution_tree_registrations.clone();
-            terminal_surface_runtime
-                .bind_agent_session_activity(agent_sessions.activity.clone());
             let provider_agent_terminal_events = terminal_surface.subscribe_events();
             let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
                 let cancellation = provider_agent_terminal_events.cancellation.clone();

@@ -1,6 +1,6 @@
 use crate::domain::workflow::{
-    ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState, NodeExecutionFailureKind,
-    NodeKindName, WorkflowDefinition,
+    AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
+    NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -107,6 +107,7 @@ pub struct WorkspaceTreeNode {
     pub title: String,
     pub status: WorkspaceNodeStatus,
     pub status_classification: WorkspaceNodeStatusClassification,
+    pub activity: Option<AgentSessionActivity>,
     pub error_reason: Option<String>,
     pub updated_at_bits: u64,
     pub execution_id: Option<String>,
@@ -124,6 +125,9 @@ pub struct WorkspaceTreeNode {
     pub can_close: bool,
     pub can_stop: bool,
     pub can_resume: bool,
+    /// Runtime aggregate が resume を受理する leaf。公開 capability は workflow root の
+    /// `can_resume` だけであり、この値は root 集約の入力にだけ使う。
+    pub(crate) resume_eligible: bool,
     /// Recovery fence owned by this node's source identity. For Workflow
     /// roots this is the execution owner; for bound Workflow Session leaves
     /// it is the Session owner. The public resume reason is derived from
@@ -157,28 +161,40 @@ impl WorkspaceTreeNode {
     }
 
     pub(super) fn classify_own_status(
+        kind: WorkspaceNodeKind,
         status: WorkspaceNodeStatus,
-        completion_signals: NodeCompletionSignalState,
+        activity: Option<AgentSessionActivity>,
         recovery_fenced: bool,
     ) -> WorkspaceNodeStatusClassification {
         if recovery_fenced || status == WorkspaceNodeStatus::Failed {
             WorkspaceNodeStatusClassification::Failure
-        } else if status == WorkspaceNodeStatus::Waiting
-            || (status == WorkspaceNodeStatus::Running
-                && completion_signals == NodeCompletionSignalState::StopReceived)
-        {
-            WorkspaceNodeStatusClassification::Attention
-        } else if status == WorkspaceNodeStatus::Running {
-            WorkspaceNodeStatusClassification::Active
-        } else {
+        } else if matches!(
+            status,
+            WorkspaceNodeStatus::Completed
+                | WorkspaceNodeStatus::Aborted
+                | WorkspaceNodeStatus::Paused
+        ) {
             WorkspaceNodeStatusClassification::Idle
+        } else if kind == WorkspaceNodeKind::WorkflowSession {
+            match activity.unwrap_or_default() {
+                AgentSessionActivity::Working => WorkspaceNodeStatusClassification::Active,
+                AgentSessionActivity::AwaitingAnswer
+                | AgentSessionActivity::AwaitingInstruction => {
+                    WorkspaceNodeStatusClassification::Attention
+                }
+            }
+        } else if status == WorkspaceNodeStatus::Waiting {
+            WorkspaceNodeStatusClassification::Attention
+        } else {
+            WorkspaceNodeStatusClassification::Active
         }
     }
 
     pub(super) fn own_status_classification(&self) -> WorkspaceNodeStatusClassification {
         Self::classify_own_status(
+            self.kind,
             self.status,
-            self.completion_signals,
+            self.activity,
             self.recovery_owner_reason.is_some(),
         )
     }
@@ -222,6 +238,11 @@ pub enum WorkspaceStructureFact {
         node_execution_id: String,
         session_id: String,
         timestamp: f64,
+    },
+    NodeActivityProjected {
+        execution_id: String,
+        node_execution_id: String,
+        activity: AgentSessionActivity,
     },
     NodeCommandPrepared {
         execution_id: String,
@@ -302,7 +323,9 @@ mod tests {
     use super::*;
 
     fn node(
+        kind: WorkspaceNodeKind,
         status: WorkspaceNodeStatus,
+        activity: Option<AgentSessionActivity>,
         completion_signals: NodeCompletionSignalState,
         recovery_owner_reason: Option<&str>,
     ) -> WorkspaceTreeNode {
@@ -310,10 +333,11 @@ mod tests {
             id: "node".to_string(),
             parent_id: Some("workflow".to_string()),
             sibling_order: 0,
-            kind: WorkspaceNodeKind::WorkflowSession,
+            kind,
             title: "node".to_string(),
             status,
             status_classification: WorkspaceNodeStatusClassification::Idle,
+            activity,
             error_reason: None,
             updated_at_bits: 1.0_f64.to_bits(),
             execution_id: Some("workflow".to_string()),
@@ -331,6 +355,7 @@ mod tests {
             can_close: false,
             can_stop: false,
             can_resume: false,
+            resume_eligible: false,
             recovery_owner_reason: recovery_owner_reason.map(str::to_string),
             resume_unavailable_reason: None,
             can_abort: false,
@@ -346,59 +371,123 @@ mod tests {
         // Given
         let cases = [
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Running,
                 NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::Working),
                 None,
                 WorkspaceNodeStatusClassification::Active,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Running,
+                NodeCompletionSignalState::StopReceived,
+                Some(AgentSessionActivity::Working),
+                None,
+                WorkspaceNodeStatusClassification::Active,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Waiting,
+                NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::Working),
+                None,
+                WorkspaceNodeStatusClassification::Active,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Waiting,
+                NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::AwaitingAnswer),
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Waiting,
+                NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::AwaitingInstruction),
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Running,
+                NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::AwaitingAnswer),
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowSession,
+                WorkspaceNodeStatus::Running,
+                NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::AwaitingInstruction),
+                None,
+                WorkspaceNodeStatusClassification::Attention,
+            ),
+            (
+                WorkspaceNodeKind::WorkflowCommand,
                 WorkspaceNodeStatus::Running,
                 NodeCompletionSignalState::StopReceived,
                 None,
-                WorkspaceNodeStatusClassification::Attention,
+                None,
+                WorkspaceNodeStatusClassification::Active,
             ),
             (
+                WorkspaceNodeKind::WorkflowCommand,
                 WorkspaceNodeStatus::Waiting,
                 NodeCompletionSignalState::Pending,
+                None,
                 None,
                 WorkspaceNodeStatusClassification::Attention,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Failed,
                 NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::Working),
                 None,
                 WorkspaceNodeStatusClassification::Failure,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Paused,
                 NodeCompletionSignalState::StopReceived,
+                Some(AgentSessionActivity::Working),
                 None,
                 WorkspaceNodeStatusClassification::Idle,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Completed,
                 NodeCompletionSignalState::Ready,
+                Some(AgentSessionActivity::Working),
                 None,
                 WorkspaceNodeStatusClassification::Idle,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Aborted,
                 NodeCompletionSignalState::Pending,
+                Some(AgentSessionActivity::Working),
                 None,
                 WorkspaceNodeStatusClassification::Idle,
             ),
             (
+                WorkspaceNodeKind::WorkflowSession,
                 WorkspaceNodeStatus::Paused,
                 NodeCompletionSignalState::StopReceived,
+                Some(AgentSessionActivity::Working),
                 Some("recovery fence"),
                 WorkspaceNodeStatusClassification::Failure,
             ),
         ];
 
         // When / Then
-        for (status, signals, recovery_reason, expected) in cases {
+        for (kind, status, signals, activity, recovery_reason, expected) in cases {
             assert_eq!(
-                node(status, signals, recovery_reason).own_status_classification(),
+                node(kind, status, activity, signals, recovery_reason).own_status_classification(),
                 expected
             );
         }

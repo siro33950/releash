@@ -111,6 +111,7 @@ impl SqliteWorkspaceTreeRepository {
             execution: record,
             recovery_owner_reason: None,
             node_recovery_reasons: &node_recovery_reasons,
+            session_activities: &folded.session_activities,
         })
         .map_err(invariant_query_error)
     }

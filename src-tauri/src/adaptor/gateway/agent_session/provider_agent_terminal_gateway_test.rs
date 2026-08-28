@@ -146,63 +146,6 @@ fn test_provider_agent_terminal_presence_稼働中は生存を返し終了後は
 }
 
 #[test]
-fn test_provider_agent_terminal_activity_直近出力ありのsurfaceをrunningに分類する() {
-    let owner =
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let mut surface = surface_for(&owner, owner.clone(), TerminalProcessState::Running);
-    surface.last_output_at = Some(std::time::Instant::now());
-    let application = application_with(Some(surface));
-
-    assert_eq!(
-        crate::domain::agent_session::ProviderAgentTerminalObservationGateway::session_activity(
-            &application,
-            &owner
-        ),
-        crate::domain::terminal_surface::TerminalActivity::Running
-    );
-}
-
-#[test]
-fn test_provider_agent_terminal_activity_出力recencyがないsurfaceをidleに分類する() {
-    let owner =
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let application = application_with(Some(surface_for(
-        &owner,
-        owner.clone(),
-        TerminalProcessState::Running,
-    )));
-
-    assert_eq!(
-        crate::domain::agent_session::ProviderAgentTerminalObservationGateway::session_activity(
-            &application,
-            &owner
-        ),
-        crate::domain::terminal_surface::TerminalActivity::Idle
-    );
-}
-
-#[test]
-fn test_provider_agent_terminal_activity_終了済みsurfaceは出力直後でもidleに分類する() {
-    let owner =
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let mut surface = surface_for(
-        &owner,
-        owner.clone(),
-        TerminalProcessState::Exited { exit_code: Some(1) },
-    );
-    surface.last_output_at = Some(std::time::Instant::now());
-    let application = application_with(Some(surface));
-
-    assert_eq!(
-        crate::domain::agent_session::ProviderAgentTerminalObservationGateway::session_activity(
-            &application,
-            &owner
-        ),
-        crate::domain::terminal_surface::TerminalActivity::Idle
-    );
-}
-
-#[test]
 fn test_provider_agent_terminal_exit_code_終了済みsurfaceのexit_codeを返す() {
     use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
 
@@ -220,33 +163,5 @@ fn test_provider_agent_terminal_exit_code_終了済みsurfaceのexit_codeを返�
     assert_eq!(
         application.exited_session_owners(),
         vec![(1, owner.clone(), Some(137))]
-    );
-}
-
-#[test]
-fn test_provider_agent_terminal_worktree解決_session所有surfaceだけを対象にする() {
-    use crate::domain::agent_session::ProviderAgentTerminalObservationGateway;
-
-    let session_owner =
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let session_backed = application_with(Some(surface_for(
-        &session_owner,
-        session_owner.clone(),
-        TerminalProcessState::Running,
-    )));
-    assert_eq!(
-        session_backed.session_worktree_path(&session_owner.stable_key()),
-        Some("/repo".to_string())
-    );
-
-    let workspace_owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let workspace_backed = application_with(Some(surface_for(
-        &workspace_owner,
-        workspace_owner.clone(),
-        TerminalProcessState::Running,
-    )));
-    assert_eq!(
-        workspace_backed.session_worktree_path(&workspace_owner.stable_key()),
-        None
     );
 }

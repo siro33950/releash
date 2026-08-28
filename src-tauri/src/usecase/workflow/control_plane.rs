@@ -18,6 +18,7 @@ pub(crate) struct WorkflowControlPlaneCommit {
     pub(crate) execution_id: String,
     pub(crate) before: DomainWorkflowExecution,
     pub(crate) after: DomainWorkflowExecution,
+    pub(crate) transition_outcome: TransitionOutcome,
     pub(crate) workflow_events: Vec<WorkflowEvent>,
     pub(crate) provider_events: Vec<ScopedProviderLifecycleEvent>,
 }
@@ -178,6 +179,7 @@ impl WorkflowControlPlaneUsecase {
                 execution_id: command.execution_id,
                 before: current,
                 after: candidate,
+                transition_outcome: TransitionOutcome::Applied,
                 workflow_events,
                 provider_events: Vec::new(),
             })
@@ -348,6 +350,7 @@ impl WorkflowControlPlaneUsecase {
                 execution_id,
                 before: current,
                 after: candidate,
+                transition_outcome: TransitionOutcome::Applied,
                 workflow_events: events,
                 provider_events: Vec::new(),
             })
@@ -414,6 +417,7 @@ impl WorkflowControlPlaneUsecase {
                 execution_id: command.execution_id,
                 before: current,
                 after: candidate,
+                transition_outcome: TransitionOutcome::Applied,
                 workflow_events: events,
                 provider_events: Vec::new(),
             })
@@ -463,21 +467,33 @@ impl WorkflowControlPlaneUsecase {
         };
         let timestamp = self.runtime.current_timestamp();
         let mut candidate = current.clone();
-        let mut workflow_events = match candidate.record_provider_stop(
+        let (mut workflow_events, provider_stop_outcome) = match candidate.record_provider_stop(
             &command.node_execution_id,
             &command.agent_session_id,
             timestamp,
         ) {
             Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied) => {
-                vec![WorkflowEvent::NodeStopReceived {
-                    execution_id: command.tree_id.clone(),
-                    node_execution_id: command.node_execution_id.clone(),
-                    timestamp,
-                }]
+                (
+                    vec![WorkflowEvent::NodeStopReceived {
+                        execution_id: command.tree_id.clone(),
+                        node_execution_id: command.node_execution_id.clone(),
+                        timestamp,
+                    }],
+                    TransitionOutcome::Applied,
+                )
             }
-            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied)
-            | Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::NotApplicable) => {
-                Vec::new()
+            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied) => {
+                (
+                    vec![WorkflowEvent::NodeStopReceived {
+                        execution_id: command.tree_id.clone(),
+                        node_execution_id: command.node_execution_id.clone(),
+                        timestamp,
+                    }],
+                    TransitionOutcome::AlreadyApplied,
+                )
+            }
+            Ok(crate::domain::workflow::entities::workflow_execution::TransitionOutcome::NotApplicable) => {
+                (Vec::new(), TransitionOutcome::NotApplicable)
             }
             Err(ProviderStopRejection::NodeExecutionNotFound) => {
                 return Err(WorkflowError::invalid_state(format!(
@@ -501,9 +517,7 @@ impl WorkflowControlPlaneUsecase {
         if workflow_events.is_empty() && lifecycle_events.is_empty() {
             return Ok(());
         }
-        let outcome = if workflow_events.is_empty() {
-            None
-        } else {
+        let outcome = if provider_stop_outcome == TransitionOutcome::Applied {
             let mut new_id = self.node_execution_id_source();
             let (outcome, events) = apply_completion_handshake(
                 &mut candidate,
@@ -513,6 +527,8 @@ impl WorkflowControlPlaneUsecase {
             )?;
             workflow_events.extend(events);
             outcome
+        } else {
+            None
         };
         let worktree_path = current.worktree_path.clone();
         let snapshot = self
@@ -521,6 +537,7 @@ impl WorkflowControlPlaneUsecase {
                 execution_id: command.tree_id,
                 before: current,
                 after: candidate,
+                transition_outcome: provider_stop_outcome,
                 workflow_events,
                 provider_events: lifecycle_events,
             })

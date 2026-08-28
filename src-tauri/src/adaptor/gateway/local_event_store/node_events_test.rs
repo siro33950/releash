@@ -1,6 +1,9 @@
 use rusqlite::Connection;
 
-use super::{append_node_event, delete_tree, list_tree_roots, read_tree, NewNodeEventRow};
+use super::{
+    append_node_event, delete_tree, latest_row_for_node_with_event_types, list_tree_roots,
+    read_tree, NewNodeEventRow,
+};
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::schema::{initialize_schema, InitialStoreMetadata};
 
@@ -107,6 +110,41 @@ mod read_tree_tests {
 
         // When / Then: 未知の tree_id は空集合
         assert!(read_tree(&connection, "missing").unwrap().is_empty());
+    }
+}
+
+mod latest_row_for_node_with_event_types_tests {
+    use super::*;
+
+    #[test]
+    fn test_node最新事実取得_対象nodeとevent種別のうち最大seqを返す() {
+        // Given: 対象 node の活動・終了・Stopと、対象外の種別・別 node の行
+        let connection = connection();
+        for (node_execution_id, event_type) in [
+            ("session-node", "agent_activity_observed"),
+            ("session-node", "process_exited"),
+            ("session-node", "stop_received"),
+            ("session-node", "submit_received"),
+            ("other-node", "agent_activity_observed"),
+        ] {
+            let mut event = row("tree-1", node_execution_id, None);
+            event.event_type = event_type.to_string();
+            append_node_event(&connection, &event, 10).unwrap();
+        }
+
+        // When: 活動導出に使う3種だけを対象に最新行を読む
+        let latest = latest_row_for_node_with_event_types(
+            &connection,
+            "session-node",
+            &["agent_activity_observed", "process_exited", "stop_received"],
+        )
+        .unwrap()
+        .unwrap();
+
+        // Then: 対象3種・対象 node のうち seq 最大のStop行が返る
+        assert_eq!(latest.seq, 3);
+        assert_eq!(latest.node_execution_id, "session-node");
+        assert_eq!(latest.event_type, "stop_received");
     }
 }
 

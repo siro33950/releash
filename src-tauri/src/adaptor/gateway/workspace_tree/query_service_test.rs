@@ -4,19 +4,21 @@ use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStor
 use crate::adaptor::gateway::workflow::test_support::{
     seed_workflow_session_facts, WorkflowSessionFactSeed,
 };
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+use crate::domain::agent_session::aggregates::{
+    AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
+};
 use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowExecutionArchiveSnapshot,
-    WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
+    AgentSessionActivity, ExecutionOrigin, ExecutionStatus, NodeFact, StopReceivedFact, TokenUsage,
+    WorkflowExecutionArchiveSnapshot, WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
 };
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
 use crate::usecase::agent_session::{
-    AgentSessionActivityDto, AgentSessionOperationsDto, AgentSessionProviderDto,
+    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionUsecase,
 };
 
 struct EmptyArchives;
@@ -83,6 +85,455 @@ impl WorkflowExecutionArchiveRepository for ArchivedExecution {
             .into_iter()
             .collect();
         Ok(WorkflowExecutionArchiveSnapshot { records })
+    }
+}
+
+fn assert_working_session_projection(store: Arc<LocalEventStore>) {
+    let workspace = WorkspaceIdentity::new("workspace-activity-read");
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
+        panic!("standalone Session must be projected as a node");
+    };
+    assert_eq!(node.status, "active");
+    let detail = query
+        .node_detail(&workspace, &node.id)
+        .unwrap()
+        .expect("Session detail must exist");
+    assert_eq!(detail.status, "running");
+    assert_eq!(detail.status_classification, "active");
+    let snapshot_json = serde_json::to_string(&snapshot).unwrap();
+    let detail_json = serde_json::to_string(&detail).unwrap();
+    assert!(!snapshot_json.contains("\"activity\":"));
+    assert!(!detail_json.contains("\"activity\":"));
+}
+
+fn assert_workflow_child_activity_projection(
+    store: Arc<LocalEventStore>,
+    expected_classification: &str,
+) {
+    let workspace = WorkspaceIdentity::new("/repo/workflow-child-activity");
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let WorkspaceTreeItemDto::Sequence(sequence) = &snapshot.nodes[0] else {
+        panic!("workflow root must be projected as a sequence");
+    };
+    let WorkspaceTreeItemDto::Node(node) = &sequence.children[0] else {
+        panic!("workflow child Session must be projected as a node");
+    };
+    assert_eq!(node.status, expected_classification);
+    let detail = query
+        .node_detail(&workspace, &node.id)
+        .unwrap()
+        .expect("workflow child Session detail must exist");
+    assert_eq!(detail.status, "running");
+    assert_eq!(detail.status_classification, expected_classification);
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_記録済み活動状態を一覧と詳細へ反映し再起動後も再現する() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            "standalone-activity-session",
+            WorkspaceIdentity::new("workspace-activity-read"),
+            "/repo/activity-read",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("standalone-activity-session").unwrap(),
+            "create-activity-read-session",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            "standalone-activity-session",
+            AgentSessionActivity::Working,
+            "observe-working-for-read",
+        )
+        .await
+        .unwrap();
+    drop(sessions);
+
+    assert_working_session_projection(store.clone());
+    drop(store);
+
+    let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    assert_working_session_projection(reopened);
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_活動未観測のsessionを一覧と詳細でattentionにする() {
+    // Given: create 後に活動事実を一度も記録していない単独 Session
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-initial-activity");
+    let session_id = "standalone-initial-activity";
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "/repo/initial-activity",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-initial-activity-session",
+        )
+        .await
+        .unwrap();
+    let records =
+        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, session_id).unwrap();
+    assert!(!records
+        .iter()
+        .any(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_))));
+
+    // When: Workspace query service から一覧と詳細を読む
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
+        panic!("standalone Session must be projected as a node");
+    };
+    let detail = query
+        .node_detail(&workspace, &node.id)
+        .unwrap()
+        .expect("Session detail must exist");
+
+    // Then: fold と projection を通った一覧・詳細の双方が attention になる
+    assert_eq!(node.status, "attention");
+    assert_eq!(detail.status, "running");
+    assert_eq!(detail.status_classification, "attention");
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_resume直後のsessionを一覧と詳細でattentionにする() {
+    // Given: Working の後に正常終了し、provider resume が完了した単独 Session
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-resumed-activity");
+    let session_id = "standalone-resumed-activity";
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "/repo/resumed-activity",
+            ProviderKind::Claude,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-resumed-activity-session",
+        )
+        .await
+        .unwrap();
+    sessions
+        .associate_provider_session(
+            session_id,
+            "provider-resumed-activity",
+            None,
+            "associate-resumed-activity-session",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            session_id,
+            AgentSessionActivity::Working,
+            "observe-working-before-resume",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_process_exit(session_id, Some(0), "observe-exit-before-resume")
+        .await
+        .unwrap();
+    sessions
+        .complete_resume(
+            session_id,
+            AgentSessionRecoveryResult::Succeeded,
+            "complete-provider-resume",
+        )
+        .await
+        .unwrap();
+
+    // When: Workspace query service から一覧と詳細を読む
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+    let snapshot = query.workspace_tree(&workspace).unwrap();
+    let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
+        panic!("standalone Session must be projected as a node");
+    };
+    let detail = query
+        .node_detail(&workspace, &node.id)
+        .unwrap()
+        .expect("Session detail must exist");
+
+    // Then: resume 後に新しい活動を観測するまでは一覧・詳細の双方が attention になる
+    assert_eq!(node.status, "attention");
+    assert_eq!(detail.status, "running");
+    assert_eq!(detail.status_classification, "attention");
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と詳細へ反映し再起動後も再現する(
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow-child-activity",
+            request: "test child activity",
+            worktree_path: "/repo/workflow-child-activity",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000001700",
+            node_execution_id: "workflow-child-node",
+            session_id: "workflow-child-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .observe_activity(
+            "workflow-child-session",
+            AgentSessionActivity::Working,
+            "observe-workflow-child-working",
+        )
+        .await
+        .unwrap();
+    drop(sessions);
+
+    assert_workflow_child_activity_projection(store.clone(), "active");
+    drop(store);
+
+    let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    assert_workflow_child_activity_projection(reopened.clone(), "active");
+
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(reopened.clone())));
+    sessions
+        .observe_activity(
+            "workflow-child-session",
+            AgentSessionActivity::AwaitingAnswer,
+            "observe-workflow-child-awaiting-answer",
+        )
+        .await
+        .unwrap();
+    assert_workflow_child_activity_projection(reopened, "attention");
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳細へ毎回反映する() {
+    // Given: 実行中の単独 Session と同じ store を読む Workspace query
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-activity-round-trip");
+    let session_id = "standalone-activity-round-trip";
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "/repo/activity-round-trip",
+            ProviderKind::Claude,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-activity-round-trip",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let query = SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+    let projected_statuses = || {
+        let snapshot = query.workspace_tree(&workspace).unwrap();
+        let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
+            panic!("standalone Session must be projected as a node");
+        };
+        let detail = query
+            .node_detail(&workspace, &node.id)
+            .unwrap()
+            .expect("Session detail must exist");
+        (
+            node.status.clone(),
+            detail.status,
+            detail.status_classification,
+        )
+    };
+
+    // When: Working と AwaitingInstruction を2往復させる
+    let transitions = [
+        (AgentSessionActivity::Working, "active"),
+        (AgentSessionActivity::AwaitingInstruction, "attention"),
+        (AgentSessionActivity::Working, "active"),
+        (AgentSessionActivity::AwaitingInstruction, "attention"),
+        (AgentSessionActivity::Working, "active"),
+    ];
+    let mut observed_classifications = Vec::new();
+    for (index, (activity, expected_classification)) in transitions.into_iter().enumerate() {
+        let request_id = format!("activity-round-trip-{index}");
+        sessions
+            .observe_activity(session_id, activity, &request_id)
+            .await
+            .unwrap();
+
+        // Then: 一覧の status と詳細の statusClassification が毎回追従する
+        let (tree_status, detail_status, detail_classification) = projected_statuses();
+        assert_eq!(tree_status, expected_classification);
+        assert_eq!(detail_status, "running");
+        assert_eq!(detail_classification, expected_classification);
+        observed_classifications.push(tree_status);
+    }
+    assert_eq!(
+        observed_classifications,
+        ["active", "attention", "active", "attention", "active"]
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細へ反映し再起動後も再現する() {
+    // Given: Working の活動観測がある実行中の単独 Session
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-stop-activity-read");
+    let session_id = "standalone-stop-activity-read";
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "/repo/stop-activity-read",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-stop-activity-read-session",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            session_id,
+            AgentSessionActivity::Working,
+            "observe-working-before-stop",
+        )
+        .await
+        .unwrap();
+    let meta = crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, session_id)
+        .unwrap()
+        .last()
+        .unwrap()
+        .meta
+        .clone();
+    let append_stop = |timestamp_ms| {
+        crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::StopReceived(StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+            timestamp_ms,
+        )
+        .unwrap();
+    };
+    let projected_classification = |store: Arc<LocalEventStore>| {
+        let repository = SqliteWorkspaceTreeRepository::new(store);
+        let query =
+            SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+        let snapshot = query.workspace_tree(&workspace).unwrap();
+        let WorkspaceTreeItemDto::Node(node) = &snapshot.nodes[0] else {
+            panic!("standalone Session must be projected as a node");
+        };
+        let detail = query
+            .node_detail(&workspace, &node.id)
+            .unwrap()
+            .expect("Session detail must exist");
+        assert_eq!(detail.status, "running");
+        (node.status.clone(), detail.status_classification)
+    };
+
+    // When: 活動観測を追加せず StopReceived だけを追記する
+    append_stop(10);
+
+    // Then: 一覧と詳細は Stop 事実から attention を導出し、再起動後も再現する
+    assert_eq!(
+        projected_classification(store.clone()),
+        ("attention".to_string(), "attention".to_string())
+    );
+    drop(sessions);
+    drop(store);
+    let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    assert_eq!(
+        projected_classification(reopened.clone()),
+        ("attention".to_string(), "attention".to_string())
+    );
+
+    // When / Then: 後続の Working が青へ戻し、再度の Stop と Working にも同じく追従する
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(reopened.clone())));
+    for index in 0..2 {
+        sessions
+            .observe_activity(
+                session_id,
+                AgentSessionActivity::Working,
+                &format!("observe-working-after-stop-{index}"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            projected_classification(reopened.clone()),
+            ("active".to_string(), "active".to_string())
+        );
+        if index == 0 {
+            crate::adaptor::gateway::workflow::fact_log::append_single_fact(
+                &reopened,
+                &meta,
+                &NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+                20,
+            )
+            .unwrap();
+            assert_eq!(
+                projected_classification(reopened.clone()),
+                ("attention".to_string(), "attention".to_string())
+            );
+        }
     }
 }
 
@@ -358,6 +809,7 @@ fn node() -> WorkspaceTreeNode {
         title: "Review".to_string(),
         status: WorkspaceNodeStatus::Waiting,
         status_classification: WorkspaceNodeStatusClassification::Attention,
+        activity: Some(crate::domain::workflow::AgentSessionActivity::AwaitingInstruction),
         error_reason: None,
         updated_at_bits: 1.0f64.to_bits(),
         execution_id: None,
@@ -375,6 +827,7 @@ fn node() -> WorkspaceTreeNode {
         can_close: false,
         can_stop: false,
         can_resume: false,
+        resume_eligible: false,
         recovery_owner_reason: None,
         resume_unavailable_reason: None,
         can_abort: false,
@@ -389,6 +842,7 @@ fn tree_owner(execution_id: &str) -> WorkspaceTreeNode {
     let mut owner = node();
     owner.id = execution_id.to_string();
     owner.kind = WorkspaceNodeKind::Workflow;
+    owner.activity = None;
     owner.title = "Workflow owner".to_string();
     owner.status = WorkspaceNodeStatus::Running;
     owner.execution_id = Some(execution_id.to_string());
@@ -418,6 +872,8 @@ fn child_node(
     child.id = id.to_string();
     child.parent_id = Some(parent_id.to_string());
     child.kind = kind;
+    child.activity = (kind == WorkspaceNodeKind::WorkflowSession)
+        .then(crate::domain::workflow::AgentSessionActivity::default);
     child.title = title.to_string();
     child.status = WorkspaceNodeStatus::Running;
     child.execution_id = Some(execution_id.to_string());
@@ -446,7 +902,6 @@ fn open_session(id: &str) -> AgentSessionItemDto {
             can_delete: false,
             can_resume: false,
         },
-        activity: AgentSessionActivityDto::Idle,
         last_exit_abnormal: false,
     }
 }
@@ -960,6 +1415,7 @@ fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由�
         "paused",
     );
     paused.status = WorkspaceNodeStatus::Paused;
+    paused.resume_eligible = true;
     let tree = WorkspaceTree::restore("/repo", vec![owner, paused]).unwrap();
 
     // When

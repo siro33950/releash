@@ -149,6 +149,22 @@ impl RuntimeNodeExecutionStatus {
 pub struct RuntimeNodeExecutionFailure {
     pub reason: String,
     pub kind: NodeExecutionFailureKind,
+    pub origin: RuntimeNodeExecutionFailureOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeNodeExecutionFailureOrigin {
+    Runtime,
+    ProviderProcessExit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeNodeResumePreviousState {
+    Paused,
+    ProviderProcessFailed {
+        reason: String,
+        kind: NodeExecutionFailureKind,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +226,27 @@ impl RuntimeNodeExecution {
         self.kind == NodeKindName::Command && self.status == RuntimeNodeExecutionStatus::Paused
     }
 
+    pub fn can_resume(&self) -> bool {
+        self.resume_previous_state().is_some()
+    }
+
+    pub fn resume_previous_state(&self) -> Option<RuntimeNodeResumePreviousState> {
+        match (self.kind, self.status, self.failure.as_ref()) {
+            (_, RuntimeNodeExecutionStatus::Paused, _) => {
+                Some(RuntimeNodeResumePreviousState::Paused)
+            }
+            (NodeKindName::Session, RuntimeNodeExecutionStatus::Failed, Some(failure))
+                if failure.origin == RuntimeNodeExecutionFailureOrigin::ProviderProcessExit =>
+            {
+                Some(RuntimeNodeResumePreviousState::ProviderProcessFailed {
+                    reason: failure.reason.clone(),
+                    kind: failure.kind,
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub fn prepare_command(&mut self, display_command: String) -> TransitionOutcome {
         if self.display_command.as_deref() == Some(display_command.as_str()) {
             return TransitionOutcome::AlreadyApplied;
@@ -237,14 +274,32 @@ impl RuntimeNodeExecution {
         }
     }
 
+    fn pause_after_process_exit(&mut self) -> TransitionOutcome {
+        match self.status {
+            RuntimeNodeExecutionStatus::Paused => TransitionOutcome::AlreadyApplied,
+            RuntimeNodeExecutionStatus::Running if self.kind == NodeKindName::Session => {
+                self.transition_status(RuntimeNodeExecutionStatus::Paused, None)
+            }
+            _ => TransitionOutcome::NotApplicable,
+        }
+    }
+
     pub fn resume(&mut self) -> TransitionOutcome {
         if self.status == RuntimeNodeExecutionStatus::Running {
             return TransitionOutcome::AlreadyApplied;
         }
-        if self.status != RuntimeNodeExecutionStatus::Paused {
-            return TransitionOutcome::NotApplicable;
+        match self.resume_previous_state() {
+            Some(RuntimeNodeResumePreviousState::Paused) => {
+                self.transition_status(RuntimeNodeExecutionStatus::Running, None)
+            }
+            Some(RuntimeNodeResumePreviousState::ProviderProcessFailed { .. }) => {
+                self.status = RuntimeNodeExecutionStatus::Running;
+                self.failure = None;
+                self.completed_at = None;
+                TransitionOutcome::Applied
+            }
+            None => TransitionOutcome::NotApplicable,
         }
-        self.transition_status(RuntimeNodeExecutionStatus::Running, None)
     }
 
     pub fn resume_after_approval(&mut self) -> TransitionOutcome {
@@ -310,38 +365,42 @@ impl RuntimeNodeExecution {
         &mut self,
         reason: String,
         kind: NodeExecutionFailureKind,
+        origin: RuntimeNodeExecutionFailureOrigin,
         completed_at: f64,
     ) -> TransitionOutcome {
         if self.status == RuntimeNodeExecutionStatus::Failed
-            && self
-                .failure
-                .as_ref()
-                .is_some_and(|failure| failure.reason == reason && failure.kind == kind)
+            && self.failure.as_ref().is_some_and(|failure| {
+                failure.reason == reason && failure.kind == kind && failure.origin == origin
+            })
         {
             return TransitionOutcome::AlreadyApplied;
         }
         if !self.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
-        self.record_failed(reason, kind, completed_at)
+        self.record_failed(reason, kind, origin, completed_at)
     }
 
     pub fn record_failed(
         &mut self,
         reason: String,
         kind: NodeExecutionFailureKind,
+        origin: RuntimeNodeExecutionFailureOrigin,
         completed_at: f64,
     ) -> TransitionOutcome {
         if self.status == RuntimeNodeExecutionStatus::Failed
-            && self
-                .failure
-                .as_ref()
-                .is_some_and(|failure| failure.reason == reason && failure.kind == kind)
+            && self.failure.as_ref().is_some_and(|failure| {
+                failure.reason == reason && failure.kind == kind && failure.origin == origin
+            })
         {
             return TransitionOutcome::AlreadyApplied;
         }
         self.status = RuntimeNodeExecutionStatus::Failed;
-        self.failure = Some(RuntimeNodeExecutionFailure { reason, kind });
+        self.failure = Some(RuntimeNodeExecutionFailure {
+            reason,
+            kind,
+            origin,
+        });
         self.completed_at = Some(completed_at);
         TransitionOutcome::Applied
     }
@@ -2442,6 +2501,26 @@ impl WorkflowExecution {
         outcome
     }
 
+    pub fn derive_session_process_exit(
+        &mut self,
+        node_execution_id: &str,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let Some(execution) = self
+            .runtime
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        else {
+            return TransitionOutcome::NotApplicable;
+        };
+        let outcome = execution.pause_after_process_exit();
+        if outcome == TransitionOutcome::Applied {
+            self.runtime.updated_at = timestamp;
+        }
+        outcome
+    }
+
     pub fn resume_node_execution(
         &mut self,
         node_execution_id: &str,
@@ -2830,7 +2909,32 @@ impl WorkflowExecution {
         disposition: FailureDisposition,
         timestamp: f64,
     ) -> TransitionOutcome {
-        let outcome = self.fail_node_execution(node_execution_id, reason, kind, timestamp);
+        self.fail_leaf_execution_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            disposition,
+            RuntimeNodeExecutionFailureOrigin::Runtime,
+            timestamp,
+        )
+    }
+
+    fn fail_leaf_execution_with_origin(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        disposition: FailureDisposition,
+        origin: RuntimeNodeExecutionFailureOrigin,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        let outcome = self.fail_node_execution_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            origin,
+            timestamp,
+        );
         if outcome != TransitionOutcome::Applied {
             return outcome;
         }
@@ -3072,6 +3176,39 @@ impl WorkflowExecution {
         kind: NodeExecutionFailureKind,
         timestamp: f64,
     ) -> Result<(), String> {
+        self.derive_leaf_failed_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            RuntimeNodeExecutionFailureOrigin::Runtime,
+            timestamp,
+        )
+    }
+
+    pub fn derive_leaf_process_exit_failed(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        timestamp: f64,
+    ) -> Result<(), String> {
+        self.derive_leaf_failed_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            RuntimeNodeExecutionFailureOrigin::ProviderProcessExit,
+            timestamp,
+        )
+    }
+
+    fn derive_leaf_failed_with_origin(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        origin: RuntimeNodeExecutionFailureOrigin,
+        timestamp: f64,
+    ) -> Result<(), String> {
         let decision = self.apply_turn_completion(CanonicalNodeFact::Failed {
             reason: reason.clone(),
             kind,
@@ -3079,11 +3216,12 @@ impl WorkflowExecution {
         if decision.application == TurnCompletionApplication::Superseded {
             return Ok(());
         }
-        let _ = self.fail_leaf_execution(
+        let _ = self.fail_leaf_execution_with_origin(
             node_execution_id,
             reason,
             kind,
             FailureDisposition::Terminal,
+            origin,
             timestamp,
         );
         let Some(target) = self.node_execution(node_execution_id).cloned() else {
@@ -3293,6 +3431,39 @@ impl WorkflowExecution {
         kind: NodeExecutionFailureKind,
         timestamp: f64,
     ) -> TransitionOutcome {
+        self.fail_node_execution_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            RuntimeNodeExecutionFailureOrigin::Runtime,
+            timestamp,
+        )
+    }
+
+    pub fn restore_provider_process_exit_failure(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        timestamp: f64,
+    ) -> TransitionOutcome {
+        self.fail_node_execution_with_origin(
+            node_execution_id,
+            reason,
+            kind,
+            RuntimeNodeExecutionFailureOrigin::ProviderProcessExit,
+            timestamp,
+        )
+    }
+
+    fn fail_node_execution_with_origin(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: NodeExecutionFailureKind,
+        origin: RuntimeNodeExecutionFailureOrigin,
+        timestamp: f64,
+    ) -> TransitionOutcome {
         let Some(execution) = self
             .runtime
             .node_executions
@@ -3301,7 +3472,7 @@ impl WorkflowExecution {
         else {
             return TransitionOutcome::NotApplicable;
         };
-        let outcome = execution.fail(reason, kind, timestamp);
+        let outcome = execution.fail(reason, kind, origin, timestamp);
         if outcome == TransitionOutcome::Applied {
             self.runtime.updated_at = timestamp;
         }
@@ -4569,6 +4740,100 @@ mod tests {
             WorkflowEvent::NodeStarted { node_execution_id, node_name, .. }
                 if node_execution_id == "node-execution-2" && node_name == "verify"
         )));
+    }
+
+    #[test]
+    fn test_runtime_node_resume可否_全kindとstatusとfailure由来で直前状態値と一致する() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        let base = execution.node_executions()[0].clone();
+
+        let assert_case =
+            |kind,
+             status,
+             failure_origin: Option<RuntimeNodeExecutionFailureOrigin>,
+             expected_previous_state: Option<RuntimeNodeResumePreviousState>| {
+                let mut node = base.clone();
+                node.kind = kind;
+                node.status = status;
+                node.failure = failure_origin.map(|origin| RuntimeNodeExecutionFailure {
+                    reason: "failed".to_string(),
+                    kind: NodeExecutionFailureKind::InfrastructureCrash,
+                    origin,
+                });
+                let expected_can_resume = expected_previous_state.is_some();
+
+                assert_eq!(
+                    node.resume_previous_state(),
+                    expected_previous_state,
+                    "{kind:?} {status:?}"
+                );
+                assert_eq!(
+                    node.can_resume(),
+                    expected_can_resume,
+                    "{kind:?} {status:?}"
+                );
+                assert_eq!(
+                    node.resume(),
+                    match (status, expected_can_resume) {
+                        (RuntimeNodeExecutionStatus::Running, _) => {
+                            TransitionOutcome::AlreadyApplied
+                        }
+                        (_, true) => TransitionOutcome::Applied,
+                        _ => TransitionOutcome::NotApplicable,
+                    },
+                    "{kind:?} {status:?}"
+                );
+            };
+
+        for kind in [
+            NodeKindName::Command,
+            NodeKindName::Session,
+            NodeKindName::Fanout,
+            NodeKindName::Sequence,
+        ] {
+            for status in [
+                RuntimeNodeExecutionStatus::Running,
+                RuntimeNodeExecutionStatus::Paused,
+                RuntimeNodeExecutionStatus::WaitingApproval,
+                RuntimeNodeExecutionStatus::Succeeded,
+                RuntimeNodeExecutionStatus::Aborted,
+            ] {
+                assert_case(
+                    kind,
+                    status,
+                    None,
+                    (status == RuntimeNodeExecutionStatus::Paused)
+                        .then_some(RuntimeNodeResumePreviousState::Paused),
+                );
+            }
+            for origin in [
+                RuntimeNodeExecutionFailureOrigin::Runtime,
+                RuntimeNodeExecutionFailureOrigin::ProviderProcessExit,
+            ] {
+                let expected_previous_state = (kind == NodeKindName::Session
+                    && origin == RuntimeNodeExecutionFailureOrigin::ProviderProcessExit)
+                    .then(|| RuntimeNodeResumePreviousState::ProviderProcessFailed {
+                        reason: "failed".to_string(),
+                        kind: NodeExecutionFailureKind::InfrastructureCrash,
+                    });
+                assert_case(
+                    kind,
+                    RuntimeNodeExecutionStatus::Failed,
+                    Some(origin),
+                    expected_previous_state,
+                );
+            }
+        }
     }
 
     #[test]

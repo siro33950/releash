@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::domain::agent_session::aggregates::AgentSessionMutationOutcome;
 use crate::domain::agent_session::repository::{
     AgentSessionRepositoryError, VersionedAgentSession,
 };
@@ -7,7 +8,10 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleIngressResult, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
     ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation, ScopedProviderLifecycleEvent,
 };
-use crate::usecase::agent_session::{AgentSessionUsecase, AgentSessionUsecaseError};
+use crate::domain::workflow::AgentSessionActivity;
+use crate::usecase::agent_session::{
+    AgentSessionChangeNotifier, AgentSessionUsecase, AgentSessionUsecaseError,
+};
 
 use super::{
     ProviderHookHealthUsecase, ProviderHookHealthUsecaseError, ProviderLifecycleUsecase,
@@ -61,6 +65,7 @@ pub(crate) struct ProviderLifecycleIngressUsecase {
     hook_health: Arc<ProviderHookHealthUsecase>,
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
     execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
+    change_notifier: Arc<dyn AgentSessionChangeNotifier>,
 }
 
 #[async_trait::async_trait]
@@ -87,6 +92,7 @@ impl ProviderLifecycleIngressUsecase {
         hook_health: Arc<ProviderHookHealthUsecase>,
         session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
         execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
+        change_notifier: Arc<dyn AgentSessionChangeNotifier>,
     ) -> Self {
         Self {
             lifecycle,
@@ -94,6 +100,7 @@ impl ProviderLifecycleIngressUsecase {
             hook_health,
             session_start_transaction,
             execution_tree_stop_transaction,
+            change_notifier,
         }
     }
 
@@ -107,95 +114,137 @@ impl ProviderLifecycleIngressUsecase {
         let agent_session_id = signal.scope().agent_session_id().to_string();
         let binding_id = signal.binding_id().to_string();
         let kind = signal.clone().into_kind();
-        if let ProviderLifecycleSignalKind::SessionStarted {
-            provider_session_id,
-            transcript_ref,
-        } = kind
-        {
-            let _operation = self
-                .sessions
-                .lock_operation(&agent_session_id)
-                .await
-                .map_err(map_session_error)?;
-            let prepared = self
-                .sessions
-                .prepare_provider_session_association(
-                    &agent_session_id,
-                    &provider_session_id,
-                    transcript_ref.as_deref(),
-                )
-                .await
-                .map_err(map_session_error)?;
-            let has_session_changes = !prepared.session().uncommitted_events().is_empty();
-            let transaction = self.session_start_transaction.clone();
-            let caller_request_id = format!("provider-session-associated.{binding_id}");
-            let result = self
-                .lifecycle
-                .receive_with_commit(
-                    slot_id,
-                    capability,
-                    signal,
-                    move |lifecycle_events| async move {
-                        if lifecycle_events.is_empty() && !has_session_changes {
-                            return Ok(());
-                        }
-                        transaction
-                            .commit_session_started(prepared, lifecycle_events, &caller_request_id)
-                            .await
-                            .map(|_| ())
-                            .map_err(map_session_repository_error)
-                    },
-                )
-                .await?;
-            if matches!(
-                result,
-                ProviderLifecycleIngressResult::Applied | ProviderLifecycleIngressResult::Duplicate
-            ) {
-                let caller_request_id = format!(
-                    "provider-session-started.{binding_id}.{}",
-                    crate::other::id::unique_simple_id()
-                );
-                self.hook_health
-                    .record_session_started(provider, slot_id.as_str(), &caller_request_id)
+        match kind {
+            ProviderLifecycleSignalKind::SessionStarted {
+                provider_session_id,
+                transcript_ref,
+            } => {
+                let _operation = self
+                    .sessions
+                    .lock_operation(&agent_session_id)
                     .await
-                    .map_err(map_hook_health_error)?;
+                    .map_err(map_session_error)?;
+                let prepared = self
+                    .sessions
+                    .prepare_provider_session_association(
+                        &agent_session_id,
+                        &provider_session_id,
+                        transcript_ref.as_deref(),
+                    )
+                    .await
+                    .map_err(map_session_error)?;
+                let has_session_changes = !prepared.session().uncommitted_events().is_empty();
+                let transaction = self.session_start_transaction.clone();
+                let caller_request_id = format!("provider-session-associated.{binding_id}");
+                let result = self
+                    .lifecycle
+                    .receive_with_commit(
+                        slot_id,
+                        capability,
+                        signal,
+                        move |lifecycle_events| async move {
+                            if lifecycle_events.is_empty() && !has_session_changes {
+                                return Ok(());
+                            }
+                            transaction
+                                .commit_session_started(
+                                    prepared,
+                                    lifecycle_events,
+                                    &caller_request_id,
+                                )
+                                .await
+                                .map(|_| ())
+                                .map_err(map_session_repository_error)
+                        },
+                    )
+                    .await?;
+                if matches!(
+                    result,
+                    ProviderLifecycleIngressResult::Applied
+                        | ProviderLifecycleIngressResult::Duplicate
+                ) {
+                    let caller_request_id = format!(
+                        "provider-session-started.{binding_id}.{}",
+                        crate::other::id::unique_simple_id()
+                    );
+                    self.hook_health
+                        .record_session_started(provider, slot_id.as_str(), &caller_request_id)
+                        .await
+                        .map_err(map_hook_health_error)?;
+                }
+                Ok(result)
             }
-            return Ok(result);
-        }
-        if matches!(kind, ProviderLifecycleSignalKind::StopObserved { .. }) {
-            let _operation = self
-                .sessions
-                .lock_operation(&agent_session_id)
-                .await
-                .map_err(map_session_error)?;
-            let session = self
-                .sessions
-                .find(&agent_session_id)
-                .await
-                .map_err(map_session_error)?
-                .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
-            let tree_location = session.session().tree_location().clone();
-            let transaction = self.execution_tree_stop_transaction.clone();
-            let command = ProviderExecutionTreeStopCommand {
-                agent_session_id,
-                tree_id: tree_location.tree_id().to_string(),
-                node_execution_id: tree_location.node_execution_id().to_string(),
-                binding_id,
-            };
-            return self
-                .lifecycle
-                .receive_with_commit(
+            ProviderLifecycleSignalKind::StopObserved { .. } => {
+                let _operation = self
+                    .sessions
+                    .lock_operation(&agent_session_id)
+                    .await
+                    .map_err(map_session_error)?;
+                let session = self
+                    .sessions
+                    .find(&agent_session_id)
+                    .await
+                    .map_err(map_session_error)?
+                    .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
+                let tree_location = session.session().tree_location().clone();
+                let transaction = self.execution_tree_stop_transaction.clone();
+                let command = ProviderExecutionTreeStopCommand {
+                    agent_session_id,
+                    tree_id: tree_location.tree_id().to_string(),
+                    node_execution_id: tree_location.node_execution_id().to_string(),
+                    binding_id,
+                };
+                self.lifecycle
+                    .receive_with_commit(
+                        slot_id,
+                        capability,
+                        signal,
+                        move |lifecycle_events| async move {
+                            transaction
+                                .commit_provider_stop(command, lifecycle_events)
+                                .await
+                        },
+                    )
+                    .await
+            }
+            ProviderLifecycleSignalKind::StopFailed { .. } => {
+                self.receive_activity_observation(
                     slot_id,
                     capability,
                     signal,
-                    move |lifecycle_events| async move {
-                        transaction
-                            .commit_provider_stop(command, lifecycle_events)
-                            .await
-                    },
+                    AgentSessionActivity::AwaitingInstruction,
+                    "provider-stop-failed-activity",
                 )
-                .await;
+                .await
+            }
+            ProviderLifecycleSignalKind::ActivityObserved { activity, .. } => {
+                self.receive_activity_observation(
+                    slot_id,
+                    capability,
+                    signal,
+                    activity,
+                    "provider-activity",
+                )
+                .await
+            }
         }
+    }
+
+    async fn receive_activity_observation(
+        &self,
+        slot_id: &ProviderLifecycleSlotId,
+        capability: &str,
+        signal: ProviderLifecycleSignal,
+        activity: AgentSessionActivity,
+        caller_request_id_prefix: &str,
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        let agent_session_id = signal.scope().agent_session_id().to_string();
+        let binding_id = signal.binding_id().to_string();
+        let _operation = self
+            .sessions
+            .lock_operation(&agent_session_id)
+            .await
+            .map_err(map_session_error)?;
         let result = self
             .lifecycle
             .receive(slot_id, capability, signal)
@@ -207,7 +256,23 @@ impl ProviderLifecycleIngressUsecase {
         ) {
             return Ok(result);
         }
-        Ok(result)
+        let observation = self
+            .sessions
+            .observe_activity(
+                &agent_session_id,
+                activity,
+                &format!(
+                    "{caller_request_id_prefix}.{binding_id}.{}",
+                    crate::other::id::unique_simple_id()
+                ),
+            )
+            .await
+            .map_err(map_session_error)?;
+        if observation.outcome == AgentSessionMutationOutcome::Applied {
+            self.change_notifier
+                .agent_session_changed(&observation.worktree_path);
+        }
+        Ok(merge_activity_outcome(result, observation.outcome))
     }
 
     pub(crate) async fn report_unavailable(
@@ -238,6 +303,17 @@ impl ProviderLifecycleIngressUsecase {
                 .map_err(map_hook_health_error)?;
         }
         Ok(result)
+    }
+}
+
+fn merge_activity_outcome(
+    lifecycle_result: ProviderLifecycleIngressResult,
+    activity_outcome: AgentSessionMutationOutcome,
+) -> ProviderLifecycleIngressResult {
+    if activity_outcome == AgentSessionMutationOutcome::Applied {
+        ProviderLifecycleIngressResult::Applied
+    } else {
+        lifecycle_result
     }
 }
 

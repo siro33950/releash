@@ -1,4 +1,4 @@
-mod agent_session_activity;
+mod agent_session_change_notifier;
 mod agent_session_exit;
 mod agent_session_history;
 mod agent_session_initial_instruction;
@@ -10,7 +10,7 @@ mod agent_session_read;
 mod provider_availability;
 mod usecase;
 
-pub(crate) use agent_session_activity::{AgentSessionActivityUsecase, AgentSessionChangeNotifier};
+pub(crate) use agent_session_change_notifier::AgentSessionChangeNotifier;
 #[cfg(test)]
 pub(crate) use agent_session_exit::AgentSessionExitPort;
 pub(crate) use agent_session_exit::AgentSessionExitUsecase;
@@ -32,9 +32,9 @@ pub(crate) use agent_session_lifecycle::{
     AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,
 };
 pub(crate) use agent_session_query::{
-    AgentSessionActivityDto, AgentSessionItemDto, AgentSessionLifecycleDto,
-    AgentSessionOperationsDto, AgentSessionProviderDto, AgentSessionQueryError,
-    AgentSessionQueryService, AgentSessionTreeLocationDto,
+    AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionOperationsDto,
+    AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
+    AgentSessionTreeLocationDto,
 };
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;

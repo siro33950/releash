@@ -17,9 +17,9 @@ use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::{
     ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact,
-    NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact, SessionAttachedFact,
-    StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
-    WorkflowEvent,
+    NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact, RuntimeFailureObservedFact,
+    SessionAttachedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
+    TreeRootFact, WorkflowEvent,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
@@ -223,6 +223,26 @@ fn fact_rows_for_events(
                     timestamp,
                 )?);
             }
+            WorkflowEvent::NodeProcessExitObserved {
+                node_execution_id,
+                exit_code,
+                failure_reason,
+                failure_kind,
+                ..
+            } => {
+                let meta = resolve(&batch_meta, node_execution_id)?;
+                rows.push(pending_row(
+                    &meta,
+                    tree_id,
+                    &NodeFact::ProcessExited(ProcessExitedFact {
+                        exit_code: *exit_code,
+                        result_summary: None,
+                        failure_reason: failure_reason.clone(),
+                        failure_kind: *failure_kind,
+                    }),
+                    timestamp,
+                )?);
+            }
             // Paused は導出（プロセス事実 + 未揃いの完了信号）であり記録しない。
             WorkflowEvent::NodePaused { .. } => {}
             WorkflowEvent::CommandSpawned {
@@ -304,14 +324,22 @@ fn fact_rows_for_events(
                 ..
             } => {
                 let meta = resolve(&batch_meta, node_execution_id)?;
-                // leaf の失敗はプロセス側の観測事実。合成子の失敗は導出。
-                if !meta.kind.is_composite_kind() {
-                    let fact = NodeFact::ProcessExited(ProcessExitedFact {
+                let fact = match meta.kind {
+                    NodeKindName::Session => Some(NodeFact::RuntimeFailureObserved(
+                        RuntimeFailureObservedFact {
+                            reason: reason.clone(),
+                            failure_kind: *failure_kind,
+                        },
+                    )),
+                    NodeKindName::Command => Some(NodeFact::ProcessExited(ProcessExitedFact {
                         exit_code: None,
                         result_summary: None,
                         failure_reason: Some(reason.clone()),
                         failure_kind: Some(*failure_kind),
-                    });
+                    })),
+                    NodeKindName::Fanout | NodeKindName::Sequence => None,
+                };
+                if let Some(fact) = fact {
                     rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
                 }
             }
@@ -604,6 +632,23 @@ pub(crate) fn read_tree_root_from(
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("node fact tree root read failed: {error:?}"))?
+        .as_ref()
+        .map(record_from_row)
+        .transpose()
+}
+
+pub(crate) fn read_latest_activity_record_for_node(
+    backend: &FactLogReadBackend,
+    node_execution_id: &str,
+) -> Result<Option<NodeFactRecord>, String> {
+    let requested = node_execution_id.to_string();
+    let event_types = NodeFact::activity_replay_event_types();
+    backend
+        .run_indexed(move |connection| {
+            node_events::latest_row_for_node_with_event_types(connection, &requested, event_types)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("node activity fact lookup failed: {error:?}"))?
         .as_ref()
         .map(record_from_row)
         .transpose()
@@ -931,6 +976,14 @@ pub(crate) fn find_session_attachment(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<(String, String)>, String> {
+    find_session_attachment_record(backend, session_id)
+        .map(|record| record.map(|record| (record.meta.tree_id, record.meta.node_execution_id)))
+}
+
+pub(crate) fn find_session_attachment_record(
+    backend: &FactLogReadBackend,
+    session_id: &str,
+) -> Result<Option<NodeFactRecord>, String> {
     let session = session_id.to_string();
     let query_session = session.clone();
     let row = backend
@@ -949,5 +1002,5 @@ pub(crate) fn find_session_attachment(
     if fact.session_id != session {
         return Err("session attachment index identity mismatch".to_string());
     }
-    Ok(Some((record.meta.tree_id, record.meta.node_execution_id)))
+    Ok(Some(record))
 }
