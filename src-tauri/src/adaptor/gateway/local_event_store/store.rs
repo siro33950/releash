@@ -6,7 +6,7 @@
 //! exchange messages with those threads.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
@@ -756,6 +756,7 @@ impl LocalEventStore {
                                 }
                             }
                             WriteRequest::NodeEventAppend(request) => {
+                                fault.wait_before_node_event_append_if_armed();
                                 let timestamp_ms = request
                                     .timestamp_ms
                                     .unwrap_or_else(|| clock.now_ms())
@@ -772,7 +773,11 @@ impl LocalEventStore {
                                     );
                                     NodeEventWriteError::StorageUnavailable
                                 });
-                                let _ = request.reply.send(result);
+                                if fault.take_drop_reply() {
+                                    drop(request.reply);
+                                } else {
+                                    let _ = request.reply.send(result);
+                                }
                             }
                         },
                         QueuePop::Idle => {}
@@ -834,6 +839,16 @@ impl LocalEventStore {
     #[cfg(test)]
     pub fn fault_injector(&self) -> &Arc<FaultInjector> {
         &self.fault
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_write_queue_for_tests(&self) {
+        self.queue.close();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_write_request_count(&self) -> usize {
+        self.queue.pending_request_count()
     }
 
     /// Validate and encode a batch before queue admission (design step 1).
@@ -975,12 +990,12 @@ impl LocalEventStore {
     /// spans more than this one row.
     ///
     /// `timestamp_ms` は事実の発生時刻。None なら store の clock で刻む。
-    pub(crate) async fn append_node_event(
+    pub(crate) fn append_node_event_blocking(
         &self,
         row: NewNodeEventRow,
         timestamp_ms: Option<i64>,
     ) -> Result<i64, NodeEventWriteError> {
-        let (reply, receiver) = oneshot::channel();
+        let (reply, receiver) = mpsc::sync_channel(1);
         match self
             .queue
             .admit(WriteRequest::NodeEventAppend(NodeEventAppendRequest {
@@ -993,7 +1008,7 @@ impl LocalEventStore {
             Err(AdmitRejection::Closed) => return Err(NodeEventWriteError::OutcomeUnknown),
         }
         receiver
-            .await
+            .recv()
             .map_err(|_| NodeEventWriteError::OutcomeUnknown)?
     }
 

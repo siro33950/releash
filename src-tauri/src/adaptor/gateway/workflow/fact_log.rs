@@ -431,24 +431,12 @@ pub(crate) fn append_pending_rows_blocking(
     if rows.is_empty() {
         return Ok(());
     }
-    let store = Arc::clone(store);
-    std::thread::scope(|scope| {
-        scope
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| format!("failed to create fact append runtime: {error}"))?;
-                for pending in rows {
-                    runtime
-                        .block_on(store.append_node_event(pending.row, Some(pending.timestamp_ms)))
-                        .map_err(|error| format!("node fact append failed: {error}"))?;
-                }
-                Ok::<(), String>(())
-            })
-            .join()
-            .map_err(|_| "node fact append worker panicked".to_string())?
-    })
+    for pending in rows {
+        store
+            .append_node_event_blocking(pending.row, Some(pending.timestamp_ms))
+            .map_err(|error| format!("node fact append failed: {error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
