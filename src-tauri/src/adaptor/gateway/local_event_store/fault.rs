@@ -6,7 +6,69 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
+#[cfg(test)]
+use std::time::Duration;
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct NodeEventAppendStallState {
+    armed: bool,
+    arrived: bool,
+    released: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct NodeEventAppendStall {
+    state: Mutex<NodeEventAppendStallState>,
+    arrived: Condvar,
+    released: Condvar,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct NodeEventAppendStallGuard {
+    stall: Arc<NodeEventAppendStall>,
+}
+
+#[cfg(test)]
+impl NodeEventAppendStallGuard {
+    pub(crate) fn wait_until_arrived(&self) {
+        let state = self
+            .stall
+            .state
+            .lock()
+            .expect("node event append stall poisoned");
+        let (state, _) = self
+            .stall
+            .arrived
+            .wait_timeout_while(state, Duration::from_secs(10), |state| !state.arrived)
+            .expect("node event append stall poisoned");
+        assert!(
+            state.arrived,
+            "writer did not reach the node event append stall"
+        );
+    }
+
+    pub(crate) fn release(&self) {
+        let mut state = self
+            .stall
+            .state
+            .lock()
+            .expect("node event append stall poisoned");
+        state.released = true;
+        drop(state);
+        self.stall.released.notify_all();
+    }
+}
+
+#[cfg(test)]
+impl Drop for NodeEventAppendStallGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitialCreateFaultPoint {
@@ -48,6 +110,8 @@ pub struct FaultInjector {
     schema_fail_before_readback: AtomicUsize,
     initial_create_fault_point: AtomicUsize,
     maintenance_fault_point: AtomicUsize,
+    #[cfg(test)]
+    node_event_append_stall: Arc<NodeEventAppendStall>,
     #[cfg(test)]
     initial_create_process_crash_point: AtomicUsize,
     #[cfg(test)]
@@ -110,6 +174,55 @@ impl FaultInjector {
     pub fn take_drop_reply(&self) -> bool {
         Self::take(&self.drop_reply)
     }
+
+    #[cfg(test)]
+    pub fn arm_drop_reply(&self) {
+        self.drop_reply.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_node_event_append_stall(&self) -> NodeEventAppendStallGuard {
+        let mut state = self
+            .node_event_append_stall
+            .state
+            .lock()
+            .expect("node event append stall poisoned");
+        assert!(!state.armed, "node event append stall is already armed");
+        *state = NodeEventAppendStallState {
+            armed: true,
+            arrived: false,
+            released: false,
+        };
+        drop(state);
+        NodeEventAppendStallGuard {
+            stall: Arc::clone(&self.node_event_append_stall),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_before_node_event_append_if_armed(&self) {
+        let mut state = self
+            .node_event_append_stall
+            .state
+            .lock()
+            .expect("node event append stall poisoned");
+        if !state.armed {
+            return;
+        }
+        state.arrived = true;
+        self.node_event_append_stall.arrived.notify_all();
+        while !state.released {
+            state = self
+                .node_event_append_stall
+                .released
+                .wait(state)
+                .expect("node event append stall poisoned");
+        }
+        *state = NodeEventAppendStallState::default();
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn wait_before_node_event_append_if_armed(&self) {}
 
     pub fn take_schema_fail_before_begin(&self) -> bool {
         Self::take(&self.schema_fail_before_begin)

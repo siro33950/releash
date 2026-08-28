@@ -143,10 +143,11 @@ mod store_round_trip_tests {
     use crate::adaptor::gateway::local_event_store::store::{
         LocalEventStore, LocalEventStoreConfig,
     };
+    use crate::adaptor::gateway::local_event_store::writer::NodeEventWriteError;
     use crate::domain::local_event::LocalEventQueryError;
 
-    #[tokio::test]
-    async fn test_store経由の追記_writerスレッドでseqが払い出され読み出せる() {
+    #[test]
+    fn test_store事実追記_同期文脈で記録され結果が返る() {
         // Given: file-backed store
         let root = tempfile::TempDir::new().unwrap();
         let store =
@@ -155,12 +156,10 @@ mod store_round_trip_tests {
 
         // When: store API で2行 append する（1行目は明示時刻・2行目は clock）
         let first = store
-            .append_node_event(row("tree-1", "root", None), Some(1_000))
-            .await
+            .append_node_event_blocking(row("tree-1", "root", None), Some(1_000))
             .unwrap();
         let second = store
-            .append_node_event(row("tree-1", "child", Some("root")), None)
-            .await
+            .append_node_event_blocking(row("tree-1", "child", Some("root")), None)
             .unwrap();
 
         // Then: seq が直列に払い出され、reader pool から読み出せる
@@ -172,6 +171,115 @@ mod store_round_trip_tests {
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].node_execution_id, "root");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_store事実追記_async_runtime上でpanicせず記録され結果が返る() {
+        // Given: current-thread tokio runtime 上で利用する file-backed store
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+
+        // When: runtime worker 上から同期 append を呼ぶ
+        let seq = store
+            .append_node_event_blocking(row("tree-async", "root", None), Some(1_000))
+            .unwrap();
+
+        // Then: 呼び出しが停止せず結果が返り、事実行を読み出せる
+        assert_eq!(seq, 1);
+        let rows = store
+            .submit_indexed_query_blocking(|connection| {
+                read_tree(connection, "tree-async")
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].node_execution_id, "root");
+    }
+
+    #[test]
+    fn test_store事実追記_閉じたwrite_queueはoutcome_unknownを返す() {
+        // Given: write queue が閉じた file-backed store
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        store.close_write_queue_for_tests();
+
+        // When: 事実行を追記する
+        let error = store
+            .append_node_event_blocking(row("tree-closed", "root", None), Some(1_000))
+            .unwrap_err();
+
+        // Then: admission の Closed が OutcomeUnknown として返る
+        assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
+    }
+
+    #[test]
+    fn test_store事実追記_reply喪失はoutcome_unknownを返す() {
+        // Given: 次の writer reply を失う file-backed store
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        store.fault_injector().arm_drop_reply();
+
+        // When: 事実行を追記する
+        let error = store
+            .append_node_event_blocking(row("tree-reply-loss", "root", None), Some(1_000))
+            .unwrap_err();
+
+        // Then: receiver の切断が OutcomeUnknown として返り、writer は処理済みである
+        assert_eq!(error, NodeEventWriteError::OutcomeUnknown);
+        let rows = store
+            .submit_indexed_query_blocking(|connection| {
+                read_tree(connection, "tree-reply-loss")
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_store事実追記_writer内のsqlite失敗を返して後続追記を継続する() {
+        // Given: node_events.kind の CHECK 制約に違反する行
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let invalid = NewNodeEventRow {
+            tree_id: "tree-sqlite-failure".to_string(),
+            node_execution_id: "invalid".to_string(),
+            parent_id: None,
+            node_name: "main".to_string(),
+            kind: "invalid-kind".to_string(),
+            attempt: 1,
+            event_type: "started".to_string(),
+            session_id: None,
+            detail: "{}".to_string(),
+        };
+
+        // When: admission 後の writer thread で INSERT が失敗する
+        let error = store
+            .append_node_event_blocking(invalid, Some(1_000))
+            .unwrap_err();
+
+        // Then: SQLite 失敗が返り、失敗行は記録されていない
+        assert_eq!(error, NodeEventWriteError::StorageUnavailable);
+        let rows = store
+            .submit_indexed_query_blocking(|connection| {
+                read_tree(connection, "tree-sqlite-failure")
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)
+            })
+            .unwrap();
+        assert!(rows.is_empty());
+
+        // And: writer は停止せず、後続の正常行に seq 1 を払い出す
+        let seq = store
+            .append_node_event_blocking(row("tree-sqlite-failure", "valid", None), Some(2_000))
+            .unwrap();
+        assert_eq!(seq, 1);
     }
 }
 

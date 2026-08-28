@@ -4611,7 +4611,7 @@ nodes:
             )
             .unwrap();
             store
-                .append_node_event(
+                .append_node_event_blocking(
                     NewNodeEventRow {
                         tree_id: CORRUPT_TREE_ID.to_string(),
                         node_execution_id: CORRUPT_TREE_ID.to_string(),
@@ -4625,7 +4625,6 @@ nodes:
                     },
                     Some(4),
                 )
-                .await
                 .unwrap();
             append_started_session_tree(&store, VALID_TREE_ID, "/repo/valid", 5);
             let corrupt_count =
@@ -4718,7 +4717,7 @@ nodes:
                 r#""permission":"bypassPermissions""#,
             );
             store
-                .append_node_event(
+                .append_node_event_blocking(
                     NewNodeEventRow {
                         tree_id: TREE_ID.to_string(),
                         node_execution_id: TREE_ID.to_string(),
@@ -4732,7 +4731,6 @@ nodes:
                     },
                     Some(1),
                 )
-                .await
                 .unwrap();
 
             let history_error = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap_err();

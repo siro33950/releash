@@ -87,6 +87,403 @@ fn no_lookup(_: &str) -> Result<Option<FactRowMeta>, String> {
     Ok(None)
 }
 
+fn open_fd_count() -> usize {
+    std::fs::read_dir("/dev/fd").unwrap().count()
+}
+
+fn test_fact_meta(tree_id: &str, node_execution_id: &str) -> NodeFactMeta {
+    NodeFactMeta {
+        tree_id: tree_id.to_string(),
+        node_execution_id: node_execution_id.to_string(),
+        parent_id: None,
+        node_name: "main".to_string(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    }
+}
+
+mod fd_invariance_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    const FD_TEST_CHILD: &str = "RELEASH_FACT_LOG_FD_TEST_CHILD";
+
+    #[cfg(unix)]
+    struct NoFileSoftLimitGuard {
+        original: libc::rlimit,
+    }
+
+    #[cfg(unix)]
+    impl NoFileSoftLimitGuard {
+        fn lower_to(soft_limit: usize) -> Self {
+            let mut original = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+            // SAFETY: getrlimit writes one rlimit value to the valid out pointer.
+            let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, original.as_mut_ptr()) };
+            assert_eq!(result, 0, "failed to read RLIMIT_NOFILE");
+            // SAFETY: getrlimit succeeded and initialized the value.
+            let original = unsafe { original.assume_init() };
+            let soft_limit = soft_limit as libc::rlim_t;
+            assert!(
+                soft_limit < original.rlim_cur,
+                "RLIMIT_NOFILE soft limit is too low to create the test condition"
+            );
+            let lowered = libc::rlimit {
+                rlim_cur: soft_limit,
+                rlim_max: original.rlim_max,
+            };
+            // SAFETY: lowered preserves the inherited hard limit and only lowers the soft limit.
+            let result = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) };
+            assert_eq!(result, 0, "failed to lower RLIMIT_NOFILE");
+            Self { original }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for NoFileSoftLimitGuard {
+        fn drop(&mut self) {
+            // SAFETY: restores the rlimit value read successfully by lower_to.
+            let result = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.original) };
+            assert_eq!(result, 0, "failed to restore RLIMIT_NOFILE");
+        }
+    }
+
+    fn run_in_isolated_process(child_name: &str, test_filter: &str) -> bool {
+        if std::env::var(FD_TEST_CHILD).as_deref() == Ok(child_name) {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .env(FD_TEST_CHILD, child_name)
+            .arg(test_filter)
+            .arg("--test-threads=1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        true
+    }
+
+    fn wait_until_pending_request_count(store: &LocalEventStore, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let actual = store.pending_write_request_count();
+            if actual == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "write queue did not reach {expected} pending requests; actual: {actual}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn test_事実行追記_単発追記中と完了後にopen_fd数が変わらない() {
+        if run_in_isolated_process(
+            "single",
+            "fd_invariance_tests::test_事実行追記_単発追記中と完了後にopen_fd数が変わらない",
+        ) {
+            return;
+        }
+
+        // Given: INSERT 直前で writer を停止する store と追記前の open fd 数
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let stall = store.fault_injector().arm_node_event_append_stall();
+        let meta = test_fact_meta("fd-single-tree", "fd-single-node");
+        let before = open_fd_count();
+
+        // When: caller が writer の応答待ちに入った状態で open fd 数を測る
+        let worker_store = Arc::clone(&store);
+        let worker = std::thread::spawn(move || {
+            append_single_fact(&worker_store, &meta, &NodeFact::RetryRequested, 1_000)
+        });
+        stall.wait_until_arrived();
+        let in_flight = open_fd_count();
+        stall.release();
+        worker.join().unwrap().unwrap();
+        let after = open_fd_count();
+
+        // Then: 追記中・完了後とも fd 数が増えず、事実行が記録される
+        assert_eq!(in_flight, before);
+        assert_eq!(after, before);
+        let records = read_tree_records(&store, "fd-single-tree").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].meta.node_execution_id, "fd-single-node");
+        assert_eq!(records[0].fact, NodeFact::RetryRequested);
+    }
+
+    #[test]
+    fn test_事実行追記_全追記が並行実行中でもopen_fd数が変わらず全行を記録する() {
+        const APPEND_COUNT: usize = 16;
+
+        if run_in_isolated_process(
+            "parallel",
+            "fd_invariance_tests::test_事実行追記_全追記が並行実行中でもopen_fd数が変わらず全行を記録する",
+        ) {
+            return;
+        }
+
+        // Given: 1本目を INSERT 直前で停止し、同時開始を待つ追記 worker
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let stall = store.fault_injector().arm_node_event_append_stall();
+        let barrier = Arc::new(Barrier::new(APPEND_COUNT + 1));
+        let workers = (0..APPEND_COUNT)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let meta = test_fact_meta("fd-parallel-tree", &format!("node-{index}"));
+                    barrier.wait();
+                    append_single_fact(&store, &meta, &NodeFact::RetryRequested, index as i64)
+                })
+            })
+            .collect::<Vec<_>>();
+        let before = open_fd_count();
+
+        // When: 1本が writer に到達し、残りすべてが queue に滞留した状態で測る
+        barrier.wait();
+        stall.wait_until_arrived();
+        wait_until_pending_request_count(&store, APPEND_COUNT - 1);
+        let in_flight = open_fd_count();
+        stall.release();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        let after = open_fd_count();
+
+        // Then: 全 append の実行中・完了後とも fd 数が増えず、全行が記録される
+        assert_eq!(in_flight, before);
+        assert_eq!(after, before);
+        let records = read_tree_records(&store, "fd-parallel-tree").unwrap();
+        assert_eq!(records.len(), APPEND_COUNT);
+        let mut node_execution_ids = records
+            .iter()
+            .map(|record| record.meta.node_execution_id.as_str())
+            .collect::<Vec<_>>();
+        node_execution_ids.sort_unstable();
+        let mut expected = (0..APPEND_COUNT)
+            .map(|index| format!("node-{index}"))
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(node_execution_ids, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_事実行追記_fd_soft_limit直下でもsession_attachedを記録する() {
+        if run_in_isolated_process(
+            "soft-limit",
+            "fd_invariance_tests::test_事実行追記_fd_soft_limit直下でもsession_attachedを記録する",
+        ) {
+            return;
+        }
+
+        // Given: store の fd を確保済みで、soft limit に2個だけ余裕がある子プロセス
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let warm_up_meta = test_fact_meta("fd-warm-up-tree", "fd-warm-up-node");
+        append_single_fact(&store, &warm_up_meta, &NodeFact::RetryRequested, 1_000).unwrap();
+        let current_open_fd_count = open_fd_count();
+        let _soft_limit = NoFileSoftLimitGuard::lower_to(current_open_fd_count + 2);
+        let meta = test_fact_meta("fd-soft-limit-tree", "fd-soft-limit-node");
+        let fact = NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: "fd-soft-limit-session".to_string(),
+            provider_session_id: Some("fd-soft-limit-provider-session".to_string()),
+            transcript_ref: Some("fd-soft-limit-transcript".to_string()),
+            initial_instruction_admitted: true,
+        });
+
+        // When: fd soft limit 直下で session_attached を追記する
+        append_single_fact(&store, &meta, &fact, 2_000).unwrap();
+
+        // Then: fd を追加取得せず追記でき、同じ事実行を既存 reader から読める
+        let records = read_tree_records(&store, "fd-soft-limit-tree").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].meta.node_execution_id, "fd-soft-limit-node");
+        assert_eq!(records[0].fact, fact);
+    }
+}
+
+mod append_contract_tests {
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::writer::NORMAL_LANE_MAX_BYTES;
+
+    fn read_raw_rows(
+        store: &Arc<LocalEventStore>,
+        tree_id: &str,
+    ) -> Vec<crate::adaptor::gateway::local_event_store::node_events::NodeEventRow> {
+        let tree_id = tree_id.to_string();
+        store
+            .submit_indexed_query_blocking(move |connection| {
+                node_events::read_tree(connection, &tree_id)
+                    .map_err(|_| LocalEventQueryError::InvalidRequest)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn test_事実行追記_同期文脈で記録され結果が返る() {
+        // Given: 同期文脈で利用する file-backed store と単独の事実
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let meta = test_fact_meta("sync-context-tree", "sync-context-node");
+
+        // When: 事実行を追記する
+        let result = append_single_fact(&store, &meta, &NodeFact::RetryRequested, 1_000);
+
+        // Then: 結果が返り、事実行が記録される
+        assert_eq!(result, Ok(()));
+        let records = read_tree_records(&store, "sync-context-tree").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].fact, NodeFact::RetryRequested);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_事実行追記_async_runtime上でpanicせず記録され結果が返る() {
+        // Given: current-thread tokio runtime 上で利用する file-backed store と単独の事実
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let meta = test_fact_meta("async-context-tree", "async-context-node");
+
+        // When: runtime worker 上から同期 append を呼ぶ
+        let result = append_single_fact(&store, &meta, &NodeFact::ResumeRequested, 2_000);
+
+        // Then: 呼び出しが停止せず結果が返り、事実行が記録される
+        assert_eq!(result, Ok(()));
+        let records = read_tree_records(&store, "async-context-tree").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].fact, NodeFact::ResumeRequested);
+    }
+
+    #[test]
+    fn test_事実行追記_同一nodeの内容とseqが入力順に記録される() {
+        // Given: 同一 node に順に発生した、全 field を同定できる3つの事実行
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let meta = NodeFactMeta {
+            tree_id: "ordering-tree".to_string(),
+            node_execution_id: "ordering-node".to_string(),
+            parent_id: Some("ordering-parent".to_string()),
+            node_name: "worker".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 2,
+        };
+        let facts = [
+            NodeFact::SessionAttached(SessionAttachedFact {
+                session_id: "session-1".to_string(),
+                provider_session_id: Some("provider-session-1".to_string()),
+                transcript_ref: Some("transcript-1".to_string()),
+                initial_instruction_admitted: true,
+            }),
+            NodeFact::RetryRequested,
+            NodeFact::ResumeRequested,
+        ];
+        let rows = facts
+            .iter()
+            .enumerate()
+            .map(|(index, fact)| pending_single_fact(&meta, fact, 1_000 + index as i64))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let expected = rows.clone();
+
+        // When: 3行を1行ずつ同期 append する
+        append_pending_rows_blocking(&store, rows).unwrap();
+
+        // Then: NewNodeEventRow の全 field・timestamp・払い出し seq が入力順と一致する
+        let stored = read_raw_rows(&store, "ordering-tree");
+        assert_eq!(stored.len(), expected.len());
+        for (index, (stored, expected)) in stored.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(stored.tree_id, expected.row.tree_id);
+            assert_eq!(stored.seq, index as i64 + 1);
+            assert_eq!(stored.node_execution_id, expected.row.node_execution_id);
+            assert_eq!(stored.parent_id, expected.row.parent_id);
+            assert_eq!(stored.node_name, expected.row.node_name);
+            assert_eq!(stored.kind, expected.row.kind);
+            assert_eq!(stored.attempt, expected.row.attempt);
+            assert_eq!(stored.event_type, expected.row.event_type);
+            assert_eq!(stored.session_id, expected.row.session_id);
+            assert_eq!(stored.detail, expected.row.detail);
+            assert_eq!(stored.timestamp_ms, expected.timestamp_ms);
+        }
+    }
+
+    #[test]
+    fn test_事実行追記_利用不能な追記先の失敗が呼び出し元へ返る() {
+        // Given: write queue が閉じた store
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        store.close_write_queue_for_tests();
+        let meta = test_fact_meta("unavailable-tree", "unavailable-node");
+
+        // When: 事実行を追記する
+        let error =
+            append_single_fact(&store, &meta, &NodeFact::AbortRequested, 1_000).unwrap_err();
+
+        // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
+        assert_eq!(
+            error,
+            "node fact append failed: node event write outcome is unknown"
+        );
+        assert!(read_raw_rows(&store, "unavailable-tree").is_empty());
+    }
+
+    #[test]
+    fn test_事実行追記_複数行の途中失敗で前の行だけが記録される() {
+        // Given: 正常行、queue 容量を超える行、未投入で終わる正常行の順の入力
+        let root = tempfile::TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
+                .unwrap();
+        let before_meta = test_fact_meta("partial-tree", "before-failure");
+        let after_meta = test_fact_meta("partial-tree", "after-failure");
+        let before = pending_single_fact(&before_meta, &NodeFact::RetryRequested, 1_000).unwrap();
+        let failed = PendingFactRow {
+            row: NewNodeEventRow {
+                tree_id: "partial-tree".to_string(),
+                node_execution_id: "failed-row".to_string(),
+                parent_id: None,
+                node_name: "main".to_string(),
+                kind: "session".to_string(),
+                attempt: 1,
+                event_type: "retry_requested".to_string(),
+                session_id: None,
+                detail: "x".repeat(NORMAL_LANE_MAX_BYTES),
+            },
+            timestamp_ms: 2_000,
+        };
+        let after = pending_single_fact(&after_meta, &NodeFact::ResumeRequested, 3_000).unwrap();
+
+        // When: 3行を順に追記する
+        let error = append_pending_rows_blocking(&store, vec![before, failed, after]).unwrap_err();
+
+        // Then: 容量拒否が返り、成功済みの1行だけが durable のまま残る
+        assert_eq!(
+            error,
+            "node fact append failed: node event storage is unavailable"
+        );
+        let stored = read_raw_rows(&store, "partial-tree");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].seq, 1);
+        assert_eq!(stored[0].node_execution_id, "before-failure");
+    }
+}
+
 mod mapping_tests {
     use super::*;
 

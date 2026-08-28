@@ -6,7 +6,7 @@
 //! are enforced at admission time, before the writer sees the request.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -59,7 +59,7 @@ pub struct NodeEventAppendRequest {
     pub row: NewNodeEventRow,
     /// 事実の発生時刻。None なら store の clock で刻む。
     pub timestamp_ms: Option<i64>,
-    pub reply: oneshot::Sender<Result<i64, NodeEventWriteError>>,
+    pub reply: mpsc::SyncSender<Result<i64, NodeEventWriteError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -164,6 +164,12 @@ impl WriteQueue {
         drop(state);
         self.available.notify_one();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_request_count(&self) -> usize {
+        let state = self.state.lock().expect("write queue poisoned");
+        state.normal.queue.len() + state.critical.queue.len()
     }
 
     /// Pop the next request, critical lane first. `None` when closed and
