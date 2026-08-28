@@ -358,10 +358,12 @@ fn install_require<H: LuaHost + 'static>(
             ));
         }
 
-        let result = if let Some(module) = host.borrow().module(&module_name) {
-            module_to_lua(lua, module, Rc::clone(&host))
-        } else {
-            load_file_module(lua, &base_dir, &module_name, location.clone())
+        // 借用 guard を分岐へ持ち込むと、file module の評価中に host 関数が
+        // borrow_mut() へ入り二重借用になる。lookup 結果は必ず先に束縛する。
+        let host_module = host.borrow().module(&module_name);
+        let result = match host_module {
+            Some(module) => module_to_lua(lua, module, Rc::clone(&host)),
+            None => load_file_module(lua, &base_dir, &module_name, location.clone()),
         };
         loading.borrow_mut().remove(&module_name);
 
@@ -854,6 +856,38 @@ mod tests {
                 &LuaData::Boolean(true),
             ]
         );
+    }
+
+    #[test]
+    fn test_lua評価_require先moduleの評価中にhost関数を呼べる() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let module = dir.path().join("parts.lua");
+        fs::write(
+            &module,
+            "local test = require('test')\nreturn { made = test.value('ok') }",
+        )
+        .unwrap();
+
+        // When
+        let result = evaluate(
+            request(
+                dir.path(),
+                "local parts = require('parts')\nreturn parts.made",
+            ),
+            TestHost::default(),
+        )
+        .unwrap();
+
+        // Then
+        assert_eq!(result.value, LuaData::String("ok".to_string()));
+        assert_eq!(result.host.calls.len(), 1);
+        assert_eq!(result.host.calls[0].0, 1);
+        assert_eq!(
+            result.host.calls[0].1.source,
+            fs::canonicalize(module).unwrap().to_string_lossy()
+        );
+        assert_eq!(result.host.calls[0].1.line, 2);
     }
 
     #[test]

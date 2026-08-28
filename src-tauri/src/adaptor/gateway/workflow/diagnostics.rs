@@ -5261,6 +5261,149 @@ return r.workflow{
     }
 
     #[test]
+    fn test_workflow診断_module評価中にhostを呼ぶ定義と他定義を正常に診断する() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let module_dir = tmp.path().join("module-host-parts");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(
+            module_dir.join("nodes.lua"),
+            r#"local r = require("releash")
+return { main = r.command{ command = "true" } }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("module-host.lua"),
+            r#"local r = require("releash")
+local nodes = require("module-host-parts.nodes")
+return r.workflow{
+  name = "module-host", description = "Module host workflow", main = nodes.main,
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("healthy.lua"),
+            r#"local r = require("releash")
+return r.workflow{
+  name = "healthy", description = "Healthy workflow",
+  main = r.command{ command = "printf healthy" },
+}
+"#,
+        )
+        .unwrap();
+
+        // When
+        let loaded = load_workflows_in_scope(
+            tmp.path(),
+            tmp.path(),
+            DiagnosticScope::ReachableFromDirectory,
+        );
+        let report = diagnose_directory(tmp.path());
+
+        // Then
+        for name in ["module-host", "healthy"] {
+            let (_, result) = loaded
+                .iter()
+                .find(|(workflow_name, _)| workflow_name == name)
+                .unwrap_or_else(|| panic!("{name} の診断 load 結果"));
+            let Ok((workflow, source_diagnostics)) = result else {
+                panic!("{name} は診断時に正常 load されるべき: {result:?}");
+            };
+            assert_eq!(workflow.name, name);
+            assert!(source_diagnostics.is_empty(), "{source_diagnostics:?}");
+            assert!(!report.items.iter().any(|item| {
+                item.workflow_name.as_deref() == Some(name) && item.severity == Severity::Error
+            }));
+        }
+
+        assert!(!report.items.iter().any(|item| {
+            item.workflow_name.as_deref() == Some("module-host")
+                && matches!(item.code.as_str(), "WFS009" | "WFS010" | "WFS011")
+        }));
+    }
+
+    #[test]
+    fn test_workflow診断_lua定義のload失敗を位置付きで報告して他定義へ波及させない() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let module_dir = tmp.path().join("broken-parts");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(
+            module_dir.join("nodes.lua"),
+            "local r = require(\"releash\")\nreturn r.command{ command = }\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("broken.lua"),
+            r#"local r = require("releash")
+local nodes = require("broken-parts.nodes")
+return r.workflow{
+  name = "broken", description = "Broken workflow", main = nodes.main,
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("invalid-yaml.yml"),
+            r#"name: invalid-yaml
+description: Invalid YAML workflow
+nodes:
+  main:
+    artifact: something
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("healthy.lua"),
+            r#"local r = require("releash")
+return r.workflow{
+  name = "healthy", description = "Healthy workflow",
+  main = r.command{ command = "printf healthy" },
+}
+"#,
+        )
+        .unwrap();
+
+        // When
+        let loaded = load_workflows_in_scope(
+            tmp.path(),
+            tmp.path(),
+            DiagnosticScope::ReachableFromDirectory,
+        );
+        let report = diagnose_directory(tmp.path());
+
+        // Then
+        let broken = report
+            .items
+            .iter()
+            .find(|item| item.workflow_name.as_deref() == Some("broken") && item.code == "WFS009")
+            .expect("broken module の syntax diagnostic");
+        let span = broken.span.as_ref().expect("broken module の失敗位置");
+        assert_eq!(span.source.as_deref(), Some("broken-parts/nodes.lua"));
+        assert_eq!(span.start_line, 2);
+
+        assert!(report.items.iter().any(|item| {
+            item.workflow_name.as_deref() == Some("invalid-yaml")
+                && item.severity == Severity::Error
+        }));
+
+        let (_, healthy_result) = loaded
+            .iter()
+            .find(|(name, _)| name == "healthy")
+            .expect("healthy の診断 load 結果");
+        let Ok((healthy, source_diagnostics)) = healthy_result else {
+            panic!("healthy は正常 load されるべき: {healthy_result:?}");
+        };
+        assert_eq!(healthy.name, "healthy");
+        assert!(source_diagnostics.is_empty(), "{source_diagnostics:?}");
+        assert!(!report.items.iter().any(|item| {
+            item.workflow_name.as_deref() == Some("healthy") && item.severity == Severity::Error
+        }));
+    }
+
+    #[test]
     fn lua_component_error_uses_workflow_relative_source_and_line() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(

@@ -726,6 +726,82 @@ nodes:
     }
 
     #[test]
+    fn test_workflow一覧_lua定義のload失敗を当該定義だけの不正表示に隔離する() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let module_dir = tmp.path().join("broken-parts");
+        fs::create_dir(&module_dir).unwrap();
+        fs::write(
+            module_dir.join("nodes.lua"),
+            "local r = require(\"releash\")\nreturn r.command{ command = }\n",
+        )
+        .unwrap();
+        let broken_path = tmp.path().join("broken.lua");
+        fs::write(
+            &broken_path,
+            r#"local r = require("releash")
+local nodes = require("broken-parts.nodes")
+return r.workflow{
+  name = "broken", description = "Broken workflow", main = nodes.main,
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("invalid-yaml.yml"),
+            r#"name: invalid-yaml
+description: Invalid YAML workflow
+nodes:
+  main:
+    artifact: something
+"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("healthy.lua"),
+            r#"local r = require("releash")
+return r.workflow{
+  name = "healthy", description = "Healthy workflow",
+  main = r.command{ command = "printf healthy" },
+}
+"#,
+        )
+        .unwrap();
+
+        // When
+        let load_error = load_workflow(&broken_path, tmp.path()).unwrap_err();
+        let summaries = list_workflows(tmp.path()).unwrap();
+
+        // Then
+        let StorageError::Diagnostics(load_diagnostics) = load_error else {
+            panic!("Lua 定義の load 失敗は structured diagnostics であるべき");
+        };
+        assert!(load_diagnostics.iter().any(|item| item.code == "WFS009"));
+
+        let broken = summaries
+            .iter()
+            .find(|summary| summary.name == "broken")
+            .expect("broken summary");
+        let invalid_yaml = summaries
+            .iter()
+            .find(|summary| summary.name == "invalid-yaml")
+            .expect("invalid-yaml summary");
+        assert_eq!(broken.description, invalid_yaml.description);
+        assert_eq!(broken.description, "Invalid workflow definition");
+        assert_eq!(broken.builtin, invalid_yaml.builtin);
+        assert_eq!(broken.is_running, invalid_yaml.is_running);
+        assert_eq!(broken.source_format, WorkflowSourceFormat::Lua);
+        assert_eq!(invalid_yaml.source_format, WorkflowSourceFormat::Yaml);
+
+        let healthy = summaries
+            .iter()
+            .find(|summary| summary.name == "healthy")
+            .expect("healthy summary");
+        assert_eq!(healthy.description, "Healthy workflow");
+        assert_eq!(healthy.source_format, WorkflowSourceFormat::Lua);
+    }
+
+    #[test]
     fn list_workflows_collapses_same_name_across_formats() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1251,6 +1327,71 @@ return r.workflow{
                 .source_format,
             WorkflowSourceFormat::Lua
         );
+    }
+
+    #[test]
+    fn test_workflow一覧_module評価中のhost呼出で作ったnodeを有効な定義として扱う() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let module_dir = tmp.path().join("module-host-parts");
+        std::fs::create_dir(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("nodes.lua"),
+            r#"local r = require("releash")
+return { main = r.command{ command = "true" } }
+"#,
+        )
+        .unwrap();
+        let workflow_path = tmp.path().join("module-host.lua");
+        std::fs::write(
+            &workflow_path,
+            r#"local r = require("releash")
+local nodes = require("module-host-parts.nodes")
+return r.workflow{
+  name = "module-host", description = "Module host workflow", main = nodes.main,
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("healthy.lua"),
+            r#"local r = require("releash")
+return r.workflow{
+  name = "healthy", description = "Healthy workflow",
+  main = r.command{ command = "printf healthy" },
+}
+"#,
+        )
+        .unwrap();
+
+        // When
+        let workflow = load_workflow(&workflow_path, tmp.path()).unwrap();
+        let summaries = list_workflows(tmp.path()).unwrap();
+
+        // Then
+        let main = workflow
+            .nodes
+            .iter()
+            .find(|node| node.name == "main")
+            .expect("module が返した main node");
+        let NodeKind::Command(command) = &main.kind else {
+            panic!("module が返した node は command であるべき");
+        };
+        assert_eq!(command.command, "true");
+
+        let module_host = summaries
+            .iter()
+            .find(|summary| summary.name == "module-host")
+            .expect("module-host summary");
+        assert_eq!(module_host.description, "Module host workflow");
+        assert_eq!(module_host.source_format, WorkflowSourceFormat::Lua);
+
+        let healthy = summaries
+            .iter()
+            .find(|summary| summary.name == "healthy")
+            .expect("healthy summary");
+        assert_eq!(healthy.description, "Healthy workflow");
+        assert_eq!(healthy.source_format, WorkflowSourceFormat::Lua);
     }
 
     #[test]
