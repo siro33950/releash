@@ -72,22 +72,12 @@ fn host(
     root: &Path,
     input_lines: usize,
 ) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
-    configured_host(root, input_lines, None)
-}
-
-fn host_with_terminal_caps(
-    root: &Path,
-    input_lines: usize,
-    per_worktree_cap: usize,
-    max_panes_total: usize,
-) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
-    configured_host(root, input_lines, Some((per_worktree_cap, max_panes_total)))
+    configured_host(root, input_lines)
 }
 
 fn configured_host(
     root: &Path,
     input_lines: usize,
-    terminal_caps: Option<(usize, usize)>,
 ) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -115,18 +105,7 @@ fn configured_host(
         claude_config_dir: root.join("claude-home"),
         codex_home: root.join("codex-home"),
     };
-    match terminal_caps {
-        Some((per_worktree_cap, max_panes_total)) => {
-            WorkflowControlPlaneAcceptanceHost::start_with_terminal_caps(
-                config,
-                app,
-                per_worktree_cap,
-                max_panes_total,
-            )
-        }
-        None => WorkflowControlPlaneAcceptanceHost::start(config, app),
-    }
-    .unwrap()
+    WorkflowControlPlaneAcceptanceHost::start(config, app).unwrap()
 }
 
 fn owner(worktree_path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
@@ -371,7 +350,15 @@ async fn test_workflow_terminal_spawn失敗を実行収束経路からruntime_fa
     let worktree = root.path().join("terminal-spawn-failure-worktree");
     std::fs::create_dir_all(&worktree).unwrap();
     let worktree = worktree.to_string_lossy().into_owned();
-    let host = host_with_terminal_caps(root.path(), 1, 0, 64);
+    let host = host(root.path(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = root.path().join("bin/claude-workflow-fixture");
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(executable, permissions).unwrap();
+    }
 
     // When
     let execution_id = host
@@ -398,8 +385,69 @@ async fn test_workflow_terminal_spawn失敗を実行収束経路からruntime_fa
     let failure_reason = runtime_failure["reason"].as_str().unwrap();
     assert!(failure_reason.contains("workflow runtime activation failed"));
     assert!(failure_reason.contains("activate Workflow AgentSession 'agent-session-"));
-    assert!(failure_reason.contains("kind=per_worktree_cap"));
-    assert!(failure_reason.contains(&format!("worktree_path={worktree}")));
+    assert!(failure_reason.contains("kind=pty_spawn"));
+    assert!(failure_reason.contains("Failed to spawn shell:"));
+    assert!(failure_reason.contains("Permission denied"));
+
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fanout_受理した33個sessionは同一worktreeで全て起動するか実行前に拒否する() {
+    // Given
+    let root = tempfile::TempDir::new().unwrap();
+    let worktree = root.path().join("default-cap-fanout-worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let worktree = worktree.to_string_lossy().into_owned();
+    let host = host(root.path(), 1);
+
+    // When
+    let execution_id = host
+        .start_default_capacity_fanout_workflow(&worktree)
+        .await
+        .expect("33 child fanout must pass definition validation");
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let execution = host.execution(&execution_id).await.unwrap().unwrap();
+            let leaves = leaf_nodes(&execution);
+            let has_failed = leaves
+                .iter()
+                .any(|leaf| leaf.status == AcceptanceNodeExecutionStatus::Failed);
+            let all_started = leaves.len() == 33
+                && leaves.iter().all(|leaf| {
+                    leaf.agent_session_id.as_deref().is_some_and(|session_id| {
+                        host.terminal().get(owner(&worktree, session_id)).is_ok()
+                    })
+                });
+            if has_failed || all_started {
+                return execution;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("accepted fanout must either start every Session or expose its runtime failure");
+
+    // Then
+    let leaves = leaf_nodes(&observed);
+    assert_eq!(leaves.len(), 33);
+    assert!(leaves.iter().all(|leaf| {
+        leaf.agent_session_id
+            .as_deref()
+            .is_some_and(|session_id| host.terminal().get(owner(&worktree, session_id)).is_ok())
+    }));
+    let failed = leaves
+        .iter()
+        .filter(|leaf| leaf.status == AcceptanceNodeExecutionStatus::Failed)
+        .collect::<Vec<_>>();
+    assert!(
+        failed.is_empty(),
+        "validation accepted fanout capacity that runtime cannot execute: {failed:?}"
+    );
+    let log = host.workflow_log(&execution_id).await.unwrap();
+    let serialized_log = serde_json::to_string(&log).unwrap();
+    assert!(!serialized_log.contains("kind=per_worktree_cap"));
+    assert!(!serialized_log.contains("kind=total_cap"));
 
     host.shutdown().await.unwrap();
 }

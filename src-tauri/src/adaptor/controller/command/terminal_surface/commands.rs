@@ -15,7 +15,6 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 #[derive(Clone, Copy)]
 enum TerminalCommandErrorCode {
-    CapReached,
     PtyError,
     InvalidRequest,
 }
@@ -23,7 +22,6 @@ enum TerminalCommandErrorCode {
 impl TerminalCommandErrorCode {
     fn code(self) -> &'static str {
         match self {
-            Self::CapReached => "CAP_REACHED",
             Self::PtyError => "PTY_ERROR",
             Self::InvalidRequest => "INVALID_REQUEST",
         }
@@ -199,9 +197,6 @@ impl TerminalCommandOperation {
 
     fn message(self, code: TerminalCommandErrorCode) -> &'static str {
         match (self, code) {
-            (_, TerminalCommandErrorCode::CapReached) => {
-                "Terminal limit reached. Close an open Terminal and try again."
-            }
             (Self::Initialize, TerminalCommandErrorCode::PtyError) => {
                 "Terminal initialization failed. Try again."
             }
@@ -228,30 +223,17 @@ impl TerminalCommandError {
     fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
         let internal_cause = error.to_string();
         let code = match error {
-            UsecaseError::PerWorktreeCap { .. } | UsecaseError::TotalCap => {
-                TerminalCommandErrorCode::CapReached
-            }
             UsecaseError::Gateway(_)
             | UsecaseError::OwnerConflict
             | UsecaseError::PtySpawn { .. }
             | UsecaseError::OtherSpawnFailure { .. } => TerminalCommandErrorCode::PtyError,
         };
-        match code {
-            TerminalCommandErrorCode::CapReached => log::warn!(
-                "Terminal command failed: operation={} code={} cause={}",
-                operation.name(),
-                code.code(),
-                internal_cause
-            ),
-            TerminalCommandErrorCode::PtyError | TerminalCommandErrorCode::InvalidRequest => {
-                log::error!(
-                    "Terminal command failed: operation={} code={} cause={}",
-                    operation.name(),
-                    code.code(),
-                    internal_cause
-                )
-            }
-        }
+        log::error!(
+            "Terminal command failed: operation={} code={} cause={}",
+            operation.name(),
+            code.code(),
+            internal_cause
+        );
         Self {
             code: code.code().to_string(),
             message: operation.message(code).to_string(),

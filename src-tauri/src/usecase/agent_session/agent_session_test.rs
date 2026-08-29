@@ -167,13 +167,6 @@ fn captured_terminal_spawn_failure(agent_session_id: &str) -> Option<String> {
 fn test_agent_session_terminal_spawn_error_記録用kindとpayloadを表示する() {
     let cases = [
         (
-            ProviderAgentTerminalSpawnError::PerWorktreeCap {
-                worktree_path: "/repo/worktree".to_string(),
-            },
-            "kind=per_worktree_cap worktree_path=/repo/worktree",
-        ),
-        (ProviderAgentTerminalSpawnError::TotalCap, "kind=total_cap"),
-        (
             ProviderAgentTerminalSpawnError::OwnerConflict,
             "kind=owner_conflict",
         ),
@@ -2272,8 +2265,8 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PerWorktreeCap {
-        worktree_path: "/repo/worktree".to_string(),
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PtySpawn {
+        error: "openpty failed".to_string(),
     });
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
@@ -2311,11 +2304,9 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalSpawn(
-            ProviderAgentTerminalSpawnError::PerWorktreeCap {
-                worktree_path: "/repo/worktree".to_string()
-            }
-        )
+        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::PtySpawn {
+            error: "openpty failed".to_string()
+        })
     );
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
@@ -2328,8 +2319,8 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
         std::slice::from_ref(&expected_id)
     );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();
-    assert!(record.contains("kind=per_worktree_cap"));
-    assert!(record.contains("worktree_path=/repo/worktree"));
+    assert!(record.contains("kind=pty_spawn"));
+    assert!(record.contains("error=openpty failed"));
 }
 
 #[tokio::test]

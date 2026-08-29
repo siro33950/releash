@@ -19,8 +19,7 @@ use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceRepository,
 };
 use crate::domain::terminal_surface::{
-    TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TerminalSurfaceLifecycleConfig,
-    TERMINAL_SURFACE_SCROLLBACK_ROWS,
+    TerminalSurfaceCheckpoint as DomainTerminalCheckpoint, TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };
 use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
 use crate::infrastructure::terminal::checkpoint_scheduler::DirtyCheckpointScheduler;
@@ -476,26 +475,10 @@ impl<R: Runtime> TerminalSurfaceRuntimeGatewayFor<R> {
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
         journal_enabled: bool,
     ) -> Self {
-        Self::new_with_event_sink_and_lifecycle_config(
-            app,
-            event_sink,
-            journal_enabled,
-            TerminalSurfaceLifecycleConfig::default(),
-        )
-    }
-
-    pub(crate) fn new_with_event_sink_and_lifecycle_config(
-        app: AppHandle<R>,
-        event_sink: Arc<dyn TerminalSurfaceEventSink>,
-        journal_enabled: bool,
-        lifecycle_config: TerminalSurfaceLifecycleConfig,
-    ) -> Self {
         Self {
             app: Some(app),
             event_sink: Some(event_sink),
-            registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::with_config(
-                lifecycle_config,
-            ))),
+            registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
             spawn_resolved: Condvar::new(),
             runtimes: Mutex::new(HashMap::new()),
@@ -878,11 +861,8 @@ impl<R: Runtime> TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor<R> 
     fn reserve_spawn_slot(
         &self,
         session_key: &str,
-        worktree_path: Option<&str>,
     ) -> Result<TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError> {
-        self.registry
-            .lock()
-            .reserve_spawn_slot(session_key, worktree_path)
+        self.registry.lock().reserve_spawn_slot(session_key)
     }
 
     fn complete_spawn_slot(&self, reservation: &TerminalSurfaceSpawnReservation) {

@@ -107,7 +107,6 @@ impl crate::domain::terminal_surface::gateway::TerminalSurfaceGateway for Backen
     fn reserve_spawn_slot(
         &self,
         session_key: &str,
-        worktree_path: Option<&str>,
     ) -> Result<
         crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservation,
         crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservationError,
@@ -115,7 +114,6 @@ impl crate::domain::terminal_surface::gateway::TerminalSurfaceGateway for Backen
         Ok(
             crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservation {
                 session_key: session_key.to_string(),
-                worktree_path: worktree_path.map(str::to_string),
             },
         )
     }

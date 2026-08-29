@@ -4,6 +4,6 @@ pub(crate) mod value_objects;
 
 pub use value_objects::{
     TerminalProcessLaunch, TerminalProcessState, TerminalRuntimeGeneration,
-    TerminalSurfaceCheckpoint, TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner,
-    TerminalSurfaceStartupCommand, TERMINAL_SURFACE_SCROLLBACK_ROWS,
+    TerminalSurfaceCheckpoint, TerminalSurfaceOwner, TerminalSurfaceStartupCommand,
+    TERMINAL_SURFACE_SCROLLBACK_ROWS,
 };

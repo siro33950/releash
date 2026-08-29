@@ -8,9 +8,7 @@ use crate::domain::terminal_surface::entities::{
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceGatewayError, TerminalSurfaceRepository,
 };
-use crate::domain::terminal_surface::{
-    TerminalProcessLaunch, TerminalSurfaceLifecycleConfig, TerminalSurfaceOwner,
-};
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 struct MockGateway {
@@ -35,12 +33,7 @@ struct MockGateway {
 impl MockGateway {
     fn new() -> Self {
         Self {
-            registry: Mutex::new(TerminalSurfaceRegistry::with_config(
-                TerminalSurfaceLifecycleConfig {
-                    per_worktree_cap: 2,
-                    max_panes_total: 3,
-                },
-            )),
+            registry: Mutex::new(TerminalSurfaceRegistry::default()),
             fail_spawn: AtomicBool::new(false),
             fail_load_checkpoint: AtomicBool::new(false),
             fail_start_reader: AtomicBool::new(false),
@@ -189,7 +182,6 @@ impl TerminalSurfaceGateway for MockGateway {
     fn reserve_spawn_slot(
         &self,
         session_key: &str,
-        worktree_path: Option<&str>,
     ) -> Result<TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError> {
         let (attempts, changed) = &self.reserve_attempts;
         *attempts.lock().unwrap() += 1;
@@ -197,7 +189,7 @@ impl TerminalSurfaceGateway for MockGateway {
         self.registry
             .lock()
             .unwrap()
-            .reserve_spawn_slot(session_key, worktree_path)
+            .reserve_spawn_slot(session_key)
     }
 
     fn complete_spawn_slot(&self, reservation: &TerminalSurfaceSpawnReservation) {
@@ -480,10 +472,11 @@ fn test_ターミナル画面取得または生成_通信文脈を要求しな�
 }
 
 #[test]
-fn test_ターミナル画面取得または生成_上限到達時は既存画面を保持してエラーにする() {
+fn test_ターミナル画面取得または生成_同一作業木に旧上限数の画面があっても新規生成する() {
     let gateway = MockGateway::new();
-    let first = gateway.insert_session("key-1", "/repo");
-    let second = gateway.insert_session("key-2", "/repo");
+    let existing = (0..32)
+        .map(|index| gateway.insert_session(&format!("key-{index}"), "/repo"))
+        .collect::<Vec<_>>();
 
     let result = get_or_spawn(
         &gateway,
@@ -492,37 +485,40 @@ fn test_ターミナル画面取得または生成_上限到達時は既存画�
         Some("/repo".to_string()),
         workspace_owner("/repo"),
         None,
-    );
+    )
+    .unwrap();
 
-    assert_eq!(
-        unwrap_spawn_error(result),
-        UsecaseError::PerWorktreeCap {
-            worktree_path: "/repo".to_string()
-        }
-    );
-    assert_eq!(*gateway.spawn_count.lock().unwrap(), 0);
+    assert!(result.is_new);
+    assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert!(gateway.killed.lock().unwrap().is_empty());
-    assert!(gateway.snapshot(first).is_some());
-    assert!(gateway.snapshot(second).is_some());
+    assert!(existing
+        .into_iter()
+        .all(|runtime_generation| gateway.snapshot(runtime_generation).is_some()));
 }
 
 #[test]
-fn test_ターミナル画面取得または生成_総数上限到達を分類する() {
+fn test_ターミナル画面取得または生成_異なる作業木に旧総数上限の画面があっても新規生成する() {
     let gateway = MockGateway::new();
-    gateway.insert_session("key-1", "/repo-1");
-    gateway.insert_session("key-2", "/repo-2");
-    gateway.insert_session("key-3", "/repo-3");
+    let existing = (0..64)
+        .map(|index| gateway.insert_session(&format!("key-{index}"), &format!("/repo-{index}")))
+        .collect::<Vec<_>>();
 
     let result = get_or_spawn(
         &gateway,
         24,
         80,
-        Some("/repo-4".to_string()),
-        workspace_owner("/repo-4"),
+        Some("/repo".to_string()),
+        workspace_owner("/repo"),
         None,
-    );
+    )
+    .unwrap();
 
-    assert_eq!(unwrap_spawn_error(result), UsecaseError::TotalCap);
+    assert!(result.is_new);
+    assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
+    assert!(gateway.killed.lock().unwrap().is_empty());
+    assert!(existing
+        .into_iter()
+        .all(|runtime_generation| gateway.snapshot(runtime_generation).is_some()));
 }
 
 #[test]

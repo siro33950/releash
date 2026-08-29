@@ -8,7 +8,6 @@ use crate::adaptor::protocol::terminal::{
     TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
 };
 use crate::domain::terminal_surface::gateway::TerminalSurfaceEventSink;
-use crate::domain::terminal_surface::TerminalSurfaceLifecycleConfig;
 
 pub struct TerminalSurfaceRuntime {
     application: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
@@ -49,30 +48,6 @@ impl TerminalSurfaceRuntime {
     }
 
     #[doc(hidden)]
-    pub fn new_with_data_dir_and_lifecycle_limits<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
-        data_dir: PathBuf,
-        per_worktree_cap: usize,
-        max_panes_total: usize,
-    ) -> Self {
-        if app
-            .try_state::<crate::infrastructure::platform::app_data_dir::TestDataDir>()
-            .is_none()
-        {
-            app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir,
-            ));
-        }
-        Self::compose_with_lifecycle_config(
-            app,
-            TerminalSurfaceLifecycleConfig {
-                per_worktree_cap,
-                max_panes_total,
-            },
-        )
-    }
-
-    #[doc(hidden)]
     pub fn new_with_data_dir_and_event_faults<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
         data_dir: PathBuf,
@@ -91,7 +66,7 @@ impl TerminalSurfaceRuntime {
         let event_target: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
         let (event_sink, faults) = crate::adaptor::gateway::terminal_surface::event_fault_relay::fault_injecting_event_sink(event_target);
         (
-            Self::compose_with_event_transport(app, event_hub, event_sink, None),
+            Self::compose_with_event_transport(app, event_hub, event_sink),
             faults,
         )
     }
@@ -101,18 +76,7 @@ impl TerminalSurfaceRuntime {
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
         );
         let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        Self::compose_with_event_transport(app, event_hub, event_sink, None)
-    }
-
-    fn compose_with_lifecycle_config<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
-        lifecycle_config: TerminalSurfaceLifecycleConfig,
-    ) -> Self {
-        let event_hub = Arc::new(
-            crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub::new(),
-        );
-        let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        Self::compose_with_event_transport(app, event_hub, event_sink, Some(lifecycle_config))
+        Self::compose_with_event_transport(app, event_hub, event_sink)
     }
 
     fn compose_with_event_transport<R: tauri::Runtime>(
@@ -121,23 +85,14 @@ impl TerminalSurfaceRuntime {
             crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub,
         >,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
-        lifecycle_config: Option<TerminalSurfaceLifecycleConfig>,
     ) -> Self {
         let journal_enabled = !crate::other::performance_switches::terminal_performance_switches()
             .disable_terminal_journal;
-        let gateway = Arc::new(match lifecycle_config {
-            Some(lifecycle_config) => crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink_and_lifecycle_config(
-                    app,
-                    event_sink.clone(),
-                    journal_enabled,
-                    lifecycle_config,
-                ),
-            None => crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-                    app,
-                    event_sink,
-                    journal_enabled,
-                ),
-        });
+        let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+            app,
+            event_sink,
+            journal_enabled,
+        ));
         Self {
             application: Arc::new(
                 crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(

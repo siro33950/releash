@@ -166,8 +166,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             });
         }
 
-        let worktree_path = owner.workspace_identity().as_str();
-        let reservation = match manager.reserve_spawn_slot(&session_key, Some(worktree_path)) {
+        let reservation = match manager.reserve_spawn_slot(&session_key) {
             Ok(reservation) => reservation,
             Err(
                 crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservationError::OwnerOccupied(_),
@@ -184,7 +183,6 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
                 }
                 continue;
             }
-            Err(error) => return Err(error.into()),
         };
         let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::CheckpointLookup,
@@ -254,9 +252,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                 is_new: false,
             });
         }
-        let reservation = match manager
-            .reserve_spawn_slot(&session_key, Some(owner.workspace_identity().as_str()))
-        {
+        let reservation = match manager.reserve_spawn_slot(&session_key) {
             Ok(reservation) => reservation,
             Err(
                 crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservationError::OwnerOccupied(_),
@@ -273,7 +269,6 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                 }
                 continue;
             }
-            Err(error) => return Err(error.into()),
         };
         let checkpoint_lookup = crate::other::telemetry::start_terminal_launch_phase(
             crate::other::telemetry::TerminalLaunch::CheckpointLookup,
