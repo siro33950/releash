@@ -1,7 +1,5 @@
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
-use crate::domain::terminal_surface::{
-    TerminalActivity, TerminalProcessLaunch, TerminalSurfaceOwner,
-};
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderAgentTerminalGatewayError {
@@ -87,11 +85,4 @@ pub(crate) trait ProviderAgentTerminalObservationGateway: Send + Sync {
 
     /// owner の surface summary が保持する exit_code。surface 不在・実行中は None。
     fn session_exit_code(&self, owner: &TerminalSurfaceOwner) -> Option<i32>;
-
-    /// owner の surface の出力recencyに基づく実行状態分類。
-    /// surface 不在・終了済みは Idle。
-    fn session_activity(&self, owner: &TerminalSurfaceOwner) -> TerminalActivity;
-
-    /// session_key が Session 所有の surface を指す場合のみ worktree path を返す。
-    fn session_worktree_path(&self, session_key: &str) -> Option<String>;
 }

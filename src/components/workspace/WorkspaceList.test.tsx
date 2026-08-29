@@ -502,7 +502,6 @@ describe("WorkspaceList", () => {
 						nodeExecutionId: "provider-agent-archived",
 					},
 					lifecycle: "archived",
-					activity: "idle",
 					lastExitAbnormal: false,
 					operations: {
 						canArchive: false,

@@ -13,12 +13,11 @@ use crate::domain::agent_session::{
     ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
 };
 use crate::usecase::agent_session::{
-    AgentSessionActivityUsecase, AgentSessionChangeNotifier, AgentSessionExitUsecase,
-    AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
-    AgentSessionInterruptUsecase, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
-    AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionUsecase,
-    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, ProviderAvailabilityUsecase,
-    ProviderAvailabilityUsecaseError, StartedExecutionTreeRegistrar,
+    AgentSessionChangeNotifier, AgentSessionExitUsecase, AgentSessionHistoryReadUsecase,
+    AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
+    AgentSessionLifecycleUsecase, AgentSessionQueryService, AgentSessionReadUsecase,
+    AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
+    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError, StartedExecutionTreeRegistrar,
     StartedExecutionTreeRegistrationError,
 };
 use crate::usecase::provider_lifecycle::{
@@ -52,7 +51,6 @@ pub(crate) struct AgentSessionComposition {
     pub(crate) interrupt: Arc<AgentSessionInterruptUsecase>,
     pub(crate) lifecycle: Arc<AgentSessionLifecycleUsecase>,
     pub(crate) exit: Arc<AgentSessionExitUsecase>,
-    pub(crate) activity: Arc<AgentSessionActivityUsecase>,
     pub(crate) read: Arc<AgentSessionReadUsecase>,
     pub(crate) provider_availability: Arc<ProviderAvailabilityUsecase>,
     pub(crate) availability_reader: Arc<dyn ProviderAvailabilityReader>,
@@ -208,6 +206,7 @@ pub(crate) fn compose_agent_sessions(
         hook_health.clone(),
         session_repository.clone(),
         execution_tree_stops.clone(),
+        input.change_notifier.clone(),
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
@@ -248,11 +247,7 @@ pub(crate) fn compose_agent_sessions(
     ));
     let query: Arc<dyn AgentSessionQueryService> =
         Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));
-    let read = Arc::new(AgentSessionReadUsecase::new(
-        query,
-        lifecycle.clone(),
-        input.terminal.clone(),
-    ));
+    let read = Arc::new(AgentSessionReadUsecase::new(query, lifecycle.clone()));
     let initial_instruction = Arc::new(AgentSessionInitialInstructionUsecase::new(
         sessions.clone(),
         input.terminal.clone(),
@@ -260,11 +255,6 @@ pub(crate) fn compose_agent_sessions(
     let interrupt = Arc::new(AgentSessionInterruptUsecase::new(
         sessions.clone(),
         input.terminal.clone(),
-    ));
-    let activity = Arc::new(AgentSessionActivityUsecase::new(
-        input.terminal.clone(),
-        input.change_notifier,
-        tokio::runtime::Handle::current(),
     ));
     let exit = Arc::new(AgentSessionExitUsecase::new(
         input.terminal,
@@ -283,7 +273,6 @@ pub(crate) fn compose_agent_sessions(
         interrupt,
         lifecycle,
         exit,
-        activity,
         read,
         provider_availability,
         availability_reader,

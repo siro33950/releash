@@ -54,6 +54,10 @@ pub enum NodeFact {
     CommandSpawned(CommandSpawnedFact),
     /// 観測: プロセスが終了した（突合で発見した喪失も exit_code: None で表す）。
     ProcessExited(ProcessExitedFact),
+    /// 観測: provider process の終了とは別に runtime が Node の失敗を確定した。
+    RuntimeFailureObserved(RuntimeFailureObservedFact),
+    /// 観測: AgentSession の provider 活動状態が変わった。
+    AgentActivityObserved(AgentActivityObservedFact),
     /// 外部入力: 受理された Submit。
     SubmitReceived(SubmitReceivedFact),
     /// 副作用: Contract 違反として Submit を拒否した。
@@ -246,6 +250,44 @@ pub struct ProcessExitedFact {
     pub failure_kind: Option<NodeExecutionFailureKind>,
 }
 
+impl ProcessExitedFact {
+    pub fn is_abnormal(&self) -> bool {
+        self.exit_code != Some(0) || self.failure_reason.is_some() || self.failure_kind.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFailureObservedFact {
+    pub reason: String,
+    pub failure_kind: NodeExecutionFailureKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionActivity {
+    Working,
+    AwaitingAnswer,
+    #[default]
+    AwaitingInstruction,
+}
+
+impl AgentSessionActivity {
+    pub fn after_fact(self, fact: &NodeFact) -> Self {
+        match fact {
+            NodeFact::AgentActivityObserved(fact) => fact.activity,
+            NodeFact::ProcessExited(_) | NodeFact::StopReceived(_) => Self::AwaitingInstruction,
+            _ => self,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityObservedFact {
+    pub activity: AgentSessionActivity,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitReceivedFact {
@@ -305,16 +347,30 @@ pub enum NodeFactDecodeError {
 }
 
 impl NodeFact {
+    const PROCESS_EXITED_EVENT_TYPE: &'static str = "process_exited";
+    const AGENT_ACTIVITY_OBSERVED_EVENT_TYPE: &'static str = "agent_activity_observed";
+    const STOP_RECEIVED_EVENT_TYPE: &'static str = "stop_received";
+
+    pub(crate) fn activity_replay_event_types() -> &'static [&'static str] {
+        &[
+            Self::PROCESS_EXITED_EVENT_TYPE,
+            Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE,
+            Self::STOP_RECEIVED_EVENT_TYPE,
+        ]
+    }
+
     /// event_type カラムの値。語彙の正はこの列挙のみが持つ。
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::Started(_) => "started",
             Self::SessionAttached(_) => "session_attached",
             Self::CommandSpawned(_) => "command_spawned",
-            Self::ProcessExited(_) => "process_exited",
+            Self::ProcessExited(_) => Self::PROCESS_EXITED_EVENT_TYPE,
+            Self::RuntimeFailureObserved(_) => "runtime_failure_observed",
+            Self::AgentActivityObserved(_) => Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE,
             Self::SubmitReceived(_) => "submit_received",
             Self::SubmitRejected(_) => "submit_rejected",
-            Self::StopReceived(_) => "stop_received",
+            Self::StopReceived(_) => Self::STOP_RECEIVED_EVENT_TYPE,
             Self::ArtifactProduced(_) => "artifact_produced",
             Self::ApprovalGranted(_) => "approval_granted",
             Self::RetryRequested => "retry_requested",
@@ -335,6 +391,8 @@ impl NodeFact {
             Self::SessionAttached(fact) => serde_json::to_string(fact),
             Self::CommandSpawned(fact) => serde_json::to_string(fact),
             Self::ProcessExited(fact) => serde_json::to_string(fact),
+            Self::RuntimeFailureObserved(fact) => serde_json::to_string(fact),
+            Self::AgentActivityObserved(fact) => serde_json::to_string(fact),
             Self::SubmitReceived(fact) => serde_json::to_string(fact),
             Self::SubmitRejected(fact) => serde_json::to_string(fact),
             Self::StopReceived(fact) => serde_json::to_string(fact),
@@ -373,10 +431,16 @@ impl NodeFact {
             "started" => parse(event_type, detail).map(Self::Started),
             "session_attached" => parse(event_type, detail).map(Self::SessionAttached),
             "command_spawned" => parse(event_type, detail).map(Self::CommandSpawned),
-            "process_exited" => parse(event_type, detail).map(Self::ProcessExited),
+            Self::PROCESS_EXITED_EVENT_TYPE => parse(event_type, detail).map(Self::ProcessExited),
+            "runtime_failure_observed" => {
+                parse(event_type, detail).map(Self::RuntimeFailureObserved)
+            }
+            Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE => {
+                parse(event_type, detail).map(Self::AgentActivityObserved)
+            }
             "submit_received" => parse(event_type, detail).map(Self::SubmitReceived),
             "submit_rejected" => parse(event_type, detail).map(Self::SubmitRejected),
-            "stop_received" => parse(event_type, detail).map(Self::StopReceived),
+            Self::STOP_RECEIVED_EVENT_TYPE => parse(event_type, detail).map(Self::StopReceived),
             "artifact_produced" => parse(event_type, detail).map(Self::ArtifactProduced),
             "approval_granted" => parse(event_type, detail).map(Self::ApprovalGranted),
             "retry_requested" => empty(event_type, detail).map(|()| Self::RetryRequested),

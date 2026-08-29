@@ -138,6 +138,22 @@ impl ProviderLaunchSpec {
                         format!(
                             "hooks.Stop=[{{hooks=[{{type=\"command\",command=\"{command}\"}}]}}]"
                         ),
+                        "-c".to_string(),
+                        format!(
+                            "hooks.UserPromptSubmit=[{{hooks=[{{type=\"command\",command=\"{command}\"}}]}}]"
+                        ),
+                        "-c".to_string(),
+                        format!(
+                            "hooks.PreToolUse=[{{hooks=[{{type=\"command\",command=\"{command}\"}}]}}]"
+                        ),
+                        "-c".to_string(),
+                        format!(
+                            "hooks.PostToolUse=[{{hooks=[{{type=\"command\",command=\"{command}\"}}]}}]"
+                        ),
+                        "-c".to_string(),
+                        format!(
+                            "hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command=\"{command}\"}}]}}]"
+                        ),
                     ],
                     environment,
                     files: Vec::new(),
@@ -229,7 +245,11 @@ fn claude_plugin_files(hook_command: &str) -> Vec<ProviderLaunchFile> {
         "hooks": {
             "SessionStart": [{"hooks": [{"type": "command", "command": hook_command}]}],
             "Stop": [{"hooks": [{"type": "command", "command": hook_command}]}],
-            "StopFailure": [{"hooks": [{"type": "command", "command": hook_command}]}]
+            "StopFailure": [{"hooks": [{"type": "command", "command": hook_command}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": hook_command}]}],
+            "PreToolUse": [{"hooks": [{"type": "command", "command": hook_command}]}],
+            "PostToolUse": [{"hooks": [{"type": "command", "command": hook_command}]}],
+            "PermissionRequest": [{"hooks": [{"type": "command", "command": hook_command}]}]
         }
     })
     .to_string()

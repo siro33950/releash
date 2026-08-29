@@ -127,6 +127,24 @@ impl PreparedWorkflowTransaction {
         )
     }
 
+    pub(crate) fn capture_with_outcome(
+        before: WorkflowExecution,
+        after: WorkflowExecution,
+        outcome: TransitionOutcome,
+        events: Vec<WorkflowEvent>,
+        effects: Vec<WorkflowRuntimeEffect>,
+    ) -> Result<Self, WorkflowTransactionPreparationError> {
+        Self::from_candidate(
+            before,
+            after,
+            WorkflowRuntimeDecision {
+                outcome,
+                events,
+                effects,
+            },
+        )
+    }
+
     fn from_candidate(
         before: WorkflowExecution,
         after: WorkflowExecution,
@@ -296,6 +314,33 @@ mod tests {
             vec![WorkflowRuntimeEffect::BroadcastState]
         );
         assert_eq!(live.state(), &RuntimeExecutionState::Interrupted);
+    }
+
+    #[test]
+    fn already_applied_observation_persists_event_without_changing_aggregate() {
+        let mut live = WorkflowExecution::restore(RuntimeExecutionState::Running, None);
+        let before = live.clone();
+        let event = interrupted_event();
+        let prepared = PreparedWorkflowTransaction::capture_with_outcome(
+            before.clone(),
+            before.clone(),
+            TransitionOutcome::AlreadyApplied,
+            vec![event.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut persisted = Vec::new();
+
+        let durable = prepared
+            .persist(&mut live, |events| {
+                persisted.extend_from_slice(events);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(durable.outcome(), TransitionOutcome::AlreadyApplied);
+        assert_eq!(persisted, vec![event]);
+        assert_eq!(live, before);
     }
 
     #[test]

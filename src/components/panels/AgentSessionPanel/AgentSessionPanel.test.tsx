@@ -44,7 +44,6 @@ const session = {
 		nodeExecutionId: "agent-session-1",
 	},
 	lifecycle: "open" as const,
-	activity: "idle" as const,
 	lastExitAbnormal: false,
 	operations: {
 		canArchive: true,

@@ -12,7 +12,7 @@ use super::{
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
-use crate::domain::workflow::ExecutionTreeLaunch;
+use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 fn standalone_location(id: &str) -> AgentSessionTreeLocation {
@@ -45,6 +45,10 @@ fn test_agent_session生成_identityとproviderとtree_locationを固定してop
         &standalone_location("agent-session-1")
     );
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
+    assert_eq!(
+        session.activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
     assert_eq!(
         session.terminal_surface_owner(),
         TerminalSurfaceOwner::session(workspace, "agent-session-1").unwrap()
@@ -90,6 +94,44 @@ fn test_agent_session_event_永続化へ渡したeventを未commit一覧から�
 
     assert_eq!(events.len(), 1);
     assert!(session.uncommitted_events().is_empty());
+}
+
+#[test]
+fn test_agent_session活動観測_異なる値だけを適用してeventを積む() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    assert_eq!(
+        session.observe_activity(AgentSessionActivity::Working),
+        AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(session.activity(), AgentSessionActivity::Working);
+    assert_eq!(
+        session.uncommitted_events(),
+        &[AgentSessionLifecycleEvent::ActivityObserved {
+            activity: AgentSessionActivity::Working,
+        }]
+    );
+
+    session.take_uncommitted_events();
+    assert_eq!(
+        session.observe_activity(AgentSessionActivity::Working),
+        AgentSessionMutationOutcome::AlreadyApplied
+    );
+    assert!(session.uncommitted_events().is_empty());
+
+    assert_eq!(
+        session.observe_activity(AgentSessionActivity::AwaitingAnswer),
+        AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(session.activity(), AgentSessionActivity::AwaitingAnswer);
 }
 
 #[test]
@@ -732,7 +774,11 @@ fn test_workflow起動由来のroot_sessionも利用者操作とgcを拒否し�
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
     assert!(session.uncommitted_events().is_empty());
 
-    session.restore_derived_lifecycle(AgentSessionLifecycle::Archived, false);
+    session.restore_derived_lifecycle(
+        AgentSessionLifecycle::Archived,
+        false,
+        AgentSessionActivity::Working,
+    );
 
     assert_eq!(
         session.authorize_restore().unwrap_err(),
@@ -863,7 +909,7 @@ fn test_agent_session生成_session起動木rootとsessionのid不一致を拒�
 }
 
 #[test]
-fn test_agent_session導出復元_lifecycleと異常終了だけを未commit事実なしで設定する() {
+fn test_agent_session導出復元_lifecycleと異常終了と活動状態を未commit事実なしで設定する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
@@ -874,10 +920,15 @@ fn test_agent_session導出復元_lifecycleと異常終了だけを未commit事�
     .unwrap();
     session.take_uncommitted_events();
 
-    session.restore_derived_lifecycle(AgentSessionLifecycle::Paused, true);
+    session.restore_derived_lifecycle(
+        AgentSessionLifecycle::Paused,
+        true,
+        AgentSessionActivity::AwaitingAnswer,
+    );
 
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
     assert!(session.last_exit_abnormal());
+    assert_eq!(session.activity(), AgentSessionActivity::AwaitingAnswer);
     assert!(session.uncommitted_events().is_empty());
 }
 
@@ -1477,6 +1528,57 @@ fn test_agent_session_process終了_exit_code不明は異常終了として記�
     session.observe_provider_process_exit(None);
 
     assert!(session.last_exit_abnormal());
+}
+
+#[test]
+fn test_agent_session活動状態_lifecycleとは独立しprocess終了で指示待ちへ戻る() {
+    let mut session = paused_candidate();
+    session.observe_activity(AgentSessionActivity::Working);
+
+    session.archive().unwrap();
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
+    assert_eq!(session.activity(), AgentSessionActivity::Working);
+
+    session
+        .complete_restore(AgentSessionRecoveryResult::Succeeded)
+        .unwrap();
+    assert_eq!(
+        session.activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
+    session.observe_activity(AgentSessionActivity::Working);
+    session.observe_provider_process_exit(Some(0));
+
+    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
+    assert_eq!(
+        session.activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
+}
+
+#[test]
+fn test_agent_session_restore_活動状態が変わると指示待ちeventを積む() {
+    let mut session = paused_candidate();
+    session.observe_activity(AgentSessionActivity::Working);
+    session.archive().unwrap();
+    session.take_uncommitted_events();
+
+    session
+        .complete_restore(AgentSessionRecoveryResult::Succeeded)
+        .unwrap();
+
+    assert_eq!(
+        session.uncommitted_events(),
+        &[
+            AgentSessionLifecycleEvent::LifecycleChanged {
+                lifecycle: AgentSessionLifecycle::Open,
+                last_exit_abnormal: false,
+            },
+            AgentSessionLifecycleEvent::ActivityObserved {
+                activity: AgentSessionActivity::AwaitingInstruction,
+            },
+        ]
+    );
 }
 
 #[test]

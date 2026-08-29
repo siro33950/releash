@@ -24,13 +24,6 @@ pub(crate) enum AgentSessionLifecycleDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AgentSessionActivityDto {
-    Running,
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentSessionOperationsDto {
     pub can_archive: bool,
@@ -51,7 +44,6 @@ pub(crate) struct AgentSessionItemDto {
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
     pub operations: AgentSessionOperationsDto,
-    pub activity: AgentSessionActivityDto,
     pub last_exit_abnormal: bool,
 }
 

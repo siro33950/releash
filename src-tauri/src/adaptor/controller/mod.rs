@@ -1,4 +1,3 @@
-pub(crate) mod agent_session_activity_observer;
 pub(crate) mod agent_session_exit_observer;
 pub(crate) mod agent_session_wiring;
 pub(crate) mod api;

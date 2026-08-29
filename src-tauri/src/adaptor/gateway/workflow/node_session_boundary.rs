@@ -63,6 +63,12 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
         instruction: &str,
     ) -> Result<(), WorkflowRuntimeError>;
 
+    async fn recover_workflow_agent_session_provider(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError>;
+
     async fn interrupt_workflow_agent_session(
         &self,
         node_session_id: &str,
@@ -198,6 +204,27 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .map_err(|error| {
                 WorkflowRuntimeError::AgentSession(format!(
                     "dispatch initial instruction for AgentSession '{node_session_id}': {error:?}"
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn recover_workflow_agent_session_provider(
+        &self,
+        node_session_id: &str,
+        node_execution_id: &str,
+    ) -> Result<(), WorkflowRuntimeError> {
+        self.lifecycle
+            .ensure_provider_running(
+                node_session_id,
+                24,
+                80,
+                &format!("workflow-node-provider-recovery-{node_execution_id}"),
+            )
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::AgentSession(format!(
+                    "recover provider for Workflow AgentSession '{node_session_id}': {error:?}"
                 ))
             })?;
         Ok(())

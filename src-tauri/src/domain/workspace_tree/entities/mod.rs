@@ -14,8 +14,8 @@ use super::value_objects::{
 };
 use super::WorkspaceNodeStatusClassification;
 use crate::domain::workflow::{
-    ExecutionParentRef, ExecutionStatus, ItemsSource, NodeCompletionSignalState,
-    NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
+    AgentSessionActivity, ExecutionParentRef, ExecutionStatus, ItemsSource,
+    NodeCompletionSignalState, NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
 };
 
 pub(super) const DEFAULT_WORKFLOW_TITLE: &str = "Workflow";
@@ -282,10 +282,12 @@ impl WorkspaceTree {
             title: non_empty_or(workflow_name, DEFAULT_WORKFLOW_TITLE),
             status,
             status_classification: WorkspaceTreeNode::classify_own_status(
+                WorkspaceNodeKind::Workflow,
                 status,
-                completion_signals,
+                None,
                 recovery_owner_reason.is_some(),
             ),
+            activity: None,
             error_reason: None,
             updated_at_bits: timestamp.to_bits(),
             execution_id: Some(execution_id.clone()),
@@ -303,6 +305,7 @@ impl WorkspaceTree {
             can_close: false,
             can_stop: true,
             can_resume: false,
+            resume_eligible: false,
             recovery_owner_reason,
             resume_unavailable_reason: None,
             can_abort: true,
@@ -326,10 +329,12 @@ impl WorkspaceTree {
                 title: name,
                 status,
                 status_classification: WorkspaceTreeNode::classify_own_status(
+                    WorkspaceNodeKind::Fanout,
                     status,
-                    completion_signals,
+                    None,
                     recovery_owner_reason.is_some(),
                 ),
+                activity: None,
                 error_reason: None,
                 updated_at_bits: timestamp.to_bits(),
                 execution_id: Some(execution_id.clone()),
@@ -347,6 +352,7 @@ impl WorkspaceTree {
                 can_close: false,
                 can_stop: false,
                 can_resume: false,
+                resume_eligible: false,
                 recovery_owner_reason,
                 resume_unavailable_reason: None,
                 can_abort: false,
@@ -462,23 +468,27 @@ impl WorkspaceTree {
         let status = WorkspaceNodeStatus::Running;
         let completion_signals = NodeCompletionSignalState::default();
         let recovery_owner_reason = None;
+        let workspace_kind = match kind {
+            NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
+            NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
+            NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
+            NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
+        };
+        let activity = (kind == NodeKindName::Session).then(AgentSessionActivity::default);
         self.nodes.push(WorkspaceTreeNode {
             id,
             parent_id: Some(parent_id),
             sibling_order,
-            kind: match kind {
-                NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
-                NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
-                NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
-                NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
-            },
+            kind: workspace_kind,
             title: node_name.clone(),
             status,
             status_classification: WorkspaceTreeNode::classify_own_status(
+                workspace_kind,
                 status,
-                completion_signals,
+                activity,
                 recovery_owner_reason.is_some(),
             ),
+            activity,
             error_reason: None,
             updated_at_bits: timestamp.to_bits(),
             execution_id: Some(execution_id),
@@ -496,6 +506,7 @@ impl WorkspaceTree {
             can_close: false,
             can_stop: false,
             can_resume: false,
+            resume_eligible: false,
             recovery_owner_reason,
             resume_unavailable_reason: None,
             can_abort: false,
@@ -625,7 +636,71 @@ impl WorkspaceTree {
         }
     }
 
+    fn workflow_resume_capability(&self, execution_id: &str) -> (bool, Option<String>) {
+        let Some(workflow) = self.workflow_node(execution_id) else {
+            return (false, None);
+        };
+        let execution_reason = workflow.recovery_owner_reason.clone();
+        let waiting_approval = self
+            .nodes
+            .iter()
+            .any(|node| node.execution_id.as_deref() == Some(execution_id) && node.can_approve);
+        let mut owner_reasons = self
+            .nodes
+            .iter()
+            .filter(|node| node.is_leaf() && node.execution_id.as_deref() == Some(execution_id))
+            .filter_map(|node| {
+                let reason = node
+                    .recovery_owner_reason
+                    .clone()
+                    .or_else(|| execution_reason.clone())?;
+                let owner = node
+                    .session_id
+                    .clone()
+                    .or_else(|| node.node_execution_id.clone())?;
+                Some((owner, reason))
+            })
+            .collect::<Vec<_>>();
+        owner_reasons.sort_by(|left, right| left.0.cmp(&right.0));
+        let resumable_leaf = self.nodes.iter().any(|node| {
+            node.execution_id.as_deref() == Some(execution_id)
+                && node.is_leaf()
+                && node.resume_eligible
+        });
+        let recovery_fenced = execution_reason.is_some() || !owner_reasons.is_empty();
+        let reason = (resumable_leaf || recovery_fenced)
+            .then(|| {
+                owner_reasons
+                    .into_iter()
+                    .next()
+                    .map(|(_, reason)| reason)
+                    .or(execution_reason)
+            })
+            .flatten();
+        (
+            resumable_leaf && !waiting_approval && reason.is_none(),
+            reason,
+        )
+    }
+
+    pub(super) fn recompute_workflow_resume_capabilities(&mut self) {
+        let execution_ids = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == WorkspaceNodeKind::Workflow)
+            .filter_map(|node| node.execution_id.clone())
+            .collect::<Vec<_>>();
+        for execution_id in &execution_ids {
+            let (can_resume, reason) = self.workflow_resume_capability(execution_id);
+            if let Some(workflow) = self.workflow_node_mut(execution_id) {
+                workflow.resume_unavailable_reason = reason;
+                workflow.can_resume = can_resume;
+            }
+        }
+    }
+
     fn recompute_workflow_recovery_capabilities(&mut self) {
+        self.recompute_workflow_resume_capabilities();
         let execution_ids = self
             .nodes
             .iter()
@@ -633,47 +708,6 @@ impl WorkspaceTree {
             .filter_map(|node| node.execution_id.clone())
             .collect::<Vec<_>>();
         for execution_id in execution_ids {
-            let Some(workflow) = self.workflow_node(&execution_id) else {
-                continue;
-            };
-            let execution_reason = workflow.recovery_owner_reason.clone();
-            let waiting_approval = self.nodes.iter().any(|node| {
-                node.execution_id.as_deref() == Some(execution_id.as_str()) && node.can_approve
-            });
-            let mut owner_reasons = self
-                .nodes
-                .iter()
-                .filter(|node| {
-                    node.is_leaf() && node.execution_id.as_deref() == Some(execution_id.as_str())
-                })
-                .filter_map(|node| {
-                    let reason = node
-                        .recovery_owner_reason
-                        .clone()
-                        .or_else(|| execution_reason.clone())?;
-                    let owner = node
-                        .session_id
-                        .clone()
-                        .or_else(|| node.node_execution_id.clone())?;
-                    Some((owner, reason))
-                })
-                .collect::<Vec<_>>();
-            owner_reasons.sort_by(|left, right| left.0.cmp(&right.0));
-            let paused = self.nodes.iter().any(|node| {
-                node.execution_id.as_deref() == Some(execution_id.as_str())
-                    && node.is_leaf()
-                    && node.status == WorkspaceNodeStatus::Paused
-            });
-            let recovery_fenced = execution_reason.is_some() || !owner_reasons.is_empty();
-            let reason = (paused || recovery_fenced)
-                .then(|| {
-                    owner_reasons
-                        .into_iter()
-                        .next()
-                        .map(|(_, reason)| reason)
-                        .or(execution_reason)
-                })
-                .flatten();
             let can_stop = self.nodes.iter().any(|node| {
                 node.execution_id.as_deref() == Some(execution_id.as_str())
                     && node.is_leaf()
@@ -681,10 +715,7 @@ impl WorkspaceTree {
                     && node.completion_signals != NodeCompletionSignalState::StopReceived
             });
             if let Some(workflow) = self.workflow_node_mut(&execution_id) {
-                workflow.resume_unavailable_reason = reason;
                 workflow.can_stop = can_stop;
-                workflow.can_resume =
-                    paused && !waiting_approval && workflow.resume_unavailable_reason.is_none();
             }
         }
     }
@@ -819,6 +850,21 @@ impl WorkspaceTreeProjector {
                         })?;
                     node.session_id = Some(session_id);
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
+                }
+                WorkspaceStructureFact::NodeActivityProjected {
+                    execution_id,
+                    node_execution_id,
+                    activity,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    if node.kind != WorkspaceNodeKind::WorkflowSession {
+                        return Err(WorkspaceTreeError::InvalidNode(node.id.clone()));
+                    }
+                    node.activity = Some(activity);
                 }
                 WorkspaceStructureFact::NodeCommandPrepared {
                     execution_id,
@@ -957,6 +1003,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.session_id.is_none()
                 && node.display_command.is_none()
                 && node.command_result.is_none()
+                && node.activity.is_none()
         }
         WorkspaceNodeKind::Fanout => {
             let structural_shape = if node.is_internal_rule_record() {
@@ -977,6 +1024,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && (!node.is_internal_rule_record() || node.recovery_owner_reason.is_none())
                 && node.display_command.is_none()
                 && node.command_result.is_none()
+                && node.activity.is_none()
         }
         WorkspaceNodeKind::Sequence => {
             node.parent_id.is_some()
@@ -988,6 +1036,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.session_id.is_none()
                 && node.display_command.is_none()
                 && node.command_result.is_none()
+                && node.activity.is_none()
         }
         WorkspaceNodeKind::WorkflowSession => {
             node.parent_id.is_some()
@@ -997,6 +1046,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && node.attempt.is_some()
                 && node.display_command.is_none()
                 && node.command_result.is_none()
+                && node.activity.is_some()
         }
         WorkspaceNodeKind::WorkflowCommand => {
             node.parent_id.is_some()
@@ -1005,6 +1055,7 @@ fn node_shape_is_valid(node: &WorkspaceTreeNode) -> bool {
                 && has_node_name
                 && node.attempt.is_some()
                 && node.session_id.is_none()
+                && node.activity.is_none()
         }
     }
 }

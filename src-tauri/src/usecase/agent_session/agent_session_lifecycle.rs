@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionMutationOutcome, AgentSessionOpenAction,
-    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionMutationOutcome,
+    AgentSessionOpenAction, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
@@ -165,6 +166,42 @@ impl AgentSessionLifecycleUsecase {
             .lock_operation(agent_session_id)
             .await
             .map_err(map_session_error)?;
+        self.resume_locked(agent_session_id, rows, cols, caller_request_id)
+            .await
+    }
+
+    pub(crate) async fn ensure_provider_running(
+        &self,
+        agent_session_id: &str,
+        rows: u16,
+        cols: u16,
+        caller_request_id: &str,
+    ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+        let _operation = self
+            .sessions
+            .lock_operation(agent_session_id)
+            .await
+            .map_err(map_session_error)?;
+        let session = self.required(agent_session_id).await?;
+        match session.session().lifecycle() {
+            AgentSessionLifecycle::Open => Ok(AgentSessionOpenOutcome::Attached),
+            AgentSessionLifecycle::Paused => {
+                self.resume_locked(agent_session_id, rows, cols, caller_request_id)
+                    .await
+            }
+            AgentSessionLifecycle::Archived => {
+                Err(AgentSessionLifecycleUsecaseError::InvalidOperation)
+            }
+        }
+    }
+
+    async fn resume_locked(
+        &self,
+        agent_session_id: &str,
+        rows: u16,
+        cols: u16,
+        caller_request_id: &str,
+    ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
         let session = self.required(agent_session_id).await?;
         session
             .session()

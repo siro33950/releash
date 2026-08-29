@@ -44,10 +44,11 @@ pub use node_execution::{
     NodeExecutionFailure, NodeExecutionStatus,
 };
 pub use node_fact::{
-    ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch,
-    IsolatedWorktreeCreatedFact, NodeFact, NodeFactMeta, NodeFactRecord, ProcessExitedFact,
-    SessionAttachedFact, SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact,
-    SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
+    CommandSpawnedFact, ExecutionTreeLaunch, IsolatedWorktreeCreatedFact, NodeFact, NodeFactMeta,
+    NodeFactRecord, ProcessExitedFact, RuntimeFailureObservedFact, SessionAttachedFact,
+    SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
+    SubmitRejectedFact, TreeRootFact,
 };
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 #[cfg(test)]

@@ -4,9 +4,7 @@ use crate::domain::agent_session::{
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
     ProviderAgentTerminalSpawnError,
 };
-use crate::domain::terminal_surface::{
-    TerminalActivity, TerminalProcessLaunch, TerminalSurfaceOwner,
-};
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::application::{
     OwnedTerminalSummaryLookup, TerminalSurfaceApplication,
 };
@@ -138,24 +136,6 @@ impl ProviderAgentTerminalObservationGateway for TerminalSurfaceApplication {
             OwnedTerminalSummaryLookup::Found(summary) => summary.process_state.exit_code(),
             OwnedTerminalSummaryLookup::Absent | OwnedTerminalSummaryLookup::OwnerMismatch => None,
         }
-    }
-
-    fn session_activity(&self, owner: &TerminalSurfaceOwner) -> TerminalActivity {
-        match self.find_owned_summary(owner) {
-            OwnedTerminalSummaryLookup::Found(summary) if !summary.process_state.is_exited() => {
-                TerminalActivity::classify(summary.last_output_at.map(|at| at.elapsed()))
-            }
-            _ => TerminalActivity::Idle,
-        }
-    }
-
-    fn session_worktree_path(&self, session_key: &str) -> Option<String> {
-        self.summaries().into_iter().find_map(|surface| {
-            (surface.session_key == session_key
-                && matches!(surface.owner, TerminalSurfaceOwner::Session { .. }))
-            .then_some(surface.worktree_path)
-            .flatten()
-        })
     }
 }
 

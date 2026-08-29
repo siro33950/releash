@@ -31,7 +31,7 @@ Releash のドメイン横断ユビキタス言語を定義する。この文書
 | Code | Worktree 内のファイル内容 | code / external state |
 | Diff | Worktree / Repository の状態から計算される差分 | code / derived view |
 | CodeAnchor | Code 上の位置への参照 | code |
-| AgentSession | Session Node が参照する provider CLI の継続 identity と lifecycle | agent_session |
+| AgentSession | Session Node が参照する provider CLI の継続 identity、lifecycle、および agent の活動状態 | agent_session |
 | ProviderLifecycle | provider session identity、transcript reference、Stop 観測の境界 | provider_lifecycle |
 | ProviderAvailability | provider executable と利用可否の境界 | provider_availability |
 | Terminal | 人間または AgentSession が操作する interactive shell surface | terminal_surface |
@@ -112,7 +112,7 @@ WorkflowExecution は木全体の `Running` / `Completed` / `Aborted` を所有�
 
 ### AgentSession
 
-AgentSession は provider、provider session identity、opaque transcript reference、Terminal ownership、open / paused / archived lifecycle を持つ。conversation 本文と provider UI は provider CLI / transcript が所有する。単独 Session の lifecycle も実行木から分離した別の作業モデルにはしない。
+AgentSession は provider、provider session identity、opaque transcript reference、Terminal ownership、open / paused / archived lifecycle、および agent の活動状態を持つ。活動状態は `Working` / `AwaitingAnswer` / `AwaitingInstruction` の3値であり、lifecycle とは独立して AgentSession が所有する。NodeExecution / WorkflowExecution はこの活動状態を持たない。conversation 本文と provider UI は provider CLI / transcript が所有する。単独 Session の lifecycle も実行木から分離した別の作業モデルにはしない。
 
 ### 隔離 worktree
 

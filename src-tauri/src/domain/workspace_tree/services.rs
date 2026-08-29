@@ -91,7 +91,7 @@ impl WorkspaceTreeVisibilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::NodeCompletionSignalState;
+    use crate::domain::workflow::{AgentSessionActivity, NodeCompletionSignalState};
     use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceNodeStatusClassification};
 
     fn node(
@@ -109,6 +109,8 @@ mod tests {
             title: id.to_string(),
             status: WorkspaceNodeStatus::Running,
             status_classification: WorkspaceNodeStatusClassification::Active,
+            activity: (kind == WorkspaceNodeKind::WorkflowSession)
+                .then(AgentSessionActivity::default),
             error_reason: None,
             updated_at_bits: 0.0_f64.to_bits(),
             execution_id: execution_id.map(str::to_string),
@@ -126,6 +128,7 @@ mod tests {
             can_close: false,
             can_stop: false,
             can_resume: false,
+            resume_eligible: false,
             recovery_owner_reason: None,
             resume_unavailable_reason: None,
             can_abort: false,

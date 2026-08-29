@@ -53,17 +53,6 @@ impl ProviderAgentTerminalObservationGateway for FixedTerminalObservation {
     fn session_exit_code(&self, _owner: &TerminalSurfaceOwner) -> Option<i32> {
         Some(0)
     }
-
-    fn session_activity(
-        &self,
-        _owner: &TerminalSurfaceOwner,
-    ) -> crate::domain::terminal_surface::TerminalActivity {
-        crate::domain::terminal_surface::TerminalActivity::Idle
-    }
-
-    fn session_worktree_path(&self, _session_key: &str) -> Option<String> {
-        None
-    }
 }
 
 #[tokio::test]

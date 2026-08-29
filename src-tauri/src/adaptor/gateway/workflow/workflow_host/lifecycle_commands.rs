@@ -23,6 +23,29 @@ fn abort_outcome_to_command_result(
     }
 }
 
+fn reapply_cached_paused_nodes(
+    cached: &DomainWorkflowExecution,
+    durable: &mut DomainWorkflowExecution,
+    previously_paused_node_execution_ids: &HashSet<String>,
+    excluded_node_execution_ids: impl Fn(&str) -> bool,
+    timestamp: f64,
+) -> HashSet<String> {
+    let mut paused_node_execution_ids = previously_paused_node_execution_ids.clone();
+    paused_node_execution_ids.extend(
+        cached
+            .node_executions
+            .iter()
+            .filter(|node| node.status == NodeExecutionStatus::Paused)
+            .map(|node| node.id.clone()),
+    );
+    for node_execution_id in &paused_node_execution_ids {
+        if !excluded_node_execution_ids(node_execution_id) {
+            let _ = durable.pause_node_execution(node_execution_id, timestamp);
+        }
+    }
+    paused_node_execution_ids
+}
+
 /// abort / stop / resume の execution ライフサイクル typed command 群。
 impl WorkflowRuntimeHost {
     pub(crate) async fn abort_workflow_execution<R: tauri::Runtime>(
@@ -219,6 +242,7 @@ impl WorkflowRuntimeHost {
                     execution_id,
                     snapshot_before,
                     candidate,
+                    transition_outcome: TransitionOutcome::Applied,
                     events: &events,
                     provider_events: Vec::new(),
                 },
@@ -302,6 +326,7 @@ impl WorkflowRuntimeHost {
                     execution_id,
                     snapshot_before,
                     candidate,
+                    transition_outcome: TransitionOutcome::Applied,
                     events: &events,
                     provider_events: Vec::new(),
                 },
@@ -312,16 +337,48 @@ impl WorkflowRuntimeHost {
     }
 
     /// Restore Agent Node Attempts that failed to activate after an in-place Resume.
-    async fn restore_unactivated_resumes_to_paused<R: tauri::Runtime>(
+    async fn restore_unactivated_resumes<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         execution_id: &str,
-        node_execution_ids: &HashSet<String>,
+        previously_paused_node_execution_ids: &HashSet<String>,
+        rollbacks: &HashMap<String, (String, RuntimeNodeResumePreviousState)>,
     ) -> Result<(), WorkflowRuntimeError> {
-        if node_execution_ids.is_empty() {
+        if rollbacks.is_empty() {
             return Ok(());
         }
+        let store = app
+            .try_state::<std::sync::Arc<
+                crate::adaptor::gateway::local_event_store::LocalEventStore,
+            >>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| {
+                WorkflowRuntimeError::SessionStore(
+                    "workflow SQLite event authority is not managed".to_string(),
+                )
+            })?;
+        let mut durable = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(store),
+            execution_id,
+        )
+        .map_err(WorkflowRuntimeError::SessionStore)?
+        .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?
+        .aggregate;
         let timestamp = current_timestamp();
+        {
+            let mut executions = self.executions.lock().await;
+            let cached = executions
+                .get(execution_id)
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            reapply_cached_paused_nodes(
+                cached,
+                &mut durable,
+                previously_paused_node_execution_ids,
+                |node_execution_id| rollbacks.contains_key(node_execution_id),
+                timestamp,
+            );
+            executions.insert(execution_id.to_string(), durable);
+        }
         let (snapshot_before, candidate, events, worktree_path) = {
             let executions = self.executions.lock().await;
             let snapshot_before = executions
@@ -330,15 +387,50 @@ impl WorkflowRuntimeHost {
                 .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
             let mut candidate = snapshot_before.clone();
             let mut events = Vec::new();
-            for node_execution_id in node_execution_ids {
-                if candidate.pause_node_execution(node_execution_id, timestamp)
+            for (node_execution_id, (session_id, rollback)) in rollbacks {
+                let (outcome, process_exit) = match rollback {
+                    RuntimeNodeResumePreviousState::Paused => (
+                        candidate.derive_session_process_exit(node_execution_id, timestamp),
+                        WorkflowEvent::NodeProcessExitObserved {
+                            execution_id: execution_id.to_string(),
+                            node_execution_id: node_execution_id.clone(),
+                            exit_code: Some(0),
+                            failure_reason: None,
+                            failure_kind: None,
+                            timestamp,
+                        },
+                    ),
+                    RuntimeNodeResumePreviousState::ProviderProcessFailed { reason, kind } => (
+                        candidate.restore_provider_process_exit_failure(
+                            node_execution_id,
+                            reason.clone(),
+                            *kind,
+                            timestamp,
+                        ),
+                        WorkflowEvent::NodeProcessExitObserved {
+                            execution_id: execution_id.to_string(),
+                            node_execution_id: node_execution_id.clone(),
+                            exit_code: None,
+                            failure_reason: Some(reason.clone()),
+                            failure_kind: Some(*kind),
+                            timestamp,
+                        },
+                    ),
+                };
+                if outcome
                     == crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
                 {
-                    events.push(WorkflowEvent::NodePaused {
-                        execution_id: execution_id.to_string(),
-                        node_execution_id: node_execution_id.clone(),
-                        timestamp,
-                    });
+                    // Node の状態だけを戻し、先に復旧した provider の Open lifecycle は
+                    // 同じ commit の attachment で維持する。
+                    events.extend([
+                        process_exit,
+                        WorkflowEvent::SessionAttached {
+                            execution_id: execution_id.to_string(),
+                            node_execution_id: node_execution_id.clone(),
+                            session_id: session_id.clone(),
+                            timestamp,
+                        },
+                    ]);
                 }
             }
             let worktree_path = candidate.worktree_path.clone();
@@ -354,6 +446,7 @@ impl WorkflowRuntimeHost {
                     execution_id,
                     snapshot_before,
                     candidate,
+                    transition_outcome: TransitionOutcome::Applied,
                     events: &events,
                     provider_events: Vec::new(),
                 },
@@ -361,6 +454,30 @@ impl WorkflowRuntimeHost {
             .await?;
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
         Ok(())
+    }
+
+    async fn restore_unactivated_resumes_after_failure<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution_id: &str,
+        previously_paused_node_execution_ids: &HashSet<String>,
+        rollbacks: &HashMap<String, (String, RuntimeNodeResumePreviousState)>,
+        error: WorkflowRuntimeError,
+    ) -> WorkflowRuntimeError {
+        match self
+            .restore_unactivated_resumes(
+                app,
+                execution_id,
+                previously_paused_node_execution_ids,
+                rollbacks,
+            )
+            .await
+        {
+            Ok(()) => error,
+            Err(compensation_error) => WorkflowRuntimeError::InvalidState(format!(
+                "{error}; failed to restore unactivated resumed nodes: {compensation_error}"
+            )),
+        }
     }
 
     pub(crate) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
@@ -382,9 +499,43 @@ impl WorkflowRuntimeHost {
                 metadata.status.as_str()
             )));
         }
+        let store = app
+            .try_state::<std::sync::Arc<
+                crate::adaptor::gateway::local_event_store::LocalEventStore,
+            >>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| {
+                WorkflowRuntimeError::SessionStore(
+                    "workflow SQLite event authority is not managed".to_string(),
+                )
+            })?;
+        let backend = workflow_fact_log::FactLogReadBackend::Live(store);
         let timestamp = current_timestamp();
-        let (snapshot_before, candidate, events, resumed_sessions, paused_commands, worktree_path) = {
-            let executions = self.executions.lock().await;
+        let (
+            snapshot_before,
+            candidate,
+            events,
+            resumed_sessions,
+            paused_commands,
+            previously_paused_node_execution_ids,
+            worktree_path,
+        ) = {
+            let mut executions = self.executions.lock().await;
+            let cached = executions
+                .get(execution_id)
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            let mut durable = workflow_fact_log::fold_tree_from(&backend, execution_id)
+                .map_err(WorkflowRuntimeError::SessionStore)?
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?
+                .aggregate;
+            let previously_paused_node_execution_ids = reapply_cached_paused_nodes(
+                cached,
+                &mut durable,
+                &HashSet::new(),
+                |_| false,
+                timestamp,
+            );
+            executions.insert(execution_id.to_string(), durable);
             let snapshot_before = executions
                 .get(execution_id)
                 .cloned()
@@ -393,13 +544,21 @@ impl WorkflowRuntimeHost {
             let targets = candidate
                 .node_executions
                 .iter()
-                .filter(|node| node.status == NodeExecutionStatus::Paused)
-                .map(|node| (node.id.clone(), node.kind, node.session_id.clone()))
+                .filter_map(|node| {
+                    node.resume_previous_state().map(|previous_state| {
+                        (
+                            node.id.clone(),
+                            node.kind,
+                            node.session_id.clone(),
+                            previous_state,
+                        )
+                    })
+                })
                 .collect::<Vec<_>>();
             let mut events = Vec::new();
             let mut resumed_sessions = Vec::new();
             let mut paused_commands = Vec::new();
-            for (node_execution_id, kind, session_id) in targets {
+            for (node_execution_id, kind, session_id, previous_state) in targets {
                 if kind == NodeKindName::Command {
                     paused_commands.push(node_execution_id);
                     continue;
@@ -417,10 +576,10 @@ impl WorkflowRuntimeHost {
                 if kind == NodeKindName::Session {
                     let session_id = session_id.ok_or_else(|| {
                         WorkflowRuntimeError::InvalidState(format!(
-                            "paused Session NodeExecution '{node_execution_id}' has no AgentSession"
+                            "resumable Session NodeExecution '{node_execution_id}' has no AgentSession"
                         ))
                     })?;
-                    resumed_sessions.push((node_execution_id, session_id));
+                    resumed_sessions.push((node_execution_id, session_id, previous_state));
                 }
             }
             let worktree_path = candidate.worktree_path.clone();
@@ -430,34 +589,68 @@ impl WorkflowRuntimeHost {
                 events,
                 resumed_sessions,
                 paused_commands,
+                previously_paused_node_execution_ids,
                 worktree_path,
             )
         };
         if events.is_empty() && paused_commands.is_empty() {
             return Ok(());
         }
+        let mut rollbacks = HashMap::new();
+        for (node_execution_id, session_id, rollback) in &resumed_sessions {
+            if let Err(error) = self
+                .workflow_agent_sessions
+                .recover_workflow_agent_session_provider(session_id, node_execution_id)
+                .await
+            {
+                return Err(self
+                    .restore_unactivated_resumes_after_failure(
+                        app,
+                        execution_id,
+                        &previously_paused_node_execution_ids,
+                        &rollbacks,
+                        error,
+                    )
+                    .await);
+            }
+            rollbacks.insert(
+                node_execution_id.clone(),
+                (session_id.clone(), rollback.clone()),
+            );
+        }
         let snapshot = if events.is_empty() {
             None
         } else {
-            Some(
-                self.commit_control_plane_candidate(
+            match self
+                .commit_control_plane_candidate(
                     app,
                     ControlPlaneCommitCandidate {
                         execution_id,
                         snapshot_before,
                         candidate,
+                        transition_outcome: TransitionOutcome::Applied,
                         events: &events,
                         provider_events: Vec::new(),
                     },
                 )
-                .await?,
-            )
+                .await
+            {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    return Err(self
+                        .restore_unactivated_resumes_after_failure(
+                            app,
+                            execution_id,
+                            &previously_paused_node_execution_ids,
+                            &rollbacks,
+                            error,
+                        )
+                        .await);
+                }
+            }
         };
-        let mut unactivated = resumed_sessions
-            .iter()
-            .map(|(node_execution_id, _)| node_execution_id.clone())
-            .collect::<HashSet<_>>();
-        for (node_execution_id, session_id) in resumed_sessions {
+        let mut unactivated = rollbacks;
+        for (node_execution_id, session_id, _) in resumed_sessions {
             let activation = self
                 .workflow_agent_sessions
                 .dispatch_initial_instruction(
@@ -467,15 +660,15 @@ impl WorkflowRuntimeHost {
                 )
                 .await;
             if let Err(error) = activation {
-                if let Err(compensation_error) = self
-                    .restore_unactivated_resumes_to_paused(app, execution_id, &unactivated)
-                    .await
-                {
-                    return Err(WorkflowRuntimeError::InvalidState(format!(
-                        "{error}; failed to restore unactivated resumed nodes: {compensation_error}"
-                    )));
-                }
-                return Err(error);
+                return Err(self
+                    .restore_unactivated_resumes_after_failure(
+                        app,
+                        execution_id,
+                        &previously_paused_node_execution_ids,
+                        &unactivated,
+                        error,
+                    )
+                    .await);
             }
             unactivated.remove(&node_execution_id);
         }

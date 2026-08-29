@@ -8,7 +8,6 @@ export interface AgentSessionItem {
 		nodeExecutionId: string;
 	};
 	lifecycle: "open" | "paused" | "archived";
-	activity: "running" | "idle";
 	lastExitAbnormal: boolean;
 	operations: {
 		canArchive: boolean;

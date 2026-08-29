@@ -24,7 +24,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
     ProviderLifecycleSlotId,
 };
-use crate::domain::workflow::SessionPermission;
+use crate::domain::workflow::{AgentSessionActivity, SessionPermission};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 
 fn scope() -> ProviderLifecycleScope {
@@ -129,6 +129,125 @@ fn test_provider信号変換_claude_subagent_payloadをroot_signalとして変�
             "hook_event_name":"Stop",
             "agent_id":"agent-child-1",
             "agent_type":"Explore"
+        }"#,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Provider lifecycle payload belongs to a subagent"
+    );
+}
+
+#[test]
+fn test_provider信号変換_両providerの共通eventを同じ活動状態へ変換する() {
+    let cases = [
+        ("UserPromptSubmit", None, AgentSessionActivity::Working),
+        ("PreToolUse", Some("Bash"), AgentSessionActivity::Working),
+        ("PostToolUse", Some("Bash"), AgentSessionActivity::Working),
+        (
+            "PermissionRequest",
+            Some("Bash"),
+            AgentSessionActivity::AwaitingAnswer,
+        ),
+    ];
+
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        for (event, tool_name, expected) in cases {
+            let payload = serde_json::json!({
+                "session_id": "provider-session-1",
+                "transcript_path": "/provider/transcript.jsonl",
+                "hook_event_name": event,
+                "tool_name": tool_name,
+                "prompt": "secret prompt",
+                "tool_input": {"secret": true},
+                "tool_response": "secret output"
+            });
+
+            let signal = parse_provider_payload(
+                provider,
+                "binding-1",
+                scope(),
+                &serde_json::to_vec(&payload).unwrap(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                signal.into_kind(),
+                ProviderLifecycleSignalKind::ActivityObserved {
+                    provider_session_id: "provider-session-1".to_string(),
+                    transcript_ref: Some("/provider/transcript.jsonl".to_string()),
+                    activity: expected,
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn test_provider信号変換_質問系pre_tool_useを正規化して回答待ちへ変換する() {
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        for tool_name in [
+            "AskUserQuestion",
+            "ask-user_question",
+            "request_user_input",
+            "REQUEST.USER-INPUT",
+        ] {
+            let payload = serde_json::json!({
+                "session_id": "provider-session-1",
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool_name
+            });
+
+            let signal = parse_provider_payload(
+                provider,
+                "binding-1",
+                scope(),
+                &serde_json::to_vec(&payload).unwrap(),
+            )
+            .unwrap();
+
+            assert!(matches!(
+                signal.into_kind(),
+                ProviderLifecycleSignalKind::ActivityObserved {
+                    activity: AgentSessionActivity::AwaitingAnswer,
+                    ..
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_provider信号変換_tool名なしのpre_tool_useをworkingとして扱う() {
+    let signal = parse_provider_payload(
+        ProviderKind::Codex,
+        "binding-1",
+        scope(),
+        br#"{"session_id":"provider-session-1","hook_event_name":"PreToolUse"}"#,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        signal.into_kind(),
+        ProviderLifecycleSignalKind::ActivityObserved {
+            activity: AgentSessionActivity::Working,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_provider信号変換_claudeの追加eventでもsubagentを除外する() {
+    let error = parse_provider_payload(
+        ProviderKind::Claude,
+        "binding-1",
+        scope(),
+        br#"{
+            "session_id":"claude-session-1",
+            "hook_event_name":"PreToolUse",
+            "tool_name":"Bash",
+            "agent_id":"agent-child-1"
         }"#,
     )
     .unwrap_err();
@@ -301,7 +420,15 @@ fn test_provider起動設定_claudeはsession_pluginを使いuser_settingsを変
         .find(|file| file.relative_path() == std::path::Path::new("hooks/hooks.json"))
         .unwrap();
     let hooks = serde_json::from_slice::<serde_json::Value>(hooks.contents()).unwrap();
-    for event in ["SessionStart", "Stop", "StopFailure"] {
+    for event in [
+        "SessionStart",
+        "Stop",
+        "StopFailure",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PermissionRequest",
+    ] {
         assert_eq!(
             hooks["hooks"][event][0]["hooks"][0]["command"],
             "releash hook receive --provider claude"
@@ -321,6 +448,14 @@ fn test_provider起動設定_codexはprocess_configを使いhook_trustを要求�
             "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
             "-c".to_string(),
             "hooks.Stop=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PreToolUse=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PostToolUse=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PermissionRequest=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
         ]
     );
     assert!(spec.requires_hook_trust());
@@ -422,6 +557,14 @@ fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ�
             "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
             "-c".to_string(),
             "hooks.Stop=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PreToolUse=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PostToolUse=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
+            "-c".to_string(),
+            "hooks.PermissionRequest=[{hooks=[{type=\"command\",command=\"releash hook receive --provider codex\"}]}]".to_string(),
             "resume".to_string(),
             "codex-session-1".to_string(),
         ]

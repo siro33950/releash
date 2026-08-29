@@ -13,6 +13,7 @@ use crate::domain::agent_session::repository::{
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
+use crate::domain::workflow::AgentSessionActivity;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,11 @@ pub(crate) struct AgentSessionCreateRequest {
     pub(crate) provider: ProviderKind,
     pub(crate) tree_location: crate::domain::agent_session::aggregates::AgentSessionTreeLocation,
     pub(crate) admit_initial_instruction: bool,
+}
+
+pub(crate) struct AgentSessionActivityObservation {
+    pub(crate) outcome: AgentSessionMutationOutcome,
+    pub(crate) worktree_path: String,
 }
 
 pub(crate) struct AgentSessionUsecase {
@@ -185,6 +191,32 @@ impl AgentSessionUsecase {
                 .map_err(map_repository_error)?;
         }
         Ok(outcome)
+    }
+
+    pub(crate) async fn observe_activity(
+        &self,
+        agent_session_id: &str,
+        activity: AgentSessionActivity,
+        caller_request_id: &str,
+    ) -> Result<AgentSessionActivityObservation, AgentSessionUsecaseError> {
+        let mut session = self
+            .repository
+            .find_for_activity(agent_session_id)
+            .await
+            .map_err(map_repository_error)?
+            .ok_or(AgentSessionUsecaseError::NotFound)?;
+        let outcome = session.session_mut().observe_activity(activity);
+        let worktree_path = session.session().worktree_path().to_string();
+        if outcome == AgentSessionMutationOutcome::Applied {
+            self.repository
+                .save_activity(session, caller_request_id)
+                .await
+                .map_err(map_repository_error)?;
+        }
+        Ok(AgentSessionActivityObservation {
+            outcome,
+            worktree_path,
+        })
     }
 
     pub(crate) async fn stop_for_terminal_execution_tree_node(

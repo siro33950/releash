@@ -35,6 +35,7 @@ use crate::usecase::workflow::{
     WorkflowRuntimeUsecase, WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget,
     WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget,
 };
+use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub use crate::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
@@ -477,7 +478,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			),
 		})
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
-        terminal.bind_agent_session_activity(composition.activity.clone());
 
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
@@ -926,6 +926,43 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                     WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
                 })
             })
+    }
+
+    pub fn workspace_node_detail_status(
+        &self,
+        worktree_path: &str,
+        node_execution_id: &str,
+    ) -> Result<Option<String>, String> {
+        let store = self
+            ._app
+            .try_state::<Arc<LocalEventStore>>()
+            .map(|store| store.inner().clone())
+            .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
+        let repository =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store);
+        let Some(node) = repository
+            .load_node_by_node_execution_id(node_execution_id)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let data_dir = self
+            .writer_lock_path
+            .parent()
+            .ok_or_else(|| "Local Event Store data directory is unavailable".to_string())?;
+        let query =
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+                repository,
+                Arc::new(
+                    crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository::new(
+                        data_dir.to_path_buf(),
+                    ),
+                ),
+            );
+        query
+            .node_detail(&WorkspaceIdentity::new(worktree_path), &node.id)
+            .map(|detail| detail.map(|detail| detail.status_classification))
+            .map_err(|error| error.to_string())
     }
 
     pub fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {

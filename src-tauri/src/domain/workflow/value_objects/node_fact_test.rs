@@ -10,8 +10,8 @@ mod vocabulary_tests {
     use super::*;
 
     #[test]
-    fn test_事実語彙_event_typeが17種の固定文字列である() {
-        // Given: 全17 variant
+    fn test_事実語彙_event_typeが19種の固定文字列である() {
+        // Given: 全19 variant
         let facts: Vec<NodeFact> = vec![
             NodeFact::Started(StartedFact {
                 parent: None,
@@ -31,6 +31,13 @@ mod vocabulary_tests {
                 result_summary: None,
                 failure_reason: None,
                 failure_kind: None,
+            }),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "activation failed".to_string(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            }),
+            NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                activity: AgentSessionActivity::Working,
             }),
             NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
             NodeFact::SubmitRejected(SubmitRejectedFact {
@@ -70,6 +77,8 @@ mod vocabulary_tests {
                 "session_attached",
                 "command_spawned",
                 "process_exited",
+                "runtime_failure_observed",
+                "agent_activity_observed",
                 "submit_received",
                 "submit_rejected",
                 "stop_received",
@@ -90,6 +99,67 @@ mod vocabulary_tests {
         for fact in facts {
             assert_eq!(round_trip(fact.clone()), fact);
         }
+    }
+
+    #[test]
+    fn test_活動観測_活動状態だけをdetailへ保存して往復する() {
+        for activity in [
+            AgentSessionActivity::Working,
+            AgentSessionActivity::AwaitingAnswer,
+            AgentSessionActivity::AwaitingInstruction,
+        ] {
+            let fact = NodeFact::AgentActivityObserved(AgentActivityObservedFact { activity });
+
+            let detail = fact.encode_detail().unwrap();
+            let stored: serde_json::Value = serde_json::from_str(&detail).unwrap();
+
+            assert_eq!(fact.event_type(), "agent_activity_observed");
+            assert_eq!(stored.as_object().unwrap().len(), 1);
+            assert!(stored.get("activity").is_some());
+            assert_eq!(round_trip(fact.clone()), fact);
+        }
+    }
+
+    #[test]
+    fn test_agent_session活動導出_stopとprocess_exitで次の指示待ちへ戻る() {
+        let stop = NodeFact::StopReceived(StopReceivedFact {
+            result_summary: None,
+            token_usage: None,
+        });
+        let process_exit = NodeFact::ProcessExited(ProcessExitedFact {
+            exit_code: Some(0),
+            result_summary: None,
+            failure_reason: None,
+            failure_kind: None,
+        });
+
+        for fact in [stop, process_exit] {
+            assert_eq!(
+                AgentSessionActivity::Working.after_fact(&fact),
+                AgentSessionActivity::AwaitingInstruction
+            );
+        }
+    }
+
+    #[test]
+    fn test_process_exited_終了結果の全項目から異常終了を判定する() {
+        let process_exited = |exit_code, failure_reason, failure_kind| ProcessExitedFact {
+            exit_code,
+            result_summary: None,
+            failure_reason,
+            failure_kind,
+        };
+
+        assert!(!process_exited(Some(0), None, None).is_abnormal());
+        assert!(process_exited(Some(1), None, None).is_abnormal());
+        assert!(process_exited(None, None, None).is_abnormal());
+        assert!(process_exited(Some(0), Some("failed".to_string()), None).is_abnormal());
+        assert!(process_exited(
+            Some(0),
+            None,
+            Some(NodeExecutionFailureKind::InfrastructureCrash),
+        )
+        .is_abnormal());
     }
 
     #[test]

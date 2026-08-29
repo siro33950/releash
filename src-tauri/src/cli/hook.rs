@@ -7,8 +7,8 @@ use crate::adaptor::gateway::provider_lifecycle::{
     parse_provider_payload, ProviderLifecycleGatewayError,
 };
 use crate::adaptor::protocol::provider_lifecycle::{
-    ProviderLifecycleProvider, ProviderLifecycleReceiveRequest, ProviderLifecycleReceiveResponse,
-    ProviderLifecycleSignalRequest,
+    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
+    ProviderLifecycleReceiveResponse, ProviderLifecycleSignalRequest,
 };
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSignalKind,
@@ -23,7 +23,11 @@ const AGENT_SESSION_ID_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID"
 const HEALTH_FILE_ENV: &str = "RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE";
 
 pub(super) fn cmd_receive(provider: HookProvider) -> Result<String, CliError> {
-    if let Err(error) = receive_from(std::io::stdin().lock(), provider) {
+    complete_receive(receive_from(std::io::stdin().lock(), provider))
+}
+
+fn complete_receive(result: Result<String, CliError>) -> Result<String, CliError> {
+    if let Err(error) = result {
         eprintln!("{}", cli_error_stderr(&error));
     }
     Ok("{}".to_string())
@@ -82,6 +86,25 @@ fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, Cl
             provider_session_id,
             transcript_ref,
             reason,
+        },
+        ProviderLifecycleSignalKind::ActivityObserved {
+            provider_session_id,
+            transcript_ref,
+            activity,
+        } => ProviderLifecycleSignalRequest::ActivityObserved {
+            provider_session_id,
+            transcript_ref,
+            activity: match activity {
+                crate::domain::workflow::AgentSessionActivity::Working => {
+                    ProviderActivityRequest::Working
+                }
+                crate::domain::workflow::AgentSessionActivity::AwaitingAnswer => {
+                    ProviderActivityRequest::AwaitingAnswer
+                }
+                crate::domain::workflow::AgentSessionActivity::AwaitingInstruction => {
+                    ProviderActivityRequest::AwaitingInstruction
+                }
+            },
         },
     };
     let request = ProviderLifecycleReceiveRequest {

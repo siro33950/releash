@@ -72,6 +72,14 @@ pub enum WorkflowEvent {
         node_execution_id: String,
         timestamp: f64,
     },
+    NodeProcessExitObserved {
+        execution_id: String,
+        node_execution_id: String,
+        exit_code: Option<i32>,
+        failure_reason: Option<String>,
+        failure_kind: Option<NodeExecutionFailureKind>,
+        timestamp: f64,
+    },
     CommandSpawned {
         execution_id: String,
         node_execution_id: String,

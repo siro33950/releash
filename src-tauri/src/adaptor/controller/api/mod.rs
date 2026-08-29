@@ -590,11 +590,10 @@ pub(crate) mod test_support {
     pub(crate) fn test_router_with_provider_lifecycle(
         data_dir: &Path,
         token: &str,
-        provider_lifecycle: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
-    ) -> Router {
-        let provider_lifecycle: Arc<
+        provider_lifecycle: Arc<
             dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
-        > = provider_lifecycle;
+        >,
+    ) -> Router {
         test_router_with_optional_deps(data_dir, token, token, None, Some(provider_lifecycle)).0
     }
 

@@ -1,10 +1,11 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use super::{
-    AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, AgentSessionUsecase,
-    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, StartedExecutionTreeRegistrar,
-    StartedExecutionTreeRegistrationError,
+    AgentSessionLifecycleUsecase, AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,
+    AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
+    StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
 };
 use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
@@ -26,13 +27,19 @@ use crate::domain::agent_session::{
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
-    ProviderHookHealthRepositoryError, ProviderKind, ProviderLifecycleEventRepository,
-    ProviderLifecycleRepositoryError, ProviderLifecycleScope, ProviderLifecycleSlotId,
-    ScopedProviderLifecycleEvent, VersionedProviderHookHealth,
+    ProviderHookHealthRepositoryError, ProviderKind, ProviderLifecycleEvent,
+    ProviderLifecycleEventRepository, ProviderLifecycleIngressResult, ProviderLifecycleRejection,
+    ProviderLifecycleRepositoryError, ProviderLifecycleScope, ProviderLifecycleSignal,
+    ProviderLifecycleSlotId, ScopedProviderLifecycleEvent, VersionedProviderHookHealth,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
+use crate::domain::workflow::{AgentSessionActivity, NodeFact};
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::provider_lifecycle::{ProviderHookHealthUsecase, ProviderLifecycleUsecase};
+use crate::usecase::provider_lifecycle::{
+    ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
+    ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase,
+    ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase,
+};
 
 fn session_location(id: &str) -> AgentSessionTreeLocation {
     AgentSessionTreeLocation::session_tree_root(id).unwrap()
@@ -102,6 +109,83 @@ impl ProviderLifecycleEventRepository for NoopLifecycleEvents {
         _scope: &ProviderLifecycleScope,
     ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
         Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct CoordinatedLifecycleEvents {
+    stored: Mutex<Vec<ScopedProviderLifecycleEvent>>,
+    transcript_associated: tokio::sync::Notify,
+    binding_expired_entered: tokio::sync::Notify,
+    binding_expired_release: tokio::sync::Notify,
+    block_binding_expired: AtomicBool,
+}
+
+impl CoordinatedLifecycleEvents {
+    fn block_next_binding_expired(&self) {
+        self.block_binding_expired.store(true, Ordering::SeqCst);
+    }
+
+    fn release_binding_expired(&self) {
+        self.binding_expired_release.notify_one();
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderLifecycleEventRepository for CoordinatedLifecycleEvents {
+    async fn append(
+        &self,
+        events: Vec<ScopedProviderLifecycleEvent>,
+    ) -> Result<(), ProviderLifecycleRepositoryError> {
+        let has_transcript_associated = events.iter().any(|event| {
+            matches!(
+                event.clone().into_parts().1,
+                ProviderLifecycleEvent::TranscriptAssociated { .. }
+            )
+        });
+        let has_binding_expired = events.iter().any(|event| {
+            matches!(
+                event.clone().into_parts().1,
+                ProviderLifecycleEvent::BindingExpired { .. }
+            )
+        });
+        if has_transcript_associated {
+            self.transcript_associated.notify_one();
+        }
+        if has_binding_expired && self.block_binding_expired.swap(false, Ordering::SeqCst) {
+            self.binding_expired_entered.notify_one();
+            self.binding_expired_release.notified().await;
+        }
+        self.stored.lock().unwrap().extend(events);
+        Ok(())
+    }
+
+    async fn load_scope(
+        &self,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<Vec<ScopedProviderLifecycleEvent>, ProviderLifecycleRepositoryError> {
+        Ok(self
+            .stored
+            .lock()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .filter(|event| event.clone().into_parts().0 == *scope)
+            .collect())
+    }
+}
+
+#[derive(Default)]
+struct NoopProviderExecutionTreeStops;
+
+#[async_trait::async_trait]
+impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
+    async fn commit_provider_stop(
+        &self,
+        _command: ProviderExecutionTreeStopCommand,
+        _lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
+    ) -> Result<(), ProviderLifecycleIngressUsecaseError> {
+        Ok(())
     }
 }
 
@@ -198,6 +282,8 @@ struct LifecycleTerminal {
     spawn_count: Mutex<usize>,
     first_spawn_entered: Mutex<Option<mpsc::Sender<()>>>,
     first_spawn_release: Mutex<Option<mpsc::Receiver<()>>>,
+    first_stop_entered: Mutex<Option<mpsc::Sender<()>>>,
+    first_stop_release: Mutex<Option<mpsc::Receiver<()>>>,
     first_delete_entered: Mutex<Option<mpsc::Sender<()>>>,
     first_delete_release: Mutex<Option<mpsc::Receiver<()>>>,
     stops: Mutex<Vec<TerminalSurfaceOwner>>,
@@ -266,6 +352,8 @@ impl LifecycleTerminal {
             spawn_count: Mutex::new(0),
             first_spawn_entered: Mutex::new(None),
             first_spawn_release: Mutex::new(None),
+            first_stop_entered: Mutex::new(None),
+            first_stop_release: Mutex::new(None),
             first_delete_entered: Mutex::new(None),
             first_delete_release: Mutex::new(None),
             stops: Mutex::new(Vec::new()),
@@ -317,6 +405,12 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         &self,
         owner: &TerminalSurfaceOwner,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        if let Some(sender) = self.first_stop_entered.lock().unwrap().take() {
+            sender.send(()).unwrap();
+        }
+        if let Some(receiver) = self.first_stop_release.lock().unwrap().take() {
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
         self.stops.lock().unwrap().push(owner.clone());
         if *self.fail_stop.lock().unwrap() {
             return Err(ProviderAgentTerminalGatewayError::Unavailable);
@@ -363,6 +457,12 @@ struct LifecycleTestContext {
 }
 
 fn setup() -> LifecycleTestContext {
+    setup_with_lifecycle_events(Arc::new(NoopLifecycleEvents))
+}
+
+fn setup_with_lifecycle_events(
+    lifecycle_events: Arc<dyn ProviderLifecycleEventRepository>,
+) -> LifecycleTestContext {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
@@ -373,7 +473,7 @@ fn setup() -> LifecycleTestContext {
     )));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
-        Arc::new(NoopLifecycleEvents),
+        lifecycle_events,
     ));
     let launches = Arc::new(RecordingResumeLaunches::default());
     let terminal = Arc::new(LifecycleTerminal::new(ManagedPtyPresence::Live));
@@ -406,6 +506,351 @@ fn setup() -> LifecycleTestContext {
         change_notifier,
         execution_trees,
     }
+}
+
+struct ActivityStopExclusionFixture {
+    context: LifecycleTestContext,
+    ingress: ProviderLifecycleIngressUsecase,
+    armed: ArmedProviderLifecycle,
+    scope: ProviderLifecycleScope,
+    agent_session_id: String,
+    workflow_execution_id: String,
+    node_execution_id: String,
+    provider_session_id: String,
+}
+
+async fn setup_activity_stop_exclusion(case_name: &str) -> ActivityStopExclusionFixture {
+    setup_activity_stop_exclusion_with_events(case_name, Arc::new(NoopLifecycleEvents)).await
+}
+
+async fn setup_activity_stop_exclusion_with_events(
+    case_name: &str,
+    lifecycle_events: Arc<dyn ProviderLifecycleEventRepository>,
+) -> ActivityStopExclusionFixture {
+    let context = setup_with_lifecycle_events(lifecycle_events);
+    let agent_session_id = format!("agent-activity-stop-{case_name}");
+    let workflow_execution_id = format!("workflow-activity-stop-{case_name}");
+    let node_execution_id = format!("node-activity-stop-{case_name}");
+    let provider_session_id = format!("provider-activity-stop-{case_name}");
+    seed_workflow_session_facts(
+        &context.store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo/worktree",
+            provider: ProviderKind::Claude,
+            workflow_execution_id: &workflow_execution_id,
+            node_execution_id: &node_execution_id,
+            session_id: &agent_session_id,
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    context
+        .sessions
+        .create(
+            &agent_session_id,
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            workflow_location(&workflow_execution_id, &node_execution_id),
+            &format!("create-{case_name}"),
+        )
+        .await
+        .unwrap();
+    let ingress = ProviderLifecycleIngressUsecase::new(
+        context.provider_lifecycle.clone(),
+        context.sessions.clone(),
+        context.hook_health.clone(),
+        Arc::new(LocalAgentSessionRepository::new(context.store.clone())),
+        Arc::new(NoopProviderExecutionTreeStops),
+        context.change_notifier.clone(),
+    );
+    let slot_id = ProviderLifecycleSlotId::new(format!("slot-activity-stop-{case_name}")).unwrap();
+    let scope = ProviderLifecycleScope::new(&agent_session_id).unwrap();
+    let armed = context
+        .provider_lifecycle
+        .arm(slot_id.clone(), ProviderKind::Claude, scope.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        ingress
+            .receive(
+                &slot_id,
+                armed.capability(),
+                ProviderLifecycleSignal::session_started(
+                    armed.binding_id(),
+                    ProviderKind::Claude,
+                    scope.clone(),
+                    provider_session_id.clone(),
+                    None,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        ProviderLifecycleIngressResult::Applied
+    );
+
+    ActivityStopExclusionFixture {
+        context,
+        ingress,
+        armed,
+        scope,
+        agent_session_id,
+        workflow_execution_id,
+        node_execution_id,
+        provider_session_id,
+    }
+}
+
+fn activity_fact_count(store: &Arc<LocalEventStore>, tree_id: &str) -> usize {
+    crate::adaptor::gateway::workflow::fact_log::read_tree_records(store, tree_id)
+        .unwrap()
+        .into_iter()
+        .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
+        .count()
+}
+
+async fn stop_activity_fixture(fixture: &ActivityStopExclusionFixture, caller_suffix: &str) {
+    fixture
+        .context
+        .lifecycle
+        .stop_for_terminal_execution_tree_node_preserving_checkpoint(
+            &fixture.agent_session_id,
+            &fixture.node_execution_id,
+            &format!("stop-{caller_suffix}"),
+        )
+        .await
+        .unwrap();
+    fixture
+        .context
+        .lifecycle
+        .observe_process_exit(
+            &fixture.agent_session_id,
+            1,
+            Some(0),
+            &format!("exit-{caller_suffix}"),
+        )
+        .await
+        .unwrap();
+}
+
+async fn observe_working(fixture: &ActivityStopExclusionFixture) -> ProviderLifecycleIngressResult {
+    observe_working_with_transcript(fixture, None).await
+}
+
+async fn observe_working_with_transcript(
+    fixture: &ActivityStopExclusionFixture,
+    transcript_ref: Option<String>,
+) -> ProviderLifecycleIngressResult {
+    fixture
+        .ingress
+        .receive(
+            fixture.armed.slot_id(),
+            fixture.armed.capability(),
+            ProviderLifecycleSignal::activity_observed(
+                fixture.armed.binding_id(),
+                ProviderKind::Claude,
+                fixture.scope.clone(),
+                fixture.provider_session_id.clone(),
+                transcript_ref.as_deref(),
+                AgentSessionActivity::Working,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn assert_paused_awaiting_instruction(fixture: &ActivityStopExclusionFixture) {
+    let session = fixture
+        .context
+        .sessions
+        .find(&fixture.agent_session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.session().lifecycle(), AgentSessionLifecycle::Paused);
+    assert_eq!(
+        session.session().activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session活動観測と停止は到着順に従い停止後のworkingを拒否する() {
+    // Given: 停止経路が活動観測より先に確定した AgentSession
+    let stop_first = setup_activity_stop_exclusion("stop-first").await;
+    stop_activity_fixture(&stop_first, "stop-first").await;
+    let facts_after_stop =
+        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id);
+
+    // When: binding 解放後に Working が到着する
+    let rejected = observe_working(&stop_first).await;
+
+    // Then: 後着の活動観測は拒否され、活動事実と停止状態を変えない
+    assert_eq!(
+        rejected,
+        ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
+    );
+    assert_eq!(
+        activity_fact_count(&stop_first.context.store, &stop_first.workflow_execution_id,),
+        facts_after_stop
+    );
+    assert_paused_awaiting_instruction(&stop_first).await;
+
+    // Given: Working が停止経路より先に受理された AgentSession
+    let activity_first = setup_activity_stop_exclusion("activity-first").await;
+    assert_eq!(
+        observe_working(&activity_first).await,
+        ProviderLifecycleIngressResult::Applied
+    );
+    assert_eq!(
+        activity_fact_count(
+            &activity_first.context.store,
+            &activity_first.workflow_execution_id,
+        ),
+        1
+    );
+
+    // When: 活動観測の後に停止経路を確定する
+    stop_activity_fixture(&activity_first, "activity-first").await;
+
+    // Then: 最終状態は停止側の値となり、停止は活動観測事実を追加しない
+    assert_paused_awaiting_instruction(&activity_first).await;
+    assert_eq!(
+        activity_fact_count(
+            &activity_first.context.store,
+            &activity_first.workflow_execution_id,
+        ),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_agent_session活動観測と停止_operation_lockが受理とbinding解放を直列化する() {
+    // Given: 停止処理が operation lock を保持したまま terminal 停止へ到達している
+    let receive_events = Arc::new(CoordinatedLifecycleEvents::default());
+    let receive_fixture = Arc::new(
+        setup_activity_stop_exclusion_with_events("receive-lock", receive_events.clone()).await,
+    );
+    let (stop_entered_sender, stop_entered_receiver) = mpsc::channel();
+    let (stop_release_sender, stop_release_receiver) = mpsc::channel();
+    *receive_fixture
+        .context
+        .terminal
+        .first_stop_entered
+        .lock()
+        .unwrap() = Some(stop_entered_sender);
+    *receive_fixture
+        .context
+        .terminal
+        .first_stop_release
+        .lock()
+        .unwrap() = Some(stop_release_receiver);
+    let stop = tokio::spawn({
+        let fixture = receive_fixture.clone();
+        async move {
+            stop_activity_fixture(&fixture, "receive-lock").await;
+        }
+    });
+    stop_entered_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    let activity = tokio::spawn({
+        let fixture = receive_fixture.clone();
+        async move {
+            observe_working_with_transcript(&fixture, Some("transcript-receive-lock".to_string()))
+                .await
+        }
+    });
+
+    // When: 後着の活動観測が停止側の operation lock を待つ
+    let lifecycle_received_before_stop = tokio::time::timeout(
+        Duration::from_millis(100),
+        receive_events.transcript_associated.notified(),
+    )
+    .await
+    .is_ok();
+    stop_release_sender.send(()).unwrap();
+    stop.await.unwrap();
+    let activity_result = activity.await.unwrap();
+
+    // Then: lifecycle 受理も停止確定後となり、解放済み binding として拒否される
+    assert!(
+        !lifecycle_received_before_stop,
+        "活動 signal の lifecycle 受理を operation lock より先に行ってはならない"
+    );
+    assert_eq!(
+        activity_result,
+        ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
+    );
+    assert_eq!(
+        activity_fact_count(
+            &receive_fixture.context.store,
+            &receive_fixture.workflow_execution_id,
+        ),
+        0
+    );
+    assert_paused_awaiting_instruction(&receive_fixture).await;
+
+    // Given: 停止状態を保存し、binding 解放 event の永続化へ到達した停止処理
+    let release_events = Arc::new(CoordinatedLifecycleEvents::default());
+    release_events.block_next_binding_expired();
+    let release_fixture = Arc::new(
+        setup_activity_stop_exclusion_with_events("release-lock", release_events.clone()).await,
+    );
+    let stop = tokio::spawn({
+        let fixture = release_fixture.clone();
+        async move {
+            stop_activity_fixture(&fixture, "release-lock").await;
+        }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        release_events.binding_expired_entered.notified(),
+    )
+    .await
+    .unwrap();
+
+    // When: binding 解放の完了前に同じ AgentSession の operation lock を取得する
+    let operation = tokio::time::timeout(
+        Duration::from_millis(100),
+        release_fixture
+            .context
+            .sessions
+            .lock_operation(&release_fixture.agent_session_id),
+    )
+    .await;
+    let operation_was_available = operation.is_ok();
+    drop(operation);
+    let activity = tokio::spawn({
+        let fixture = release_fixture.clone();
+        async move { observe_working(&fixture).await }
+    });
+    tokio::task::yield_now().await;
+    release_events.release_binding_expired();
+    stop.await.unwrap();
+    let activity_result = activity.await.unwrap();
+
+    // Then: binding 解放まで lock は保持され、活動観測は停止後に拒否される
+    assert!(
+        !operation_was_available,
+        "binding 解放が完了する前に operation lock を解放してはならない"
+    );
+    assert_eq!(
+        activity_result,
+        ProviderLifecycleIngressResult::Rejected(ProviderLifecycleRejection::BindingNotActive)
+    );
+    assert_eq!(
+        activity_fact_count(
+            &release_fixture.context.store,
+            &release_fixture.workflow_execution_id,
+        ),
+        0
+    );
+    assert_paused_awaiting_instruction(&release_fixture).await;
 }
 
 #[tokio::test]
@@ -464,6 +909,15 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
         .await
         .unwrap();
 
+    assert_eq!(
+        lifecycle
+            .ensure_provider_running("workflow-agent", 24, 80, "ensure-open-workflow-agent")
+            .await
+            .unwrap(),
+        AgentSessionOpenOutcome::Attached
+    );
+    assert!(launches.launches.lock().unwrap().is_empty());
+
     lifecycle
         .stop_for_terminal_execution_tree_node_preserving_checkpoint(
             "workflow-agent",
@@ -499,7 +953,7 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
 
     assert_eq!(
         lifecycle
-            .resume("workflow-agent", 24, 80, "resume-workflow-agent")
+            .ensure_provider_running("workflow-agent", 24, 80, "resume-workflow-agent")
             .await
             .unwrap(),
         AgentSessionOpenOutcome::Resumed
@@ -518,6 +972,62 @@ async fn test_workflow所有agent_session停止_checkpointとprovider参照を�
             .lifecycle(),
         AgentSessionLifecycle::Open
     );
+}
+
+#[tokio::test]
+async fn test_archived_agent_sessionのensure_provider_runningは起動せず拒否する() {
+    let LifecycleTestContext {
+        _directory,
+        sessions,
+        lifecycle,
+        launches,
+        ..
+    } = setup();
+    sessions
+        .create(
+            "archived-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("archived-agent"),
+            "create-archived-agent",
+        )
+        .await
+        .unwrap();
+    sessions
+        .associate_provider_session(
+            "archived-agent",
+            "provider-archived-agent",
+            None,
+            "associate-archived-agent",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        lifecycle
+            .archive("archived-agent", "archive-agent")
+            .await
+            .unwrap(),
+        AgentSessionArchiveOutcome::Archived
+    );
+    assert_eq!(
+        sessions
+            .find("archived-agent")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Archived
+    );
+
+    let error = lifecycle
+        .ensure_provider_running("archived-agent", 24, 80, "ensure-archived-agent")
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, AgentSessionLifecycleUsecaseError::InvalidOperation);
+    assert!(launches.launches.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

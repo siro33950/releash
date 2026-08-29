@@ -21,10 +21,13 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionTreeLaunch, NodeFact, NodeKindName, TreeRootFact,
+    AgentSessionActivity, ExecutionOrigin, ExecutionTreeLaunch, NodeFact, NodeKindName,
+    StopReceivedFact, TreeRootFact,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::agent_session::{AgentSessionLifecycleDto, AgentSessionQueryService};
+use crate::usecase::agent_session::{
+    AgentSessionLifecycleDto, AgentSessionQueryService, AgentSessionUsecase,
+};
 use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
 
 fn open_store(directory: &TempDir) -> Arc<LocalEventStore> {
@@ -169,6 +172,369 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     );
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Open);
     assert!(loaded.session().uncommitted_events().is_empty());
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_活動遷移だけをnode行へ追記し同値観測は追記しない() {
+    // Given: 活動観測を永続化する単独 Session
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let sessions = AgentSessionUsecase::new(Arc::new(new_repository(&store)));
+    sessions
+        .create(
+            "agent-session-activity",
+            WorkspaceIdentity::new("workspace-activity"),
+            "/repo/activity",
+            ProviderKind::Claude,
+            session_location("agent-session-activity"),
+            "create-activity-session",
+        )
+        .await
+        .unwrap();
+
+    // When: Working と AwaitingInstruction を2往復し、同値も再観測する
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::Working,
+                "activity-working",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::Working,
+                "activity-working-duplicate",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::AlreadyApplied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::AwaitingInstruction,
+                "activity-awaiting-instruction-1",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::Working,
+                "activity-working-2",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::AwaitingInstruction,
+                "activity-awaiting-instruction-2",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::Working,
+                "activity-working-3",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity",
+                AgentSessionActivity::Working,
+                "activity-working-3-duplicate",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::AlreadyApplied
+    );
+
+    // Then: 遷移だけが事実として同じ Session Node へ追記される
+    let records = fact_log::read_tree_records(&store, "agent-session-activity").unwrap();
+    let activities = records
+        .iter()
+        .filter_map(|record| match &record.fact {
+            NodeFact::AgentActivityObserved(fact) => Some(fact.activity),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        activities,
+        [
+            AgentSessionActivity::Working,
+            AgentSessionActivity::AwaitingInstruction,
+            AgentSessionActivity::Working,
+            AgentSessionActivity::AwaitingInstruction,
+            AgentSessionActivity::Working,
+        ]
+    );
+    assert!(records
+        .iter()
+        .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
+        .all(|record| record.meta.node_execution_id == "agent-session-activity"));
+
+    // When: store を開き直して Session を復元する
+    drop(sessions);
+    drop(store);
+
+    let reopened = open_store(&directory);
+    let loaded = new_repository(&reopened)
+        .find("agent-session-activity")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Then: 最後に観測した活動状態が復元される
+    assert_eq!(loaded.session().activity(), AgentSessionActivity::Working);
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_process_exit後のworking再観測を活動遷移として追記する() {
+    // Given: Working の活動観測後に ProcessExited を記録した単独 Session
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = Arc::new(new_repository(&store));
+    let sessions = AgentSessionUsecase::new(repository.clone());
+    sessions
+        .create(
+            "agent-session-activity-exit",
+            WorkspaceIdentity::new("workspace-activity-exit"),
+            "/repo/activity-exit",
+            ProviderKind::Codex,
+            session_location("agent-session-activity-exit"),
+            "create-activity-exit-session",
+        )
+        .await
+        .unwrap();
+    let mut saved = repository
+        .find("agent-session-activity-exit")
+        .await
+        .unwrap()
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-session-activity-exit", None)
+        .unwrap();
+    repository
+        .save(saved, "associate-activity-exit-session")
+        .await
+        .unwrap();
+    assert_eq!(
+        sessions
+            .observe_activity(
+                "agent-session-activity-exit",
+                AgentSessionActivity::Working,
+                "activity-before-exit",
+            )
+            .await
+            .unwrap()
+            .outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    sessions
+        .observe_process_exit(
+            "agent-session-activity-exit",
+            Some(0),
+            "activity-process-exit",
+        )
+        .await
+        .unwrap();
+    let before = fact_log::read_tree_records(&store, "agent-session-activity-exit").unwrap();
+    assert!(matches!(
+        before.last().unwrap().fact,
+        NodeFact::ProcessExited(_)
+    ));
+    assert_eq!(
+        before
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
+            .count(),
+        1
+    );
+
+    // When: bounded read 経路から同じ Working を再観測する
+    let observation = sessions
+        .observe_activity(
+            "agent-session-activity-exit",
+            AgentSessionActivity::Working,
+            "activity-after-exit",
+        )
+        .await
+        .unwrap();
+
+    // Then: ProcessExited 後は遷移として受理され、活動事実が1件増える
+    assert_eq!(
+        observation.outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    let after = fact_log::read_tree_records(&store, "agent-session-activity-exit").unwrap();
+    assert_eq!(
+        after
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
+            .count(),
+        2
+    );
+    assert!(matches!(
+        after.last().unwrap().fact,
+        NodeFact::AgentActivityObserved(ref fact)
+            if fact.activity == AgentSessionActivity::Working
+    ));
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_stop事実後のworking再観測をbounded_readから活動遷移として追記する(
+) {
+    // Given: Working の活動観測後に StopReceived だけを記録した単独 Session
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = Arc::new(new_repository(&store));
+    let sessions = AgentSessionUsecase::new(repository.clone());
+    let session_id = "agent-session-activity-stop";
+    sessions
+        .create(
+            session_id,
+            WorkspaceIdentity::new("workspace-activity-stop"),
+            "/repo/activity-stop",
+            ProviderKind::Codex,
+            session_location(session_id),
+            "create-activity-stop-session",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            session_id,
+            AgentSessionActivity::Working,
+            "activity-before-stop",
+        )
+        .await
+        .unwrap();
+    let records = fact_log::read_tree_records(&store, session_id).unwrap();
+    let meta = records.last().unwrap().meta.clone();
+    fact_log::append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::StopReceived(StopReceivedFact {
+            result_summary: None,
+            token_usage: None,
+        }),
+        10,
+    )
+    .unwrap();
+
+    let restored = repository
+        .find_for_activity(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored.session().activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
+
+    // When: Stop より後に Working を観測する
+    let observation = sessions
+        .observe_activity(
+            session_id,
+            AgentSessionActivity::Working,
+            "activity-after-stop",
+        )
+        .await
+        .unwrap();
+
+    // Then: bounded read が Stop を最新活動入力として読み、Working を新しい遷移として追記する
+    assert_eq!(
+        observation.outcome,
+        crate::domain::agent_session::aggregates::AgentSessionMutationOutcome::Applied
+    );
+    let records = fact_log::read_tree_records(&store, session_id).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::StopReceived(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_)))
+            .count(),
+        2
+    );
+    assert!(matches!(
+        records.last().unwrap().fact,
+        NodeFact::AgentActivityObserved(ref fact)
+            if fact.activity == AgentSessionActivity::Working
+    ));
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_workflow子sessionも同じ活動保存経路を使う() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "activity-workflow",
+            request: "implement",
+            worktree_path: "/repo/workflow-activity",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "workflow-activity",
+            node_execution_id: "workflow-session-node",
+            session_id: "workflow-agent-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .unwrap();
+    let sessions = AgentSessionUsecase::new(Arc::new(new_repository(&store)));
+
+    sessions
+        .observe_activity(
+            "workflow-agent-session",
+            AgentSessionActivity::Working,
+            "workflow-activity-working",
+        )
+        .await
+        .unwrap();
+
+    let records = fact_log::read_tree_records(&store, "workflow-activity").unwrap();
+    assert!(matches!(
+        &records.last().unwrap().fact,
+        NodeFact::AgentActivityObserved(fact)
+            if fact.activity == AgentSessionActivity::Working
+                && records.last().unwrap().meta.node_execution_id == "workflow-session-node"
+    ));
 }
 
 #[tokio::test]
@@ -408,6 +774,143 @@ async fn test_agent_session_repository_異常exitをfailure付きprocess_exited�
         .unwrap();
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Paused);
     assert!(loaded.session().last_exit_abnormal());
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_異常終了したsession起動木をresumeする() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let mut saved = repository
+        .create(
+            standalone_session(
+                "agent-session-abnormal-resume",
+                "/repo",
+                ProviderKind::Codex,
+            ),
+            "create-abnormal-resume",
+        )
+        .await
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-session-abnormal-resume", None)
+        .unwrap();
+    saved.session_mut().observe_provider_process_exit(Some(1));
+    let mut saved = repository
+        .save(saved, "abnormal-exit-before-resume")
+        .await
+        .unwrap();
+    let failed = fact_log::fold_tree_from(
+        &fact_log::FactLogReadBackend::Live(store.clone()),
+        "agent-session-abnormal-resume",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        failed
+            .aggregate
+            .node_execution("agent-session-abnormal-resume")
+            .unwrap()
+            .status,
+        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Failed
+    );
+
+    saved
+        .session_mut()
+        .complete_resume(
+            crate::domain::agent_session::aggregates::AgentSessionRecoveryResult::Succeeded,
+        )
+        .unwrap();
+    repository
+        .save(saved, "resume-after-abnormal-exit")
+        .await
+        .unwrap();
+
+    let resumed = fact_log::fold_tree_from(
+        &fact_log::FactLogReadBackend::Live(store),
+        "agent-session-abnormal-resume",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        resumed
+            .aggregate
+            .node_execution("agent-session-abnormal-resume")
+            .unwrap()
+            .status,
+        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_restore後の指示待ちを事実から復元する() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let mut saved = repository
+        .create(
+            standalone_session(
+                "agent-session-restore-activity",
+                "/repo",
+                ProviderKind::Claude,
+            ),
+            "create-restore-activity",
+        )
+        .await
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-session-restore-activity", None)
+        .unwrap();
+    saved
+        .session_mut()
+        .observe_activity(AgentSessionActivity::Working);
+    let mut saved = repository
+        .save(saved, "working-before-archive")
+        .await
+        .unwrap();
+    saved.session_mut().archive().unwrap();
+    let mut saved = repository
+        .save(saved, "archive-working-session")
+        .await
+        .unwrap();
+
+    saved
+        .session_mut()
+        .complete_restore(
+            crate::domain::agent_session::aggregates::AgentSessionRecoveryResult::Succeeded,
+        )
+        .unwrap();
+    repository
+        .save(saved, "restore-working-session")
+        .await
+        .unwrap();
+
+    let restored = repository
+        .find("agent-session-restore-activity")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored.session().activity(),
+        AgentSessionActivity::AwaitingInstruction
+    );
+    let activities = fact_log::read_tree_records(&store, "agent-session-restore-activity")
+        .unwrap()
+        .into_iter()
+        .filter_map(|record| match record.fact {
+            NodeFact::AgentActivityObserved(fact) => Some(fact.activity),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        activities,
+        [
+            AgentSessionActivity::Working,
+            AgentSessionActivity::AwaitingInstruction,
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1235,10 +1738,6 @@ async fn test_agent_session_query_service_idで一件の表示モデルを返す
     assert_eq!(detail.lifecycle, AgentSessionLifecycleDto::Open);
     assert_eq!(detail.provider_session_id, None);
     assert_eq!(detail.transcript_ref, None);
-    assert_eq!(
-        detail.activity,
-        crate::usecase::agent_session::AgentSessionActivityDto::Idle
-    );
     assert!(!detail.last_exit_abnormal);
     assert!(detail.operations.can_archive);
     assert!(!detail.operations.can_restore);
