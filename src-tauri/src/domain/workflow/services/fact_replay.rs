@@ -68,9 +68,21 @@ pub fn fold_execution_tree(
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
     let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
 
-    for record in records {
-        apply_record(&mut aggregate, record)
+    for (index, record) in records.iter().enumerate() {
+        let defer_submit_settlement = records
+            .get(index + 1)
+            .is_some_and(|next| is_submitted_artifact_pair(record, next));
+        apply_record(&mut aggregate, record, defer_submit_settlement)
             .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+        if index
+            .checked_sub(1)
+            .and_then(|previous| records.get(previous))
+            .is_some_and(|previous| is_submitted_artifact_pair(previous, record))
+        {
+            aggregate
+                .derive_session_settlement(&record.meta.node_execution_id, timestamp_of(record))
+                .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+        }
         if record.meta.kind == NodeKindName::Session {
             let activity = session_activities
                 .entry(record.meta.node_execution_id.clone())
@@ -85,6 +97,12 @@ pub fn fold_execution_tree(
         isolated_worktrees,
         session_activities,
     }))
+}
+
+fn is_submitted_artifact_pair(submit: &NodeFactRecord, artifact: &NodeFactRecord) -> bool {
+    matches!(submit.fact, NodeFact::SubmitReceived(_))
+        && matches!(artifact.fact, NodeFact::ArtifactProduced(_))
+        && submit.meta.node_execution_id == artifact.meta.node_execution_id
 }
 
 fn timestamp_of(record: &NodeFactRecord) -> f64 {
@@ -199,6 +217,7 @@ fn restore_aggregate(
 fn apply_record(
     aggregate: &mut WorkflowExecutionAggregate,
     record: &NodeFactRecord,
+    defer_submit_settlement: bool,
 ) -> Result<(), String> {
     let id = record.meta.node_execution_id.as_str();
     let timestamp = timestamp_of(record);
@@ -293,7 +312,11 @@ fn apply_record(
                 NodeCompletionSignal::Submit,
                 timestamp,
             );
-            aggregate.derive_session_settlement(id, timestamp)
+            if defer_submit_settlement {
+                Ok(())
+            } else {
+                aggregate.derive_session_settlement(id, timestamp)
+            }
         }
         NodeFact::SubmitRejected(_) => Ok(()),
         NodeFact::StopReceived(fact) => {

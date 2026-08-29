@@ -4,9 +4,9 @@ use crate::domain::workflow::entities::workflow_execution::{
     RuntimeNodeExecutionFailureOrigin, RuntimeNodeExecutionStatus,
 };
 use crate::domain::workflow::{
-    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ChildEntry, CommandSpec,
-    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec, NodeCompletion,
-    NodeDefinition, NodeFactMeta, NodeKind, OnFailure, RuntimeExecutionState,
+    AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
+    ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec,
+    NodeCompletion, NodeDefinition, NodeFactMeta, NodeKind, OnFailure, RuntimeExecutionState,
     RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact, SessionExecutionTreeRootFacts,
     StartedFact, StopReceivedFact, SubmitReceivedFact, WorkflowDefinition,
 };
@@ -154,6 +154,14 @@ fn attached(session_id: &str) -> NodeFact {
 
 fn submit() -> NodeFact {
     NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None })
+}
+
+fn artifact(contract: &str, value: serde_json::Value) -> NodeFact {
+    NodeFact::ArtifactProduced(ArtifactProducedFact {
+        contract: Some(contract.to_string()),
+        value,
+        request_id: None,
+    })
 }
 
 fn stop() -> NodeFact {
@@ -692,6 +700,258 @@ mod sequence_tests {
         );
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Running);
     }
+
+    #[test]
+    fn test_sequence_stop後のartifact付きsubmitをoutput子の成果として完了導出する() {
+        // Given: output 子で Stop が先着し、Submit の直後に Artifact が記録された事実列
+        let mut output = session_leaf("make_plan");
+        output.artifact = Some("plan".to_string());
+        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
+        main.artifact = Some("plan".to_string());
+        let NodeKind::Sequence(spec) = &mut main.kind else {
+            unreachable!();
+        };
+        spec.output = Some("make_plan".to_string());
+
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(workflow_definition(
+                vec![output, main],
+                "main",
+            ))),
+        );
+        let make_plan = meta(
+            "make-plan-exec",
+            Some("main-exec"),
+            "make_plan",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            make_plan.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        log.push(make_plan.clone(), stop());
+        log.push(make_plan.clone(), submit());
+        let artifact = serde_json::json!({"plan": "ready"});
+        log.push(
+            make_plan,
+            NodeFact::ArtifactProduced(ArtifactProducedFact {
+                contract: Some("plan".to_string()),
+                value: artifact.clone(),
+                request_id: None,
+            }),
+        );
+
+        // When: 永続化順に事実列を fold する
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let make_plan = tree.aggregate.node_execution("make-plan-exec").unwrap();
+        let main = tree.aggregate.node_execution("main-exec").unwrap();
+
+        // Then: output 子と Sequence は同じ Artifact を成果として成功する
+        assert_eq!(make_plan.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(make_plan.artifact.as_ref(), Some(&artifact));
+        assert_eq!(main.failure, None);
+        assert_eq!(main.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(main.artifact.as_ref(), Some(&artifact));
+        assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+    fn test_sequence_artifact付きsubmit後のstopと同一artifact再適用で成果が変わらない() {
+        let mut output = session_leaf("make_plan");
+        output.artifact = Some("plan".to_string());
+        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
+        main.artifact = Some("plan".to_string());
+        let NodeKind::Sequence(spec) = &mut main.kind else {
+            unreachable!();
+        };
+        spec.output = Some("make_plan".to_string());
+
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(workflow_definition(
+                vec![output, main],
+                "main",
+            ))),
+        );
+        let make_plan = meta(
+            "make-plan-exec",
+            Some("main-exec"),
+            "make_plan",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            make_plan.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        let produced = serde_json::json!({"plan": "ready"});
+        log.push(make_plan.clone(), submit());
+        log.push(make_plan.clone(), artifact("plan", produced.clone()));
+        log.push(make_plan.clone(), stop());
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let output = tree.aggregate.node_execution("make-plan-exec").unwrap();
+        let sequence = tree.aggregate.node_execution("main-exec").unwrap();
+        assert_eq!(output.artifact.as_ref(), Some(&produced));
+        assert_eq!(sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
+
+        log.push(make_plan, artifact("plan", produced.clone()));
+        let replayed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let replayed_output = replayed.aggregate.node_execution("make-plan-exec").unwrap();
+        let replayed_sequence = replayed.aggregate.node_execution("main-exec").unwrap();
+        assert_eq!(replayed_output.artifact.as_ref(), Some(&produced));
+        assert_eq!(replayed_sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(
+            replayed_sequence.status,
+            RuntimeNodeExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn test_sequence_stop先着output子のartifactを下流入力と自身の成果に使う() {
+        let mut output = session_leaf("make_plan");
+        output.artifact = Some("plan".to_string());
+        let mut downstream = session_leaf("judge");
+        downstream.input.push(crate::domain::workflow::InputParam {
+            name: "plan".to_string(),
+            contract: Some("plan".to_string()),
+        });
+        let mut main = sequence_node(
+            "main",
+            vec![
+                ChildEntry::reference("make_plan"),
+                ChildEntry {
+                    name: "judge".to_string(),
+                    inputs: vec![(
+                        "plan".to_string(),
+                        crate::domain::workflow::value_objects::InputSourceRef::new("make_plan"),
+                    )],
+                    rules: None,
+                    on_failure: None,
+                },
+            ],
+        );
+        main.artifact = Some("plan".to_string());
+        let NodeKind::Sequence(spec) = &mut main.kind else {
+            unreachable!();
+        };
+        spec.output = Some("make_plan".to_string());
+
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(workflow_definition(
+                vec![output, downstream, main],
+                "main",
+            ))),
+        );
+        let make_plan = meta(
+            "make-plan-exec",
+            Some("main-exec"),
+            "make_plan",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            make_plan.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        let produced = serde_json::json!({"plan": "ready"});
+        log.push(make_plan.clone(), stop());
+        log.push(make_plan.clone(), submit());
+        log.push(make_plan, artifact("plan", produced.clone()));
+
+        let judge = meta(
+            "judge-exec",
+            Some("main-exec"),
+            "judge",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            judge.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        let running = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert_eq!(
+            running
+                .aggregate
+                .leaf_start_for("judge-exec")
+                .unwrap()
+                .bindings,
+            vec![("plan".to_string(), produced.clone())]
+        );
+
+        log.push(judge.clone(), submit());
+        log.push(judge, stop());
+        let completed = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let output = completed
+            .aggregate
+            .node_execution("make-plan-exec")
+            .unwrap();
+        let sequence = completed.aggregate.node_execution("main-exec").unwrap();
+        assert_eq!(output.artifact.as_ref(), Some(&produced));
+        assert_eq!(sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(sequence.failure, None);
+        assert!(!sequence.can_retry());
+    }
+
+    #[test]
+    fn test_sequence_output子がartifactなしで終端到達するとvalidation_failureになる() {
+        let mut output = session_leaf("make_plan");
+        output.artifact = Some("plan".to_string());
+        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
+        main.artifact = Some("plan".to_string());
+        let NodeKind::Sequence(spec) = &mut main.kind else {
+            unreachable!();
+        };
+        spec.output = Some("make_plan".to_string());
+
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(workflow_definition(
+                vec![output, main],
+                "main",
+            ))),
+        );
+        let make_plan = meta(
+            "make-plan-exec",
+            Some("main-exec"),
+            "make_plan",
+            NodeKindName::Session,
+            1,
+        );
+        log.push(
+            make_plan.clone(),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        log.push(make_plan.clone(), stop());
+        log.push(make_plan, submit());
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let sequence = tree.aggregate.node_execution("main-exec").unwrap();
+        assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Failed);
+        assert_eq!(
+            sequence.failure.as_ref().map(|failure| failure.kind),
+            Some(NodeExecutionFailureKind::ValidationFailure)
+        );
+        assert_eq!(
+            sequence
+                .failure
+                .as_ref()
+                .map(|failure| failure.reason.as_str()),
+            Some(
+                "sequence 'main' reached its terminal without an artifact from output child 'make_plan'"
+            )
+        );
+    }
 }
 
 mod fanout_tests {
@@ -818,6 +1078,69 @@ mod fanout_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_fanout_stop先着の最終子artifactをnullにせず集約する() {
+        let mut x = session_leaf("x");
+        x.artifact = Some("result".to_string());
+        let mut y = session_leaf("y");
+        y.artifact = Some("result".to_string());
+        let definition = workflow_definition(
+            vec![
+                x,
+                y,
+                fanout_node(
+                    "fan",
+                    vec![ChildEntry::reference("x"), ChildEntry::reference("y")],
+                ),
+                sequence_node("main", vec![ChildEntry::reference("fan")]),
+            ],
+            "main",
+        );
+        let mut log = FactLog::new();
+        log.push(
+            meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+            started_root(workflow_root(definition)),
+        );
+        log.push(
+            meta(
+                "fan-exec",
+                Some("main-exec"),
+                "fan",
+                NodeKindName::Fanout,
+                1,
+            ),
+            started_child(ExecutionParentRef::sequence_child("main-exec")),
+        );
+        let x = meta("x-exec", Some("fan-exec"), "x", NodeKindName::Session, 1);
+        log.push(
+            x.clone(),
+            started_child(ExecutionParentRef::fanout_child("fan-exec", None, 0)),
+        );
+        let y = meta("y-exec", Some("fan-exec"), "y", NodeKindName::Session, 1);
+        log.push(
+            y.clone(),
+            started_child(ExecutionParentRef::fanout_child("fan-exec", None, 1)),
+        );
+        let x_artifact = serde_json::json!({"result": "x"});
+        log.push(x.clone(), submit());
+        log.push(x.clone(), artifact("result", x_artifact.clone()));
+        log.push(x, stop());
+
+        let y_artifact = serde_json::json!({"result": "y"});
+        log.push(y.clone(), stop());
+        log.push(y.clone(), submit());
+        log.push(y, artifact("result", y_artifact.clone()));
+
+        let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        let fanout = tree.aggregate.node_execution("fan-exec").unwrap();
+        assert_eq!(
+            fanout.artifact.as_ref(),
+            Some(&serde_json::json!([x_artifact, y_artifact]))
+        );
+        assert_eq!(fanout.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
     }
 }
 
