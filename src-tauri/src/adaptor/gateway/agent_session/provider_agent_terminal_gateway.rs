@@ -12,10 +12,6 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 fn map_spawn_error(error: UsecaseError) -> ProviderAgentTerminalSpawnError {
     match error {
-        UsecaseError::PerWorktreeCap { worktree_path } => {
-            ProviderAgentTerminalSpawnError::PerWorktreeCap { worktree_path }
-        }
-        UsecaseError::TotalCap => ProviderAgentTerminalSpawnError::TotalCap,
         UsecaseError::OwnerConflict => ProviderAgentTerminalSpawnError::OwnerConflict,
         UsecaseError::PtySpawn { error } => ProviderAgentTerminalSpawnError::PtySpawn { error },
         UsecaseError::Gateway(error) | UsecaseError::OtherSpawnFailure { error } => {

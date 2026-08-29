@@ -85,93 +85,40 @@ fn test_ターミナル画面終了_登録簿内のプロセス状態を更新�
     assert!(registry.mark_exited(999, None).is_none());
 }
 
-fn lifecycle_config() -> TerminalSurfaceLifecycleConfig {
-    TerminalSurfaceLifecycleConfig {
-        per_worktree_cap: 2,
-        max_panes_total: 3,
+#[test]
+fn test_ターミナル画面生成予約_同一作業木で旧上限を超えて成功する() {
+    let mut registry = TerminalSurfaceRegistry::default();
+
+    for index in 0..33 {
+        let session_key = format!("key-{index}");
+        let reservation = registry.reserve_spawn_slot(&session_key).unwrap();
+        registry.complete_spawn_slot(&reservation);
+        registry.insert(session(index + 1, &session_key, Some("/repo"), None));
     }
-}
 
-#[test]
-fn test_ターミナル画面上限_生存中画面だけを数える() {
-    let mut registry = TerminalSurfaceRegistry::with_config(lifecycle_config());
-    registry.insert(session(1, "key-1", Some("/repo"), None));
-    registry.insert(session(2, "key-2", Some("/repo"), None));
-    registry.insert(session(3, "key-3", Some("/other"), None));
-
-    assert!(registry.would_exceed_worktree_cap("/repo"));
-    assert!(registry.would_exceed_total_cap());
-
-    registry.mark_exited(2, Some(0));
-
-    assert!(!registry.would_exceed_worktree_cap("/repo"));
-    assert!(!registry.would_exceed_total_cap());
-}
-
-#[test]
-fn test_ターミナル画面生成予約_作業木上限時も既存画面を保持する() {
-    let mut registry = TerminalSurfaceRegistry::with_config(lifecycle_config());
-    registry.insert(session(1, "key-1", Some("/repo"), None));
-    registry.insert(session(2, "key-2", Some("/repo"), None));
-
-    assert_eq!(
-        registry.reserve_spawn_slot("new-key", Some("/repo")),
-        Err(TerminalSurfaceSpawnReservationError::WorktreeCapReached(
-            "/repo".to_string()
-        ))
-    );
-    assert!(registry.get(1).is_some());
-    assert!(registry.get(2).is_some());
-}
-
-fn total_cap_config(
-    per_worktree_cap: usize,
-    max_panes_total: usize,
-) -> TerminalSurfaceLifecycleConfig {
-    TerminalSurfaceLifecycleConfig {
-        per_worktree_cap,
-        max_panes_total,
-    }
-}
-
-#[test]
-fn test_ターミナル画面生成予約_全体上限時も既存画面を保持する() {
-    let mut registry = TerminalSurfaceRegistry::with_config(total_cap_config(10, 2));
-    registry.insert(session(1, "key-1", Some("/repo"), None));
-    registry.insert(session(2, "key-2", Some("/other"), None));
-
-    assert_eq!(
-        registry.reserve_spawn_slot("new-key", Some("/third")),
-        Err(TerminalSurfaceSpawnReservationError::TotalCapReached)
-    );
-    assert!(registry.get(1).is_some());
-    assert!(registry.get(2).is_some());
+    assert_eq!(registry.len(), 33);
 }
 
 #[test]
 fn test_ターミナル画面生成予約_生存中または予約済み所有者を拒否する() {
-    let mut registry = TerminalSurfaceRegistry::with_config(total_cap_config(10, 10));
+    let mut registry = TerminalSurfaceRegistry::default();
     registry.insert(session(1, "live-key", Some("/repo"), None));
 
     assert_eq!(
-        registry.reserve_spawn_slot("live-key", Some("/repo")),
+        registry.reserve_spawn_slot("live-key"),
         Err(TerminalSurfaceSpawnReservationError::OwnerOccupied(
             "live-key".to_string()
         ))
     );
 
-    let reservation = registry
-        .reserve_spawn_slot("reserved-key", Some("/repo"))
-        .unwrap();
+    let reservation = registry.reserve_spawn_slot("reserved-key").unwrap();
     assert_eq!(
-        registry.reserve_spawn_slot("reserved-key", Some("/repo")),
+        registry.reserve_spawn_slot("reserved-key"),
         Err(TerminalSurfaceSpawnReservationError::OwnerOccupied(
             "reserved-key".to_string()
         ))
     );
 
     registry.rollback_spawn_slot(&reservation);
-    assert!(registry
-        .reserve_spawn_slot("reserved-key", Some("/repo"))
-        .is_ok());
+    assert!(registry.reserve_spawn_slot("reserved-key").is_ok());
 }

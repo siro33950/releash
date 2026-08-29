@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::adaptor::gateway::terminal_surface::event_hub::TerminalSurfaceEventHub;
-use crate::domain::terminal_surface::entities::{
-    TerminalSurface, TerminalSurfaceSpawnReservationError,
-};
+use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEvent, TerminalSurfaceEventSink, TerminalSurfaceGateway,
 };
@@ -13,45 +11,6 @@ use crate::domain::terminal_surface::{
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
-
-#[test]
-fn test_ターミナル画面生成_上限到達を固定したコマンドエラーへ変換する() {
-    // Given
-    let operations = [
-        TerminalCommandOperation::Initialize,
-        TerminalCommandOperation::GetExisting,
-        TerminalCommandOperation::Attach,
-        TerminalCommandOperation::Resynchronize,
-    ];
-
-    // When / Then
-    for operation in operations {
-        let command_error = TerminalCommandError::from_usecase(
-            UsecaseError::from(TerminalSurfaceSpawnReservationError::WorktreeCapReached(
-                "/repo".to_string(),
-            )),
-            operation,
-        );
-        assert_eq!(
-            serde_json::to_value(command_error).unwrap(),
-            serde_json::json!({
-                "code": "CAP_REACHED",
-                "message": "Terminal limit reached. Close an open Terminal and try again.",
-            })
-        );
-    }
-    let total_command_error = TerminalCommandError::from_usecase(
-        UsecaseError::from(TerminalSurfaceSpawnReservationError::TotalCapReached),
-        TerminalCommandOperation::Initialize,
-    );
-    assert_eq!(
-        serde_json::to_value(total_command_error).unwrap(),
-        serde_json::json!({
-            "code": "CAP_REACHED",
-            "message": "Terminal limit reached. Close an open Terminal and try again.",
-        })
-    );
-}
 
 #[test]
 fn test_ターミナル接続_recovery指定を初回接続と再同期へ対応づける() {
@@ -182,7 +141,7 @@ fn test_ターミナル画面変形_resize失敗をtransport共通の固定文�
 }
 
 #[test]
-fn test_ターミナル画面生成_上限以外のspawn失敗を汎用codeと固定文言へ変換する() {
+fn test_ターミナル画面生成_spawn失敗を汎用codeと固定文言へ変換する() {
     // Given
     let errors = [
         UsecaseError::OwnerConflict,

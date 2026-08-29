@@ -775,14 +775,13 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("CAP_REACHEDのbackend messageをalert用callbackだけへ通知する", async () => {
+	it("PTY_ERRORのbackend messageをalert用callbackだけへ通知する", async () => {
 		const onTerminalError = vi.fn();
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_or_spawn_terminal_surface") {
 				return Promise.reject({
-					code: "CAP_REACHED",
-					message:
-						"Terminal limit reached. Close an open Terminal and try again.",
+					code: "PTY_ERROR",
+					message: "Terminal initialization failed. Try again.",
 				});
 			}
 			return Promise.resolve();
@@ -794,11 +793,11 @@ describe("useTerminal", () => {
 
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith(
-				"Terminal limit reached. Close an open Terminal and try again.",
+				"Terminal initialization failed. Try again.",
 			);
 		});
 		expect(mockTerminalInstance.write).not.toHaveBeenCalledWith(
-			"\r\n\x1b[31mTerminal limit reached. Close an open Terminal and try again.\x1b[0m\r\n",
+			"\r\n\x1b[31mTerminal initialization failed. Try again.\x1b[0m\r\n",
 		);
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"register_active_terminal",

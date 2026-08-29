@@ -49,6 +49,8 @@ const APPROVAL_CLAUDE_WORKFLOW: &str = "acceptance-approval-claude";
 const APPROVAL_CODEX_WORKFLOW: &str = "acceptance-approval-codex";
 const APPROVAL_FANOUT_CLAUDE_WORKFLOW: &str = "acceptance-approval-fanout-claude";
 const APPROVAL_FANOUT_CODEX_WORKFLOW: &str = "acceptance-approval-fanout-codex";
+const DEFAULT_CAP_FANOUT_CLAUDE_WORKFLOW: &str = "acceptance-default-cap-fanout-claude";
+const DEFAULT_CAP_FANOUT_CHILDREN: usize = 33;
 const ARTIFACT_CLAUDE_WORKFLOW: &str = "acceptance-artifact-claude";
 const ARTIFACT_CODEX_WORKFLOW: &str = "acceptance-artifact-codex";
 const APPROVAL_ARTIFACT_CLAUDE_WORKFLOW: &str = "acceptance-approval-artifact-claude";
@@ -220,6 +222,33 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
         &self,
         workflow_name: &str,
     ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+        if workflow_name == DEFAULT_CAP_FANOUT_CLAUDE_WORKFLOW {
+            let child_names = (0..DEFAULT_CAP_FANOUT_CHILDREN)
+                .map(|index| format!("review-{index:02}"))
+                .collect::<Vec<_>>();
+            let mut nodes = vec![NodeDefinition {
+                name: "fanout".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: child_names.iter().map(ChildEntry::reference).collect(),
+                    items: None,
+                }),
+                artifact: None,
+                input: Vec::new(),
+                completion: NodeCompletion::Auto,
+                worktree: None,
+            }];
+            nodes.extend(child_names.iter().map(|name| {
+                acceptance_session_node(name, ProviderKind::Claude, NodeCompletion::Approval)
+            }));
+            return Ok(WorkflowDefinition {
+                name: workflow_name.to_string(),
+                description: "Workflow control-plane product acceptance".to_string(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes,
+                entry: "fanout".to_string(),
+            });
+        }
         let fanout_provider = match workflow_name {
             APPROVAL_FANOUT_CLAUDE_WORKFLOW => Some(ProviderKind::Claude),
             APPROVAL_FANOUT_CODEX_WORKFLOW => Some(ProviderKind::Codex),
@@ -405,28 +434,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         config: AgentSessionTuiAcceptanceConfig,
         app: tauri::App<R>,
     ) -> Result<Self, String> {
-        Self::start_with_terminal_lifecycle_limits(config, app, None)
-    }
-
-    #[doc(hidden)]
-    pub fn start_with_terminal_caps(
-        config: AgentSessionTuiAcceptanceConfig,
-        app: tauri::App<R>,
-        per_worktree_cap: usize,
-        max_panes_total: usize,
-    ) -> Result<Self, String> {
-        Self::start_with_terminal_lifecycle_limits(
-            config,
-            app,
-            Some((per_worktree_cap, max_panes_total)),
-        )
-    }
-
-    fn start_with_terminal_lifecycle_limits(
-        config: AgentSessionTuiAcceptanceConfig,
-        app: tauri::App<R>,
-        terminal_caps: Option<(usize, usize)>,
-    ) -> Result<Self, String> {
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store =
             LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
@@ -438,20 +445,10 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             config.data_dir.clone(),
         ));
 
-        let terminal = match terminal_caps {
-            Some((per_worktree_cap, max_panes_total)) => {
-                TerminalSurfaceRuntime::new_with_data_dir_and_lifecycle_limits(
-                    app.handle().clone(),
-                    config.data_dir.clone(),
-                    per_worktree_cap,
-                    max_panes_total,
-                )
-            }
-            None => TerminalSurfaceRuntime::new_with_data_dir(
-                app.handle().clone(),
-                config.data_dir.clone(),
-            ),
-        };
+        let terminal = TerminalSurfaceRuntime::new_with_data_dir(
+            app.handle().clone(),
+            config.data_dir.clone(),
+        );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
 			store: store.clone(),
 			data_dir: config.data_dir.clone(),
@@ -628,6 +625,15 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             AcceptanceProvider::Codex => APPROVAL_FANOUT_CODEX_WORKFLOW,
         };
         self.start_named_workflow(worktree_path, workflow_name)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn start_default_capacity_fanout_workflow(
+        &self,
+        worktree_path: &str,
+    ) -> Result<String, String> {
+        self.start_named_workflow(worktree_path, DEFAULT_CAP_FANOUT_CLAUDE_WORKFLOW)
             .await
     }
 

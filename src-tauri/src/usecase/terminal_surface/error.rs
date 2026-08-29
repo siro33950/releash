@@ -1,14 +1,9 @@
-use crate::domain::terminal_surface::entities::TerminalSurfaceSpawnReservationError;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGatewayError;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UsecaseError {
     #[error("{0}")]
     Gateway(String),
-    #[error("PTY cap reached for worktree {worktree_path}")]
-    PerWorktreeCap { worktree_path: String },
-    #[error("PTY total cap reached")]
-    TotalCap,
     #[error("Terminal Surface owner identity collision")]
     OwnerConflict,
     #[error("{error}")]
@@ -26,17 +21,5 @@ impl From<String> for UsecaseError {
 impl From<TerminalSurfaceGatewayError> for UsecaseError {
     fn from(value: TerminalSurfaceGatewayError) -> Self {
         Self::Gateway(value.message().to_string())
-    }
-}
-
-impl From<TerminalSurfaceSpawnReservationError> for UsecaseError {
-    fn from(value: TerminalSurfaceSpawnReservationError) -> Self {
-        match value {
-            TerminalSurfaceSpawnReservationError::OwnerOccupied(_) => Self::OwnerConflict,
-            TerminalSurfaceSpawnReservationError::WorktreeCapReached(worktree_path) => {
-                Self::PerWorktreeCap { worktree_path }
-            }
-            TerminalSurfaceSpawnReservationError::TotalCapReached => Self::TotalCap,
-        }
     }
 }

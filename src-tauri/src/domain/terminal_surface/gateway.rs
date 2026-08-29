@@ -176,7 +176,6 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
     fn reserve_spawn_slot(
         &self,
         session_key: &str,
-        worktree_path: Option<&str>,
     ) -> Result<TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError>;
     fn wait_for_spawn_resolution(&self, session_key: &str) -> Option<TerminalSurfaceSummary> {
         self.find_summary_by_session_key(session_key)

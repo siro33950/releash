@@ -71,11 +71,9 @@ impl TerminalSurfaceGateway for FakePtyGateway {
     fn reserve_spawn_slot(
         &self,
         session_key: &str,
-        _worktree_path: Option<&str>,
     ) -> Result<TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError> {
         Ok(TerminalSurfaceSpawnReservation {
             session_key: session_key.to_string(),
-            worktree_path: None,
         })
     }
 

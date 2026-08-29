@@ -2292,6 +2292,28 @@ mod tests {
     }
 
     #[test]
+    fn test_fanout_children数_上限超過を拒否する() {
+        let child_names = (0..=MAX_FANOUT_CHILDREN)
+            .map(|index| format!("child-{index}"))
+            .collect::<Vec<_>>();
+        let mut nodes = vec![fanout_node(
+            "main",
+            child_names.iter().map(ChildEntry::reference).collect(),
+            None,
+        )];
+        nodes.extend(child_names.iter().map(|name| command_node(name, "echo hi")));
+        let wf = workflow(nodes);
+
+        assert!(matches!(
+            validate(&wf),
+            Err(ValidationError::TooManyFanoutChildren { node, count, max })
+                if node == "main"
+                    && count == MAX_FANOUT_CHILDREN + 1
+                    && max == MAX_FANOUT_CHILDREN
+        ));
+    }
+
+    #[test]
     fn test_検証_sessionのfacet無しを拒否する() {
         let mut node = session_node("main");
         if let NodeKind::Session(spec) = &mut node.kind {

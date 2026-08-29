@@ -43,20 +43,8 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
 }
 
 #[test]
-fn test_provider_agent_terminal_spawn_error_5分類とpayloadを保持する() {
+fn test_provider_agent_terminal_spawn_error_残る分類とpayloadを保持する() {
     let cases = [
-        (
-            crate::usecase::terminal_surface::error::UsecaseError::PerWorktreeCap {
-                worktree_path: "/repo/worktree".to_string(),
-            },
-            ProviderAgentTerminalSpawnError::PerWorktreeCap {
-                worktree_path: "/repo/worktree".to_string(),
-            },
-        ),
-        (
-            crate::usecase::terminal_surface::error::UsecaseError::TotalCap,
-            ProviderAgentTerminalSpawnError::TotalCap,
-        ),
         (
             crate::usecase::terminal_surface::error::UsecaseError::OwnerConflict,
             ProviderAgentTerminalSpawnError::OwnerConflict,

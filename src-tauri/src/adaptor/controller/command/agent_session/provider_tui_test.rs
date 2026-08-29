@@ -57,13 +57,13 @@ fn test_agent_session_controller_provider未選択と未知値を起動前に拒
 #[test]
 fn test_agent_session_controller_terminal_spawn詳細を既存の利用者向けerrorへ変換する() {
     // Given
-    let internal_worktree_path = "/repo/worktree";
+    let internal_error = "Failed to spawn shell: Permission denied (os error 13)";
 
     // When
     let error = launch_error(
         AgentSessionLaunchUsecaseError::TerminalSpawn(
-            crate::domain::agent_session::ProviderAgentTerminalSpawnError::PerWorktreeCap {
-                worktree_path: internal_worktree_path.to_string(),
+            crate::domain::agent_session::ProviderAgentTerminalSpawnError::PtySpawn {
+                error: internal_error.to_string(),
             },
         ),
         AgentSessionLaunchOperation::Start,
@@ -76,7 +76,7 @@ fn test_agent_session_controller_terminal_spawn詳細を既存の利用者向け
         value["message"],
         "Releash could not complete the Terminal operation for this AgentSession. Try again."
     );
-    assert!(!value.to_string().contains(internal_worktree_path));
+    assert!(!value.to_string().contains(internal_error));
 }
 
 #[test]
