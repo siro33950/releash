@@ -10,7 +10,6 @@ import {
 	GitBranch,
 	GitPullRequest,
 	Home,
-	ListTree,
 	Loader2,
 	MessageSquare,
 	MoreHorizontal,
@@ -21,6 +20,7 @@ import {
 	Square,
 	Terminal,
 	Trash2,
+	Waypoints,
 	Workflow,
 	X,
 } from "lucide-react";
@@ -403,7 +403,7 @@ function WorkspaceBranchRow({
 					{item.kind === "fanout" ? (
 						<FanoutRowStatusIcon status={item.status} />
 					) : (
-						<WorkspaceBranchStatusIcon status={item.status} icon={ListTree} />
+						<WorkspaceBranchStatusIcon status={item.status} icon={Waypoints} />
 					)}
 					<span className="min-w-0 truncate">{item.title}</span>
 					{expanded ? (
