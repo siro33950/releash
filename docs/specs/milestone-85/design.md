@@ -38,6 +38,9 @@ implement:
     require: approval          # 任意。全 Node 種別で宣言できる
     delegate:                  # 任意。Session だけが宣言できる
       child: verify            # 必須。任意の Node を名前で参照する
+      inputs:                  # child が input を宣言しているとき
+        task: implement_result
+        spec: spec
       when: child.judge.clean  # 必須。述語
       max_iterations: 3        # 必須
 ```
@@ -45,6 +48,8 @@ implement:
 `completion` は map であり、`require` と `delegate` を並べる。両方あるときの意味は and（述語が成立し、かつ human が承認して完了）で、or は持たない。
 
 `require` の値域は `approval`。要求しないなら `require` を書かない。現行の `completion: auto` / `completion: approval` という文字列形式は廃止し、`auto` という値も持たない（要求を書かないことが自動完了を意味する）。
+
+`inputs` は合成子の children エントリと同形で、`<パラメータ名>: <供給元>` を書く。「配線は、その Node を子として扱う側が書く」という現行の原則に従い、child を子として扱う親 session が配線を持つ。供給元は親 session のスコープで参照できるものすべてである（親の `input` パラメータ、親の Artifact、`request`）。親の Artifact には前ラウンドの結果である `child` キーも含まれる。
 
 ### 2.4 発火
 
