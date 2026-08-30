@@ -195,19 +195,28 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				updatedAt: 4,
 				children: [
 					{
-						kind: "node",
-						id: "fanout-child-internal-uuid",
-						title: "Architecture review",
-						status: "active",
-						contentKind: "command",
-						capabilities: {
-							canApprove: false,
-							canRetry: false,
-							canClose: false,
-						},
-						pastAttempts: [],
-						pastAttemptsCollapsed: false,
+						kind: "sequence",
+						id: "review-sequence-internal-uuid",
+						title: "Review sequence",
+						status: "attention",
 						updatedAt: 5,
+						children: [
+							{
+								kind: "node",
+								id: "fanout-child-internal-uuid",
+								title: "Architecture review",
+								status: "active",
+								contentKind: "command",
+								capabilities: {
+									canApprove: false,
+									canRetry: false,
+									canClose: false,
+								},
+								pastAttempts: [],
+								pastAttemptsCollapsed: false,
+								updatedAt: 6,
+							},
+						],
 					},
 				],
 			},
@@ -383,22 +392,30 @@ describe("WorkspaceList", () => {
 		expect(within(section).queryByRole("button")).not.toBeInTheDocument();
 	});
 
-	it("renders the backend-owned recursive Workflow and Fanout hierarchy", () => {
+	it("renders Waypoints for top-level and nested Sequence rows while keeping GitFork for Fanout", () => {
 		const { container } = renderWorkspaceList();
 
 		expect(screen.getByText("Release workflow")).toBeInTheDocument();
 		expect(screen.getByText("Review all")).toBeInTheDocument();
+		expect(screen.getByText("Review sequence")).toBeInTheDocument();
 		expect(screen.getByText("Architecture review")).toBeInTheDocument();
 		expect(
 			screen
 				.getByRole("button", { name: "Release workflow" })
-				.querySelector("svg.lucide-list-tree"),
+				.querySelector("svg.lucide-waypoints"),
+		).toBeInTheDocument();
+		expect(
+			screen
+				.getByRole("button", { name: "Review sequence" })
+				.querySelector("svg.lucide-waypoints"),
 		).toBeInTheDocument();
 		expect(
 			screen
 				.getByRole("button", { name: "Review all" })
 				.querySelector("svg.lucide-git-fork"),
 		).toBeInTheDocument();
+		expect(container.querySelectorAll("svg.lucide-waypoints")).toHaveLength(2);
+		expect(container.querySelectorAll("svg.lucide-list-tree")).toHaveLength(0);
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
 	});
 
@@ -441,13 +458,14 @@ describe("WorkspaceList", () => {
 		);
 		mocks.treeStateOverrides.set("/repo/wt", { nodes });
 
-		renderWorkspaceList();
+		const { container } = renderWorkspaceList();
 
 		for (const { title, colorClasses, pulses } of cases) {
 			const icon = screen
 				.getByRole("button", { name: title })
-				.querySelector("svg.lucide-list-tree");
+				.querySelector("svg.lucide-waypoints");
 			expect(icon).toBeInTheDocument();
+			expect(icon).toHaveClass("size-3.5");
 			expect(icon).toHaveClass(...colorClasses);
 			if (pulses) {
 				expect(icon).toHaveClass("animate-pulse");
@@ -455,6 +473,7 @@ describe("WorkspaceList", () => {
 				expect(icon).not.toHaveClass("animate-pulse");
 			}
 		}
+		expect(container.querySelectorAll("svg.lucide-list-tree")).toHaveLength(0);
 	});
 
 	it("backendが絞り込んだStandalone Session Nodeを選択できる", async () => {
