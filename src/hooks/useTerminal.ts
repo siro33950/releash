@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 import { getErrorMessage } from "@/lib/errorMessage";
@@ -7,6 +8,11 @@ import {
 	reportMountedXtermMounted,
 	reportMountedXtermUnmounted,
 } from "@/lib/telemetry";
+import { activateTerminalLink } from "@/lib/terminalLinkActivation";
+import {
+	createTerminalLinkTooltip,
+	type TerminalLinkTooltip,
+} from "@/lib/terminalLinkTooltip";
 import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
 import {
 	isTerminalPerformanceProbeActive,
@@ -162,19 +168,40 @@ export function useTerminal(
 		if (!container) return;
 
 		let isMounted = true;
+		let linkTooltip: TerminalLinkTooltip | null = null;
+		const activateLink = (_event: MouseEvent, url: string): void => {
+			activateTerminalLink(url);
+		};
+		const hoverLink = (event: MouseEvent, url: string): void => {
+			linkTooltip?.hover(event, url);
+		};
+		const leaveLink = (): void => {
+			linkTooltip?.leave();
+		};
 
 		const terminal = new Terminal({
 			cursorBlink: true,
 			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 			fontSize: 14,
+			linkHandler: {
+				activate: activateLink,
+				hover: hoverLink,
+				leave: leaveLink,
+			},
 			theme: getTerminalTheme(themeRef.current, container),
 		});
 		reportMountedXtermMounted();
 
 		const fitAddon = new FitAddon();
+		const webLinksAddon = new WebLinksAddon(activateLink, {
+			hover: hoverLink,
+			leave: leaveLink,
+		});
 		terminal.loadAddon(fitAddon);
+		terminal.loadAddon(webLinksAddon);
 
 		terminal.open(container);
+		linkTooltip = createTerminalLinkTooltip(terminal.element as HTMLElement);
 		fitAddon.fit();
 
 		// レンダラー初期化後に再度fitして正確なサイズを確定
@@ -778,6 +805,7 @@ export function useTerminal(
 				);
 			}
 			isRunningRef.current = false;
+			linkTooltip.dispose();
 			terminal.dispose();
 			reportMountedXtermUnmounted();
 		};
