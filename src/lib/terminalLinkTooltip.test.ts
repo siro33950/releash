@@ -41,7 +41,7 @@ describe("createTerminalLinkTooltip", () => {
 		const tooltipBounds = { width: 180, height: 48 } as DOMRect;
 		vi.spyOn(target, "getBoundingClientRect").mockReturnValue(targetBounds);
 		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-			function () {
+			function (this: HTMLElement) {
 				return this.classList.contains("xterm-hover")
 					? tooltipBounds
 					: ({} as DOMRect);
