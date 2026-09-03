@@ -822,6 +822,7 @@ fn node() -> WorkspaceTreeNode {
         completion_signals: Default::default(),
         has_artifact: false,
         session_id: None,
+        can_rename: false,
         can_approve: true,
         can_retry: false,
         can_close: false,
@@ -1200,6 +1201,7 @@ fn workflow_node_detail_exposes_backend_owned_signal_and_capabilities_without_at
         crate::domain::workflow::NodeCompletionSignalState::StopReceived;
     workflow_session.has_artifact = false;
     workflow_session.can_retry = true;
+    workflow_session.can_rename = true;
 
     let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
 
@@ -1209,6 +1211,7 @@ fn workflow_node_detail_exposes_backend_owned_signal_and_capabilities_without_at
     assert_eq!(detail["waitingFor"], "submit");
     assert_eq!(detail["hasArtifact"], false);
     assert_eq!(detail["capabilities"]["canRetry"], true);
+    assert_eq!(detail["capabilities"]["canRename"], true);
 }
 
 #[test]
@@ -1270,7 +1273,7 @@ fn test_workspaceツリー契約_nodeとsequenceとfanoutは4分類だけを返�
 }
 
 #[test]
-fn test_workspaceノード詳細契約_詳細状態と4分類を同時に返す() {
+fn test_workspaceノード詳細契約_詳細状態と5分類を同時に返す() {
     // Given
     let cases = [
         (
@@ -1309,6 +1312,12 @@ fn test_workspaceノード詳細契約_詳細状態と4分類を同時に返す(
             "completed",
             "idle",
         ),
+        (
+            WorkspaceNodeStatus::Running,
+            WorkspaceNodeStatusClassification::Unbound,
+            "running",
+            "unbound",
+        ),
     ];
 
     // When / Then
@@ -1322,6 +1331,34 @@ fn test_workspaceノード詳細契約_詳細状態と4分類を同時に返す(
         assert_ne!(detail["status"], "interrupted");
         assert_ne!(detail["statusClassification"], "interrupted");
     }
+}
+
+#[test]
+fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからそのまま公開する() {
+    let execution_id = "workflow-execution";
+    let owner = tree_owner(execution_id);
+    let mut session = child_node(
+        "session",
+        execution_id,
+        execution_id,
+        WorkspaceNodeKind::WorkflowSession,
+        "session",
+    );
+    session.status_classification = WorkspaceNodeStatusClassification::Unbound;
+    session.can_rename = true;
+    let tree = WorkspaceTree::restore("/repo", vec![owner, session]).unwrap();
+
+    let json = serde_json::to_value(project_tree(
+        &tree,
+        &HashSet::new(),
+        &HashSet::from([execution_id.to_string()]),
+        &[],
+    ))
+    .unwrap();
+
+    assert_eq!(json[0]["status"], "unbound");
+    assert_eq!(json[0]["capabilities"]["canRename"], false);
+    assert!(json[0].get("workflowCapabilities").is_some());
 }
 
 #[test]
@@ -1415,6 +1452,7 @@ fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由�
         "paused",
     );
     paused.status = WorkspaceNodeStatus::Paused;
+    paused.session_id = Some("paused-agent-session".to_string());
     paused.resume_eligible = true;
     let tree = WorkspaceTree::restore("/repo", vec![owner, paused]).unwrap();
 

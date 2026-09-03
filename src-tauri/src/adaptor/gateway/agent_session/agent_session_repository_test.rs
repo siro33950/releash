@@ -3,7 +3,9 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use super::agent_session_repository::map_commit_batch_error;
+use super::agent_session_repository::{
+    map_commit_batch_error, open_session_title_candidates, OPEN_SESSION_LIFECYCLE_EVENT_TYPES,
+};
 use super::{workspace_session_items, LocalAgentSessionQueryService, LocalAgentSessionRepository};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::fact_log;
@@ -13,7 +15,9 @@ use crate::adaptor::gateway::workflow::test_support::{
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionLifecycle, AgentSessionTreeLocation,
 };
-use crate::domain::agent_session::repository::AgentSessionRepository;
+use crate::domain::agent_session::repository::{
+    AgentSessionRepository, AgentSessionRepositoryError,
+};
 use crate::domain::agent_session::AgentSessionOwnershipQuery;
 use crate::domain::local_event::CommitBatchError;
 use crate::domain::local_event::LocalEventTransactionRepository;
@@ -739,6 +743,199 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
     );
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Paused);
     assert!(!loaded.session().last_exit_abnormal());
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_openかつprovider_session確定済みのsessionだけを軽量列挙する()
+{
+    // Given: Open・paused・archived と、provider session id 未確定の Session
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    for id in ["open-session", "paused-session", "archived-session"] {
+        let mut saved = repository
+            .create(
+                standalone_session(id, "/repo", ProviderKind::Claude),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+        let transcript_ref = format!("provider://transcript/{id}");
+        saved
+            .session_mut()
+            .associate_provider_session(format!("provider-{id}"), Some(&transcript_ref))
+            .unwrap();
+        let mut saved = repository
+            .save(saved, &format!("associate-{id}"))
+            .await
+            .unwrap();
+        match id {
+            "open-session" => {
+                saved
+                    .session_mut()
+                    .observe_provider_session_title("Old title")
+                    .unwrap();
+                let mut saved = repository
+                    .save_provider_session_title(saved, "old-open-title")
+                    .await
+                    .unwrap();
+                saved
+                    .session_mut()
+                    .observe_provider_session_title("Current title")
+                    .unwrap();
+                repository
+                    .save_provider_session_title(saved, "current-open-title")
+                    .await
+                    .unwrap();
+            }
+            "paused-session" => {
+                saved.session_mut().observe_provider_process_exit(Some(0));
+                repository.save(saved, "pause-session").await.unwrap();
+            }
+            "archived-session" => {
+                saved.session_mut().archive().unwrap();
+                repository.save(saved, "archive-session").await.unwrap();
+            }
+            _ => {}
+        }
+    }
+    repository
+        .create(
+            standalone_session("unattached-session", "/repo", ProviderKind::Codex),
+            "create-unattached-session",
+        )
+        .await
+        .unwrap();
+
+    // When: 一括取得した lifecycle 事実から追加読み対象を絞り、Session を列挙する
+    let lifecycle_records = fact_log::read_records_for_event_types(
+        &fact_log::FactLogReadBackend::Live(Arc::clone(&store)),
+        OPEN_SESSION_LIFECYCLE_EVENT_TYPES,
+    )
+    .unwrap();
+    let candidates = open_session_title_candidates(lifecycle_records);
+    let sessions = repository
+        .list_open_for_provider_session_title()
+        .await
+        .unwrap();
+
+    // Then: 追加読み候補にも返却値にも provider id 付きの Open だけが残る
+    assert_eq!(
+        candidates.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["open-session"]
+    );
+    let candidate = candidates.get("open-session").unwrap();
+    assert_eq!(candidate.location.tree_id, "open-session");
+    assert_eq!(candidate.location.node_execution_id, "open-session");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session().id(), "open-session");
+    assert_eq!(sessions[0].session().provider(), ProviderKind::Claude);
+    assert_eq!(sessions[0].session().worktree_path(), "/repo");
+    assert_eq!(
+        sessions[0].session().lifecycle(),
+        AgentSessionLifecycle::Open
+    );
+    assert_eq!(
+        sessions[0].session().provider_session_id(),
+        Some("provider-open-session")
+    );
+    assert_eq!(
+        sessions[0].session().transcript_ref(),
+        Some("provider://transcript/open-session")
+    );
+    assert_eq!(sessions[0].session().manual_name(), None);
+    assert_eq!(
+        sessions[0].session().provider_session_title(),
+        Some("Current title")
+    );
+    assert_eq!(sessions[0].revision(), 5);
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_renameとproviderタイトルを対応する事実へ保存し再取得する() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let mut saved = repository
+        .create(
+            standalone_session("named-session", "/repo", ProviderKind::Codex),
+            "create-named-session",
+        )
+        .await
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-named-session", None)
+        .unwrap();
+    let mut saved = repository
+        .save(saved, "associate-named-session")
+        .await
+        .unwrap();
+    saved.session_mut().rename("  release review  ").unwrap();
+    let saved = repository.save(saved, "rename-session").await.unwrap();
+    let mut observed = repository.find("named-session").await.unwrap().unwrap();
+    observed
+        .session_mut()
+        .observe_provider_session_title("  Generated title  ")
+        .unwrap();
+    repository
+        .save_provider_session_title(observed, "observe-provider-title")
+        .await
+        .unwrap();
+
+    let restored = repository.find("named-session").await.unwrap().unwrap();
+
+    assert_eq!(restored.session().manual_name(), Some("release review"));
+    assert_eq!(
+        restored.session().provider_session_title(),
+        Some("Generated title")
+    );
+    assert!(saved.session().uncommitted_events().is_empty());
+    assert_eq!(
+        tree_event_types(&store, "named-session"),
+        [
+            "started",
+            "session_attached",
+            "session_attached",
+            "session_node_renamed",
+            "provider_session_title_observed",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_repository_providerタイトル軽量保存は他のeventが混ざる要求を拒否する() {
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    let mut saved = repository
+        .create(
+            standalone_session("invalid-title-save", "/repo", ProviderKind::Claude),
+            "create-invalid-title-save",
+        )
+        .await
+        .unwrap();
+    saved
+        .session_mut()
+        .associate_provider_session("provider-invalid-title-save", None)
+        .unwrap();
+    let mut saved = repository
+        .save(saved, "associate-invalid-title-save")
+        .await
+        .unwrap();
+    saved.session_mut().rename("manual name").unwrap();
+    saved
+        .session_mut()
+        .observe_provider_session_title("provider title")
+        .unwrap();
+    let rows_before = tree_event_types(&store, "invalid-title-save");
+
+    let result = repository
+        .save_provider_session_title(saved, "invalid-title-observation")
+        .await;
+
+    assert_eq!(result, Err(AgentSessionRepositoryError::InvalidRequest));
+    assert_eq!(tree_event_types(&store, "invalid-title-save"), rows_before);
 }
 
 #[tokio::test]

@@ -338,6 +338,7 @@ mod tests {
         "get_workspace_session_node_id",
         "get_workspace_tree_selection_reconciliation",
         "restore_workspace_workflow_execution",
+        "rename_workspace_session_node",
         "retry_workspace_node",
     ];
 

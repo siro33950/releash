@@ -18,6 +18,7 @@ impl AgentSessionHistoryQueryService for FixedHistoryQueryService {
             items: vec![AgentSessionHistoryCandidateDto {
                 provider: AgentSessionProviderDto::Claude,
                 provider_session_id: "claude-1".to_string(),
+                label: "Claude claude-1…".to_string(),
                 updated_at_ms: 10,
             }],
             next_after: None,

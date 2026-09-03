@@ -1660,6 +1660,375 @@ fn repeated_session_occurrences_keep_distinct_session_detail_and_lookup() {
 }
 
 #[test]
+fn test_session表示名_単独rootだけproviderタイトルを使いrenameを最優先する() {
+    let standalone_id = "00000000-0000-4000-8000-000000000014";
+    let workflow_id = "00000000-0000-4000-8000-000000000015";
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: standalone_id.to_string(),
+                workflow_name: "session".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: standalone_id.to_string(),
+                node_execution_id: standalone_id.to_string(),
+                node_name: "session".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+                execution_id: standalone_id.to_string(),
+                node_execution_id: standalone_id.to_string(),
+                manual_name: None,
+                provider_session_title: Some("Provider title".to_string()),
+            },
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: workflow_id.to_string(),
+                workflow_name: "review".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 3.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: workflow_id.to_string(),
+                node_execution_id: "workflow-session".to_string(),
+                node_name: "plan".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 4.0,
+            },
+            WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+                execution_id: workflow_id.to_string(),
+                node_execution_id: "workflow-session".to_string(),
+                manual_name: None,
+                provider_session_title: Some("Hidden provider title".to_string()),
+            },
+        ],
+    )
+    .unwrap();
+
+    let standalone = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some(standalone_id))
+        .unwrap();
+    let workflow_session = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("workflow-session"))
+        .unwrap();
+    assert!(standalone.is_standalone_session_root());
+    assert_eq!(standalone.title, "Provider title");
+    assert_eq!(workflow_session.title, "plan");
+
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+            execution_id: standalone_id.to_string(),
+            node_execution_id: standalone_id.to_string(),
+            manual_name: Some("Manual name".to_string()),
+            provider_session_title: Some("Updated provider title".to_string()),
+        }],
+    )
+    .unwrap();
+    let standalone = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some(standalone_id))
+        .unwrap();
+    assert_eq!(standalone.title, "Manual name");
+}
+
+#[test]
+fn test_session表示名_親ありで実行idとnode実行idが同じsessionは単独rootにしない() {
+    let execution_id = "00000000-0000-4000-8000-000000000018";
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "review".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "sequence".to_string(),
+                node_name: "main".to_string(),
+                kind: NodeKindName::Sequence,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: execution_id.to_string(),
+                node_name: "nested-session".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: Some(ExecutionParentRef::sequence_child("sequence")),
+                timestamp: 3.0,
+            },
+            WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+                execution_id: execution_id.to_string(),
+                node_execution_id: execution_id.to_string(),
+                manual_name: None,
+                provider_session_title: Some("Hidden provider title".to_string()),
+            },
+        ],
+    )
+    .unwrap();
+
+    let session = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some(execution_id))
+        .unwrap();
+    assert!(!session.is_standalone_session_root());
+    assert!(session.id.starts_with("node-w-"));
+    assert_eq!(session.title, "nested-session");
+}
+
+#[test]
+fn test_session表示名変更可否_session_bind後だけ真になる() {
+    let execution_id = "00000000-0000-4000-8000-000000000016";
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: "review".to_string(),
+                worktree_path: "/repo".to_string(),
+                definition: definition(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "sequence".to_string(),
+                node_name: "main".to_string(),
+                kind: NodeKindName::Sequence,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: "session-node".to_string(),
+                node_name: "plan".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: Some(ExecutionParentRef::sequence_child("sequence")),
+                timestamp: 3.0,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(tree.nodes().iter().all(|node| !node.can_rename));
+    let unbound = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("session-node"))
+        .unwrap();
+    assert_eq!(
+        unbound.status_classification,
+        WorkspaceNodeStatusClassification::Unbound
+    );
+
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [WorkspaceStructureFact::NodeAgentBound {
+            execution_id: execution_id.to_string(),
+            node_execution_id: "session-node".to_string(),
+            session_id: "agent-session".to_string(),
+            timestamp: 4.0,
+        }],
+    )
+    .unwrap();
+
+    let session = tree.session_node("agent-session").unwrap();
+    assert!(session.can_rename);
+    assert_ne!(
+        session.status_classification,
+        WorkspaceNodeStatusClassification::Unbound
+    );
+    assert!(tree
+        .nodes()
+        .iter()
+        .filter(|node| node.kind != WorkspaceNodeKind::WorkflowSession)
+        .all(|node| !node.can_rename));
+}
+
+#[test]
+fn test_親分類集約_bind前sessionだけならunboundで他の子があればその状態になる() {
+    for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
+        let execution_id = format!("00000000-0000-4000-8000-00000000002{}", kind as u8);
+        let mut tree = WorkspaceTree::empty("/repo");
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [
+                WorkspaceStructureFact::WorkflowStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "workflow".to_string(),
+                    worktree_path: "/repo".to_string(),
+                    definition: definition(),
+                    timestamp: 1.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "branch".to_string(),
+                    node_name: "branch".to_string(),
+                    kind,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 2.0,
+                },
+                WorkspaceStructureFact::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "unbound-session".to_string(),
+                    node_name: "session".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: Some(parent_ref(kind, "branch", 0)),
+                    timestamp: 3.0,
+                },
+            ],
+        )
+        .unwrap();
+        let branch = tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("branch"))
+            .unwrap();
+        assert_eq!(
+            branch.status_classification,
+            WorkspaceNodeStatusClassification::Unbound,
+            "{kind:?}"
+        );
+
+        WorkspaceTreeProjector::project(
+            &mut tree,
+            [WorkspaceStructureFact::NodeStarted {
+                execution_id: execution_id.clone(),
+                node_execution_id: "command".to_string(),
+                node_name: "command".to_string(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: Some(parent_ref(kind, "branch", 1)),
+                timestamp: 4.0,
+            }],
+        )
+        .unwrap();
+        let branch = tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("branch"))
+            .unwrap();
+        assert_eq!(
+            branch.status_classification,
+            WorkspaceNodeStatusClassification::Active,
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn test_親分類集約_bind前sessionの終了状態をsequenceとfanoutへ反映する() {
+    let cases = [
+        (
+            NodeExecutionFailureKind::ValidationFailure,
+            WorkspaceNodeStatus::Failed,
+            WorkspaceNodeStatusClassification::Failure,
+            WorkspaceNodeStatusClassification::Failure,
+        ),
+        (
+            NodeExecutionFailureKind::UserAbort,
+            WorkspaceNodeStatus::Aborted,
+            WorkspaceNodeStatusClassification::Idle,
+            WorkspaceNodeStatusClassification::Active,
+        ),
+    ];
+    for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
+        for (failure_kind, child_status, child_expected, parent_expected) in cases {
+            let execution_id = format!(
+                "00000000-0000-4000-8000-{:012x}",
+                0x300 + kind as u64 * 0x10 + failure_kind as u64
+            );
+            let mut tree = WorkspaceTree::empty("/repo");
+            WorkspaceTreeProjector::project(
+                &mut tree,
+                [
+                    WorkspaceStructureFact::WorkflowStarted {
+                        execution_id: execution_id.clone(),
+                        workflow_name: "workflow".to_string(),
+                        worktree_path: "/repo".to_string(),
+                        definition: definition(),
+                        timestamp: 1.0,
+                    },
+                    WorkspaceStructureFact::NodeStarted {
+                        execution_id: execution_id.clone(),
+                        node_execution_id: "branch".to_string(),
+                        node_name: "branch".to_string(),
+                        kind,
+                        attempt: 1,
+                        parent: None,
+                        timestamp: 2.0,
+                    },
+                    WorkspaceStructureFact::NodeStarted {
+                        execution_id: execution_id.clone(),
+                        node_execution_id: "session".to_string(),
+                        node_name: "session".to_string(),
+                        kind: NodeKindName::Session,
+                        attempt: 1,
+                        parent: Some(parent_ref(kind, "branch", 0)),
+                        timestamp: 3.0,
+                    },
+                    WorkspaceStructureFact::NodeFailed {
+                        execution_id: execution_id.clone(),
+                        node_execution_id: "session".to_string(),
+                        reason: "provider launch failed".to_string(),
+                        failure_kind,
+                        timestamp: 4.0,
+                    },
+                ],
+            )
+            .unwrap();
+
+            let session = tree
+                .nodes()
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some("session"))
+                .unwrap();
+            assert_eq!(session.session_id, None);
+            assert_eq!(session.status, child_status, "{kind:?} {failure_kind:?}");
+            assert_eq!(
+                session.status_classification, child_expected,
+                "{kind:?} {failure_kind:?}"
+            );
+            let branch = tree
+                .nodes()
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some("branch"))
+                .unwrap();
+            assert_eq!(
+                branch.status_classification, parent_expected,
+                "{kind:?} {failure_kind:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn missing_session_keeps_node_but_returns_no_unusable_session_id() {
     let execution_id = "00000000-0000-4000-8000-000000000012";
     let mut tree = WorkspaceTree::empty("/repo");

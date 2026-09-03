@@ -27,6 +27,7 @@ export interface AgentSessionLaunchAttachment {
 export interface AgentSessionHistoryCandidate {
 	provider: string;
 	providerSessionId: string;
+	label: string;
 }
 
 export interface AgentSessionHistoryPage {

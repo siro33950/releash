@@ -51,7 +51,12 @@ function sessionDetail(
 		submitReceived: false,
 		stopReceived: false,
 		hasArtifact: false,
-		capabilities: { canApprove: false, canRetry: false, canClose: false },
+		capabilities: {
+			canRename: false,
+			canApprove: false,
+			canRetry: false,
+			canClose: false,
+		},
 		updatedAt: 1,
 		content: { kind: "session", sessionId },
 	};
@@ -238,7 +243,12 @@ describe("NodeContentView", () => {
 			submitReceived: false,
 			stopReceived: false,
 			hasArtifact: false,
-			capabilities: { canApprove: false, canRetry: false, canClose: false },
+			capabilities: {
+				canRename: false,
+				canApprove: false,
+				canRetry: false,
+				canClose: false,
+			},
 			updatedAt: 2,
 			content: {
 				kind: "command",
@@ -412,7 +422,12 @@ describe("NodeContentView", () => {
 		const user = userEvent.setup();
 		mocks.detailState.detail = {
 			...sessionDetail("approval"),
-			capabilities: { canApprove: true, canRetry: false, canClose: false },
+			capabilities: {
+				canRename: false,
+				canApprove: true,
+				canRetry: false,
+				canClose: false,
+			},
 		};
 		renderView("approval");
 
@@ -432,6 +447,7 @@ describe("NodeContentView", () => {
 			waitingFor: "stop",
 			hasArtifact: true,
 			capabilities: {
+				canRename: false,
 				canApprove: false,
 				canClose: false,
 				canRetry: true,

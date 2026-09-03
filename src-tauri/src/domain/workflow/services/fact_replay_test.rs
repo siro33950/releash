@@ -613,6 +613,191 @@ mod isolated_worktree_ledger_tests {
     }
 }
 
+mod session_display_name_fact_tests {
+    use super::*;
+    use crate::domain::workflow::{ProviderSessionTitleObservedFact, SessionNodeRenamedFact};
+
+    fn provider_title(title: &str) -> NodeFact {
+        NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+            title: title.to_string(),
+        })
+    }
+
+    fn assert_provider_title(log: &FactLog, expected: Option<&str>) {
+        assert_eq!(
+            derive_session_facts(&log.records, "root-exec", "session-1")
+                .provider_session_title
+                .as_deref(),
+            expected
+        );
+        assert_eq!(
+            fold_execution_tree(TREE, &log.records)
+                .unwrap()
+                .unwrap()
+                .session_display_names
+                .get("root-exec")
+                .and_then(|inputs| inputs.provider_session_title.as_deref()),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_session表示名事実は実行状態と完了signalを変えない() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        let before = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        log.push(
+            root_meta.clone(),
+            NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                name: "release review".to_string(),
+            }),
+        );
+        log.push(
+            root_meta,
+            NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                title: "Fix the flaky test".to_string(),
+            }),
+        );
+        let after = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+        assert_eq!(after.aggregate.state(), before.aggregate.state());
+        assert_eq!(
+            after.aggregate.node_executions()[0].status,
+            before.aggregate.node_executions()[0].status
+        );
+        assert_eq!(
+            after.aggregate.node_executions()[0].completion_signals,
+            before.aggregate.node_executions()[0].completion_signals
+        );
+    }
+
+    #[test]
+    fn test_session表示名事実はrenameとproviderタイトルを独立に最後の値から導出する() {
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        for fact in [
+            NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                name: "first name".to_string(),
+            }),
+            NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                title: "first title".to_string(),
+            }),
+            NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                name: "latest name".to_string(),
+            }),
+            NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                title: "latest title".to_string(),
+            }),
+        ] {
+            log.push(root_meta.clone(), fact);
+        }
+
+        let view = derive_session_facts(&log.records, "root-exec", "session-1");
+
+        assert_eq!(view.manual_name.as_deref(), Some("latest name"));
+        assert_eq!(view.provider_session_title.as_deref(), Some("latest title"));
+        assert_eq!(
+            fold_execution_tree(TREE, &log.records)
+                .unwrap()
+                .unwrap()
+                .session_display_names
+                .get("root-exec"),
+            Some(&SessionDisplayNameInputs {
+                manual_name: Some("latest name".to_string()),
+                provider_session_title: Some("latest title".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_providerタイトル_停止前の最終値を停止後の観測で上書きしない() {
+        for stop in [exited(0), NodeFact::ArchiveRequested] {
+            // Given
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta.clone(), provider_title("active title"));
+            log.push(root_meta.clone(), stop);
+
+            // When
+            log.push(root_meta, provider_title("title observed after stop"));
+
+            // Then
+            assert_provider_title(&log, Some("active title"));
+        }
+    }
+
+    #[test]
+    fn test_providerタイトル_未観測のまま停止した後の観測を採用しない() {
+        for stop in [exited(0), NodeFact::ArchiveRequested] {
+            // Given
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta.clone(), stop);
+
+            // When
+            log.push(root_meta, provider_title("title observed after stop"));
+
+            // Then
+            assert_provider_title(&log, None);
+        }
+    }
+
+    #[test]
+    fn test_providerタイトル_再活動後の観測を採用する() {
+        for (stop, reactivate) in [
+            (exited(0), NodeFact::ResumeRequested),
+            (exited(0), attached("session-1")),
+            (NodeFact::ArchiveRequested, NodeFact::RestoreRequested),
+        ] {
+            // Given
+            let mut log = FactLog::new();
+            let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+            log.push(root_meta.clone(), started_root(session_root()));
+            log.push(root_meta.clone(), attached("session-1"));
+            log.push(root_meta.clone(), provider_title("active title"));
+            log.push(root_meta.clone(), stop);
+            log.push(
+                root_meta.clone(),
+                provider_title("title observed after stop"),
+            );
+            assert_provider_title(&log, Some("active title"));
+
+            // When
+            log.push(root_meta.clone(), reactivate);
+            log.push(root_meta, provider_title("reactivated title"));
+
+            // Then
+            assert_provider_title(&log, Some("reactivated title"));
+        }
+    }
+
+    #[test]
+    fn test_providerタイトル_別sessionのattachでは停止を解除しない() {
+        // Given
+        let mut log = FactLog::new();
+        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
+        log.push(root_meta.clone(), started_root(session_root()));
+        log.push(root_meta.clone(), attached("session-1"));
+        log.push(root_meta.clone(), exited(0));
+
+        // When
+        log.push(root_meta.clone(), attached("session-2"));
+        log.push(root_meta, provider_title("other session title"));
+
+        // Then
+        assert_provider_title(&log, None);
+    }
+}
+
 mod sequence_tests {
     use super::*;
 

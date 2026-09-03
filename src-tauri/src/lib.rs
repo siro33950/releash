@@ -779,6 +779,18 @@ pub fn run() {
             let provider_execution_tree_stops = agent_sessions.execution_tree_stops.clone();
             let started_execution_tree_registrations =
                 agent_sessions.execution_tree_registrations.clone();
+            let provider_session_title_ingestion =
+                agent_sessions.provider_session_title_ingestion.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(
+                    domain::agent_session::PROVIDER_SESSION_TITLE_TICK_INTERVAL,
+                );
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    provider_session_title_ingestion.ingest_due().await;
+                }
+            });
             let provider_agent_terminal_events = terminal_surface.subscribe_events();
             let shutdown_provider_exit_observer: Arc<dyn Fn() + Send + Sync> = Arc::new({
                 let cancellation = provider_agent_terminal_events.cancellation.clone();
@@ -1001,6 +1013,7 @@ pub fn run() {
                 adaptor::controller::wiring::build_workspace_node_command_usecase(
                     workspace_node_resolver,
                     workflow_runtime_usecase.clone(),
+                    agent_sessions.rename.clone(),
                 ),
             ));
             provider_execution_tree_stops.bind(workflow_runtime_usecase.clone());

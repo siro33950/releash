@@ -25,6 +25,10 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub node_recovery_reasons: &'a [(String, String)],
     pub session_activities:
         &'a std::collections::HashMap<String, crate::domain::workflow::AgentSessionActivity>,
+    pub session_display_names: &'a std::collections::HashMap<
+        String,
+        crate::domain::workflow::services::fact_replay::SessionDisplayNameInputs,
+    >,
 }
 
 pub fn runtime_snapshot_nodes(
@@ -49,6 +53,7 @@ pub fn runtime_snapshot_nodes(
         recovery_owner_reason,
         node_recovery_reasons,
         session_activities,
+        session_display_names,
     } = input;
 
     let mut facts = vec![F::WorkflowStarted {
@@ -98,6 +103,16 @@ pub fn runtime_snapshot_nodes(
                     .get(&node.id)
                     .copied()
                     .unwrap_or_default(),
+            });
+            let display_name = session_display_names
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_default();
+            facts.push(F::NodeSessionDisplayNameProjected {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node.id.clone(),
+                manual_name: display_name.manual_name,
+                provider_session_title: display_name.provider_session_title,
             });
         }
         if let Some(display_command) = &node.display_command {
@@ -344,6 +359,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
 
@@ -368,6 +384,54 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_snapshot_projection_session表示名入力をstructure_factへ渡す() {
+        use crate::domain::workflow::services::fact_replay::SessionDisplayNameInputs;
+
+        let mut session = node(
+            EXECUTION_ID,
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Running,
+        );
+        session.node_name = "session".to_string();
+        session.kind = NodeKindName::Session;
+        session.session_id = Some("agent-session".to_string());
+        session.display_command = None;
+        let execution = execution();
+        let display_names = std::collections::HashMap::from([(
+            EXECUTION_ID.to_string(),
+            SessionDisplayNameInputs {
+                manual_name: Some("Manual name".to_string()),
+                provider_session_title: Some("Provider title".to_string()),
+            },
+        )]);
+
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "session",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[session],
+            retry_predecessors: &std::collections::HashMap::new(),
+            accepts_explicit_retry: true,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+            session_activities: &std::collections::HashMap::new(),
+            session_display_names: &display_names,
+        })
+        .unwrap();
+        let session = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(EXECUTION_ID))
+            .unwrap();
+
+        assert_eq!(session.title, "Manual name");
+        assert!(session.can_rename);
+    }
+
+    #[test]
     fn runtime_snapshot_projects_completion_wait_and_retry_from_the_current_attempt() {
         let mut waiting = node(
             "waiting-submit",
@@ -375,6 +439,7 @@ mod tests {
             RuntimeNodeExecutionStatus::Running,
         );
         waiting.kind = NodeKindName::Session;
+        waiting.session_id = Some("agent-session".to_string());
         waiting.display_command = None;
         waiting.completion_signals = NodeCompletionSignalState::SubmitReceived;
         waiting.artifact = Some(serde_json::json!({"result": "ready"}));
@@ -402,6 +467,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
 
@@ -430,6 +496,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         assert!(!nodes[0].can_retry);
@@ -475,6 +542,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -552,6 +620,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
 
@@ -594,6 +663,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let failed = nodes
@@ -632,6 +702,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[("lost-node".to_string(), reason.to_string())],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
 
@@ -668,6 +739,7 @@ mod tests {
         );
         stopped_child.node_name = "stopped-child".to_string();
         stopped_child.kind = NodeKindName::Session;
+        stopped_child.session_id = Some("agent-session".to_string());
         stopped_child.display_command = None;
         stopped_child.parent = Some(crate::domain::workflow::ExecutionParentRef::sequence_child(
             "sequence",
@@ -695,6 +767,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &session_activities,
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -733,6 +806,7 @@ mod tests {
             RuntimeNodeExecutionStatus::WaitingApproval,
         );
         waiting.kind = NodeKindName::Session;
+        waiting.session_id = Some("agent-session".to_string());
         waiting.display_command = None;
         let execution = execution();
         let session_activities = std::collections::HashMap::from([(
@@ -754,6 +828,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &session_activities,
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let waiting = nodes
@@ -791,6 +866,7 @@ mod tests {
         for (node_execution_id, status, completion_signals) in cases {
             let mut session = node(node_execution_id, EXECUTION_ID, status);
             session.kind = NodeKindName::Session;
+            session.session_id = Some("agent-session".to_string());
             session.display_command = None;
             session.completion_signals = completion_signals;
             let runtime_nodes = [session];
@@ -820,6 +896,7 @@ mod tests {
                     recovery_owner_reason: None,
                     node_recovery_reasons: &[],
                     session_activities: &session_activities,
+                    session_display_names: &std::collections::HashMap::new(),
                 })
                 .unwrap()
             });
@@ -857,6 +934,7 @@ mod tests {
             RuntimeNodeExecutionStatus::Failed,
         );
         failed.kind = NodeKindName::Session;
+        failed.session_id = Some("agent-session".to_string());
         failed.display_command = None;
         failed.failure = Some(RuntimeNodeExecutionFailure {
             reason: "provider process exited abnormally".to_string(),
@@ -879,6 +957,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let tree = WorkspaceTree::restore("/repo", nodes).unwrap();
@@ -910,6 +989,7 @@ mod tests {
             RuntimeNodeExecutionStatus::Failed,
         );
         failed.kind = NodeKindName::Session;
+        failed.session_id = Some("agent-session".to_string());
         failed.display_command = None;
         failed.failure = Some(RuntimeNodeExecutionFailure {
             reason: "activation failed".to_string(),
@@ -932,6 +1012,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let tree = WorkspaceTree::restore("/repo", nodes).unwrap();
@@ -957,6 +1038,7 @@ mod tests {
         let mut paused = node("paused", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
         paused.node_name = "paused".to_string();
         paused.kind = NodeKindName::Session;
+        paused.session_id = Some("agent-session".to_string());
         paused.display_command = None;
         paused.completion_signals = NodeCompletionSignalState::StopReceived;
         let execution = execution();
@@ -976,6 +1058,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let paused = nodes
@@ -1038,6 +1121,7 @@ mod tests {
             recovery_owner_reason: None,
             node_recovery_reasons: &[("recovery".to_string(), recovery_reason.to_string())],
             session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
         })
         .unwrap();
         let by_execution_id = nodes

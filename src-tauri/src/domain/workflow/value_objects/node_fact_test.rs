@@ -10,8 +10,8 @@ mod vocabulary_tests {
     use super::*;
 
     #[test]
-    fn test_事実語彙_event_typeが19種の固定文字列である() {
-        // Given: 全19 variant
+    fn test_事実語彙_event_typeが21種の固定文字列である() {
+        // Given: 全21 variant
         let facts: Vec<NodeFact> = vec![
             NodeFact::Started(StartedFact {
                 parent: None,
@@ -38,6 +38,12 @@ mod vocabulary_tests {
             }),
             NodeFact::AgentActivityObserved(AgentActivityObservedFact {
                 activity: AgentSessionActivity::Working,
+            }),
+            NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                name: "release review".to_string(),
+            }),
+            NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                title: "Fix the flaky test".to_string(),
             }),
             NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
             NodeFact::SubmitRejected(SubmitRejectedFact {
@@ -79,6 +85,8 @@ mod vocabulary_tests {
                 "process_exited",
                 "runtime_failure_observed",
                 "agent_activity_observed",
+                "session_node_renamed",
+                "provider_session_title_observed",
                 "submit_received",
                 "submit_rejected",
                 "stop_received",
@@ -97,6 +105,33 @@ mod vocabulary_tests {
 
         // Then: 全 variant が encode → decode で往復する
         for fact in facts {
+            assert_eq!(round_trip(fact.clone()), fact);
+        }
+    }
+
+    #[test]
+    fn test_session表示名事実_1fieldのdetailを保存して往復する() {
+        for (fact, field, value) in [
+            (
+                NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                    name: "release review".to_string(),
+                }),
+                "name",
+                "release review",
+            ),
+            (
+                NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                    title: "Fix the flaky test".to_string(),
+                }),
+                "title",
+                "Fix the flaky test",
+            ),
+        ] {
+            let detail = fact.encode_detail().unwrap();
+            let stored: serde_json::Value = serde_json::from_str(&detail).unwrap();
+
+            assert_eq!(stored.as_object().unwrap().len(), 1);
+            assert_eq!(stored[field], value);
             assert_eq!(round_trip(fact.clone()), fact);
         }
     }

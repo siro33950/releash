@@ -4,6 +4,8 @@ use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch, ProcessExitedFact};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
+use super::super::{AgentSessionDisplayName, AgentSessionDisplayNameError};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionLifecycle {
     Open,
@@ -30,6 +32,12 @@ pub(crate) enum AgentSessionLifecycleEvent {
     },
     ActivityObserved {
         activity: AgentSessionActivity,
+    },
+    SessionNodeRenamed {
+        name: AgentSessionDisplayName,
+    },
+    ProviderSessionTitleObserved {
+        title: AgentSessionDisplayName,
     },
     InitialInstructionAdmitted,
 }
@@ -289,6 +297,8 @@ pub(crate) struct AgentSession {
     tree_location: AgentSessionTreeLocation,
     lifecycle: AgentSessionLifecycle,
     activity: AgentSessionActivity,
+    manual_name: Option<AgentSessionDisplayName>,
+    provider_session_title: Option<AgentSessionDisplayName>,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
@@ -335,6 +345,8 @@ impl AgentSession {
             tree_location,
             lifecycle: AgentSessionLifecycle::Open,
             activity: AgentSessionActivity::AwaitingInstruction,
+            manual_name: None,
+            provider_session_title: None,
             provider_session_id: None,
             transcript_ref: None,
             initial_instruction_admitted: false,
@@ -357,6 +369,16 @@ impl AgentSession {
         self.last_exit_abnormal = last_exit_abnormal;
         self.last_exit_code = None;
         self.activity = activity;
+    }
+
+    pub(crate) fn restore_display_names(
+        &mut self,
+        manual_name: Option<AgentSessionDisplayName>,
+        provider_session_title: Option<AgentSessionDisplayName>,
+    ) {
+        debug_assert!(self.uncommitted_events.is_empty());
+        self.manual_name = manual_name;
+        self.provider_session_title = provider_session_title;
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -399,6 +421,46 @@ impl AgentSession {
         self.uncommitted_events
             .push(AgentSessionLifecycleEvent::ActivityObserved { activity });
         AgentSessionMutationOutcome::Applied
+    }
+
+    pub(crate) fn rename(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<AgentSessionMutationOutcome, AgentSessionDisplayNameError> {
+        let name = AgentSessionDisplayName::new(name)?;
+        if self.manual_name.as_ref() == Some(&name) {
+            return Ok(AgentSessionMutationOutcome::AlreadyApplied);
+        }
+        self.manual_name = Some(name.clone());
+        self.uncommitted_events
+            .push(AgentSessionLifecycleEvent::SessionNodeRenamed { name });
+        Ok(AgentSessionMutationOutcome::Applied)
+    }
+
+    pub(crate) fn observe_provider_session_title(
+        &mut self,
+        title: impl Into<String>,
+    ) -> Result<AgentSessionMutationOutcome, AgentSessionDisplayNameError> {
+        let title = AgentSessionDisplayName::new(title)?;
+        if self.provider_session_title.as_ref() == Some(&title) {
+            return Ok(AgentSessionMutationOutcome::AlreadyApplied);
+        }
+        self.provider_session_title = Some(title.clone());
+        self.uncommitted_events
+            .push(AgentSessionLifecycleEvent::ProviderSessionTitleObserved { title });
+        Ok(AgentSessionMutationOutcome::Applied)
+    }
+
+    pub(crate) fn manual_name(&self) -> Option<&str> {
+        self.manual_name
+            .as_ref()
+            .map(AgentSessionDisplayName::as_str)
+    }
+
+    pub(crate) fn provider_session_title(&self) -> Option<&str> {
+        self.provider_session_title
+            .as_ref()
+            .map(AgentSessionDisplayName::as_str)
     }
 
     #[cfg(test)]

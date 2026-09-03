@@ -12,7 +12,7 @@ use super::value_objects::{
     WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceStructureFact,
     WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
 };
-use super::WorkspaceNodeStatusClassification;
+use super::{WorkspaceNodeStatusClassification, WorkspacePublicRoot};
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, ItemsSource,
     NodeCompletionSignalState, NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
@@ -285,6 +285,7 @@ impl WorkspaceTree {
                 WorkspaceNodeKind::Workflow,
                 status,
                 None,
+                false,
                 recovery_owner_reason.is_some(),
             ),
             activity: None,
@@ -300,6 +301,7 @@ impl WorkspaceTree {
             completion_signals,
             has_artifact: false,
             session_id: None,
+            can_rename: false,
             can_approve: false,
             can_retry: false,
             can_close: false,
@@ -332,6 +334,7 @@ impl WorkspaceTree {
                     WorkspaceNodeKind::Fanout,
                     status,
                     None,
+                    false,
                     recovery_owner_reason.is_some(),
                 ),
                 activity: None,
@@ -347,6 +350,7 @@ impl WorkspaceTree {
                 completion_signals,
                 has_artifact: false,
                 session_id: None,
+                can_rename: false,
                 can_approve: false,
                 can_retry: false,
                 can_close: false,
@@ -382,8 +386,6 @@ impl WorkspaceTree {
         {
             return Ok(());
         }
-        let standalone_session_root =
-            kind == NodeKindName::Session && parent.is_none() && node_execution_id == execution_id;
         let workflow_id = self
             .workflow_node(&execution_id)
             .map(|node| node.id.clone())
@@ -455,16 +457,6 @@ impl WorkspaceTree {
                 .iter()
                 .any(|node| node.id == dynamic_fanout_sentinel_id(&execution_id, &node_name));
         let sibling_order = self.next_sibling_order(Some(&parent_id));
-        let id = match kind {
-            NodeKindName::Fanout | NodeKindName::Sequence => opaque_branch_id(&semantic_key),
-            NodeKindName::Session | NodeKindName::Command => {
-                if standalone_session_root {
-                    opaque_standalone_session_node_id(&execution_id, &semantic_key)
-                } else {
-                    opaque_workflow_node_id(&execution_id, &semantic_key)?
-                }
-            }
-        };
         let status = WorkspaceNodeStatus::Running;
         let completion_signals = NodeCompletionSignalState::default();
         let recovery_owner_reason = None;
@@ -475,8 +467,8 @@ impl WorkspaceTree {
             NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
         };
         let activity = (kind == NodeKindName::Session).then(AgentSessionActivity::default);
-        self.nodes.push(WorkspaceTreeNode {
-            id,
+        let mut node = WorkspaceTreeNode {
+            id: String::new(),
             parent_id: Some(parent_id),
             sibling_order,
             kind: workspace_kind,
@@ -486,6 +478,7 @@ impl WorkspaceTree {
                 workspace_kind,
                 status,
                 activity,
+                false,
                 recovery_owner_reason.is_some(),
             ),
             activity,
@@ -501,6 +494,7 @@ impl WorkspaceTree {
             completion_signals,
             has_artifact: false,
             session_id: None,
+            can_rename: false,
             can_approve: false,
             can_retry: false,
             can_close: false,
@@ -514,11 +508,42 @@ impl WorkspaceTree {
             display_command: None,
             command_result: None,
             dynamic_fanout,
-        });
+        };
+        node.id = match kind {
+            NodeKindName::Fanout | NodeKindName::Sequence => opaque_branch_id(&semantic_key),
+            NodeKindName::Session | NodeKindName::Command => {
+                if node.is_standalone_session_root() {
+                    opaque_standalone_session_node_id(
+                        node.execution_id
+                            .as_deref()
+                            .expect("execution id was assigned"),
+                        &semantic_key,
+                    )
+                } else {
+                    opaque_workflow_node_id(
+                        node.execution_id
+                            .as_deref()
+                            .expect("execution id was assigned"),
+                        &semantic_key,
+                    )?
+                }
+            }
+        };
+        self.nodes.push(node);
         Ok(())
     }
 
     pub(super) fn recompute_branch_summaries(&mut self) {
+        let non_rename_public_root_ids = WorkspacePublicRoot::all(&self.nodes)
+            .into_iter()
+            .filter(|root| !root.node().is_standalone_session_root())
+            .map(|root| root.node().id.clone())
+            .collect::<HashSet<_>>();
+        for node in &mut self.nodes {
+            node.can_rename = node.kind == WorkspaceNodeKind::WorkflowSession
+                && node.session_id.is_some()
+                && !non_rename_public_root_ids.contains(&node.id);
+        }
         let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
         for (index, node) in self.nodes.iter().enumerate() {
             if !node.is_internal_rule_record() && !node.is_retry_history {
@@ -866,6 +891,29 @@ impl WorkspaceTreeProjector {
                     }
                     node.activity = Some(activity);
                 }
+                WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+                    execution_id,
+                    node_execution_id,
+                    manual_name,
+                    provider_session_title,
+                } => {
+                    let node = tree
+                        .execution_node_mut(&execution_id, &node_execution_id)
+                        .ok_or_else(|| {
+                            WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
+                        })?;
+                    if node.kind != WorkspaceNodeKind::WorkflowSession {
+                        return Err(WorkspaceTreeError::InvalidNode(node.id.clone()));
+                    }
+                    node.title = manual_name
+                        .or_else(|| {
+                            node.is_standalone_session_root()
+                                .then_some(provider_session_title)
+                                .flatten()
+                        })
+                        .or_else(|| node.node_name.clone())
+                        .ok_or_else(|| WorkspaceTreeError::InvalidNode(node.id.clone()))?;
+                }
                 WorkspaceStructureFact::NodeCommandPrepared {
                     execution_id,
                     node_execution_id,
@@ -1089,12 +1137,21 @@ fn aggregate_status_classification(
         WorkspaceNodeKind::Sequence | WorkspaceNodeKind::Fanout
     );
     let mut classification = nodes[index].status_classification;
+    let mut has_aggregate_child = false;
+    let mut all_aggregate_children_unbound = true;
     for child_index in by_parent.get(&node_id).into_iter().flatten().copied() {
         let child_classification =
             aggregate_status_classification(child_index, nodes, by_parent, visit_state);
         if aggregate_children {
-            classification = classification.most_severe(child_classification);
+            has_aggregate_child = true;
+            if child_classification != WorkspaceNodeStatusClassification::Unbound {
+                all_aggregate_children_unbound = false;
+                classification = classification.most_severe(child_classification);
+            }
         }
+    }
+    if aggregate_children && has_aggregate_child && all_aggregate_children_unbound {
+        classification = WorkspaceNodeStatusClassification::Unbound;
     }
     nodes[index].status_classification = classification;
     visit_state[index] = 2;

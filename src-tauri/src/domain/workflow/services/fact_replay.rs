@@ -34,6 +34,55 @@ pub struct FoldedTree {
     pub isolated_worktrees: IsolatedWorktreeLedgerSnapshot,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
     pub session_activities: HashMap<String, AgentSessionActivity>,
+    /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
+    pub session_display_names: HashMap<String, SessionDisplayNameInputs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionDisplayNameInputs {
+    pub manual_name: Option<String>,
+    pub provider_session_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionTitleObservationState {
+    session_id: Option<String>,
+    exited: bool,
+    archived: bool,
+}
+
+impl SessionTitleObservationState {
+    fn for_session(session_id: &str) -> Self {
+        Self {
+            session_id: Some(session_id.to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn apply(&mut self, fact: &NodeFact) {
+        match fact {
+            NodeFact::SessionAttached(fact) => match &self.session_id {
+                Some(session_id) if session_id == &fact.session_id => self.exited = false,
+                Some(_) => {}
+                None => {
+                    self.session_id = Some(fact.session_id.clone());
+                    self.exited = false;
+                }
+            },
+            NodeFact::ProcessExited(_) => self.exited = true,
+            NodeFact::ResumeRequested => self.exited = false,
+            NodeFact::ArchiveRequested => self.archived = true,
+            NodeFact::RestoreRequested => {
+                self.exited = false;
+                self.archived = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn accepts_title(&self) -> bool {
+        !self.exited && !self.archived
+    }
 }
 
 /// 1 tree 分の事実行列から実行木の状態を導出する。
@@ -67,6 +116,9 @@ pub fn fold_execution_tree(
     let started_at = timestamp_of(first);
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
     let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
+    let mut session_display_names: HashMap<String, SessionDisplayNameInputs> = HashMap::new();
+    let mut session_title_observation_states: HashMap<String, SessionTitleObservationState> =
+        HashMap::new();
 
     for (index, record) in records.iter().enumerate() {
         let defer_submit_settlement = records
@@ -84,10 +136,28 @@ pub fn fold_execution_tree(
                 .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
         }
         if record.meta.kind == NodeKindName::Session {
+            let title_observation_state = session_title_observation_states
+                .entry(record.meta.node_execution_id.clone())
+                .or_default();
+            title_observation_state.apply(&record.fact);
             let activity = session_activities
                 .entry(record.meta.node_execution_id.clone())
                 .or_default();
             *activity = activity.after_fact(&record.fact);
+            let display_name = session_display_names
+                .entry(record.meta.node_execution_id.clone())
+                .or_default();
+            match &record.fact {
+                NodeFact::SessionNodeRenamed(fact) => {
+                    display_name.manual_name = Some(fact.name.clone());
+                }
+                NodeFact::ProviderSessionTitleObserved(fact)
+                    if title_observation_state.accepts_title() =>
+                {
+                    display_name.provider_session_title = Some(fact.title.clone());
+                }
+                _ => {}
+            }
         }
     }
 
@@ -96,6 +166,7 @@ pub fn fold_execution_tree(
         root,
         isolated_worktrees,
         session_activities,
+        session_display_names,
     }))
 }
 
@@ -358,6 +429,8 @@ fn apply_record(
             Ok(())
         }
         NodeFact::AgentActivityObserved(_)
+        | NodeFact::SessionNodeRenamed(_)
+        | NodeFact::ProviderSessionTitleObserved(_)
         | NodeFact::ArchiveRequested
         | NodeFact::RestoreRequested
         | NodeFact::IsolatedWorktreeCreated(_)
@@ -372,6 +445,8 @@ fn apply_record(
 pub struct SessionFactsView {
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
+    pub manual_name: Option<String>,
+    pub provider_session_title: Option<String>,
     pub initial_instruction_admitted: bool,
     /// 後続の attach / resume が無い process_exited（= Paused の根拠）。
     pub exited: bool,
@@ -395,10 +470,12 @@ pub fn derive_session_facts(
 ) -> SessionFactsView {
     let mut view = SessionFactsView::default();
     let mut exited: Option<&crate::domain::workflow::ProcessExitedFact> = None;
+    let mut title_observation_state = SessionTitleObservationState::for_session(session_id);
     for record in records {
         if record.meta.node_execution_id != node_execution_id {
             continue;
         }
+        title_observation_state.apply(&record.fact);
         view.activity = view.activity.after_fact(&record.fact);
         match &record.fact {
             NodeFact::SessionAttached(fact) if fact.session_id == session_id => {
@@ -408,6 +485,12 @@ pub fn derive_session_facts(
                 }
                 view.initial_instruction_admitted |= fact.initial_instruction_admitted;
                 exited = None;
+            }
+            NodeFact::SessionNodeRenamed(fact) => view.manual_name = Some(fact.name.clone()),
+            NodeFact::ProviderSessionTitleObserved(fact)
+                if title_observation_state.accepts_title() =>
+            {
+                view.provider_session_title = Some(fact.title.clone());
             }
             NodeFact::ProcessExited(fact) => exited = Some(fact),
             NodeFact::ResumeRequested | NodeFact::RestoreRequested => {

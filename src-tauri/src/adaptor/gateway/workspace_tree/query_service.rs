@@ -321,6 +321,7 @@ fn project_tree(
                 "session"
             },
             capabilities: WorkspaceNodeCapabilitiesDto {
+                can_rename: node.can_rename,
                 can_approve: node.can_approve,
                 can_retry: node.can_retry,
                 can_close: node.can_close,
@@ -472,6 +473,7 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         error_reason: node.error_reason,
         recovery_reason: node.recovery_owner_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
+            can_rename: node.can_rename,
             can_approve: node.can_approve,
             can_retry: node.can_retry,
             can_close: node.can_close,

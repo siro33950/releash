@@ -28,7 +28,12 @@ function detail(id: string, title = id): WorkspaceNodeDetail {
 		submitReceived: false,
 		stopReceived: false,
 		hasArtifact: false,
-		capabilities: { canApprove: false, canRetry: false, canClose: false },
+		capabilities: {
+			canRename: false,
+			canApprove: false,
+			canRetry: false,
+			canClose: false,
+		},
 		updatedAt: 1,
 		content: { kind: "session", sessionId: `session-${id}` },
 	};

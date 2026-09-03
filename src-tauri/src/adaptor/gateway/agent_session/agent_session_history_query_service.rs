@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::domain::agent_session::{
-    AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
-    AgentSessionOwnershipQuery,
+    provider_history_label, AgentSessionHistoryGateway, AgentSessionHistoryGatewayError,
+    AgentSessionHistoryMetadata, AgentSessionOwnershipQuery,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{
@@ -98,16 +98,59 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
         let next_after = has_more
             .then(|| visible.last().map(encode_cursor))
             .flatten();
+        let mut titles = HashMap::new();
+        for provider in ProviderKind::supported() {
+            let provider_session_ids = visible
+                .iter()
+                .filter(|entry| entry.provider == *provider)
+                .map(|entry| entry.provider_session_id.clone())
+                .collect::<Vec<_>>();
+            if provider_session_ids.is_empty() {
+                continue;
+            }
+            let entries = self
+                .history
+                .list_session_titles(*provider, &request.worktree_path, &provider_session_ids)
+                .await
+                .map_err(map_gateway_error)?;
+            if entries.len() != provider_session_ids.len() {
+                return Err(AgentSessionHistoryQueryError::Corrupt);
+            }
+            for entry in entries {
+                if !provider_session_ids.contains(&entry.provider_session_id)
+                    || titles
+                        .insert(
+                            (*provider, entry.provider_session_id),
+                            (entry.session_title, entry.first_user_prompt),
+                        )
+                        .is_some()
+                {
+                    return Err(AgentSessionHistoryQueryError::Corrupt);
+                }
+            }
+        }
         Ok(AgentSessionHistoryPageDto {
             items: visible
                 .into_iter()
-                .map(|entry| AgentSessionHistoryCandidateDto {
-                    provider: match entry.provider {
-                        ProviderKind::Claude => AgentSessionProviderDto::Claude,
-                        ProviderKind::Codex => AgentSessionProviderDto::Codex,
-                    },
-                    provider_session_id: entry.provider_session_id,
-                    updated_at_ms: entry.updated_at_ms,
+                .map(|entry| {
+                    let (title, first_user_prompt) = titles
+                        .remove(&(entry.provider, entry.provider_session_id.clone()))
+                        .unwrap_or((None, None));
+                    let label = provider_history_label(
+                        entry.provider,
+                        &entry.provider_session_id,
+                        title.as_deref(),
+                        first_user_prompt.as_deref(),
+                    );
+                    AgentSessionHistoryCandidateDto {
+                        provider: match entry.provider {
+                            ProviderKind::Claude => AgentSessionProviderDto::Claude,
+                            ProviderKind::Codex => AgentSessionProviderDto::Codex,
+                        },
+                        provider_session_id: entry.provider_session_id,
+                        label,
+                        updated_at_ms: entry.updated_at_ms,
+                    }
                 })
                 .collect(),
             next_after,

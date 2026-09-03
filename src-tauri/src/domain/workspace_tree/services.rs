@@ -47,7 +47,11 @@ impl<'a> WorkspacePublicRoot<'a> {
     }
 
     pub fn public_title(&self) -> &'a str {
-        self.owner.title.as_str()
+        if self.node.is_standalone_session_root() {
+            self.node.title.as_str()
+        } else {
+            self.owner.title.as_str()
+        }
     }
 
     fn from_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Option<Self> {
@@ -123,6 +127,7 @@ mod tests {
             completion_signals: NodeCompletionSignalState::Pending,
             has_artifact: false,
             session_id: None,
+            can_rename: false,
             can_approve: false,
             can_retry: false,
             can_close: false,
@@ -257,5 +262,33 @@ mod tests {
 
         // Then
         assert_eq!(public_root.public_title(), "01_author-spec");
+    }
+
+    #[test]
+    fn test_public_root表示名_単独session実行木はnode自身のtitleを返す() {
+        let mut owner = node(
+            "execution",
+            None,
+            0,
+            WorkspaceNodeKind::Workflow,
+            Some("execution"),
+        );
+        owner.title = "session".to_string();
+        let mut session = node(
+            "root",
+            Some("execution"),
+            0,
+            WorkspaceNodeKind::WorkflowSession,
+            Some("execution"),
+        );
+        session.node_execution_id = Some("execution".to_string());
+        session.node_name = Some("session".to_string());
+        session.attempt = Some(1);
+        session.title = "Provider title".to_string();
+        let nodes = vec![owner, session];
+
+        let public_root = WorkspacePublicRoot::for_execution(&nodes, "execution").unwrap();
+
+        assert_eq!(public_root.public_title(), "Provider title");
     }
 }

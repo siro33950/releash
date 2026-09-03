@@ -267,6 +267,32 @@ fn test_schema_v5_新規作成と再起動で廃止schemaを作成しない() {
 }
 
 #[test]
+fn test_schema_v7_v6からevent_type索引を追加してversionを更新する() {
+    let root = tempfile::TempDir::new().unwrap();
+    drop(open_store(root.path()));
+    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    connection
+        .execute_batch("DROP INDEX idx_node_events_event_type;")
+        .unwrap();
+    rewrite_metadata_version(&connection, 6);
+    drop(connection);
+
+    drop(open_store(root.path()));
+    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+
+    assert_retired_schema_absent(&connection);
+    let index_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type = 'index' AND name = 'idx_node_events_event_type'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 1);
+}
+
+#[test]
 fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削除する() {
     for version in 1..=4 {
         let root = tempfile::TempDir::new().unwrap();

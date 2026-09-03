@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,8 +19,8 @@ use crate::domain::agent_session::services::{
     derive_agent_session_fields, DerivedAgentSessionFields,
 };
 use crate::domain::agent_session::{
-    AgentSessionHistoryGatewayError, AgentSessionOwnershipQuery, ProviderSessionOwnership,
-    ProviderSessionOwnershipEvent,
+    AgentSessionDisplayName, AgentSessionHistoryGatewayError, AgentSessionOwnershipQuery,
+    ProviderSessionOwnership, ProviderSessionOwnershipEvent,
 };
 use crate::domain::local_event::{
     AgentSessionRemovalMutation, CommitBatchError, CommitIdentity, CommitOperationKind,
@@ -31,9 +32,11 @@ use crate::domain::local_event::{
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ScopedProviderLifecycleEvent,
 };
+use crate::domain::workflow::services::fact_replay::derive_session_facts;
 use crate::domain::workflow::{
     AgentActivityObservedFact, ExecutionTreeLaunch, NodeFact, NodeFactRecord, ProcessExitedFact,
-    SessionAttachedFact, SessionExecutionTreeRootFacts,
+    ProviderSessionTitleObservedFact, SessionAttachedFact, SessionExecutionTreeRootFacts,
+    SessionNodeRenamedFact,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
@@ -143,6 +146,16 @@ impl LocalAgentSessionRepository {
                 AgentSessionLifecycleEvent::ActivityObserved { activity } => {
                     NodeFact::AgentActivityObserved(AgentActivityObservedFact {
                         activity: *activity,
+                    })
+                }
+                AgentSessionLifecycleEvent::SessionNodeRenamed { name } => {
+                    NodeFact::SessionNodeRenamed(SessionNodeRenamedFact {
+                        name: name.as_str().to_string(),
+                    })
+                }
+                AgentSessionLifecycleEvent::ProviderSessionTitleObserved { title } => {
+                    NodeFact::ProviderSessionTitleObserved(ProviderSessionTitleObservedFact {
+                        title: title.as_str().to_string(),
                     })
                 }
             };
@@ -304,6 +317,63 @@ impl LocalAgentSessionRepository {
             next_revision,
         })
     }
+}
+
+pub(super) const OPEN_SESSION_LIFECYCLE_EVENT_TYPES: &[&str] = &[
+    "session_attached",
+    "process_exited",
+    "archive_requested",
+    "resume_requested",
+    "restore_requested",
+];
+
+#[derive(Debug)]
+pub(super) struct OpenSessionTitleCandidate {
+    pub(super) location: SessionLocation,
+    records: Vec<NodeFactRecord>,
+}
+
+pub(super) fn open_session_title_candidates(
+    lifecycle_records: Vec<NodeFactRecord>,
+) -> BTreeMap<String, OpenSessionTitleCandidate> {
+    let mut records_by_node = BTreeMap::<String, Vec<NodeFactRecord>>::new();
+    for record in lifecycle_records {
+        records_by_node
+            .entry(record.meta.node_execution_id.clone())
+            .or_default()
+            .push(record);
+    }
+
+    let mut candidates = BTreeMap::new();
+    for records in records_by_node.into_values() {
+        let locations_by_session = records
+            .iter()
+            .filter_map(|record| {
+                let NodeFact::SessionAttached(attached) = &record.fact else {
+                    return None;
+                };
+                attached.provider_session_id.as_ref().map(|_| {
+                    (
+                        attached.session_id.clone(),
+                        SessionLocation::from_meta(&record.meta),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (session_id, location) in locations_by_session {
+            let view = derive_session_facts(&records, &location.node_execution_id, &session_id);
+            if view.provider_session_id.is_some() && view.is_open() {
+                candidates.insert(
+                    session_id,
+                    OpenSessionTitleCandidate {
+                        location,
+                        records: records.clone(),
+                    },
+                );
+            }
+        }
+    }
+    candidates
 }
 
 struct OwnershipClaim {
@@ -502,6 +572,38 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         derive_session(session_id, &location, &records).map(Some)
     }
 
+    async fn list_open_for_provider_session_title(
+        &self,
+    ) -> Result<Vec<VersionedAgentSession>, AgentSessionRepositoryError> {
+        let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
+        let lifecycle_records =
+            fact_log::read_records_for_event_types(&backend, OPEN_SESSION_LIFECYCLE_EVENT_TYPES)
+                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+        let candidates = open_session_title_candidates(lifecycle_records);
+
+        let mut sessions = Vec::new();
+        for (session_id, candidate) in candidates {
+            let mut records = candidate.records;
+            let root = fact_log::read_tree_root_from(&backend, &candidate.location.tree_id)
+                .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+                .ok_or(AgentSessionRepositoryError::Corrupt)?;
+            records.push(root);
+            if let Some(title) = fact_log::read_latest_record_for_node_with_event_types(
+                &backend,
+                &candidate.location.node_execution_id,
+                &["provider_session_title_observed"],
+            )
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            {
+                records.push(title);
+            }
+            records.sort_by_key(|record| record.seq);
+            records.dedup_by_key(|record| record.seq);
+            sessions.push(derive_session(&session_id, &candidate.location, &records)?);
+        }
+        Ok(sessions)
+    }
+
     async fn save(
         &self,
         session: VersionedAgentSession,
@@ -541,6 +643,44 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             rows,
             caller_request_id,
             "activity",
+        )
+        .await?;
+        Ok(VersionedAgentSession::restored(
+            session,
+            previous_revision.saturating_add(1),
+        ))
+    }
+
+    async fn save_provider_session_title(
+        &self,
+        session: VersionedAgentSession,
+        caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        if caller_request_id.trim().is_empty() {
+            return Err(AgentSessionRepositoryError::InvalidRequest);
+        }
+        let previous_revision = session.revision();
+        let mut session = session.into_session();
+        let pending = session.take_uncommitted_events();
+        if !matches!(
+            pending.as_slice(),
+            [AgentSessionLifecycleEvent::ProviderSessionTitleObserved { .. }]
+        ) {
+            return Err(AgentSessionRepositoryError::InvalidRequest);
+        }
+        let backend = fact_log::FactLogReadBackend::Live(Arc::clone(&self.store));
+        let attachment = fact_log::find_session_attachment_record(&backend, session.id())
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
+            .ok_or(AgentSessionRepositoryError::Conflict)?;
+        let location = SessionLocation::from_meta(&attachment.meta);
+        let rows = self.session_event_rows(&location, session.id(), &session, &pending, None)?;
+        self.commit_provider_batch(
+            session.id(),
+            Vec::new(),
+            None,
+            rows,
+            caller_request_id,
+            "provider-title",
         )
         .await?;
         Ok(VersionedAgentSession::restored(
@@ -830,6 +970,16 @@ fn derive_session(
         session.take_uncommitted_events();
     }
     session.restore_derived_lifecycle(lifecycle, view.last_exit_abnormal, view.activity);
+    session.restore_display_names(
+        view.manual_name
+            .map(AgentSessionDisplayName::new)
+            .transpose()
+            .map_err(|_| AgentSessionRepositoryError::Corrupt)?,
+        view.provider_session_title
+            .map(AgentSessionDisplayName::new)
+            .transpose()
+            .map_err(|_| AgentSessionRepositoryError::Corrupt)?,
+    );
     let revision = records.last().map(|record| record.seq).unwrap_or(0);
     let revision = u64::try_from(revision).map_err(|_| AgentSessionRepositoryError::Corrupt)?;
     Ok(VersionedAgentSession::restored(session, revision))

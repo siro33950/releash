@@ -9,6 +9,7 @@ use super::AgentSessionProviderDto;
 pub(crate) struct AgentSessionHistoryCandidateDto {
     pub(crate) provider: AgentSessionProviderDto,
     pub(crate) provider_session_id: String,
+    pub(crate) label: String,
     pub(crate) updated_at_ms: i64,
 }
 

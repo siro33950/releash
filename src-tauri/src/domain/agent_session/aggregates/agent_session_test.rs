@@ -10,6 +10,7 @@ use super::{
     AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
     AgentSessionRecoveryResult, AgentSessionTreeLocation, ManagedPtyPresence,
 };
+use crate::domain::agent_session::AgentSessionDisplayNameError;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch};
@@ -21,6 +22,87 @@ fn standalone_location(id: &str) -> AgentSessionTreeLocation {
 
 fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
     AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
+}
+
+#[test]
+fn test_agent_session表示名_renameとproviderタイトルを独立に保持して同値を積まない() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    assert_eq!(
+        session.rename("  release review  ").unwrap(),
+        AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(session.manual_name(), Some("release review"));
+    assert_eq!(session.provider_session_title(), None);
+    assert_eq!(
+        session.uncommitted_events(),
+        &[AgentSessionLifecycleEvent::SessionNodeRenamed {
+            name: crate::domain::agent_session::AgentSessionDisplayName::new("release review")
+                .unwrap(),
+        }]
+    );
+
+    session.take_uncommitted_events();
+    assert_eq!(
+        session.rename("release review").unwrap(),
+        AgentSessionMutationOutcome::AlreadyApplied
+    );
+    assert!(session.uncommitted_events().is_empty());
+
+    assert_eq!(
+        session
+            .observe_provider_session_title("  Fix the flaky test  ")
+            .unwrap(),
+        AgentSessionMutationOutcome::Applied
+    );
+    assert_eq!(session.manual_name(), Some("release review"));
+    assert_eq!(session.provider_session_title(), Some("Fix the flaky test"));
+    assert_eq!(
+        session.uncommitted_events(),
+        &[AgentSessionLifecycleEvent::ProviderSessionTitleObserved {
+            title:
+                crate::domain::agent_session::AgentSessionDisplayName::new("Fix the flaky test",)
+                    .unwrap(),
+        }]
+    );
+
+    session.take_uncommitted_events();
+    assert_eq!(
+        session
+            .observe_provider_session_title("Fix the flaky test")
+            .unwrap(),
+        AgentSessionMutationOutcome::AlreadyApplied
+    );
+    assert!(session.uncommitted_events().is_empty());
+    assert_eq!(session.manual_name(), Some("release review"));
+}
+
+#[test]
+fn test_agent_session表示名_空文字でrename取り消しを作らない() {
+    let mut session = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap();
+    session.take_uncommitted_events();
+
+    assert_eq!(
+        session.rename("  "),
+        Err(AgentSessionDisplayNameError::Empty)
+    );
+    assert_eq!(session.manual_name(), None);
+    assert!(session.uncommitted_events().is_empty());
 }
 
 #[test]

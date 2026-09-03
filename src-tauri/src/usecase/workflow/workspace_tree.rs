@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use super::workspace_node_command::{
     WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget, WorkspaceNodeRetryTarget,
+    WorkspaceSessionNodeRenameTarget,
 };
 use super::WorkflowUsecase;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
@@ -76,6 +77,7 @@ pub(crate) struct WorkspaceSessionCapabilitiesDto {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceNodeCapabilitiesDto {
+    pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
     pub can_close: bool,
@@ -332,6 +334,32 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
             node_execution_id,
         })
     }
+
+    fn resolve_session_rename_target(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceSessionNodeRenameTarget, WorkflowError> {
+        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
+            self.resolve_worktree_path(worktree_path)?,
+        );
+        let node = self
+            .workspace_nodes
+            .load_node(&workspace, node_id)
+            .map_err(|error| WorkflowError::external(error.to_string()))?
+            .ok_or_else(|| {
+                WorkflowError::NotFound(format!("Workspace node not found: {node_id}"))
+            })?;
+        if !node.can_rename {
+            return Err(WorkflowError::invalid_state(
+                "Workspace node cannot be renamed",
+            ));
+        }
+        let agent_session_id = node
+            .session_id
+            .ok_or_else(|| WorkflowError::invalid_state("Workspace Session Node is not bound"))?;
+        Ok(WorkspaceSessionNodeRenameTarget { agent_session_id })
+    }
 }
 
 fn reconcile_workspace_tree_selection(
@@ -390,6 +418,7 @@ mod tests {
                         error_reason: None,
                         content_kind: "session",
                         capabilities: WorkspaceNodeCapabilitiesDto {
+                            can_rename: false,
                             can_approve: false,
                             can_retry: false,
                             can_close: false,
@@ -432,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_選択整合契約_返却snapshotの全行が4分類だけを持つ() {
+    fn test_選択整合契約_返却snapshotの全行が5分類だけを持つ() {
         fn assert_classifications(items: &[WorkspaceTreeItemDto]) {
             for item in items {
                 let (status, children) = match item {
@@ -444,7 +473,7 @@ mod tests {
                         (fanout.status.as_str(), Some(fanout.children.as_slice()))
                     }
                 };
-                assert!(["active", "attention", "failure", "idle"].contains(&status));
+                assert!(["active", "attention", "failure", "idle", "unbound"].contains(&status));
                 assert_ne!(status, "interrupted");
                 if let Some(children) = children {
                     assert_classifications(children);

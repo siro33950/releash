@@ -13,6 +13,7 @@ import {
 	Loader2,
 	MessageSquare,
 	MoreHorizontal,
+	Pencil,
 	Plus,
 	RefreshCw,
 	RotateCcw,
@@ -162,6 +163,7 @@ function WorkspaceNodeRow({
 	onToggleHistory,
 	onArchiveSession,
 	onDeleteSession,
+	onRename,
 	onWorkflowAction,
 	onArchiveWorkflow,
 }: {
@@ -174,17 +176,54 @@ function WorkspaceNodeRow({
 	onToggleHistory?: () => void;
 	onArchiveSession?: () => void;
 	onDeleteSession?: () => void;
+	onRename: (name: string) => void | Promise<void>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
 	) => void | Promise<void>;
 	onArchiveWorkflow: (item: WorkspaceTreeItem) => void | Promise<void>;
 }) {
+	const [renaming, setRenaming] = useState(false);
+	const [name, setName] = useState(node.title);
+	const renameInputRef = useRef<HTMLInputElement>(null);
 	const ContentIcon = node.contentKind === "session" ? Bot : Terminal;
 	const pulseClassName = isWorkspaceNodePulseStatus(node.status)
 		? "animate-pulse"
 		: "";
 	const statusTitle = `${node.contentKind}, ${node.status}`;
+	useEffect(() => {
+		if (!renaming) return;
+		renameInputRef.current?.focus();
+		renameInputRef.current?.select();
+	}, [renaming]);
+	const beginRename = () => {
+		setName(node.title);
+		setRenaming(true);
+	};
+	const cancelRename = () => {
+		setRenaming(false);
+		setName(node.title);
+	};
+	const commitRename = async () => {
+		if (!name.trim()) {
+			cancelRename();
+			return;
+		}
+		await onRename(name);
+		setRenaming(false);
+	};
+	const nodeIcon =
+		node.status === "unbound" ? (
+			<Loader2
+				className={`size-3.5 shrink-0 animate-spin ${workflowNodeIconClasses[node.status]}`}
+				aria-hidden="true"
+			/>
+		) : (
+			<ContentIcon
+				className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
+				aria-hidden="true"
+			/>
+		);
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
@@ -194,24 +233,53 @@ function WorkspaceNodeRow({
 			}`}
 			style={{ paddingLeft: indentPx }}
 		>
-			<button
-				type="button"
-				className="flex min-w-0 flex-1 items-center gap-2 text-left"
-				onClick={onSelect}
-				aria-current={selected ? "page" : undefined}
-				aria-label={`${node.title}, ${node.status}`}
-			>
-				<span
-					className="flex size-5 shrink-0 items-center justify-center"
-					title={statusTitle}
-				>
-					<ContentIcon
-						className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
-						aria-hidden="true"
+			{renaming ? (
+				<div className="flex min-w-0 flex-1 items-center gap-2">
+					<span
+						className="flex size-5 shrink-0 items-center justify-center"
+						title={statusTitle}
+					>
+						{nodeIcon}
+					</span>
+					<input
+						ref={renameInputRef}
+						type="text"
+						value={name}
+						onChange={(event) => setName(event.target.value)}
+						onClick={(event) => event.stopPropagation()}
+						onKeyDown={(event) => {
+							if (event.key === "Enter") {
+								event.preventDefault();
+								event.stopPropagation();
+								void commitRename();
+							} else if (event.key === "Escape") {
+								event.preventDefault();
+								event.stopPropagation();
+								cancelRename();
+							}
+						}}
+						onBlur={cancelRename}
+						className="h-6 min-w-0 flex-1 rounded border border-input bg-background px-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						aria-label={`Rename ${node.title}`}
 					/>
-				</span>
-				<span className="min-w-0 flex-1 truncate">{node.title}</span>
-			</button>
+				</div>
+			) : (
+				<button
+					type="button"
+					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					onClick={onSelect}
+					aria-current={selected ? "page" : undefined}
+					aria-label={`${node.title}, ${node.status}`}
+				>
+					<span
+						className="flex size-5 shrink-0 items-center justify-center"
+						title={statusTitle}
+					>
+						{nodeIcon}
+					</span>
+					<span className="min-w-0 flex-1 truncate">{node.title}</span>
+				</button>
+			)}
 			{node.pastAttempts.length > 0 && (
 				<Button
 					size="icon-xs"
@@ -229,6 +297,21 @@ function WorkspaceNodeRow({
 					) : (
 						<ChevronRight className="size-3" />
 					)}
+				</Button>
+			)}
+			{node.capabilities.canRename && !renaming && (
+				<Button
+					size="icon-xs"
+					variant="ghost"
+					className="hidden size-5 shrink-0 text-muted-foreground group-hover:flex group-focus-within:flex"
+					onClick={(event) => {
+						event.stopPropagation();
+						beginRename();
+					}}
+					aria-label={`Rename ${node.title}`}
+					title="Rename"
+				>
+					<Pencil className="size-3" />
 				</Button>
 			)}
 			{node.sessionCapabilities?.canArchive && (
@@ -372,6 +455,7 @@ function WorkspaceBranchRow({
 	onCloseNode,
 	onArchiveSession,
 	onDeleteSession,
+	onRenameNode,
 	onWorkflowAction,
 	onArchiveWorkflow,
 }: {
@@ -382,6 +466,7 @@ function WorkspaceBranchRow({
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
+	onRenameNode: (node: WorkspaceNode, name: string) => void | Promise<void>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
@@ -429,6 +514,7 @@ function WorkspaceBranchRow({
 						onCloseNode={onCloseNode}
 						onArchiveSession={onArchiveSession}
 						onDeleteSession={onDeleteSession}
+						onRenameNode={onRenameNode}
 						onWorkflowAction={onWorkflowAction}
 						onArchiveWorkflow={onArchiveWorkflow}
 					/>
@@ -445,6 +531,7 @@ function WorkspaceTreeItemRow({
 	onCloseNode,
 	onArchiveSession,
 	onDeleteSession,
+	onRenameNode,
 	onWorkflowAction,
 	onArchiveWorkflow,
 }: {
@@ -455,6 +542,7 @@ function WorkspaceTreeItemRow({
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
+	onRenameNode: (node: WorkspaceNode, name: string) => void | Promise<void>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
@@ -476,6 +564,7 @@ function WorkspaceTreeItemRow({
 							selected={isNodeSelected(centerSelection, past)}
 							onSelect={() => onSelectNode(past)}
 							onClose={() => onCloseNode(past)}
+							onRename={(name) => onRenameNode(past, name)}
 							onWorkflowAction={onWorkflowAction}
 							onArchiveWorkflow={onArchiveWorkflow}
 						/>
@@ -490,6 +579,7 @@ function WorkspaceTreeItemRow({
 					onToggleHistory={() => setPastExpanded((current) => !current)}
 					onArchiveSession={() => onArchiveSession(item)}
 					onDeleteSession={() => onDeleteSession(item)}
+					onRename={(name) => onRenameNode(item, name)}
 					onWorkflowAction={onWorkflowAction}
 					onArchiveWorkflow={onArchiveWorkflow}
 				/>
@@ -505,6 +595,7 @@ function WorkspaceTreeItemRow({
 			onCloseNode={onCloseNode}
 			onArchiveSession={onArchiveSession}
 			onDeleteSession={onDeleteSession}
+			onRenameNode={onRenameNode}
 			onWorkflowAction={onWorkflowAction}
 			onArchiveWorkflow={onArchiveWorkflow}
 		/>
@@ -691,6 +782,22 @@ function WorktreeTreeItem({
 			});
 		},
 		[branch.worktree_path, selectCenter],
+	);
+	const handleRenameNode = useCallback(
+		async (node: WorkspaceNode, name: string) => {
+			if (!branch.worktree_path) return;
+			setProviderActionError(null);
+			try {
+				await invoke("rename_workspace_session_node", {
+					worktreePath: branch.worktree_path,
+					nodeId: node.id,
+					name,
+				});
+			} catch (error) {
+				setProviderActionError(getErrorMessage(error));
+			}
+		},
+		[branch.worktree_path],
 	);
 	const handleArchiveAgentSession = useCallback(
 		async (node: WorkspaceNode) => {
@@ -1254,7 +1361,7 @@ function WorktreeTreeItem({
 												}
 											>
 												<span className="max-w-52 truncate">
-													{candidate.provider} {candidate.providerSessionId}
+													{candidate.label}
 												</span>
 											</DropdownMenuItem>
 										))}
@@ -1472,6 +1579,7 @@ function WorktreeTreeItem({
 										node.id,
 									);
 								}}
+								onRenameNode={handleRenameNode}
 								onWorkflowAction={handleWorkflowExecutionAction}
 								onArchiveWorkflow={handleArchiveWorkflow}
 							/>
