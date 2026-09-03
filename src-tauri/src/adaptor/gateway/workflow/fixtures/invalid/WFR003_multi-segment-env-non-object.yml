@@ -1,0 +1,14 @@
+name: multi-segment-env-non-object
+description: nested environment reference traverses a scalar
+schemas:
+  document:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    command: target
+    input:
+    - doc: document
+    env:
+      VALUE: doc.outer.value

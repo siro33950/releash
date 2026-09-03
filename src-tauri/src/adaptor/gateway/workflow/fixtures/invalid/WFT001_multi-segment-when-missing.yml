@@ -1,0 +1,31 @@
+name: multi-segment-when-missing
+description: nested when reference has a missing field
+schemas:
+  output:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          flag:
+            type: boolean
+        required: [flag]
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - when:
+              on: route.missing.flag
+              then: "yes"
+            next: "no"
+      - "yes"
+      - "no"
+  source:
+    command: source
+    artifact: output
+  "yes":
+    command: yes
+  "no":
+    command: no

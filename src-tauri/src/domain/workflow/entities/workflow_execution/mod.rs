@@ -1328,7 +1328,7 @@ impl WorkflowExecution {
         match &spec.items {
             None => Ok(None),
             Some(ItemsSource::Literal(items)) => Ok(Some(items.clone())),
-            Some(ItemsSource::ArtifactField { node, field }) => {
+            Some(ItemsSource::ArtifactField { node, field_path }) => {
                 let value = fanout_scope
                     .parent_scope_id
                     .as_deref()
@@ -1336,16 +1336,19 @@ impl WorkflowExecution {
                     .and_then(ScopeRuntime::sequence)
                     .and_then(|sequence| sequence.artifacts.get(node))
                     .and_then(|artifact| artifact.artifact.as_ref())
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|artifact| artifact.get(field))
+                    .and_then(|artifact| {
+                        workflow_reference::resolve_value_at_path(artifact, field_path)
+                    })
                     .ok_or_else(|| {
                         crate::domain::workflow::WorkflowError::invalid_state(format!(
-                            "fanout items source '{node}.{field}' is unavailable"
+                            "fanout items source '{node}.{}' is unavailable",
+                            field_path.as_string()
                         ))
                     })?;
                 let items = value.as_array().ok_or_else(|| {
                     crate::domain::workflow::WorkflowError::invalid_state(format!(
-                        "fanout items source '{node}.{field}' is not an array"
+                        "fanout items source '{node}.{}' is not an array",
+                        field_path.as_string()
                     ))
                 })?;
                 Ok(Some(items.clone()))
@@ -4043,6 +4046,68 @@ mod tests {
             RuntimeExecutionState::Completed,
             RuntimeExecutionState::Aborted,
         ]
+    }
+
+    #[test]
+    fn test_fanout_items実行時解決_多段の終端配列で展開する() {
+        // Given
+        let parent_scope = ScopeRuntime {
+            node_execution_id: "main-execution".to_string(),
+            node_name: "main".to_string(),
+            parent_scope_id: None,
+            parameters: Vec::new(),
+            kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime {
+                artifacts: HashMap::from([(
+                    "producer".to_string(),
+                    RuntimeArtifact {
+                        node_name: "producer".to_string(),
+                        attempt: 1,
+                        session_id: None,
+                        result: None,
+                        artifact: Some(serde_json::json!({
+                            "payload": {"groups": {"items": [1, 2, 3]}}
+                        })),
+                        contract: Some("result".to_string()),
+                        token_usage: None,
+                        completed_at: 1.0,
+                    },
+                )]),
+                ..Default::default()
+            }),
+        };
+        let fanout_scope = ScopeRuntime {
+            node_execution_id: "fan-execution".to_string(),
+            node_name: "fan".to_string(),
+            parent_scope_id: Some("main-execution".to_string()),
+            parameters: Vec::new(),
+            kind: ScopeRuntimeKind::Fanout(FanoutScopeRuntime::default()),
+        };
+        let execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
+            scopes: vec![parent_scope, fanout_scope],
+            ..Default::default()
+        });
+        let spec = crate::domain::workflow::value_objects::FanoutSpec {
+            children: Vec::new(),
+            items: Some(crate::domain::workflow::ItemsSource::ArtifactField {
+                node: "producer".to_string(),
+                field_path: crate::domain::workflow::FieldPath::new(["payload", "groups", "items"]),
+            }),
+        };
+
+        // When
+        let items = execution
+            .resolve_fanout_items_in_scope(execution.scope("fan-execution").unwrap(), &spec)
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            items,
+            Some(vec![
+                serde_json::json!(1),
+                serde_json::json!(2),
+                serde_json::json!(3)
+            ])
+        );
     }
 
     #[test]

@@ -3,25 +3,13 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ChildEntry, EnvironmentVariableName, InputParameterRef, NodeDefinition, NodeKindName,
-    SchemaDef, WorkflowDefinition,
+    ChildEntry, EnvironmentVariableName, FieldPath, InputParameterRef, NodeDefinition,
+    NodeKindName, SchemaDef, WorkflowDefinition,
 };
 
 pub const REQUEST_ARTIFACT: &str = "request";
 /// fanout の展開要素を子パラメータへ配線する予約供給元名。
 pub const ITEMS_SOURCE: &str = "items";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ArtifactReference {
-    Request,
-    Node { node: String, field: Option<String> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReferenceParseError {
-    Empty,
-    InvalidFormat(String),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReferenceResolveError {
@@ -71,33 +59,6 @@ impl std::fmt::Display for CommandEnvironmentResolutionError {
 }
 
 impl std::error::Error for CommandEnvironmentResolutionError {}
-
-pub fn parse_reference(input: &str) -> Result<ArtifactReference, ReferenceParseError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err(ReferenceParseError::Empty);
-    }
-    if trimmed.contains(char::is_whitespace) {
-        return Err(ReferenceParseError::InvalidFormat(trimmed.to_string()));
-    }
-    let mut parts = trimmed.split('.');
-    let root = parts.next().unwrap_or_default();
-    let field = parts.next();
-    if parts.next().is_some() {
-        return Err(ReferenceParseError::InvalidFormat(trimmed.to_string()));
-    }
-    if !is_reference_segment(root) || field.is_some_and(|value| !is_reference_segment(value)) {
-        return Err(ReferenceParseError::InvalidFormat(trimmed.to_string()));
-    }
-    match (root, field) {
-        (REQUEST_ARTIFACT, None) => Ok(ArtifactReference::Request),
-        (REQUEST_ARTIFACT, Some(_)) => Err(ReferenceParseError::InvalidFormat(trimmed.to_string())),
-        (node, field) => Ok(ArtifactReference::Node {
-            node: node.to_string(),
-            field: field.map(ToOwned::to_owned),
-        }),
-    }
-}
 
 pub fn extract_template_references(content: &str) -> Vec<String> {
     let mut refs = Vec::new();
@@ -149,7 +110,7 @@ pub(crate) fn validate_workflow_command_environment_references(
                 node,
                 &workflow.schemas,
                 input_reference.parameter(),
-                input_reference.field(),
+                input_reference.field_path(),
             ) {
                 errors.push(CommandEnvironmentReferenceError {
                     node: node.name.clone(),
@@ -182,11 +143,11 @@ fn validate_node_template_content(
     errors: &mut Vec<ReferenceResolveError>,
 ) {
     for reference in extract_template_references(content) {
-        let Some((root, field)) = split_reference(&reference) else {
+        let Some((root, field_path)) = split_reference(&reference) else {
             errors.push(ReferenceResolveError::InvalidInputRef { value: reference });
             continue;
         };
-        if let Some(error) = validate_input_parameter_reference(node, schemas, root, field) {
+        if let Some(error) = validate_input_parameter_reference(node, schemas, root, &field_path) {
             errors.push(error);
         }
     }
@@ -196,55 +157,49 @@ fn validate_input_parameter_reference(
     node: &NodeDefinition,
     schemas: &BTreeMap<String, SchemaDef>,
     root: &str,
-    field: Option<&str>,
+    field_path: &FieldPath,
 ) -> Option<ReferenceResolveError> {
     let Some(parameter) = node.input_parameter(root) else {
         return Some(ReferenceResolveError::UnknownParameter {
             name: root.to_string(),
         });
     };
-    let field = field?;
+    if field_path.is_empty() {
+        return None;
+    }
     // 型あり（Contract 付き）パラメータの field パスは Contract に対して検証する。
     // 型なしパラメータは供給元の形が実行時に決まるため検証しない。
-    if parameter
-        .contract
-        .as_deref()
-        .is_some_and(|contract| !contract_field_available(contract, field, schemas))
-    {
-        return Some(ReferenceResolveError::UnknownField {
-            reference: root.to_string(),
-            field: field.to_string(),
+    if let Some(contract) = parameter.contract.as_deref() {
+        let resolved = schemas.get(contract).and_then(|schema| {
+            crate::domain::workflow::services::contract_schema::resolve_field_path(
+                schema, field_path,
+            )
+            .ok()
         });
+        if resolved.is_none() {
+            return Some(ReferenceResolveError::UnknownField {
+                reference: root.to_string(),
+                field: field_path.as_string(),
+            });
+        }
     }
     None
 }
 
-/// `root` / `root.field` の分解。形式不正（空・空白・2 段以上の field）は None。
-pub(crate) fn split_reference(value: &str) -> Option<(&str, Option<&str>)> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
-        return None;
-    }
-    let mut parts = trimmed.split('.');
-    let root = parts.next()?;
-    let field = parts.next();
-    if parts.next().is_some() {
-        return None;
-    }
-    if !is_reference_segment(root) || field.is_some_and(|value| !is_reference_segment(value)) {
-        return None;
-    }
-    Some((root, field))
+/// `root` / `root.field...` の分解。
+pub(crate) fn split_reference(value: &str) -> Option<(&str, FieldPath)> {
+    let (_, field_path) = FieldPath::from_reference(value).ok()?;
+    Some((value.split('.').next()?, field_path))
 }
 
-/// fanout items（`<node>.<field>`）の要素 schema を解決する。
+/// fanout items（`<node>.<field>...`）の終端 schema を解決する。
 /// 参照先は Artifact を産出するカタログ node（fanout の子は親の配列へ集約される
 /// ため参照不可）。
-pub(crate) fn artifact_field_schema<'a>(
-    workflow: &'a WorkflowDefinition,
+pub(crate) fn artifact_field_schema(
+    workflow: &WorkflowDefinition,
     node_name: &str,
-    field: &str,
-) -> Result<Option<&'a SchemaDef>, String> {
+    field_path: &FieldPath,
+) -> Result<SchemaDef, String> {
     if workflow
         .nodes
         .iter()
@@ -262,26 +217,37 @@ pub(crate) fn artifact_field_schema<'a>(
     if !node_has_artifact(node) {
         return Err(format!("node '{node_name}' does not produce an Artifact"));
     }
-    if node.kind_name() == NodeKindName::Command
-        && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
-            .contains(&field)
-    {
-        return Ok(None);
-    }
-    let Some(contract) = node.artifact.as_deref() else {
-        return Err(format!(
-            "node '{node_name}' has no Artifact field '{field}'"
-        ));
+    let artifact_schema = node
+        .artifact
+        .as_deref()
+        .and_then(|contract| workflow.schemas.get(contract));
+    let command_schema;
+    let schema = if node.kind_name() == NodeKindName::Command {
+        command_schema =
+            crate::domain::workflow::services::contract_schema::command_reference_schema(
+                artifact_schema,
+            )
+            .map_err(|_| format!("node '{node_name}' Artifact Contract is not an object"))?;
+        &command_schema
+    } else {
+        artifact_schema.ok_or_else(|| {
+            format!("node '{node_name}' has no Artifact field path '{field_path}'")
+        })?
     };
-    let Some(SchemaDef::Object { properties, .. }) = workflow.schemas.get(contract) else {
-        return Err(format!(
-            "node '{node_name}' has no Artifact field '{field}'"
-        ));
-    };
-    properties
-        .get(field)
-        .map(Some)
-        .ok_or_else(|| format!("node '{node_name}' has no Artifact field '{field}'"))
+    crate::domain::workflow::services::contract_schema::resolve_field_path(schema, field_path)
+    .map(|resolved| resolved.schema.clone())
+    .map_err(|error| match error.kind {
+        crate::domain::workflow::services::contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+            "node '{node_name}' Artifact cannot resolve segment {} ('{}') from a non-object value",
+            error.position + 1,
+            error.segment
+        ),
+        crate::domain::workflow::services::contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
+            "node '{node_name}' Artifact does not declare segment {} ('{}')",
+            error.position + 1,
+            error.segment
+        ),
+    })
 }
 
 /// sequence（root スコープ）の children エントリの inputs から、node 起動時の
@@ -302,7 +268,10 @@ pub fn resolve_entry_bindings(
         .filter_map(|(parameter, source)| {
             artifacts
                 .get(source.root())
-                .and_then(|value| field_value(value, source.field()))
+                .and_then(|value| {
+                    let (_, field_path) = FieldPath::from_reference(source.raw()).ok()?;
+                    resolve_value_at_path(value, &field_path)
+                })
                 .map(|value| (parameter.clone(), value.clone()))
         })
         .collect()
@@ -338,7 +307,10 @@ pub fn resolve_fanout_child_bindings(
             } else {
                 parent_parameters
                     .get(root)
-                    .and_then(|value| field_value(value, source.field()))
+                    .and_then(|value| {
+                        let (_, field_path) = FieldPath::from_reference(source.raw()).ok()?;
+                        resolve_value_at_path(value, &field_path)
+                    })
                     .cloned()
             };
             if let Some(value) = value {
@@ -372,11 +344,11 @@ pub fn resolve_fanout_child_bindings(
 /// 束縛済みパラメータ値から `{{ root(.field) }}` を解決する。
 pub fn resolve_template_value<'a>(
     root: &str,
-    field: Option<&str>,
+    field_path: &FieldPath,
     values: &'a HashMap<String, Value>,
 ) -> Option<&'a Value> {
     let value = values.get(root)?;
-    field_value(value, field)
+    resolve_value_at_path(value, field_path)
 }
 
 pub fn resolve_command_environment(
@@ -394,11 +366,12 @@ pub fn resolve_command_environment(
                     reference: input_reference.as_string(),
                 }
             })?;
-            let value = field_value(value, input_reference.field()).ok_or_else(|| {
-                CommandEnvironmentResolutionError::MissingField {
-                    reference: input_reference.as_string(),
-                }
-            })?;
+            let value =
+                resolve_value_at_path(value, input_reference.field_path()).ok_or_else(|| {
+                    CommandEnvironmentResolutionError::MissingField {
+                        reference: input_reference.as_string(),
+                    }
+                })?;
             let value = reference_value_to_string(value);
             Ok((variable.as_str().to_string(), value))
         })
@@ -413,25 +386,21 @@ pub fn reference_value_to_string(value: &Value) -> String {
     }
 }
 
-fn field_value<'a>(value: &'a Value, field: Option<&str>) -> Option<&'a Value> {
-    match field {
-        None => Some(value),
-        Some(field) => value.as_object()?.get(field),
+pub fn resolve_value_at_path<'a>(value: &'a Value, field_path: &FieldPath) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in field_path.segments() {
+        current = current.as_object()?.get(segment)?;
     }
-}
-
-pub(crate) fn is_reference_segment(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_alphanumeric()
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    Some(current)
 }
 
 pub(crate) fn is_reserved_artifact_name(value: &str) -> bool {
     value == REQUEST_ARTIFACT
 }
+
+#[cfg(test)]
+#[path = "reference_path_test.rs"]
+mod reference_path_test;
 
 pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
     match node.kind_name() {
@@ -440,35 +409,6 @@ pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
         // sequence の Artifact は output の子から委譲される（宣言があるときのみ）。
         NodeKindName::Sequence => node.artifact.is_some(),
     }
-}
-
-pub(crate) fn contract_field_available(
-    contract: &str,
-    field: &str,
-    schemas: &BTreeMap<String, SchemaDef>,
-) -> bool {
-    let Some(SchemaDef::Object { properties, .. }) = schemas.get(contract) else {
-        return false;
-    };
-    properties.contains_key(field)
-}
-
-/// 兄弟 node の Artifact field が参照可能か（field パス付き inputs 配線の検証）。
-pub(crate) fn node_field_available(
-    node: &NodeDefinition,
-    field: &str,
-    schemas: &BTreeMap<String, SchemaDef>,
-) -> bool {
-    if node.kind_name() == NodeKindName::Command
-        && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
-            .contains(&field)
-    {
-        return true;
-    }
-    let Some(contract) = node.artifact.as_deref() else {
-        return false;
-    };
-    contract_field_available(contract, field, schemas)
 }
 
 #[cfg(test)]
@@ -514,19 +454,6 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    #[test]
-    fn test_reference_parse_requestとnode参照() {
-        assert_eq!(parse_reference("request"), Ok(ArtifactReference::Request));
-        assert_eq!(
-            parse_reference("plan.summary"),
-            Ok(ArtifactReference::Node {
-                node: "plan".to_string(),
-                field: Some("summary".to_string())
-            })
-        );
-        assert!(parse_reference("request.field").is_err());
     }
 
     #[test]

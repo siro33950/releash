@@ -366,7 +366,7 @@ nodes:
             fanout.items,
             Some(ItemsSource::ArtifactField {
                 node: "plan".to_string(),
-                field: "targets".to_string(),
+                field_path: crate::domain::workflow::FieldPath::new(["targets"]),
             })
         );
         let serialized = serde_saphyr::to_string(&wf).unwrap();
@@ -420,7 +420,7 @@ nodes:
 
     #[test]
     fn rejects_fanout_items_outside_literal_array_or_node_field_reference() {
-        for items in ["source", "source.field.nested", "request"] {
+        for items in ["source", "source.", "source..nested", "request"] {
             let yaml = format!(
                 r#"
 name: invalid-items

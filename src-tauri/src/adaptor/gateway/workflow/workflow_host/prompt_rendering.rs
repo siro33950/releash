@@ -33,13 +33,13 @@ pub(crate) fn render_template_variables(content: &str, values: &HashMap<String, 
     template_preview::render_template_variables(content, values)
 }
 
-/// `{{ <パラメータ>(.field) }}` を束縛済みパラメータ値で置換する。
+/// `{{ <パラメータ>(.field...) }}` を束縛済みパラメータ値で置換する。
 /// 解決できない参照はそのまま残す。
 pub(crate) fn render_parameter_references(content: &str, bindings: &[(String, Value)]) -> String {
     let values = binding_values(bindings);
     replace_template_refs(content, |inner| {
-        let (root, field) = reference::split_reference(inner)?;
-        reference::resolve_template_value(root, field, &values)
+        let (root, field_path) = reference::split_reference(inner)?;
+        reference::resolve_template_value(root, &field_path, &values)
             .map(reference::reference_value_to_string)
     })
 }
@@ -201,5 +201,67 @@ mod tests {
             render_parameter_references("echo '{{ missing }}'", &[]),
             "echo '{{ missing }}'"
         );
+    }
+
+    #[test]
+    fn test_commandテンプレート_多段fieldを終端値へ展開する() {
+        // Given
+        let bindings = vec![(
+            "document".to_string(),
+            serde_json::json!({"outer": {"inner": {"text": "rendered"}}}),
+        )];
+
+        // When
+        let rendered =
+            render_parameter_references("echo '{{ document.outer.inner.text }}'", &bindings);
+
+        // Then
+        assert_eq!(rendered, "echo 'rendered'");
+    }
+
+    #[test]
+    fn test_sessionファセット_システムとユーザー本文の多段fieldを展開する() {
+        // Given
+        let node = NodeDefinition {
+            name: "main".to_string(),
+            kind: crate::domain::workflow::NodeKind::Session(
+                crate::domain::workflow::SessionSpec {
+                    facets: crate::domain::workflow::FacetRefs {
+                        policy: Some("policy".to_string()),
+                        instruction: Some("instruction".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            input: vec![crate::domain::workflow::InputParam {
+                name: "context".to_string(),
+                contract: None,
+            }],
+            ..Default::default()
+        };
+        let facets = FacetContents {
+            policy: Some("Policy {{ context.outer.value }}".to_string()),
+            instruction: Some("Do {{ context.outer.value }}".to_string()),
+            ..Default::default()
+        };
+        let bindings = vec![(
+            "context".to_string(),
+            serde_json::json!({"outer": {"value": "nested"}}),
+        )];
+
+        // When
+        let (system, user) = build_leaf_prompt(
+            &node,
+            Some(&facets),
+            "00000000-0000-4000-8000-000000000001",
+            &bindings,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        // Then
+        assert!(system.unwrap().contains("Policy nested"));
+        assert!(user.contains("Do nested"));
     }
 }

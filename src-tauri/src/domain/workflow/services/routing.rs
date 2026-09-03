@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
-use crate::domain::workflow::services::contract_schema::{self, RoutingFieldKind};
+use crate::domain::workflow::services::contract_schema::RoutingFieldKind;
+use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
     ChildEntry, EffectiveRules, NodeDefinition, NodeKind, Rule, SchemaDef, SequenceSpec,
     WorkflowDefinition,
 };
-use crate::domain::workflow::WorkflowError;
+use crate::domain::workflow::{FieldPath, WorkflowError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteDecision {
@@ -394,8 +395,9 @@ fn validate_entry_rules(
                         });
                     }
                     let missing: Vec<_> = enum_set.difference(&case_set).copied().collect();
-                    let needs_p11_next =
-                        child.is_command() && child.artifact.is_some() && on != "ok";
+                    let needs_p11_next = child.is_command()
+                        && child.artifact.is_some()
+                        && !is_command_success_field(on);
                     if missing.is_empty() {
                         if next.is_some() && !needs_p11_next {
                             errors.push(RoutingValidationError::SwitchExhaustiveHasNext {
@@ -691,34 +693,47 @@ fn validate_routing_field(
     field: &str,
     expected: RoutingFieldKind,
 ) -> Result<Vec<String>, String> {
-    if node.is_command() && field == "ok" {
-        if expected == RoutingFieldKind::Boolean {
-            return Ok(Vec::new());
+    let field_path = routing_field_path(field)?;
+    let artifact_schema = node
+        .artifact
+        .as_deref()
+        .and_then(|contract| workflow.schemas.get(contract));
+    let command_schema;
+    let schema = if node.is_command() {
+        command_schema = contract_schema::command_reference_schema(artifact_schema)
+            .map_err(|_| "command Artifact Contract is not an object".to_string())?;
+        &command_schema
+    } else {
+        let contract_name = node.artifact.as_deref().ok_or_else(|| {
+            format!("routing field '{field}' requires an artifact Contract on this node")
+        })?;
+        artifact_schema.ok_or_else(|| {
+            format!("artifact Contract '{contract_name}' is not declared in schemas")
+        })?
+    };
+    let resolved = contract_schema::resolve_field_path(schema, &field_path).map_err(|error| {
+        match error.kind {
+            contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+                "routing field '{field}' cannot resolve segment {} ('{}') from a non-object value",
+                error.position + 1,
+                error.segment
+            ),
+            contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
+                "routing field '{field}' has undeclared segment {} ('{}')",
+                error.position + 1,
+                error.segment
+            ),
         }
-        return Err("switch.on cannot reference command reserved boolean field 'ok'".to_string());
-    }
-
-    let contract_name = node.artifact.as_deref().ok_or_else(|| {
-        format!("routing field '{field}' requires an artifact Contract on this node")
     })?;
-    let schema = workflow
-        .schemas
-        .get(contract_name)
-        .ok_or_else(|| format!("artifact Contract '{contract_name}' is not declared in schemas"))?;
-    let kind = contract_schema::routing_field_kind(schema, field).map_err(|err| match err {
-        contract_schema::RoutingFieldError::NotObject => {
-            format!("artifact Contract '{contract_name}' is not an object")
-        }
-        contract_schema::RoutingFieldError::MissingProperty { .. } => {
-            format!("routing field '{field}' is not declared on Contract '{contract_name}'")
-        }
-        contract_schema::RoutingFieldError::NotRequired { .. } => {
-            format!("routing field '{field}' must be required on Contract '{contract_name}'")
-        }
-        contract_schema::RoutingFieldError::NotBooleanOrEnum { .. } => {
-            format!("routing field '{field}' must be boolean or string enum")
-        }
-    })?;
+    let kind = contract_schema::routing_field_kind(resolved.schema, resolved.required, field)
+        .map_err(|err| match err {
+            contract_schema::RoutingFieldError::NotRequired { .. } => {
+                format!("routing field '{field}' must be required on its parent Object")
+            }
+            contract_schema::RoutingFieldError::NotBooleanOrEnum { .. } => {
+                format!("routing field '{field}' must be boolean or string enum")
+            }
+        })?;
     if kind != expected {
         return Err(match expected {
             RoutingFieldKind::Boolean => {
@@ -729,20 +744,29 @@ fn validate_routing_field(
             }
         });
     }
-    Ok(enum_values(schema, field).unwrap_or_default())
+    Ok(enum_values(resolved.schema).unwrap_or_default())
 }
 
-fn enum_values(schema: &SchemaDef, field: &str) -> Option<Vec<String>> {
-    let SchemaDef::Object { properties, .. } = schema else {
-        return None;
-    };
+fn enum_values(schema: &SchemaDef) -> Option<Vec<String>> {
     let SchemaDef::String {
         r#enum: Some(values),
-    } = properties.get(field)?
+    } = schema
     else {
         return None;
     };
     Some(values.clone())
+}
+
+fn is_command_success_field(field: &str) -> bool {
+    routing_field_path(field).is_ok_and(|path| path.segments() == ["ok"])
+}
+
+fn routing_field_path(field: &str) -> Result<FieldPath, String> {
+    if field.trim() != field {
+        return Err(format!("routing field '{field}' is not a valid field path"));
+    }
+    FieldPath::from_dotted(field)
+        .map_err(|_| format!("routing field '{field}' is not a valid field path"))
 }
 
 fn raw_target(
@@ -756,14 +780,16 @@ fn raw_target(
     match discriminator {
         Some(Rule::When { on, then, next }) => {
             let is_true = artifact
-                .and_then(|value| value.get(on))
+                .zip(routing_field_path(on).ok())
+                .and_then(|(value, path)| reference::resolve_value_at_path(value, &path))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             Ok(Some(if is_true { then } else { next }.clone()))
         }
         Some(Rule::Switch { on, cases, next }) => {
             if let Some(target) = artifact
-                .and_then(|value| value.get(on))
+                .zip(routing_field_path(on).ok())
+                .and_then(|(value, path)| reference::resolve_value_at_path(value, &path))
                 .and_then(Value::as_str)
                 .and_then(|value| cases.get(value))
             {
@@ -934,6 +960,432 @@ mod routing_tests {
             &HashMap::new(),
         )
         .expect("route succeeds")
+    }
+
+    fn nested_schema(field: &str, schema: SchemaDef, required: bool) -> SchemaDef {
+        SchemaDef::Object {
+            properties: BTreeMap::from([(
+                "outer".to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::from([(field.to_string(), schema)]),
+                    required: if required {
+                        BTreeSet::from([field.to_string()])
+                    } else {
+                        BTreeSet::new()
+                    },
+                },
+            )]),
+            required: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn test_when_空白入り1段propertyをrequired_booleanとして分岐する() {
+        // Given
+        let mut work = command_node("work");
+        work.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules(
+                        "work",
+                        vec![Rule::When {
+                            on: "legacy flag".to_string(),
+                            then: "yes".to_string(),
+                            next: "no".to_string(),
+                        }],
+                    ),
+                    ChildEntry::reference("yes"),
+                    ChildEntry::reference("no"),
+                ],
+            ),
+            work,
+            command_node("yes"),
+            command_node("no"),
+        ]);
+        wf.schemas.insert(
+            "result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([("legacy flag".to_string(), SchemaDef::Boolean)]),
+                required: BTreeSet::from(["legacy flag".to_string()]),
+            },
+        );
+
+        // When
+        let errors = validate_rules(&wf);
+        let when_true = route_from(&wf, "work", Some(&serde_json::json!({"legacy flag": true})));
+        let when_false = route_from(
+            &wf,
+            "work",
+            Some(&serde_json::json!({"legacy flag": false})),
+        );
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(when_true, RouteDecision::TransitionTo("yes".to_string()));
+        assert_eq!(when_false, RouteDecision::TransitionTo("no".to_string()));
+    }
+
+    #[test]
+    fn test_switch_空白入り1段propertyをrequired_string_enumとして分岐する() {
+        // Given
+        let mut work = command_node("work");
+        work.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules(
+                        "work",
+                        vec![Rule::Switch {
+                            on: "legacy kind".to_string(),
+                            cases: BTreeMap::from([
+                                ("A".to_string(), "a".to_string()),
+                                ("B".to_string(), "b".to_string()),
+                            ]),
+                            next: Some("failed".to_string()),
+                        }],
+                    ),
+                    ChildEntry::reference("a"),
+                    ChildEntry::reference("b"),
+                    ChildEntry::reference("failed"),
+                ],
+            ),
+            work,
+            command_node("a"),
+            command_node("b"),
+            command_node("failed"),
+        ]);
+        wf.schemas.insert(
+            "result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "legacy kind".to_string(),
+                    SchemaDef::String {
+                        r#enum: Some(vec!["A".to_string(), "B".to_string()]),
+                    },
+                )]),
+                required: BTreeSet::from(["legacy kind".to_string()]),
+            },
+        );
+
+        // When
+        let errors = validate_rules(&wf);
+        let decision = route_from(&wf, "work", Some(&serde_json::json!({"legacy kind": "B"})));
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(decision, RouteDecision::TransitionTo("b".to_string()));
+
+        // When
+        let NodeKind::Sequence(sequence) = &mut wf.nodes[0].kind else {
+            unreachable!();
+        };
+        let Rule::Switch {
+            cases,
+            next: switch_next,
+            ..
+        } = sequence.children[0]
+            .rules
+            .as_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        cases.remove("B");
+        *switch_next = None;
+        let errors = validate_rules(&wf);
+
+        // Then
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            RoutingValidationError::SwitchMissingCases { missing, .. }
+                if missing == &vec!["B".to_string()]
+        )));
+    }
+
+    #[test]
+    fn test_when_空白入り中間段を経由してrequired_booleanを解決する() {
+        // Given
+        let mut work = command_node("work");
+        work.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules(
+                        "work",
+                        vec![Rule::When {
+                            on: "legacy flag.enabled".to_string(),
+                            then: "yes".to_string(),
+                            next: "no".to_string(),
+                        }],
+                    ),
+                    ChildEntry::reference("yes"),
+                    ChildEntry::reference("no"),
+                ],
+            ),
+            work,
+            command_node("yes"),
+            command_node("no"),
+        ]);
+        wf.schemas.insert(
+            "result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "legacy flag".to_string(),
+                    SchemaDef::Object {
+                        properties: BTreeMap::from([("enabled".to_string(), SchemaDef::Boolean)]),
+                        required: BTreeSet::from(["enabled".to_string()]),
+                    },
+                )]),
+                required: BTreeSet::new(),
+            },
+        );
+
+        // When
+        let errors = validate_rules(&wf);
+        let decision = route_from(
+            &wf,
+            "work",
+            Some(&serde_json::json!({"legacy flag": {"enabled": true}})),
+        );
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(decision, RouteDecision::TransitionTo("yes".to_string()));
+    }
+
+    #[test]
+    fn test_述語_on全体の前後空白を段数によらず拒否する() {
+        // Given
+        let node = command_node("work");
+        let wf = workflow(vec![node]);
+        let node = wf.node_by_name("work").unwrap();
+
+        for field in [" ok", "ok ", " outer.enabled", "outer.enabled "] {
+            // When
+            let result = validate_routing_field(&wf, node, field, RoutingFieldKind::Boolean);
+
+            // Then
+            assert!(result.is_err(), "{field:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn test_when多段参照_中間段がoptionalでもrequired_booleanで分岐する() {
+        // Given
+        let mut work = command_node("work");
+        work.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules(
+                        "work",
+                        vec![Rule::When {
+                            on: "outer.flag".to_string(),
+                            then: "yes".to_string(),
+                            next: "no".to_string(),
+                        }],
+                    ),
+                    ChildEntry::reference("yes"),
+                    ChildEntry::reference("no"),
+                ],
+            ),
+            work,
+            command_node("yes"),
+            command_node("no"),
+        ]);
+        wf.schemas.insert(
+            "result".to_string(),
+            nested_schema("flag", SchemaDef::Boolean, true),
+        );
+
+        // When
+        let errors = validate_rules(&wf);
+        let when_true = route_from(
+            &wf,
+            "work",
+            Some(&serde_json::json!({"outer": {"flag": true}})),
+        );
+        let when_false = route_from(
+            &wf,
+            "work",
+            Some(&serde_json::json!({"outer": {"flag": false}})),
+        );
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(when_true, RouteDecision::TransitionTo("yes".to_string()));
+        assert_eq!(when_false, RouteDecision::TransitionTo("no".to_string()));
+    }
+
+    #[test]
+    fn test_switch多段参照_required_string_enumで分岐し網羅性を検査する() {
+        // Given
+        let mut work = command_node("work");
+        work.artifact = Some("result".to_string());
+        let cases = BTreeMap::from([
+            ("A".to_string(), "a".to_string()),
+            ("B".to_string(), "b".to_string()),
+        ]);
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry_with_rules(
+                        "work",
+                        vec![Rule::Switch {
+                            on: "outer.verdict".to_string(),
+                            cases,
+                            next: Some("failed".to_string()),
+                        }],
+                    ),
+                    ChildEntry::reference("a"),
+                    ChildEntry::reference("b"),
+                    ChildEntry::reference("failed"),
+                ],
+            ),
+            work,
+            command_node("a"),
+            command_node("b"),
+            command_node("failed"),
+        ]);
+        wf.schemas.insert(
+            "result".to_string(),
+            nested_schema(
+                "verdict",
+                SchemaDef::String {
+                    r#enum: Some(vec!["A".to_string(), "B".to_string()]),
+                },
+                true,
+            ),
+        );
+
+        // When
+        let errors = validate_rules(&wf);
+        let decision = route_from(
+            &wf,
+            "work",
+            Some(&serde_json::json!({"outer": {"verdict": "B"}})),
+        );
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(decision, RouteDecision::TransitionTo("b".to_string()));
+
+        // When
+        let NodeKind::Sequence(sequence) = &mut wf.nodes[0].kind else {
+            unreachable!();
+        };
+        let Rule::Switch {
+            cases,
+            next: switch_next,
+            ..
+        } = sequence.children[0]
+            .rules
+            .as_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        cases.remove("B");
+        *switch_next = None;
+        let errors = validate_rules(&wf);
+
+        // Then
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            RoutingValidationError::SwitchMissingCases { missing, .. }
+                if missing == &vec!["B".to_string()]
+        )));
+    }
+
+    #[test]
+    fn test_多段述語_存在しない段と非object中間段と末端型不一致を拒否する() {
+        // Given
+        let mut node = command_node("work");
+        node.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![node]);
+        wf.schemas.insert(
+            "result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([
+                    ("scalar".to_string(), SchemaDef::String { r#enum: None }),
+                    (
+                        "outer".to_string(),
+                        SchemaDef::Object {
+                            properties: BTreeMap::from([
+                                ("text".to_string(), SchemaDef::String { r#enum: None }),
+                                ("optional".to_string(), SchemaDef::Boolean),
+                                (
+                                    "empty".to_string(),
+                                    SchemaDef::String {
+                                        r#enum: Some(Vec::new()),
+                                    },
+                                ),
+                            ]),
+                            required: BTreeSet::from(["text".to_string(), "empty".to_string()]),
+                        },
+                    ),
+                ]),
+                required: BTreeSet::new(),
+            },
+        );
+        let node = wf.node_by_name("work").unwrap();
+
+        // When / Then
+        assert!(
+            validate_routing_field(&wf, node, "outer.missing", RoutingFieldKind::Boolean).is_err()
+        );
+        assert!(
+            validate_routing_field(&wf, node, "scalar.leaf", RoutingFieldKind::Boolean).is_err()
+        );
+        assert!(
+            validate_routing_field(&wf, node, "outer.text", RoutingFieldKind::Boolean).is_err()
+        );
+        assert!(
+            validate_routing_field(&wf, node, "outer.optional", RoutingFieldKind::Boolean).is_err()
+        );
+        assert!(validate_routing_field(&wf, node, "outer.empty", RoutingFieldKind::Enum).is_err());
+    }
+
+    #[test]
+    fn test_述語_1段のcommand_okとartifact_fieldの従来挙動を維持する() {
+        // Given
+        let command = command_node("command");
+        let mut session = command_node("session");
+        session.artifact = Some("result".to_string());
+        let mut wf = workflow(vec![command, session]);
+        wf.schemas.insert(
+            "result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([("flag".to_string(), SchemaDef::Boolean)]),
+                required: BTreeSet::from(["flag".to_string()]),
+            },
+        );
+
+        // When / Then
+        assert!(validate_routing_field(
+            &wf,
+            wf.node_by_name("command").unwrap(),
+            "ok",
+            RoutingFieldKind::Boolean,
+        )
+        .is_ok());
+        assert!(validate_routing_field(
+            &wf,
+            wf.node_by_name("session").unwrap(),
+            "flag",
+            RoutingFieldKind::Boolean,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1196,6 +1648,9 @@ mod routing_tests {
     fn test_パラメータ配線_供給元参照のroot分解() {
         let source = InputSourceRef::new("collect_inputs.spec_dir");
         assert_eq!(source.root(), "collect_inputs");
-        assert_eq!(source.field(), Some("spec_dir"));
+        assert_eq!(
+            source.raw().split_once('.').map(|(_, field)| field),
+            Some("spec_dir")
+        );
     }
 }

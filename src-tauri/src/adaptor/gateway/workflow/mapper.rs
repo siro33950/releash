@@ -139,10 +139,10 @@ fn domain_items_source_to_schema(
         domain::ItemsSource::Literal(values) => {
             crate::adaptor::gateway::workflow::schema::ItemsSource::Literal(values.clone())
         }
-        domain::ItemsSource::ArtifactField { node, field } => {
+        domain::ItemsSource::ArtifactField { node, field_path } => {
             crate::adaptor::gateway::workflow::schema::ItemsSource::ArtifactField {
                 node: node.clone(),
-                field: field.clone(),
+                field_path: field_path.clone(),
             }
         }
     }

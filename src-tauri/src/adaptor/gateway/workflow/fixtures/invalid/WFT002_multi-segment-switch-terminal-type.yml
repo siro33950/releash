@@ -1,0 +1,28 @@
+name: multi-segment-switch-terminal-type
+description: nested switch reference resolves to a required boolean
+schemas:
+  output:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          flag:
+            type: boolean
+        required: [flag]
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - switch:
+              on: route.flag
+              cases:
+                "true": target
+      - target
+  source:
+    command: source
+    artifact: output
+  target:
+    command: target

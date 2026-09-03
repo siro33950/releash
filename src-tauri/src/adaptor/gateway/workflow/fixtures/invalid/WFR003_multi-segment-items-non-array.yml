@@ -1,0 +1,24 @@
+name: multi-segment-items-non-array
+description: nested fanout items resolves to a scalar
+schemas:
+  output:
+    type: object
+    properties:
+      batch:
+        type: object
+        properties:
+          values: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: output
+  spread:
+    fanout:
+      items: source.batch.values
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]

@@ -1,0 +1,12 @@
+name: multi-segment-template-non-object
+description: nested template reference traverses a scalar
+schemas:
+  document:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    command: echo {{ doc.outer.value }}
+    input:
+    - doc: document

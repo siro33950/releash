@@ -1,0 +1,15 @@
+name: multi-segment-template-missing
+description: nested template reference has a missing intermediate field
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: echo {{ doc.outer.missing.value }}
+    input:
+    - doc: document

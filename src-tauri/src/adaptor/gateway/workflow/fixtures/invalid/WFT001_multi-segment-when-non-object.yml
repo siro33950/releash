@@ -1,0 +1,26 @@
+name: multi-segment-when-non-object
+description: nested when reference traverses a scalar
+schemas:
+  output:
+    type: object
+    properties:
+      route: string
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - when:
+              on: route.flag
+              then: "yes"
+            next: "no"
+      - "yes"
+      - "no"
+  source:
+    command: source
+    artifact: output
+  "yes":
+    command: yes
+  "no":
+    command: no

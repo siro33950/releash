@@ -593,7 +593,7 @@ fn dynamic_fanout_with_sequence_child_definition() -> WorkflowDefinition {
                     children: vec![ChildEntry::reference("review-sequence")],
                     items: Some(ItemsSource::ArtifactField {
                         node: "source".to_string(),
-                        field: "items".to_string(),
+                        field_path: crate::domain::workflow::FieldPath::new(["items"]),
                     }),
                 }),
                 ..NodeDefinition::default()

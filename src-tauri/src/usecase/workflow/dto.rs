@@ -378,8 +378,8 @@ fn fanout_to_dto(fanout: &domain::FanoutSpec) -> FanoutSpecDto {
 fn items_source_to_dto(items: &domain::ItemsSource) -> ItemsSourceDto {
     match items {
         domain::ItemsSource::Literal(values) => ItemsSourceDto::Literal(values.clone()),
-        domain::ItemsSource::ArtifactField { node, field } => {
-            ItemsSourceDto::ArtifactField(format!("{node}.{field}"))
+        domain::ItemsSource::ArtifactField { node, field_path } => {
+            ItemsSourceDto::ArtifactField(format!("{node}.{}", field_path.as_string()))
         }
     }
 }

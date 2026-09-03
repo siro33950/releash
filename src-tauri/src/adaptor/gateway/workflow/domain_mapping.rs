@@ -172,10 +172,12 @@ fn facet_refs_to_domain(facets: &schema::FacetRefs) -> domain::FacetRefs {
 fn items_source_to_domain(items: &schema::ItemsSource) -> domain::ItemsSource {
     match items {
         schema::ItemsSource::Literal(values) => domain::ItemsSource::Literal(values.clone()),
-        schema::ItemsSource::ArtifactField { node, field } => domain::ItemsSource::ArtifactField {
-            node: node.clone(),
-            field: field.clone(),
-        },
+        schema::ItemsSource::ArtifactField { node, field_path } => {
+            domain::ItemsSource::ArtifactField {
+                node: node.clone(),
+                field_path: field_path.clone(),
+            }
+        }
     }
 }
 
@@ -262,7 +264,7 @@ mod tests {
                     ],
                     items: Some(schema::ItemsSource::ArtifactField {
                         node: "plan".to_string(),
-                        field: "targets".to_string(),
+                        field_path: domain::FieldPath::new(["targets"]),
                     }),
                 }),
                 ..Default::default()
@@ -284,7 +286,7 @@ mod tests {
             fanout.items,
             Some(domain::ItemsSource::ArtifactField {
                 node: "plan".to_string(),
-                field: "targets".to_string(),
+                field_path: domain::FieldPath::new(["targets"]),
             })
         );
     }
