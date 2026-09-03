@@ -53,6 +53,17 @@ vi.mock("@xterm/addon-fit", () => {
 	};
 });
 
+vi.mock("@xterm/addon-web-links", () => {
+	return {
+		WebLinksAddon: class MockWebLinksAddon {
+			constructor(
+				readonly handler?: (event: MouseEvent, uri: string) => void,
+				readonly options?: Record<string, unknown>,
+			) {}
+		},
+	};
+});
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({
 	open: vi.fn().mockResolvedValue(null),
 }));

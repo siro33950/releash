@@ -1,4 +1,5 @@
 import { renderHook, waitFor } from "@testing-library/react";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
 import { resetTerminalPerformanceSwitchesCache } from "@/lib/terminalPerformanceSwitches";
@@ -82,6 +83,7 @@ const REPO_WORKSPACE_OWNER = {
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
+const mockOpenUrl = vi.fn();
 const mockChannels: Array<{ onmessage: (message: unknown) => void }> = [];
 let mockChannelConstructionError: Error | null = null;
 let mockOnDataCallback: (data: string) => void = () => {};
@@ -89,6 +91,7 @@ let mockTerminalConstructorOptions: Record<string, unknown> = {};
 let mockTerminalInstance: {
 	loadAddon: ReturnType<typeof vi.fn>;
 	open: ReturnType<typeof vi.fn>;
+	element: HTMLElement | undefined;
 	focus: ReturnType<typeof vi.fn>;
 	write: ReturnType<typeof vi.fn>;
 	resize: ReturnType<typeof vi.fn>;
@@ -122,11 +125,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+vi.mock("@tauri-apps/plugin-opener", () => ({
+	openUrl: (...args: unknown[]) => mockOpenUrl(...args),
+}));
+
 vi.mock("@xterm/xterm", () => {
 	return {
 		Terminal: class MockTerminal {
 			loadAddon = vi.fn();
-			open = vi.fn();
+			open = vi.fn((parent: HTMLElement) => {
+				this.element = document.createElement("div");
+				this.element.className = "xterm";
+				parent.append(this.element);
+			});
 			focus = vi.fn();
 			write = vi.fn((_data: string, callback?: () => void) => callback?.());
 			resize = vi.fn((cols: number, rows: number) => {
@@ -144,6 +155,7 @@ vi.mock("@xterm/xterm", () => {
 			dispose = vi.fn();
 			refresh = vi.fn();
 			options: Record<string, unknown> = {};
+			element: HTMLElement | undefined;
 			rows = 24;
 			cols = 80;
 
@@ -243,6 +255,23 @@ function terminalInputWrites() {
 
 let mockFitAddonInstance: { fit: ReturnType<typeof vi.fn> };
 
+interface MockWebLinksAddon {
+	handler: (event: MouseEvent, url: string) => void;
+	options: {
+		hover: (event: MouseEvent, url: string, range: unknown) => void;
+		leave: (event: MouseEvent, url: string) => void;
+		urlRegex?: RegExp;
+	};
+}
+
+function getMockWebLinksAddon(): MockWebLinksAddon {
+	const addon = mockTerminalInstance.loadAddon.mock.calls
+		.map(([loadedAddon]) => loadedAddon)
+		.find((loadedAddon) => loadedAddon instanceof WebLinksAddon);
+	if (!addon) throw new Error("WebLinksAddon was not loaded");
+	return addon as unknown as MockWebLinksAddon;
+}
+
 vi.mock("@xterm/addon-fit", () => {
 	return {
 		FitAddon: class MockFitAddon {
@@ -279,6 +308,7 @@ describe("useTerminal", () => {
 		vi.clearAllMocks();
 		mockInvoke.mockReset();
 		mockListen.mockReset();
+		mockOpenUrl.mockReset().mockResolvedValue(undefined);
 		mockChannels.length = 0;
 		mockChannelConstructionError = null;
 		mockTerminalConstructorOptions = {};
@@ -345,6 +375,123 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.open).toHaveBeenCalledWith(
 			containerRef.current,
 		);
+	});
+
+	it("Terminal constructor optionsへlinkHandlerを渡す", () => {
+		renderHook(() => useTerminal(containerRef));
+
+		expect(mockTerminalConstructorOptions.linkHandler).toEqual({
+			activate: expect.any(Function),
+			hover: expect.any(Function),
+			leave: expect.any(Function),
+		});
+	});
+
+	it("OSC 8 linkのactivateでopenUrlを使いwindow.openを呼ばない", () => {
+		const windowOpen = vi.spyOn(window, "open");
+		renderHook(() => useTerminal(containerRef));
+		const linkHandler = mockTerminalConstructorOptions.linkHandler as {
+			activate: (event: MouseEvent, url: string, range: unknown) => void;
+		};
+		const url = "https://example.com/osc-8";
+
+		linkHandler.activate(new MouseEvent("click"), url, {});
+
+		expect(mockOpenUrl).toHaveBeenCalledWith(url);
+		expect(windowOpen).not.toHaveBeenCalled();
+		windowOpen.mockRestore();
+	});
+
+	it("WebLinksAddonをTerminal初期化時に同期loadする", () => {
+		renderHook(() => useTerminal(containerRef));
+
+		expect(mockTerminalInstance.loadAddon).toHaveBeenCalledWith(
+			expect.any(WebLinksAddon),
+		);
+		expect(mockWebglAddonInstances).toHaveLength(0);
+	});
+
+	it("WebLinksAddon handlerでopenUrlを呼ぶ", () => {
+		const windowOpen = vi.spyOn(window, "open");
+		renderHook(() => useTerminal(containerRef));
+		const webLinksAddon = getMockWebLinksAddon();
+		const url = "https://example.com/plain-text";
+
+		webLinksAddon.handler(new MouseEvent("click"), url);
+
+		expect(mockOpenUrl).toHaveBeenCalledWith(url);
+		expect(windowOpen).not.toHaveBeenCalled();
+		windowOpen.mockRestore();
+	});
+
+	it("OSC 8 linkHandlerのhoverとleaveをtooltipへ接続する", () => {
+		renderHook(() => useTerminal(containerRef));
+		const linkHandler = mockTerminalConstructorOptions.linkHandler as {
+			hover: (event: MouseEvent, url: string, range: unknown) => void;
+			leave: (event: MouseEvent, url: string, range: unknown) => void;
+		};
+		const url = "https://example.com/osc-8-tooltip";
+
+		linkHandler.hover(new MouseEvent("mousemove"), url, {});
+
+		expect(mockTerminalInstance.element).toHaveTextContent(url);
+		expect(
+			mockTerminalInstance.element?.querySelector(".xterm-hover"),
+		).toHaveClass("xterm-hover");
+
+		linkHandler.leave(new MouseEvent("mouseleave"), url, {});
+
+		expect(
+			mockTerminalInstance.element?.querySelector(".xterm-hover"),
+		).toBeNull();
+	});
+
+	it("WebLinksAddon optionsのhoverとleaveをtooltipへ接続する", () => {
+		renderHook(() => useTerminal(containerRef));
+		const webLinksAddon = getMockWebLinksAddon();
+		const url = "https://example.com/plain-text-tooltip";
+
+		webLinksAddon.options.hover(new MouseEvent("mousemove"), url, {});
+
+		expect(mockTerminalInstance.element).toHaveTextContent(url);
+
+		webLinksAddon.options.leave(new MouseEvent("mouseleave"), url);
+
+		expect(
+			mockTerminalInstance.element?.querySelector(".xterm-hover"),
+		).toBeNull();
+	});
+
+	it("WebLinksAddon optionsで既定urlRegexを上書きしない", () => {
+		renderHook(() => useTerminal(containerRef));
+		const webLinksAddon = getMockWebLinksAddon();
+
+		expect(webLinksAddon.options).not.toHaveProperty("urlRegex");
+	});
+
+	it("linkHandlerでallowNonHttpProtocolsを有効にしない", () => {
+		renderHook(() => useTerminal(containerRef));
+
+		expect(mockTerminalConstructorOptions.linkHandler).not.toHaveProperty(
+			"allowNonHttpProtocols",
+		);
+	});
+
+	it("unmount時に表示中のlink tooltipを解放する", () => {
+		const { unmount } = renderHook(() => useTerminal(containerRef));
+		const linkHandler = mockTerminalConstructorOptions.linkHandler as {
+			hover: (event: MouseEvent, url: string, range: unknown) => void;
+		};
+		linkHandler.hover(
+			new MouseEvent("mousemove"),
+			"https://example.com/cleanup",
+			{},
+		);
+		const terminalElement = mockTerminalInstance.element;
+
+		unmount();
+
+		expect(terminalElement?.querySelector(".xterm-hover")).toBeNull();
 	});
 
 	it("既定でWebGL addonをロードしcontext loss時のfallbackを設定する", async () => {
