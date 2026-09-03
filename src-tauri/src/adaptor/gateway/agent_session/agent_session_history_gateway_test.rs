@@ -240,6 +240,36 @@ async fn test_provider_session_title_gateway_claudeはai_titleが末尾64kib外�
 }
 
 #[tokio::test]
+async fn test_provider_session_title_gateway_claudeは壊れた行を読み飛ばして直前を返す() {
+    let directory = tempfile::tempdir().unwrap();
+    let claude_root = directory.path().join("claude");
+    let codex_root = directory.path().join("codex");
+    let project = claude_root.join("projects").join("-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("claude-partial.jsonl"),
+        concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Committed title\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Being appen",
+        ),
+    )
+    .unwrap();
+    let gateway = LocalAgentSessionHistoryGateway::new(claude_root, codex_root);
+
+    let title = gateway
+        .read_title(ProviderSessionTitleRequest {
+            provider: ProviderKind::Claude,
+            provider_session_id: "claude-partial".to_string(),
+            worktree_path: "/repo/worktree".to_string(),
+            transcript_ref: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(title.as_deref(), Some("Committed title"));
+}
+
+#[tokio::test]
 async fn test_provider_session_title_gateway_codexはthreads_nameをread_onlyで読みtitleを使わない() {
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
@@ -386,6 +416,39 @@ async fn test_agent_session_history_gateway_指定した可視idだけのタイ�
     assert_eq!(
         codex[0].first_user_prompt.as_deref(),
         Some("Codex first prompt")
+    );
+}
+
+#[tokio::test]
+async fn test_agent_session_history_gateway_claudeは壊れた行を読み飛ばして次を読む() {
+    let directory = tempfile::tempdir().unwrap();
+    let claude_root = directory.path().join("claude");
+    let codex_root = directory.path().join("codex");
+    let project = claude_root.join("projects").join("-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("claude-broken.jsonl"),
+        concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"Claude first prompt\"}}\n",
+        ),
+    )
+    .unwrap();
+    let gateway = LocalAgentSessionHistoryGateway::new(claude_root, codex_root);
+
+    let entries = gateway
+        .list_session_titles(
+            ProviderKind::Claude,
+            "/repo/worktree",
+            &["claude-broken".to_string()],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].first_user_prompt.as_deref(),
+        Some("Claude first prompt")
     );
 }
 

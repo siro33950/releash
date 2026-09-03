@@ -22,7 +22,7 @@ impl AgentSessionDisplayName {
 }
 
 #[cfg(test)]
-mod tests {
+mod agent_session_display_name_tests {
     use super::*;
 
     #[test]

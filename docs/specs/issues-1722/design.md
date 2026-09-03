@@ -218,7 +218,7 @@ session ごとの最終読み取り時刻を持たず、単一の tick カウン
 
 - 基準 tick = 20 秒。
 - タイトル未取得の AgentSession は毎 tick 読む → 読み取りの間隔は 20 秒。
-- タイトル取得済みの AgentSession は 15 tick ごと（= 5 分）に読む → 読み取りの間隔は 5 分。
+- タイトル取得済みの AgentSession は 15 tick ごと（= 5 分）の共通の tick 境界で読む → 定常の読み取り間隔は 5 分。タイトルを取得した直後は、次の共通の tick 境界までの残りの間隔で 1 度読み直されることがある（最短 20 秒）。
 
 規則（`tick`、`has_title`）→ 読むか、と2つの定数は `domain/agent_session/` に置く。session ごとの scheduling state を持たないため、再起動やセッション増減で状態を復元する必要がない。
 

@@ -8,7 +8,7 @@ pub(crate) fn should_read_provider_session_title(tick: u64, has_title: bool) -> 
 }
 
 #[cfg(test)]
-mod tests {
+mod provider_session_title_cadence_tests {
     use super::{
         should_read_provider_session_title, PROVIDER_SESSION_TITLE_REFRESH_TICKS,
         PROVIDER_SESSION_TITLE_TICK_INTERVAL,

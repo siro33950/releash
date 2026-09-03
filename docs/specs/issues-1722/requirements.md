@@ -104,7 +104,7 @@
 - R-009: 手動 rename の名前は Releash 側だけが持ち、provider 側へ名前を書き込まない。Claude の `custom-title` は読み取らない。Codex の thread name は自動生成名と `SetThreadName` が同じ保存先を使い供給源の側で区別できないため、Codex について「カスタム名を読み取らない」ことは保証せず、手動 rename が provider のセッションタイトルより優先される R-001 によって、rename 済みの表示名が Codex 側の名前に上書きされないことを保証する。
 - R-010: provider のセッションタイトルの供給源は、Claude が transcript の `ai-title`、Codex が thread name とする。provider hook の payload はタイトルを含まないため、hook とは別の経路で読む。
 - R-011: provider のセッションタイトルの定期的な取り込みは、活動中の AgentSession のみを対象とする。provider session が終了した AgentSession、および `paused` / `archived` になった AgentSession のタイトルは再取得しない。
-- R-012: 定期的な取り込みの間隔は、タイトルが未取得の AgentSession で 20 秒、取得済みの AgentSession で 5 分とする。
+- R-012: 定期的な取り込みは 20 秒の基準 tick で行う。タイトルが未取得の AgentSession は毎 tick、取得済みの AgentSession は 15 tick（5 分）ごとの共通の tick 境界で読む。AgentSession ごとの読み取り時刻は持たないため、タイトルを取得した直後の AgentSession は、次の共通の tick 境界までの残りの間隔で 1 度読み直されることがある。
 - R-013: タイトルの読み取りは最小に保つ。transcript の全走査を行わない。
 - R-014: Provider history 一覧の各行は、provider のセッションタイトル、最初のユーザープロンプトの冒頭、provider 名と短縮した provider session id の順に、最初に存在する値を表示する。provider session id をそのまま表示しない。
 - R-015: Session Node は、AgentSession が bind されるまでの間、表示名を変更できない。bind された後は変更できる。

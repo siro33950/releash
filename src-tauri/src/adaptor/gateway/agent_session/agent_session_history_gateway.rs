@@ -188,8 +188,9 @@ fn claude_session_title(
         if line.is_empty() {
             continue;
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(line).map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
         if value.get("type").and_then(serde_json::Value::as_str) != Some("ai-title") {
             continue;
         }
@@ -227,8 +228,9 @@ fn claude_first_user_prompt(
         if line.is_empty() {
             continue;
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(line).map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
         if value.get("type").and_then(serde_json::Value::as_str) != Some("user")
             || value.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true)
         {

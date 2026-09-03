@@ -45,7 +45,7 @@ fn truncate_prompt(prompt: String) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod provider_history_label_tests {
     use super::provider_history_label;
     use crate::domain::provider_lifecycle::ProviderKind;
 
