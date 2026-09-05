@@ -26,6 +26,13 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 | workflow 定義構文（YAML / Lua / Diagnostic） | `docs/glossary/WORKFLOW.md` |
 | spec | `docs/specs/<name>/{requirements,behavior,design}.md` |
 
+変更内容に応じて、着手前に次を確認する。
+
+- Rust を変更する場合は、対象レイヤーの規約と `docs/architecture/TEST.md` を読む。
+- ドメインの型・規則・状態所有を変更する場合は、`docs/glossary/DOMAIN.md` を読む。
+- workflow 定義構文を変更する場合は、`docs/glossary/WORKFLOW.md` と対象 spec を読む。
+- 振る舞いを変更する場合は、対象 spec の requirements / behavior / design を確認する。
+
 ## アーキテクチャ原則
 
 ### Rust がロジックを所有する
@@ -35,7 +42,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 - Rust 側に置くのは、ビジネスロジック全般、データ変換・加工・計算、バリデーション、外部リソースアクセス（ファイル、Git、ネットワーク等）。
 - 新しい振る舞いは Rust の usecase / query service / Tauri command の背後に実装し、frontend からは `invoke` で呼ぶ。
 - workflow、session、artifact、terminal、review、persistence のロジックを React hook や UI component に追加しない。
-- 触った frontend code に既存ロジックが残っている場合は、タスクのスコープ内で可能な範囲で Rust 境界へ移す。
+- 依頼された振る舞いの実装・修正に必要な既存ロジックは Rust 境界へ移す。依頼に直接関係しない既存ロジックは、所在と問題を報告し、移設は別途合意する。
 
 ### 状態の所有者を明確にする
 
@@ -66,10 +73,17 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 CI と同じコマンドを使う。`.github/workflows/ci.yml` を参照。
 
+- 調査・提案のみでファイルを変更しない場合、ビルドやテストは実行しない。
+- 文書のみの変更では、差分・参照先・指示の整合性を確認する。アプリケーションのビルドやテストは実行しない。
+- 実装変更では、変更に関係する検証と必須チェックを行う。テスト追加の必須／柔軟は `docs/architecture/TEST.md` に従う。
+- 必須チェックが成功した後は、新たな変更・失敗・未解決の懸念がない限り再実行しない。
+- 実行できないチェックは理由と未検証範囲を報告し、成功扱いにしない。
+- lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告し、`pnpm lint:fix` による一括修正で範囲外の変更を混ぜない。
+
 プロジェクトルート:
 
 ```bash
-pnpm lint              # 落ちたら pnpm lint:fix
+pnpm lint
 pnpm test
 pnpm build
 pnpm test:integration
