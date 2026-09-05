@@ -176,7 +176,7 @@ function WorkspaceNodeRow({
 	onToggleHistory?: () => void;
 	onArchiveSession?: () => void;
 	onDeleteSession?: () => void;
-	onRename: (name: string) => void | Promise<void>;
+	onRename: (name: string) => Promise<boolean>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
@@ -209,8 +209,9 @@ function WorkspaceNodeRow({
 			cancelRename();
 			return;
 		}
-		await onRename(name);
-		setRenaming(false);
+		if (await onRename(name)) {
+			setRenaming(false);
+		}
 	};
 	const nodeIcon =
 		node.status === "unbound" ? (
@@ -466,7 +467,7 @@ function WorkspaceBranchRow({
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
-	onRenameNode: (node: WorkspaceNode, name: string) => void | Promise<void>;
+	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
@@ -542,7 +543,7 @@ function WorkspaceTreeItemRow({
 	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
 	onArchiveSession: (node: WorkspaceNode) => void | Promise<void>;
 	onDeleteSession: (node: WorkspaceNode) => void | Promise<void>;
-	onRenameNode: (node: WorkspaceNode, name: string) => void | Promise<void>;
+	onRenameNode: (node: WorkspaceNode, name: string) => Promise<boolean>;
 	onWorkflowAction: (
 		action: WorkflowExecutionAction,
 		item: WorkspaceTreeItem,
@@ -785,7 +786,7 @@ function WorktreeTreeItem({
 	);
 	const handleRenameNode = useCallback(
 		async (node: WorkspaceNode, name: string) => {
-			if (!branch.worktree_path) return;
+			if (!branch.worktree_path) return false;
 			setProviderActionError(null);
 			try {
 				await invoke("rename_workspace_session_node", {
@@ -793,8 +794,10 @@ function WorktreeTreeItem({
 					nodeId: node.id,
 					name,
 				});
+				return true;
 			} catch (error) {
 				setProviderActionError(getErrorMessage(error));
+				return false;
 			}
 		},
 		[branch.worktree_path],

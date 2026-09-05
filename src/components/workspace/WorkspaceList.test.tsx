@@ -770,6 +770,54 @@ describe("WorkspaceList", () => {
 		expect(screen.queryByText("New title")).not.toBeInTheDocument();
 	});
 
+	it("rename失敗時は入力を保持し再送信の成功後に編集を閉じる", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "retry-rename-session",
+					title: "Current title",
+					canRename: true,
+				}),
+			],
+			archivedSessions: [],
+		});
+		const rename = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Rename failed"))
+			.mockResolvedValueOnce(undefined);
+		mocks.invoke.mockImplementation((command: string, args: unknown) => {
+			if (command === "rename_workspace_session_node") return rename(args);
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		await user.click(
+			screen.getByRole("button", { name: "Rename Current title" }),
+		);
+		const input = screen.getByRole("textbox", {
+			name: "Rename Current title",
+		});
+		await user.clear(input);
+		await user.type(input, "New title{Enter}");
+
+		expect(await screen.findByText("Rename failed")).toBeVisible();
+		expect(input).toHaveValue("New title");
+		expect(input).toHaveFocus();
+
+		await user.keyboard("{Enter}");
+
+		await waitFor(() => {
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+		});
+		expect(rename).toHaveBeenCalledTimes(2);
+		expect(rename).toHaveBeenNthCalledWith(2, {
+			worktreePath: "/repo/wt",
+			nodeId: "retry-rename-session",
+			name: "New title",
+		});
+		expect(screen.queryByText("Rename failed")).not.toBeInTheDocument();
+	});
+
 	it.each([
 		["Escape", "{Escape}"],
 		["blur", "{Tab}"],
