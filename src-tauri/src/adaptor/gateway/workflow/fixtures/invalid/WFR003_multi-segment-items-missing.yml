@@ -1,0 +1,27 @@
+name: multi-segment-items-missing
+description: nested fanout items reference has a missing intermediate field
+schemas:
+  output:
+    type: object
+    properties:
+      batch:
+        type: object
+        properties:
+          values:
+            type: array
+            items: text
+  text: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: output
+  spread:
+    fanout:
+      items: source.batch.missing.values
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]

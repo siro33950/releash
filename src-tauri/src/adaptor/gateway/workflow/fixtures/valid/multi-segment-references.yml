@@ -1,0 +1,81 @@
+name: multi-segment-references
+description: valid multi-segment references across workflow surfaces
+schemas:
+  text: string
+  document:
+    type: object
+    properties:
+      nested:
+        type: object
+        properties:
+          title: string
+  source-output:
+    type: object
+    properties:
+      payload:
+        type: object
+        properties:
+          nested:
+            type: object
+            properties:
+              title: string
+      route:
+        type: object
+        properties:
+          flag:
+            type: boolean
+          status:
+            type: string
+            enum: [ready]
+        required: [flag, status]
+      batch:
+        type: object
+        properties:
+          values:
+            type: array
+            items: text
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - when:
+              on: route.flag
+              then: target
+            next: target
+      - target:
+          inputs:
+            doc: source.payload
+            title: source.payload.nested.title
+      - classifier:
+          rules:
+          - switch:
+              on: route.status
+              cases:
+                ready: spread
+            next: spread
+      - spread
+  source:
+    command: source
+    artifact: source-output
+  target:
+    command: echo {{ doc.nested.title }} {{ opaque.any.depth }}
+    input:
+    - doc: document
+    - title: text
+    - opaque
+    env:
+      TITLE: doc.nested.title
+      OPAQUE: opaque.any.depth
+  classifier:
+    command: classify
+    artifact: source-output
+  spread:
+    fanout:
+      items: source.batch.values
+      children: [worker]
+  worker:
+    command: worker
+    input:
+    - item: text

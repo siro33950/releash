@@ -117,6 +117,24 @@ mod tests {
     }
 
     #[test]
+    fn test_facet保存_多段template参照を受理する() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let repo = WorkflowFacetFileRepository::new(tmp.path());
+        let content = "Use {{ context.outer.inner.value }}";
+
+        // When
+        repo.save(FacetKind::Instruction, "nested", content, true)
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("instructions/nested.md")).unwrap(),
+            content
+        );
+    }
+
+    #[test]
     fn list_summaries_preserves_existing_shape_fields() {
         let tmp = TempDir::new().unwrap();
         let repo = WorkflowFacetFileRepository::new(tmp.path());

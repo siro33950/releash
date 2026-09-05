@@ -1,0 +1,21 @@
+name: multi-segment-items-non-object
+description: nested fanout items reference traverses a scalar
+schemas:
+  output:
+    type: object
+    properties:
+      batch: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: output
+  spread:
+    fanout:
+      items: source.batch.values
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]

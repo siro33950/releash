@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -238,15 +239,108 @@ struct InputDraft {
 enum SourceDraft {
     Node {
         node: usize,
-        fields: Vec<String>,
+        path: usize,
+        location: LuaSourceLocation,
     },
     Input {
         input: usize,
-        fields: Vec<String>,
+        path: usize,
         location: LuaSourceLocation,
     },
     Request,
     Items,
+}
+
+impl SourceDraft {
+    fn path(&self) -> usize {
+        match self {
+            Self::Node { path, .. } | Self::Input { path, .. } => *path,
+            Self::Request => SourcePaths::REQUEST,
+            Self::Items => SourcePaths::ITEMS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SourceRoot {
+    Node(usize),
+    Input(usize),
+}
+
+#[derive(Debug, Default)]
+struct SourcePaths {
+    roots: HashMap<SourceRoot, usize>,
+    children: HashMap<usize, HashMap<String, usize>>,
+    parents: Vec<Option<(usize, String)>>,
+    consumed: RefCell<HashSet<usize>>,
+}
+
+impl SourcePaths {
+    const REQUEST: usize = 0;
+    const ITEMS: usize = 1;
+
+    fn new() -> Self {
+        Self {
+            parents: vec![None, None],
+            ..Self::default()
+        }
+    }
+
+    fn root(&mut self, root: SourceRoot) -> usize {
+        if let Some(path) = self.roots.get(&root) {
+            return *path;
+        }
+        let path = self.parents.len();
+        self.parents.push(None);
+        self.roots.insert(root, path);
+        path
+    }
+
+    fn child(&mut self, parent: usize, field: &str) -> usize {
+        if let Some(path) = self
+            .children
+            .get(&parent)
+            .and_then(|children| children.get(field))
+        {
+            return *path;
+        }
+        let path = self.parents.len();
+        self.parents.push(Some((parent, field.to_string())));
+        self.children
+            .entry(parent)
+            .or_default()
+            .insert(field.to_string(), path);
+        path
+    }
+
+    fn is_root(&self, path: usize) -> bool {
+        self.parents[path].is_none()
+    }
+
+    fn fields(&self, mut path: usize) -> Vec<String> {
+        let mut fields = Vec::new();
+        while let Some((parent, field)) = &self.parents[path] {
+            fields.push(field.clone());
+            path = *parent;
+        }
+        fields.reverse();
+        fields
+    }
+
+    fn mark(&self, path: usize) {
+        let mut consumed = self.consumed.borrow_mut();
+        let mut current = Some(path);
+        while let Some(path) = current {
+            if !consumed.insert(path) {
+                break;
+            }
+            current = self.parents[path].as_ref().map(|(parent, _)| *parent);
+        }
+    }
+
+    fn contains(&self, path: usize) -> bool {
+        self.consumed.borrow().contains(&path)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +394,7 @@ struct WorkflowLuaHost {
     failures: Vec<OnFailure>,
     inputs: Vec<InputDraft>,
     sources: Vec<SourceDraft>,
+    source_paths: SourcePaths,
     schemas: Vec<SchemaDraft>,
     facets: Vec<FacetDraft>,
     workflows: Vec<WorkflowDraft>,
@@ -318,6 +413,7 @@ impl WorkflowLuaHost {
             failures: vec![OnFailure::Ignore],
             inputs: Vec::new(),
             sources: vec![SourceDraft::Request, SourceDraft::Items],
+            source_paths: SourcePaths::new(),
             schemas: Vec::new(),
             facets: Vec::new(),
             workflows: Vec::new(),
@@ -563,25 +659,20 @@ impl LuaHost for WorkflowLuaHost {
                 index,
             }));
         }
-        let (node, mut fields) = match handle.kind.as_str() {
-            HANDLE_NODE => (handle.index, Vec::new()),
+        let (node, parent_path) = match handle.kind.as_str() {
+            HANDLE_NODE => (
+                handle.index,
+                self.source_paths.root(SourceRoot::Node(handle.index)),
+            ),
             HANDLE_INPUT => {
-                return self.index_input(handle.index, Vec::new(), key, location);
+                let parent_path = self.source_paths.root(SourceRoot::Input(handle.index));
+                return self.index_input(handle.index, parent_path, key, location);
             }
             HANDLE_SOURCE => match self.sources.get(handle.index) {
-                Some(SourceDraft::Input { input, fields, .. }) => {
-                    return self.index_input(*input, fields.clone(), key, location);
+                Some(SourceDraft::Input { input, path, .. }) => {
+                    return self.index_input(*input, *path, key, location);
                 }
-                Some(SourceDraft::Node { node, fields }) if fields.is_empty() => {
-                    (*node, fields.clone())
-                }
-                Some(SourceDraft::Node { .. }) => {
-                    return Err(host_error(
-                        "WFR003",
-                        "nested artifact field references are not supported",
-                        location,
-                    ));
-                }
+                Some(SourceDraft::Node { node, path, .. }) => (*node, *path),
                 _ => {
                     return Err(host_error(
                         "WFR003",
@@ -598,10 +689,12 @@ impl LuaHost for WorkflowLuaHost {
                 ));
             }
         };
-        fields.push(key.to_string());
-        self.validate_artifact_path(node, &fields)
-            .map_err(|message| host_error("WFR003", message, location.clone()))?;
-        Ok(self.push_source(SourceDraft::Node { node, fields }))
+        let path = self.source_paths.child(parent_path, key);
+        Ok(self.push_source(SourceDraft::Node {
+            node,
+            path,
+            location,
+        }))
     }
 }
 
@@ -801,15 +894,15 @@ impl WorkflowLuaHost {
             None | Some(LuaData::Nil) => None,
             Some(value @ LuaData::Handle(_)) => {
                 let source = expect_handle(value, HANDLE_SOURCE)
-                    .or_else(|_| self.node_as_source_index(value))
+                    .or_else(|_| self.node_as_source_index(value, &location))
                     .map_err(|_| type_error("items", "Source or literal array", &location))?;
                 if let Some(SourceDraft::Input {
                     input,
-                    fields,
+                    path,
                     location: source_location,
                 }) = self.sources.get(source)
                 {
-                    if !fields.is_empty() && self.inputs[*input].contract.is_none() {
+                    if !self.source_paths.is_root(*path) && self.inputs[*input].contract.is_none() {
                         return Err(host_error(
                             "WFR003",
                             "input does not declare a contract",
@@ -819,7 +912,7 @@ impl WorkflowLuaHost {
                 }
                 if !matches!(
                     self.sources.get(source),
-                    Some(SourceDraft::Node { fields, .. }) if !fields.is_empty()
+                    Some(SourceDraft::Node { path, .. }) if !self.source_paths.is_root(*path)
                 ) {
                     return Err(host_error(
                         "WFR003",
@@ -849,12 +942,18 @@ impl WorkflowLuaHost {
         Ok(push_node(&mut self.nodes, draft))
     }
 
-    fn node_as_source_index(&mut self, value: &LuaData) -> Result<usize, ()> {
+    fn node_as_source_index(
+        &mut self,
+        value: &LuaData,
+        location: &LuaSourceLocation,
+    ) -> Result<usize, ()> {
         let node = expect_handle(value, HANDLE_NODE)?;
         let index = self.sources.len();
+        let path = self.source_paths.root(SourceRoot::Node(node));
         self.sources.push(SourceDraft::Node {
             node,
-            fields: Vec::new(),
+            path,
+            location: location.clone(),
         });
         Ok(index)
     }
@@ -917,7 +1016,7 @@ impl WorkflowLuaHost {
                         return Err(type_error("inputs", "string-keyed table", &location));
                     };
                     let source = expect_handle(value, HANDLE_SOURCE)
-                        .or_else(|_| self.node_as_source_index(value))
+                        .or_else(|_| self.node_as_source_index(value, &location))
                         .or_else(|_| self.input_as_source_index(value, &location))
                         .map_err(|_| type_error("inputs", "Source values", &location))?;
                     result.push((key.clone(), source));
@@ -958,9 +1057,10 @@ impl WorkflowLuaHost {
     ) -> Result<usize, ()> {
         let input = expect_handle(value, HANDLE_INPUT)?;
         let index = self.sources.len();
+        let path = self.source_paths.root(SourceRoot::Input(input));
         self.sources.push(SourceDraft::Input {
             input,
-            fields: Vec::new(),
+            path,
             location: location.clone(),
         });
         Ok(index)
@@ -1193,7 +1293,7 @@ impl WorkflowLuaHost {
             .get_string(field)
             .ok_or_else(|| missing_field(field, location))?;
         expect_handle(value, HANDLE_SOURCE)
-            .or_else(|_| self.node_as_source_index(value))
+            .or_else(|_| self.node_as_source_index(value, location))
             .or_else(|_| self.input_as_source_index(value, location))
             .map_err(|_| type_error(field, "Source", location))
     }
@@ -1219,25 +1319,14 @@ impl WorkflowLuaHost {
     fn index_input(
         &mut self,
         input: usize,
-        mut fields: Vec<String>,
+        parent_path: usize,
         key: &str,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
-        if !fields.is_empty() {
-            return Err(host_error(
-                "WFR003",
-                "nested input field references are not supported",
-                location,
-            ));
-        }
-        fields.push(key.to_string());
-        if let Some(schema) = self.inputs.get(input).and_then(|input| input.contract) {
-            self.validate_schema_path(schema, &fields, "input")
-                .map_err(|message| host_error("WFR003", message, location.clone()))?;
-        }
+        let path = self.source_paths.child(parent_path, key);
         Ok(self.push_source(SourceDraft::Input {
             input,
-            fields,
+            path,
             location,
         }))
     }
@@ -1263,6 +1352,13 @@ impl WorkflowLuaHost {
                 .ok_or_else(|| format!("{source_kind} field '{field}' does not exist"))?;
         }
         Ok(())
+    }
+
+    fn mark_source_consumed(&self, source: usize) {
+        let Some(source) = self.sources.get(source) else {
+            return;
+        };
+        self.source_paths.mark(source.path());
     }
 }
 
@@ -1319,6 +1415,7 @@ impl WorkflowGraphBuilder {
             .insert(workflow.main, MAIN_ENTRY_NODE_NAME.to_string());
         self.child_uses.insert(workflow.main);
         self.visit_node(workflow.main)?;
+        self.validate_unconsumed_sources()?;
         Ok(LuaWorkflowDefinition {
             workflow: WorkflowDefinition {
                 name: workflow.name,
@@ -1651,13 +1748,14 @@ impl WorkflowGraphBuilder {
             .map(|(variable, source)| match self.host.sources.get(*source) {
                 Some(SourceDraft::Input {
                     input,
-                    fields,
+                    path,
                     location,
                 }) => {
+                    self.host.mark_source_consumed(*source);
                     let mut reference = self.host.inputs[*input].name.clone();
-                    if !fields.is_empty() {
+                    if !self.host.source_paths.is_root(*path) {
                         reference.push('.');
-                        reference.push_str(&fields.join("."));
+                        reference.push_str(&self.host.source_paths.fields(*path).join("."));
                     }
                     InputParameterRef::new(&reference)
                         .map(|reference| (variable.clone(), reference))
@@ -1681,19 +1779,22 @@ impl WorkflowGraphBuilder {
         location: &LuaSourceLocation,
     ) -> Result<String, LuaWorkflowError> {
         match self.host.sources.get(source) {
-            Some(SourceDraft::Node { node, fields }) if !fanout && scope.contains(node) => {
+            Some(SourceDraft::Node { node, path, .. }) if !fanout && scope.contains(node) => {
+                self.host.mark_source_consumed(source);
                 let mut raw = self.names[node].clone();
-                if !fields.is_empty() {
+                if !self.host.source_paths.is_root(*path) {
                     raw.push('.');
-                    raw.push_str(&fields.join("."));
+                    raw.push_str(&self.host.source_paths.fields(*path).join("."));
                 }
                 Ok(raw)
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: source_location,
-            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+            }) if !self.host.source_paths.is_root(*path)
+                && self.host.inputs[*input].contract.is_none() =>
+            {
                 Err(build_error(
                     "WFR003",
                     "input does not declare a contract",
@@ -1702,18 +1803,25 @@ impl WorkflowGraphBuilder {
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: _,
             }) if owner_inputs.contains(input) => {
+                self.host.mark_source_consumed(source);
                 let mut raw = self.host.inputs[*input].name.clone();
-                if !fields.is_empty() {
+                if !self.host.source_paths.is_root(*path) {
                     raw.push('.');
-                    raw.push_str(&fields.join("."));
+                    raw.push_str(&self.host.source_paths.fields(*path).join("."));
                 }
                 Ok(raw)
             }
-            Some(SourceDraft::Request) => Ok("request".to_string()),
-            Some(SourceDraft::Items) if fanout => Ok("items".to_string()),
+            Some(SourceDraft::Request) => {
+                self.host.mark_source_consumed(source);
+                Ok("request".to_string())
+            }
+            Some(SourceDraft::Items) if fanout => {
+                self.host.mark_source_consumed(source);
+                Ok("items".to_string())
+            }
             Some(_) => Err(build_error(
                 "WFR007",
                 "input source is outside the composite node scope",
@@ -1781,16 +1889,19 @@ impl WorkflowGraphBuilder {
         location: &LuaSourceLocation,
     ) -> Result<String, LuaWorkflowError> {
         match self.host.sources.get(source) {
-            Some(SourceDraft::Node { node, fields })
-                if *node == child_node && !fields.is_empty() =>
+            Some(SourceDraft::Node { node, path, .. })
+                if *node == child_node && !self.host.source_paths.is_root(*path) =>
             {
-                Ok(fields.join("."))
+                self.host.mark_source_consumed(source);
+                Ok(self.host.source_paths.fields(*path).join("."))
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: source_location,
-            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+            }) if !self.host.source_paths.is_root(*path)
+                && self.host.inputs[*input].contract.is_none() =>
+            {
                 Err(build_error(
                     "WFR003",
                     "input does not declare a contract",
@@ -1813,12 +1924,23 @@ impl WorkflowGraphBuilder {
         match items {
             FanoutItemsDraft::Literal(values) => Ok(ItemsSource::Literal(values)),
             FanoutItemsDraft::Source(source) => match self.host.sources.get(source) {
-                Some(SourceDraft::Node { node, fields }) if !fields.is_empty() => {
-                    Ok(ItemsSource::ArtifactField {
-                        node: self.names.get(node).cloned().unwrap_or_else(|| {
+                Some(SourceDraft::Node { node, path, .. })
+                    if !self.host.source_paths.is_root(*path) =>
+                {
+                    self.host.mark_source_consumed(source);
+                    let node_name =
+                        self.names.get(node).cloned().unwrap_or_else(|| {
                             self.host.nodes[*node].name.clone().unwrap_or_default()
-                        }),
-                        field: fields.join("."),
+                        });
+                    let field_path = crate::domain::workflow::FieldPath::new(
+                        self.host.source_paths.fields(*path),
+                    );
+                    field_path.to_reference("source").map_err(|_| {
+                        build_error("WFR003", "invalid fanout items field path", None)
+                    })?;
+                    Ok(ItemsSource::ArtifactField {
+                        node: node_name,
+                        field_path,
                     })
                 }
                 Some(SourceDraft::Input { input, .. })
@@ -1837,6 +1959,43 @@ impl WorkflowGraphBuilder {
                 )),
             },
         }
+    }
+
+    fn validate_unconsumed_sources(&self) -> Result<(), LuaWorkflowError> {
+        for source in &self.host.sources {
+            if self.host.source_paths.contains(source.path()) {
+                continue;
+            }
+            match source {
+                SourceDraft::Node {
+                    node,
+                    path,
+                    location,
+                } if !self.host.source_paths.is_root(*path) => self
+                    .host
+                    .validate_artifact_path(*node, &self.host.source_paths.fields(*path))
+                    .map_err(|message| build_error("WFR003", message, Some(location.clone())))?,
+                SourceDraft::Input {
+                    input,
+                    path,
+                    location,
+                } if !self.host.source_paths.is_root(*path) => {
+                    if let Some(schema) = self.host.inputs[*input].contract {
+                        self.host
+                            .validate_schema_path(
+                                schema,
+                                &self.host.source_paths.fields(*path),
+                                "input",
+                            )
+                            .map_err(|message| {
+                                build_error("WFR003", message, Some(location.clone()))
+                            })?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2182,6 +2341,7 @@ fn build_error(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::{Duration, Instant};
 
     use tempfile::TempDir;
 
@@ -2195,6 +2355,105 @@ mod tests {
             directory.path(),
             LuaFacetCatalog::default(),
         )
+    }
+
+    fn load_many_source_entries(entry_count: usize) -> (LuaWorkflowDefinition, Duration) {
+        let source = format!(
+            r#"
+local r = require("releash")
+local result = r.schema.object{{ properties = {{ value = r.schema.string{{}} }} }}
+local source = r.command{{ name = "source", command = "source", artifact = result }}
+local target_inputs = {{}}
+local environment = {{}}
+local child_inputs = {{}}
+for i = 1, {entry_count} do
+  local input = r.input("p" .. i)
+  target_inputs[i] = input
+  environment["V" .. i] = input
+  child_inputs["p" .. i] = source.value
+end
+local target = r.command{{
+  name = "target",
+  command = "target",
+  input = target_inputs,
+  env = environment,
+}}
+return r.workflow{{
+  name = "many-references",
+  description = "Many references",
+  main = r.sequence{{ children = {{
+    r.child{{ node = source }},
+    r.child{{ node = target, inputs = child_inputs }},
+  }} }},
+}}
+"#
+        );
+        let started = Instant::now();
+        let loaded = load(&source).unwrap();
+        (loaded, started.elapsed())
+    }
+
+    #[test]
+    fn source_pathsは供給元と段が同じ別sourceをprefixまで消費済みにする() {
+        // Given
+        let mut paths = SourcePaths::new();
+        let root = paths.root(SourceRoot::Node(3));
+        let same_prefix = paths.child(root, "a");
+        let same_prefix_from_another_reference = paths.child(root, "a");
+        let consumed_source = paths.child(same_prefix, "b");
+        let sibling = paths.child(same_prefix, "c");
+
+        // When
+        paths.mark(consumed_source);
+
+        // Then
+        assert!(paths.contains(consumed_source));
+        assert!(paths.contains(same_prefix));
+        assert!(paths.contains(same_prefix_from_another_reference));
+        assert!(!paths.contains(sibling));
+    }
+
+    #[test]
+    fn source_pathsは深いsourceの各段を線形個のpathとして追跡する() {
+        // Given
+        const DEPTH: usize = 10_000;
+        let mut paths = SourcePaths::new();
+        let mut path = paths.root(SourceRoot::Input(7));
+        let mut prefixes = Vec::with_capacity(DEPTH);
+        for index in 0..DEPTH {
+            path = paths.child(path, &format!("field{index}"));
+            prefixes.push(path);
+        }
+
+        // When
+        paths.mark(path);
+
+        // Then
+        assert_eq!(paths.parents.len(), DEPTH + 3);
+        assert!(prefixes.into_iter().all(|path| paths.contains(path)));
+    }
+
+    #[test]
+    fn loads_many_child_inputs_and_command_env_entries_with_linear_source_tracking() {
+        // Given
+        const SMALL_ENTRY_COUNT: usize = 2_000;
+        const LARGE_ENTRY_COUNT: usize = 6_000;
+
+        // When
+        let (_, small_elapsed) = load_many_source_entries(SMALL_ENTRY_COUNT);
+        let (loaded, large_elapsed) = load_many_source_entries(LARGE_ENTRY_COUNT);
+
+        // Then
+        let target = loaded.workflow.node_by_name("target").unwrap();
+        assert_eq!(target.input.len(), LARGE_ENTRY_COUNT);
+        assert_eq!(target.command_spec().unwrap().env.len(), LARGE_ENTRY_COUNT);
+        let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
+        assert_eq!(sequence.children[1].inputs.len(), LARGE_ENTRY_COUNT);
+        let linear_budget = small_elapsed.saturating_mul(5) + Duration::from_millis(250);
+        assert!(
+            large_elapsed <= linear_budget,
+            "source tracking must scale linearly: {SMALL_ENTRY_COUNT} entries took {small_elapsed:?}, {LARGE_ENTRY_COUNT} entries took {large_elapsed:?}"
+        );
     }
 
     #[test]
@@ -2489,14 +2748,17 @@ local detail = r.schema.object{
   name = "topic-detail",
   properties = { label = r.schema.string{} },
 }
+local payload = r.schema.object{
+  properties = {
+    topics = r.schema.array{ items = topic },
+    detail = detail,
+  },
+  required = { "topics" },
+}
 local scan = r.command{
   command = "scan",
   artifact = r.schema.object{
-    properties = {
-      topics = r.schema.array{ items = topic },
-      detail = detail,
-    },
-    required = { "topics" },
+    properties = { payload = payload },
   },
 }
 local worker = r.session{
@@ -2505,7 +2767,7 @@ local worker = r.session{
   input = { r.input("topic", topic) },
 }
 local spread = r.fanout{
-  items = scan.topics,
+  items = scan.payload.topics,
   children = {
     r.child{ node = worker, inputs = { topic = r.items } },
   },
@@ -2538,6 +2800,39 @@ return r.workflow{
         let validation_errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
         assert!(validation_errors.is_empty(), "{validation_errors:#?}");
         assert!(loaded.workflow.schemas.contains_key("topic-detail"));
+    }
+
+    #[test]
+    fn test_lua多段参照_whenとswitchを共有domain検証へ渡せる() {
+        let loaded = load(
+            r#"
+local r = require("releash")
+local route = r.schema.object{ properties = {
+  flag = r.schema.boolean(),
+  status = r.schema.string{ enum = { "A" } },
+}, required = { "flag", "status" } }
+local result = r.schema.object{ properties = { route = route } }
+local yes = r.command{ name = "yes", command = "yes" }
+local no = r.command{ name = "no", command = "no" }
+local when_source = r.command{ name = "when-source", command = "source", artifact = result }
+local switch_source = r.command{ name = "switch-source", command = "source", artifact = result }
+return r.workflow{ name = "routing", description = "routing", main = r.sequence{ children = {
+  r.child{ node = when_source, rules = {
+    r.when{ on = when_source.route.flag, on_true = switch_source, next = switch_source },
+  } },
+  r.child{ node = switch_source, rules = {
+    r.switch{ on = switch_source.route.status, cases = { A = yes }, next = no },
+  } },
+  r.child{ node = yes },
+  r.child{ node = no },
+} } }
+"#,
+        )
+        .unwrap();
+
+        let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
+
+        assert!(errors.is_empty(), "{errors:#?}");
     }
 
     #[test]
@@ -2590,6 +2885,52 @@ return r.workflow{
 
         let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
         assert_eq!(sequence.children[0].inputs[0].1.raw(), "payload.message");
+    }
+
+    #[test]
+    fn test_lua多段参照_child配線を保持して実行時に末端値を解決する() {
+        // Given
+        let loaded = load(
+            r#"
+local r = require("releash")
+local result = r.schema.object{ properties = {
+  payload = r.schema.object{ properties = {
+    nested = r.schema.object{ properties = { title = r.schema.string{} } },
+  } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target", input = { r.input("title") } }
+return r.workflow{ name = "wiring", description = "wiring", main = r.sequence{ children = {
+  r.child{ node = source },
+  r.child{ node = target, inputs = { title = source.payload.nested.title } },
+} } }
+"#,
+        )
+        .unwrap();
+        let validation_errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
+        let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
+        let target_entry = &sequence.children[1];
+        let artifacts = HashMap::from([(
+            "source".to_string(),
+            serde_json::json!({"payload": {"nested": {"title": "resolved"}}}),
+        )]);
+
+        // When
+        let bindings = crate::domain::workflow::services::reference::resolve_entry_bindings(
+            Some(target_entry),
+            &artifacts,
+        );
+
+        // Then
+        assert!(validation_errors.is_empty(), "{validation_errors:#?}");
+        assert_eq!(
+            target_entry.inputs[0].1.raw(),
+            "source.payload.nested.title"
+        );
+        assert_eq!(
+            bindings,
+            vec![("title".to_string(), serde_json::json!("resolved"))]
+        );
     }
 
     #[test]
@@ -2671,7 +3012,27 @@ return r.workflow{ name = "review", description = "Review" }
     }
 
     #[test]
-    fn rejects_nested_field_reference_at_the_index_line() {
+    fn test_lua未消費参照_全段が存在する多段fieldを受理する() {
+        let loaded = load(
+            r#"
+local r = require("releash")
+local child = r.command{
+  command = "echo",
+  artifact = r.schema.object{ properties = {
+    nested = r.schema.object{ properties = { value = r.schema.string{} } },
+  } },
+}
+local nested = child.nested.value
+return r.workflow{ name = "review", description = "Review", main = child }
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.workflow.entry_node().unwrap().name, "main");
+    }
+
+    #[test]
+    fn test_lua未消費参照_存在しない段をwfr003で拒否する() {
         let error = load(
             r#"
 local r = require("releash")
@@ -2681,14 +3042,61 @@ local child = r.command{
     nested = r.schema.object{ properties = { value = r.schema.string{} } },
   } },
 }
-local invalid = child.nested.value
+local invalid = child.nested.missing
 return r.workflow{ name = "review", description = "Review", main = child }
 "#,
         )
         .unwrap_err();
 
         assert_eq!(error.code, "WFR003");
+        assert_eq!(error.message, "artifact field 'missing' does not exist");
         assert_eq!(error.location.unwrap().line, 9);
+    }
+
+    #[test]
+    fn test_lua消費済み参照_多段artifactとinputを共有domain検証へ渡す() {
+        let loaded = load(
+            r#"
+local r = require("releash")
+local text = r.schema.string{}
+local payload = r.schema.object{
+  name = "payload",
+  properties = { nested = r.schema.object{ properties = { value = text } } },
+}
+local source = r.command{
+  name = "source", command = "source",
+  artifact = r.schema.object{ properties = { payload = payload } },
+}
+local input = r.input("input", payload)
+local target = r.command{
+  name = "target", command = "echo {{ input.nested.value }}",
+  input = { input }, env = { VALUE = input.nested.value },
+}
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{ children = {
+    r.child{ node = source },
+    r.child{ node = target, inputs = { input = source.payload } },
+  } },
+}
+"#,
+        )
+        .unwrap();
+
+        let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
+        assert!(errors.is_empty(), "{errors:#?}");
+        let target = loaded.workflow.node_by_name("target").unwrap();
+        assert_eq!(
+            target
+                .command_spec()
+                .unwrap()
+                .env
+                .values()
+                .next()
+                .unwrap()
+                .as_string(),
+            "input.nested.value"
+        );
     }
 
     #[test]
@@ -2714,6 +3122,38 @@ return r.workflow{
 
         assert_eq!(error.code, "WFR003");
         assert_eq!(error.location.unwrap().line, 5);
+    }
+
+    #[test]
+    fn rejects_fanout_items_with_a_non_reference_segment() {
+        let error = load(
+            r#"
+local r = require("releash")
+local source = r.command{
+  name = "source",
+  command = "source",
+  artifact = r.schema.object{ properties = {
+    ["legacy values"] = r.schema.array{ items = r.schema.string{} },
+  } },
+}
+local child = r.command{ name = "child", command = "child" }
+local spread = r.fanout{
+  name = "spread",
+  items = source["legacy values"],
+  children = { r.child{ node = child } },
+}
+return r.workflow{
+  name = "review", description = "Review",
+  main = r.sequence{ children = {
+    r.child{ node = source }, r.child{ node = spread },
+  } },
+}
+"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "WFR003");
+        assert_eq!(error.message, "invalid fanout items field path");
     }
 
     #[test]
@@ -3062,3 +3502,6 @@ return r.workflow{
         assert!(following.is_ok());
     }
 }
+
+#[cfg(test)]
+mod mod_test;

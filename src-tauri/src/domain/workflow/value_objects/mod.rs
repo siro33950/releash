@@ -4,6 +4,7 @@ mod execution;
 mod execution_metadata;
 mod facet;
 mod failure;
+mod field_path;
 mod ids;
 mod node_execution;
 mod node_fact;
@@ -36,6 +37,7 @@ pub use facet::{FacetContents, FacetKey, FacetKind, FacetSummary, WorkflowFacetC
 pub use failure::{
     FailureClassification, FailureDisposition, NodeExecutionFailureKind, TimeoutKind,
 };
+pub use field_path::FieldPath;
 pub use ids::{
     NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
 };

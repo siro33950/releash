@@ -1,0 +1,17 @@
+name: multi-segment-env-missing
+description: nested environment reference has a missing field
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: target
+    input:
+    - doc: document
+    env:
+      VALUE: doc.outer.missing.value

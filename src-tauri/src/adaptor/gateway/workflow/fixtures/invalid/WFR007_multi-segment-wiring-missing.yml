@@ -1,0 +1,24 @@
+name: multi-segment-wiring-missing
+description: nested wiring references a missing field
+schemas:
+  output:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    sequence:
+      children:
+      - source
+      - target:
+          inputs:
+            value: source.outer.missing.value
+  source:
+    command: source
+    artifact: output
+  target:
+    command: target
+    input: [value]

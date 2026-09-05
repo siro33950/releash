@@ -1,0 +1,21 @@
+name: multi-segment-wiring-non-object
+description: nested wiring traverses a scalar
+schemas:
+  output:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    sequence:
+      children:
+      - source
+      - target:
+          inputs:
+            value: source.outer.value
+  source:
+    command: source
+    artifact: output
+  target:
+    command: target
+    input: [value]

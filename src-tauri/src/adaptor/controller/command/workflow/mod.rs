@@ -808,10 +808,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_template_variables_mixed() {
+    fn test_template変数検証_0段と多段の参照を受理する() {
         let result = validate_template_variables("{{ goal }} and {{ goal.a.b }}");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("goal.a.b"));
+        assert!(result.is_ok());
     }
 
     // ---- duplicate logic tests ----

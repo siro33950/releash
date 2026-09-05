@@ -1,0 +1,29 @@
+name: multi-segment-switch-missing
+description: nested switch reference has a missing intermediate field
+schemas:
+  output:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          status:
+            type: string
+            enum: [ready]
+        required: [status]
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - switch:
+              on: route.missing.status
+              cases:
+                ready: target
+      - target
+  source:
+    command: source
+    artifact: output
+  target:
+    command: target

@@ -1,8 +1,8 @@
 use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW};
 use crate::domain::workflow::{
-    is_reserved_node_name, InputParam, ItemsSource, NodeDefinition, NodeKind, NodeKindName, Rule,
-    SchemaDef, WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
+    is_reserved_node_name, FieldPath, InputParam, ItemsSource, NodeDefinition, NodeKind,
+    NodeKindName, Rule, SchemaDef, WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -51,7 +51,7 @@ pub enum InvalidRuleKind {
 pub enum InputWiringKind {
     /// 供給元が兄弟 node / 自合成子のパラメータ / request / items のどれにも解決しない。
     UnknownSource,
-    /// 供給元の記述が不正（空・空白・2段以上の field パス・request / items への field）。
+    /// 供給元の記述が不正（空・空白・空の段・request / items への field）。
     InvalidSourceFormat,
     /// 配線先のパラメータ名が子 node の input 宣言に無い。
     UnknownParameter,
@@ -520,7 +520,7 @@ fn reference_error_to_validation_error(error: reference::ReferenceResolveError) 
             ValidationError::InvalidArtifactReference {
                 reference: value,
                 kind: InvalidArtifactReferenceKind::InvalidInputRef,
-                reason: "`{{ ... }}` references must be `<parameter>` or `<parameter>.<field>`"
+                reason: "`{{ ... }}` references must be `<parameter>` or `<parameter>.<field>...`"
                     .to_string(),
             }
         }
@@ -543,7 +543,7 @@ fn environment_reference_error_to_validation_error(
         reference::ReferenceResolveError::InvalidInputRef { .. }
         | reference::ReferenceResolveError::ReservedNodeName { .. } => (
             InvalidEnvironmentReferenceKind::InvalidInputRef,
-            "env references must be `<parameter>` or `<parameter>.<field>`".to_string(),
+            "env references must be `<parameter>` or `<parameter>.<field>...`".to_string(),
         ),
     };
     ValidationError::InvalidEnvironmentReference {
@@ -760,29 +760,30 @@ fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationE
         };
 
         enum ElementShape<'a> {
-            Contract(&'a str),
+            Contract(String),
             Literals(&'a [serde_json::Value]),
         }
 
         let element_shape = match items {
             ItemsSource::Literal(values) => ElementShape::Literals(values),
-            ItemsSource::ArtifactField { node, field } => {
-                match reference::artifact_field_schema(workflow, node, field) {
+            ItemsSource::ArtifactField { node, field_path } => {
+                let reference_value = format!("{node}.{}", field_path.as_string());
+                match reference::artifact_field_schema(workflow, node, field_path) {
                     Err(reason) => {
                         errors.push(ValidationError::InvalidFanoutItemsReference {
                             node: parent.name.clone(),
-                            reference: format!("{node}.{field}"),
+                            reference: reference_value.clone(),
                             reason,
                         });
                         continue;
                     }
-                    Ok(Some(SchemaDef::Array {
+                    Ok(SchemaDef::Array {
                         items: element_contract,
-                    })) => ElementShape::Contract(element_contract),
+                    }) => ElementShape::Contract(element_contract),
                     Ok(_) => {
                         errors.push(ValidationError::InvalidFanoutItemsReference {
                             node: parent.name.clone(),
-                            reference: format!("{node}.{field}"),
+                            reference: reference_value,
                             reason: "items reference must resolve to an array field".to_string(),
                         });
                         continue;
@@ -844,7 +845,7 @@ fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationE
                 };
                 match &element_shape {
                     ElementShape::Contract(element_contract) => {
-                        if receiver_contract != *element_contract {
+                        if receiver_contract != element_contract {
                             errors.push(ValidationError::FanoutInputMismatch {
                                 node: parent.name.clone(),
                                 child: entry.name.clone(),
@@ -943,13 +944,13 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                     push(
                         &mut errors,
                         InputWiringKind::InvalidSourceFormat,
-                        "source must be `<name>` or `<name>.<field>`".to_string(),
+                        "source must be `<name>` or `<name>.<field>...`".to_string(),
                     );
                     continue;
                 };
 
                 if root == reference::REQUEST_ARTIFACT {
-                    if field.is_some() {
+                    if !field.is_empty() {
                         push(
                             &mut errors,
                             InputWiringKind::InvalidSourceFormat,
@@ -961,7 +962,7 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                 if root == reference::ITEMS_SOURCE {
                     match fanout_has_items {
                         Some(true) => {
-                            if field.is_some() {
+                            if !field.is_empty() {
                                 push(
                                     &mut errors,
                                     InputWiringKind::InvalidSourceFormat,
@@ -1008,35 +1009,42 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                                 InputWiringKind::UnavailableSourceArtifact,
                                 format!("source node '{root}' does not produce an Artifact"),
                             );
-                        } else if let Some(field) = field {
-                            if !reference::node_field_available(
-                                source_node,
-                                field,
-                                &workflow.schemas,
-                            ) {
-                                push(
-                                    &mut errors,
-                                    InputWiringKind::UnknownSourceField,
-                                    format!("source node '{root}' Artifact has no field '{field}'"),
-                                );
+                        } else if !field.is_empty() {
+                            if let Err(reason) =
+                                validate_node_source_field_path(workflow, source_node, &field)
+                            {
+                                push(&mut errors, InputWiringKind::UnknownSourceField, reason);
                             }
                         }
                     }
                     (false, true) => {
-                        if let (Some(field), Some(param)) = (field, owner.input_parameter(root)) {
+                        if let Some(param) = owner.input_parameter(root) {
+                            if field.is_empty() {
+                                continue;
+                            }
                             if let Some(contract) = param.contract.as_deref() {
-                                if !reference::contract_field_available(
-                                    contract,
-                                    field,
-                                    &workflow.schemas,
-                                ) {
-                                    push(
-                                        &mut errors,
-                                        InputWiringKind::UnknownSourceField,
+                                let resolution = workflow
+                                    .schemas
+                                    .get(contract)
+                                    .ok_or_else(|| {
                                         format!(
-                                            "parameter '{root}' Contract '{contract}' has no field '{field}'"
-                                        ),
-                                    );
+                                        "parameter '{root}' Contract '{contract}' is not declared"
+                                    )
+                                    })
+                                    .and_then(|schema| {
+                                        contract_schema::resolve_field_path(schema, &field)
+                                            .map(|_| ())
+                                            .map_err(|error| {
+                                                field_path_resolution_reason(
+                                                    &format!(
+                                                        "parameter '{root}' Contract '{contract}'"
+                                                    ),
+                                                    &error,
+                                                )
+                                            })
+                                    });
+                                if let Err(reason) = resolution {
+                                    push(&mut errors, InputWiringKind::UnknownSourceField, reason);
                                 }
                             }
                         }
@@ -1061,6 +1069,58 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
     }
 
     errors
+}
+
+fn validate_node_source_field_path(
+    workflow: &WorkflowDefinition,
+    node: &NodeDefinition,
+    field_path: &FieldPath,
+) -> Result<(), String> {
+    let artifact_schema = node
+        .artifact
+        .as_deref()
+        .and_then(|contract| workflow.schemas.get(contract));
+    let command_schema;
+    let schema = if node.kind_name() == NodeKindName::Command {
+        command_schema =
+            contract_schema::command_reference_schema(artifact_schema).map_err(|_| {
+                format!(
+                    "source node '{}' Artifact Contract is not an object",
+                    node.name
+                )
+            })?;
+        &command_schema
+    } else {
+        artifact_schema.ok_or_else(|| {
+            format!(
+                "source node '{}' Artifact has no field path '{field_path}'",
+                node.name
+            )
+        })?
+    };
+    contract_schema::resolve_field_path(schema, field_path)
+        .map(|_| ())
+        .map_err(|error| {
+            field_path_resolution_reason(&format!("source node '{}' Artifact", node.name), &error)
+        })
+}
+
+fn field_path_resolution_reason(
+    source: &str,
+    error: &contract_schema::FieldPathResolutionError,
+) -> String {
+    match error.kind {
+        contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+            "{source} cannot resolve segment {} ('{}') from a non-object value",
+            error.position + 1,
+            error.segment
+        ),
+        contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
+            "{source} does not declare segment {} ('{}')",
+            error.position + 1,
+            error.segment
+        ),
+    }
 }
 
 /// children エントリの on_failure を検証する。
@@ -1891,6 +1951,223 @@ mod tests {
     }
 
     #[test]
+    fn test_配線_兄弟artifactと型あり自inputの多段fieldが通る() {
+        // Given
+        let mut collect = command_node("collect", "echo '{}'");
+        collect.artifact = Some("nested".to_string());
+        let mut consume = command_node("consume", "echo");
+        consume.input = vec![
+            untyped_param("artifact_value"),
+            untyped_param("input_value"),
+        ];
+        let mut main = sequence_node(
+            "main",
+            vec![
+                ChildEntry::reference("collect"),
+                entry(
+                    "consume",
+                    vec![
+                        ("artifact_value", "collect.outer.leaf"),
+                        ("input_value", "context.outer.leaf"),
+                    ],
+                ),
+            ],
+        );
+        main.input = vec![typed_param("context", "nested")];
+        let mut wf = workflow(vec![main, collect, consume]);
+        wf.schemas.insert(
+            "nested".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "outer".to_string(),
+                    SchemaDef::Object {
+                        properties: BTreeMap::from([(
+                            "leaf".to_string(),
+                            SchemaDef::String { r#enum: None },
+                        )]),
+                        required: BTreeSet::new(),
+                    },
+                )]),
+                required: BTreeSet::new(),
+            },
+        );
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_配線_多段の存在しない段と非object中間段を拒否する() {
+        // Given
+        let mut collect = command_node("collect", "echo '{}'");
+        collect.artifact = Some("nested".to_string());
+        let mut consume = command_node("consume", "echo");
+        consume.input = vec![untyped_param("missing"), untyped_param("non_object")];
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("collect"),
+                    entry(
+                        "consume",
+                        vec![
+                            ("missing", "collect.outer.missing"),
+                            ("non_object", "collect.scalar.leaf"),
+                        ],
+                    ),
+                ],
+            ),
+            collect,
+            consume,
+        ]);
+        wf.schemas.insert(
+            "nested".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([
+                    (
+                        "outer".to_string(),
+                        SchemaDef::Object {
+                            properties: BTreeMap::new(),
+                            required: BTreeSet::new(),
+                        },
+                    ),
+                    ("scalar".to_string(), SchemaDef::String { r#enum: None }),
+                ]),
+                required: BTreeSet::new(),
+            },
+        );
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        let violations = errors
+            .iter()
+            .filter(|error| {
+                matches!(
+                    error,
+                    ValidationError::InvalidInputWiring(violation)
+                        if violation.kind == InputWiringKind::UnknownSourceField
+                )
+            })
+            .count();
+        assert_eq!(violations, 2, "{errors:?}");
+    }
+
+    #[test]
+    fn test_配線_型なしinputの多段fieldは静的検査せずcommand予約fieldは受理する() {
+        // Given
+        let collect = command_node("collect", "true");
+        let mut consume = command_node("consume", "echo");
+        consume.input = vec![untyped_param("dynamic"), untyped_param("ok")];
+        let mut main = sequence_node(
+            "main",
+            vec![
+                ChildEntry::reference("collect"),
+                entry(
+                    "consume",
+                    vec![("dynamic", "context.any.depth"), ("ok", "collect.ok")],
+                ),
+            ],
+        );
+        main.input = vec![untyped_param("context")];
+        let wf = workflow(vec![main, collect, consume]);
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_配線_requestとitemsのfield参照は拒否する() {
+        // Given
+        let mut sequence_consumer = command_node("sequence-consumer", "echo");
+        sequence_consumer.input = vec![untyped_param("value")];
+        let mut fanout_consumer = command_node("fanout-consumer", "echo");
+        fanout_consumer.input = vec![untyped_param("value")];
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    entry("sequence-consumer", vec![("value", "request.field")]),
+                    ChildEntry::reference("fan"),
+                ],
+            ),
+            sequence_consumer,
+            fanout_node(
+                "fan",
+                vec![entry("fanout-consumer", vec![("value", "items.field")])],
+                Some(ItemsSource::Literal(vec![serde_json::json!(1)])),
+            ),
+            fanout_consumer,
+        ]);
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        let invalid_formats = errors
+            .iter()
+            .filter(|error| {
+                matches!(
+                    error,
+                    ValidationError::InvalidInputWiring(violation)
+                        if violation.kind == InputWiringKind::InvalidSourceFormat
+                )
+            })
+            .count();
+        assert_eq!(invalid_formats, 2, "{errors:?}");
+    }
+
+    #[test]
+    fn test_配線_空・空白・空の段は従来と同じ形式不正になる() {
+        // Given
+        let mut consume = command_node("consume", "echo");
+        consume.input = vec![
+            untyped_param("empty"),
+            untyped_param("space"),
+            untyped_param("middle"),
+            untyped_param("trailing"),
+        ];
+        let wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![entry(
+                    "consume",
+                    vec![
+                        ("empty", ""),
+                        ("space", "bad source"),
+                        ("middle", "source..leaf"),
+                        ("trailing", "source."),
+                    ],
+                )],
+            ),
+            consume,
+        ]);
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        let invalid_formats = errors
+            .iter()
+            .filter(|error| {
+                matches!(
+                    error,
+                    ValidationError::InvalidInputWiring(violation)
+                        if violation.kind == InputWiringKind::InvalidSourceFormat
+                )
+            })
+            .count();
+        assert_eq!(invalid_formats, 4, "{errors:?}");
+    }
+
+    #[test]
     fn test_配線_未知の供給元を拒否する() {
         let mut consume = command_node("consume", "echo");
         consume.input = vec![untyped_param("spec")];
@@ -2174,7 +2451,7 @@ mod tests {
                 vec![entry("worker", vec![("thread", "items")])],
                 Some(ItemsSource::ArtifactField {
                     node: "list".to_string(),
-                    field: "threads".to_string(),
+                    field_path: crate::domain::workflow::FieldPath::new(["threads"]),
                 }),
             ),
             worker,
@@ -2200,6 +2477,130 @@ mod tests {
     }
 
     #[test]
+    fn test_items検証_多段の終端arrayと子inputの要素contractが一致する() {
+        // Given
+        let mut list = command_node("list", "echo '{}'");
+        list.artifact = Some("scan".to_string());
+        let mut worker = command_node("worker", "echo");
+        worker.input = vec![typed_param("thread", "thread-ref")];
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![ChildEntry::reference("list"), ChildEntry::reference("fan")],
+            ),
+            list,
+            fanout_node(
+                "fan",
+                vec![entry("worker", vec![("thread", "items")])],
+                Some(ItemsSource::ArtifactField {
+                    node: "list".to_string(),
+                    field_path: crate::domain::workflow::FieldPath::new(["payload", "threads"]),
+                }),
+            ),
+            worker,
+        ]);
+        wf.schemas
+            .insert("thread-ref".to_string(), object_schema(&["thread_id"]));
+        wf.schemas.insert(
+            "scan".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "payload".to_string(),
+                    SchemaDef::Object {
+                        properties: BTreeMap::from([(
+                            "threads".to_string(),
+                            SchemaDef::Array {
+                                items: "thread-ref".to_string(),
+                            },
+                        )]),
+                        required: BTreeSet::new(),
+                    },
+                )]),
+                required: BTreeSet::new(),
+            },
+        );
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_items検証_多段の存在しない段と非object中間段と非array終端を拒否する() {
+        // Given
+        let mut list = command_node("list", "echo '{}'");
+        list.artifact = Some("scan".to_string());
+        let fan = |name: &str, worker: &str, path: &[&str]| {
+            fanout_node(
+                name,
+                vec![ChildEntry::reference(worker)],
+                Some(ItemsSource::ArtifactField {
+                    node: "list".to_string(),
+                    field_path: crate::domain::workflow::FieldPath::new(path.iter().copied()),
+                }),
+            )
+        };
+        let mut workers = ["worker-missing", "worker-scalar", "worker-not-array"]
+            .map(|name| command_node(name, "echo"));
+        for worker in &mut workers {
+            worker.input = vec![untyped_param("item")];
+        }
+        let mut wf = workflow(vec![
+            sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("list"),
+                    ChildEntry::reference("fan-missing"),
+                    ChildEntry::reference("fan-scalar"),
+                    ChildEntry::reference("fan-not-array"),
+                ],
+            ),
+            list,
+            fan("fan-missing", "worker-missing", &["payload", "missing"]),
+            fan("fan-scalar", "worker-scalar", &["scalar", "leaf"]),
+            fan(
+                "fan-not-array",
+                "worker-not-array",
+                &["payload", "not-array"],
+            ),
+            workers[0].clone(),
+            workers[1].clone(),
+            workers[2].clone(),
+        ]);
+        wf.schemas.insert(
+            "scan".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([
+                    (
+                        "payload".to_string(),
+                        SchemaDef::Object {
+                            properties: BTreeMap::from([(
+                                "not-array".to_string(),
+                                SchemaDef::String { r#enum: None },
+                            )]),
+                            required: BTreeSet::new(),
+                        },
+                    ),
+                    ("scalar".to_string(), SchemaDef::Boolean),
+                ]),
+                required: BTreeSet::new(),
+            },
+        );
+
+        // When
+        let errors = validate_all(&wf);
+
+        // Then
+        let invalid_items = errors
+            .iter()
+            .filter(|error| matches!(error, ValidationError::InvalidFanoutItemsReference { .. }))
+            .count();
+        assert_eq!(invalid_items, 3, "{errors:?}");
+    }
+
+    #[test]
     fn test_items検証_受け手のいないitemsを拒否する() {
         let worker = command_node("worker", "echo hi");
         let mut list = command_node("list", "echo '{}'");
@@ -2215,7 +2616,7 @@ mod tests {
                 vec![ChildEntry::reference("worker")],
                 Some(ItemsSource::ArtifactField {
                     node: "list".to_string(),
-                    field: "threads".to_string(),
+                    field_path: crate::domain::workflow::FieldPath::new(["threads"]),
                 }),
             ),
             worker,
@@ -2501,7 +2902,7 @@ mod tests {
                 vec![entry("worker", vec![])],
                 Some(ItemsSource::ArtifactField {
                     node: "collect".to_string(),
-                    field: "note".to_string(),
+                    field_path: crate::domain::workflow::FieldPath::new(["note"]),
                 }),
             ),
             NodeDefinition {

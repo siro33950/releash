@@ -6,7 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::services::{contract_schema, reference};
+use crate::domain::workflow::services::contract_schema;
+
+use super::FieldPath;
 
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
 pub const MAX_FANOUT_CHILDREN: usize = 64;
@@ -107,20 +109,20 @@ impl<'de> Deserialize<'de> for EnvironmentVariableName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputParameterRef {
     parameter: String,
-    field: Option<String>,
+    field_path: FieldPath,
 }
 
 impl InputParameterRef {
     pub fn new(reference: impl AsRef<str>) -> Result<Self, String> {
         let reference = reference.as_ref();
-        let Some((parameter, field)) = reference::split_reference(reference) else {
+        let Ok((parameter, field_path)) = FieldPath::from_reference(reference) else {
             return Err(format!(
-                "input parameter reference '{reference}' must be `<parameter>` or `<parameter>.<field>`"
+                "input parameter reference '{reference}' must be `<parameter>` or `<parameter>.<field>...`"
             ));
         };
         Ok(Self {
-            parameter: parameter.to_string(),
-            field: field.map(str::to_string),
+            parameter,
+            field_path,
         })
     }
 
@@ -128,15 +130,14 @@ impl InputParameterRef {
         &self.parameter
     }
 
-    pub fn field(&self) -> Option<&str> {
-        self.field.as_deref()
+    pub fn field_path(&self) -> &FieldPath {
+        &self.field_path
     }
 
     pub fn as_string(&self) -> String {
-        match &self.field {
-            Some(field) => format!("{}.{field}", self.parameter),
-            None => self.parameter.clone(),
-        }
+        self.field_path
+            .to_reference(&self.parameter)
+            .expect("InputParameterRef parameter is validated at construction")
     }
 }
 
@@ -762,11 +763,6 @@ impl InputSourceRef {
     pub fn root(&self) -> &str {
         self.0.split('.').next().unwrap_or(&self.0)
     }
-
-    /// 最初の `.` より後の field パス。
-    pub fn field(&self) -> Option<&str> {
-        self.0.split_once('.').map(|(_, field)| field)
-    }
 }
 
 impl Serialize for InputSourceRef {
@@ -794,7 +790,7 @@ impl<'de> Deserialize<'de> for InputSourceRef {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemsSource {
     Literal(Vec<Value>),
-    ArtifactField { node: String, field: String },
+    ArtifactField { node: String, field_path: FieldPath },
 }
 
 #[derive(Deserialize)]
@@ -838,11 +834,10 @@ impl<'de> Deserialize<'de> for ItemsSource {
 
         match RawItemsSource::deserialize(deserializer)? {
             RawItemsSource::Literal(items) => Ok(Self::Literal(items)),
-            RawItemsSource::ArtifactField(value) => match reference::parse_reference(&value) {
-                Ok(reference::ArtifactReference::Node {
-                    node,
-                    field: Some(field),
-                }) => Ok(Self::ArtifactField { node, field }),
+            RawItemsSource::ArtifactField(value) => match FieldPath::from_reference(&value) {
+                Ok((node, field_path)) if !field_path.is_empty() => {
+                    Ok(Self::ArtifactField { node, field_path })
+                }
                 _ => Err(de::Error::custom(
                     "fanout.items must be a literal array or a <node>.<field> Artifact reference",
                 )),
@@ -858,8 +853,8 @@ impl Serialize for ItemsSource {
     {
         match self {
             Self::Literal(items) => items.serialize(serializer),
-            Self::ArtifactField { node, field } => {
-                serializer.serialize_str(&format!("{node}.{field}"))
+            Self::ArtifactField { node, field_path } => {
+                serializer.serialize_str(&format!("{node}.{}", field_path.as_string()))
             }
         }
     }
@@ -1725,15 +1720,15 @@ mod definition_tests {
     }
 
     #[test]
-    fn test_inputパラメータ参照_パラメータと1段fieldだけを受理する() {
+    fn test_inputパラメータ参照_パラメータと多段fieldを受理する() {
         let parameter = InputParameterRef::new("document").unwrap();
         assert_eq!(parameter.parameter(), "document");
-        assert_eq!(parameter.field(), None);
+        assert!(parameter.field_path().is_empty());
 
-        let field = InputParameterRef::new("document.body").unwrap();
+        let field = InputParameterRef::new("document.body.text").unwrap();
         assert_eq!(field.parameter(), "document");
-        assert_eq!(field.field(), Some("body"));
-        assert!(InputParameterRef::new("document.body.text").is_err());
+        assert_eq!(field.field_path().segments(), ["body", "text"]);
+        assert_eq!(field.as_string(), "document.body.text");
         assert!(InputParameterRef::new("document bad").is_err());
     }
 
@@ -1783,6 +1778,27 @@ nodes:
                 .map(InputParameterRef::as_string),
             Some("document.body".to_string())
         );
+    }
+
+    #[test]
+    fn test_fanout_items_多段artifact参照を直列化表記で往復する() {
+        // Given
+        let source = "plan.payload.targets";
+
+        // When
+        let items =
+            serde_json::from_value::<ItemsSource>(Value::String(source.to_string())).unwrap();
+        let serialized = serde_json::to_value(&items).unwrap();
+
+        // Then
+        assert_eq!(
+            items,
+            ItemsSource::ArtifactField {
+                node: "plan".to_string(),
+                field_path: FieldPath::new(["payload", "targets"]),
+            }
+        );
+        assert_eq!(serialized, Value::String(source.to_string()));
     }
 
     #[test]

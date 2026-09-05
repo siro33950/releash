@@ -4308,7 +4308,7 @@ nodes:
     fn diagnose_template_variable_error() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
-        setup_facet(wf_dir, "instructions", "bad", "Use {{spec.a.b}} here");
+        setup_facet(wf_dir, "instructions", "bad", "Use {{spec..b}} here");
         let wf = WorkflowDefinitionYaml {
             name: "bad-template".to_string(),
             description: "test".to_string(),
@@ -4322,8 +4322,7 @@ nodes:
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(report.items.iter().any(|i| i.severity == Severity::Error
             && i.facet_key.as_deref() == Some("bad")
-            && i.message
-                .contains("未定義のテンプレート変数 '{{spec.a.b}}'")));
+            && i.message.contains("未定義のテンプレート変数 '{{spec..b}}'")));
     }
 
     #[test]
@@ -4933,7 +4932,11 @@ schemas:
   document-contract:
     type: object
     properties:
-      body: string
+      body:
+        type: object
+        properties:
+          text: string
+        required: [text]
     required:
       - body
 nodes:
@@ -4944,7 +4947,7 @@ nodes:
       - context
     env:
       DOC: document
-      BODY: document.body
+      BODY: document.body.text
       SPEC_DIR: context.spec_dir
 "#,
             Some("env-equivalence"),
@@ -4954,7 +4957,9 @@ nodes:
             r#"local r = require("releash")
 local document_contract = r.schema.object{
   name = "document-contract",
-  properties = { body = r.schema.string{} },
+  properties = { body = r.schema.object{
+    properties = { text = r.schema.string{} }, required = { "text" },
+  } },
   required = { "body" },
 }
 local document = r.input("document", document_contract)
@@ -4964,7 +4969,7 @@ return r.workflow{
   main = r.command{
     command = "printf",
     input = { document, context },
-    env = { DOC = document, BODY = document.body, SPEC_DIR = context.spec_dir },
+    env = { DOC = document, BODY = document.body.text, SPEC_DIR = context.spec_dir },
   },
 }
 "#,
@@ -5041,27 +5046,6 @@ local missing = r.input("missing")
 return r.workflow{
   name = "unknown-input", description = "invalid env",
   main = r.command{ command = "true", input = { document }, env = { DOC = missing } },
-}
-"#,
-                "WFR003",
-            ),
-            (
-                "nested-field",
-                r#"name: nested-field
-description: invalid env
-nodes:
-  main:
-    command: "true"
-    input:
-      - document
-    env:
-      DOC: document.body.text
-"#,
-                r#"local r = require("releash")
-local document = r.input("document")
-return r.workflow{
-  name = "nested-field", description = "invalid env",
-  main = r.command{ command = "true", input = { document }, env = { DOC = document.body.text } },
 }
 "#,
                 "WFR003",
@@ -5440,5 +5424,712 @@ return require("releash").workflow{
 
         assert_eq!(span.source.as_deref(), Some("component.lua"));
         assert_eq!(span.start_line, 5);
+    }
+
+    #[test]
+    fn test_多段参照診断_yamlとluaでcode_stage_messageが一致する() {
+        let tmp = TempDir::new().unwrap();
+        let cases = [
+            (
+                "wiring",
+                "WFR007",
+                r#"name: wiring
+description: wiring
+schemas:
+  result:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    sequence:
+      children:
+        - source
+        - target:
+            inputs:
+              value: source.outer.missing
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+    input: [value]
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target", input = { r.input("value") } }
+return r.workflow{ name = "wiring", description = "wiring", main = r.sequence{ children = {
+  r.child{ node = source },
+  r.child{ node = target, inputs = { value = source.outer.missing } },
+} } }
+"#,
+            ),
+            (
+                "env",
+                "WFR003",
+                r#"name: env
+description: env
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: target
+    input:
+      - doc: document
+    env:
+      VALUE: doc.outer.missing
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "env", description = "env", main = r.command{
+  command = "target", input = { doc }, env = { VALUE = doc.outer.missing },
+} }
+"#,
+            ),
+            (
+                "template",
+                "WFR003",
+                r#"name: template
+description: template
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: "echo {{ doc.outer.missing }}"
+    input:
+      - doc: document
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "template", description = "template", main = r.command{
+  command = "echo {{ doc.outer.missing }}", input = { doc },
+} }
+"#,
+            ),
+            (
+                "when",
+                "WFT001",
+                r#"name: when
+description: when
+schemas:
+  result:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          flag:
+            type: boolean
+        required: [flag]
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - when:
+                  on: outer.missing
+                  then: "yes"
+                next: "no"
+        - "yes"
+        - "no"
+  source:
+    command: source
+    artifact: result
+  "yes":
+    command: yes
+  "no":
+    command: no
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  outer = r.schema.object{ properties = { flag = r.schema.boolean() }, required = { "flag" } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local yes = r.command{ name = "yes", command = "yes" }
+local no = r.command{ name = "no", command = "no" }
+return r.workflow{ name = "when", description = "when", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.when{ on = source.outer.missing, on_true = yes, next = no } } },
+  r.child{ node = yes }, r.child{ node = no },
+} } }
+"#,
+            ),
+            (
+                "switch",
+                "WFT002",
+                r#"name: switch
+description: switch
+schemas:
+  result:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          verdict:
+            type: string
+            enum: [A]
+        required: [verdict]
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - switch:
+                  on: outer.missing
+                  cases:
+                    A: target
+        - target
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  outer = r.schema.object{ properties = { verdict = r.schema.string{ enum = { "A" } } }, required = { "verdict" } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target" }
+return r.workflow{ name = "switch", description = "switch", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.switch{ on = source.outer.missing, cases = { A = target } } } },
+  r.child{ node = target },
+} } }
+"#,
+            ),
+            (
+                "items",
+                "WFR003",
+                r#"name: items
+description: items
+schemas:
+  result:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          values:
+            type: array
+            items: item
+  item: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: result
+  spread:
+    fanout:
+      items: source.outer.missing
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]
+"#,
+                r#"local r = require("releash")
+local item = r.schema.string{}
+local result = r.schema.object{ properties = {
+  outer = r.schema.object{ properties = { values = r.schema.array{ items = item } } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local worker = r.command{ name = "worker", command = "worker", input = { r.input("item") } }
+local spread = r.fanout{ name = "spread", items = source.outer.missing, children = { r.child{ node = worker } } }
+return r.workflow{ name = "items", description = "items", main = r.sequence{ children = {
+  r.child{ node = source }, r.child{ node = spread },
+} } }
+"#,
+            ),
+            (
+                "wiring-intermediate-missing",
+                "WFR007",
+                r#"name: wiring-intermediate-missing
+description: wiring intermediate missing
+schemas:
+  result:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    sequence:
+      children:
+        - source
+        - target:
+            inputs:
+              value: source.outer.missing.value
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+    input: [value]
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target", input = { r.input("value") } }
+return r.workflow{ name = "wiring-intermediate-missing", description = "wiring intermediate missing", main = r.sequence{ children = {
+  r.child{ node = source },
+  r.child{ node = target, inputs = { value = source.outer.missing.value } },
+} } }
+"#,
+            ),
+            (
+                "when-intermediate-missing",
+                "WFT001",
+                r#"name: when-intermediate-missing
+description: when intermediate missing
+schemas:
+  result:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          flag:
+            type: boolean
+        required: [flag]
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - when:
+                  on: route.missing.flag
+                  then: "yes"
+                next: "no"
+        - "yes"
+        - "no"
+  source:
+    command: source
+    artifact: result
+  "yes":
+    command: yes
+  "no":
+    command: no
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  route = r.schema.object{ properties = { flag = r.schema.boolean() }, required = { "flag" } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local yes = r.command{ name = "yes", command = "yes" }
+local no = r.command{ name = "no", command = "no" }
+return r.workflow{ name = "when-intermediate-missing", description = "when intermediate missing", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.when{ on = source.route.missing.flag, on_true = yes, next = no } } },
+  r.child{ node = yes }, r.child{ node = no },
+} } }
+"#,
+            ),
+            (
+                "switch-intermediate-missing",
+                "WFT002",
+                r#"name: switch-intermediate-missing
+description: switch intermediate missing
+schemas:
+  result:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          status:
+            type: string
+            enum: [ready]
+        required: [status]
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - switch:
+                  on: route.missing.status
+                  cases:
+                    ready: target
+        - target
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = {
+  route = r.schema.object{ properties = { status = r.schema.string{ enum = { "ready" } } }, required = { "status" } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target" }
+return r.workflow{ name = "switch-intermediate-missing", description = "switch intermediate missing", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.switch{ on = source.route.missing.status, cases = { ready = target } } } },
+  r.child{ node = target },
+} } }
+"#,
+            ),
+            (
+                "env-intermediate-missing",
+                "WFR003",
+                r#"name: env-intermediate-missing
+description: env intermediate missing
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: target
+    input:
+      - doc: document
+    env:
+      VALUE: doc.outer.missing.value
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "env-intermediate-missing", description = "env intermediate missing", main = r.command{
+  command = "target", input = { doc }, env = { VALUE = doc.outer.missing.value },
+} }
+"#,
+            ),
+            (
+                "template-intermediate-missing",
+                "WFR003",
+                r#"name: template-intermediate-missing
+description: template intermediate missing
+schemas:
+  document:
+    type: object
+    properties:
+      outer:
+        type: object
+        properties:
+          value: string
+nodes:
+  main:
+    command: "echo {{ doc.outer.missing.value }}"
+    input:
+      - doc: document
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.object{ properties = { value = r.schema.string{} } },
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "template-intermediate-missing", description = "template intermediate missing", main = r.command{
+  command = "echo {{ doc.outer.missing.value }}", input = { doc },
+} }
+"#,
+            ),
+            (
+                "items-intermediate-missing",
+                "WFR003",
+                r#"name: items-intermediate-missing
+description: items intermediate missing
+schemas:
+  result:
+    type: object
+    properties:
+      batch:
+        type: object
+        properties:
+          values:
+            type: array
+            items: item
+  item: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: result
+  spread:
+    fanout:
+      items: source.batch.missing.values
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]
+"#,
+                r#"local r = require("releash")
+local item = r.schema.string{}
+local result = r.schema.object{ properties = {
+  batch = r.schema.object{ properties = { values = r.schema.array{ items = item } } },
+} }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local worker = r.command{ name = "worker", command = "worker", input = { r.input("item") } }
+local spread = r.fanout{ name = "spread", items = source.batch.missing.values, children = { r.child{ node = worker } } }
+return r.workflow{ name = "items-intermediate-missing", description = "items intermediate missing", main = r.sequence{ children = {
+  r.child{ node = source }, r.child{ node = spread },
+} } }
+"#,
+            ),
+            (
+                "wiring-non-object",
+                "WFR007",
+                r#"name: wiring-non-object
+description: wiring non-object
+schemas:
+  result:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    sequence:
+      children:
+        - source
+        - target:
+            inputs:
+              value: source.outer.value
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+    input: [value]
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = { outer = r.schema.string{} } }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target", input = { r.input("value") } }
+return r.workflow{ name = "wiring-non-object", description = "wiring non-object", main = r.sequence{ children = {
+  r.child{ node = source },
+  r.child{ node = target, inputs = { value = source.outer.value } },
+} } }
+"#,
+            ),
+            (
+                "env-non-object",
+                "WFR003",
+                r#"name: env-non-object
+description: env non-object
+schemas:
+  document:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    command: target
+    input:
+      - doc: document
+    env:
+      VALUE: doc.outer.value
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.string{},
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "env-non-object", description = "env non-object", main = r.command{
+  command = "target", input = { doc }, env = { VALUE = doc.outer.value },
+} }
+"#,
+            ),
+            (
+                "template-non-object",
+                "WFR003",
+                r#"name: template-non-object
+description: template non-object
+schemas:
+  document:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    command: "echo {{ doc.outer.value }}"
+    input:
+      - doc: document
+"#,
+                r#"local r = require("releash")
+local document = r.schema.object{ name = "document", properties = {
+  outer = r.schema.string{},
+} }
+local doc = r.input("doc", document)
+return r.workflow{ name = "template-non-object", description = "template non-object", main = r.command{
+  command = "echo {{ doc.outer.value }}", input = { doc },
+} }
+"#,
+            ),
+            (
+                "when-non-object",
+                "WFT001",
+                r#"name: when-non-object
+description: when non-object
+schemas:
+  result:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - when:
+                  on: outer.flag
+                  then: "yes"
+                next: "no"
+        - "yes"
+        - "no"
+  source:
+    command: source
+    artifact: result
+  "yes":
+    command: yes
+  "no":
+    command: no
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = { outer = r.schema.string{} } }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local yes = r.command{ name = "yes", command = "yes" }
+local no = r.command{ name = "no", command = "no" }
+return r.workflow{ name = "when-non-object", description = "when non-object", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.when{ on = source.outer.flag, on_true = yes, next = no } } },
+  r.child{ node = yes }, r.child{ node = no },
+} } }
+"#,
+            ),
+            (
+                "switch-non-object",
+                "WFT002",
+                r#"name: switch-non-object
+description: switch non-object
+schemas:
+  result:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    sequence:
+      children:
+        - source:
+            rules:
+              - switch:
+                  on: outer.verdict
+                  cases:
+                    A: target
+        - target
+  source:
+    command: source
+    artifact: result
+  target:
+    command: target
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = { outer = r.schema.string{} } }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local target = r.command{ name = "target", command = "target" }
+return r.workflow{ name = "switch-non-object", description = "switch non-object", main = r.sequence{ children = {
+  r.child{ node = source, rules = { r.switch{ on = source.outer.verdict, cases = { A = target } } } },
+  r.child{ node = target },
+} } }
+"#,
+            ),
+            (
+                "items-non-object",
+                "WFR003",
+                r#"name: items-non-object
+description: items non-object
+schemas:
+  result:
+    type: object
+    properties:
+      outer: string
+nodes:
+  main:
+    sequence:
+      children: [source, spread]
+  source:
+    command: source
+    artifact: result
+  spread:
+    fanout:
+      items: source.outer.values
+      children: [worker]
+  worker:
+    command: worker
+    input: [item]
+"#,
+                r#"local r = require("releash")
+local result = r.schema.object{ properties = { outer = r.schema.string{} } }
+local source = r.command{ name = "source", command = "source", artifact = result }
+local worker = r.command{ name = "worker", command = "worker", input = { r.input("item") } }
+local spread = r.fanout{ name = "spread", items = source.outer.values, children = { r.child{ node = worker } } }
+return r.workflow{ name = "items-non-object", description = "items non-object", main = r.sequence{ children = {
+  r.child{ node = source }, r.child{ node = spread },
+} } }
+"#,
+            ),
+        ];
+
+        for (name, code, yaml_source, lua_source) in cases {
+            let yaml = diagnose_workflow_source(yaml_source, Some(name));
+            let lua = diagnose_lua_workflow_source(
+                &format!("{name}.lua"),
+                lua_source,
+                tmp.path(),
+                tmp.path(),
+                Some(name),
+            );
+            let yaml_item = yaml
+                .diagnostics
+                .iter()
+                .find(|item| item.code == code)
+                .unwrap_or_else(|| panic!("{name} YAML: {:?}", yaml.diagnostics));
+            let lua_item = lua
+                .diagnostics
+                .iter()
+                .find(|item| item.code == code)
+                .unwrap_or_else(|| panic!("{name} Lua: {:?}", lua.diagnostics));
+            assert_eq!(lua_item.code, yaml_item.code, "{name}");
+            assert_eq!(lua_item.stage, yaml_item.stage, "{name}");
+            assert_eq!(lua_item.message, yaml_item.message, "{name}");
+        }
     }
 }

@@ -88,13 +88,15 @@ nodes:
 
 children の `inputs` は `<パラメータ名>: <供給元>` の map である。
 
-- Sequence の子: 兄弟エントリ、`<兄弟>.<field>`、Sequence 自身の input、`request`。
+- Sequence の子: 兄弟エントリ、`<兄弟>.<field>...`、Sequence 自身の input、`request`。
 - Fanout の子: Fanout 自身の input、field path、`request`、展開中の要素を表す `items`。
 - `request` は起動時の String input で、どの合成子の配線からも参照できる。
 - Fanout の子は並走するため、兄弟の Artifact を直接参照しない。外側の値は親から input を一段ずつ渡す。
 - `items` は本文の特殊名ではない。child の input パラメータへ配線し、そのパラメータ名を本文で参照する。
-- 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>` の1段だけで、参照先の Node / Contract field が存在し、Node 供給元は Artifact を産出する必要がある。
+- 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>...` で、参照先の Node と各 Contract field が存在し、Node 供給元は Artifact を産出する必要がある。
 - 同じ名前が Sequence の兄弟 Node と Sequence 自身の input パラメータの両方に一致する配線は曖昧なので拒否される。`request` と `items` は予約供給元名であり、Node の input パラメータ名には使えない。`request` / `items` に field は無く、`items` は `items` を宣言した Fanout 内だけで使える。
+
+配線 `inputs`、Command の `env`、テンプレート `{{ }}`、`fanout.items` の field path は `.` で区切り、各段は先頭が ASCII 英数字、以降が ASCII 英数字・`-`・`_` である。参照文字列の前後に空白を含めることはできない。テンプレート `{{ }}` の内側にある空白だけは区切りとして扱い、参照文字列には含めない。段数に上限はない。起点に Contract がある参照は、各段を Object の `properties` に沿って load 時に解決する。存在しない field、Object でない値から field を引く段、または末端が参照箇所の要求型を満たさない参照は Error Diagnostic になる。中間 Object の field は `required` でなくてもよく、array の要素 Contract を経由して次の段を解決しない。共有 domain validation は、型なし input パラメータを起点とする field path の Contract 検査を行わず、実行時の Object 値を各段に沿って引く。`when.on` / `switch.on` の field path は後述の rules 固有の規則に従う。
 
 ### children の4形式
 
@@ -177,7 +179,7 @@ fix_each:
 
 - `children`: Sequence と同じ4形式。
 - Fanout の children エントリに `rules` は書けない。Fanout children は並列展開であり辺を持たないため、宣言すると `WFC007` になる。
-- `items`: literal 配列、または Artifact の `<node>.<field>` 配列。
+- `items`: literal 配列、または Artifact の `<node>.<field>...` で末端が配列になる参照。
 - item ごとに children を展開する。各要素は children の `inputs` で供給元 `items` から渡す。
 - child の input が一つだけで `items` がある場合に限り、その `inputs` を省略できる。
 - 型付き child input が `items` を受ける場合、Artifact 配列の要素 Contract または各 literal item がその Contract と一致する必要がある。
@@ -207,11 +209,11 @@ record_revision:
 
 `command` は worktree を cwd として shell で一度実行する非空文字列である。結果は `ok`、`exit_code`、`stdout`、`stderr`、`duration` を持つ。`artifact` があれば stdout 全体を JSON として parse・Contract 検証し、予約 field と同じ Object Artifact に合成する。process 起動不能は Node failure、非ゼロ exit codeまたは stdout 検証失敗は `ok: false` の確定結果になる。
 
-`env` は任意の map で、`<環境変数名>: <input パラメータ名>` または `<環境変数名>: <input パラメータ名>.<field>` を宣言する。参照先は同じ Command が `input` で宣言したパラメータとその1段の field に限る。map 以外の値、受理形でない参照、未宣言パラメータ、型ありパラメータの Contract に存在しない field、2段以上の field path は load 時に Error Diagnostic になる。`env` は Command だけに宣言でき、ほかの Node 種別での宣言は load 時に Error Diagnostic になる。
+`env` は任意の map で、`<環境変数名>: <input パラメータ名>` または `<環境変数名>: <input パラメータ名>.<field>...` を宣言する。参照先は同じ Command が `input` で宣言したパラメータと、その Contract の Object を各段に沿って辿った field である。map 以外の値、受理形でない参照、未宣言パラメータ、型ありパラメータから解決できない field path は load 時に Error Diagnostic になる。`env` は Command だけに宣言でき、ほかの Node 種別での宣言は load 時に Error Diagnostic になる。
 
 環境変数名は `[A-Za-z_][A-Za-z0-9_]*` に一致しなければならない。`RELEASH_` で始まる名前はすべて engine の予約名であり、宣言すると load 時に Error Diagnostic になる。参照した値が string なら文字列をそのまま、string 以外なら compact JSON テキストを子 process の環境変数へ渡す。値にテンプレート展開や shell 解釈は行わない。
 
-テンプレートの `{{ parameter }}` / `{{ parameter.field }}` は Node が宣言した input パラメータを参照する。field を付ける場合はそのパラメータの Contract に存在する1段の field でなければならず、未宣言パラメータ、未知 field、2段以上の path は拒否される。`{{ }}` は shell quoting を自動で行わないため、信頼できない値を shell syntax へ直接連結しない。信頼できない値は `env` で渡し、上の例の `"$DOC"` のように引用付きの shell 変数として参照する。
+テンプレートの `{{ parameter }}` / `{{ parameter.field... }}` は Node が宣言した input パラメータを参照する。field path を付ける場合、型ありパラメータではその Contract の Object を各段に沿って辿って解決できなければならない。未宣言パラメータと解決できない field path は拒否される。`{{ }}` は shell quoting を自動で行わないため、信頼できない値を shell syntax へ直接連結しない。信頼できない値は `env` で渡し、上の例の `"$DOC"` のように引用付きの shell 変数として参照する。
 
 ### Session
 
@@ -290,8 +292,9 @@ rules:
   - next: run_tests
 ```
 
-- `when.on` は自 Node Artifact の required boolean field。
-- `switch.on` は required string enum field。非網羅なら同じ要素の sibling `next` が必須。
+- `when.on` は自 Node Artifact の Object を各段に沿って辿り、末端の直上 Object で required になっている boolean field。
+- `switch.on` は自 Node Artifact の Object を各段に沿って辿り、末端の直上 Object で required になっている非空の string enum field。中間段は required でなくてよい。case が非網羅なら同じ要素の sibling `next` が必須。
+- `when.on` / `switch.on` の field path は `.` で区切り、空の段および参照文字列全体の前後空白を拒否する。各段の文字種は制限せず、`legacy flag` のように空白を含む property 名は1段参照として引ける。`.` は段の区切りとして解釈されるため、`.` を含む property 名は `when.on` / `switch.on` から引けない。
 - 単独の `next` は無条件辺。
 - 一つの `rules` リストに置ける判別規則（`when` または `switch`）、`loop_guard`、単独 `next` はそれぞれ最大一つである。判別規則と単独 `next` は併記せず、判別規則自身の sibling `next` を catch-all に使う。
 - 辺の target は存在する Node でなければならない。同じ Sequence の child またはどの合成子にも属さない Node へ遷移できるが、別の合成子が所有する child へ外から遷移できない。
@@ -394,7 +397,7 @@ return r.workflow{
 | `r.schema.string{ enum? }` / `boolean()` / `integer()` / `number()` | Schema |
 | `r.workflow{ name, description, main }` | Workflow |
 
-Lua の Command は `env = { <環境変数名> = <Input>, <環境変数名> = <Input>.<field> }` で同じ対応を宣言する。
+Lua の Command は `env = { <環境変数名> = <Input>, <環境変数名> = <Input>.<field>... }` で同じ対応を宣言する。
 
 ```lua
 local doc = r.input("doc")
@@ -410,7 +413,7 @@ local materialize_requirements = r.command{
 }
 ```
 
-Node、Input、`r.request`、`r.items` は値参照として配線する。`node.field` は Artifact field の Source になる。children の要素はすべて `r.child{}` で書き、同じ Node 値を複数の child に置くことはできない。部品は Sequence を返す関数として作り、再利用時は関数を再度呼んで独立した Node 群を得る。
+Node、Input、`r.request`、`r.items` は値参照として配線する。`node.field...` と Contract 付き Input の `input.field...` は Object を各段に沿って辿る Source になり、YAML と同じ多段 field path の解決規則を使う。Lua の child `inputs` では、Contract を持たない Input の `input.field...` を `WFR003`（`input does not declare a contract`）として拒否する。`r.request` と `r.items` に field はない。children の要素はすべて `r.child{}` で書き、同じ Node 値を複数の child に置くことはできない。部品は Sequence を返す関数として作り、再利用時は関数を再度呼んで独立した Node 群を得る。
 
 `require` は workflows ディレクトリ配下だけを探索し、合成後は単一の定義になる。評価環境は外部 I/O を持たず、命令数とメモリ量に上限がある。`.releash/releash.lua`、`.releash/facets.lua`、`.luarc.json` は LuaLS の補完用生成物にすぎず、load と実行の正本ではない。
 

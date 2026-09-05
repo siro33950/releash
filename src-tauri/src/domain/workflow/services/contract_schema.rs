@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::domain::workflow::SchemaDef;
+use crate::domain::workflow::{FieldPath, SchemaDef};
 
 pub const COMMAND_RESERVED_FIELDS: &[&str] = &["ok", "exit_code", "stdout", "stderr", "duration"];
 
@@ -20,10 +20,95 @@ pub enum RoutingFieldKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingFieldError {
-    NotObject,
-    MissingProperty { field: String },
     NotRequired { field: String },
     NotBooleanOrEnum { field: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldPathResolutionErrorKind {
+    NonObject,
+    MissingProperty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldPathResolutionError {
+    pub position: usize,
+    pub segment: String,
+    pub kind: FieldPathResolutionErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedFieldPath<'a> {
+    pub schema: &'a SchemaDef,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandReferenceSchemaError {
+    ArtifactNotObject,
+}
+
+pub fn resolve_field_path<'a>(
+    schema: &'a SchemaDef,
+    field_path: &FieldPath,
+) -> Result<ResolvedFieldPath<'a>, FieldPathResolutionError> {
+    let mut current = schema;
+    let mut terminal_required = false;
+    for (position, segment) in field_path.segments().iter().enumerate() {
+        let SchemaDef::Object {
+            properties,
+            required,
+        } = current
+        else {
+            return Err(FieldPathResolutionError {
+                position,
+                segment: segment.clone(),
+                kind: FieldPathResolutionErrorKind::NonObject,
+            });
+        };
+        let Some(next) = properties.get(segment) else {
+            return Err(FieldPathResolutionError {
+                position,
+                segment: segment.clone(),
+                kind: FieldPathResolutionErrorKind::MissingProperty,
+            });
+        };
+        terminal_required = required.contains(segment);
+        current = next;
+    }
+    Ok(ResolvedFieldPath {
+        schema: current,
+        required: terminal_required,
+    })
+}
+
+pub fn command_reference_schema(
+    artifact_schema: Option<&SchemaDef>,
+) -> Result<SchemaDef, CommandReferenceSchemaError> {
+    let (mut properties, mut required) = match artifact_schema {
+        Some(SchemaDef::Object {
+            properties,
+            required,
+        }) => (properties.clone(), required.clone()),
+        Some(_) => return Err(CommandReferenceSchemaError::ArtifactNotObject),
+        None => (BTreeMap::new(), BTreeSet::new()),
+    };
+    properties.extend([
+        ("ok".to_string(), SchemaDef::Boolean),
+        ("exit_code".to_string(), SchemaDef::Integer),
+        ("stdout".to_string(), SchemaDef::String { r#enum: None }),
+        ("stderr".to_string(), SchemaDef::String { r#enum: None }),
+        ("duration".to_string(), SchemaDef::Integer),
+    ]);
+    required.extend(
+        COMMAND_RESERVED_FIELDS
+            .iter()
+            .map(|field| (*field).to_string()),
+    );
+    Ok(SchemaDef::Object {
+        properties,
+        required,
+    })
 }
 
 pub fn schema_def_from_json(value: &Value) -> Result<SchemaDef, String> {
@@ -169,27 +254,15 @@ pub fn validate(
 
 pub fn routing_field_kind(
     schema: &SchemaDef,
+    required: bool,
     field: &str,
 ) -> Result<RoutingFieldKind, RoutingFieldError> {
-    let SchemaDef::Object {
-        properties,
-        required,
-        ..
-    } = schema
-    else {
-        return Err(RoutingFieldError::NotObject);
-    };
-    let Some(property) = properties.get(field) else {
-        return Err(RoutingFieldError::MissingProperty {
-            field: field.to_string(),
-        });
-    };
-    if !required.contains(field) {
+    if !required {
         return Err(RoutingFieldError::NotRequired {
             field: field.to_string(),
         });
     }
-    match property {
+    match schema {
         SchemaDef::Boolean => Ok(RoutingFieldKind::Boolean),
         SchemaDef::String {
             r#enum: Some(values),
@@ -598,16 +671,41 @@ mod contract_schema_tests {
             required: BTreeSet::from(["flag".to_string(), "verdict".to_string()]),
         };
         assert_eq!(
-            routing_field_kind(&schema, "flag"),
+            routing_field_kind(
+                match &schema {
+                    SchemaDef::Object { properties, .. } => &properties["flag"],
+                    _ => unreachable!(),
+                },
+                true,
+                "flag",
+            ),
             Ok(RoutingFieldKind::Boolean)
         );
         assert_eq!(
-            routing_field_kind(&schema, "verdict"),
+            routing_field_kind(
+                match &schema {
+                    SchemaDef::Object { properties, .. } => &properties["verdict"],
+                    _ => unreachable!(),
+                },
+                true,
+                "verdict",
+            ),
             Ok(RoutingFieldKind::Enum)
         );
         assert!(matches!(
-            routing_field_kind(&schema, "note"),
+            routing_field_kind(
+                match &schema {
+                    SchemaDef::Object { properties, .. } => &properties["note"],
+                    _ => unreachable!(),
+                },
+                false,
+                "note",
+            ),
             Err(RoutingFieldError::NotRequired { .. })
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "contract_schema_path_test.rs"]
+mod contract_schema_path_test;

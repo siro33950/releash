@@ -964,7 +964,7 @@ fn test_動的fanout子projection_後方辺の周回ごとに独立する() {
         execution_id,
         ItemsSource::ArtifactField {
             node: "source".to_string(),
-            field: "items".to_string(),
+            field_path: crate::domain::workflow::FieldPath::new(["items"]),
         },
     );
 
@@ -1088,7 +1088,7 @@ fn artifact_item_fanout_without_started_children_has_an_empty_branch() {
             children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
             items: Some(ItemsSource::ArtifactField {
                 node: "source".to_string(),
-                field: "items".to_string(),
+                field_path: crate::domain::workflow::FieldPath::new(["items"]),
             }),
         }),
         ..NodeDefinition::default()
@@ -1419,7 +1419,7 @@ fn terminal_workflows_hide_every_unstarted_leaf_and_branch() {
             children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
             items: Some(ItemsSource::ArtifactField {
                 node: "source".to_string(),
-                field: "items".to_string(),
+                field_path: crate::domain::workflow::FieldPath::new(["items"]),
             }),
         }),
         ..NodeDefinition::default()

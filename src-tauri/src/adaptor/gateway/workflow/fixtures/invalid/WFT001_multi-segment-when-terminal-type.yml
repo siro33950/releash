@@ -1,0 +1,30 @@
+name: multi-segment-when-terminal-type
+description: nested when reference resolves to a required string
+schemas:
+  output:
+    type: object
+    properties:
+      route:
+        type: object
+        properties:
+          status: string
+        required: [status]
+nodes:
+  main:
+    sequence:
+      children:
+      - source:
+          rules:
+          - when:
+              on: route.status
+              then: "yes"
+            next: "no"
+      - "yes"
+      - "no"
+  source:
+    command: source
+    artifact: output
+  "yes":
+    command: yes
+  "no":
+    command: no
