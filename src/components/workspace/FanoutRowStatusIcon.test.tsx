@@ -9,6 +9,7 @@ const classifications: WorkspaceNodeStatusClassification[] = [
 	"attention",
 	"failure",
 	"idle",
+	"unbound",
 ];
 
 describe("FanoutRowStatusIcon", () => {

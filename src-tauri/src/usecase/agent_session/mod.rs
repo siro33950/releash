@@ -7,7 +7,9 @@ mod agent_session_launch;
 mod agent_session_lifecycle;
 mod agent_session_query;
 mod agent_session_read;
+mod agent_session_rename;
 mod provider_availability;
+mod provider_session_title_ingestion;
 mod usecase;
 
 pub(crate) use agent_session_change_notifier::AgentSessionChangeNotifier;
@@ -39,9 +41,13 @@ pub(crate) use agent_session_query::{
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;
 pub(crate) use agent_session_read::{AgentSessionReadUsecase, AgentSessionReadUsecaseError};
+pub(crate) use agent_session_rename::{
+    AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase,
+};
 pub(crate) use provider_availability::{
     ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
+pub(crate) use provider_session_title_ingestion::ProviderSessionTitleIngestionUsecase;
 pub(crate) use usecase::{
     AgentSessionCreateRequest, AgentSessionUsecase, AgentSessionUsecaseError,
 };
@@ -62,8 +68,14 @@ mod agent_session_lifecycle_tests;
 #[path = "agent_session_read_test.rs"]
 mod agent_session_read_tests;
 #[cfg(test)]
+#[path = "agent_session_rename_test.rs"]
+mod agent_session_rename_tests;
+#[cfg(test)]
 #[path = "agent_session_test.rs"]
 mod agent_session_tests;
 #[cfg(test)]
 #[path = "provider_availability_test.rs"]
 mod provider_availability_tests;
+#[cfg(test)]
+#[path = "provider_session_title_ingestion_test.rs"]
+mod provider_session_title_ingestion_tests;

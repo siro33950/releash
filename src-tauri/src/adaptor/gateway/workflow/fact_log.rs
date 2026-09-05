@@ -654,6 +654,50 @@ pub(crate) fn read_latest_activity_record_for_node(
         .transpose()
 }
 
+pub(crate) fn read_records_for_event_types(
+    backend: &FactLogReadBackend,
+    event_types: &[&str],
+) -> Result<Vec<NodeFactRecord>, String> {
+    let event_types = event_types
+        .iter()
+        .map(|event_type| (*event_type).to_string())
+        .collect::<Vec<_>>();
+    let rows = backend
+        .run_indexed(move |connection| {
+            let event_types = event_types.iter().map(String::as_str).collect::<Vec<_>>();
+            node_events::rows_for_event_types(connection, &event_types)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("node lifecycle fact lookup failed: {error:?}"))?;
+    rows.iter().map(record_from_row).collect()
+}
+
+pub(crate) fn read_latest_record_for_node_with_event_types(
+    backend: &FactLogReadBackend,
+    node_execution_id: &str,
+    event_types: &[&str],
+) -> Result<Option<NodeFactRecord>, String> {
+    let node_execution_id = node_execution_id.to_string();
+    let event_types = event_types
+        .iter()
+        .map(|event_type| (*event_type).to_string())
+        .collect::<Vec<_>>();
+    backend
+        .run_indexed(move |connection| {
+            let event_types = event_types.iter().map(String::as_str).collect::<Vec<_>>();
+            node_events::latest_row_for_node_with_event_types(
+                connection,
+                &node_execution_id,
+                &event_types,
+            )
+            .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .map_err(|error| format!("latest node fact lookup failed: {error:?}"))?
+        .as_ref()
+        .map(record_from_row)
+        .transpose()
+}
+
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
 pub(crate) fn read_tree_records(
     store: &Arc<LocalEventStore>,

@@ -46,9 +46,10 @@ use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
-    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeActionResolver,
-    WorkspaceNodeApprovalTarget, WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget,
-    WorkspaceNodeWorkflowCommandExecutor,
+    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand,
+    WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget, WorkspaceNodeCommandUsecase,
+    WorkspaceNodeRetryTarget, WorkspaceNodeWorkflowCommandExecutor,
+    WorkspaceSessionNodeRenameTarget,
 };
 pub(crate) use workspace_tree::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
@@ -965,6 +966,7 @@ mod tests {
             completion_signals: Default::default(),
             has_artifact: false,
             session_id: None,
+            can_rename: false,
             can_approve: false,
             can_retry: false,
             can_close: false,

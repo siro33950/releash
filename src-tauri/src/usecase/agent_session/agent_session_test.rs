@@ -22,6 +22,7 @@ use crate::domain::agent_session::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
+    ProviderSessionTitleEntry,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -754,6 +755,22 @@ impl AgentSessionHistoryGateway for FixedHistory {
             .filter(|entry| entry.provider == provider && entry.worktree_path == worktree_path)
             .take(limit)
             .cloned()
+            .collect())
+    }
+
+    async fn list_session_titles(
+        &self,
+        _provider: ProviderKind,
+        _worktree_path: &str,
+        provider_session_ids: &[String],
+    ) -> Result<Vec<ProviderSessionTitleEntry>, AgentSessionHistoryGatewayError> {
+        Ok(provider_session_ids
+            .iter()
+            .map(|provider_session_id| ProviderSessionTitleEntry {
+                provider_session_id: provider_session_id.clone(),
+                session_title: None,
+                first_user_prompt: None,
+            })
             .collect())
     }
 }

@@ -4,9 +4,9 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    ApproveWorkspaceNodeCommand, RetryWorkspaceNodeCommand, WorkspaceNodeCommandUsecase,
-    WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
-    WorkspaceWorkflowHistoryItemDto,
+    ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand, RetryWorkspaceNodeCommand,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto,
+    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
@@ -17,6 +17,7 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_workspace_session_node_id",
     "approve_workspace_node",
     "retry_workspace_node",
+    "rename_workspace_session_node",
     "archive_workspace_workflow_execution",
     "restore_workspace_workflow_execution",
 ];
@@ -35,6 +36,7 @@ pub(crate) fn invoke_handler(
         get_workspace_session_node_id,
         approve_workspace_node,
         retry_workspace_node,
+        rename_workspace_session_node,
         archive_workspace_workflow_execution,
         restore_workspace_workflow_execution,
     ]
@@ -144,6 +146,23 @@ pub async fn retry_workspace_node(
         .retry_workspace_node(RetryWorkspaceNodeCommand {
             worktree_path,
             node_id,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn rename_workspace_session_node(
+    usecase: State<'_, Arc<WorkspaceNodeCommandUsecase>>,
+    worktree_path: String,
+    node_id: String,
+    name: String,
+) -> Result<(), String> {
+    usecase
+        .rename_workspace_session_node(RenameWorkspaceSessionNodeCommand {
+            worktree_path,
+            node_id,
+            name,
         })
         .await
         .map_err(|error| error.to_string())

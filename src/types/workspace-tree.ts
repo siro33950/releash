@@ -31,9 +31,11 @@ export type WorkspaceNodeStatusClassification =
 	| "active"
 	| "attention"
 	| "failure"
-	| "idle";
+	| "idle"
+	| "unbound";
 
 export interface WorkspaceNodeCapabilities {
+	canRename: boolean;
 	canApprove: boolean;
 	canRetry: boolean;
 	canClose: boolean;

@@ -27,7 +27,12 @@ function makeNode(id: string): WorkspaceTreeItem {
 		title: id,
 		status: "active",
 		contentKind: "session",
-		capabilities: { canApprove: false, canRetry: false, canClose: true },
+		capabilities: {
+			canRename: false,
+			canApprove: false,
+			canRetry: false,
+			canClose: true,
+		},
 		pastAttempts: [],
 		pastAttemptsCollapsed: false,
 		updatedAt: 1,

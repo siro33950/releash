@@ -121,7 +121,12 @@ const directNode: WorkspaceTreeItem = {
 	title: "Direct session",
 	status: "active",
 	contentKind: "session",
-	capabilities: { canApprove: false, canRetry: false, canClose: true },
+	capabilities: {
+		canRename: false,
+		canApprove: false,
+		canRetry: false,
+		canClose: true,
+	},
 	pastAttempts: [],
 	pastAttemptsCollapsed: false,
 	updatedAt: 1,
@@ -133,6 +138,7 @@ function standaloneSessionNode({
 	status = "active",
 	canArchive = true,
 	canDelete = false,
+	canRename = false,
 	sessionRef = id,
 }: {
 	id: string;
@@ -140,6 +146,7 @@ function standaloneSessionNode({
 	status?: WorkspaceNode["status"];
 	canArchive?: boolean;
 	canDelete?: boolean;
+	canRename?: boolean;
 	sessionRef?: string;
 }): WorkspaceNode {
 	return {
@@ -148,7 +155,12 @@ function standaloneSessionNode({
 		title,
 		status,
 		contentKind: "session",
-		capabilities: { canApprove: false, canRetry: false, canClose: false },
+		capabilities: {
+			canRename,
+			canApprove: false,
+			canRetry: false,
+			canClose: false,
+		},
 		sessionCapabilities: {
 			sessionRef,
 			canArchive,
@@ -181,7 +193,12 @@ const recursiveTree: WorkspaceTreeItem[] = [
 				title: "Prepare",
 				status: "idle",
 				contentKind: "session",
-				capabilities: { canApprove: false, canRetry: false, canClose: false },
+				capabilities: {
+					canRename: false,
+					canApprove: false,
+					canRetry: false,
+					canClose: false,
+				},
 				pastAttempts: [],
 				pastAttemptsCollapsed: false,
 				updatedAt: 3,
@@ -208,6 +225,7 @@ const recursiveTree: WorkspaceTreeItem[] = [
 								status: "active",
 								contentKind: "command",
 								capabilities: {
+									canRename: false,
 									canApprove: false,
 									canRetry: false,
 									canClose: false,
@@ -657,6 +675,185 @@ describe("WorkspaceList", () => {
 		expect(
 			within(idleRow).getByTitle("session, idle").firstChild,
 		).not.toHaveClass("animate-pulse");
+	});
+
+	it("bind前のSession Nodeを灰色の回転loaderで描画しrename入口を出さない", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "unbound-session",
+					title: "session",
+					status: "unbound",
+					canRename: false,
+				}),
+			],
+			archivedSessions: [],
+		});
+		renderWorkspaceList();
+
+		const row = screen.getByRole("button", { name: "session, unbound" });
+		const icon = within(row).getByTitle("session, unbound").firstChild;
+		expect(icon).toHaveClass(
+			"lucide-loader-circle",
+			"animate-spin",
+			"text-muted-foreground",
+		);
+		expect(
+			screen.queryByRole("button", { name: "Rename session" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("canRenameが真のSession Nodeだけにrename入口を出す", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "renameable-session",
+					title: "Renameable session",
+					canRename: true,
+				}),
+				standaloneSessionNode({
+					id: "fixed-session",
+					title: "Fixed session",
+					canRename: false,
+				}),
+			],
+			archivedSessions: [],
+		});
+
+		renderWorkspaceList();
+
+		expect(
+			screen.getByRole("button", { name: "Rename Renameable session" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Rename Fixed session" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("rename入力は現在名を全選択しEnterでbackend commandだけを呼ぶ", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "renameable-session",
+					title: "Current title",
+					canRename: true,
+				}),
+			],
+			archivedSessions: [],
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Rename Current title" }),
+		);
+		const input = screen.getByRole("textbox", {
+			name: "Rename Current title",
+		}) as HTMLInputElement;
+		expect(input).toHaveValue("Current title");
+		expect(input.selectionStart).toBe(0);
+		expect(input.selectionEnd).toBe("Current title".length);
+		await user.clear(input);
+		await user.type(input, "  New title  {Enter}");
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"rename_workspace_session_node",
+				{
+					worktreePath: "/repo/wt",
+					nodeId: "renameable-session",
+					name: "  New title  ",
+				},
+			);
+		});
+		expect(screen.getByText("Current title")).toBeInTheDocument();
+		expect(screen.queryByText("New title")).not.toBeInTheDocument();
+	});
+
+	it("rename失敗時は入力を保持し再送信の成功後に編集を閉じる", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "retry-rename-session",
+					title: "Current title",
+					canRename: true,
+				}),
+			],
+			archivedSessions: [],
+		});
+		const rename = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Rename failed"))
+			.mockResolvedValueOnce(undefined);
+		mocks.invoke.mockImplementation((command: string, args: unknown) => {
+			if (command === "rename_workspace_session_node") return rename(args);
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		await user.click(
+			screen.getByRole("button", { name: "Rename Current title" }),
+		);
+		const input = screen.getByRole("textbox", {
+			name: "Rename Current title",
+		});
+		await user.clear(input);
+		await user.type(input, "New title{Enter}");
+
+		expect(await screen.findByText("Rename failed")).toBeVisible();
+		expect(input).toHaveValue("New title");
+		expect(input).toHaveFocus();
+
+		await user.keyboard("{Enter}");
+
+		await waitFor(() => {
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+		});
+		expect(rename).toHaveBeenCalledTimes(2);
+		expect(rename).toHaveBeenNthCalledWith(2, {
+			worktreePath: "/repo/wt",
+			nodeId: "retry-rename-session",
+			name: "New title",
+		});
+		expect(screen.queryByText("Rename failed")).not.toBeInTheDocument();
+	});
+
+	it.each([
+		["Escape", "{Escape}"],
+		["blur", "{Tab}"],
+		["whitespace", "   {Enter}"],
+	])("rename入力は%sで取り消しinvokeしない", async (_caseName, keys) => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				standaloneSessionNode({
+					id: "cancel-rename-session",
+					title: "Stable title",
+					canRename: true,
+				}),
+			],
+			archivedSessions: [],
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		await user.click(
+			screen.getByRole("button", { name: "Rename Stable title" }),
+		);
+		const input = screen.getByRole("textbox", {
+			name: "Rename Stable title",
+		});
+		if (_caseName === "whitespace") {
+			await user.clear(input);
+		}
+
+		await user.keyboard(keys);
+
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"rename_workspace_session_node",
+			expect.anything(),
+		);
+		expect(
+			screen.queryByRole("textbox", { name: "Rename Stable title" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("Standalone AgentSessionのXはArchiveしID不明時はDelete確認を要求する", async () => {
@@ -1139,7 +1336,12 @@ describe("WorkspaceList", () => {
 			title: "A",
 			status: "idle",
 			contentKind: "session",
-			capabilities: { canApprove: false, canRetry: false, canClose: false },
+			capabilities: {
+				canRename: false,
+				canApprove: false,
+				canRetry: false,
+				canClose: false,
+			},
 			pastAttempts: [],
 			pastAttemptsCollapsed: false,
 			updatedAt: 1,
@@ -1629,6 +1831,7 @@ describe("WorkspaceList", () => {
 						{
 							provider: "codex",
 							providerSessionId: "provider-session-1",
+							label: "Fix provider history labels",
 						},
 					],
 					nextAfter: null,
@@ -1649,8 +1852,9 @@ describe("WorkspaceList", () => {
 		);
 		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
 		const candidate = await screen.findByRole("menuitem", {
-			name: /codex.*provider-session-1/,
+			name: "Fix provider history labels",
 		});
+		expect(screen.queryByText("provider-session-1")).not.toBeInTheDocument();
 		act(() => candidate.focus());
 		await user.keyboard("{Enter}");
 
@@ -1699,6 +1903,7 @@ describe("WorkspaceList", () => {
 									{
 										provider: "claude",
 										providerSessionId: "provider-session-2",
+										label: "Second provider conversation",
 									},
 								],
 								nextAfter: null,
@@ -1708,6 +1913,7 @@ describe("WorkspaceList", () => {
 									{
 										provider: "codex",
 										providerSessionId: "provider-session-1",
+										label: "First provider conversation",
 									},
 								],
 								nextAfter: "history-cursor-1",
@@ -1736,7 +1942,7 @@ describe("WorkspaceList", () => {
 		);
 		expect(
 			await screen.findByRole("menuitem", {
-				name: /claude.*provider-session-2/,
+				name: "Second provider conversation",
 			}),
 		).toBeVisible();
 	});

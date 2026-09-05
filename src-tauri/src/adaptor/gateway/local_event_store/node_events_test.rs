@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::{
     append_node_event, delete_tree, latest_row_for_node_with_event_types, list_tree_roots,
-    read_tree, NewNodeEventRow,
+    read_tree, rows_for_event_types, NewNodeEventRow,
 };
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::schema::{initialize_schema, InitialStoreMetadata};
@@ -145,6 +145,55 @@ mod latest_row_for_node_with_event_types_tests {
         assert_eq!(latest.seq, 3);
         assert_eq!(latest.node_execution_id, "session-node");
         assert_eq!(latest.event_type, "stop_received");
+    }
+}
+
+mod event_type_access_path_tests {
+    use super::*;
+
+    #[test]
+    fn test_event種別一覧_指定した事実集合だけを全node分まとめてnodeとseq順に返す() {
+        // Given: 複数 tree・node の lifecycle 事実と対象外の事実
+        let connection = connection();
+        for (tree_id, node_execution_id, event_type) in [
+            ("tree-b", "node-b", "session_attached"),
+            ("tree-a", "node-a", "started"),
+            ("tree-a", "node-a", "session_attached"),
+            ("tree-a", "node-a", "process_exited"),
+            ("tree-b", "node-b", "submit_received"),
+            ("tree-b", "node-b", "resume_requested"),
+        ] {
+            let mut event = row(tree_id, node_execution_id, None);
+            event.event_type = event_type.to_string();
+            append_node_event(&connection, &event, 10).unwrap();
+        }
+
+        // When: lifecycle に必要な event_type 集合を一度に読む
+        let rows = rows_for_event_types(
+            &connection,
+            &["session_attached", "process_exited", "resume_requested"],
+        )
+        .unwrap();
+
+        // Then: 対象事実だけが node_execution_id・seq の順で返る
+        assert_eq!(
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.node_execution_id.as_str(),
+                        row.seq,
+                        row.event_type.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("node-a", 2, "session_attached"),
+                ("node-a", 3, "process_exited"),
+                ("node-b", 1, "session_attached"),
+                ("node-b", 3, "resume_requested"),
+            ]
+        );
+        assert!(rows_for_event_types(&connection, &[]).unwrap().is_empty());
     }
 }
 

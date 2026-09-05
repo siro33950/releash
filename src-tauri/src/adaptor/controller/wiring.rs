@@ -199,8 +199,9 @@ pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
 pub(crate) fn build_workspace_node_command_usecase(
     resolver: Arc<dyn WorkspaceNodeActionResolver>,
     workflows: Arc<dyn crate::usecase::workflow::WorkspaceNodeWorkflowCommandExecutor>,
+    session_renames: Arc<dyn crate::usecase::agent_session::AgentSessionRenameExecutor>,
 ) -> WorkspaceNodeCommandUsecase {
-    WorkspaceNodeCommandUsecase::new(resolver, workflows)
+    WorkspaceNodeCommandUsecase::new(resolver, workflows, session_renames)
 }
 
 /// Test helper using the same mandatory canonical store wiring as production.

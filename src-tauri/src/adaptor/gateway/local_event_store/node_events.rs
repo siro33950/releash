@@ -162,6 +162,26 @@ pub(crate) fn latest_row_for_node_with_event_types(
     rows.next().transpose()
 }
 
+pub(crate) fn rows_for_event_types(
+    connection: &Connection,
+    event_types: &[&str],
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    if event_types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (1..=event_types.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events
+         WHERE event_type IN ({placeholders})
+         ORDER BY node_execution_id, seq",
+    ))?;
+    let rows = statement.query_map(rusqlite::params_from_iter(event_types), row_from_sql)?;
+    rows.collect()
+}
+
 /// First row of one tree (the root started fact).
 pub(crate) fn first_row_of_tree(
     connection: &Connection,

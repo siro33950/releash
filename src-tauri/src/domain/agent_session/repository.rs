@@ -65,6 +65,12 @@ pub trait AgentSessionRepository: Send + Sync {
         self.find(session_id).await
     }
 
+    async fn list_open_for_provider_session_title(
+        &self,
+    ) -> Result<Vec<VersionedAgentSession>, AgentSessionRepositoryError> {
+        Err(AgentSessionRepositoryError::InvalidRequest)
+    }
+
     async fn save(
         &self,
         session: VersionedAgentSession,
@@ -77,6 +83,14 @@ pub trait AgentSessionRepository: Send + Sync {
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         self.save(session, caller_request_id).await
+    }
+
+    async fn save_provider_session_title(
+        &self,
+        _session: VersionedAgentSession,
+        _caller_request_id: &str,
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        Err(AgentSessionRepositoryError::InvalidRequest)
     }
 
     async fn remove(

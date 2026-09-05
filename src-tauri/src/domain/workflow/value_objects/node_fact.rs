@@ -58,6 +58,10 @@ pub enum NodeFact {
     RuntimeFailureObserved(RuntimeFailureObservedFact),
     /// 観測: AgentSession の provider 活動状態が変わった。
     AgentActivityObserved(AgentActivityObservedFact),
+    /// 人間の行動: Session Node の表示名を変更した。
+    SessionNodeRenamed(SessionNodeRenamedFact),
+    /// 外部の観測: provider session のタイトルが変わった。
+    ProviderSessionTitleObserved(ProviderSessionTitleObservedFact),
     /// 外部入力: 受理された Submit。
     SubmitReceived(SubmitReceivedFact),
     /// 副作用: Contract 違反として Submit を拒否した。
@@ -289,6 +293,16 @@ pub struct AgentActivityObservedFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionNodeRenamedFact {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSessionTitleObservedFact {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitReceivedFact {
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -368,6 +382,8 @@ impl NodeFact {
             Self::ProcessExited(_) => Self::PROCESS_EXITED_EVENT_TYPE,
             Self::RuntimeFailureObserved(_) => "runtime_failure_observed",
             Self::AgentActivityObserved(_) => Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE,
+            Self::SessionNodeRenamed(_) => "session_node_renamed",
+            Self::ProviderSessionTitleObserved(_) => "provider_session_title_observed",
             Self::SubmitReceived(_) => "submit_received",
             Self::SubmitRejected(_) => "submit_rejected",
             Self::StopReceived(_) => Self::STOP_RECEIVED_EVENT_TYPE,
@@ -393,6 +409,8 @@ impl NodeFact {
             Self::ProcessExited(fact) => serde_json::to_string(fact),
             Self::RuntimeFailureObserved(fact) => serde_json::to_string(fact),
             Self::AgentActivityObserved(fact) => serde_json::to_string(fact),
+            Self::SessionNodeRenamed(fact) => serde_json::to_string(fact),
+            Self::ProviderSessionTitleObserved(fact) => serde_json::to_string(fact),
             Self::SubmitReceived(fact) => serde_json::to_string(fact),
             Self::SubmitRejected(fact) => serde_json::to_string(fact),
             Self::StopReceived(fact) => serde_json::to_string(fact),
@@ -437,6 +455,10 @@ impl NodeFact {
             }
             Self::AGENT_ACTIVITY_OBSERVED_EVENT_TYPE => {
                 parse(event_type, detail).map(Self::AgentActivityObserved)
+            }
+            "session_node_renamed" => parse(event_type, detail).map(Self::SessionNodeRenamed),
+            "provider_session_title_observed" => {
+                parse(event_type, detail).map(Self::ProviderSessionTitleObserved)
             }
             "submit_received" => parse(event_type, detail).map(Self::SubmitReceived),
             "submit_rejected" => parse(event_type, detail).map(Self::SubmitRejected),

@@ -33,7 +33,7 @@ use crate::usecase::workflow::runtime_resolver::{
 };
 use crate::usecase::workflow::{
     WorkflowRuntimeUsecase, WorkspaceNodeActionResolver, WorkspaceNodeApprovalTarget,
-    WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget,
+    WorkspaceNodeCommandUsecase, WorkspaceNodeRetryTarget, WorkspaceSessionNodeRenameTarget,
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
@@ -89,6 +89,7 @@ pub enum AcceptanceWorkspaceNodeStatus {
     Attention,
     Failure,
     Idle,
+    Unbound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +397,16 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
             node_execution_id: node_id.to_string(),
         })
     }
+
+    fn resolve_session_rename_target(
+        &self,
+        _worktree_path: &str,
+        node_id: &str,
+    ) -> Result<WorkspaceSessionNodeRenameTarget, WorkflowError> {
+        Ok(WorkspaceSessionNodeRenameTarget {
+            agent_session_id: node_id.to_string(),
+        })
+    }
 }
 
 impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
@@ -515,6 +526,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(
             Arc::new(AcceptanceWorkspaceNodeActionResolver),
             runtime.clone(),
+            composition.rename.clone(),
         ));
         app.manage(workspace_node_commands.clone());
         composition.execution_tree_stops.bind(runtime.clone());
@@ -930,6 +942,9 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
                         AcceptanceWorkspaceNodeStatus::Failure
                     }
                     WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
+                    WorkspaceNodeStatusClassification::Unbound => {
+                        AcceptanceWorkspaceNodeStatus::Unbound
+                    }
                 })
             })
     }

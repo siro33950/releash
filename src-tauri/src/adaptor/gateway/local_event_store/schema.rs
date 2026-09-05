@@ -11,7 +11,7 @@ mod schema_test;
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 pub const APPLICATION_ID: i32 = 0x524C_5348;
-pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 pub const CURRENT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS logical_commits (
@@ -196,7 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_operation_bindings_operation
 /// domain fold on the read side. Columns beyond the fact identity exist for
 /// tree / node / kind narrowing only, so `event_type` carries no CHECK (the
 /// vocabulary is owned by the domain, not duplicated into SQL).
-const NODE_EVENTS_TABLE_V6: &str = r#"
+const NODE_EVENTS_SCHEMA_V7: &str = r#"
 CREATE TABLE IF NOT EXISTS node_events (
     tree_id TEXT NOT NULL,
     seq INTEGER NOT NULL CHECK (seq >= 1),
@@ -218,6 +218,8 @@ CREATE INDEX IF NOT EXISTS idx_node_events_kind
 CREATE INDEX IF NOT EXISTS idx_node_events_session
     ON node_events (session_id, tree_id, seq)
     WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_node_events_event_type
+    ON node_events (event_type, node_execution_id, seq);
 "#;
 
 const SESSION_PROJECTION_TABLE_V3: &str = r#"
@@ -264,7 +266,7 @@ fn create_store_metadata(
 ) -> Result<(), rusqlite::Error> {
     if !matches!(table_name, "store_metadata" | "store_metadata_v2")
         || !matches!(shutdown_plans_table, "shutdown_plans" | "shutdown_plans_v2")
-        || !matches!(schema_version, 2..=6)
+        || !matches!(schema_version, 2..=7)
     {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -307,15 +309,15 @@ pub fn initialize_schema(
     if let Err(error) = (|| {
         connection.execute_batch(CURRENT_SCHEMA)?;
         connection.execute_batch(SESSION_PROJECTION_TABLE_V3)?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
-        connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 7)?;
+        connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
         connection.execute(
             "INSERT INTO store_metadata (
                 id, schema_version, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
                 next_global_sequence, health, current_shutdown_id,
                 shutdown_pointer_revision
-             ) VALUES (1, 6, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
+             ) VALUES (1, 7, ?1, ?2, ?3, ?4, ?5, 1, 'ok',
                        NULL, 0)",
             rusqlite::params![
                 metadata.installation_id,
@@ -358,9 +360,10 @@ enum SupportedMetadataVersion {
     V3,
     V4,
     V5,
+    V6,
 }
 
-fn carry_forward_store_metadata_v6(
+fn carry_forward_store_metadata_v7(
     connection: &Connection,
     source_version: SupportedMetadataVersion,
 ) -> Result<(), rusqlite::Error> {
@@ -369,11 +372,12 @@ fn carry_forward_store_metadata_v6(
         SupportedMetadataVersion::V3 => "store_metadata_v3",
         SupportedMetadataVersion::V4 => "store_metadata_v4",
         SupportedMetadataVersion::V5 => "store_metadata_v5",
+        SupportedMetadataVersion::V6 => "store_metadata_v6",
     };
     connection.execute_batch(&format!(
         "ALTER TABLE store_metadata RENAME TO {source_table};"
     ))?;
-    create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
+    create_store_metadata(connection, "store_metadata", "shutdown_plans", 7)?;
     connection.execute_batch(&format!(
         "INSERT INTO store_metadata (
              id, schema_version, installation_id, created_at_ms,
@@ -381,7 +385,7 @@ fn carry_forward_store_metadata_v6(
              process_instance_id, next_global_sequence, health,
              current_shutdown_id, shutdown_pointer_revision
          )
-         SELECT id, 6, installation_id, created_at_ms,
+         SELECT id, 7, installation_id, created_at_ms,
                 cursor_hmac_key, operation_binding_hmac_key,
                 process_instance_id, next_global_sequence, health,
                 current_shutdown_id, shutdown_pointer_revision
@@ -444,6 +448,20 @@ pub fn evolve_schema(
         return Ok(false);
     }
 
+    let is_supported_v6 = application_id == i64::from(APPLICATION_ID)
+        && user_version == 6
+        && metadata_columns
+            .iter()
+            .any(|column| column == "installation_id")
+        && !metadata_columns.iter().any(|column| column == "store_id");
+    if is_supported_v6 {
+        return evolve_schema_transaction(connection, fault, |connection| {
+            carry_forward_store_metadata_v7(connection, SupportedMetadataVersion::V6)?;
+            connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
+            Ok(())
+        });
+    }
+
     let is_supported_v5 = application_id == i64::from(APPLICATION_ID)
         && user_version == 5
         && metadata_columns
@@ -452,8 +470,8 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v5 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V5)?;
-            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            carry_forward_store_metadata_v7(connection, SupportedMetadataVersion::V5)?;
+            connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
             discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
@@ -467,9 +485,9 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v4 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V4)?;
+            carry_forward_store_metadata_v7(connection, SupportedMetadataVersion::V4)?;
             drop_retired_schema_v5(connection)?;
-            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
             discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
@@ -483,9 +501,9 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v3 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V3)?;
+            carry_forward_store_metadata_v7(connection, SupportedMetadataVersion::V3)?;
             drop_retired_schema_v5(connection)?;
-            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
             discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
@@ -499,10 +517,10 @@ pub fn evolve_schema(
         && !metadata_columns.iter().any(|column| column == "store_id");
     if is_supported_v2 {
         return evolve_schema_transaction(connection, fault, |connection| {
-            carry_forward_store_metadata_v6(connection, SupportedMetadataVersion::V2)?;
+            carry_forward_store_metadata_v7(connection, SupportedMetadataVersion::V2)?;
             evolve_session_projection_v3(connection)?;
             drop_retired_schema_v5(connection)?;
-            connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+            connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
             discard_retired_event_sourcing_v6(connection)?;
             Ok(())
         });
@@ -697,7 +715,7 @@ pub fn evolve_schema(
                  ON shutdown_plans (details_state);
              PRAGMA application_id = 0x524C5348;",
         )?;
-        create_store_metadata(connection, "store_metadata", "shutdown_plans", 6)?;
+        create_store_metadata(connection, "store_metadata", "shutdown_plans", 7)?;
         connection.execute_batch(
             "INSERT INTO store_metadata (
                  id, schema_version, installation_id, created_at_ms,
@@ -705,7 +723,7 @@ pub fn evolve_schema(
                  next_global_sequence, health, current_shutdown_id,
                  shutdown_pointer_revision
              )
-             SELECT id, 6, generation_id, created_at_ms,
+             SELECT id, 7, generation_id, created_at_ms,
                     cursor_hmac_key, operation_binding_hmac_key, boot_id,
                     next_global_sequence, 'ok', current_shutdown_plan_id,
                     shutdown_pointer_revision
@@ -714,7 +732,7 @@ pub fn evolve_schema(
         )?;
         evolve_session_projection_v3(connection)?;
         drop_retired_schema_v5(connection)?;
-        connection.execute_batch(NODE_EVENTS_TABLE_V6)?;
+        connection.execute_batch(NODE_EVENTS_SCHEMA_V7)?;
         discard_retired_event_sourcing_v6(connection)?;
         Ok(())
     })
@@ -966,6 +984,7 @@ pub fn validate_current_schema(connection: &Connection) -> Result<(), rusqlite::
         "idx_node_events_node",
         "idx_node_events_kind",
         "idx_node_events_session",
+        "idx_node_events_event_type",
     ] {
         require_index(connection, index)?;
     }
@@ -1280,6 +1299,7 @@ mod tests {
         require_index(&connection, "idx_node_events_node").unwrap();
         require_index(&connection, "idx_node_events_kind").unwrap();
         require_index(&connection, "idx_node_events_session").unwrap();
+        require_index(&connection, "idx_node_events_event_type").unwrap();
         for commit_id in ["keep-recovery", "keep-plan", "keep-target", "keep-snapshot"] {
             let count: i64 = connection
                 .query_row(

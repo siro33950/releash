@@ -16,8 +16,9 @@ use crate::usecase::agent_session::{
     AgentSessionChangeNotifier, AgentSessionExitUsecase, AgentSessionHistoryReadUsecase,
     AgentSessionInitialInstructionUsecase, AgentSessionInterruptUsecase, AgentSessionLaunchUsecase,
     AgentSessionLifecycleUsecase, AgentSessionQueryService, AgentSessionReadUsecase,
-    AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError, StartedExecutionTreeRegistrar,
+    AgentSessionRenameUsecase, AgentSessionUsecase, ExecutionTreeCacheReleaseError,
+    ProviderAgentRuntime, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    ProviderSessionTitleIngestionUsecase, StartedExecutionTreeRegistrar,
     StartedExecutionTreeRegistrationError,
 };
 use crate::usecase::provider_lifecycle::{
@@ -43,6 +44,8 @@ pub(crate) struct AgentSessionComposition {
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
     pub(crate) sessions: Arc<AgentSessionUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
+    pub(crate) provider_session_title_ingestion: Arc<ProviderSessionTitleIngestionUsecase>,
+    pub(crate) rename: Arc<AgentSessionRenameUsecase>,
     pub(crate) hook_health: Arc<ProviderHookHealthUsecase>,
     pub(crate) hook_health_read: Arc<ProviderHookHealthReadUsecase>,
     pub(crate) lifecycle_ingress: Arc<ProviderLifecycleIngressUsecase>,
@@ -222,8 +225,20 @@ pub(crate) fn compose_agent_sessions(
         input.codex_home,
     ));
     let history_read = Arc::new(AgentSessionHistoryReadUsecase::new(Arc::new(
-        LocalAgentSessionHistoryQueryService::new(history_gateway.clone(), session_repository),
+        LocalAgentSessionHistoryQueryService::new(
+            history_gateway.clone(),
+            session_repository.clone(),
+        ),
     )));
+    let provider_session_title_ingestion = Arc::new(ProviderSessionTitleIngestionUsecase::new(
+        session_repository.clone(),
+        history_gateway.clone(),
+        input.change_notifier.clone(),
+    ));
+    let rename = Arc::new(AgentSessionRenameUsecase::new(
+        session_repository,
+        input.change_notifier.clone(),
+    ));
     let provider_runtime = ProviderAgentRuntime::new(
         availability_reader.clone(),
         launch_gateway.clone(),
@@ -265,6 +280,8 @@ pub(crate) fn compose_agent_sessions(
         provider_lifecycle,
         sessions,
         history_read,
+        provider_session_title_ingestion,
+        rename,
         hook_health,
         hook_health_read,
         lifecycle_ingress,
