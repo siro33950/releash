@@ -520,7 +520,7 @@ fn reference_error_to_validation_error(error: reference::ReferenceResolveError) 
             ValidationError::InvalidArtifactReference {
                 reference: value,
                 kind: InvalidArtifactReferenceKind::InvalidInputRef,
-                reason: "`{{ ... }}` references must be `<parameter>` or `<parameter>.<field>`"
+                reason: "`{{ ... }}` references must be `<parameter>` or `<parameter>.<field>...`"
                     .to_string(),
             }
         }
@@ -543,7 +543,7 @@ fn environment_reference_error_to_validation_error(
         reference::ReferenceResolveError::InvalidInputRef { .. }
         | reference::ReferenceResolveError::ReservedNodeName { .. } => (
             InvalidEnvironmentReferenceKind::InvalidInputRef,
-            "env references must be `<parameter>` or `<parameter>.<field>`".to_string(),
+            "env references must be `<parameter>` or `<parameter>.<field>...`".to_string(),
         ),
     };
     ValidationError::InvalidEnvironmentReference {
@@ -944,7 +944,7 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
                     push(
                         &mut errors,
                         InputWiringKind::InvalidSourceFormat,
-                        "source must be `<name>` or `<name>.<field>`".to_string(),
+                        "source must be `<name>` or `<name>.<field>...`".to_string(),
                     );
                     continue;
                 };

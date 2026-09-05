@@ -239,16 +239,26 @@ struct InputDraft {
 enum SourceDraft {
     Node {
         node: usize,
-        fields: Vec<String>,
+        path: usize,
         location: LuaSourceLocation,
     },
     Input {
         input: usize,
-        fields: Vec<String>,
+        path: usize,
         location: LuaSourceLocation,
     },
     Request,
     Items,
+}
+
+impl SourceDraft {
+    fn path(&self) -> usize {
+        match self {
+            Self::Node { path, .. } | Self::Input { path, .. } => *path,
+            Self::Request => SourcePaths::REQUEST,
+            Self::Items => SourcePaths::ITEMS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -261,7 +271,7 @@ enum SourceRoot {
 struct SourcePaths {
     roots: HashMap<SourceRoot, usize>,
     children: HashMap<usize, HashMap<String, usize>>,
-    parents: Vec<Option<usize>>,
+    parents: Vec<Option<(usize, String)>>,
     consumed: RefCell<HashSet<usize>>,
 }
 
@@ -295,12 +305,26 @@ impl SourcePaths {
             return *path;
         }
         let path = self.parents.len();
-        self.parents.push(Some(parent));
+        self.parents.push(Some((parent, field.to_string())));
         self.children
             .entry(parent)
             .or_default()
             .insert(field.to_string(), path);
         path
+    }
+
+    fn is_root(&self, path: usize) -> bool {
+        self.parents[path].is_none()
+    }
+
+    fn fields(&self, mut path: usize) -> Vec<String> {
+        let mut fields = Vec::new();
+        while let Some((parent, field)) = &self.parents[path] {
+            fields.push(field.clone());
+            path = *parent;
+        }
+        fields.reverse();
+        fields
     }
 
     fn mark(&self, path: usize) {
@@ -310,7 +334,7 @@ impl SourcePaths {
             if !consumed.insert(path) {
                 break;
             }
-            current = self.parents[path];
+            current = self.parents[path].as_ref().map(|(parent, _)| *parent);
         }
     }
 
@@ -370,7 +394,6 @@ struct WorkflowLuaHost {
     failures: Vec<OnFailure>,
     inputs: Vec<InputDraft>,
     sources: Vec<SourceDraft>,
-    source_path_ids: Vec<usize>,
     source_paths: SourcePaths,
     schemas: Vec<SchemaDraft>,
     facets: Vec<FacetDraft>,
@@ -390,7 +413,6 @@ impl WorkflowLuaHost {
             failures: vec![OnFailure::Ignore],
             inputs: Vec::new(),
             sources: vec![SourceDraft::Request, SourceDraft::Items],
-            source_path_ids: vec![SourcePaths::REQUEST, SourcePaths::ITEMS],
             source_paths: SourcePaths::new(),
             schemas: Vec::new(),
             facets: Vec::new(),
@@ -522,10 +544,9 @@ impl WorkflowLuaHost {
         handle(HANDLE_SCHEMA, index)
     }
 
-    fn push_source(&mut self, draft: SourceDraft, path: usize) -> LuaData {
+    fn push_source(&mut self, draft: SourceDraft) -> LuaData {
         let index = self.sources.len();
         self.sources.push(draft);
-        self.source_path_ids.push(path);
         handle(HANDLE_SOURCE, index)
     }
 
@@ -638,26 +659,20 @@ impl LuaHost for WorkflowLuaHost {
                 index,
             }));
         }
-        let (node, mut fields, parent_path) = match handle.kind.as_str() {
+        let (node, parent_path) = match handle.kind.as_str() {
             HANDLE_NODE => (
                 handle.index,
-                Vec::new(),
                 self.source_paths.root(SourceRoot::Node(handle.index)),
             ),
             HANDLE_INPUT => {
                 let parent_path = self.source_paths.root(SourceRoot::Input(handle.index));
-                return self.index_input(handle.index, Vec::new(), parent_path, key, location);
+                return self.index_input(handle.index, parent_path, key, location);
             }
             HANDLE_SOURCE => match self.sources.get(handle.index) {
-                Some(SourceDraft::Input { input, fields, .. }) => {
-                    let input = *input;
-                    let fields = fields.clone();
-                    let parent_path = self.source_path_ids[handle.index];
-                    return self.index_input(input, fields, parent_path, key, location);
+                Some(SourceDraft::Input { input, path, .. }) => {
+                    return self.index_input(*input, *path, key, location);
                 }
-                Some(SourceDraft::Node { node, fields, .. }) => {
-                    (*node, fields.clone(), self.source_path_ids[handle.index])
-                }
+                Some(SourceDraft::Node { node, path, .. }) => (*node, *path),
                 _ => {
                     return Err(host_error(
                         "WFR003",
@@ -674,16 +689,12 @@ impl LuaHost for WorkflowLuaHost {
                 ));
             }
         };
-        fields.push(key.to_string());
         let path = self.source_paths.child(parent_path, key);
-        Ok(self.push_source(
-            SourceDraft::Node {
-                node,
-                fields,
-                location,
-            },
+        Ok(self.push_source(SourceDraft::Node {
+            node,
             path,
-        ))
+            location,
+        }))
     }
 }
 
@@ -887,11 +898,11 @@ impl WorkflowLuaHost {
                     .map_err(|_| type_error("items", "Source or literal array", &location))?;
                 if let Some(SourceDraft::Input {
                     input,
-                    fields,
+                    path,
                     location: source_location,
                 }) = self.sources.get(source)
                 {
-                    if !fields.is_empty() && self.inputs[*input].contract.is_none() {
+                    if !self.source_paths.is_root(*path) && self.inputs[*input].contract.is_none() {
                         return Err(host_error(
                             "WFR003",
                             "input does not declare a contract",
@@ -901,7 +912,7 @@ impl WorkflowLuaHost {
                 }
                 if !matches!(
                     self.sources.get(source),
-                    Some(SourceDraft::Node { fields, .. }) if !fields.is_empty()
+                    Some(SourceDraft::Node { path, .. }) if !self.source_paths.is_root(*path)
                 ) {
                     return Err(host_error(
                         "WFR003",
@@ -941,10 +952,9 @@ impl WorkflowLuaHost {
         let path = self.source_paths.root(SourceRoot::Node(node));
         self.sources.push(SourceDraft::Node {
             node,
-            fields: Vec::new(),
+            path,
             location: location.clone(),
         });
-        self.source_path_ids.push(path);
         Ok(index)
     }
 
@@ -1050,10 +1060,9 @@ impl WorkflowLuaHost {
         let path = self.source_paths.root(SourceRoot::Input(input));
         self.sources.push(SourceDraft::Input {
             input,
-            fields: Vec::new(),
+            path,
             location: location.clone(),
         });
-        self.source_path_ids.push(path);
         Ok(index)
     }
 
@@ -1310,21 +1319,16 @@ impl WorkflowLuaHost {
     fn index_input(
         &mut self,
         input: usize,
-        mut fields: Vec<String>,
         parent_path: usize,
         key: &str,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
-        fields.push(key.to_string());
         let path = self.source_paths.child(parent_path, key);
-        Ok(self.push_source(
-            SourceDraft::Input {
-                input,
-                fields,
-                location,
-            },
+        Ok(self.push_source(SourceDraft::Input {
+            input,
             path,
-        ))
+            location,
+        }))
     }
 
     fn validate_schema_path(
@@ -1351,10 +1355,10 @@ impl WorkflowLuaHost {
     }
 
     fn mark_source_consumed(&self, source: usize) {
-        let Some(path) = self.source_path_ids.get(source) else {
+        let Some(source) = self.sources.get(source) else {
             return;
         };
-        self.source_paths.mark(*path);
+        self.source_paths.mark(source.path());
     }
 }
 
@@ -1744,14 +1748,14 @@ impl WorkflowGraphBuilder {
             .map(|(variable, source)| match self.host.sources.get(*source) {
                 Some(SourceDraft::Input {
                     input,
-                    fields,
+                    path,
                     location,
                 }) => {
                     self.host.mark_source_consumed(*source);
                     let mut reference = self.host.inputs[*input].name.clone();
-                    if !fields.is_empty() {
+                    if !self.host.source_paths.is_root(*path) {
                         reference.push('.');
-                        reference.push_str(&fields.join("."));
+                        reference.push_str(&self.host.source_paths.fields(*path).join("."));
                     }
                     InputParameterRef::new(&reference)
                         .map(|reference| (variable.clone(), reference))
@@ -1775,20 +1779,22 @@ impl WorkflowGraphBuilder {
         location: &LuaSourceLocation,
     ) -> Result<String, LuaWorkflowError> {
         match self.host.sources.get(source) {
-            Some(SourceDraft::Node { node, fields, .. }) if !fanout && scope.contains(node) => {
+            Some(SourceDraft::Node { node, path, .. }) if !fanout && scope.contains(node) => {
                 self.host.mark_source_consumed(source);
                 let mut raw = self.names[node].clone();
-                if !fields.is_empty() {
+                if !self.host.source_paths.is_root(*path) {
                     raw.push('.');
-                    raw.push_str(&fields.join("."));
+                    raw.push_str(&self.host.source_paths.fields(*path).join("."));
                 }
                 Ok(raw)
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: source_location,
-            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+            }) if !self.host.source_paths.is_root(*path)
+                && self.host.inputs[*input].contract.is_none() =>
+            {
                 Err(build_error(
                     "WFR003",
                     "input does not declare a contract",
@@ -1797,14 +1803,14 @@ impl WorkflowGraphBuilder {
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: _,
             }) if owner_inputs.contains(input) => {
                 self.host.mark_source_consumed(source);
                 let mut raw = self.host.inputs[*input].name.clone();
-                if !fields.is_empty() {
+                if !self.host.source_paths.is_root(*path) {
                     raw.push('.');
-                    raw.push_str(&fields.join("."));
+                    raw.push_str(&self.host.source_paths.fields(*path).join("."));
                 }
                 Ok(raw)
             }
@@ -1883,17 +1889,19 @@ impl WorkflowGraphBuilder {
         location: &LuaSourceLocation,
     ) -> Result<String, LuaWorkflowError> {
         match self.host.sources.get(source) {
-            Some(SourceDraft::Node { node, fields, .. })
-                if *node == child_node && !fields.is_empty() =>
+            Some(SourceDraft::Node { node, path, .. })
+                if *node == child_node && !self.host.source_paths.is_root(*path) =>
             {
                 self.host.mark_source_consumed(source);
-                Ok(fields.join("."))
+                Ok(self.host.source_paths.fields(*path).join("."))
             }
             Some(SourceDraft::Input {
                 input,
-                fields,
+                path,
                 location: source_location,
-            }) if !fields.is_empty() && self.host.inputs[*input].contract.is_none() => {
+            }) if !self.host.source_paths.is_root(*path)
+                && self.host.inputs[*input].contract.is_none() =>
+            {
                 Err(build_error(
                     "WFR003",
                     "input does not declare a contract",
@@ -1916,13 +1924,17 @@ impl WorkflowGraphBuilder {
         match items {
             FanoutItemsDraft::Literal(values) => Ok(ItemsSource::Literal(values)),
             FanoutItemsDraft::Source(source) => match self.host.sources.get(source) {
-                Some(SourceDraft::Node { node, fields, .. }) if !fields.is_empty() => {
+                Some(SourceDraft::Node { node, path, .. })
+                    if !self.host.source_paths.is_root(*path) =>
+                {
                     self.host.mark_source_consumed(source);
                     let node_name =
                         self.names.get(node).cloned().unwrap_or_else(|| {
                             self.host.nodes[*node].name.clone().unwrap_or_default()
                         });
-                    let field_path = crate::domain::workflow::FieldPath::new(fields.clone());
+                    let field_path = crate::domain::workflow::FieldPath::new(
+                        self.host.source_paths.fields(*path),
+                    );
                     field_path.to_reference("source").map_err(|_| {
                         build_error("WFR003", "invalid fanout items field path", None)
                     })?;
@@ -1950,31 +1962,31 @@ impl WorkflowGraphBuilder {
     }
 
     fn validate_unconsumed_sources(&self) -> Result<(), LuaWorkflowError> {
-        for (index, source) in self.host.sources.iter().enumerate() {
-            if self
-                .host
-                .source_paths
-                .contains(self.host.source_path_ids[index])
-            {
+        for source in &self.host.sources {
+            if self.host.source_paths.contains(source.path()) {
                 continue;
             }
             match source {
                 SourceDraft::Node {
                     node,
-                    fields,
+                    path,
                     location,
-                } if !fields.is_empty() => self
+                } if !self.host.source_paths.is_root(*path) => self
                     .host
-                    .validate_artifact_path(*node, fields)
+                    .validate_artifact_path(*node, &self.host.source_paths.fields(*path))
                     .map_err(|message| build_error("WFR003", message, Some(location.clone())))?,
                 SourceDraft::Input {
                     input,
-                    fields,
+                    path,
                     location,
-                } if !fields.is_empty() => {
+                } if !self.host.source_paths.is_root(*path) => {
                     if let Some(schema) = self.host.inputs[*input].contract {
                         self.host
-                            .validate_schema_path(schema, fields, "input")
+                            .validate_schema_path(
+                                schema,
+                                &self.host.source_paths.fields(*path),
+                                "input",
+                            )
                             .map_err(|message| {
                                 build_error("WFR003", message, Some(location.clone()))
                             })?;
@@ -3490,3 +3502,6 @@ return r.workflow{
         assert!(following.is_ok());
     }
 }
+
+#[cfg(test)]
+mod mod_test;
