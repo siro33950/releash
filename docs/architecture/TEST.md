@@ -2,7 +2,15 @@
 
 ## 配置
 
-実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[cfg(test)] mod <impl>_test;` として取り込む。
+実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
+
+例: `terminal_surface_registry.rs` と同じディレクトリの `terminal_surface_registry_test.rs` を取り込む。
+
+```rust
+#[cfg(test)]
+#[path = "terminal_surface_registry_test.rs"]
+mod terminal_surface_registry_tests;
+```
 
 ## 命名規則
 

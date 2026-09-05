@@ -42,7 +42,6 @@ infrastructure ← adaptor（controller / gateway / presenter）→ usecase → 
 - Workflow completionとAgentSession lifecycleは独立する。
 - Submit / Stop / Approval / ArtifactはWorkflowが所有する。
 - Provider lifecycleとProvider availabilityは別の境界である。
-- 旧Agent GUI specは現行正本ではない。
 
 ## ドメイン一覧（16個）
 
