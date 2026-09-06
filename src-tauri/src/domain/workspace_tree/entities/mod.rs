@@ -931,7 +931,7 @@ impl WorkspaceTreeProjector {
                 WorkspaceStructureFact::NodeArtifactProduced {
                     execution_id,
                     node_execution_id,
-                    result,
+                    command_result_candidate,
                     timestamp,
                 } => {
                     let node = tree
@@ -940,7 +940,9 @@ impl WorkspaceTreeProjector {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
                     node.has_artifact = true;
-                    node.command_result = result;
+                    if node.kind == WorkspaceNodeKind::WorkflowCommand {
+                        node.command_result = command_result_candidate;
+                    }
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeCompleted {

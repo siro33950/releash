@@ -274,7 +274,7 @@ pub enum WorkspaceStructureFact {
     NodeArtifactProduced {
         execution_id: String,
         node_execution_id: String,
-        result: Option<WorkspaceCommandResult>,
+        command_result_candidate: Option<WorkspaceCommandResult>,
         timestamp: f64,
     },
     NodeCompleted {

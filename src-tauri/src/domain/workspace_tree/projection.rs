@@ -127,7 +127,7 @@ pub fn runtime_snapshot_nodes(
             facts.push(F::NodeArtifactProduced {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
-                result: command_result_from_value(value),
+                command_result_candidate: command_result_from_value(value),
                 timestamp: node.completed_at.unwrap_or(updated_at),
             });
         }
@@ -233,7 +233,8 @@ mod tests {
         NodeExecutionFailureKind, NodeKindName, TokenUsage, WorkflowDefinition,
     };
     use crate::domain::workspace_tree::{
-        WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTree, WorkspaceTreeNode,
+        WorkspaceCommandResult, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
+        WorkspaceTree, WorkspaceTreeNode,
     };
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000901";
@@ -279,6 +280,119 @@ mod tests {
             interruption_reason: None,
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
+        }
+    }
+
+    fn project_artifact_node(runtime: RuntimeNodeExecution) -> WorkspaceTreeNode {
+        let node_execution_id = runtime.id.clone();
+        runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[runtime],
+            retry_predecessors: &std::collections::HashMap::new(),
+            accepts_explicit_retry: true,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution(),
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+            session_activities: &std::collections::HashMap::new(),
+            session_display_names: &std::collections::HashMap::new(),
+        })
+        .unwrap()
+        .into_iter()
+        .find(|node| node.node_execution_id.as_deref() == Some(&node_execution_id))
+        .unwrap()
+    }
+
+    fn command_shaped_artifact() -> serde_json::Value {
+        serde_json::json!({
+            "exit_code": -1,
+            "duration": 123,
+            "stdout": "output",
+            "stderr": "error"
+        })
+    }
+
+    #[test]
+    fn test_成果物投影_commandの4項目を実行結果として保持し産出済みになる() {
+        // Given
+        let mut runtime = node(
+            "command",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Succeeded,
+        );
+        runtime.artifact = Some(command_shaped_artifact());
+        runtime.completed_at = Some(3.0);
+
+        // When
+        let projected = project_artifact_node(runtime);
+
+        // Then
+        assert_eq!(
+            projected.command_result,
+            Some(WorkspaceCommandResult {
+                exit_code: -1,
+                duration: 123,
+                stdout: "output".to_string(),
+                stderr: "error".to_string(),
+            })
+        );
+        assert!(projected.has_artifact);
+    }
+
+    #[test]
+    fn test_成果物投影_commandの各項目が欠けると実行結果なしで産出済みになる() {
+        for missing_field in ["exit_code", "duration", "stdout", "stderr"] {
+            // Given
+            let mut artifact = command_shaped_artifact();
+            artifact.as_object_mut().unwrap().remove(missing_field);
+            let mut runtime = node(
+                "command",
+                EXECUTION_ID,
+                RuntimeNodeExecutionStatus::Succeeded,
+            );
+            runtime.artifact = Some(artifact);
+            runtime.completed_at = Some(3.0);
+
+            // When
+            let projected = project_artifact_node(runtime);
+
+            // Then
+            assert_eq!(projected.command_result, None, "{missing_field}");
+            assert!(projected.has_artifact, "{missing_field}");
+        }
+    }
+
+    #[test]
+    fn test_成果物投影_非commandの4項目は実行結果にならず産出済みで読み出せる() {
+        for kind in [
+            NodeKindName::Sequence,
+            NodeKindName::Fanout,
+            NodeKindName::Session,
+        ] {
+            // Given
+            let mut runtime = node(
+                "artifact-node",
+                EXECUTION_ID,
+                RuntimeNodeExecutionStatus::Succeeded,
+            );
+            runtime.kind = kind;
+            runtime.display_command = None;
+            if kind == NodeKindName::Session {
+                runtime.session_id = Some("agent-session".to_string());
+            }
+            runtime.artifact = Some(command_shaped_artifact());
+            runtime.completed_at = Some(3.0);
+
+            // When
+            let projected = project_artifact_node(runtime);
+
+            // Then
+            assert_eq!(projected.command_result, None, "{kind:?}");
+            assert!(projected.has_artifact, "{kind:?}");
         }
     }
 
