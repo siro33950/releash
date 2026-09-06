@@ -236,10 +236,8 @@ impl WorkflowExecution {
                 if occupied {
                     continue;
                 }
-                match self.start_unavailable_reason(Some(scope_id), &entry.name, item) {
-                    Some(reason) => blocked = Some(reason),
-                    None => return None,
-                }
+                let reason = self.start_unavailable_reason(Some(scope_id), &entry.name, item)?;
+                blocked = Some(reason);
             }
         }
         blocked
