@@ -179,8 +179,8 @@ impl LocalAgentSessionRepository {
         records: &[NodeFactRecord],
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         let backend = fact_log::FactLogReadBackend::Live(self.store.clone());
-        let context = read_session_context(&backend, location)
-            .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
+        let context =
+            read_session_context(&backend, location).map_err(AgentSessionRepositoryError::from)?;
         derive_session(session_id, location, &context, records)
     }
 

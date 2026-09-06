@@ -52,6 +52,7 @@ fn test_session読取_root欠落と対象provider欠落は接続情報取得エ�
     // When / Then
     assert!(read_session_context(&backend, &location)
         .unwrap_err()
+        .to_string()
         .contains("root is missing"));
     seed_unavailable_definition(&store, "tree", "/repo", "unused");
     let missing = SessionLocation {
@@ -60,5 +61,76 @@ fn test_session読取_root欠落と対象provider欠落は接続情報取得エ�
     };
     assert!(read_session_context(&backend, &missing)
         .unwrap_err()
+        .to_string()
         .contains("provider is unavailable"));
+}
+
+#[test]
+fn test_session読取_sql障害とroot欠損を区別する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let backend = FactLogReadBackend::Live(store);
+    let location = SessionLocation {
+        tree_id: "missing".into(),
+        node_execution_id: "missing".into(),
+        parent_id: None,
+        node_name: "session".into(),
+        attempt: 1,
+    };
+
+    // When / Then
+    let error = read_session_context(&backend, &location).unwrap_err();
+    assert_eq!(
+        AgentSessionRepositoryError::from(error),
+        AgentSessionRepositoryError::Corrupt
+    );
+    rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3"))
+        .unwrap()
+        .execute("DROP TABLE node_events", [])
+        .unwrap();
+    let error = read_session_context(&backend, &location).unwrap_err();
+    assert!(matches!(
+        &error,
+        SessionContextReadError::Read(LocalEventQueryError::StorageUnavailable { .. })
+    ));
+    assert_eq!(
+        AgentSessionRepositoryError::from(error),
+        AgentSessionRepositoryError::Unavailable
+    );
+    assert_eq!(
+        AgentSessionQueryError::from(read_session_context(&backend, &location).unwrap_err()),
+        AgentSessionQueryError::Unavailable
+    );
+}
+
+#[test]
+fn test_session読取_混雑と期限切れをデータ破損扱いしない() {
+    // Given
+    for error in [
+        LocalEventQueryError::QueryBusy,
+        LocalEventQueryError::DeadlineExceeded,
+    ] {
+        // When / Then
+        assert_eq!(
+            AgentSessionRepositoryError::from(SessionContextReadError::Read(error.clone())),
+            AgentSessionRepositoryError::Unavailable
+        );
+        assert_eq!(
+            AgentSessionQueryError::from(SessionContextReadError::Read(error)),
+            AgentSessionQueryError::Unavailable
+        );
+    }
+    let corrupt = LocalEventQueryError::Corrupt {
+        correlation_id: "corrupt".into(),
+    };
+    assert_eq!(
+        AgentSessionRepositoryError::from(SessionContextReadError::Read(corrupt.clone())),
+        AgentSessionRepositoryError::Corrupt
+    );
+    assert_eq!(
+        AgentSessionQueryError::from(SessionContextReadError::Read(corrupt)),
+        AgentSessionQueryError::Corrupt
+    );
 }

@@ -42,6 +42,159 @@ fn complete_command(log: &mut FactLog, meta: NodeFactMeta) {
 }
 
 #[test]
+fn test_部分復元_無関係な定義やschemaの非互換で通常の遷移エラーを変換しない() {
+    use crate::domain::workflow::Rule;
+    // Given
+    for (rule, message) in [
+        (
+            Rule::Switch {
+                on: "decision".into(),
+                cases: std::collections::BTreeMap::from([("ok".into(), "next".into())]),
+                next: None,
+            },
+            "No matching switch case",
+        ),
+        (Rule::Next("missing".into()), "node not found: missing"),
+    ] {
+        for unavailable in ["none", "node", "schema"] {
+            let mut current = ChildEntry::reference("cmd");
+            current.rules = Some(vec![rule.clone()]);
+            let mut root = workflow_root(workflow_definition(
+                vec![
+                    sequence_node("main", vec![current]),
+                    command_leaf("cmd"),
+                    command_leaf("next"),
+                ],
+                "main",
+            ));
+            match unavailable {
+                "node" => {
+                    root.definition_resolution
+                        .node_errors
+                        .insert("unused".into(), "unsupported".into());
+                }
+                "schema" => {
+                    root.definition_resolution
+                        .schema_errors
+                        .insert("unused".into(), "unsupported".into());
+                }
+                _ => {}
+            }
+            let mut log = root_log(root, NodeKindName::Sequence);
+            let cmd = start(
+                &mut log,
+                "cmd-1",
+                "cmd",
+                NodeKindName::Command,
+                ExecutionParentRef::sequence_child(TREE),
+            );
+            complete_command(&mut log, cmd);
+
+            // When
+            let error = fold_execution_tree(TREE, &log.records).unwrap_err();
+
+            // Then
+            assert!(error.contains(message), "{unavailable}: {error}");
+        }
+    }
+}
+
+#[test]
+fn test_部分復元_参照元の保存値が不正なfanoutは通常エラーを返す() {
+    use crate::domain::workflow::{FieldPath, ItemsSource};
+    // Given
+    for (value, expected, unavailable) in [
+        (
+            serde_json::json!({"items": 42}),
+            "is not an array",
+            "unused",
+        ),
+        (serde_json::json!({}), "is unavailable", "unused"),
+        (
+            serde_json::json!({"items": 42}),
+            "is not an array",
+            "source",
+        ),
+        (serde_json::json!({}), "is unavailable", "source"),
+    ] {
+        let mut fanout = fanout_node("fan", vec![ChildEntry::reference("worker")]);
+        let NodeKind::Fanout(spec) = &mut fanout.kind else {
+            unreachable!()
+        };
+        spec.items = Some(ItemsSource::ArtifactField {
+            node: "source".into(),
+            field_path: FieldPath::new(["items"]),
+        });
+        let mut root = recovery_root(
+            vec![
+                sequence_node(
+                    "main",
+                    vec![
+                        ChildEntry::reference("source"),
+                        ChildEntry::reference("current"),
+                        ChildEntry::reference("fan"),
+                    ],
+                ),
+                command_leaf("source"),
+                command_leaf("current"),
+                fanout,
+                command_leaf("worker"),
+            ],
+            "main",
+            unavailable,
+        );
+        if unavailable == "source" {
+            root.definition.nodes.retain(|node| node.name != "source");
+        }
+        let mut log = root_log(root, NodeKindName::Sequence);
+        let source = start(
+            &mut log,
+            "source-1",
+            "source",
+            NodeKindName::Command,
+            ExecutionParentRef::sequence_child(TREE),
+        );
+        log.push(source.clone(), artifact("result", value));
+        log.push(source, exited(0));
+        let current = start(
+            &mut log,
+            "current-1",
+            "current",
+            NodeKindName::Command,
+            ExecutionParentRef::sequence_child(TREE),
+        );
+        complete_command(&mut log, current);
+
+        // When / Then: live advancement
+        let mut folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+        assert!(folded
+            .aggregate
+            .node_execution(TREE)
+            .unwrap()
+            .recovery_reason
+            .is_none());
+        let pending = folded.aggregate.derive_pending_advances();
+        assert_eq!(pending.len(), 1);
+        let error = folded
+            .aggregate
+            .apply_pending_advance(&pending[0], &mut || "fan-1".into(), 10.0)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+
+        // When / Then: stored fanout
+        start(
+            &mut log,
+            "fan-1",
+            "fan",
+            NodeKindName::Fanout,
+            ExecutionParentRef::sequence_child(TREE),
+        );
+        let error = fold_execution_tree(TREE, &log.records).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn test_部分復元_未実行の未対応定義は正常な木の完了を妨げない() {
     // Given
     let root = recovery_root(

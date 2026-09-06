@@ -17,6 +17,23 @@ pub enum RouteDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeRoutingError {
+    NodeNotFound(String),
+    Rule(WorkflowError),
+}
+
+impl From<ScopeRoutingError> for WorkflowError {
+    fn from(error: ScopeRoutingError) -> Self {
+        match error {
+            ScopeRoutingError::NodeNotFound(name) => {
+                Self::validation(format!("node not found: {name}"))
+            }
+            ScopeRoutingError::Rule(error) => error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingValidationError {
     /// children エントリが存在しないカタログ node を参照している。
     UnknownChildReference {
@@ -619,7 +636,8 @@ pub fn route(
             &node.name,
             artifact,
             node_execution_counts,
-        ),
+        )
+        .map_err(WorkflowError::from),
     }
 }
 
@@ -634,9 +652,11 @@ pub fn route_in_scope(
     from_child: &str,
     artifact: Option<&Value>,
     child_counts: &HashMap<String, u32>,
-) -> Result<RouteDecision, WorkflowError> {
+) -> Result<RouteDecision, ScopeRoutingError> {
     let target = match sequence.effective_rules(from_child) {
-        EffectiveRules::Rules(rules) => raw_target(from_child, rules, artifact)?,
+        EffectiveRules::Rules(rules) => {
+            raw_target(from_child, rules, artifact).map_err(ScopeRoutingError::Rule)?
+        }
         EffectiveRules::AdjacentNext(next) => Some(next.to_string()),
         EffectiveRules::Terminal => None,
     };
@@ -651,12 +671,10 @@ fn guarded_target_in_scope(
     sequence: &SequenceSpec,
     mut target: String,
     child_counts: &HashMap<String, u32>,
-) -> Result<RouteDecision, WorkflowError> {
+) -> Result<RouteDecision, ScopeRoutingError> {
     for _ in 0..workflow.nodes.len() {
         if workflow.node_by_name(&target).is_none() {
-            return Err(WorkflowError::validation(format!(
-                "node not found: {target}"
-            )));
+            return Err(ScopeRoutingError::NodeNotFound(target));
         }
         let Some((max_iterations, on_exhausted)) =
             sequence.child_entry(&target).and_then(entry_loop_guard)
@@ -669,9 +687,9 @@ fn guarded_target_in_scope(
         }
         target = on_exhausted.to_string();
     }
-    Err(WorkflowError::validation(
+    Err(ScopeRoutingError::Rule(WorkflowError::validation(
         "loop_guard on_exhausted chain depth exceeded",
-    ))
+    )))
 }
 
 fn validate_routing_field(

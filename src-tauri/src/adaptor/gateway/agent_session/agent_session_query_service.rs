@@ -51,8 +51,8 @@ impl LocalAgentSessionQueryService {
         else {
             return Ok(None);
         };
-        let context = read_session_context(backend, &location)
-            .map_err(|_| AgentSessionQueryError::Corrupt)?;
+        let context =
+            read_session_context(backend, &location).map_err(AgentSessionQueryError::from)?;
         let records = read_session_records(backend, &location)
             .map_err(|_| AgentSessionQueryError::Unavailable)?;
         Ok(Some(agent_session_item_from_facts(
@@ -130,8 +130,8 @@ pub(crate) fn workspace_session_items(
         }) else {
             continue;
         };
-        let context = read_session_context(backend, &location)
-            .map_err(|_| AgentSessionQueryError::Corrupt)?;
+        let context =
+            read_session_context(backend, &location).map_err(AgentSessionQueryError::from)?;
         items.push(agent_session_item_from_facts(
             session_id, &location, &context, &records,
         )?);

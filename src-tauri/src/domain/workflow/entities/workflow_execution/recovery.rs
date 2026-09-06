@@ -33,6 +33,61 @@ impl WorkflowExecution {
             || !self.definition_resolution.schema_errors.is_empty()
     }
 
+    pub(super) fn route_recovery_reason(
+        &self,
+        error: &workflow_routing::ScopeRoutingError,
+    ) -> Option<String> {
+        match error {
+            workflow_routing::ScopeRoutingError::NodeNotFound(name)
+                if self.definition_resolution.node_errors.contains_key(name) =>
+            {
+                self.definition_error(name)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn fanout_items_recovery_reason(
+        &self,
+        parent_scope_id: Option<&str>,
+        spec: &crate::domain::workflow::value_objects::FanoutSpec,
+    ) -> Option<String> {
+        let crate::domain::workflow::ItemsSource::ArtifactField { node, field_path } =
+            spec.items.as_ref()?
+        else {
+            return None;
+        };
+        let scope_id = parent_scope_id?;
+        let sequence = self.scope(scope_id)?.sequence()?;
+        if sequence
+            .artifacts
+            .get(node)
+            .and_then(|artifact| artifact.artifact.as_ref())
+            .is_some()
+        {
+            return None;
+        }
+        self.runtime
+            .node_executions
+            .iter()
+            .filter(|execution| {
+                execution.node_name == *node
+                    && execution
+                        .parent
+                        .as_ref()
+                        .is_some_and(|parent| parent.parent_id == scope_id)
+            })
+            .max_by_key(|execution| execution.attempt)
+            .and_then(|execution| execution.recovery_reason.clone())
+            .or_else(|| {
+                self.definition_resolution.node_errors.get(node)?;
+                self.definition_error(node)
+            })
+            .map(|reason| {
+                format!("fanout items source '{node}.{field_path}' is unavailable: {reason}")
+            })
+    }
+
     pub(super) fn start_unavailable_reason(
         &self,
         parent_scope_id: Option<&str>,
@@ -47,8 +102,8 @@ impl WorkflowExecution {
         }
         let node = self.runtime.workflow.node_by_name(node_name)?;
         if let Some(spec) = node.fanout() {
-            if let Err(error) = self.resolve_fanout_items_for_parent(parent_scope_id, spec) {
-                return Some(error.to_string());
+            if let Some(reason) = self.fanout_items_recovery_reason(parent_scope_id, spec) {
+                return Some(reason);
             }
         }
         let bindings = self.resolve_child_bindings(parent_scope_id, node, item);
@@ -181,10 +236,7 @@ impl WorkflowExecution {
                             Ok(workflow_routing::RouteDecision::Completed) => {
                                 self.unavailable_child_artifact(scope_id)
                             }
-                            Err(error) if self.has_unavailable_definitions() => {
-                                Some(error.to_string())
-                            }
-                            Err(_) => None,
+                            Err(error) => self.route_recovery_reason(&error),
                         }
                     });
                     (scope_id, reason)

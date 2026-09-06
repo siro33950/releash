@@ -1442,11 +1442,13 @@ impl WorkflowExecution {
                 );
                 let route = match route {
                     Ok(route) => route,
-                    Err(error) if self.has_unavailable_definitions() => {
-                        self.record_recovery_block(scope_id, error.to_string());
-                        return Ok(());
+                    Err(error) => {
+                        if let Some(reason) = self.route_recovery_reason(&error) {
+                            self.record_recovery_block(scope_id, reason);
+                            return Ok(());
+                        }
+                        return Err(error.into());
                     }
-                    Err(error) => return Err(error),
                 };
                 match route {
                     workflow_routing::RouteDecision::TransitionTo(next) => match effects {
@@ -3707,11 +3709,20 @@ impl WorkflowExecution {
                 };
                 let items = match items {
                     Ok(items) => items,
-                    Err(error) if self.has_unavailable_definitions() => {
-                        self.record_recovery_block(node_execution_id, error.to_string());
-                        None
+                    Err(error) => {
+                        let reason = self.scope(node_execution_id).and_then(|scope| {
+                            self.fanout_items_recovery_reason(
+                                scope.parent_scope_id.as_deref(),
+                                node.as_ref()?.fanout()?,
+                            )
+                        });
+                        if let Some(reason) = reason {
+                            self.record_recovery_block(node_execution_id, reason);
+                            None
+                        } else {
+                            return Err(error.to_string());
+                        }
                     }
-                    Err(error) => return Err(error.to_string()),
                 };
                 if let Some(fanout) = self
                     .scope_mut(node_execution_id)

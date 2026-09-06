@@ -104,7 +104,7 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
+pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
     // Concurrent-commit contention surfaces as SQLITE_BUSY / SQLITE_LOCKED
     // after the 250 ms busy timeout; that is `QueryBusy`, not a storage
     // failure (B-069).
