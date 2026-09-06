@@ -37,11 +37,6 @@ pub enum RoutingValidationError {
         sequence: String,
         entry: String,
     },
-    /// sequence の output が children のエントリ名を指していない。
-    SequenceOutputNotChild {
-        sequence: String,
-        output: String,
-    },
     /// fanout の children エントリに rules が書かれている（fanout に辺は無い）。
     RulesOnFanoutChildEntry {
         fanout: String,
@@ -269,14 +264,6 @@ fn validate_scope_children(
                     });
                 }
             }
-            if let Some(output) = &sequence.output {
-                if !seen.contains(output.as_str()) {
-                    errors.push(RoutingValidationError::SequenceOutputNotChild {
-                        sequence: composite.to_string(),
-                        output: output.clone(),
-                    });
-                }
-            }
             for entry in scope.children {
                 let Some(rules) = &entry.rules else { continue };
                 let child = node_by_name.get(entry.name.as_str()).copied();
@@ -432,7 +419,7 @@ fn validate_entry_rules(
             node: entry_name.to_string(),
         });
     }
-    if discriminator.is_some() && child.artifact.is_none() && !child.is_command() {
+    if discriminator.is_some() && !reference::node_has_artifact(child) {
         errors.push(RoutingValidationError::DiscriminatorWithoutArtifact {
             node: entry_name.to_string(),
         });
@@ -694,24 +681,21 @@ fn validate_routing_field(
     expected: RoutingFieldKind,
 ) -> Result<Vec<String>, String> {
     let field_path = routing_field_path(field)?;
-    let artifact_schema = node
-        .artifact
-        .as_deref()
-        .and_then(|contract| workflow.schemas.get(contract));
-    let command_schema;
-    let schema = if node.is_command() {
-        command_schema = contract_schema::command_reference_schema(artifact_schema)
-            .map_err(|_| "command Artifact Contract is not an object".to_string())?;
-        &command_schema
-    } else {
-        let contract_name = node.artifact.as_deref().ok_or_else(|| {
-            format!("routing field '{field}' requires an artifact Contract on this node")
-        })?;
-        artifact_schema.ok_or_else(|| {
-            format!("artifact Contract '{contract_name}' is not declared in schemas")
-        })?
-    };
-    let resolved = contract_schema::resolve_field_path(schema, &field_path).map_err(|error| {
+    let schema = reference::node_reference_schema(workflow, node).map_err(|error| match error {
+        reference::NodeReferenceSchemaError::ArtifactNotObject => {
+            "command Artifact Contract is not an object".to_string()
+        }
+        reference::NodeReferenceSchemaError::NoReferenceableArtifact => match node
+            .artifact
+            .as_deref()
+        {
+            Some(contract_name) => {
+                format!("artifact Contract '{contract_name}' is not declared in schemas")
+            }
+            None => format!("routing field '{field}' requires an artifact Contract on this node"),
+        },
+    })?;
+    let resolved = contract_schema::resolve_field_path(&schema, &field_path).map_err(|error| {
         match error.kind {
             contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
                 "routing field '{field}' cannot resolve segment {} ('{}') from a non-object value",
@@ -899,7 +883,6 @@ mod routing_tests {
             name: name.to_string(),
             kind: NodeKind::Sequence(SequenceSpec {
                 entry: None,
-                output: None,
                 children,
             }),
             artifact: None,
@@ -1595,7 +1578,6 @@ mod routing_tests {
     fn test_検証_entryがchildren外ならエラー() {
         let mut seq = SequenceSpec {
             entry: Some("outside".to_string()),
-            output: None,
             children: vec![ChildEntry::reference("first")],
         };
         let wf = workflow(vec![
@@ -1654,3 +1636,7 @@ mod routing_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "routing_test.rs"]
+mod routing_sequence_tests;

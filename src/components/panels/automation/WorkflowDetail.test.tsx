@@ -64,6 +64,31 @@ const matchLabel = (label: string) => (_content: string, el: Element | null) =>
 	el?.tagName === "SPAN" && el.textContent === `${label}:`;
 
 describe("WorkflowDetail facet refs row", () => {
+	it("Sequenceのentryとchildrenを表示しOutput行を持たない", async () => {
+		const user = userEvent.setup();
+		const workflow = makeWorkflow();
+		workflow.nodes = [
+			{
+				name: "main",
+				kind: "sequence",
+				sequence: { entry: "check", children: [{ name: "check" }] },
+			},
+		];
+		render(
+			<WorkflowDetail
+				workflow={workflow}
+				report={EMPTY_REPORT}
+				onEdit={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByText("main"));
+
+		expect(screen.getByText(matchLabel("Entry"))).toBeInTheDocument();
+		expect(screen.getAllByText("check").length).toBeGreaterThan(0);
+		expect(screen.queryByText(matchLabel("Output"))).not.toBeInTheDocument();
+	});
+
 	// Gherkin: ワークフロー詳細画面ではファセット参照として Persona を表示しない
 	it("displays workflow reference rows and no Persona row", async () => {
 		const user = userEvent.setup();

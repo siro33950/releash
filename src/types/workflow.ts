@@ -96,7 +96,6 @@ export interface FanoutSpec {
 
 export interface SequenceSpec {
 	entry?: string;
-	output?: string;
 	children: ChildEntry[];
 }
 

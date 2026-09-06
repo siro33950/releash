@@ -77,7 +77,6 @@ fn reported_fanout_definition() -> WorkflowDefinition {
             NodeDefinition {
                 name: "review_scan".to_string(),
                 kind: NodeKind::Sequence(SequenceSpec {
-                    output: Some("review_fanout".to_string()),
                     children: vec![ChildEntry::reference("review_fanout")],
                     ..SequenceSpec::default()
                 }),
@@ -102,7 +101,6 @@ fn reported_fanout_definition() -> WorkflowDefinition {
             NodeDefinition {
                 name: "fix_round".to_string(),
                 kind: NodeKind::Sequence(SequenceSpec {
-                    output: Some("fix_step".to_string()),
                     children: vec![ChildEntry::reference("fix_step")],
                     ..SequenceSpec::default()
                 }),

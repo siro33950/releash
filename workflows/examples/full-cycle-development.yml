@@ -275,7 +275,7 @@ nodes:
       - authoring_design:
           inputs:
             spec: spec
-            behavior: authoring_behavior
+            behavior: authoring_behavior.write_behavior
           rules:
           - next: spec_confirmation
       - spec_confirmation:
@@ -291,7 +291,6 @@ nodes:
   # 終端はステージの結果報告（complete で確定したか、上限到達で妥協したかを報告する）。
   authoring_behavior:
     sequence:
-      output: write_behavior
       children:
       - write_behavior:
           inputs:
@@ -323,12 +322,10 @@ nodes:
             result: write_behavior
     input:
     - spec
-    artifact: behavior-authoring-result
 
   # 設計作成ステージ: 書く → 不備なら振る舞いを直し design を消して書き直す（loop_guard 2）。
   authoring_design:
     sequence:
-      output: write_design
       children:
       - write_design:
           inputs:
@@ -363,7 +360,6 @@ nodes:
     input:
     - spec
     - behavior
-    artifact: design-authoring-result
 
   # ---- authoring の葉 ----
 
@@ -570,10 +566,9 @@ nodes:
     input:
     - spec
 
-  # 部品 sequence: 1 タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  # 部品 sequence: 1 タスクの実装と検証。検証結果を子名キーの統合 map に含める。
   implement_and_verify:
     sequence:
-      output: verify_task
       children:
       - implement_task:
           inputs:
@@ -588,7 +583,6 @@ nodes:
     input:
     - task: implement-task
     - spec
-    artifact: implement-task-check-result
 
   implement_task:
     session:
@@ -685,7 +679,7 @@ nodes:
             spec: spec
           rules:
           - when:
-              on: has_open_threads
+              on: check_full_review_threads.has_open_threads
               then: fix_round
             next: implementation_confirmation
       - fix_round:
@@ -705,7 +699,6 @@ nodes:
   # 1ラウンドのレビュー実施と open thread 判定（純直列・隣接辺のみ）
   review_scan:
     sequence:
-      output: check_full_review_threads
       children:
       - full_review_fanout:
           inputs:
@@ -716,7 +709,6 @@ nodes:
       - check_full_review_threads
     input:
     - spec
-    artifact: thread-scan
 
   # 修正ラウンド: 方針決定 → 整合確認ループ → 修正計画 →
   # タスクごとに隔離 worktree で修正 + 検証 → 統合
@@ -1096,10 +1088,9 @@ nodes:
     input:
     - spec
 
-  # 部品 sequence: 1 修正タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  # 部品 sequence: 1 修正タスクの実装と検証。検証結果を子名キーの統合 map に含める。
   fix_and_verify:
     sequence:
-      output: verify_fix
       children:
       - fix_task:
           inputs:
@@ -1114,7 +1105,6 @@ nodes:
     input:
     - task: fix-plan-task
     - spec
-    artifact: fix-verification
 
   fix_task:
     session:

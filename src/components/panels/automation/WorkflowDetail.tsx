@@ -445,9 +445,6 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 							{sequence.entry && (
 								<FacetRefRow label="Entry" value={sequence.entry} />
 							)}
-							{sequence.output && (
-								<FacetRefRow label="Output" value={sequence.output} />
-							)}
 							{sequence.children.map((entry) => (
 								<ChildEntryRow
 									key={entry.name}

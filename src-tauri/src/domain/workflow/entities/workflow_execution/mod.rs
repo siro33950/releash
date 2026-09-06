@@ -1474,75 +1474,31 @@ impl WorkflowExecution {
         // 成果の確定。
         let (artifact_value, contract, result, token_usage) = match &scope.kind {
             ScopeRuntimeKind::Sequence(sequence) => {
-                let output_child = node.sequence().and_then(|spec| spec.output.as_deref());
-                match (&node.artifact, output_child) {
-                    (Some(_), Some(output_child)) => match sequence
-                        .artifacts
-                        .get(output_child)
-                        .filter(|output| output.artifact.is_some())
-                    {
-                        Some(output) => (
-                            output.artifact.clone(),
-                            output.contract.clone(),
-                            output.result.clone(),
-                            None,
-                        ),
-                        None => {
-                            // artifact 宣言のある部品 sequence が output 子の
-                            // Artifact なしで終端へ到達した: 失敗として停止する。
-                            let reason = format!(
-                                "sequence '{}' reached its terminal without an artifact from output child '{output_child}'",
-                                scope.node_name
-                            );
-                            let scope_attempt = self
-                                .node_execution(scope_id)
-                                .map(|execution| execution.attempt)
-                                .unwrap_or(1);
-                            let _ = self.fail_node_execution(
-                                scope_id,
-                                reason.clone(),
-                                NodeExecutionFailureKind::ValidationFailure,
-                                timestamp,
-                            );
-                            effects.emit(WorkflowEvent::NodeFailed {
-                                execution_id: self.runtime.id.clone(),
-                                node_execution_id: scope_id.to_string(),
-                                node_name: scope.node_name.clone(),
-                                attempt: scope_attempt,
-                                reason,
-                                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                                retry_count: None,
-                                timestamp,
-                            });
-                            self.runtime
-                                .scopes
-                                .retain(|active| active.node_execution_id != scope_id);
-                            self.record_child_failure_in_parent(&scope, timestamp);
-                            // `on_failure: ignore` の合成子 child は失敗のまま親を
-                            // 前進させる（retry は load 時に拒否済み）。
-                            if let Some(parent_scope_id) = scope.parent_scope_id.clone() {
-                                let ignored = self
-                                    .node_execution(scope_id)
-                                    .and_then(|target| self.on_failure_treatment_for(target))
-                                    == Some(OnFailure::Ignore);
-                                if ignored
-                                    && !self
-                                        .ignore_advance_blocked_by_halted_sibling(&parent_scope_id)
-                                {
-                                    self.advance_scope_after_child(
-                                        &parent_scope_id,
-                                        &scope.node_name,
-                                        effects,
-                                        timestamp,
-                                    )?;
-                                }
-                            }
-                            return Ok(());
-                        }
-                    },
-                    _ => (None, None, None, None),
-                }
+                let spec = node.sequence().ok_or_else(|| {
+                    crate::domain::workflow::WorkflowError::invalid_state(format!(
+                        "node '{}' is not a sequence",
+                        node.name
+                    ))
+                })?;
+                let aggregated = spec
+                    .children
+                    .iter()
+                    .filter_map(|entry| {
+                        sequence
+                            .artifacts
+                            .get(&entry.name)
+                            .and_then(|child| child.artifact.as_ref())
+                            .map(|artifact| (entry.name.clone(), artifact.clone()))
+                    })
+                    .collect();
+                (
+                    Some(serde_json::Value::Object(aggregated)),
+                    None,
+                    None,
+                    None,
+                )
             }
+
             ScopeRuntimeKind::Fanout(fanout) => {
                 let mut combined = TokenUsage::default();
                 for child in &fanout.children {
@@ -1682,30 +1638,6 @@ impl WorkflowExecution {
             }
         }
         self.runtime.updated_at = timestamp;
-    }
-
-    /// 失敗した子を親 fanout の slot に反映する（sequence の親は前進しない）。
-    fn record_child_failure_in_parent(&mut self, failed_scope: &ScopeRuntime, timestamp: f64) {
-        let Some(parent_scope_id) = failed_scope.parent_scope_id.as_deref() else {
-            return;
-        };
-        let child_execution_id = failed_scope.node_execution_id.clone();
-        if let Some(fanout) = self
-            .scope_mut(parent_scope_id)
-            .and_then(ScopeRuntime::fanout_mut)
-        {
-            if let Some(slot) = fanout
-                .children
-                .iter_mut()
-                .find(|slot| slot.node_execution_id == child_execution_id)
-            {
-                let _ = slot.fail(
-                    NodeExecutionFailureKind::ValidationFailure,
-                    FailureDisposition::Terminal,
-                    timestamp,
-                );
-            }
-        }
     }
 
     /// leaf の完了確定と、そこからの前進の伝播。
@@ -2388,7 +2320,7 @@ impl WorkflowExecution {
             return TransitionOutcome::AlreadyApplied;
         }
         if execution.kind.is_composite_kind() {
-            // 合成子インスタンスの成果（fanout 集約 / sequence output）は
+            // 合成子インスタンスの成果（fanout 集約 / sequence 統合 map）は
             // NodeCompleted の replay で親へ渡る。ここでは自身に記録するだけ。
             if let Some(execution) = self
                 .runtime
@@ -3427,6 +3359,7 @@ impl WorkflowExecution {
         })
     }
 
+    #[cfg(test)]
     pub fn fail_node_execution(
         &mut self,
         node_execution_id: &str,
@@ -4508,7 +4441,6 @@ mod tests {
                 kind: crate::domain::workflow::NodeKind::Sequence(
                     crate::domain::workflow::SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![crate::domain::workflow::ChildEntry {
                             on_failure: None,
                             name: "implement".to_string(),
@@ -4747,7 +4679,6 @@ mod tests {
                 kind: crate::domain::workflow::NodeKind::Sequence(
                     crate::domain::workflow::SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![
                             crate::domain::workflow::ChildEntry::reference("implement"),
                             crate::domain::workflow::ChildEntry::reference("verify"),
@@ -5694,16 +5625,11 @@ mod tests {
         }
     }
 
-    fn tree_sequence_node(
-        name: &str,
-        output: Option<&str>,
-        children: Vec<ChildEntry>,
-    ) -> NodeDefinition {
+    fn tree_sequence_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Sequence(SequenceSpec {
                 entry: None,
-                output: output.map(str::to_string),
                 children,
             }),
             ..Default::default()
@@ -5752,8 +5678,7 @@ mod tests {
             "document".to_string(),
             crate::domain::workflow::value_objects::InputSourceRef::new("request"),
         ));
-        let mut execution =
-            tree_execution(vec![tree_sequence_node("main", None, vec![entry]), command]);
+        let mut execution = tree_execution(vec![tree_sequence_node("main", vec![entry]), command]);
         execution.request = Some("document body".to_string());
         let mut new_id = tree_id_source();
         let started = execution.start_root(&mut new_id, 1.0).unwrap();
@@ -5866,7 +5791,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![ChildEntry::reference("fan"), ChildEntry::reference("after")],
             ),
             NodeDefinition {
@@ -5879,7 +5803,6 @@ mod tests {
             },
             tree_sequence_node(
                 "part",
-                None,
                 vec![ChildEntry::reference("s1"), ChildEntry::reference("s2")],
             ),
             tree_command_node("s1"),
@@ -6095,6 +6018,20 @@ mod tests {
         }
 
         assert_eq!(final_started, ["merge_implementations"]);
+        let expected_results = serde_json::json!([
+            {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}},
+            {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}}
+        ]);
+        let merge_id = execution_id_of(&execution, "merge_implementations");
+        let merge = execution.leaf_start_for(&merge_id).unwrap();
+        assert_eq!(
+            merge
+                .bindings
+                .iter()
+                .find(|(name, _)| name == "results")
+                .map(|(_, value)| value),
+            Some(&expected_results)
+        );
         assert_eq!(
             execution
                 .node_executions()
@@ -6119,166 +6056,10 @@ mod tests {
     }
 
     #[test]
-    fn nested_sequence_output_child_artifact_becomes_the_part_artifact() {
-        let mut execution = tree_execution(vec![
-            tree_sequence_node(
-                "main",
-                None,
-                vec![
-                    ChildEntry::reference("prepare"),
-                    ChildEntry::reference("part"),
-                    ChildEntry::reference("report"),
-                ],
-            ),
-            NodeDefinition {
-                artifact: Some("part-result".to_string()),
-                ..tree_sequence_node(
-                    "part",
-                    Some("inner-b"),
-                    vec![
-                        ChildEntry::reference("inner-a"),
-                        ChildEntry::reference("inner-b"),
-                    ],
-                )
-            },
-            tree_command_node("prepare"),
-            tree_command_node("inner-a"),
-            tree_command_node("inner-b"),
-            tree_command_node("report"),
-        ]);
-        let mut new_id = tree_id_source();
-
-        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
-            panic!("start must yield the prepare leaf");
-        };
-        let prepare_id = leaves[0].node_execution_id.clone();
-        let applied = execution
-            .complete_leaf_and_advance(&prepare_id, &mut new_id, 2.0)
-            .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
-            panic!("main must advance into part");
-        };
-        assert_eq!(leaves[0].node_name, "inner-a");
-        let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 3.0)
-            .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
-            panic!("part must advance into inner-b");
-        };
-        assert_eq!(leaves[0].node_name, "inner-b");
-        let inner_b_id = leaves[0].node_execution_id.clone();
-
-        let output_value = serde_json::json!({"verdict": "ok"});
-        assert_eq!(
-            execution.record_pending_result(
-                &inner_b_id,
-                Some("done".to_string()),
-                Some(output_value.clone()),
-                Some("part-result".to_string()),
-                None,
-                4.0,
-            ),
-            TransitionOutcome::Applied
-        );
-        let part_id = execution_id_of(&execution, "part");
-        let applied = execution
-            .complete_leaf_and_advance(&inner_b_id, &mut new_id, 5.0)
-            .unwrap();
-
-        // 部品 sequence の完了が output 子の Artifact を part の Artifact として発行する。
-        let produced = applied
-            .events
-            .iter()
-            .find_map(|event| match event {
-                WorkflowEvent::ArtifactProduced {
-                    node_execution_id,
-                    node_name,
-                    contract,
-                    value,
-                    ..
-                } if node_execution_id == &part_id => {
-                    Some((node_name.clone(), contract.clone(), value.clone()))
-                }
-                _ => None,
-            })
-            .expect("part completion must produce its artifact");
-        assert_eq!(
-            produced,
-            (
-                "part".to_string(),
-                Some("part-result".to_string()),
-                output_value.clone()
-            )
-        );
-        assert_eq!(
-            execution
-                .flattened_artifacts()
-                .get("part")
-                .and_then(|artifact| artifact.artifact.clone()),
-            Some(output_value)
-        );
-        // main は report へ前進している。
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
-            panic!("main must advance into report");
-        };
-        assert_eq!(leaves[0].node_name, "report");
-    }
-
-    #[test]
-    fn nested_sequence_without_output_artifact_fails_as_validation_failure() {
-        let mut execution = tree_execution(vec![
-            tree_sequence_node(
-                "main",
-                None,
-                vec![
-                    ChildEntry::reference("part"),
-                    ChildEntry::reference("report"),
-                ],
-            ),
-            NodeDefinition {
-                artifact: Some("part-result".to_string()),
-                ..tree_sequence_node("part", Some("inner"), vec![ChildEntry::reference("inner")])
-            },
-            tree_command_node("inner"),
-            tree_command_node("report"),
-        ]);
-        let mut new_id = tree_id_source();
-
-        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
-            panic!("start must yield the inner leaf");
-        };
-        let part_id = execution_id_of(&execution, "part");
-        let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 2.0)
-            .unwrap();
-
-        assert!(applied.events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeFailed {
-                node_execution_id,
-                failure_kind: NodeExecutionFailureKind::ValidationFailure,
-                ..
-            } if node_execution_id == &part_id
-        )));
-        assert_eq!(applied.decision, ExecutionAdvanceDecision::Persist);
-        assert_eq!(*execution.state(), RuntimeExecutionState::Running);
-        assert!(
-            !execution
-                .node_executions()
-                .iter()
-                .any(|node| node.node_name == "report"),
-            "a failed part must not advance the parent sequence"
-        );
-    }
-
-    #[test]
     fn nested_approval_pauses_inside_the_tree_and_resumes_in_place() {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry::reference("part"),
                     ChildEntry::reference("report"),
@@ -6286,7 +6067,7 @@ mod tests {
             ),
             NodeDefinition {
                 completion: NodeCompletion::Approval,
-                ..tree_sequence_node("part", None, vec![ChildEntry::reference("inner")])
+                ..tree_sequence_node("part", vec![ChildEntry::reference("inner")])
             },
             tree_command_node("inner"),
             tree_command_node("report"),
@@ -6343,7 +6124,6 @@ mod tests {
         let nodes = vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry::reference("part"),
                     ChildEntry::reference("report"),
@@ -6351,7 +6131,6 @@ mod tests {
             ),
             tree_sequence_node(
                 "part",
-                None,
                 vec![
                     ChildEntry::reference("inner-a"),
                     ChildEntry::reference("inner-b"),
@@ -6440,7 +6219,7 @@ mod tests {
         // fix は loop_guard(2) で自己ループする。lane 0 が予算を使い切っても
         // lane 1 の fix は自分のスコープの予算で 2 回目に入れる。
         let mut execution = tree_execution(vec![
-            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
             NodeDefinition {
                 name: "fan".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
@@ -6454,7 +6233,6 @@ mod tests {
             },
             tree_sequence_node(
                 "part",
-                None,
                 vec![
                     ChildEntry {
                         on_failure: None,
@@ -6571,7 +6349,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry::reference("prepare"),
                     ChildEntry {
@@ -6592,7 +6369,6 @@ mod tests {
                 }],
                 ..tree_sequence_node(
                     "part",
-                    None,
                     vec![ChildEntry {
                         on_failure: None,
                         name: "worker".to_string(),
@@ -6654,7 +6430,7 @@ mod tests {
         // 同一 attempt（スコープ採番）でアクティブになる。abort は全 lane の
         // leaf を記録する。
         let mut execution = tree_execution(vec![
-            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
             NodeDefinition {
                 name: "fan".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
@@ -6666,7 +6442,7 @@ mod tests {
                 }),
                 ..Default::default()
             },
-            tree_sequence_node("part", None, vec![ChildEntry::reference("fix")]),
+            tree_sequence_node("part", vec![ChildEntry::reference("fix")]),
             tree_command_node("fix"),
         ]);
         let mut new_id = tree_id_source();
@@ -6708,7 +6484,7 @@ mod tests {
         // items 2 件の直接 fanout 子（leaf）は lane ごとに attempt 1 で始まり、
         // 片方の retry だけがその lane の attempt 2 になる。
         let mut execution = tree_execution(vec![
-            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
             NodeDefinition {
                 name: "fan".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
@@ -6782,7 +6558,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry {
                         on_failure: None,
@@ -6801,7 +6576,6 @@ mod tests {
             ),
             tree_sequence_node(
                 "part",
-                None,
                 vec![
                     ChildEntry {
                         on_failure: None,
@@ -6892,7 +6666,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     entry_with_on_failure("flaky", OnFailure::Retry(2)),
                     ChildEntry::reference("after"),
@@ -6964,7 +6737,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry {
                         on_failure: Some(OnFailure::Retry(1)),
@@ -7047,7 +6819,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     entry_with_on_failure("optional", OnFailure::Ignore),
                     ChildEntry::reference("after"),
@@ -7078,7 +6849,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     ChildEntry::reference("work"),
                     entry_with_on_failure("optional", OnFailure::Ignore),
@@ -7115,7 +6885,6 @@ mod tests {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![ChildEntry::reference("fan"), ChildEntry::reference("after")],
             ),
             NodeDefinition {
@@ -7181,7 +6950,7 @@ mod tests {
     #[test]
     fn fanout_ignore_advance_is_blocked_while_an_undeclared_failure_halts() {
         let mut execution = tree_execution(vec![
-            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
             NodeDefinition {
                 name: "fan".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
@@ -7229,7 +6998,7 @@ mod tests {
     #[test]
     fn fanout_child_auto_retry_uses_lane_attempt_numbering() {
         let mut execution = tree_execution(vec![
-            tree_sequence_node("main", None, vec![ChildEntry::reference("fan")]),
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
             NodeDefinition {
                 name: "fan".to_string(),
                 kind: NodeKind::Fanout(FanoutSpec {
@@ -7270,7 +7039,6 @@ mod tests {
         let nodes = vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     entry_with_on_failure("flaky", OnFailure::Retry(2)),
                     ChildEntry::reference("after"),
@@ -7370,7 +7138,6 @@ mod tests {
         let nodes = vec![
             tree_sequence_node(
                 "main",
-                None,
                 vec![
                     entry_with_on_failure("optional", OnFailure::Ignore),
                     ChildEntry::reference("after"),
@@ -7440,3 +7207,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod workflow_execution_tests;

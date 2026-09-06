@@ -1,0 +1,58 @@
+name: sequence-merged-references
+description: Sequence maps support wiring, when, switch and fanout items
+schemas:
+  text: string
+  scan-result:
+    type: object
+    properties:
+      has_open_threads: {type: boolean}
+      status: {type: string, enum: [READY, HOLD]}
+      tasks: {type: array, items: text}
+    required: [has_open_threads, status, tasks]
+nodes:
+  main:
+    sequence:
+      children:
+        - review_scan:
+            rules:
+              - when:
+                  on: check_full_review_threads.has_open_threads
+                  then: consume
+                next: finished
+        - consume:
+            inputs:
+              all: review_scan
+              scan: review_scan.check_full_review_threads
+              flag: review_scan.check_full_review_threads.has_open_threads
+        - classifier:
+            rules:
+              - switch:
+                  on: classify.status
+                  cases: {READY: spread, HOLD: finished}
+        - spread
+        - finished
+  review_scan:
+    sequence:
+      children: [check_full_review_threads]
+  check_full_review_threads:
+    command: scan
+    artifact: scan-result
+  consume:
+    command: consume
+    input: [all, scan, flag]
+  classifier:
+    sequence:
+      children: [classify]
+  classify:
+    command: classify
+    artifact: scan-result
+  spread:
+    fanout:
+      items: review_scan.check_full_review_threads.tasks
+      children: [worker]
+  worker:
+    command: work
+    input:
+      - item: text
+  finished:
+    command: finished

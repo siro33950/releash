@@ -1171,3 +1171,7 @@ fn decode_shutdown_target(
         _ => unreachable!("schema was validated"),
     }
 }
+
+#[cfg(test)]
+#[path = "state_record_codec_test.rs"]
+mod state_record_codec_tests;

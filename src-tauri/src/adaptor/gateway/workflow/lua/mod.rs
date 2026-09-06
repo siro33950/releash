@@ -4,7 +4,9 @@ use std::path::Path;
 
 use serde_json::{Number, Value};
 
+use crate::adaptor::protocol::workflow::DiagnosticSpan;
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
     FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
@@ -16,7 +18,10 @@ use crate::infrastructure::lua::{
     LuaLimits, LuaModule, LuaModuleValue, LuaSourceLocation, LuaTableData, LuaTableKey,
 };
 
+mod field_span;
 mod stubs;
+
+use field_span::ArtifactSpanMap;
 
 pub(crate) use stubs::generate_editor_support;
 
@@ -79,6 +84,7 @@ pub(crate) fn facet_catalog(
 pub(crate) struct LuaWorkflowDefinition {
     pub(crate) workflow: WorkflowDefinition,
     pub(crate) node_locations: BTreeMap<String, LuaSourceLocation>,
+    pub(crate) node_artifact_spans: BTreeMap<String, DiagnosticSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +197,6 @@ enum NodeDraftKind {
     Sequence {
         children: Vec<usize>,
         entry: Option<usize>,
-        output: Option<usize>,
     },
 }
 
@@ -388,6 +393,7 @@ struct WorkflowDraft {
 
 #[derive(Debug)]
 struct WorkflowLuaHost {
+    artifact_spans: HashMap<String, ArtifactSpanMap>,
     nodes: Vec<NodeDraft>,
     children: Vec<ChildDraft>,
     rules: Vec<RuleDraft>,
@@ -407,6 +413,7 @@ struct WorkflowLuaHost {
 impl WorkflowLuaHost {
     fn new(catalog: LuaFacetCatalog) -> Self {
         let mut host = Self {
+            artifact_spans: HashMap::new(),
             nodes: Vec::new(),
             children: Vec::new(),
             rules: Vec::new(),
@@ -584,6 +591,11 @@ impl WorkflowLuaHost {
 }
 
 impl LuaHost for WorkflowLuaHost {
+    fn source_loaded(&mut self, name: &str, source: &str) {
+        self.artifact_spans
+            .insert(name.to_string(), ArtifactSpanMap::parse(source));
+    }
+
     fn module(&self, name: &str) -> Option<LuaModule> {
         match name {
             "releash" => Some(self.releash_module()),
@@ -969,7 +981,6 @@ impl WorkflowLuaHost {
             &[
                 "name",
                 "entry",
-                "output",
                 "children",
                 "artifact",
                 "input",
@@ -982,7 +993,6 @@ impl WorkflowLuaHost {
             kind: NodeDraftKind::Sequence {
                 children: required_handle_array(&table, "children", HANDLE_CHILD, &location)?,
                 entry: optional_handle(&table, "entry", HANDLE_NODE, &location)?,
-                output: optional_handle(&table, "output", HANDLE_NODE, &location)?,
             },
             artifact: optional_handle(&table, "artifact", HANDLE_SCHEMA, &location)?,
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
@@ -1298,24 +1308,6 @@ impl WorkflowLuaHost {
             .map_err(|_| type_error(field, "Source", location))
     }
 
-    fn validate_artifact_path(&self, node: usize, fields: &[String]) -> Result<(), String> {
-        let node = self
-            .nodes
-            .get(node)
-            .ok_or_else(|| "unknown node handle".to_string())?;
-        if matches!(node.kind, NodeDraftKind::Command { .. })
-            && fields.len() == 1
-            && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
-                .contains(&fields[0].as_str())
-        {
-            return Ok(());
-        }
-        let schema = node
-            .artifact
-            .ok_or_else(|| "node does not declare an artifact".to_string())?;
-        self.validate_schema_path(schema, fields, "artifact")
-    }
-
     fn index_input(
         &mut self,
         input: usize,
@@ -1369,6 +1361,7 @@ struct WorkflowGraphBuilder {
     child_uses: HashSet<usize>,
     nodes: Vec<NodeDefinition>,
     locations: BTreeMap<String, LuaSourceLocation>,
+    artifact_spans: BTreeMap<String, DiagnosticSpan>,
     schemas: BTreeMap<String, SchemaDef>,
     schema_names: HashMap<usize, String>,
 }
@@ -1382,6 +1375,7 @@ impl WorkflowGraphBuilder {
             child_uses: HashSet::new(),
             nodes: Vec::new(),
             locations: BTreeMap::new(),
+            artifact_spans: BTreeMap::new(),
             schemas: BTreeMap::new(),
             schema_names: HashMap::new(),
         }
@@ -1415,17 +1409,19 @@ impl WorkflowGraphBuilder {
             .insert(workflow.main, MAIN_ENTRY_NODE_NAME.to_string());
         self.child_uses.insert(workflow.main);
         self.visit_node(workflow.main)?;
-        self.validate_unconsumed_sources()?;
+        let workflow = WorkflowDefinition {
+            name: workflow.name,
+            description: workflow.description,
+            builtin: false,
+            schemas: std::mem::take(&mut self.schemas),
+            nodes: std::mem::take(&mut self.nodes),
+            entry: MAIN_ENTRY_NODE_NAME.to_string(),
+        };
+        self.validate_unconsumed_sources(&workflow)?;
         Ok(LuaWorkflowDefinition {
-            workflow: WorkflowDefinition {
-                name: workflow.name,
-                description: workflow.description,
-                builtin: false,
-                schemas: self.schemas,
-                nodes: self.nodes,
-                entry: MAIN_ENTRY_NODE_NAME.to_string(),
-            },
+            workflow,
             node_locations: self.locations,
+            node_artifact_spans: self.artifact_spans,
         })
     }
 
@@ -1534,26 +1530,30 @@ impl WorkflowGraphBuilder {
                     .map(|value| self.build_fanout_items(index, value))
                     .transpose()?,
             }),
-            NodeDraftKind::Sequence {
-                children,
-                entry,
-                output,
-            } => {
+            NodeDraftKind::Sequence { children, entry } => {
                 let child_nodes = children
                     .iter()
                     .map(|child| self.host.children[*child].node)
                     .collect::<HashSet<_>>();
                 let entry =
                     self.optional_child_name(entry, &child_nodes, &draft.location, "entry")?;
-                let output =
-                    self.optional_child_name(output, &child_nodes, &draft.location, "output")?;
                 NodeKind::Sequence(SequenceSpec {
                     entry,
-                    output,
                     children: self.build_children(index, &children, false)?,
                 })
             }
         };
+        if artifact.is_some() {
+            if let Some(mut span) = self
+                .host
+                .artifact_spans
+                .get(&draft.location.source)
+                .and_then(|spans| spans.node_span(draft.location.line, &name))
+            {
+                span.source = Some(draft.location.source.clone());
+                self.artifact_spans.insert(name.clone(), span);
+            }
+        }
         self.locations.insert(name.clone(), draft.location);
         self.nodes.push(NodeDefinition {
             name,
@@ -1961,7 +1961,10 @@ impl WorkflowGraphBuilder {
         }
     }
 
-    fn validate_unconsumed_sources(&self) -> Result<(), LuaWorkflowError> {
+    fn validate_unconsumed_sources(
+        &self,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), LuaWorkflowError> {
         for source in &self.host.sources {
             if self.host.source_paths.contains(source.path()) {
                 continue;
@@ -1971,10 +1974,45 @@ impl WorkflowGraphBuilder {
                     node,
                     path,
                     location,
-                } if !self.host.source_paths.is_root(*path) => self
-                    .host
-                    .validate_artifact_path(*node, &self.host.source_paths.fields(*path))
-                    .map_err(|message| build_error("WFR003", message, Some(location.clone())))?,
+                } if !self.host.source_paths.is_root(*path) => {
+                    let Some(node) = self
+                        .names
+                        .get(node)
+                        .and_then(|name| workflow.node_by_name(name))
+                    else {
+                        continue;
+                    };
+                    let fields = self.host.source_paths.fields(*path);
+                    let schema =
+                        reference::node_reference_schema(workflow, node).map_err(|error| {
+                            let message = match error {
+                                reference::NodeReferenceSchemaError::NoReferenceableArtifact => {
+                                    "node does not declare an artifact".to_string()
+                                }
+                                reference::NodeReferenceSchemaError::ArtifactNotObject => format!(
+                                    "artifact field '{}' cannot be read from a non-object schema",
+                                    fields[0]
+                                ),
+                            };
+                            build_error("WFR003", message, Some(location.clone()))
+                        })?;
+                    contract_schema::resolve_field_path(
+                        &schema,
+                        &crate::domain::workflow::FieldPath::new(fields),
+                    )
+                    .map_err(|error| {
+                        let message = match error.kind {
+                            contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+                                "artifact field '{}' cannot be read from a non-object schema",
+                                error.segment
+                            ),
+                            contract_schema::FieldPathResolutionErrorKind::MissingProperty => {
+                                format!("artifact field '{}' does not exist", error.segment)
+                            }
+                        };
+                        build_error("WFR003", message, Some(location.clone()))
+                    })?;
+                }
                 SourceDraft::Input {
                     input,
                     path,

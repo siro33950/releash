@@ -17,7 +17,7 @@ pub const MAX_FANOUT_CHILDREN: usize = 64;
 pub const MAIN_ENTRY_NODE_NAME: &str = "main";
 
 /// node 名として使用禁止の予約語（kind 名とフィールド名）。
-pub const RESERVED_NODE_NAMES: [&str; 16] = [
+pub const RESERVED_NODE_NAMES: [&str; 15] = [
     "command",
     "session",
     "fanout",
@@ -32,7 +32,6 @@ pub const RESERVED_NODE_NAMES: [&str; 16] = [
     "on_failure",
     "items",
     "entry",
-    "output",
     "children",
 ];
 
@@ -537,9 +536,6 @@ pub struct SequenceSpec {
     /// 開始 node（children のエントリ名）。省略時はリスト先頭。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
-    /// artifact 宣言時にどの子の Artifact を返すか（children のエントリ名）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
     pub children: Vec<ChildEntry>,
 }
 
@@ -965,8 +961,6 @@ struct RawFanoutSpec {
 struct RawSequenceSpec {
     #[serde(default)]
     entry: Option<String>,
-    #[serde(default)]
-    output: Option<String>,
     children: Vec<RawChildElement>,
 }
 
@@ -1337,7 +1331,6 @@ impl CatalogNormalizer {
             }
             NodeKind::Sequence(SequenceSpec {
                 entry: sequence.entry,
-                output: sequence.output,
                 children: self.normalize_children(&name, sequence.children)?,
             })
         } else {
@@ -1962,7 +1955,6 @@ nodes:
     fn test_実効辺_rules省略は隣接辺で末尾は終端() {
         let sequence = SequenceSpec {
             entry: None,
-            output: None,
             children: vec![
                 ChildEntry::reference("first"),
                 ChildEntry::reference("second"),
@@ -1984,7 +1976,6 @@ nodes:
     fn test_実効辺_明示rulesが隣接辺より優先され空rulesは終端() {
         let sequence = SequenceSpec {
             entry: None,
-            output: None,
             children: vec![
                 ChildEntry {
                     on_failure: None,
@@ -2016,7 +2007,6 @@ nodes:
     fn test_entry解決_sequenceのentry省略時はリスト先頭() {
         let sequence = SequenceSpec {
             entry: None,
-            output: None,
             children: vec![
                 ChildEntry::reference("first"),
                 ChildEntry::reference("second"),
@@ -2054,5 +2044,12 @@ nodes:
             Err(NodeNamespaceError::Reserved("children".to_string()))
         );
         assert!(!namespace.contains("children"));
+        assert_eq!(
+            namespace.register_explicit("artifact"),
+            Err(NodeNamespaceError::Reserved("artifact".to_string()))
+        );
+        assert!(!namespace.contains("artifact"));
+        assert!(namespace.register_explicit("output").is_ok());
+        assert!(namespace.contains("output"));
     }
 }

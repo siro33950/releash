@@ -1,0 +1,10 @@
+name: output-node-name
+description: output is a valid catalog and named child entry name
+nodes:
+  main:
+    sequence:
+      children:
+        - output:
+            rules: []
+  output:
+    command: output

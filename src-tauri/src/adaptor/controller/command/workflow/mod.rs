@@ -1845,7 +1845,6 @@ mod tests {
                     kind: crate::adaptor::gateway::workflow::schema::NodeKind::Sequence(
                         crate::adaptor::gateway::workflow::schema::SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![crate::domain::workflow::ChildEntry::reference("plan")],
                         },
                     ),

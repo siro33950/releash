@@ -136,6 +136,8 @@ impl fmt::Display for LuaHostError {
 impl std::error::Error for LuaHostError {}
 
 pub(crate) trait LuaHost {
+    fn source_loaded(&mut self, name: &str, source: &str);
+
     fn module(&self, name: &str) -> Option<LuaModule>;
 
     fn call(
@@ -221,7 +223,7 @@ impl<H: LuaHost + 'static> UserData for HostUserData<H> {
 
 pub(crate) fn evaluate<H: LuaHost + 'static>(
     request: LuaEvaluationRequest<'_>,
-    host: H,
+    mut host: H,
 ) -> Result<LuaEvaluation<H>, LuaFailure> {
     let base_dir = canonical_workflows_dir(request.workflows_dir)?;
     let lua = Lua::new_with(
@@ -235,6 +237,7 @@ pub(crate) fn evaluate<H: LuaHost + 'static>(
     install_instruction_limit(&lua, request.limits.instructions)
         .map_err(|error| map_mlua_error(error, request.source_name))?;
 
+    host.source_loaded(&normalize_source_name(request.source_name), request.source);
     let host = Rc::new(RefCell::new(host));
     install_require(&lua, &base_dir, Rc::clone(&host))
         .map_err(|error| map_mlua_error(error, request.source_name))?;
@@ -363,7 +366,7 @@ fn install_require<H: LuaHost + 'static>(
         let host_module = host.borrow().module(&module_name);
         let result = match host_module {
             Some(module) => module_to_lua(lua, module, Rc::clone(&host)),
-            None => load_file_module(lua, &base_dir, &module_name, location.clone()),
+            None => load_file_module(lua, &base_dir, &module_name, location.clone(), &host),
         };
         loading.borrow_mut().remove(&module_name);
 
@@ -378,11 +381,12 @@ fn install_require<H: LuaHost + 'static>(
     lua.globals().raw_set("require", require)
 }
 
-fn load_file_module(
+fn load_file_module<H: LuaHost>(
     lua: &Lua,
     base_dir: &Path,
     module_name: &str,
     require_location: LuaSourceLocation,
+    host: &Rc<RefCell<H>>,
 ) -> mlua::Result<Value> {
     let path = resolve_module_path(base_dir, module_name).map_err(|message| {
         callback_failure(
@@ -398,6 +402,8 @@ fn load_file_module(
             format!("module '{}' could not be read: {error}", path.display()),
         )
     })?;
+    host.borrow_mut()
+        .source_loaded(path.to_string_lossy().as_ref(), &source);
     lua.load(&source)
         .set_name(path.to_string_lossy().as_ref())
         .eval::<Value>()
@@ -689,6 +695,8 @@ mod tests {
     }
 
     impl LuaHost for TestHost {
+        fn source_loaded(&mut self, _name: &str, _source: &str) {}
+
         fn module(&self, name: &str) -> Option<LuaModule> {
             (name == "test").then(|| LuaModule {
                 members: BTreeMap::from([("value".to_string(), LuaModuleValue::Function(1))]),

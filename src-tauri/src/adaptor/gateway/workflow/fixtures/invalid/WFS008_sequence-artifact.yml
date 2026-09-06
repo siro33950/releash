@@ -1,0 +1,15 @@
+name: sequence-artifact
+description: Sequence cannot declare its own Artifact Contract
+schemas:
+  result:
+    type: object
+    properties: {passed: {type: boolean}}
+    required: [passed]
+nodes:
+  main:
+    sequence:
+      children: [check]
+    artifact: result
+  check:
+    command: check
+    artifact: result

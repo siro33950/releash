@@ -122,14 +122,13 @@ nodes:
       - fix_report:
           inputs:
             check_open_threads: check_open_threads
-            verify_fixes: fix_round
+            verify_fixes: fix_round.close_round
 
   # 修正ラウンド（部品 sequence）: 1つの修正計画を作り、検証が通るか実装
   # リトライが尽きるまで実装・検証を繰り返す。ラウンドを再訪するたび新しい
   # スコープが生まれ、内側の loop_guard カウントはフレッシュになる。
   fix_round:
     sequence:
-      output: close_round
       children:
       - create_fix_plan:
           inputs:
@@ -159,7 +158,6 @@ nodes:
       - close_round
     input:
     - spec
-    artifact: fix-verification
 
   resolve_request:
     session:

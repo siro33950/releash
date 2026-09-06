@@ -40,7 +40,7 @@ R-009 は、Contract を持たない供給元（型なし input パラメータ�
 
 Lua host から深さ制限（`nested artifact field references are not supported` / `nested input field references are not supported`）と、**定義に消費される参照**の schema 走査を外す。host は index 時に段を記録するだけにする。消費された参照は、build 後に走る共有の domain validation（`diagnose_lua_workflow_source` は `load_lua_workflow` 成功後に `diagnose_workflow_definition` を呼ぶ）が use site に応じた Diagnostic を返し、YAML と一致する（R-008 / B-014）。
 
-どの配線・辺・`env`・`items` にも消費されない参照（例: `local invalid = child.missing`）は `WorkflowDefinition` に現れず共有 validation に届かない。現行はこれを index 行の `WFR003` で拒否しており、R-009 によりこの拒否は維持する必要があるため、host が build 完了時に未消費の source draft だけを自分の schema draft 上で解決し、同じ `WFR003` を返す。
+どの配線・辺・`env`・`items` にも消費されない参照（例: `local invalid = child.missing`）は `WorkflowDefinition` に現れず共有 validation に届かない。Node を起点とする未消費 Source は、host が build 完了時に build 済み `WorkflowDefinition` 上で domain の参照解決規則（`reference::node_reference_schema` と `contract_schema::resolve_field_path`）により検証し、解決できない参照には index 行の `WFR003` を返す。検証対象は `main` から到達し、build / visit_node によって Node 名を付与された draft に限る。`main` から到達しない draft を起点とする未消費参照は検証しない。
 
 帰結として、消費される参照の解決 Diagnostic は Lua source の行ではなく node 単位の span になる。Lua で共有 validation を通る Diagnostic は現行から node 単位であり、R-008 は span を各表面の位置付けに委ねている。
 
