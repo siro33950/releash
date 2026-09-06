@@ -249,6 +249,19 @@ impl Default for WorkflowDefinition {
 }
 
 impl WorkflowDefinition {
+    pub fn dynamic_fanout_names(&self) -> std::collections::BTreeSet<String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.fanout()
+                    .filter(|fanout| {
+                        matches!(fanout.items, Some(ItemsSource::ArtifactField { .. }))
+                    })
+                    .map(|_| node.name.clone())
+            })
+            .collect()
+    }
+
     pub fn entry_node(&self) -> Option<&NodeDefinition> {
         self.entry_index().map(|index| &self.nodes[index])
     }

@@ -14,8 +14,8 @@ use super::value_objects::{
 };
 use super::{WorkspaceNodeStatusClassification, WorkspacePublicRoot};
 use crate::domain::workflow::{
-    AgentSessionActivity, ExecutionParentRef, ExecutionStatus, ItemsSource,
-    NodeCompletionSignalState, NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
+    AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
+    NodeExecutionFailureKind, NodeKindName,
 };
 
 pub(super) const DEFAULT_WORKFLOW_TITLE: &str = "Workflow";
@@ -250,7 +250,7 @@ impl WorkspaceTree {
         execution_id: String,
         workflow_name: String,
         worktree_path: String,
-        definition: WorkflowDefinition,
+        dynamic_fanout_names: std::collections::BTreeSet<String>,
         timestamp: f64,
     ) -> Result<(), WorkspaceTreeError> {
         if WorkspaceIdentity::new(&worktree_path) != self.workspace_identity {
@@ -259,17 +259,6 @@ impl WorkspaceTree {
         if self.workflow_node(&execution_id).is_some() {
             return Ok(());
         }
-        let dynamic_fanout_names = definition
-            .nodes
-            .iter()
-            .filter_map(|node| {
-                node.fanout()
-                    .filter(|fanout| {
-                        matches!(fanout.items, Some(ItemsSource::ArtifactField { .. }))
-                    })
-                    .map(|_| node.name.clone())
-            })
-            .collect::<HashSet<_>>();
         let sibling_order = self.next_sibling_order(None);
         let status = WorkspaceNodeStatus::Running;
         let completion_signals = NodeCompletionSignalState::default();
@@ -784,13 +773,13 @@ impl WorkspaceTreeProjector {
                     execution_id,
                     workflow_name,
                     worktree_path,
-                    definition,
+                    dynamic_fanout_names,
                     timestamp,
                 } => tree.apply_workflow_started(
                     execution_id,
                     workflow_name,
                     worktree_path,
-                    definition,
+                    dynamic_fanout_names,
                     timestamp,
                 )?,
                 WorkspaceStructureFact::WorkflowSummaryProjected {

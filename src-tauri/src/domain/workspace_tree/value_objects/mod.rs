@@ -1,6 +1,6 @@
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
-    NodeExecutionFailureKind, NodeKindName, WorkflowDefinition,
+    NodeExecutionFailureKind, NodeKindName,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -33,6 +33,7 @@ pub enum WorkspaceNodeKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
+    Unresolved,
     Running,
     Paused,
     Failed,
@@ -44,6 +45,7 @@ pub enum WorkspaceNodeStatus {
 impl WorkspaceNodeStatus {
     pub fn as_public_str(self) -> &'static str {
         match self {
+            Self::Unresolved => "unresolved",
             Self::Running => "running",
             Self::Paused => "paused",
             Self::Failed => "failed",
@@ -178,7 +180,12 @@ impl WorkspaceTreeNode {
         session_bound: bool,
         recovery_fenced: bool,
     ) -> WorkspaceNodeStatusClassification {
-        if recovery_fenced || status == WorkspaceNodeStatus::Failed {
+        if recovery_fenced
+            || matches!(
+                status,
+                WorkspaceNodeStatus::Failed | WorkspaceNodeStatus::Unresolved
+            )
+        {
             WorkspaceNodeStatusClassification::Failure
         } else if matches!(
             status,
@@ -221,7 +228,7 @@ pub enum WorkspaceStructureFact {
         execution_id: String,
         workflow_name: String,
         worktree_path: String,
-        definition: WorkflowDefinition,
+        dynamic_fanout_names: std::collections::BTreeSet<String>,
         timestamp: f64,
     },
     WorkflowSummaryProjected {

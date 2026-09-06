@@ -123,6 +123,8 @@ pub struct TreeRootFact {
     pub request: String,
     #[serde(with = "workflow_definition_snapshot_serde")]
     pub definition: WorkflowDefinition,
+    #[serde(skip)]
+    pub definition_resolution: Box<super::DefinitionResolution>,
     pub launched_as: ExecutionTreeLaunch,
 }
 
@@ -174,6 +176,7 @@ impl SessionExecutionTreeRootFacts {
             started: NodeFact::Started(StartedFact {
                 parent: None,
                 root: Some(TreeRootFact {
+                    definition_resolution: Default::default(),
                     workspace_identity,
                     worktree_path,
                     created_from: ExecutionOrigin::DesktopUi,

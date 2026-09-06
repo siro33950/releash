@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::WorkflowDefinition;
 use crate::domain::workflow::{
     FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, SequenceSpec,
     SessionSpec,
@@ -33,7 +34,7 @@ fn test_成果物適用_commandだけが実行結果候補を保持し全kindで
                         execution_id: execution_id.to_string(),
                         workflow_name: "review".to_string(),
                         worktree_path: "/repo".to_string(),
-                        definition: definition(),
+                        dynamic_fanout_names: definition().dynamic_fanout_names(),
                         timestamp: 1.0,
                     },
                     WorkspaceStructureFact::NodeStarted {
@@ -148,7 +149,7 @@ fn status_fact(
                 timestamp,
             })
         }
-        WorkspaceNodeStatus::Paused => None,
+        WorkspaceNodeStatus::Paused | WorkspaceNodeStatus::Unresolved => None,
     }
 }
 
@@ -163,7 +164,7 @@ fn branch_classification(
             execution_id: execution_id.to_string(),
             workflow_name: "classification".to_string(),
             worktree_path: "/repo".to_string(),
-            definition: definition(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
             timestamp: 1.0,
         },
         WorkspaceStructureFact::NodeStarted {
@@ -264,7 +265,7 @@ fn test_親分類集約_子孫のfailureをsequenceとfanoutの祖先まで反�
             execution_id: execution_id.to_string(),
             workflow_name: "classification".to_string(),
             worktree_path: "/repo".to_string(),
-            definition: definition(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
             timestamp: 1.0,
         },
         WorkspaceStructureFact::NodeStarted {
@@ -343,7 +344,7 @@ fn root_sequence_tree_nodes_get_distinct_ids_per_execution() {
                     execution_id: execution_id.to_string(),
                     workflow_name: "review".to_string(),
                     worktree_path: "/repo".to_string(),
-                    definition: definition(),
+                    dynamic_fanout_names: definition().dynamic_fanout_names(),
                     timestamp: 1.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -384,7 +385,7 @@ fn sequence_branch_propagates_child_updated_at_to_workflow_root() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -435,7 +436,7 @@ fn workspace_tree_projector_owns_parentage_identity_and_occurrence_order() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -481,7 +482,7 @@ fn workflow_without_started_nodes_has_an_empty_branch_and_no_preferred_node() {
             execution_id: execution_id.to_string(),
             workflow_name: "review".to_string(),
             worktree_path: "/repo".to_string(),
-            definition: definition(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
             timestamp: 1.0,
         }],
     )
@@ -508,7 +509,7 @@ fn workspace_tree_rejects_duplicate_session_binding() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -562,7 +563,7 @@ fn two_execution_session_tree() -> WorkspaceTree {
                 execution_id: "00000000-0000-4000-8000-0000000000a1".to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -578,7 +579,7 @@ fn two_execution_session_tree() -> WorkspaceTree {
                 execution_id: "00000000-0000-4000-8000-0000000000b1".to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 3.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -703,7 +704,7 @@ fn completed_workflow_session_keeps_agent_session_binding() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -744,7 +745,7 @@ fn archive_visibility_hides_only_workflow_branch() {
             execution_id: execution_id.to_string(),
             workflow_name: "review".to_string(),
             worktree_path: "/repo".to_string(),
-            definition: definition(),
+            dynamic_fanout_names: definition().dynamic_fanout_names(),
             timestamp: 1.0,
         }],
     )
@@ -765,7 +766,7 @@ fn workflow_recovery_reason_is_derived_from_stable_owner_order() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -887,7 +888,7 @@ fn looping_fanout_facts(execution_id: &str, items: ItemsSource) -> Vec<Workspace
             execution_id: execution_id.to_string(),
             workflow_name: "review".to_string(),
             worktree_path: "/repo".to_string(),
-            definition: workflow,
+            dynamic_fanout_names: workflow.dynamic_fanout_names(),
             timestamp: 1.0,
         },
         WorkspaceStructureFact::NodeStarted {
@@ -1096,7 +1097,7 @@ fn literal_fanout_projects_only_started_children_in_event_order() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition,
+                dynamic_fanout_names: definition.dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1181,7 +1182,7 @@ fn artifact_item_fanout_without_started_children_has_an_empty_branch() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: workflow,
+                dynamic_fanout_names: workflow.dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1269,7 +1270,7 @@ fn fanout_occurrences_are_distinct_and_children_stay_nested_in_event_order() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: workflow,
+                dynamic_fanout_names: workflow.dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1375,7 +1376,7 @@ fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: workflow,
+                dynamic_fanout_names: workflow.dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1513,7 +1514,7 @@ fn terminal_workflows_hide_every_unstarted_leaf_and_branch() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: workflow,
+                dynamic_fanout_names: workflow.dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::WorkflowSummaryProjected {
@@ -1547,14 +1548,14 @@ fn workflow_root_order_matches_the_audit_golden() {
                 execution_id: "00000000-0000-4000-8000-000000000002".to_string(),
                 workflow_name: "zeta".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::WorkflowStarted {
                 execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
                 workflow_name: "Echo".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 2.0,
             },
         ],
@@ -1589,7 +1590,7 @@ fn repeated_command_occurrence_tree() -> WorkspaceTree {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1688,7 +1689,7 @@ fn repeated_session_occurrences_keep_distinct_session_detail_and_lookup() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1751,7 +1752,7 @@ fn test_session表示名_単独rootだけproviderタイトルを使いrenameを�
                 execution_id: standalone_id.to_string(),
                 workflow_name: "session".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1773,7 +1774,7 @@ fn test_session表示名_単独rootだけproviderタイトルを使いrenameを�
                 execution_id: workflow_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 3.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1838,7 +1839,7 @@ fn test_session表示名_親ありで実行idとnode実行idが同じsessionは�
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1890,7 +1891,7 @@ fn test_session表示名変更可否_session_bind後だけ真になる() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {
@@ -1961,7 +1962,7 @@ fn test_親分類集約_bind前sessionだけならunboundで他の子があれ�
                     execution_id: execution_id.clone(),
                     workflow_name: "workflow".to_string(),
                     worktree_path: "/repo".to_string(),
-                    definition: definition(),
+                    dynamic_fanout_names: definition().dynamic_fanout_names(),
                     timestamp: 1.0,
                 },
                 WorkspaceStructureFact::NodeStarted {
@@ -2052,7 +2053,7 @@ fn test_親分類集約_bind前sessionの終了状態をsequenceとfanoutへ反�
                         execution_id: execution_id.clone(),
                         workflow_name: "workflow".to_string(),
                         worktree_path: "/repo".to_string(),
-                        definition: definition(),
+                        dynamic_fanout_names: definition().dynamic_fanout_names(),
                         timestamp: 1.0,
                     },
                     WorkspaceStructureFact::NodeStarted {
@@ -2119,7 +2120,7 @@ fn missing_session_keeps_node_but_returns_no_unusable_session_id() {
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
-                definition: definition(),
+                dynamic_fanout_names: definition().dynamic_fanout_names(),
                 timestamp: 1.0,
             },
             WorkspaceStructureFact::NodeStarted {

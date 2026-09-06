@@ -126,6 +126,18 @@ pub(crate) fn read_tree_page(
     rows.collect()
 }
 
+pub(crate) fn read_node(
+    connection: &Connection,
+    tree_id: &str,
+    node_execution_id: &str,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 AND node_execution_id = ?2 ORDER BY seq"
+    ))?;
+    let rows = statement.query_map([tree_id, node_execution_id], row_from_sql)?;
+    rows.collect()
+}
+
 /// Latest fact row of one node execution (used to resolve a node's identity
 /// columns for facts that only carry the node execution id).
 pub(crate) fn latest_row_for_node(

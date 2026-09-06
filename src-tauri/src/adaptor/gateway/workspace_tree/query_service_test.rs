@@ -1558,3 +1558,73 @@ fn unrepresentable_page_offset_falls_back_to_the_first_record() {
     );
     assert_eq!(sqlite_page_bounds(None), (i64::MAX, 0));
 }
+
+#[test]
+fn test_workspace読取_未対応の親または自身の定義があってもcommand出力とsession参照を取得できる() {
+    use crate::domain::workspace_tree::WorkspaceTreeRepository;
+    // Given
+    for unavailable in ["main", "command", "session", "unused"] {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
+            &store,
+            "00000000-0000-4000-8000-000000001744",
+            "/repo",
+            unavailable,
+        );
+        crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
+            &store,
+            "00000000-0000-4000-8000-000000001745",
+            "/other",
+            "main",
+        );
+        let read_store =
+            crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+                directory.path(),
+            )
+            .unwrap();
+        for repository in [
+            SqliteWorkspaceTreeRepository::new(store.clone()),
+            SqliteWorkspaceTreeRepository::new_read_only(read_store),
+        ] {
+            let command = repository
+                .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-command")
+                .unwrap()
+                .unwrap();
+            let session = repository
+                .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-session")
+                .unwrap()
+                .unwrap();
+            let query =
+                SqliteWorkspaceQueryService::with_repository(repository, Arc::new(EmptyArchives));
+            let workspace = WorkspaceIdentity::new("/repo");
+
+            // When
+            let snapshot = query.workspace_tree(&workspace).unwrap();
+            let command_detail = query.node_detail(&workspace, &command.id).unwrap().unwrap();
+            let session_detail = query.node_detail(&workspace, &session.id).unwrap().unwrap();
+
+            // Then
+            assert!(!snapshot.nodes.is_empty());
+            let WorkspaceNodeContentDto::Command(content) = command_detail.content else {
+                panic!("command content must remain available")
+            };
+            assert_eq!(content.display_command.as_deref(), Some("printf kept"));
+            assert_eq!(content.result.unwrap().stdout, "kept");
+            let WorkspaceNodeContentDto::Session(content) = session_detail.content else {
+                panic!("session reference must remain available")
+            };
+            assert_eq!(
+                content.session_id.as_deref(),
+                Some("00000000-0000-4000-8000-000000001744-session")
+            );
+            if unavailable == "command" {
+                assert_eq!(command_detail.status, "unresolved");
+                assert!(!command_detail.capabilities.can_retry);
+                assert!(command_detail.recovery_reason.is_some());
+            }
+        }
+    }
+}

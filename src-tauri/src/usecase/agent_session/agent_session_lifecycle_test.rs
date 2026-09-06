@@ -2578,3 +2578,52 @@ async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通知�
         "既にpausedの遅延通知では再emitしない"
     );
 }
+
+#[tokio::test]
+async fn test_agent_session_open_未対応の親または自身の定義があってもattachとprovider再開を行える()
+{
+    // Given
+    for unavailable in ["main", "session", "unused"] {
+        let context = setup();
+        crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
+            &context.store,
+            "tree",
+            "/repo",
+            unavailable,
+        );
+
+        // When
+        let attached = context
+            .lifecycle
+            .open("tree-session", 24, 80, "attach")
+            .await
+            .unwrap();
+        assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
+        *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+        let resumed = context
+            .lifecycle
+            .open("tree-session", 24, 80, "resume")
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(attached, AgentSessionOpenOutcome::Attached);
+        assert_eq!(resumed, AgentSessionOpenOutcome::Resumed);
+        assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 1);
+        assert_eq!(
+            context.launches.launches.lock().unwrap().as_slice(),
+            &[ProviderSessionLaunch::resume("provider-session").unwrap()]
+        );
+        assert_eq!(
+            context
+                .sessions
+                .find("tree-session")
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Open
+        );
+    }
+}

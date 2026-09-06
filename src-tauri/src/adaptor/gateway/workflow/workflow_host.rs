@@ -6309,6 +6309,7 @@ nodes:
                 &NodeFact::Started(StartedFact {
                     parent: None,
                     root: Some(TreeRootFact {
+                        definition_resolution: Default::default(),
                         workspace_identity: worktree_path.to_string(),
                         worktree_path: worktree_path.to_string(),
                         created_from: ExecutionOrigin::DesktopUi,
@@ -6454,7 +6455,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_startup_reconciliation_provider固有permissionのstarted_factをsession_store_errorにする(
+        async fn test_startup_reconciliation_未対応permissionはnode単位で制限し木の読み取りを継続する(
         ) {
             const TREE_ID: &str = "00000000-0000-4000-8000-000000000004";
             let directory = tempfile::tempdir().unwrap();
@@ -6497,9 +6498,20 @@ nodes:
                 )
                 .unwrap();
 
-            let history_error = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap_err();
-            assert!(history_error.contains("node fact decode failed"));
-            assert!(history_error.contains("bypassPermissions"));
+            let records = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap();
+            let folded = crate::domain::workflow::services::fact_replay::fold_execution_tree(
+                TREE_ID, &records,
+            )
+            .unwrap()
+            .unwrap();
+            let node = folded.aggregate.node_execution(TREE_ID).unwrap();
+            assert_eq!(node.status, crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Unresolved);
+            assert!(node
+                .recovery_reason
+                .as_ref()
+                .unwrap()
+                .contains("bypassPermissions"));
+            assert!(!node.can_retry());
 
             let app = tauri::test::mock_builder()
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -6519,12 +6531,7 @@ nodes:
                 Arc::new(MissingRepoWorktreeInventory),
             );
 
-            let error = host.reconcile_startup(app.handle()).await.unwrap_err();
-
-            assert!(
-                matches!(error, WorkflowRuntimeError::SessionStore(message) if
-                message.contains("bypassPermissions"))
-            );
+            host.reconcile_startup(app.handle()).await.unwrap();
         }
 
         #[tokio::test]

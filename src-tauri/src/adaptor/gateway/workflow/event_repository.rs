@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
+use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
@@ -39,9 +40,15 @@ impl WorkflowEventLogRepository {
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         match &self.source {
             WorkflowEventReadSource::Canonical(backend) => {
-                let records = fact_log::read_tree_records_from(backend, execution_id.as_str())
-                    .map_err(WorkflowError::external)?;
-                records.iter().map(record_to_draft).collect()
+                let execution_id = execution_id.as_str().to_string();
+                let rows = backend
+                    .run_indexed(move |connection| {
+                        node_events::read_tree(connection, &execution_id).map_err(|_| {
+                            crate::domain::local_event::LocalEventQueryError::InvalidRequest
+                        })
+                    })
+                    .map_err(|error| WorkflowError::external(error.to_string()))?;
+                rows.iter().map(row_to_draft).collect()
             }
         }
     }
@@ -52,44 +59,41 @@ impl WorkflowEventLogRepository {
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         match &self.source {
-            WorkflowEventReadSource::Canonical(backend) => fact_log::read_tree_record_page_from(
-                backend,
-                execution_id.as_str(),
-                page.offset,
-                page.limit,
-            )
-            .map_err(WorkflowError::external)?
-            .iter()
-            .map(record_to_draft)
-            .collect(),
+            WorkflowEventReadSource::Canonical(backend) => {
+                let execution_id = execution_id.as_str().to_string();
+                let rows = backend
+                    .run_indexed(move |connection| {
+                        node_events::read_tree_page(
+                            connection,
+                            &execution_id,
+                            page.offset,
+                            page.limit,
+                        )
+                        .map_err(|_| {
+                            crate::domain::local_event::LocalEventQueryError::InvalidRequest
+                        })
+                    })
+                    .map_err(|error| WorkflowError::external(error.to_string()))?;
+                rows.iter().map(row_to_draft).collect()
+            }
         }
     }
 }
 
-fn record_to_draft(
-    record: &crate::domain::workflow::NodeFactRecord,
-) -> Result<WorkflowEventDraft, WorkflowError> {
-    let detail = record
-        .fact
-        .encode_detail()
-        .map_err(|error| WorkflowError::external(error.to_string()))?;
-    let mut payload: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&detail)
+fn row_to_draft(row: &NodeEventRow) -> Result<WorkflowEventDraft, WorkflowError> {
+    let mut payload: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&row.detail)
         .map_err(|error| WorkflowError::external(error.to_string()))?;
     payload.insert(
         "nodeExecutionId".to_string(),
-        record.meta.node_execution_id.clone().into(),
+        row.node_execution_id.clone().into(),
     );
-    payload.insert("nodeName".to_string(), record.meta.node_name.clone().into());
-    payload.insert(
-        "kind".to_string(),
-        serde_json::to_value(record.meta.kind)
-            .map_err(|error| WorkflowError::external(error.to_string()))?,
-    );
-    payload.insert("attempt".to_string(), record.meta.attempt.into());
+    payload.insert("nodeName".to_string(), row.node_name.clone().into());
+    payload.insert("kind".to_string(), row.kind.clone().into());
+    payload.insert("attempt".to_string(), row.attempt.into());
     Ok(WorkflowEventDraft {
-        execution_id: record.meta.tree_id.clone(),
-        event_kind: record.fact.event_type().to_string(),
-        timestamp: record.timestamp_ms as f64 / 1000.0,
+        execution_id: row.tree_id.clone(),
+        event_kind: row.event_type.clone(),
+        timestamp: row.timestamp_ms as f64 / 1000.0,
         payload: serde_json::Value::Object(payload),
     })
 }
@@ -229,5 +233,40 @@ mod tests {
         assert_eq!(second[0], first[0]);
         assert_eq!(second[1].event_kind, "abort_requested");
         assert_eq!(second[1].timestamp, 2.0);
+    }
+    #[test]
+    fn test_実行履歴_未対応定義を落とさず保存されたpayloadをページでも返す() {
+        // Given
+        let directory = TempDir::new().unwrap();
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
+                .unwrap();
+        let id = WorkflowExecutionId::new("00000000-0000-4000-8000-000000001744").unwrap();
+        crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
+            &store,
+            id.as_str(),
+            "/repo",
+            "main",
+        );
+        let repository = WorkflowEventLogRepository::with_store(store);
+
+        // When
+        let records = repository.read(&id).unwrap();
+        let page = repository
+            .read_page(
+                &id,
+                WorkflowPageRequest {
+                    offset: 0,
+                    limit: 1,
+                },
+            )
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            records[0].payload["root"]["definition"]["nodes"]["main"]["sequence"]["output"],
+            "session"
+        );
+        assert_eq!(page, records[..1]);
     }
 }

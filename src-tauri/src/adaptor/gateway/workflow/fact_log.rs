@@ -133,6 +133,7 @@ fn fact_rows_for_events(
                 ..
             } => {
                 pending_root = Some(TreeRootFact {
+                    definition_resolution: Default::default(),
                     workspace_identity: WorkspaceIdentity::new(worktree_path).as_str().to_string(),
                     worktree_path: worktree_path.clone(),
                     created_from: *created_from,
@@ -564,7 +565,7 @@ pub(crate) enum FactLogReadBackend {
 }
 
 impl FactLogReadBackend {
-    fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    pub(crate) fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
@@ -603,38 +604,6 @@ pub(crate) fn read_tree_records_from(
         })
         .map_err(|error| format!("node fact tree read failed: {error:?}"))?;
     rows.iter().map(record_from_row).collect()
-}
-
-pub(crate) fn read_tree_record_page_from(
-    backend: &FactLogReadBackend,
-    tree_id: &str,
-    offset: usize,
-    limit: usize,
-) -> Result<Vec<NodeFactRecord>, String> {
-    let tree_id_owned = tree_id.to_string();
-    let rows = backend
-        .run_indexed(move |connection| {
-            node_events::read_tree_page(connection, &tree_id_owned, offset, limit)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
-        })
-        .map_err(|error| format!("node fact tree page read failed: {error:?}"))?;
-    rows.iter().map(record_from_row).collect()
-}
-
-pub(crate) fn read_tree_root_from(
-    backend: &FactLogReadBackend,
-    tree_id: &str,
-) -> Result<Option<NodeFactRecord>, String> {
-    let tree_id_owned = tree_id.to_string();
-    backend
-        .run_indexed(move |connection| {
-            node_events::first_row_of_tree(connection, &tree_id_owned)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
-        })
-        .map_err(|error| format!("node fact tree root read failed: {error:?}"))?
-        .as_ref()
-        .map(record_from_row)
-        .transpose()
 }
 
 pub(crate) fn read_latest_activity_record_for_node(
@@ -707,8 +676,12 @@ pub(crate) fn read_tree_records(
 }
 
 pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<NodeFactRecord, String> {
-    let fact = NodeFact::decode(&row.event_type, &row.detail)
-        .map_err(|error| format!("node fact decode failed: {error}"))?;
+    let fact = if row.event_type == "started" {
+        super::stored_definition::decode_started(&row.detail)
+    } else {
+        NodeFact::decode(&row.event_type, &row.detail).map_err(|error| error.to_string())
+    }
+    .map_err(|error| format!("node fact decode failed: {error}"))?;
     Ok(NodeFactRecord {
         meta: NodeFactMeta {
             tree_id: row.tree_id.clone(),
@@ -947,7 +920,7 @@ pub(crate) fn reconcile_tree_pass(
 pub(crate) fn list_tree_roots(
     backend: &FactLogReadBackend,
     worktree_path: Option<&str>,
-) -> Result<Vec<(String, TreeRootFact)>, String> {
+) -> Result<Vec<(String, super::stored_definition::TreeRootHeader)>, String> {
     let rows = backend
         .run_indexed(move |connection| {
             node_events::list_tree_roots(connection, "started")
@@ -960,15 +933,11 @@ pub(crate) fn list_tree_roots(
         if !seen.insert(row.tree_id.clone()) {
             continue;
         }
-        let record = record_from_row(&row)?;
-        let NodeFact::Started(started) = &record.fact else {
-            continue;
-        };
-        let Some(root) = &started.root else {
+        let Some(root) = super::stored_definition::read_tree_header(&row.detail)? else {
             continue;
         };
         if worktree_path.is_none_or(|wanted| wanted == root.worktree_path) {
-            roots.push((row.tree_id, root.clone()));
+            roots.push((row.tree_id, root));
         }
     }
     Ok(roots)

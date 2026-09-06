@@ -104,7 +104,7 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
+pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
     // Concurrent-commit contention surfaces as SQLITE_BUSY / SQLITE_LOCKED
     // after the 250 ms busy timeout; that is `QueryBusy`, not a storage
     // failure (B-069).
@@ -2332,6 +2332,7 @@ mod canonical_runtime_owner_snapshot_tests {
         NodeFact::Started(StartedFact {
             parent: None,
             root: Some(TreeRootFact {
+                definition_resolution: Default::default(),
                 workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
                 created_from: ExecutionOrigin::Cli,

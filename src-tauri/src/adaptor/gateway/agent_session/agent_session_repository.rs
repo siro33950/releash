@@ -4,7 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-use super::session_facts::{locate_session, SessionLocation};
+use super::session_facts::{
+    locate_session, read_session_context, read_session_records, SessionLocation,
+};
 use crate::adaptor::gateway::local_event_store::writer::PreparedNodeEvent;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log;
@@ -16,7 +18,7 @@ use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
 };
 use crate::domain::agent_session::services::{
-    derive_agent_session_fields, DerivedAgentSessionFields,
+    derive_session_fields, DerivedAgentSessionFields, SessionExecutionContext,
 };
 use crate::domain::agent_session::{
     AgentSessionDisplayName, AgentSessionHistoryGatewayError, AgentSessionOwnershipQuery,
@@ -168,6 +170,18 @@ impl LocalAgentSessionRepository {
             });
         }
         Ok(rows)
+    }
+
+    fn derive_session(
+        &self,
+        session_id: &str,
+        location: &SessionLocation,
+        records: &[NodeFactRecord],
+    ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
+        let backend = fact_log::FactLogReadBackend::Live(self.store.clone());
+        let context =
+            read_session_context(&backend, location).map_err(AgentSessionRepositoryError::from)?;
+        derive_session(session_id, location, &context, records)
     }
 
     /// archive からの復帰は restore_requested として記録する（LifecycleChanged
@@ -426,9 +440,12 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 if session.id() != expected_id {
                     return Err(AgentSessionRepositoryError::Conflict);
                 }
-                let records = fact_log::read_tree_records(&self.store, &location.tree_id)
-                    .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-                let existing = derive_session(session.id(), &location, &records)?;
+                let records = read_session_records(
+                    &fact_log::FactLogReadBackend::Live(self.store.clone()),
+                    &location,
+                )
+                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                let existing = self.derive_session(session.id(), &location, &records)?;
                 if existing.session().workspace() != session.workspace()
                     || existing.session().worktree_path() != session.worktree_path()
                     || existing.session().provider() != session.provider()
@@ -469,9 +486,12 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
                 > 0;
             if persisted {
                 let existing = if let Some(location) = self.locate(session.id())? {
-                    let records = fact_log::read_tree_records(&self.store, &location.tree_id)
-                        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-                    let existing = derive_session(session.id(), &location, &records)?;
+                    let records = read_session_records(
+                        &fact_log::FactLogReadBackend::Live(self.store.clone()),
+                        &location,
+                    )
+                    .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+                    let existing = self.derive_session(session.id(), &location, &records)?;
                     if existing.session().workspace() != session.workspace()
                         || existing.session().worktree_path() != session.worktree_path()
                         || existing.session().provider() != session.provider()
@@ -540,9 +560,13 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         let Some(location) = self.locate(session_id)? else {
             return Ok(None);
         };
-        let records = fact_log::read_tree_records(&self.store, &location.tree_id)
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-        derive_session(session_id, &location, &records).map(Some)
+        let records = read_session_records(
+            &fact_log::FactLogReadBackend::Live(self.store.clone()),
+            &location,
+        )
+        .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+        self.derive_session(session_id, &location, &records)
+            .map(Some)
     }
 
     async fn find_for_activity(
@@ -559,17 +583,15 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             return Ok(None);
         };
         let location = SessionLocation::from_meta(&attachment.meta);
-        let root = fact_log::read_tree_root_from(&backend, &location.tree_id)
-            .map_err(|_| AgentSessionRepositoryError::Unavailable)?
-            .ok_or(AgentSessionRepositoryError::Corrupt)?;
         let activity =
             fact_log::read_latest_activity_record_for_node(&backend, &location.node_execution_id)
                 .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
-        let mut records = vec![root, attachment];
+        let mut records = vec![attachment];
         records.extend(activity);
         records.sort_by_key(|record| record.seq);
         records.dedup_by_key(|record| record.seq);
-        derive_session(session_id, &location, &records).map(Some)
+        self.derive_session(session_id, &location, &records)
+            .map(Some)
     }
 
     async fn list_open_for_provider_session_title(
@@ -584,10 +606,6 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
         let mut sessions = Vec::new();
         for (session_id, candidate) in candidates {
             let mut records = candidate.records;
-            let root = fact_log::read_tree_root_from(&backend, &candidate.location.tree_id)
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?
-                .ok_or(AgentSessionRepositoryError::Corrupt)?;
-            records.push(root);
             if let Some(title) = fact_log::read_latest_record_for_node_with_event_types(
                 &backend,
                 &candidate.location.node_execution_id,
@@ -599,7 +617,7 @@ impl AgentSessionRepository for LocalAgentSessionRepository {
             }
             records.sort_by_key(|record| record.seq);
             records.dedup_by_key(|record| record.seq);
-            sessions.push(derive_session(&session_id, &candidate.location, &records)?);
+            sessions.push(self.derive_session(&session_id, &candidate.location, &records)?);
         }
         Ok(sessions)
     }
@@ -786,10 +804,13 @@ impl ProviderSessionStartTransaction for LocalAgentSessionRepository {
                 }
             )
         }) {
-            let records = fact_log::read_tree_records(&self.store, &location.tree_id)
-                .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
+            let records = read_session_records(
+                &fact_log::FactLogReadBackend::Live(self.store.clone()),
+                &location,
+            )
+            .map_err(|_| AgentSessionRepositoryError::Unavailable)?;
             Some(
-                derive_session(session.id(), &location, &records)?
+                self.derive_session(session.id(), &location, &records)?
                     .session()
                     .lifecycle(),
             )
@@ -932,6 +953,7 @@ impl LocalAgentSessionRepository {
 fn derive_session(
     session_id: &str,
     location: &SessionLocation,
+    context: &SessionExecutionContext,
     records: &[NodeFactRecord],
 ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
     let DerivedAgentSessionFields {
@@ -941,11 +963,11 @@ fn derive_session(
         worktree_path,
         lifecycle,
         session_facts: view,
-    } = derive_agent_session_fields(
+    } = derive_session_fields(
         records,
+        context,
         &location.tree_id,
         &location.node_execution_id,
-        &location.node_name,
         session_id,
     )
     .map_err(|_| AgentSessionRepositoryError::Corrupt)?;

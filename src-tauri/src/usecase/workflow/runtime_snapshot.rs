@@ -92,12 +92,16 @@ fn runtime_node_execution_to_domain(
     let artifact_node_name = execution.node_name.clone();
     let artifact_produced_at = execution.completed_at.unwrap_or(execution.started_at);
     crate::domain::workflow::NodeExecution {
+        recovery_reason: execution.recovery_reason.clone(),
         id: execution.id,
         execution_id: execution.execution_id,
         node_name: execution.node_name,
         kind: execution.kind,
         attempt: execution.attempt,
         status: match execution.status {
+            RuntimeNodeExecutionStatus::Unresolved => {
+                crate::domain::workflow::NodeExecutionStatus::Unresolved
+            }
             RuntimeNodeExecutionStatus::Running => {
                 crate::domain::workflow::NodeExecutionStatus::Running
             }

@@ -86,6 +86,7 @@ pub(crate) fn seed_workflow_session_facts(
         &NodeFact::Started(StartedFact {
             parent: None,
             root: Some(TreeRootFact {
+                definition_resolution: Default::default(),
                 workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(
                     seed.worktree_path,
                 )
@@ -221,4 +222,78 @@ pub(crate) fn append_canonical_events(
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
     super::fact_log::append_facts_for_events(store, events)
+}
+
+#[cfg(test)]
+pub(crate) fn seed_unavailable_definition(
+    store: &Arc<LocalEventStore>,
+    tree_id: &str,
+    workspace: &str,
+    unavailable: &str,
+) {
+    use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
+    use crate::domain::workflow::*;
+    let mut definition = serde_json::json!({
+        "name": "stored workflow", "description": "", "entry": "main",
+        "nodes": {
+            "main": { "sequence": { "children": ["command", "session"] } },
+            "command": { "command": "printf kept" },
+            "session": { "session": { "provider": "codex" } },
+            "unused": { "command": "true" }
+        }
+    });
+    if unavailable == "main" {
+        definition["nodes"]["main"]["sequence"]["output"] = serde_json::json!("session");
+    } else {
+        definition["nodes"][unavailable]["unrecognized_field"] = serde_json::json!(true);
+    }
+    let root = serde_json::json!({"root": {
+        "workspaceIdentity": workspace, "worktreePath": workspace,
+        "createdFrom": "desktop_ui", "request": "work", "launchedAs": "workflow",
+        "definition": definition
+    }});
+    store
+        .append_node_event_blocking(
+            NewNodeEventRow {
+                tree_id: tree_id.into(),
+                node_execution_id: tree_id.into(),
+                parent_id: None,
+                node_name: "main".into(),
+                kind: "sequence".into(),
+                attempt: 1,
+                event_type: "started".into(),
+                session_id: None,
+                detail: root.to_string(),
+            },
+            Some(1),
+        )
+        .unwrap();
+    let command = NodeFactMeta {
+        tree_id: tree_id.into(),
+        node_execution_id: format!("{tree_id}-command"),
+        parent_id: Some(tree_id.into()),
+        node_name: "command".into(),
+        kind: NodeKindName::Command,
+        attempt: 1,
+    };
+    let session = NodeFactMeta {
+        node_execution_id: format!("{tree_id}-session"),
+        node_name: "session".into(),
+        kind: NodeKindName::Session,
+        ..command.clone()
+    };
+    let started = NodeFact::Started(StartedFact {
+        root: None,
+        parent: Some(ExecutionParentRef::sequence_child(tree_id)),
+    });
+    for (index, (meta, fact)) in [
+        (command.clone(), started.clone()),
+        (command.clone(), NodeFact::CommandSpawned(CommandSpawnedFact { display_command: "printf kept".into() })),
+        (command.clone(), NodeFact::ArtifactProduced(ArtifactProducedFact { contract: None, value: serde_json::json!({"stdout":"kept", "stderr":"", "exit_code":0, "duration":10}), request_id: None })),
+        (command, NodeFact::ProcessExited(ProcessExitedFact { exit_code: Some(0), result_summary: None, failure_reason: None, failure_kind: None })),
+        (session.clone(), started),
+        (session, NodeFact::SessionAttached(SessionAttachedFact { session_id: format!("{tree_id}-session"), provider_session_id: Some("provider-session".into()), transcript_ref: Some("/transcripts/session.jsonl".into()), initial_instruction_admitted: true })),
+    ].iter().enumerate() {
+        super::fact_log::append_single_fact(store, meta, fact, index as i64 + 2).unwrap();
+    }
 }

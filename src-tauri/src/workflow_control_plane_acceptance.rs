@@ -67,6 +67,7 @@ pub enum AcceptanceWorkflowExecutionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceNodeExecutionStatus {
+    Unresolved,
     Running,
     Paused,
     WaitingApproval,
@@ -179,6 +180,7 @@ struct NodeExecutionFailureResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum NodeExecutionStatusResponse {
+    Unresolved,
     Running,
     Paused,
     WaitingApproval,
@@ -1183,6 +1185,9 @@ fn acceptance_execution_from_runtime(
                     },
                     attempt: node.attempt,
                     status: match node.status {
+                        NodeExecutionStatus::Unresolved => {
+                            AcceptanceNodeExecutionStatus::Unresolved
+                        }
                         NodeExecutionStatus::Running => AcceptanceNodeExecutionStatus::Running,
                         NodeExecutionStatus::Paused => AcceptanceNodeExecutionStatus::Paused,
                         NodeExecutionStatus::WaitingApproval => {
@@ -1250,6 +1255,9 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
             },
             attempt: value.attempt,
             status: match value.status {
+                NodeExecutionStatusResponse::Unresolved => {
+                    AcceptanceNodeExecutionStatus::Unresolved
+                }
                 NodeExecutionStatusResponse::Running => AcceptanceNodeExecutionStatus::Running,
                 NodeExecutionStatusResponse::Paused => AcceptanceNodeExecutionStatus::Paused,
                 NodeExecutionStatusResponse::WaitingApproval => {
@@ -1270,3 +1278,7 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "workflow_control_plane_acceptance_test.rs"]
+mod workflow_control_plane_acceptance_tests;

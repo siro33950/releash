@@ -53,9 +53,8 @@ impl NodeEventIsolatedWorktreeLedgerRepository {
     }
 
     fn load_tree_snapshot(&self, tree_id: &str) -> Result<IsolatedWorktreeLedgerSnapshot, String> {
-        Ok(fact_log::fold_tree_from(&self.backend, tree_id)?
-            .map(|folded| folded.isolated_worktrees)
-            .unwrap_or_default())
+        let records = fact_log::read_tree_records_from(&self.backend, tree_id)?;
+        IsolatedWorktreeLedgerSnapshot::from_records(&records)
     }
 
     fn unavailable(reason: impl Into<String>) -> WorkflowError {

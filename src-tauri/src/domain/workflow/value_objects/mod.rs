@@ -1,5 +1,6 @@
 mod contract;
 mod definition;
+mod definition_resolution;
 mod execution;
 mod execution_metadata;
 mod facet;
@@ -22,6 +23,7 @@ pub use definition::{
     SessionSpec, WorkflowDefinition, WorkflowSourceFormat, WorkflowSummary, MAIN_ENTRY_NODE_NAME,
     MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };
+pub use definition_resolution::DefinitionResolution;
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,
     Fanout, WorkflowExecution,

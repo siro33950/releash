@@ -37,6 +37,7 @@ pub(crate) mod span_map;
 pub(crate) mod state;
 mod state_notification_gateway;
 pub(crate) mod storage;
+pub(crate) mod stored_definition;
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
 mod worktree_gateway;

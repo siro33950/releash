@@ -77,6 +77,7 @@ pub struct FanoutSlot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeExecutionStatus {
+    Unresolved,
     Running,
     Paused,
     WaitingApproval,
@@ -89,6 +90,7 @@ impl NodeExecutionStatus {
     #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Unresolved => "unresolved",
             Self::Running => "running",
             Self::Paused => "paused",
             Self::WaitingApproval => "waiting_approval",
@@ -99,7 +101,10 @@ impl NodeExecutionStatus {
     }
 
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::Paused | Self::WaitingApproval)
+        matches!(
+            self,
+            Self::Running | Self::Paused | Self::WaitingApproval | Self::Unresolved
+        )
     }
 }
 
@@ -112,6 +117,7 @@ pub struct NodeExecutionFailure {
 /// event replay から構築する node 実行 1 回分の read model。
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeExecution {
+    pub recovery_reason: Option<String>,
     pub id: String,
     pub execution_id: String,
     pub node_name: String,
@@ -138,6 +144,9 @@ impl NodeExecution {
     }
 
     pub fn can_retry(&self) -> bool {
+        if self.recovery_reason.is_some() {
+            return false;
+        }
         self.status == NodeExecutionStatus::Failed
             || (matches!(
                 self.status,
@@ -161,6 +170,7 @@ mod tests {
     #[test]
     fn retry_admission_belongs_to_the_node_execution() {
         let mut node = NodeExecution {
+            recovery_reason: None,
             id: "node-1".to_string(),
             execution_id: "execution-1".to_string(),
             node_name: "review".to_string(),
