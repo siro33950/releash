@@ -2332,6 +2332,7 @@ mod canonical_runtime_owner_snapshot_tests {
         NodeFact::Started(StartedFact {
             parent: None,
             root: Some(TreeRootFact {
+                definition_resolution: Default::default(),
                 workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
                 created_from: ExecutionOrigin::Cli,

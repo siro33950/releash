@@ -340,6 +340,7 @@ mod repository_query_service_tests {
                     .nodes
                     .iter()
                     .map(|(id, status)| NodeExecution {
+                        recovery_reason: None,
                         id: (*id).to_string(),
                         execution_id: execution_id.to_string(),
                         node_name: "work".to_string(),

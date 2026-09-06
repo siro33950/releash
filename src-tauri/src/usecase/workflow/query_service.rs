@@ -530,6 +530,7 @@ mod tests {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
+                recovery_reason: None,
                 id: "ne-review-1".to_string(),
                 execution_id: execution_id.to_string(),
                 node_name: "review".to_string(),

@@ -20,6 +20,7 @@ export type CenterSelection =
 	  };
 
 export type WorkspaceNodeStatus =
+	| "unresolved"
 	| "running"
 	| "paused"
 	| "failed"

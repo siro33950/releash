@@ -161,6 +161,7 @@ pub fn fold_execution_tree(
         }
     }
 
+    aggregate.resolve_recovery_dependencies();
     Ok(Some(FoldedTree {
         aggregate,
         root,
@@ -226,6 +227,7 @@ fn read_model_node(
     node: &RuntimeNodeExecution,
 ) -> NodeExecution {
     let status = match node.status {
+        RuntimeNodeExecutionStatus::Unresolved => NodeExecutionStatus::Unresolved,
         RuntimeNodeExecutionStatus::Running => NodeExecutionStatus::Running,
         RuntimeNodeExecutionStatus::Paused => NodeExecutionStatus::Paused,
         RuntimeNodeExecutionStatus::WaitingApproval => NodeExecutionStatus::WaitingApproval,
@@ -239,6 +241,7 @@ fn read_model_node(
         .node_by_name(&node.node_name)
         .and_then(|definition| definition.artifact.clone());
     NodeExecution {
+        recovery_reason: node.recovery_reason.clone(),
         id: node.id.clone(),
         execution_id: node.execution_id.clone(),
         node_name: node.node_name.clone(),
@@ -271,7 +274,7 @@ fn restore_aggregate(
     root: &TreeRootFact,
     started_at: f64,
 ) -> WorkflowExecutionAggregate {
-    WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
+    let mut aggregate = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
         id: tree_id.to_string(),
         workflow: root.definition.clone(),
         workflow_defaults: WorkflowDefaults,
@@ -282,7 +285,9 @@ fn restore_aggregate(
         updated_at: started_at,
         request: (!root.request.is_empty()).then(|| root.request.clone()),
         ..WorkflowExecutionRestore::default()
-    })
+    });
+    aggregate.restore_definition_resolution((*root.definition_resolution).clone());
+    aggregate
 }
 
 fn apply_record(

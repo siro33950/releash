@@ -310,6 +310,7 @@ mod tests {
                     },
                 )]),
                 node_executions: vec![NodeExecution {
+                    recovery_reason: None,
                     id: node_execution_id.to_string(),
                     execution_id: execution_id.to_string(),
                     node_name: "review".to_string(),
@@ -426,6 +427,7 @@ mod tests {
                     parent: Option<ExecutionParentRef>,
                     started_at: f64,
                     completed_at: Option<f64>| NodeExecution {
+            recovery_reason: None,
             id: id.to_string(),
             execution_id: execution_id.to_string(),
             node_name: node_name.to_string(),

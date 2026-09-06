@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use super::session_facts::{locate_session, SessionLocation};
+use super::session_facts::{
+    locate_session, read_session_context, read_session_records, SessionLocation,
+};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
+use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
 use crate::domain::agent_session::aggregates::{
     derive_agent_session_operations, AgentSessionLifecycle, AgentSessionOperations,
 };
-use crate::domain::agent_session::services::derive_agent_session_fields;
+use crate::domain::agent_session::services::{derive_session_fields, SessionExecutionContext};
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact, NodeFactRecord};
 use crate::usecase::agent_session::{
@@ -49,11 +51,14 @@ impl LocalAgentSessionQueryService {
         else {
             return Ok(None);
         };
-        let records = fact_log::read_tree_records_from(backend, &location.tree_id)
+        let context = read_session_context(backend, &location)
+            .map_err(|_| AgentSessionQueryError::Corrupt)?;
+        let records = read_session_records(backend, &location)
             .map_err(|_| AgentSessionQueryError::Unavailable)?;
         Ok(Some(agent_session_item_from_facts(
             agent_session_id,
             &location,
+            &context,
             &records,
         )?))
     }
@@ -87,42 +92,48 @@ pub(crate) fn workspace_session_items(
 ) -> Result<Vec<AgentSessionItemDto>, AgentSessionQueryError> {
     let mut items = Vec::new();
     for tree_id in tree_ids {
-        let Some(root) = fact_log::read_tree_root_from(backend, tree_id)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?
+        let requested = tree_id.clone();
+        let root = backend
+            .run_indexed(move |connection| {
+                crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree(
+                    connection, &requested,
+                )
+                .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
+            })
+            .map_err(|_| AgentSessionQueryError::Unavailable)?;
+        let Some(root) = root else {
+            continue;
+        };
+        let Some(header) =
+            crate::adaptor::gateway::workflow::stored_definition::read_tree_header(&root.detail)
+                .map_err(|_| AgentSessionQueryError::Corrupt)?
         else {
             continue;
         };
-        let is_workspace_session = matches!(
-            &root.fact,
-            NodeFact::Started(started)
-                if started.root.as_ref().is_some_and(|root| {
-                    root.launched_as == ExecutionTreeLaunch::Session
-                        && root.workspace_identity == workspace
-                })
-        );
-        if !is_workspace_session {
+        if header.launched_as != ExecutionTreeLaunch::Session
+            || header.workspace_identity != workspace
+        {
             continue;
         }
-        let records = fact_log::read_tree_records_from(backend, tree_id)
-            .map_err(|_| AgentSessionQueryError::Unavailable)?;
-        let Some(first) = records.first() else {
-            continue;
+        let location = SessionLocation {
+            tree_id: root.tree_id,
+            node_execution_id: root.node_execution_id,
+            parent_id: root.parent_id,
+            node_name: root.node_name,
+            attempt: u32::try_from(root.attempt).map_err(|_| AgentSessionQueryError::Corrupt)?,
         };
+        let records = read_session_records(backend, &location)
+            .map_err(|_| AgentSessionQueryError::Unavailable)?;
         let Some(session_id) = records.iter().find_map(|record| match &record.fact {
-            NodeFact::SessionAttached(attached)
-                if record.meta.node_execution_id == first.meta.node_execution_id =>
-            {
-                Some(attached.session_id.clone())
-            }
+            NodeFact::SessionAttached(attached) => Some(attached.session_id.as_str()),
             _ => None,
         }) else {
             continue;
         };
-        let location = SessionLocation::from_meta(&first.meta);
+        let context = read_session_context(backend, &location)
+            .map_err(|_| AgentSessionQueryError::Corrupt)?;
         items.push(agent_session_item_from_facts(
-            &session_id,
-            &location,
-            &records,
+            session_id, &location, &context, &records,
         )?);
     }
     items.sort_by(|left, right| left.id.cmp(&right.id));
@@ -132,13 +143,14 @@ pub(crate) fn workspace_session_items(
 fn agent_session_item_from_facts(
     session_id: &str,
     location: &SessionLocation,
+    context: &SessionExecutionContext,
     records: &[NodeFactRecord],
 ) -> Result<AgentSessionItemDto, AgentSessionQueryError> {
-    let derived = derive_agent_session_fields(
+    let derived = derive_session_fields(
         records,
+        context,
         &location.tree_id,
         &location.node_execution_id,
-        &location.node_name,
         session_id,
     )
     .map_err(|_| AgentSessionQueryError::Corrupt)?;

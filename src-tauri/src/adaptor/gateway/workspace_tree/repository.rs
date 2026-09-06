@@ -102,6 +102,7 @@ impl SqliteWorkspaceTreeRepository {
             execution_id: &folded.aggregate.id,
             workflow_name: &folded.aggregate.workflow.name,
             workspace_identity: workspace,
+            recorded_dynamic_fanout_names: &folded.root.definition_resolution.dynamic_fanout_names,
             workflow_definition: &folded.aggregate.workflow,
             node_executions: &folded.aggregate.node_executions,
             retry_predecessors: &folded.aggregate.retry_predecessors,

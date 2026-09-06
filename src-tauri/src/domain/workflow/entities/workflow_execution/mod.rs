@@ -8,6 +8,7 @@
 //! 再帰木を成し、合成子（sequence / fanout）の実行インスタンスごとの進行
 //! カーソル・子カウント・子 Artifact は `ScopeRuntime` が所有する。
 
+mod recovery;
 pub mod scope;
 
 use std::collections::HashMap;
@@ -131,6 +132,7 @@ pub struct NodeStallObservation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeNodeExecutionStatus {
+    Unresolved,
     Running,
     Paused,
     WaitingApproval,
@@ -141,7 +143,10 @@ pub enum RuntimeNodeExecutionStatus {
 
 impl RuntimeNodeExecutionStatus {
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Running | Self::Paused | Self::WaitingApproval)
+        matches!(
+            self,
+            Self::Running | Self::Paused | Self::WaitingApproval | Self::Unresolved
+        )
     }
 }
 
@@ -187,6 +192,7 @@ pub struct ApprovalAttemptTarget {
 /// One node attempt held inside the execution aggregate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNodeExecution {
+    pub recovery_reason: Option<String>,
     pub id: String,
     pub execution_id: String,
     pub node_name: String,
@@ -215,6 +221,9 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_retry(&self) -> bool {
+        if self.recovery_reason.is_some() {
+            return false;
+        }
         self.status == RuntimeNodeExecutionStatus::Failed
             || (matches!(
                 self.status,
@@ -223,6 +232,9 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_restart_paused_command(&self) -> bool {
+        if self.recovery_reason.is_some() {
+            return false;
+        }
         self.kind == NodeKindName::Command && self.status == RuntimeNodeExecutionStatus::Paused
     }
 
@@ -231,6 +243,9 @@ impl RuntimeNodeExecution {
     }
 
     pub fn resume_previous_state(&self) -> Option<RuntimeNodeResumePreviousState> {
+        if self.recovery_reason.is_some() {
+            return None;
+        }
         match (self.kind, self.status, self.failure.as_ref()) {
             (_, RuntimeNodeExecutionStatus::Paused, _) => {
                 Some(RuntimeNodeResumePreviousState::Paused)
@@ -684,6 +699,7 @@ pub struct WorkflowExecution {
     interruption_reason: Option<ExecutionInterruptionReason>,
     runtime: WorkflowExecutionView,
     pending_restart: Option<PendingRestart>,
+    definition_resolution: crate::domain::workflow::DefinitionResolution,
 }
 
 /// Read-only runtime view exposed by the aggregate.
@@ -763,6 +779,7 @@ impl WorkflowExecution {
             state: restore.lifecycle.state,
             interruption_reason: restore.lifecycle.interruption_reason,
             pending_restart: None,
+            definition_resolution: Default::default(),
             runtime: WorkflowExecutionView {
                 id: restore.id,
                 workflow: restore.workflow,
@@ -895,7 +912,16 @@ impl WorkflowExecution {
         timestamp: f64,
         events: &mut Vec<WorkflowEvent>,
         leaves: &mut Vec<LeafStart>,
-    ) -> Result<String, crate::domain::workflow::WorkflowError> {
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if let Some(reason) = self.start_unavailable_reason(parent_scope_id, node_name, None) {
+            if let Some(scope_id) = parent_scope_id {
+                self.record_recovery_block(scope_id, reason);
+                return Ok(());
+            }
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                reason,
+            ));
+        }
         let node = self
             .runtime
             .workflow
@@ -989,7 +1015,7 @@ impl WorkflowExecution {
                 self.expand_fanout_scope(&id, new_id, timestamp, events, leaves)?;
             }
         }
-        Ok(id)
+        Ok(())
     }
 
     /// fanout スコープを items × children で展開し、各子を開始する。
@@ -1084,6 +1110,12 @@ impl WorkflowExecution {
             .collect();
         for (child_name, item, item_index, child_index) in coordinates {
             if occupied.contains(&(item_index, child_index)) {
+                continue;
+            }
+            if let Some(reason) =
+                self.start_unavailable_reason(Some(scope_id), &child_name, item.as_ref())
+            {
+                self.record_recovery_block(scope_id, reason);
                 continue;
             }
             self.start_fanout_child_instance(
@@ -1223,6 +1255,7 @@ impl WorkflowExecution {
         events: &mut Vec<WorkflowEvent>,
     ) {
         self.runtime.node_executions.push(RuntimeNodeExecution {
+            recovery_reason: None,
             id: node_execution_id.clone(),
             execution_id: self.runtime.id.clone(),
             node_name: node.name.clone(),
@@ -1324,14 +1357,20 @@ impl WorkflowExecution {
         fanout_scope: &ScopeRuntime,
         spec: &crate::domain::workflow::value_objects::FanoutSpec,
     ) -> Result<Option<Vec<serde_json::Value>>, crate::domain::workflow::WorkflowError> {
+        self.resolve_fanout_items_for_parent(fanout_scope.parent_scope_id.as_deref(), spec)
+    }
+
+    fn resolve_fanout_items_for_parent(
+        &self,
+        parent_scope_id: Option<&str>,
+        spec: &crate::domain::workflow::value_objects::FanoutSpec,
+    ) -> Result<Option<Vec<serde_json::Value>>, crate::domain::workflow::WorkflowError> {
         use crate::domain::workflow::value_objects::ItemsSource;
         match &spec.items {
             None => Ok(None),
             Some(ItemsSource::Literal(items)) => Ok(Some(items.clone())),
             Some(ItemsSource::ArtifactField { node, field_path }) => {
-                let value = fanout_scope
-                    .parent_scope_id
-                    .as_deref()
+                let value = parent_scope_id
                     .and_then(|id| self.scope(id))
                     .and_then(ScopeRuntime::sequence)
                     .and_then(|sequence| sequence.artifacts.get(node))
@@ -1364,6 +1403,12 @@ impl WorkflowExecution {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if self
+            .node_execution(scope_id)
+            .is_some_and(|node| node.recovery_reason.is_some())
+        {
+            return Ok(());
+        }
         let Some(scope) = self.scope(scope_id) else {
             // スコープが既に確定している（例: 失敗停止後の遅延完了）。前進しない。
             return Ok(());
@@ -1388,13 +1433,22 @@ impl WorkflowExecution {
                     .get(completed_child)
                     .and_then(|output| output.artifact.clone());
                 let counts = sequence.child_counts.clone();
-                match workflow_routing::route_in_scope(
+                let route = workflow_routing::route_in_scope(
                     &workflow,
                     spec,
                     completed_child,
                     artifact.as_ref(),
                     &counts,
-                )? {
+                );
+                let route = match route {
+                    Ok(route) => route,
+                    Err(error) if self.has_unavailable_definitions() => {
+                        self.record_recovery_block(scope_id, error.to_string());
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
+                match route {
                     workflow_routing::RouteDecision::TransitionTo(next) => match effects {
                         AdvanceEffects::Live {
                             new_id,
@@ -1443,6 +1497,16 @@ impl WorkflowExecution {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if self
+            .node_execution(scope_id)
+            .is_some_and(|node| node.recovery_reason.is_some())
+        {
+            return Ok(());
+        }
+        if let Some(reason) = self.unavailable_child_artifact(scope_id) {
+            self.record_recovery_block(scope_id, reason);
+            return Ok(());
+        }
         let scope = self.scope(scope_id).cloned().ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
                 "scope '{scope_id}' is not active"
@@ -1459,6 +1523,14 @@ impl WorkflowExecution {
                     scope.node_name
                 ))
             })?;
+        if let ScopeRuntimeKind::Fanout(fanout) = &scope.kind {
+            if let Some(spec) = node.fanout() {
+                let expected = fanout.items.as_ref().map_or(1, Vec::len) * spec.children.len();
+                if fanout.children.len() < expected {
+                    return Ok(());
+                }
+            }
+        }
         if node.requires_approval_completion() && !approved {
             if self.mark_node_waiting_approval(scope_id, timestamp) == TransitionOutcome::Applied {
                 effects.emit(WorkflowEvent::ApprovalRequested {
@@ -1647,6 +1719,12 @@ impl WorkflowExecution {
         effects: &mut AdvanceEffects<'_>,
         timestamp: f64,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        if self
+            .node_execution(node_execution_id)
+            .is_some_and(|node| node.recovery_reason.is_some())
+        {
+            return Ok(());
+        }
         let node = self
             .node_execution(node_execution_id)
             .cloned()
@@ -1843,6 +1921,13 @@ impl WorkflowExecution {
                     .find(|slot| slot.node_execution_id == node_execution_id)
             })
             .and_then(|slot| slot.item.clone());
+        if let Some(reason) =
+            self.start_unavailable_reason(parent_scope_id.as_deref(), &node.name, item.as_ref())
+        {
+            return Err(crate::domain::workflow::WorkflowError::invalid_state(
+                reason,
+            ));
+        }
         let bindings =
             self.resolve_child_bindings(parent_scope_id.as_deref(), &node, item.as_ref());
         Ok(LeafStart {
@@ -1876,6 +1961,7 @@ impl WorkflowExecution {
         if !admission(&target) {
             return None;
         }
+        self.leaf_start_for(node_execution_id).ok()?;
         if self.request_node_restart_with(node_execution_id, timestamp, admission)
             != TransitionOutcome::Applied
         {
@@ -2112,6 +2198,7 @@ impl WorkflowExecution {
             return Ok(id);
         }
         self.runtime.node_executions.push(RuntimeNodeExecution {
+            recovery_reason: None,
             id: id.clone(),
             execution_id: self.runtime.id.clone(),
             node_name,
@@ -2707,7 +2794,9 @@ impl WorkflowExecution {
             RuntimeNodeExecutionStatus::WaitingApproval | RuntimeNodeExecutionStatus::Succeeded => {
                 return NodeCompletionHandshakeDecision::AlreadySettled;
             }
-            RuntimeNodeExecutionStatus::Failed | RuntimeNodeExecutionStatus::Aborted => {
+            RuntimeNodeExecutionStatus::Failed
+            | RuntimeNodeExecutionStatus::Aborted
+            | RuntimeNodeExecutionStatus::Unresolved => {
                 return NodeCompletionHandshakeDecision::NotApplicable;
             }
             RuntimeNodeExecutionStatus::Running | RuntimeNodeExecutionStatus::Paused => {}
@@ -2992,7 +3081,7 @@ impl WorkflowExecution {
         let Some(target) = self.node_execution(node_execution_id).cloned() else {
             return Ok(None);
         };
-        if target.status != RuntimeNodeExecutionStatus::Failed {
+        if target.recovery_reason.is_some() || target.status != RuntimeNodeExecutionStatus::Failed {
             return Ok(None);
         }
         let Some(treatment) = self.on_failure_treatment_for(&target) else {
@@ -3162,7 +3251,9 @@ impl WorkflowExecution {
         let Some(target) = self.node_execution(node_execution_id).cloned() else {
             return Ok(());
         };
-        if self.on_failure_treatment_for(&target) == Some(OnFailure::Ignore) {
+        if target.recovery_reason.is_none()
+            && self.on_failure_treatment_for(&target) == Some(OnFailure::Ignore)
+        {
             if let Some(parent_scope_id) = target
                 .parent
                 .as_ref()
@@ -3229,13 +3320,27 @@ impl WorkflowExecution {
             if scope_node.status != RuntimeNodeExecutionStatus::Running {
                 continue;
             }
-            let has_active_child = self.runtime.node_executions.iter().any(|node| {
-                node.parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.parent_id == *scope_id)
-                    && node.status.is_active()
-            });
-            if has_active_child {
+            let has_active_child = match &scope.kind {
+                ScopeRuntimeKind::Sequence(sequence) => self
+                    .runtime
+                    .node_executions
+                    .iter()
+                    .filter(|node| {
+                        node.parent
+                            .as_ref()
+                            .is_some_and(|parent| parent.parent_id == *scope_id)
+                            && sequence.current_child.as_deref() == Some(node.node_name.as_str())
+                    })
+                    .max_by_key(|node| node.attempt)
+                    .is_some_and(|node| node.status.is_active()),
+                ScopeRuntimeKind::Fanout(_) => self.runtime.node_executions.iter().any(|node| {
+                    node.parent
+                        .as_ref()
+                        .is_some_and(|parent| parent.parent_id == *scope_id)
+                        && node.status.is_active()
+                }),
+            };
+            if has_active_child && matches!(scope.kind, ScopeRuntimeKind::Sequence(_)) {
                 continue;
             }
             match &scope.kind {
@@ -3428,12 +3533,12 @@ impl WorkflowExecution {
         parent: Option<ExecutionParentRef>,
         timestamp: f64,
     ) -> Result<(), String> {
-        let node = self
-            .runtime
-            .workflow
-            .node_by_name(node_name)
-            .cloned()
-            .ok_or_else(|| format!("node '{node_name}' is undefined"))?;
+        let node = self.runtime.workflow.node_by_name(node_name).cloned();
+        let definition_error = self.definition_error(node_name).or_else(|| {
+            node.as_ref()
+                .filter(|node| node.kind_name() != kind)
+                .map(|_| format!("Node definition '{node_name}' does not match the recorded kind"))
+        });
         // 直前の NodeRetryRequested に対応する restart の start か。
         let retry_predecessor = self.pending_restart.take().and_then(|pending| {
             (pending.node_name == node_name
@@ -3467,7 +3572,7 @@ impl WorkflowExecution {
                     Some((execution.id.clone(), parent.fanout_slot?))
                 })
                 .collect();
-            let contract = node.artifact.clone();
+            let contract = node.as_ref().and_then(|node| node.artifact.clone());
             let scope = self
                 .scope_mut(&scope_id)
                 .ok_or_else(|| format!("parent scope '{scope_id}' is not active"))?;
@@ -3541,6 +3646,9 @@ impl WorkflowExecution {
                 .retry_predecessors
                 .insert(node_execution_id.to_string(), predecessor);
         }
+        if let Some(reason) = definition_error {
+            self.record_recovery_block(node_execution_id, reason);
+        }
         // 合成子ならスコープを生やす。
         if kind.is_composite_kind() {
             let parent_scope_id = parent.as_ref().map(|parent| parent.parent_id.clone());
@@ -3556,8 +3664,16 @@ impl WorkflowExecution {
                         .and_then(|fanout| fanout.items.as_ref())
                         .and_then(|items| items.get(index).cloned())
                 });
-            let parameters =
-                self.resolve_child_bindings(parent_scope_id.as_deref(), &node, slot_item.as_ref());
+            let parameters = node
+                .as_ref()
+                .map(|node| {
+                    self.resolve_child_bindings(
+                        parent_scope_id.as_deref(),
+                        node,
+                        slot_item.as_ref(),
+                    )
+                })
+                .unwrap_or_default();
             let scope_kind = match kind {
                 NodeKindName::Sequence => {
                     ScopeRuntimeKind::Sequence(SequenceScopeRuntime::default())
@@ -3572,7 +3688,11 @@ impl WorkflowExecution {
                 parameters,
                 kind: scope_kind,
             });
-            if kind == NodeKindName::Fanout {
+            if kind == NodeKindName::Fanout
+                && self
+                    .node_execution(node_execution_id)
+                    .is_some_and(|node| node.recovery_reason.is_none())
+            {
                 // items を開始時点のスコープ状態から再解決して保持する
                 // （子 slot の item 復元に使う）。
                 let items = {
@@ -3580,10 +3700,18 @@ impl WorkflowExecution {
                         .scope(node_execution_id)
                         .expect("the fanout scope was just pushed");
                     let spec = node
-                        .fanout()
+                        .as_ref()
+                        .and_then(|node| node.fanout())
                         .ok_or_else(|| format!("node '{node_name}' is not a fanout"))?;
                     self.resolve_fanout_items_in_scope(scope, spec)
-                        .map_err(|error| error.to_string())?
+                };
+                let items = match items {
+                    Ok(items) => items,
+                    Err(error) if self.has_unavailable_definitions() => {
+                        self.record_recovery_block(node_execution_id, error.to_string());
+                        None
+                    }
+                    Err(error) => return Err(error.to_string()),
                 };
                 if let Some(fanout) = self
                     .scope_mut(node_execution_id)

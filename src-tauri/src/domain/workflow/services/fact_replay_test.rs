@@ -107,6 +107,7 @@ fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefin
 
 fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
     TreeRootFact {
+        definition_resolution: Default::default(),
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Cli,
@@ -1896,3 +1897,6 @@ mod input_validation_tests {
         assert!(fold_execution_tree(TREE, &log.records).is_err());
     }
 }
+
+#[path = "fact_replay_recovery_test.rs"]
+mod recovery_tests;

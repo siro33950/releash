@@ -2111,6 +2111,7 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
     let workflow_root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
         root: Some(TreeRootFact {
+            definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::DesktopUi,
@@ -2153,6 +2154,7 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
     let root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
         root: Some(TreeRootFact {
+            definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::DesktopUi,
@@ -2205,4 +2207,49 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
 
     let records = fact_log::read_tree_records(&store, "workflow-attempt").unwrap();
     assert_eq!(records.last().unwrap().meta.attempt, 3);
+}
+
+#[tokio::test]
+async fn test_agent_session読取_未対応node定義があってもqueryと操作用repositoryを利用できる() {
+    // Given
+    for unavailable in ["main", "session", "command", "unused"] {
+        let directory = TempDir::new().unwrap();
+        let store = open_store(&directory);
+        crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
+            &store,
+            "tree",
+            "/repo",
+            unavailable,
+        );
+        let repository = new_repository(&store);
+        let query = LocalAgentSessionQueryService::new(store.clone());
+        let read_store =
+            crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+                directory.path(),
+            )
+            .unwrap();
+        let read_query = LocalAgentSessionQueryService::new_read_only(read_store);
+
+        // When
+        let session = repository.find("tree-session").await.unwrap().unwrap();
+        let activity = repository
+            .find_for_activity("tree-session")
+            .await
+            .unwrap()
+            .unwrap();
+        let item = query.get("tree-session").await.unwrap().unwrap();
+        let read_item = read_query.get("tree-session").await.unwrap().unwrap();
+        let candidates = repository
+            .list_open_for_provider_session_title()
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(session.session().worktree_path(), "/repo");
+        assert_eq!(session.session(), activity.session());
+        assert_eq!(session.session().lifecycle(), AgentSessionLifecycle::Open);
+        assert_eq!(item, read_item);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session(), session.session());
+    }
 }

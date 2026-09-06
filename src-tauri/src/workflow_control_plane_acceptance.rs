@@ -67,6 +67,7 @@ pub enum AcceptanceWorkflowExecutionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceNodeExecutionStatus {
+    Unresolved,
     Running,
     Paused,
     WaitingApproval,
@@ -1183,6 +1184,9 @@ fn acceptance_execution_from_runtime(
                     },
                     attempt: node.attempt,
                     status: match node.status {
+                        NodeExecutionStatus::Unresolved => {
+                            AcceptanceNodeExecutionStatus::Unresolved
+                        }
                         NodeExecutionStatus::Running => AcceptanceNodeExecutionStatus::Running,
                         NodeExecutionStatus::Paused => AcceptanceNodeExecutionStatus::Paused,
                         NodeExecutionStatus::WaitingApproval => {

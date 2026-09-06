@@ -295,6 +295,7 @@ mod detail_round_trip_tests {
         let fact = NodeFact::Started(StartedFact {
             parent: None,
             root: Some(TreeRootFact {
+                definition_resolution: Default::default(),
                 workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,

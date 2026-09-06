@@ -86,6 +86,7 @@ mod tests {
             artifacts: HashMap::new(),
             node_executions: node_is_waiting_approval
                 .then(|| RuntimeNodeExecution {
+                    recovery_reason: None,
                     id: "node-execution-1".to_string(),
                     execution_id: "execution-1".to_string(),
                     node_name: "approval".to_string(),

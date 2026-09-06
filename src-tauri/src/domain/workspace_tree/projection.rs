@@ -13,6 +13,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub execution_id: &'a str,
     pub workflow_name: &'a str,
     pub workspace_identity: &'a str,
+    pub recorded_dynamic_fanout_names: &'a std::collections::BTreeSet<String>,
     pub workflow_definition: &'a crate::domain::workflow::WorkflowDefinition,
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
@@ -44,6 +45,7 @@ pub fn runtime_snapshot_nodes(
         workflow_name,
         workspace_identity,
         workflow_definition,
+        recorded_dynamic_fanout_names,
         node_executions,
         retry_predecessors,
         accepts_explicit_retry,
@@ -60,7 +62,11 @@ pub fn runtime_snapshot_nodes(
         execution_id: execution_id.to_string(),
         workflow_name: workflow_name.to_string(),
         worktree_path: workspace_identity.to_string(),
-        definition: workflow_definition.clone(),
+        dynamic_fanout_names: workflow_definition
+            .dynamic_fanout_names()
+            .union(recorded_dynamic_fanout_names)
+            .cloned()
+            .collect(),
         timestamp: started_at,
     }];
     facts.push(F::RecoveryFenceProjected {
@@ -132,7 +138,7 @@ pub fn runtime_snapshot_nodes(
             });
         }
         match node.status {
-            S::Running | S::Paused => {}
+            S::Running | S::Paused | S::Unresolved => {}
             S::WaitingApproval => facts.push(F::NodeApprovalRequested {
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
@@ -200,7 +206,12 @@ pub fn runtime_snapshot_nodes(
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
             });
         node.resume_eligible = runtime.can_resume();
-        if runtime.status == S::Paused {
+        if let Some(reason) = &runtime.recovery_reason {
+            node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved;
+            node.error_reason = Some(reason.clone());
+            node.can_approve = false;
+        }
+        if runtime.status == S::Paused && runtime.recovery_reason.is_none() {
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Paused;
         }
     }
@@ -246,6 +257,7 @@ mod tests {
         status: RuntimeNodeExecutionStatus,
     ) -> RuntimeNodeExecution {
         RuntimeNodeExecution {
+            recovery_reason: None,
             id: id.to_string(),
             execution_id: execution_id.to_string(),
             node_name: "test".to_string(),
@@ -289,6 +301,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[runtime],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -463,6 +476,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &definition,
             node_executions: &node_executions,
             retry_predecessors: &std::collections::HashMap::new(),
@@ -523,6 +537,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[session],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -571,6 +586,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &definition,
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -600,6 +616,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &definition,
             node_executions: &[waiting.clone()],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -646,6 +663,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[first, second, latest, loop_visit],
             retry_predecessors: &retry_predecessors,
@@ -724,6 +742,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
@@ -767,6 +786,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -806,6 +826,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -871,6 +892,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
@@ -932,6 +954,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[waiting],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -1000,6 +1023,7 @@ mod tests {
                     execution_id: EXECUTION_ID,
                     workflow_name: "workflow",
                     workspace_identity: "/repo",
+                    recorded_dynamic_fanout_names: &Default::default(),
                     workflow_definition: &definition,
                     node_executions: &runtime_nodes,
                     retry_predecessors: &std::collections::HashMap::new(),
@@ -1061,6 +1085,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -1116,6 +1141,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[failed],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -1162,6 +1188,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &[paused],
             retry_predecessors: &std::collections::HashMap::new(),
@@ -1225,6 +1252,7 @@ mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
             workflow_definition: &WorkflowDefinition::default(),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
@@ -1272,5 +1300,116 @@ mod tests {
                 Some(recovery_reason)
             )
         );
+    }
+    #[test]
+    fn test_runtime_snapshot復旧_未対応nodeがあっても正常なleafの再開を提示する() {
+        // Given
+        let mut unresolved = node(
+            "unresolved",
+            EXECUTION_ID,
+            RuntimeNodeExecutionStatus::Unresolved,
+        );
+        unresolved.node_name = "old".into();
+        unresolved.recovery_reason = Some("unsupported definition".into());
+        let paused = node("healthy", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
+        let execution = execution();
+
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            recorded_dynamic_fanout_names: &Default::default(),
+            workflow_definition: &WorkflowDefinition::default(),
+            node_executions: &[unresolved, paused],
+            retry_predecessors: &Default::default(),
+            accepts_explicit_retry: true,
+            started_at: 1.0,
+            updated_at: 10.0,
+            execution: &execution,
+            recovery_owner_reason: None,
+            node_recovery_reasons: &[],
+            session_activities: &Default::default(),
+            session_display_names: &Default::default(),
+        })
+        .unwrap();
+
+        // Then
+        let tree = WorkspaceTree::restore("/repo", nodes).unwrap();
+        let nodes = tree.nodes();
+        let workflow = nodes
+            .iter()
+            .find(|node| node.kind == crate::domain::workspace_tree::WorkspaceNodeKind::Workflow)
+            .unwrap();
+        assert!(workflow.can_resume);
+        assert!(workflow.resume_unavailable_reason.is_none());
+        let old = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("unresolved"))
+            .unwrap();
+        assert!(!old.can_retry);
+        assert_eq!(old.status, WorkspaceNodeStatus::Unresolved);
+        assert_eq!(old.error_reason.as_deref(), Some("unsupported definition"));
+    }
+
+    #[test]
+    fn test_runtime_snapshot同定_未対応fanoutでも保存された展開種別から同じnode_idになる() {
+        use crate::domain::workflow::{
+            ChildEntry, ExecutionParentRef, FanoutSpec, FieldPath, ItemsSource, NodeKind,
+        };
+        // Given
+        let definition = WorkflowDefinition {
+            nodes: vec![NodeDefinition {
+                name: "fan".into(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("test")],
+                    items: Some(ItemsSource::ArtifactField {
+                        node: "plan".into(),
+                        field_path: FieldPath::from_reference("plan.items").unwrap().1,
+                    }),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut fan = node("fan", EXECUTION_ID, RuntimeNodeExecutionStatus::Unresolved);
+        fan.kind = NodeKindName::Fanout;
+        fan.node_name = "fan".into();
+        fan.display_command = None;
+        let mut child = node("child", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        child.parent = Some(ExecutionParentRef::fanout_child("fan", Some(2), 0));
+        let runtime_nodes = [fan, child];
+        let execution = execution();
+        let project = |definition: &WorkflowDefinition,
+                       names: &std::collections::BTreeSet<String>| {
+            runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+                execution_id: EXECUTION_ID,
+                workflow_name: "workflow",
+                workspace_identity: "/repo",
+                recorded_dynamic_fanout_names: names,
+                workflow_definition: definition,
+                node_executions: &runtime_nodes,
+                retry_predecessors: &Default::default(),
+                accepts_explicit_retry: true,
+                started_at: 1.0,
+                updated_at: 10.0,
+                execution: &execution,
+                recovery_owner_reason: None,
+                node_recovery_reasons: &[],
+                session_activities: &Default::default(),
+                session_display_names: &Default::default(),
+            })
+            .unwrap()
+        };
+
+        // When
+        let full = project(&definition, &Default::default());
+        let partial = project(
+            &WorkflowDefinition::default(),
+            &std::collections::BTreeSet::from(["fan".into()]),
+        );
+
+        // Then
+        assert_eq!(full, partial);
     }
 }

@@ -47,6 +47,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
     let artifact_node_name = execution.node_name.clone();
     let artifact_produced_at = execution.completed_at.unwrap_or(execution.started_at);
     crate::domain::workflow::NodeExecution {
+        recovery_reason: execution.recovery_reason.clone(),
         id: execution.id,
         execution_id: execution.execution_id,
         node_name: execution.node_name,
@@ -58,6 +59,9 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
         },
         attempt: execution.attempt,
         status: match execution.status {
+            NodeExecutionStatus::Unresolved => {
+                crate::domain::workflow::NodeExecutionStatus::Unresolved
+            }
             NodeExecutionStatus::Running => crate::domain::workflow::NodeExecutionStatus::Running,
             NodeExecutionStatus::Paused => crate::domain::workflow::NodeExecutionStatus::Paused,
             NodeExecutionStatus::WaitingApproval => {

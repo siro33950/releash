@@ -37,8 +37,7 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
 
     // When
     let open =
-        derive_agent_session_fields(&records, "session-1", "session-1", "session", "session-1")
-            .unwrap();
+        derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
 
     // Then
     assert_eq!(open.tree_location.tree_id(), "session-1");
@@ -65,8 +64,7 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
         }),
     );
     let working =
-        derive_agent_session_fields(&records, "session-1", "session-1", "session", "session-1")
-            .unwrap();
+        derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
     assert_eq!(working.lifecycle, AgentSessionLifecycle::Open);
     assert_eq!(
         working.session_facts.activity,
@@ -84,8 +82,7 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
         }),
     );
     let paused =
-        derive_agent_session_fields(&records, "session-1", "session-1", "session", "session-1")
-            .unwrap();
+        derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
     assert_eq!(paused.lifecycle, AgentSessionLifecycle::Paused);
     assert!(paused.session_facts.exited);
     assert_eq!(
@@ -95,8 +92,7 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
 
     push_fact(&mut records, meta, NodeFact::ArchiveRequested);
     let archived =
-        derive_agent_session_fields(&records, "session-1", "session-1", "session", "session-1")
-            .unwrap();
+        derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
     assert_eq!(archived.lifecycle, AgentSessionLifecycle::Archived);
     assert!(archived.session_facts.archived);
 }
@@ -108,22 +104,22 @@ fn test_agent_session事実導出_session起動木のtreeまたはnodeとsession
 
     // When / Then
     assert_eq!(
-        derive_agent_session_fields(
+        derive_session_fields(
             &records,
+            &context(),
             "different-tree",
             "session-1",
-            "session",
             "session-1",
         )
         .unwrap_err(),
         AgentSessionDerivationError::SessionTreeRootIdentityMismatch
     );
     assert_eq!(
-        derive_agent_session_fields(
+        derive_session_fields(
             &records,
+            &context(),
             "session-1",
             "different-node",
-            "session",
             "session-1",
         )
         .unwrap_err(),
@@ -131,45 +127,28 @@ fn test_agent_session事実導出_session起動木のtreeまたはnodeとsession
     );
 }
 
-#[test]
-fn test_agent_session事実導出_root事実欠落を拒否する() {
-    // Given
-    let records = session_records();
-
-    // When / Then
-    assert_eq!(
-        derive_agent_session_fields(&[], "session-1", "session-1", "session", "session-1")
-            .unwrap_err(),
-        AgentSessionDerivationError::MissingTreeRoot
-    );
-    assert_eq!(
-        derive_agent_session_fields(
-            &records[1..],
-            "session-1",
-            "session-1",
-            "session",
-            "session-1",
-        )
-        .unwrap_err(),
-        AgentSessionDerivationError::MissingTreeRoot
-    );
+fn context() -> SessionExecutionContext {
+    SessionExecutionContext {
+        workspace_identity: "workspace-1".into(),
+        worktree_path: "/repo".into(),
+        launched_as: ExecutionTreeLaunch::Session,
+        provider: ProviderKind::Claude,
+    }
 }
 
 #[test]
-fn test_agent_session事実導出_definitionからsession_nodeのproviderを解決できなければ拒否する() {
+fn test_agent_session事実導出_workflow定義を渡さずsession自身の事実から復元できる() {
     // Given
-    let records = session_records();
+    let mut records = session_records();
+    let meta = records[0].meta.clone();
+    push_fact(&mut records, meta, NodeFact::ArchiveRequested);
+    records.retain(|record| !matches!(record.fact, NodeFact::Started(_)));
 
     // When
-    let error = derive_agent_session_fields(
-        &records,
-        "session-1",
-        "session-1",
-        "missing-node",
-        "session-1",
-    )
-    .unwrap_err();
+    let session =
+        derive_session_fields(&records, &context(), "session-1", "session-1", "session-1").unwrap();
 
     // Then
-    assert_eq!(error, AgentSessionDerivationError::SessionProviderMissing);
+    assert_eq!(session.lifecycle, AgentSessionLifecycle::Archived);
+    assert_eq!(session.provider, ProviderKind::Claude);
 }

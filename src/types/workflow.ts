@@ -122,6 +122,7 @@ export interface WorkflowDefinition {
 }
 
 export type NodeExecutionStatus =
+	| "unresolved"
 	| "running"
 	| "paused"
 	| "waiting_approval"
@@ -141,6 +142,7 @@ export interface NodeExecutionFailure {
 }
 
 export interface NodeExecution {
+	recoveryReason?: string;
 	id: string;
 	executionId: string;
 	nodeName: string;
