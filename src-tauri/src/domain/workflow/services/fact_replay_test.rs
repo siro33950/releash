@@ -77,7 +77,6 @@ fn sequence_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Sequence(SequenceSpec {
             entry: None,
-            output: None,
             children,
         }),
         ..NodeDefinition::default()
@@ -887,16 +886,11 @@ mod sequence_tests {
     }
 
     #[test]
-    fn test_sequence_stop後のartifact付きsubmitをoutput子の成果として完了導出する() {
-        // Given: output 子で Stop が先着し、Submit の直後に Artifact が記録された事実列
+    fn test_sequence_stop後のartifact付きsubmitを統合mapとして完了導出する() {
+        // Given: 子で Stop が先着し、Submit の直後に Artifact が記録された事実列
         let mut output = session_leaf("make_plan");
         output.artifact = Some("plan".to_string());
-        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
-        main.artifact = Some("plan".to_string());
-        let NodeKind::Sequence(spec) = &mut main.kind else {
-            unreachable!();
-        };
-        spec.output = Some("make_plan".to_string());
+        let main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
 
         let mut log = FactLog::new();
         log.push(
@@ -934,12 +928,15 @@ mod sequence_tests {
         let make_plan = tree.aggregate.node_execution("make-plan-exec").unwrap();
         let main = tree.aggregate.node_execution("main-exec").unwrap();
 
-        // Then: output 子と Sequence は同じ Artifact を成果として成功する
+        // Then: 子の Artifact を Sequence の統合 map に含めて成功する
         assert_eq!(make_plan.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(make_plan.artifact.as_ref(), Some(&artifact));
         assert_eq!(main.failure, None);
         assert_eq!(main.status, RuntimeNodeExecutionStatus::Succeeded);
-        assert_eq!(main.artifact.as_ref(), Some(&artifact));
+        assert_eq!(
+            main.artifact,
+            Some(serde_json::json!({"make_plan": artifact}))
+        );
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
     }
 
@@ -947,12 +944,7 @@ mod sequence_tests {
     fn test_sequence_artifact付きsubmit後のstopと同一artifact再適用で成果が変わらない() {
         let mut output = session_leaf("make_plan");
         output.artifact = Some("plan".to_string());
-        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
-        main.artifact = Some("plan".to_string());
-        let NodeKind::Sequence(spec) = &mut main.kind else {
-            unreachable!();
-        };
-        spec.output = Some("make_plan".to_string());
+        let main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
 
         let mut log = FactLog::new();
         log.push(
@@ -982,7 +974,10 @@ mod sequence_tests {
         let output = tree.aggregate.node_execution("make-plan-exec").unwrap();
         let sequence = tree.aggregate.node_execution("main-exec").unwrap();
         assert_eq!(output.artifact.as_ref(), Some(&produced));
-        assert_eq!(sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(
+            sequence.artifact,
+            Some(serde_json::json!({"make_plan": produced}))
+        );
         assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
 
         log.push(make_plan, artifact("plan", produced.clone()));
@@ -990,7 +985,10 @@ mod sequence_tests {
         let replayed_output = replayed.aggregate.node_execution("make-plan-exec").unwrap();
         let replayed_sequence = replayed.aggregate.node_execution("main-exec").unwrap();
         assert_eq!(replayed_output.artifact.as_ref(), Some(&produced));
-        assert_eq!(replayed_sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(
+            replayed_sequence.artifact,
+            Some(serde_json::json!({"make_plan": produced}))
+        );
         assert_eq!(
             replayed_sequence.status,
             RuntimeNodeExecutionStatus::Succeeded
@@ -998,7 +996,7 @@ mod sequence_tests {
     }
 
     #[test]
-    fn test_sequence_stop先着output子のartifactを下流入力と自身の成果に使う() {
+    fn test_sequence_stop先着の子のartifactを下流入力と統合mapに使う() {
         let mut output = session_leaf("make_plan");
         output.artifact = Some("plan".to_string());
         let mut downstream = session_leaf("judge");
@@ -1006,7 +1004,7 @@ mod sequence_tests {
             name: "plan".to_string(),
             contract: Some("plan".to_string()),
         });
-        let mut main = sequence_node(
+        let main = sequence_node(
             "main",
             vec![
                 ChildEntry::reference("make_plan"),
@@ -1021,11 +1019,6 @@ mod sequence_tests {
                 },
             ],
         );
-        main.artifact = Some("plan".to_string());
-        let NodeKind::Sequence(spec) = &mut main.kind else {
-            unreachable!();
-        };
-        spec.output = Some("make_plan".to_string());
 
         let mut log = FactLog::new();
         log.push(
@@ -1081,22 +1074,20 @@ mod sequence_tests {
             .unwrap();
         let sequence = completed.aggregate.node_execution("main-exec").unwrap();
         assert_eq!(output.artifact.as_ref(), Some(&produced));
-        assert_eq!(sequence.artifact.as_ref(), Some(&produced));
+        assert_eq!(
+            sequence.artifact,
+            Some(serde_json::json!({"make_plan": produced}))
+        );
         assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(sequence.failure, None);
         assert!(!sequence.can_retry());
     }
 
     #[test]
-    fn test_sequence_output子がartifactなしで終端到達するとvalidation_failureになる() {
+    fn test_sequence_子がartifactなしで終端到達すると空mapを導出する() {
         let mut output = session_leaf("make_plan");
         output.artifact = Some("plan".to_string());
-        let mut main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
-        main.artifact = Some("plan".to_string());
-        let NodeKind::Sequence(spec) = &mut main.kind else {
-            unreachable!();
-        };
-        spec.output = Some("make_plan".to_string());
+        let main = sequence_node("main", vec![ChildEntry::reference("make_plan")]);
 
         let mut log = FactLog::new();
         log.push(
@@ -1122,20 +1113,10 @@ mod sequence_tests {
 
         let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
         let sequence = tree.aggregate.node_execution("main-exec").unwrap();
-        assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Failed);
-        assert_eq!(
-            sequence.failure.as_ref().map(|failure| failure.kind),
-            Some(NodeExecutionFailureKind::ValidationFailure)
-        );
-        assert_eq!(
-            sequence
-                .failure
-                .as_ref()
-                .map(|failure| failure.reason.as_str()),
-            Some(
-                "sequence 'main' reached its terminal without an artifact from output child 'make_plan'"
-            )
-        );
+        assert_eq!(sequence.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(sequence.failure, None);
+        assert_eq!(sequence.artifact, Some(serde_json::json!({})));
+        assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);
     }
 }
 

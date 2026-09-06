@@ -81,8 +81,6 @@ pub(crate) struct FanoutSpecDto {
 pub(crate) struct SequenceSpecDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
     pub children: Vec<ChildEntryDto>,
 }
 
@@ -320,7 +318,6 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
 fn sequence_to_dto(sequence: &domain::SequenceSpec) -> SequenceSpecDto {
     SequenceSpecDto {
         entry: sequence.entry.clone(),
-        output: sequence.output.clone(),
         children: sequence.children.iter().map(child_entry_to_dto).collect(),
     }
 }
@@ -611,7 +608,6 @@ mod tests {
                     name: "main".to_string(),
                     kind: domain::NodeKind::Sequence(domain::SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![domain::ChildEntry {
                             on_failure: None,
                             name: "fix".to_string(),

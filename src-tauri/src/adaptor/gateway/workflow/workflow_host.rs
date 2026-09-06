@@ -2846,7 +2846,6 @@ nodes:
                     name: RESUME_PAUSED_SIBLING_NODES[0].0.to_string(),
                     kind: NodeKind::Sequence(SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![ChildEntry::reference(child_node_name)],
                     }),
                     artifact: None,
@@ -4024,7 +4023,6 @@ nodes:
                         name: "main".to_string(),
                         kind: NodeKind::Sequence(SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![
                                 ChildEntry::reference("agent-one"),
                                 ChildEntry::reference("agent-two"),
@@ -6274,7 +6272,6 @@ nodes:
                         name: "main".to_string(),
                         kind: NodeKind::Sequence(SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![ChildEntry::reference("impl")],
                         }),
                         artifact: None,

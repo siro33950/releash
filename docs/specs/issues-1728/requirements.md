@@ -89,7 +89,7 @@
     - Object でない値から field を引く段。array、string、boolean、integer、number はいずれも Object ではない。
     - 末端の型がその箇所の要求（`when.on` の boolean、`switch.on` の string enum、`fanout.items` の配列）に合わない段。
 - R-008: 多段参照は YAML と Lua の両方の定義表面で書ける。同じ定義上の誤りには、どちらの表面でも同じ code、同じ stage、同じ message の Diagnostic が返る。Diagnostic の span は各表面の位置付けに従い、表面間で一致しなくてよい。
-- R-009: 既存の1段参照および field を持たない参照は、参照文字列の前後に空白を含むもの、および Contract の property 名に `.` を含む field を `when.on` / `switch.on` の1段参照として引くものを除き、受理・拒否・実行時の値解決のいずれも従来どおりである。維持対象はこの3つであり、Error Diagnostic の message 文言は含まない。参照文字列の前後に空白を含む参照は、段数によらず受理しない。`.` は `when.on` / `switch.on` でも段の区切りとして解釈されるため、`.` を含む property 名は分岐条件から引けない。Contract を持たない供給元（型なし input パラメータ）を起点とする参照は、段数によらず load 時の静的検査の対象にならない。予約供給元 `request` と `items` は引き続き field を持たず、`request.<field>` / `items.<field>` は Error Diagnostic になる。Command の Artifact の予約 field は引き続き Contract 宣言なしに参照できる。
+- R-009: 既存の1段参照および field を持たない参照は、参照文字列の前後に空白を含むもの、および Contract の property 名に `.` を含む field を `when.on` / `switch.on` の1段参照として引くものを除き、受理・拒否・実行時の値解決のいずれも従来どおりである。維持対象はこの3つであり、Error Diagnostic の message 文言は含まない。参照文字列の前後に空白を含む参照は、段数によらず受理しない。`.` は `when.on` / `switch.on` でも段の区切りとして解釈されるため、`.` を含む property 名は分岐条件から引けない。Contract を持たない供給元（型なし input パラメータ）を起点とする参照は、段数によらず load 時の静的検査の対象にならない。`main` から到達しない Node draft を起点とする未消費参照は、段数によらず load 時の静的検査の対象にならない。予約供給元 `request` と `items` は引き続き field を持たず、`request.<field>` / `items.<field>` は Error Diagnostic になる。Command の Artifact の予約 field は引き続き Contract 宣言なしに参照できる。
 - R-010: `workflows/*.yml`（builtin 8本）と `workflows/examples/full-cycle-development.yml` は、本変更後も Diagnostic ゼロで load できる。
 
 # Assumptions / Open Questions

@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ChildEntry, EnvironmentVariableName, FieldPath, InputParameterRef, NodeDefinition,
+    ChildEntry, EnvironmentVariableName, FieldPath, InputParameterRef, NodeDefinition, NodeKind,
     NodeKindName, SchemaDef, WorkflowDefinition,
 };
 
@@ -192,6 +192,60 @@ pub(crate) fn split_reference(value: &str) -> Option<(&str, FieldPath)> {
     Some((value.split('.').next()?, field_path))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeReferenceSchemaError {
+    ArtifactNotObject,
+    NoReferenceableArtifact,
+}
+
+pub(crate) fn node_reference_schema(
+    workflow: &WorkflowDefinition,
+    node: &NodeDefinition,
+) -> Result<SchemaDef, NodeReferenceSchemaError> {
+    fn resolve(
+        workflow: &WorkflowDefinition,
+        node: &NodeDefinition,
+        visited: &mut HashSet<String>,
+    ) -> Result<SchemaDef, NodeReferenceSchemaError> {
+        if !visited.insert(node.name.clone()) {
+            return Err(NodeReferenceSchemaError::NoReferenceableArtifact);
+        }
+        let artifact_schema = node
+            .artifact
+            .as_deref()
+            .and_then(|contract| workflow.schemas.get(contract));
+        match &node.kind {
+            NodeKind::Command(_) => {
+                crate::domain::workflow::services::contract_schema::command_reference_schema(
+                    artifact_schema,
+                )
+                .map_err(|_| NodeReferenceSchemaError::ArtifactNotObject)
+            }
+            NodeKind::Session(_) => artifact_schema
+                .cloned()
+                .ok_or(NodeReferenceSchemaError::NoReferenceableArtifact),
+            NodeKind::Fanout(_) => Err(NodeReferenceSchemaError::NoReferenceableArtifact),
+            NodeKind::Sequence(sequence) => {
+                let properties = sequence
+                    .children
+                    .iter()
+                    .filter_map(|entry| {
+                        let child = workflow.node_by_name(&entry.name)?;
+                        resolve(workflow, child, visited)
+                            .ok()
+                            .map(|schema| (entry.name.clone(), schema))
+                    })
+                    .collect();
+                Ok(SchemaDef::Object {
+                    properties,
+                    required: Default::default(),
+                })
+            }
+        }
+    }
+    resolve(workflow, node, &mut HashSet::new())
+}
+
 /// fanout items（`<node>.<field>...`）の終端 schema を解決する。
 /// 参照先は Artifact を産出するカタログ node（fanout の子は親の配列へ集約される
 /// ため参照不可）。
@@ -217,24 +271,15 @@ pub(crate) fn artifact_field_schema(
     if !node_has_artifact(node) {
         return Err(format!("node '{node_name}' does not produce an Artifact"));
     }
-    let artifact_schema = node
-        .artifact
-        .as_deref()
-        .and_then(|contract| workflow.schemas.get(contract));
-    let command_schema;
-    let schema = if node.kind_name() == NodeKindName::Command {
-        command_schema =
-            crate::domain::workflow::services::contract_schema::command_reference_schema(
-                artifact_schema,
-            )
-            .map_err(|_| format!("node '{node_name}' Artifact Contract is not an object"))?;
-        &command_schema
-    } else {
-        artifact_schema.ok_or_else(|| {
+    let schema = node_reference_schema(workflow, node).map_err(|error| match error {
+        NodeReferenceSchemaError::ArtifactNotObject => {
+            format!("node '{node_name}' Artifact Contract is not an object")
+        }
+        NodeReferenceSchemaError::NoReferenceableArtifact => {
             format!("node '{node_name}' has no Artifact field path '{field_path}'")
-        })?
-    };
-    crate::domain::workflow::services::contract_schema::resolve_field_path(schema, field_path)
+        }
+    })?;
+    crate::domain::workflow::services::contract_schema::resolve_field_path(&schema, field_path)
     .map(|resolved| resolved.schema.clone())
     .map_err(|error| match error.kind {
         crate::domain::workflow::services::contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
@@ -404,12 +449,14 @@ mod reference_path_test;
 
 pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
     match node.kind_name() {
-        NodeKindName::Command | NodeKindName::Fanout => true,
+        NodeKindName::Command | NodeKindName::Fanout | NodeKindName::Sequence => true,
         NodeKindName::Session => node.artifact.is_some(),
-        // sequence の Artifact は output の子から委譲される（宣言があるときのみ）。
-        NodeKindName::Sequence => node.artifact.is_some(),
     }
 }
+
+#[cfg(test)]
+#[path = "reference_test.rs"]
+mod reference_tests;
 
 #[cfg(test)]
 mod tests {

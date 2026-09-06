@@ -264,7 +264,7 @@ fn fact_rows_for_events(
                 ..
             } => {
                 let meta = resolve(&batch_meta, node_execution_id)?;
-                // 合成子の成果（fanout 集約 / sequence output）は導出であり
+                // 合成子の成果（fanout 集約 / sequence 統合 map）は導出であり
                 // 記録しない。外部入力の Artifact（leaf への提出物）のみが事実。
                 if meta.kind.is_composite_kind() {
                     continue;

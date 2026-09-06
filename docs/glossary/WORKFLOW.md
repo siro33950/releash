@@ -61,7 +61,7 @@ Node 共通 field は kind block と同じ階層に書く。
 | field | 意味 |
 | --- | --- |
 | `input` | Node が受け取るパラメータのリスト。文字列は型なし、`- name: Contract` は型あり |
-| `artifact` | Node が産出する Artifact の Contract 名。Fanout には宣言しない |
+| `artifact` | Node が産出する Artifact の Contract 名。Sequence / Fanout には宣言しない |
 | `completion` | Node 自身の完了定義。`auto` または `approval`。省略時は `auto` |
 | `worktree` | 将来の隔離実行用の予約 field。現行 loader では `WFU002` Error |
 
@@ -93,7 +93,8 @@ children の `inputs` は `<パラメータ名>: <供給元>` の map である�
 - `request` は起動時の String input で、どの合成子の配線からも参照できる。
 - Fanout の子は並走するため、兄弟の Artifact を直接参照しない。外側の値は親から input を一段ずつ渡す。
 - `items` は本文の特殊名ではない。child の input パラメータへ配線し、そのパラメータ名を本文で参照する。
-- 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>...` で、参照先の Node と各 Contract field が存在し、Node 供給元は Artifact を産出する必要がある。
+- 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>...` で、参照先の Node と各 field が存在し、Node 供給元は Artifact を産出する必要がある。Sequence は宣言なしに統合 map を産出し、`<sequence>.<child>.<field>...` で child の値を参照できる。
+- Sequence 内の Fanout child は、実行時には統合 map のキーとして配列の値を持つが、load 時の参照解決用 schema には含まれない。このため `<sequence>.<fanout child>`（例: `review_scan.full_review_fanout`）およびその先の field path は Error Diagnostic になる。この制限は配線 `inputs`、`when.on` / `switch.on`、`fanout.items` の3経路に共通する。並列の結果を下流へ渡す場合は、参照可能なスコープで Fanout そのものを field path なしの供給元にする（例: 同じ Sequence の兄弟から `results: full_review_fanout` と配線する）。
 - 同じ名前が Sequence の兄弟 Node と Sequence 自身の input パラメータの両方に一致する配線は曖昧なので拒否される。`request` と `items` は予約供給元名であり、Node の input パラメータ名には使えない。`request` / `items` に field は無く、`items` は `items` を宣言した Fanout 内だけで使える。
 
 配線 `inputs`、Command の `env`、テンプレート `{{ }}`、`fanout.items` の field path は `.` で区切り、各段は先頭が ASCII 英数字、以降が ASCII 英数字・`-`・`_` である。参照文字列の前後に空白を含めることはできない。テンプレート `{{ }}` の内側にある空白だけは区切りとして扱い、参照文字列には含めない。段数に上限はない。起点に Contract がある参照は、各段を Object の `properties` に沿って load 時に解決する。存在しない field、Object でない値から field を引く段、または末端が参照箇所の要求型を満たさない参照は Error Diagnostic になる。中間 Object の field は `required` でなくてもよく、array の要素 Contract を経由して次の段を解決しない。共有 domain validation は、型なし input パラメータを起点とする field path の Contract 検査を行わず、実行時の Object 値を各段に沿って引く。`when.on` / `switch.on` の field path は後述の rules 固有の規則に従う。
@@ -134,7 +135,6 @@ children:
 main:
   sequence:
     entry: run_tests
-    output: publish
     children:
       - run_tests
       - fix_tests:
@@ -148,19 +148,23 @@ main:
                 on_exhausted: give_up
             - next: run_tests
       - publish
-  artifact: release_result
 ```
 
 - `entry`: 開始する children エントリ名。省略時は先頭。
-- `output`: Sequence が `artifact` を宣言するときに、その Artifact を返す children エントリ名。`artifact` があれば必須で、無ければ書かない。
 - `children`: 実行対象と、各 child の配線・辺・失敗時の扱い。
 - `rules` を省略したエントリには、リストの次のエントリへ進む隣接辺がある。末尾では終端になる。
 - `rules: []` は明示的な終端である。
 
+Sequence の Artifact は、宣言なしに常に engine が産出する JSON object である。その実行で通り Artifact を産出した children の成果を、children エントリ名をキーにした統合 map として返す。各キーの値は child の Artifact そのものである。通らなかった child と Artifact を産出しなかった child はキーに現れず、該当する child がなければ空の object になる。ループで同じ child を複数回通った場合は、最後の結果が残る。Sequence 自身には `artifact` や Contract を宣言しない。
+
+```json
+{ "run_tests": { "ok": true }, "publish": { "version": "1.0.0" } }
+```
+
 `on_failure` は children エントリが所有する。省略時は中断し、resume または手動 Retry を待つ。`ignore` は失敗を除外して続行し、`retry: n` は新しい attempt を最大 n 回自動実行した後、省略時と同じ中断へ移る。
 
 - `on_failure: retry` は attempt 機構の対象である Session / Command child だけに宣言できる。Sequence / Fanout child への宣言は `WFC010` になる。
-- `on_failure: ignore` の child は、失敗時に Artifact を産出しない可能性がある。そのため、同じ Sequence の兄弟 `inputs`、その child 自身の `when` / `switch`、Sequence の `output`、または兄弟 Fanout の `items` がその Artifact に依存する定義は `WFC009` になる。
+- `on_failure: ignore` の child は、失敗時に Artifact を産出しない可能性がある。そのため、同じ Sequence の兄弟 `inputs`、その child 自身の `when` / `switch`、または兄弟 Fanout の `items` がその Artifact に依存する定義は `WFC009` になる。
 
 ### Fanout
 
@@ -299,7 +303,7 @@ rules:
 - 一つの `rules` リストに置ける判別規則（`when` または `switch`）、`loop_guard`、単独 `next` はそれぞれ最大一つである。判別規則と単独 `next` は併記せず、判別規則自身の sibling `next` を catch-all に使う。
 - 辺の target は存在する Node でなければならない。同じ Sequence の child またはどの合成子にも属さない Node へ遷移できるが、別の合成子が所有する child へ外から遷移できない。
 - `switch` の case は enum 値だけを使う。case が非網羅なら sibling `next` が必須で、網羅していれば `next` は書かない。ただし Artifact を持つ Command の独自 field で分岐するときは、command failure の catch-all として `next` が必要である。
-- Fanout child に `when` / `switch` は置けない。Command の予約結果 `ok` を除き、Artifact を宣言しない child の field では分岐できない。
+- Fanout child に `when` / `switch` は置けない。Artifact を宣言しない Session child の field では分岐できない。Command の予約結果 `ok` は宣言なしで使える。Sequence child は統合 map を持つため、`<child>.<field>...` で参照可能な children エントリ名を起点に分岐できる（例: `check_full_review_threads.has_open_threads`）。統合 map 内の Fanout child は参照先にできず、分岐の起点にもできない。
 - 後方辺の cycle には、その cycle 上の少なくとも一つのエントリに `loop_guard` が必要である。無い場合は `WFC005` になる。`max_iterations` は1以上で、上限では `on_exhausted` へ進む。合成子の静的な包含 cycle も load 時に拒否する。
 - 全 Node は `main` から children または rule target を辿って到達可能でなければならない。Sequence 内でも、実効 `entry` から隣接辺または明示 rules で到達できない child は拒否される。
 - 比較・計算・配列集約の式言語はない。Command または Session が routing 用 boolean / enum を Artifact にする。
@@ -327,7 +331,7 @@ schemas:
 
 `required` の各 field は同じ Object の `properties` に存在しなければならない。配列の `items` は同じ `schemas` 内に存在する名前付き Contract を参照し、string の `enum` は宣言するなら非空でなければならない。Node の `artifact` / 型付き `input` が参照する Contract も同じ `schemas` 内に存在する必要がある。
 
-`artifact` は Fanout 以外の Node で Object Contract を参照する。Fanout は child Artifact の配列を結果として持つため `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
+`artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の配列を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
 
 ### 予約語と未解禁 field
 
@@ -335,7 +339,7 @@ schemas:
 
 ```text
 command session fanout sequence input artifact completion env worktree
-inputs rules on_failure items entry output children
+inputs rules on_failure items entry children
 ```
 
 `request` と `items` は input 配線の予約供給元名であり、input パラメータ名には使えない。`request` は `schemas` の Contract 名としても使えない。
@@ -381,7 +385,7 @@ return r.workflow{
 | `r.command{ name?, command, env?, artifact?, input?, completion? }` | Node |
 | `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion? }` | Node |
 | `r.fanout{ name?, children, items?, input?, completion? }` | Node |
-| `r.sequence{ name?, entry?, output?, children, artifact?, input?, completion? }` | Node |
+| `r.sequence{ name?, entry?, children, input?, completion? }` | Node |
 | `r.child{ node, inputs?, rules?, on_failure? }` | Child |
 | `r.next(node)` | Rule |
 | `r.when{ on, on_true, next }` | Rule |

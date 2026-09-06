@@ -75,8 +75,6 @@ pub enum IgnoredChildDependencyKind {
     },
     /// その entry 自身の rules（when / switch）が artifact を評価する。
     RulesEvaluation,
-    /// sequence の output がこの child を名指ししている。
-    SequenceOutput,
     /// 兄弟 fanout の items がこの child の artifact を参照している。
     FanoutItems { dependent: String },
 }
@@ -137,13 +135,8 @@ pub enum ValidationError {
         node: String,
         entry: String,
     },
-    /// sequence の output が children のエントリ名を指していない。
-    SequenceOutputNotChild {
-        node: String,
-        output: String,
-    },
-    /// artifact を宣言した sequence は output（どの子の Artifact を返すか）が必要。
-    SequenceArtifactRequiresOutput {
+    /// sequence の Artifact は engine が組み立てるため宣言できない。
+    SequenceArtifactDeclaration {
         node: String,
     },
     /// fanout.items の Artifact field 参照が解決できない。
@@ -314,16 +307,10 @@ impl fmt::Display for ValidationError {
                     "sequence node '{node}' entry '{entry}' must reference one of its children"
                 )
             }
-            Self::SequenceOutputNotChild { node, output } => {
+            Self::SequenceArtifactDeclaration { node } => {
                 write!(
                     f,
-                    "sequence node '{node}' output '{output}' must reference one of its children"
-                )
-            }
-            Self::SequenceArtifactRequiresOutput { node } => {
-                write!(
-                    f,
-                    "sequence node '{node}' declares an artifact and must name the child that provides it via `output`"
+                    "sequence node '{node}' cannot declare an artifact: the engine merges child Artifacts"
                 )
             }
             Self::InvalidFanoutItemsReference {
@@ -367,10 +354,6 @@ impl fmt::Display for ValidationError {
                 IgnoredChildDependencyKind::RulesEvaluation => write!(
                     f,
                     "composite node '{node}' child '{child}' declares `on_failure: ignore` but its rules evaluate the child's artifact (when / switch)"
-                ),
-                IgnoredChildDependencyKind::SequenceOutput => write!(
-                    f,
-                    "sequence node '{node}' names child '{child}' as `output` but the child declares `on_failure: ignore`"
                 ),
                 IgnoredChildDependencyKind::FanoutItems { dependent } => write!(
                     f,
@@ -576,12 +559,6 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
             ValidationError::SequenceEntryNotChild {
                 node: sequence,
                 entry,
-            }
-        }
-        routing::RoutingValidationError::SequenceOutputNotChild { sequence, output } => {
-            ValidationError::SequenceOutputNotChild {
-                node: sequence,
-                output,
             }
         }
         routing::RoutingValidationError::RulesOnFanoutChildEntry { fanout, child } => {
@@ -1076,29 +1053,17 @@ fn validate_node_source_field_path(
     node: &NodeDefinition,
     field_path: &FieldPath,
 ) -> Result<(), String> {
-    let artifact_schema = node
-        .artifact
-        .as_deref()
-        .and_then(|contract| workflow.schemas.get(contract));
-    let command_schema;
-    let schema = if node.kind_name() == NodeKindName::Command {
-        command_schema =
-            contract_schema::command_reference_schema(artifact_schema).map_err(|_| {
-                format!(
-                    "source node '{}' Artifact Contract is not an object",
-                    node.name
-                )
-            })?;
-        &command_schema
-    } else {
-        artifact_schema.ok_or_else(|| {
-            format!(
-                "source node '{}' Artifact has no field path '{field_path}'",
-                node.name
-            )
-        })?
-    };
-    contract_schema::resolve_field_path(schema, field_path)
+    let schema = reference::node_reference_schema(workflow, node).map_err(|error| match error {
+        reference::NodeReferenceSchemaError::ArtifactNotObject => format!(
+            "source node '{}' Artifact Contract is not an object",
+            node.name
+        ),
+        reference::NodeReferenceSchemaError::NoReferenceableArtifact => format!(
+            "source node '{}' Artifact has no field path '{field_path}'",
+            node.name
+        ),
+    })?;
+    contract_schema::resolve_field_path(&schema, field_path)
         .map(|_| ())
         .map_err(|error| {
             field_path_resolution_reason(&format!("source node '{}' Artifact", node.name), &error)
@@ -1127,7 +1092,7 @@ fn field_path_resolution_reason(
 ///
 /// - `ignore`: 失敗しても続行するため、その child の artifact に依存する下流
 ///   （同一 sequence スコープの inputs 供給元・その entry 自身の when / switch・
-///   sequence の output 名指し・兄弟 fanout の items 参照）は満たせない。load 時に拒否する。
+///   兄弟 fanout の items 参照）は満たせない。load 時に拒否する。
 ///   依存の解決はスコープ（同一 children リスト）に閉じる。
 /// - `retry`: 手動の Node 単位 Retry と同じ attempt 機構を使うため、同機構が
 ///   対象外とする合成子 child への宣言を拒否する。
@@ -1206,17 +1171,6 @@ fn collect_on_failure_errors(workflow: &WorkflowDefinition) -> Vec<ValidationErr
                             },
                         });
                     }
-                }
-            }
-        }
-        if let NodeKind::Sequence(sequence) = &owner.kind {
-            if let Some(output) = &sequence.output {
-                if ignored.contains(output.as_str()) {
-                    errors.push(ValidationError::IgnoredChildDependency {
-                        node: owner.name.clone(),
-                        child: output.clone(),
-                        kind: IgnoredChildDependencyKind::SequenceOutput,
-                    });
                 }
             }
         }
@@ -1307,18 +1261,13 @@ fn inclusion_cycle_from<'a>(
     dfs(start, start, graph, &mut path, &mut visited).then_some(path)
 }
 
-/// artifact を宣言した sequence には output（返す子の名指し）を要求する。
-fn collect_sequence_output_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+/// sequence の artifact 宣言を拒否する。
+fn collect_sequence_artifact_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     workflow
         .nodes
         .iter()
-        .filter(|node| {
-            node.artifact.is_some()
-                && node
-                    .sequence()
-                    .is_some_and(|sequence| sequence.output.is_none())
-        })
-        .map(|node| ValidationError::SequenceArtifactRequiresOutput {
+        .filter(|node| node.artifact.is_some() && node.sequence().is_some())
+        .map(|node| ValidationError::SequenceArtifactDeclaration {
             node: node.name.clone(),
         })
         .collect()
@@ -1403,7 +1352,10 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     {
         return Err(err);
     }
-    if let Some(err) = collect_sequence_output_errors(workflow).into_iter().next() {
+    if let Some(err) = collect_sequence_artifact_errors(workflow)
+        .into_iter()
+        .next()
+    {
         return Err(err);
     }
     if let Some(err) = collect_on_failure_errors(workflow).into_iter().next() {
@@ -1752,7 +1704,7 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     errors.extend(collect_children_wiring_errors(workflow));
     errors.extend(collect_fanout_items_errors(workflow));
     errors.extend(collect_reserved_parameter_errors(workflow));
-    errors.extend(collect_sequence_output_errors(workflow));
+    errors.extend(collect_sequence_artifact_errors(workflow));
     errors.extend(collect_on_failure_errors(workflow));
     errors.extend(collect_unsupported_errors(workflow));
 
@@ -1817,7 +1769,6 @@ mod tests {
             name: name.to_string(),
             kind: NodeKind::Sequence(SequenceSpec {
                 entry: None,
-                output: None,
                 children,
             }),
             artifact: None,
@@ -2334,7 +2285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_検証_artifact宣言のsequenceはoutputが必要() {
+    fn test_検証_sequenceのartifact宣言を拒否する() {
         let mut root = sequence_node("main", vec![ChildEntry::reference("leaf")]);
         root.artifact = Some("result".to_string());
         let mut wf = workflow(vec![root, command_node("leaf", "echo hi")]);
@@ -2343,7 +2294,7 @@ mod tests {
 
         assert!(validate_all(&wf).iter().any(|error| matches!(
             error,
-            ValidationError::SequenceArtifactRequiresOutput { node } if node == "main"
+            ValidationError::SequenceArtifactDeclaration { node } if node == "main"
         )));
     }
 
@@ -2862,34 +2813,6 @@ mod tests {
     }
 
     #[test]
-    fn test_onfailure_ignoreをsequenceのoutputが名指しすると拒否される() {
-        let mut wf = workflow(vec![
-            sequence_node("main", vec![ChildEntry::reference("part")]),
-            NodeDefinition {
-                artifact: Some("data".to_string()),
-                kind: NodeKind::Sequence(SequenceSpec {
-                    entry: None,
-                    output: Some("collect".to_string()),
-                    children: vec![ignore_entry("collect")],
-                }),
-                ..command_node("part", "unused")
-            },
-            command_node_with_artifact("collect", "data"),
-        ]);
-        wf.schemas
-            .insert("data".to_string(), object_schema(&["note"]));
-
-        assert!(validate_all(&wf).iter().any(|error| matches!(
-            error,
-            ValidationError::IgnoredChildDependency {
-                node,
-                child,
-                kind: IgnoredChildDependencyKind::SequenceOutput,
-            } if node == "part" && child == "collect"
-        )));
-    }
-
-    #[test]
     fn test_onfailure_ignoreのartifactを兄弟fanoutのitemsが参照すると拒否される() {
         let mut wf = workflow(vec![
             sequence_node(
@@ -2969,3 +2892,7 @@ mod tests {
         assert!(validate_all(&wf).is_empty(), "{:?}", validate_all(&wf));
     }
 }
+
+#[cfg(test)]
+#[path = "validation_test.rs"]
+mod validation_tests;

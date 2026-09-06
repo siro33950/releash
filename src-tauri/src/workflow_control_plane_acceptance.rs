@@ -339,7 +339,6 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                     name: "main".to_string(),
                     kind: NodeKind::Sequence(SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![
                             ChildEntry::reference("agent-first"),
                             ChildEntry::reference("agent-second"),

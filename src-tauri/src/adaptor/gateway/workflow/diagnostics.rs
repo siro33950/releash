@@ -247,6 +247,17 @@ pub(crate) fn diagnose_lua_workflow_source(
             .or_else(|| loaded.node_locations.get("main"));
         if let Some(location) = location {
             item.span = Some(lua_location_span(location, workflows_dir));
+            if item.code == "WFS008" && item.field.as_deref() == Some("artifact") {
+                if let Some(mut span) = item
+                    .node_name
+                    .as_ref()
+                    .and_then(|node| loaded.node_artifact_spans.get(node))
+                    .cloned()
+                {
+                    span.source = lua_location_span(location, workflows_dir).source;
+                    item.span = Some(span);
+                }
+            }
         }
     }
     if workflow_name_hint.is_some_and(|name| name != loaded.workflow.name) {
@@ -579,7 +590,7 @@ fn check_composite_shape(
         check_allowed_fields(
             sequence,
             &sequence_path,
-            &["entry", "output", "children"],
+            &["entry", "children"],
             span_map,
             workflow_name,
             Some(node_name),
@@ -1163,13 +1174,12 @@ fn validation_error_code_stage(
         | ValidationError::TooManyNodes { .. }
         | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
         ValidationError::EmptyChildren { .. }
-        | ValidationError::SequenceArtifactRequiresOutput { .. } => "WFS008",
+        | ValidationError::SequenceArtifactDeclaration { .. } => "WFS008",
         ValidationError::MissingEntryNode { .. } => "WFR006",
         ValidationError::ReservedNodeName { .. } => "WFR004",
         ValidationError::UnknownRuleTarget { .. }
         | ValidationError::UnknownChildNode { .. }
-        | ValidationError::SequenceEntryNotChild { .. }
-        | ValidationError::SequenceOutputNotChild { .. } => "WFR001",
+        | ValidationError::SequenceEntryNotChild { .. } => "WFR001",
         ValidationError::InvalidFanoutItemsReference { .. } => "WFR003",
         ValidationError::FanoutInputMismatch { .. } => "WFT003",
         ValidationError::ChildReferenceViolation { .. } => "WFC006",
@@ -1796,9 +1806,8 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::SequenceEntryNotChild { node, .. } => {
             (Some(node.clone()), Some("sequence.entry".to_string()))
         }
-        ValidationError::SequenceOutputNotChild { node, .. }
-        | ValidationError::SequenceArtifactRequiresOutput { node } => {
-            (Some(node.clone()), Some("sequence.output".to_string()))
+        ValidationError::SequenceArtifactDeclaration { node } => {
+            (Some(node.clone()), Some("artifact".to_string()))
         }
         ValidationError::InvalidFanoutItemsReference { node, .. }
         | ValidationError::FanoutInputMismatch { node, .. } => {
@@ -4150,7 +4159,6 @@ nodes:
                     kind: NodeKind::Sequence(
                         crate::adaptor::gateway::workflow::schema::SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![crate::domain::workflow::ChildEntry {
                                 on_failure: None,
                                 name: "work".to_string(),
@@ -4202,7 +4210,6 @@ nodes:
                     kind: NodeKind::Sequence(
                         crate::adaptor::gateway::workflow::schema::SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![
                                 crate::domain::workflow::ChildEntry::reference("start"),
                                 crate::domain::workflow::ChildEntry::reference("node3"),
@@ -4728,7 +4735,6 @@ nodes:
                     kind: NodeKind::Sequence(
                         crate::adaptor::gateway::workflow::schema::SequenceSpec {
                             entry: None,
-                            output: None,
                             children: vec![
                                 crate::domain::workflow::ChildEntry::reference("produce"),
                                 crate::domain::workflow::ChildEntry {
@@ -6133,3 +6139,7 @@ return r.workflow{ name = "items-non-object", description = "items non-object", 
         }
     }
 }
+
+#[cfg(test)]
+#[path = "diagnostics_test.rs"]
+mod diagnostics_tests;

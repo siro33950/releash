@@ -101,7 +101,6 @@ fn domain_kind_to_schema(
             crate::adaptor::gateway::workflow::schema::NodeKind::Sequence(
                 crate::adaptor::gateway::workflow::schema::SequenceSpec {
                     entry: spec.entry.clone(),
-                    output: spec.output.clone(),
                     children: spec.children.clone(),
                 },
             )
@@ -419,7 +418,6 @@ mod tests {
                     name: "main".to_string(),
                     kind: NodeKind::Sequence(domain::SequenceSpec {
                         entry: None,
-                        output: None,
                         children: vec![domain::ChildEntry {
                             on_failure: None,
                             name: "fix".to_string(),

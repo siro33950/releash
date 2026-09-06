@@ -1,5 +1,152 @@
 use super::*;
 
+fn load_unconsumed_source(source: &str) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
+    let directory = tempfile::tempdir().unwrap();
+    load_lua_workflow(
+        "review.lua",
+        source,
+        directory.path(),
+        LuaFacetCatalog::default(),
+    )
+}
+
+#[test]
+fn test_lua未消費参照_sequenceのchildの予約fieldを受理する() {
+    // Given
+    let source = r#"local r = require('releash')
+local c = r.command{ name = 'check', command = 'true' }
+local s = r.sequence{ children = { r.child{ node = c } } }
+local ref = s.check.ok
+return r.workflow{ name = 'example', description = 'example', main = s }
+"#;
+
+    // When
+    let loaded = load_unconsumed_source(source).unwrap();
+
+    // Then
+    crate::domain::workflow::services::validation::validate(&loaded.workflow).unwrap();
+}
+
+#[test]
+fn test_lua未消費参照_入れ子のsequenceとartifactの多段fieldを受理する() {
+    // Given
+    let source = r#"local r = require('releash')
+local result = r.schema.object{ properties = {
+  nested = r.schema.object{ properties = { passed = r.schema.boolean() } },
+} }
+local c = r.command{ name = 'check', command = 'true', artifact = result }
+local s = r.sequence{ name = 'part', children = { r.child{ node = c } } }
+local main = r.sequence{ children = { r.child{ node = s } } }
+local ref = main.part.check.nested.passed
+return r.workflow{ name = 'example', description = 'example', main = main }
+"#;
+
+    // When
+    let loaded = load_unconsumed_source(source).unwrap();
+
+    // Then
+    crate::domain::workflow::services::validation::validate(&loaded.workflow).unwrap();
+}
+
+#[test]
+fn test_lua未消費参照_sequenceの未知のchildとfieldを添字アクセス行で拒否する() {
+    // Given
+    for path in ["s.missing.ok", "s.check.missing", "s.check.ok.missing"] {
+        let source = format!(
+            r#"local r = require('releash')
+local c = r.command{{ name = 'check', command = 'true' }}
+local s = r.sequence{{ children = {{ r.child{{ node = c }} }} }}
+local ref = {path}
+return r.workflow{{ name = 'example', description = 'example', main = s }}
+"#
+        );
+
+        // When
+        let error = load_unconsumed_source(&source).unwrap_err();
+
+        // Then
+        assert_eq!(error.code, "WFR003", "{path}");
+        assert_eq!(
+            error.location,
+            Some(LuaSourceLocation {
+                source: "review.lua".to_string(),
+                line: 4,
+            })
+        );
+    }
+}
+
+#[test]
+fn test_lua未消費参照_mainから到達しないdraftは検証しない() {
+    // Given
+    let source = r#"local r = require('releash')
+local draft = r.command{ name = 'draft', command = 'true' }
+local ref = draft.missing
+return r.workflow{ name = 'example', description = 'example', main = r.command{ command = 'true' } }
+"#;
+
+    // When
+    let loaded = load_unconsumed_source(source).unwrap();
+
+    // Then
+    assert_eq!(loaded.workflow.nodes.len(), 1);
+    crate::domain::workflow::services::validation::validate(&loaded.workflow).unwrap();
+}
+
+#[test]
+fn test_lua未消費参照_fanoutのchildの未配線参照を従来どおり受理する() {
+    // Given
+    let source = r#"local r = require('releash')
+local c = r.command{ name = 'check', command = 'true' }
+local ref = c.ok
+return r.workflow{ name = 'example', description = 'example', main = r.fanout{ children = { r.child{ node = c } } } }
+"#;
+
+    // When
+    let loaded = load_unconsumed_source(source).unwrap();
+
+    // Then
+    crate::domain::workflow::services::validation::validate(&loaded.workflow).unwrap();
+}
+
+#[test]
+fn test_lua未消費参照_inputのcontractを従来どおり検証する() {
+    // Given
+    for (contract, field, accepted) in [
+        (
+            ", r.schema.object{ properties = { valid = r.schema.boolean() } }",
+            "valid",
+            true,
+        ),
+        (
+            ", r.schema.object{ properties = { valid = r.schema.boolean() } }",
+            "missing",
+            false,
+        ),
+        ("", "missing", true),
+    ] {
+        let source = format!(
+            r#"local r = require('releash')
+local input = r.input('data'{contract})
+local ref = input.{field}
+return r.workflow{{ name = 'example', description = 'example', main = r.command{{ command = 'true' }} }}
+"#
+        );
+
+        // When
+        let result = load_unconsumed_source(&source);
+
+        // Then
+        if accepted {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, "WFR003");
+            assert_eq!(error.location.unwrap().line, 3);
+        }
+    }
+}
+
 #[test]
 fn test_lua参照パス_分岐とルートを正しい段順に復元する() {
     let mut paths = SourcePaths::new();

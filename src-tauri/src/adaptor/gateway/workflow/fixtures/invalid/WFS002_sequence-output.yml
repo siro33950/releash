@@ -1,0 +1,9 @@
+name: sequence-output
+description: Sequence output is an unknown field
+nodes:
+  main:
+    sequence:
+      output: check
+      children: [check]
+  check:
+    command: check

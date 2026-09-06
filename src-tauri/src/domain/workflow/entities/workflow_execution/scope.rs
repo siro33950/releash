@@ -44,7 +44,7 @@ pub struct SequenceScopeRuntime {
     /// retry（自動・手動とも）では更新されず、`child_counts - visit_bases` が
     /// この visit で消化した attempt 数 = on_failure retry の予算消化になる。
     pub visit_bases: HashMap<String, u32>,
-    /// スコープ内で子が確定させた Artifact（兄弟参照・output の解決空間）。
+    /// スコープ内で子が確定させた Artifact（兄弟参照・統合 map の解決空間）。
     pub artifacts: HashMap<String, RuntimeArtifact>,
 }
 

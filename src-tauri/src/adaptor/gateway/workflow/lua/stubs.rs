@@ -114,9 +114,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashSequenceOptions
 ---@field name? string
 ---@field entry? ReleashNode
----@field output? ReleashNode
 ---@field children ReleashChild[]
----@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
 

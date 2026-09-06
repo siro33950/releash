@@ -148,7 +148,6 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
         }),
         schema::NodeKind::Sequence(spec) => domain::NodeKind::Sequence(domain::SequenceSpec {
             entry: spec.entry.clone(),
-            output: spec.output.clone(),
             children: spec.children.clone(),
         }),
     }

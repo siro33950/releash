@@ -41,7 +41,6 @@ pub(crate) fn seed_workflow_session_facts(
                 name: "main".to_string(),
                 kind: NodeKind::Sequence(SequenceSpec {
                     entry: None,
-                    output: None,
                     children: vec![ChildEntry::reference("impl")],
                 }),
                 artifact: None,
