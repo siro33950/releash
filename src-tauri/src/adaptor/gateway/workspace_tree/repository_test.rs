@@ -6,9 +6,9 @@ use crate::domain::agent_session::repository::AgentSessionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::value_objects::EffectiveRules;
 use crate::domain::workflow::{
-    ChildEntry, ExecutionOrigin, ExecutionParentRef, FanoutSpec, ItemsSource, NodeCompletion,
-    NodeDefinition, NodeKind, NodeKindName, Rule, SchemaDef, SequenceSpec, SessionSpec,
-    WorkflowDefinition, WorkflowEvent,
+    ChildEntry, ExecutionOrigin, ExecutionParentRef, FacetRefs, FanoutSpec, ItemsSource,
+    NodeCompletion, NodeDefinition, NodeKind, NodeKindName, Rule, SchemaDef, SequenceSpec,
+    SessionSpec, WorkflowDefinition, WorkflowEvent,
 };
 use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceTreeRepository};
 
@@ -804,6 +804,167 @@ fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fact列�
         Some(waiting_execution_id.to_string())
     );
     assert_eq!(loaded_session.session_id, Some(session_id.to_string()));
+    assert_eq!(rows_after, rows_before);
+}
+
+#[test]
+fn test_ツリー読み出し_command形のsession成果物を含む複数実行木と各nodeをfact変更なしで読める() {
+    // Given
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("/repo/.worktrees/command-shaped-artifact");
+    let execution_ids = [
+        "00000000-0000-4000-8000-000000000743",
+        "00000000-0000-4000-8000-000000000744",
+    ];
+    let definition = WorkflowDefinition {
+        name: "session-artifact".to_string(),
+        schemas: std::collections::BTreeMap::from([(
+            "report-result".to_string(),
+            SchemaDef::Object {
+                properties: std::collections::BTreeMap::from([
+                    ("exit_code".to_string(), SchemaDef::Integer),
+                    ("duration".to_string(), SchemaDef::Integer),
+                    ("stdout".to_string(), SchemaDef::String { r#enum: None }),
+                    ("stderr".to_string(), SchemaDef::String { r#enum: None }),
+                ]),
+                required: ["exit_code", "duration", "stdout", "stderr"]
+                    .map(str::to_string)
+                    .into_iter()
+                    .collect(),
+            },
+        )]),
+        nodes: vec![NodeDefinition {
+            name: "report".to_string(),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some("report".to_string()),
+                    ..FacetRefs::default()
+                },
+                ..SessionSpec::default()
+            }),
+            artifact: Some("report-result".to_string()),
+            ..NodeDefinition::default()
+        }],
+        entry: "report".to_string(),
+        ..WorkflowDefinition::default()
+    };
+    crate::domain::workflow::services::validation::validate(&definition).unwrap();
+    for execution_id in execution_ids {
+        let node_execution_id = format!("{execution_id}-report");
+        let mut events = vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: execution_id.to_string(),
+                workflow_name: definition.name.clone(),
+                worktree_path: workspace.as_str().to_string(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: "report".to_string(),
+                definition: definition.clone(),
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: "report".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkflowEvent::SessionAttached {
+                execution_id: execution_id.to_string(),
+                node_execution_id: node_execution_id.clone(),
+                session_id: format!("{execution_id}-session"),
+                timestamp: 3.0,
+            },
+        ];
+        if execution_id == execution_ids[0] {
+            events.extend([
+                WorkflowEvent::NodeSubmitReceived {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    timestamp: 4.0,
+                },
+                WorkflowEvent::ArtifactProduced {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: "report".to_string(),
+                    contract: Some("report-result".to_string()),
+                    value: serde_json::json!({
+                        "exit_code": 0,
+                        "duration": 123,
+                        "stdout": "output",
+                        "stderr": ""
+                    }),
+                    request_id: None,
+                    submitted_at: None,
+                    timestamp: 4.0,
+                },
+                WorkflowEvent::NodeStopReceived {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id,
+                    timestamp: 5.0,
+                },
+            ]);
+        }
+        crate::adaptor::gateway::workflow::test_support::append_canonical_events(&store, &events)
+            .unwrap();
+    }
+    let rows_before = execution_ids
+        .map(|execution_id| fact_log::read_tree_records(&store, execution_id).unwrap());
+    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+
+    // When
+    let folded = repository
+        .folded_workspace_trees(workspace.as_str())
+        .unwrap();
+    let tree = repository
+        .workspace_tree_from_folded(workspace.as_str(), &folded)
+        .unwrap()
+        .unwrap();
+    let loaded_nodes = execution_ids.map(|execution_id| {
+        let node_execution_id = format!("{execution_id}-report");
+        let node = tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(&node_execution_id))
+            .unwrap();
+        (
+            node,
+            repository.load_node(&workspace, &node.id).unwrap().unwrap(),
+            repository
+                .load_node_by_node_execution_id(&node_execution_id)
+                .unwrap()
+                .unwrap(),
+        )
+    });
+    let rows_after = execution_ids
+        .map(|execution_id| fact_log::read_tree_records(&store, execution_id).unwrap());
+
+    // Then
+    assert_eq!(folded.len(), 2);
+    assert_eq!(tree.nodes().len(), 4);
+    for execution_id in execution_ids {
+        assert_eq!(
+            tree.nodes()
+                .iter()
+                .filter(|node| node.execution_id.as_deref() == Some(execution_id))
+                .count(),
+            2
+        );
+    }
+    for (node, loaded_by_id, loaded_by_execution) in &loaded_nodes {
+        assert_eq!(*node, loaded_by_id);
+        assert_eq!(*node, loaded_by_execution);
+        assert_eq!(node.command_result, None);
+    }
+    assert!(loaded_nodes[0].0.has_artifact);
+    assert_eq!(loaded_nodes[0].0.status, WorkspaceNodeStatus::Completed);
+    assert!(!loaded_nodes[1].0.has_artifact);
+    assert_eq!(loaded_nodes[1].0.status, WorkspaceNodeStatus::Running);
     assert_eq!(rows_after, rows_before);
 }
 

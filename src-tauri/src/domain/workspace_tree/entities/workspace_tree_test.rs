@@ -4,7 +4,87 @@ use crate::domain::workflow::{
     FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, SequenceSpec,
     SessionSpec,
 };
-use crate::domain::workspace_tree::WorkspaceTreeVisibilityPolicy;
+use crate::domain::workspace_tree::{WorkspaceCommandResult, WorkspaceTreeVisibilityPolicy};
+
+#[test]
+fn test_成果物適用_commandだけが実行結果候補を保持し全kindで産出済みになる() {
+    for kind in [
+        NodeKindName::Command,
+        NodeKindName::Sequence,
+        NodeKindName::Fanout,
+        NodeKindName::Session,
+    ] {
+        for result in [
+            Some(WorkspaceCommandResult {
+                exit_code: -1,
+                duration: 123,
+                stdout: "output".to_string(),
+                stderr: "error".to_string(),
+            }),
+            None,
+        ] {
+            // Given
+            let execution_id = "00000000-0000-4000-8000-000000000743";
+            let mut tree = WorkspaceTree::empty("/repo");
+            WorkspaceTreeProjector::project(
+                &mut tree,
+                [
+                    WorkspaceStructureFact::WorkflowStarted {
+                        execution_id: execution_id.to_string(),
+                        workflow_name: "review".to_string(),
+                        worktree_path: "/repo".to_string(),
+                        definition: definition(),
+                        timestamp: 1.0,
+                    },
+                    WorkspaceStructureFact::NodeStarted {
+                        execution_id: execution_id.to_string(),
+                        node_execution_id: "artifact-node".to_string(),
+                        node_name: "plan".to_string(),
+                        kind,
+                        attempt: 1,
+                        parent: None,
+                        timestamp: 2.0,
+                    },
+                ],
+            )
+            .unwrap();
+
+            // When
+            WorkspaceTreeProjector::project(
+                &mut tree,
+                [WorkspaceStructureFact::NodeArtifactProduced {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: "artifact-node".to_string(),
+                    command_result_candidate: result.clone(),
+                    timestamp: 3.0,
+                }],
+            )
+            .unwrap();
+
+            // Then
+            let node = tree
+                .nodes()
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some("artifact-node"))
+                .unwrap();
+            assert!(node.has_artifact, "{kind:?}, {result:?}");
+            assert_eq!(
+                node.command_result,
+                if kind == NodeKindName::Command {
+                    result
+                } else {
+                    None
+                },
+                "{kind:?}"
+            );
+            assert!(tree
+                .nodes()
+                .iter()
+                .filter(|node| node.kind == WorkspaceNodeKind::Workflow)
+                .all(|node| node.command_result.is_none()));
+        }
+    }
+}
 
 fn definition() -> WorkflowDefinition {
     WorkflowDefinition {
