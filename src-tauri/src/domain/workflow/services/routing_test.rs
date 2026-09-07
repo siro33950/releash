@@ -149,9 +149,9 @@ fn test_fanoutの辺_switchのslot欠番は網羅ならエラーで非網羅な�
         // Then
         assert_eq!(
             decision,
-            Err(WorkflowError::validation(format!(
+            Err(ScopeRoutingError::Rule(WorkflowError::validation(format!(
                 "No matching switch case for node '{node}' and no next catch-all"
-            ))),
+            )))),
             "{node}"
         );
     }
