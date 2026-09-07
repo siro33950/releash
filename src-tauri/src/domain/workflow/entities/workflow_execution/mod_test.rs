@@ -286,3 +286,481 @@ fn test_sequenceの多段参照_配線と辺とfanout展開へ統合mapの値を
         }
     }
 }
+
+fn fanout_execution(children: &str, items: &str) -> WorkflowExecution {
+    execution(&format!(
+        r#"
+name: fanout-map
+description: test
+nodes:
+  main:
+    fanout:
+      children: {children}
+      {items}
+  a: {{command: 'echo a'}}
+  b: {{command: 'echo b'}}
+"#
+    ))
+}
+
+fn start_fanout(
+    execution: &mut WorkflowExecution,
+    new_id: &mut dyn FnMut() -> String,
+) -> Vec<LeafStart> {
+    let ExecutionAdvanceDecision::StartLeaves(leaves) =
+        execution.start_root(new_id, 1.0).unwrap().decision
+    else {
+        panic!("expected fanout leaves");
+    };
+    leaves
+}
+
+#[test]
+fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空なら空mapになる() {
+    // Given
+    for (children, items, expected) in [
+        ("[a, b]", "", json!({"a": {"slot": 0}, "b": {"slot": 1}})),
+        (
+            "[a]",
+            "items: [x, y]",
+            json!({"0": {"slot": 0}, "1": {"slot": 1}}),
+        ),
+        (
+            "[a, b]",
+            "items: [x, y]",
+            json!({"0": {"slot": 0}, "1": {"slot": 1}, "2": {"slot": 2}, "3": {"slot": 3}}),
+        ),
+        ("[a]", "items: []", json!({})),
+    ] {
+        let mut execution = fanout_execution(children, items);
+        let mut new_id = id_source();
+        let started = execution.start_root(&mut new_id, 1.0).unwrap();
+        let mut events = started.events;
+
+        // When
+        if let ExecutionAdvanceDecision::StartLeaves(leaves) = started.decision {
+            for (index, leaf) in leaves.iter().enumerate().rev() {
+                execution.record_pending_result(
+                    &leaf.node_execution_id,
+                    None,
+                    Some(json!({"slot": index})),
+                    None,
+                    Some(TokenUsage {
+                        input_tokens: 2,
+                        output_tokens: 3,
+                    }),
+                    2.0,
+                );
+                events.extend(
+                    execution
+                        .complete_leaf_and_advance(&leaf.node_execution_id, &mut new_id, 3.0)
+                        .unwrap()
+                        .events,
+                );
+            }
+        }
+
+        // Then
+        let slot_count = expected.as_object().unwrap().len() as u64;
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+        assert_eq!(
+            execution.node_executions()[0].artifact,
+            Some(expected.clone())
+        );
+        assert!(events.iter().any(|event| matches!(event,
+            WorkflowEvent::ArtifactProduced { node_name, contract: None, value, .. }
+                if node_name == "main" && value == &expected
+        )));
+        assert!(events.iter().any(|event| matches!(event,
+            WorkflowEvent::NodeCompleted { node_name, result_summary: Some(summary), token_usage: Some(usage), .. }
+                if node_name == "main" && summary == "complete"
+                    && usage == &TokenUsage { input_tokens: slot_count * 2, output_tokens: slot_count * 3 }
+        )));
+    }
+}
+
+#[test]
+fn test_fanoutの成果_ignore失敗はキー欠番となり他のslotをずらさない() {
+    // Given
+    for items in ["", "items: [x, y]"] {
+        for fail in [false, true] {
+            let mut execution = fanout_execution("[{a: {on_failure: ignore}}, b]", items);
+            let mut new_id = id_source();
+            let leaves = start_fanout(&mut execution, &mut new_id);
+
+            // When
+            for (index, leaf) in leaves.iter().enumerate() {
+                if fail && index == 0 {
+                    assert_eq!(
+                        execution.fail_leaf_execution(
+                            &leaf.node_execution_id,
+                            "failed".to_string(),
+                            NodeExecutionFailureKind::ValidationFailure,
+                            FailureDisposition::Terminal,
+                            2.0
+                        ),
+                        TransitionOutcome::Applied
+                    );
+                    execution
+                        .apply_on_failure_treatment(&leaf.node_execution_id, &mut new_id, 3.0)
+                        .unwrap()
+                        .unwrap();
+                } else {
+                    finish_leaf(
+                        &mut execution,
+                        leaf,
+                        Some(json!({"slot": index})),
+                        &mut new_id,
+                    );
+                }
+            }
+
+            // Then
+            let mut expected = if items.is_empty() {
+                json!({"a": {"slot": 0}, "b": {"slot": 1}})
+            } else {
+                json!({"0": {"slot": 0}, "1": {"slot": 1}, "2": {"slot": 2}, "3": {"slot": 3}})
+            };
+            if fail {
+                expected
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(if items.is_empty() { "a" } else { "0" });
+            }
+            assert_eq!(execution.node_executions()[0].artifact, Some(expected));
+            assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+        }
+    }
+}
+
+#[test]
+fn test_fanoutの成果_全slotがignore失敗なら空mapになる() {
+    // Given
+    let mut execution = fanout_execution("[{a: {on_failure: ignore}}]", "items: [x, y]");
+    let mut new_id = id_source();
+    let leaves = start_fanout(&mut execution, &mut new_id);
+
+    // When
+    for leaf in leaves {
+        execution.fail_leaf_execution(
+            &leaf.node_execution_id,
+            "failed".to_string(),
+            NodeExecutionFailureKind::ValidationFailure,
+            FailureDisposition::Terminal,
+            2.0,
+        );
+        execution
+            .apply_on_failure_treatment(&leaf.node_execution_id, &mut new_id, 3.0)
+            .unwrap()
+            .unwrap();
+    }
+
+    // Then
+    assert_eq!(execution.node_executions()[0].artifact, Some(json!({})));
+    assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+}
+
+#[test]
+fn test_fanoutの成果_artifact未宣言とignore未宣言の失敗はnullで残す() {
+    // Given
+    let mut execution = execution(
+        r#"
+name: null-slots
+description: test
+nodes:
+  main: {fanout: {children: [silent, failed]}}
+  silent: {session: {provider: codex}}
+  failed: {command: 'exit 1'}
+"#,
+    );
+    let mut new_id = id_source();
+    let leaves = start_fanout(&mut execution, &mut new_id);
+    finish_leaf(&mut execution, &leaves[0], None, &mut new_id);
+    execution.fail_leaf_execution(
+        &leaves[1].node_execution_id,
+        "failed".to_string(),
+        NodeExecutionFailureKind::ValidationFailure,
+        FailureDisposition::Terminal,
+        2.0,
+    );
+    assert!(execution
+        .apply_on_failure_treatment(&leaves[1].node_execution_id, &mut new_id, 3.0)
+        .unwrap()
+        .is_none());
+    let scope_id = execution.node_executions()[0].id.clone();
+
+    // When
+    execution
+        .complete_scope(&scope_id, false, &mut AdvanceEffects::Derive, 4.0)
+        .unwrap();
+
+    // Then
+    assert_eq!(
+        execution.node_executions()[0].artifact,
+        Some(json!({"silent": null, "failed": null}))
+    );
+}
+
+#[test]
+fn test_fanoutの成果_replayのpush順が異なっても展開座標から同じキーを作る() {
+    // Given
+    let mut execution = fanout_execution("[a, b]", "items: [x, y]");
+    execution
+        .replay_node_started("main-id", "main", NodeKindName::Fanout, 1, None, 1.0)
+        .unwrap();
+    for (index, name, item_index, child_index) in [
+        (3, "b", 1, 1),
+        (0, "a", 0, 0),
+        (2, "a", 1, 0),
+        (1, "b", 0, 1),
+    ] {
+        execution
+            .replay_node_started(
+                &format!("slot-{index}"),
+                name,
+                NodeKindName::Command,
+                1,
+                Some(ExecutionParentRef::fanout_child(
+                    "main-id",
+                    Some(item_index),
+                    child_index,
+                )),
+                2.0,
+            )
+            .unwrap();
+    }
+    let mut new_id = id_source();
+
+    // When
+    for index in [0, 1, 2, 3] {
+        let leaf = execution.leaf_start_for(&format!("slot-{index}")).unwrap();
+        finish_leaf(
+            &mut execution,
+            &leaf,
+            Some(json!({"slot": index})),
+            &mut new_id,
+        );
+    }
+
+    // Then
+    assert_eq!(
+        execution.node_execution("main-id").unwrap().artifact,
+        Some(json!({"0": {"slot": 0}, "1": {"slot": 1}, "2": {"slot": 2}, "3": {"slot": 3}}))
+    );
+}
+
+#[test]
+fn test_fanoutの成果_解決不能な展開座標は集約エラーになる() {
+    // Given
+    let mut execution = fanout_execution("[a]", "");
+    let mut new_id = id_source();
+    let leaves = start_fanout(&mut execution, &mut new_id);
+    execution
+        .runtime
+        .node_executions
+        .iter_mut()
+        .find(|node| node.id == leaves[0].node_execution_id)
+        .unwrap()
+        .parent
+        .as_mut()
+        .unwrap()
+        .fanout_slot
+        .as_mut()
+        .unwrap()
+        .child_index = 1;
+    let scope_id = execution.node_executions()[0].id.clone();
+
+    // When
+    let result = execution.complete_scope(&scope_id, false, &mut AdvanceEffects::Derive, 2.0);
+
+    // Then
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("has no valid slot coordinates"));
+}
+
+#[test]
+fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛とitems展開へ値を渡す() {
+    // Given
+    let mut execution = execution(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-references.yml"
+    )));
+    crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+    let mut new_id = id_source();
+    let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
+    let named = json!({"passed": true, "tasks": ["first", "second"]});
+    let indexed = json!({"passed": false, "tasks": []});
+    let nested = json!({"passed": true, "tasks": ["third", "fourth"]});
+
+    // When
+    let completed = finish_leaf(&mut execution, &leaf, Some(named.clone()), &mut new_id);
+    let ExecutionAdvanceDecision::StartLeaves(leaves) = completed.decision else {
+        panic!("expected items expansion");
+    };
+
+    // Then
+    assert_eq!(leaves.len(), 2);
+    for (leaf, item) in leaves.iter().zip(["first", "second"]) {
+        assert_eq!(leaf.bindings, vec![("item".to_string(), json!(item))]);
+    }
+    finish_leaf(
+        &mut execution,
+        &leaves[0],
+        Some(indexed.clone()),
+        &mut new_id,
+    );
+    let leaf =
+        next_leaf(finish_leaf(&mut execution, &leaves[1], Some(indexed), &mut new_id).decision);
+    assert_eq!(leaf.node_name, "nested_a");
+    let leaf = next_leaf(finish_leaf(&mut execution, &leaf, Some(nested), &mut new_id).decision);
+    assert_eq!(leaf.node_name, "consume");
+    assert_eq!(
+        leaf.bindings,
+        vec![
+            ("all".to_string(), json!({"a": named.clone()})),
+            ("slot".to_string(), named),
+            ("named".to_string(), json!(true)),
+            ("indexed".to_string(), json!(false)),
+            ("nested".to_string(), json!(true)),
+        ]
+    );
+    let completed = finish_leaf(&mut execution, &leaf, None, &mut new_id);
+    let ExecutionAdvanceDecision::StartLeaves(leaves) = completed.decision else {
+        panic!("expected nested items expansion");
+    };
+    assert_eq!(leaves.len(), 2);
+    for (leaf, item) in leaves.iter().zip(["third", "fourth"]) {
+        assert_eq!(leaf.node_name, "worker");
+        assert_eq!(leaf.bindings, vec![("item".to_string(), json!(item))]);
+    }
+}
+
+#[test]
+fn test_fanoutの辺_確定したmapのwhenとswitchとsequence経由で次のleafを起動する() {
+    // Given
+    for (passed, verdict, nested_passed, target) in [
+        (false, "READY", true, "finished"),
+        (true, "HOLD", true, "finished"),
+        (true, "READY", false, "finished"),
+        (true, "READY", true, "ready"),
+    ] {
+        let mut execution = execution(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-routing.yml"
+        )));
+        crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+        let mut new_id = id_source();
+        let mut leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
+
+        // When
+        assert_eq!(leaf.node_name, "a");
+        leaf = next_leaf(
+            finish_leaf(
+                &mut execution,
+                &leaf,
+                Some(json!({"passed": passed, "verdict": verdict})),
+                &mut new_id,
+            )
+            .decision,
+        );
+        if passed {
+            assert_eq!(leaf.node_name, "indexed_worker");
+            leaf = next_leaf(
+                finish_leaf(
+                    &mut execution,
+                    &leaf,
+                    Some(json!({"passed": true, "verdict": "READY"})),
+                    &mut new_id,
+                )
+                .decision,
+            );
+            assert_eq!(leaf.node_name, "classify");
+            leaf = next_leaf(
+                finish_leaf(
+                    &mut execution,
+                    &leaf,
+                    Some(json!({"passed": true, "verdict": verdict})),
+                    &mut new_id,
+                )
+                .decision,
+            );
+            if verdict == "READY" {
+                assert_eq!(leaf.node_name, "nested_a");
+                leaf = next_leaf(
+                    finish_leaf(
+                        &mut execution,
+                        &leaf,
+                        Some(json!({"passed": nested_passed, "verdict": verdict})),
+                        &mut new_id,
+                    )
+                    .decision,
+                );
+            }
+        }
+
+        // Then
+        assert_eq!(leaf.node_name, target);
+    }
+}
+
+#[test]
+fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしinputで受ける() {
+    // Given
+    for source in [
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/adaptor/gateway/workflow/fixtures/valid/fanout-command-reducer.yml"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/adaptor/gateway/workflow/fixtures/valid/fanout-session-reducer.yml"
+        )),
+    ] {
+        for all_lgtm in [true, false] {
+            let mut execution = execution(source);
+            crate::domain::workflow::services::validation::validate(&execution.workflow).unwrap();
+            let mut new_id = id_source();
+            let leaves = start_fanout(&mut execution, &mut new_id);
+            let review_a = json!({"lgtm": true});
+            let review_b = json!({"lgtm": all_lgtm});
+
+            // When
+            finish_leaf(
+                &mut execution,
+                &leaves[0],
+                Some(review_a.clone()),
+                &mut new_id,
+            );
+            let judge = next_leaf(
+                finish_leaf(
+                    &mut execution,
+                    &leaves[1],
+                    Some(review_b.clone()),
+                    &mut new_id,
+                )
+                .decision,
+            );
+
+            // Then
+            assert_eq!(judge.node_name, "judge");
+            assert_eq!(
+                judge.bindings,
+                vec![(
+                    "reviews".to_string(),
+                    json!({"review-a": review_a, "review-b": review_b})
+                )]
+            );
+            let judgment = if judge.kind == NodeKindName::Command {
+                json!({"ok": true, "all_lgtm": all_lgtm})
+            } else {
+                json!({"verdict": if all_lgtm {"READY"} else {"NEEDS_FIX"}})
+            };
+            let target = next_leaf(
+                finish_leaf(&mut execution, &judge, Some(judgment), &mut new_id).decision,
+            );
+            assert_eq!(target.node_name, if all_lgtm { "ready" } else { "fix" });
+        }
+    }
+}

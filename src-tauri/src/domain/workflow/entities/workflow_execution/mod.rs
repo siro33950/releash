@@ -1578,15 +1578,29 @@ impl WorkflowExecution {
                 for child in &fanout.children {
                     combined.add(&child.token_usage);
                 }
-                // `on_failure: ignore` 宣言 child の失敗 slot は結果配列から除く。
-                // 宣言なしの失敗 slot は現行のまま null で残る。
-                let aggregated = serde_json::Value::Array(
+                let aggregated = serde_json::Value::Object(
                     fanout
                         .children
                         .iter()
                         .filter(|child| !self.is_ignored_failed_fanout_slot(&node, child))
-                        .map(|child| child.artifact.clone().unwrap_or(serde_json::Value::Null))
-                        .collect(),
+                        .map(|child| {
+                            let key = self
+                                .node_execution(&child.node_execution_id)
+                                .and_then(|execution| execution.parent.as_ref())
+                                .and_then(|parent| parent.fanout_slot)
+                                .and_then(|slot| node.fanout()?.artifact_key(slot))
+                                .ok_or_else(|| {
+                                    crate::domain::workflow::WorkflowError::invalid_state(format!(
+                                        "fanout child '{}' has no valid slot coordinates",
+                                        child.node_execution_id
+                                    ))
+                                })?;
+                            Ok((
+                                key,
+                                child.artifact.clone().unwrap_or(serde_json::Value::Null),
+                            ))
+                        })
+                        .collect::<Result<_, crate::domain::workflow::WorkflowError>>()?,
                 );
                 (
                     Some(aggregated),
@@ -3010,7 +3024,7 @@ impl WorkflowExecution {
         }
     }
 
-    /// fanout 集約時に結果配列から除外する slot（`on_failure: ignore` 宣言 child の失敗）。
+    /// fanout 集約時に結果 map から除外する slot（`on_failure: ignore` 宣言 child の失敗）。
     fn is_ignored_failed_fanout_slot(
         &self,
         owner: &NodeDefinition,
@@ -6157,10 +6171,10 @@ mod tests {
         }
 
         assert_eq!(final_started, ["merge_implementations"]);
-        let expected_results = serde_json::json!([
-            {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}},
-            {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}}
-        ]);
+        let expected_results = serde_json::json!({
+            "0": {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}},
+            "1": {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}}
+        });
         let merge_id = execution_id_of(&execution, "merge_implementations");
         let merge = execution.leaf_start_for(&merge_id).unwrap();
         assert_eq!(
@@ -7020,7 +7034,7 @@ mod tests {
     }
 
     #[test]
-    fn fanout_ignored_failed_child_is_excluded_from_the_aggregate_array() {
+    fn fanout_ignored_failed_child_is_excluded_from_the_aggregate_map() {
         let mut execution = tree_execution(vec![
             tree_sequence_node(
                 "main",
@@ -7058,7 +7072,7 @@ mod tests {
         assert!(outcome.events.is_empty());
         assert!(outcome.leaves.is_empty());
 
-        // 最後の子の完了で fanout が完了し、失敗子は結果配列から除かれる。
+        // 最後の子の完了で fanout が完了し、失敗子のキーは結果 map から除かれる。
         let applied = execution
             .complete_leaf_and_advance(&steady, &mut new_id, 4.0)
             .unwrap();
@@ -7074,15 +7088,8 @@ mod tests {
                 } if *node_execution_id == fan_id => Some(value.clone()),
                 _ => None,
             })
-            .expect("fanout completion must aggregate an array");
-        let serde_json::Value::Array(values) = aggregated else {
-            panic!("fanout aggregate must be an array");
-        };
-        assert_eq!(
-            values.len(),
-            1,
-            "the ignored failed child must be excluded from the aggregate"
-        );
+            .expect("fanout completion must aggregate a map");
+        assert_eq!(aggregated, serde_json::json!({"steady": null}));
         assert!(started_names(&applied.events).contains(&"after".to_string()));
     }
 

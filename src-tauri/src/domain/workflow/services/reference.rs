@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
+use super::contract_schema;
+
 use crate::domain::workflow::{
     ChildEntry, EnvironmentVariableName, FieldPath, InputParameterRef, NodeDefinition, NodeKind,
     NodeKindName, SchemaDef, WorkflowDefinition,
@@ -192,68 +194,106 @@ pub(crate) fn split_reference(value: &str) -> Option<(&str, FieldPath)> {
     Some((value.split('.').next()?, field_path))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NodeReferenceSchemaError {
-    ArtifactNotObject,
-    NoReferenceableArtifact,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ResolvedNodeField {
+    Leaf { schema: SchemaDef, required: bool },
+    Map,
 }
 
-pub(crate) fn node_reference_schema(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NodeFieldPathError {
+    ArtifactNotObject,
+    NoReferenceableArtifact,
+    Segment(contract_schema::FieldPathResolutionError),
+}
+
+pub(crate) fn resolve_node_field_path(
     workflow: &WorkflowDefinition,
     node: &NodeDefinition,
-) -> Result<SchemaDef, NodeReferenceSchemaError> {
-    fn resolve(
-        workflow: &WorkflowDefinition,
-        node: &NodeDefinition,
-        visited: &mut HashSet<String>,
-    ) -> Result<SchemaDef, NodeReferenceSchemaError> {
-        if !visited.insert(node.name.clone()) {
-            return Err(NodeReferenceSchemaError::NoReferenceableArtifact);
-        }
-        let artifact_schema = node
-            .artifact
-            .as_deref()
-            .and_then(|contract| workflow.schemas.get(contract));
-        match &node.kind {
-            NodeKind::Command(_) => {
-                crate::domain::workflow::services::contract_schema::command_reference_schema(
-                    artifact_schema,
-                )
-                .map_err(|_| NodeReferenceSchemaError::ArtifactNotObject)
-            }
-            NodeKind::Session(_) => artifact_schema
-                .cloned()
-                .ok_or(NodeReferenceSchemaError::NoReferenceableArtifact),
-            NodeKind::Fanout(_) => Err(NodeReferenceSchemaError::NoReferenceableArtifact),
-            NodeKind::Sequence(sequence) => {
-                let properties = sequence
-                    .children
-                    .iter()
-                    .filter_map(|entry| {
-                        let child = workflow.node_by_name(&entry.name)?;
-                        resolve(workflow, child, visited)
-                            .ok()
-                            .map(|schema| (entry.name.clone(), schema))
-                    })
-                    .collect();
-                Ok(SchemaDef::Object {
-                    properties,
-                    required: Default::default(),
-                })
-            }
-        }
+    field_path: &FieldPath,
+) -> Result<ResolvedNodeField, NodeFieldPathError> {
+    let mut current = node;
+    let mut position = 0;
+    let mut visited = HashSet::from([node.name.as_str()]);
+    while current.is_composite() {
+        let Some(segment) = field_path.segments().get(position) else {
+            return Ok(ResolvedNodeField::Map);
+        };
+        let child = composite_artifact_child(current, segment)
+            .and_then(|entry| workflow.node_by_name(&entry.name))
+            .filter(|child| node_has_artifact(child))
+            .filter(|child| visited.insert(child.name.as_str()))
+            .ok_or_else(|| missing_node_field(position, segment))?;
+        current = child;
+        position += 1;
     }
-    resolve(workflow, node, &mut HashSet::new())
+    let schema = node_reference_schema(workflow, current).map_err(|error| match error {
+        NodeFieldPathError::NoReferenceableArtifact if position > 0 => {
+            missing_node_field(position - 1, &field_path.segments()[position - 1])
+        }
+        NodeFieldPathError::ArtifactNotObject if position > 0 => {
+            NodeFieldPathError::Segment(contract_schema::FieldPathResolutionError {
+                position: position - 1,
+                segment: field_path.segments()[position - 1].clone(),
+                kind: contract_schema::FieldPathResolutionErrorKind::NonObject,
+            })
+        }
+        _ => error,
+    })?;
+    let remaining = FieldPath::new(field_path.segments()[position..].iter().cloned());
+    let resolved =
+        contract_schema::resolve_field_path(&schema, &remaining).map_err(|mut error| {
+            error.position += position;
+            NodeFieldPathError::Segment(error)
+        })?;
+    Ok(ResolvedNodeField::Leaf {
+        schema: resolved.schema.clone(),
+        required: resolved.required,
+    })
+}
+
+fn composite_artifact_child<'a>(node: &'a NodeDefinition, key: &str) -> Option<&'a ChildEntry> {
+    match &node.kind {
+        NodeKind::Sequence(sequence) => sequence.child_entry(key),
+        NodeKind::Fanout(fanout) => fanout.child_entry_for_artifact_key(key),
+        _ => None,
+    }
+}
+
+fn missing_node_field(position: usize, segment: &str) -> NodeFieldPathError {
+    NodeFieldPathError::Segment(contract_schema::FieldPathResolutionError {
+        position,
+        segment: segment.to_string(),
+        kind: contract_schema::FieldPathResolutionErrorKind::MissingProperty,
+    })
+}
+
+fn node_reference_schema(
+    workflow: &WorkflowDefinition,
+    node: &NodeDefinition,
+) -> Result<SchemaDef, NodeFieldPathError> {
+    let artifact_schema = node
+        .artifact
+        .as_deref()
+        .and_then(|contract| workflow.schemas.get(contract));
+    match &node.kind {
+        NodeKind::Command(_) => contract_schema::command_reference_schema(artifact_schema)
+            .map_err(|_| NodeFieldPathError::ArtifactNotObject),
+        NodeKind::Session(_) => artifact_schema
+            .cloned()
+            .ok_or(NodeFieldPathError::NoReferenceableArtifact),
+        _ => Err(NodeFieldPathError::NoReferenceableArtifact),
+    }
 }
 
 /// fanout items（`<node>.<field>...`）の終端 schema を解決する。
-/// 参照先は Artifact を産出するカタログ node（fanout の子は親の配列へ集約される
+/// 参照先は Artifact を産出するカタログ node（fanout の子は親の map へ集約される
 /// ため参照不可）。
 pub(crate) fn artifact_field_schema(
     workflow: &WorkflowDefinition,
     node_name: &str,
     field_path: &FieldPath,
-) -> Result<SchemaDef, String> {
+) -> Result<ResolvedNodeField, String> {
     if workflow
         .nodes
         .iter()
@@ -271,27 +311,25 @@ pub(crate) fn artifact_field_schema(
     if !node_has_artifact(node) {
         return Err(format!("node '{node_name}' does not produce an Artifact"));
     }
-    let schema = node_reference_schema(workflow, node).map_err(|error| match error {
-        NodeReferenceSchemaError::ArtifactNotObject => {
+    resolve_node_field_path(workflow, node, field_path).map_err(|error| match error {
+        NodeFieldPathError::ArtifactNotObject => {
             format!("node '{node_name}' Artifact Contract is not an object")
         }
-        NodeReferenceSchemaError::NoReferenceableArtifact => {
+        NodeFieldPathError::NoReferenceableArtifact => {
             format!("node '{node_name}' has no Artifact field path '{field_path}'")
         }
-    })?;
-    crate::domain::workflow::services::contract_schema::resolve_field_path(&schema, field_path)
-    .map(|resolved| resolved.schema.clone())
-    .map_err(|error| match error.kind {
-        crate::domain::workflow::services::contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
-            "node '{node_name}' Artifact cannot resolve segment {} ('{}') from a non-object value",
-            error.position + 1,
-            error.segment
-        ),
-        crate::domain::workflow::services::contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
-            "node '{node_name}' Artifact does not declare segment {} ('{}')",
-            error.position + 1,
-            error.segment
-        ),
+        NodeFieldPathError::Segment(error) => match error.kind {
+            contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+                "node '{node_name}' Artifact cannot resolve segment {} ('{}') from a non-object value",
+                error.position + 1,
+                error.segment
+            ),
+            contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
+                "node '{node_name}' Artifact does not declare segment {} ('{}')",
+                error.position + 1,
+                error.segment
+            ),
+        },
     })
 }
 
@@ -327,7 +365,7 @@ pub fn resolve_entry_bindings(
 ///
 /// 供給元は自 fanout の input パラメータ（`parent_parameters`）/ `request` /
 /// `items`（展開の各要素 = `item` 引数）に閉じる。兄弟や他 node の直接参照は
-/// 存在しない（fanout の子は並走し、Artifact は親配列へ集約されるため）。
+/// 存在しない（fanout の子は並走し、Artifact は親の map へ集約されるため）。
 ///
 /// 自動束縛: entry が items を明示配線せず、node のパラメータがちょうど1つで
 /// 未配線なら、そのパラメータへ item を束縛する。

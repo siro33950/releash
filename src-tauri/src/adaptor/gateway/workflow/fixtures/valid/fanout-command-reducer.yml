@@ -1,5 +1,5 @@
 name: fanout-command-reducer
-description: command reducer folds a fanout Artifact array into a boolean Artifact
+description: command reducer folds a fanout Artifact map into a boolean Artifact
 schemas:
   review-verdict:
     type: object

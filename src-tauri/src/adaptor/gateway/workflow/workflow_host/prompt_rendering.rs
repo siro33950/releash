@@ -171,6 +171,10 @@ pub(crate) fn build_leaf_prompt(
 }
 
 #[cfg(test)]
+#[path = "prompt_rendering_test.rs"]
+mod prompt_rendering_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

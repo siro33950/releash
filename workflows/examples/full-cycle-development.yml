@@ -611,7 +611,7 @@ nodes:
     - spec
     artifact: implement-task-check-result
 
-  # 検証結果（implement_all の子 Artifact 配列）と各 task branch の diff を確認し、
+  # 検証結果（implement_all の添字キーごとの子 Artifact map）と各 task branch の diff を確認し、
   # 親 worktree へ統合する。統合は通常の Git 操作（専用構文は持たない）。
   merge_implementations:
     session:

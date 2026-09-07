@@ -1,0 +1,60 @@
+name: fanout-map-routing
+description: Fanout maps support when and switch and routing through Sequence maps
+schemas:
+  result:
+    type: object
+    properties:
+      passed: {type: boolean}
+      verdict: {type: string, enum: [READY, HOLD]}
+    required: [passed, verdict]
+nodes:
+  main:
+    sequence:
+      children:
+        - fan:
+            rules:
+              - when: {on: a.passed, then: indexed}
+                next: finished
+        - indexed:
+            rules:
+              - switch:
+                  on: 0.verdict
+                  cases: {READY: classifier, HOLD: finished}
+        - classifier:
+            rules:
+              - switch:
+                  on: classify.verdict
+                  cases: {READY: seq, HOLD: finished}
+        - seq:
+            rules:
+              - when: {on: nested_fan.nested_a.passed, then: ready}
+                next: finished
+        - ready:
+            rules:
+              - next: partial_classifier
+        - partial_classifier:
+            rules:
+              - switch:
+                  on: partial_classify.verdict
+                  cases:
+                    READY: finished
+                next: finished
+        - finished
+  fan: {fanout: {children: [a]}}
+  a: {command: collect, artifact: result}
+  indexed: {fanout: {children: [indexed_worker], items: [task]}}
+  indexed_worker: {command: collect, input: [item], artifact: result}
+  classifier: {fanout: {children: [classify]}}
+  classify: {command: collect, artifact: result}
+  partial_classifier:
+    fanout:
+      children:
+        - partial_classify
+  partial_classify:
+    command: collect
+    artifact: result
+  seq: {sequence: {children: [nested_fan]}}
+  nested_fan: {fanout: {children: [nested_a]}}
+  nested_a: {command: collect, artifact: result}
+  ready: {command: ready}
+  finished: {command: finished}

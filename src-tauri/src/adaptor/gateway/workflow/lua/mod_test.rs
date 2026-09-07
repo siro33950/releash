@@ -245,3 +245,69 @@ fn test_lua参照パス_深いチェーンを線形に保持してarena上限で
         assert_eq!(host.source_paths.parents.len(), depth + 3);
     }
 }
+
+#[test]
+fn test_lua未消費参照_fanoutの名前キーと添字キーと入れ子を受理する() {
+    // Given
+    for (items, path) in [
+        ("", "main.fan.check.ok"),
+        ("items = {'one'},", "main.fan['0'].ok"),
+        ("items = {'one'},", "main.fan['100'].ok"),
+        ("", "main.fan"),
+    ] {
+        let source = format!(
+            r#"local r = require('releash')
+local c = r.command{{ name = 'check', command = 'true', input = {{ r.input('item') }} }}
+local fan = r.fanout{{ name = 'fan', {items} children = {{ r.child{{ node = c }} }} }}
+local main = r.sequence{{ children = {{ r.child{{ node = fan }} }} }}
+local ref = {path}
+return r.workflow{{ name = 'example', description = 'example', main = main }}
+"#
+        );
+
+        // When
+        let loaded = load_unconsumed_source(&source);
+
+        // Then
+        assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[test]
+fn test_lua未消費参照_fanoutの未知キーと非正準添字と非objectを拒否する() {
+    // Given
+    for (items, path, message) in [
+        (
+            "",
+            "fan.missing.ok",
+            "artifact field 'missing' does not exist",
+        ),
+        (
+            "items = {'one'},",
+            "fan['007'].ok",
+            "artifact field '007' does not exist",
+        ),
+        (
+            "",
+            "fan.check.ok.missing",
+            "artifact field 'missing' cannot be read from a non-object schema",
+        ),
+    ] {
+        let source = format!(
+            r#"local r = require('releash')
+local c = r.command{{ name = 'check', command = 'true' }}
+local fan = r.fanout{{ {items} children = {{ r.child{{ node = c }} }} }}
+local ref = {path}
+return r.workflow{{ name = 'example', description = 'example', main = fan }}
+"#
+        );
+
+        // When
+        let error = load_unconsumed_source(&source).unwrap_err();
+
+        // Then
+        assert_eq!(error.code, "WFR003");
+        assert_eq!(error.message, message);
+        assert_eq!(error.location.unwrap().line, 4);
+    }
+}
