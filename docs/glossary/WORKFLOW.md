@@ -98,7 +98,7 @@ children の `inputs` は `<パラメータ名>: <供給元>` の map である�
 - Fanout の子は並走するため、兄弟の Artifact を直接参照しない。外側の値は親から input を一段ずつ渡す。
 - `items` は本文の特殊名ではない。child の input パラメータへ配線し、そのパラメータ名を本文で参照する。
 - 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>...` で、参照先の Node と各 field が存在し、Node 供給元は Artifact を産出する必要がある。Sequence は宣言なしに統合 map を産出し、`<sequence>.<child>.<field>...` で child の値を参照できる。
-- Sequence 内の Fanout child は、実行時には統合 map のキーとして配列の値を持つが、load 時の参照解決用 schema には含まれない。このため `<sequence>.<fanout child>`（例: `review_scan.full_review_fanout`）およびその先の field path は Error Diagnostic になる。この制限は配線 `inputs`、`when.on` / `switch.on`、`fanout.items` の3経路に共通する。並列の結果を下流へ渡す場合は、参照可能なスコープで Fanout そのものを field path なしの供給元にする（例: 同じ Sequence の兄弟から `results: full_review_fanout` と配線する）。
+- Fanout は宣言なしに slot ごとの Artifact の map を産出し、`<fanout>.<キー>.<field>...` で slot の値を参照できる。合成子の内側にある場合も、`<合成子>.<fanout>.<キー>.<field>...` で参照できる。例えば Sequence `outer_seq` の child に `items` なしの Fanout `parallel_checks` があり、その child `check_a` が `passed` field を持つ Artifact を産出する場合、`outer_seq.parallel_checks.check_a.passed` で参照できる。合成子経由で辿る各段の slot は Artifact を産出する Node に限る。Command / Fanout / Sequence は常に Artifact を持つが、Session は `artifact` 宣言がある場合だけであり、宣言しない Session は段にできない。配線 `inputs`、`when.on` / `switch.on`、`fanout.items` の3経路で同じ map を辿る。Fanout 全体を渡す場合は field path なしで配線する（例: `results: full_review_fanout`）。
 - 同じ名前が Sequence の兄弟 Node と Sequence 自身の input パラメータの両方に一致する配線は曖昧なので拒否される。`request` と `items` は予約供給元名であり、Node の input パラメータ名には使えない。`request` / `items` に field は無く、`items` は `items` を宣言した Fanout 内だけで使える。
 
 配線 `inputs`、Command の `env`、テンプレート `{{ }}`、`fanout.items` の field path は `.` で区切り、各段は先頭が ASCII 英数字、以降が ASCII 英数字・`-`・`_` である。参照文字列の前後に空白を含めることはできない。テンプレート `{{ }}` の内側にある空白だけは区切りとして扱い、参照文字列には含めない。段数に上限はない。起点に Contract がある参照は、各段を Object の `properties` に沿って load 時に解決する。存在しない field、Object でない値から field を引く段、または末端が参照箇所の要求型を満たさない参照は Error Diagnostic になる。中間 Object の field は `required` でなくてもよく、array の要素 Contract を経由して次の段を解決しない。共有 domain validation は、型なし input パラメータを起点とする field path の Contract 検査を行わず、実行時の Object 値を各段に沿って引く。`when.on` / `switch.on` の field path は後述の rules 固有の規則に従う。
@@ -191,8 +191,24 @@ fix_each:
 - item ごとに children を展開する。各要素は children の `inputs` で供給元 `items` から渡す。
 - child の input が一つだけで `items` がある場合に限り、その `inputs` を省略できる。
 - 型付き child input が `items` を受ける場合、Artifact 配列の要素 Contract または各 literal item がその Contract と一致する必要がある。
-- children の Artifact は実行順の配列として Fanout の Artifact になる。
-- `on_failure: ignore` の child は失敗時に結果配列から除かれる。
+- children の Artifact は slot をキーで引ける map として Fanout の Artifact になる。各キーの値は、その slot の Artifact そのものである。
+- `items` なしのキーは children エントリ名、`items` ありのキーは0から始まる展開順の添字の文字列である。
+- `items` と複数 children を同時に宣言した場合は、item を外側・children エントリを内側とするフラットな並びに展開する。キーは `item_index * children.len() + child_index` で決まり、item ごとや child ごとの階層は作らない。
+- `on_failure: ignore` の失敗 slot はキーの欠番になる。他の slot のキーはずれない。
+- Artifact を産出しなかった slot（`on_failure` 宣言なしの失敗、`artifact` を宣言しない child）はキーとして残り、値が `null` になる。宣言なしの失敗で中断する規則は変わらない。
+- `items` が空配列で slot が展開されない場合、または全 slot が `on_failure: ignore` の失敗になった場合は空の object `{}` になる。
+
+```json
+{ "run_lint": { "ok": true }, "run_test": { "ok": true } }
+```
+
+上は `items` なしの例である。`items` が2件で children が `run_lint`、`run_test` の順なら、キーは次のようになる。`"0"` と `"1"` が最初の item、`"2"` と `"3"` が次の item の成果である。
+
+```json
+{ "0": { "ok": true }, "1": { "ok": true }, "2": { "ok": true }, "3": { "ok": true } }
+```
+
+添字キーは正準な10進表記だけを解決し、`007`、`+1`、`1.0`、前後に空白を含むキーは解決しない。load 時は対応する children エントリの Contract を検査し、実行時に決まる item 数による添字の上限は検査しない。無名インラインエントリの合成内部名（`<fanout名>#<index>`）も map のキーになるが、配線 `inputs` と `fanout.items` の field path では `#` を段に使えない。Lua で添字を参照する場合は `fan["0"].passed` と書く。field path の区切り・文字種・段数の規則は変わらない。
 
 ### Command
 
@@ -307,7 +323,7 @@ rules:
 - 一つの `rules` リストに置ける判別規則（`when` または `switch`）、`loop_guard`、単独 `next` はそれぞれ最大一つである。判別規則と単独 `next` は併記せず、判別規則自身の sibling `next` を catch-all に使う。
 - 辺の target は存在する Node でなければならない。同じ Sequence の child またはどの合成子にも属さない Node へ遷移できるが、別の合成子が所有する child へ外から遷移できない。
 - `switch` の case は enum 値だけを使う。case が非網羅なら sibling `next` が必須で、網羅していれば `next` は書かない。ただし Artifact を持つ Command の独自 field で分岐するときは、command failure の catch-all として `next` が必要である。
-- Fanout child に `when` / `switch` は置けない。Artifact を宣言しない Session child の field では分岐できない。Command の予約結果 `ok` は宣言なしで使える。Sequence child は統合 map を持つため、`<child>.<field>...` で参照可能な children エントリ名を起点に分岐できる（例: `check_full_review_threads.has_open_threads`）。統合 map 内の Fanout child は参照先にできず、分岐の起点にもできない。
+- Fanout の children エントリに `when` / `switch` を含む `rules` は置けない（`WFC007`）。Artifact を宣言しない Session child の field では分岐できない。Command の予約結果 `ok` は宣言なしで使える。Sequence を自 Node とする辺では、統合 map の `<child>.<field>...` を起点に分岐できる（例: `check_full_review_threads.has_open_threads`）。Fanout を自 Node とする辺にも `when` / `switch` を置け、`<キー>.<field>...`（例: `a.passed`、`0.verdict`）を起点に分岐できる。Sequence 経由の `<fanout>.<キー>.<field>...` も同じ規則で解決する。合成子の map のキー自体は required にせず、受理の可否は終端 field の型と、その直上 Object の `required` で決まる。実行時に `when.on` の指す値が存在しない場合、述語は false になり、同じ要素の sibling `next` へ進む。`switch.on` の指す値が存在しない場合は、どの case にも当たらない。非網羅 switch は sibling `next` へ進み、網羅 switch は `next` を書けないため進行エラーになる（前述の Command の command failure catch-all は例外）。
 - 後方辺の cycle には、その cycle 上の少なくとも一つのエントリに `loop_guard` が必要である。無い場合は `WFC005` になる。`max_iterations` は1以上で、上限では `on_exhausted` へ進む。合成子の静的な包含 cycle も load 時に拒否する。
 - 全 Node は `main` から children または rule target を辿って到達可能でなければならない。Sequence 内でも、実効 `entry` から隣接辺または明示 rules で到達できない child は拒否される。
 - 比較・計算・配列集約の式言語はない。Command または Session が routing 用 boolean / enum を Artifact にする。
@@ -335,7 +351,7 @@ schemas:
 
 `required` の各 field は同じ Object の `properties` に存在しなければならない。配列の `items` は同じ `schemas` 内に存在する名前付き Contract を参照し、string の `enum` は宣言するなら非空でなければならない。Node の `artifact` / 型付き `input` が参照する Contract も同じ `schemas` 内に存在する必要がある。
 
-`artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の配列を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
+`artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の map を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
 
 ### 予約語と未解禁 field
 

@@ -107,9 +107,6 @@ pub enum RoutingValidationError {
     SwitchRequiresNext {
         node: String,
     },
-    DiscriminatorOnFanout {
-        node: String,
-    },
     DiscriminatorWithoutArtifact {
         node: String,
     },
@@ -431,11 +428,6 @@ fn validate_entry_rules(
         _ => {}
     }
 
-    if discriminator.is_some() && child.is_fanout() {
-        errors.push(RoutingValidationError::DiscriminatorOnFanout {
-            node: entry_name.to_string(),
-        });
-    }
     if discriminator.is_some() && !reference::node_has_artifact(child) {
         errors.push(RoutingValidationError::DiscriminatorWithoutArtifact {
             node: entry_name.to_string(),
@@ -699,36 +691,33 @@ fn validate_routing_field(
     expected: RoutingFieldKind,
 ) -> Result<Vec<String>, String> {
     let field_path = routing_field_path(field)?;
-    let schema = reference::node_reference_schema(workflow, node).map_err(|error| match error {
-        reference::NodeReferenceSchemaError::ArtifactNotObject => {
-            "command Artifact Contract is not an object".to_string()
-        }
-        reference::NodeReferenceSchemaError::NoReferenceableArtifact => match node
-            .artifact
-            .as_deref()
-        {
-            Some(contract_name) => {
-                format!("artifact Contract '{contract_name}' is not declared in schemas")
+    let resolved = reference::resolve_node_field_path(workflow, node, &field_path)
+        .map_err(|error| match error {
+            reference::NodeFieldPathError::ArtifactNotObject => {
+                "command Artifact Contract is not an object".to_string()
             }
-            None => format!("routing field '{field}' requires an artifact Contract on this node"),
-        },
-    })?;
-    let resolved = contract_schema::resolve_field_path(&schema, &field_path).map_err(|error| {
-        match error.kind {
-            contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
-                "routing field '{field}' cannot resolve segment {} ('{}') from a non-object value",
-                error.position + 1,
-                error.segment
-            ),
-            contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
-                "routing field '{field}' has undeclared segment {} ('{}')",
-                error.position + 1,
-                error.segment
-            ),
-        }
-    })?;
-    let kind = contract_schema::routing_field_kind(resolved.schema, resolved.required, field)
-        .map_err(|err| match err {
+            reference::NodeFieldPathError::NoReferenceableArtifact => match node.artifact.as_deref() {
+                Some(contract_name) => format!("artifact Contract '{contract_name}' is not declared in schemas"),
+                None => format!("routing field '{field}' requires an artifact Contract on this node"),
+            },
+            reference::NodeFieldPathError::Segment(error) => match error.kind {
+                contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
+                    "routing field '{field}' cannot resolve segment {} ('{}') from a non-object value",
+                    error.position + 1, error.segment
+                ),
+                contract_schema::FieldPathResolutionErrorKind::MissingProperty => format!(
+                    "routing field '{field}' has undeclared segment {} ('{}')",
+                    error.position + 1, error.segment
+                ),
+            },
+        })?;
+    let reference::ResolvedNodeField::Leaf { schema, required } = resolved else {
+        return Err(format!(
+            "routing field '{field}' must be boolean or string enum"
+        ));
+    };
+    let kind =
+        contract_schema::routing_field_kind(&schema, required, field).map_err(|err| match err {
             contract_schema::RoutingFieldError::NotRequired { .. } => {
                 format!("routing field '{field}' must be required on its parent Object")
             }
@@ -746,7 +735,7 @@ fn validate_routing_field(
             }
         });
     }
-    Ok(enum_values(resolved.schema).unwrap_or_default())
+    Ok(enum_values(&schema).unwrap_or_default())
 }
 
 fn enum_values(schema: &SchemaDef) -> Option<Vec<String>> {

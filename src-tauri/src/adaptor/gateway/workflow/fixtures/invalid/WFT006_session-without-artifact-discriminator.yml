@@ -1,0 +1,13 @@
+name: session-without-artifact-discriminator
+description: A Session without an Artifact cannot discriminate routes
+nodes:
+  main:
+    sequence:
+      children:
+        - silent:
+            rules:
+              - when: {on: passed, then: ready}
+                next: ready
+        - ready
+  silent: {session: {provider: codex, facets: {policy: coding}}}
+  ready: {command: ready}

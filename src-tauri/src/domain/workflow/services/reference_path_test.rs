@@ -320,3 +320,48 @@ fn test_template参照検証_型なしinputの多段は静的検査しない() {
     // Then
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn test_正本サンプルのfanout配線_統合と整合確認と修正統合へ同じslot集合を渡す() {
+    // Given
+    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../workflows/examples/full-cycle-development.yml"
+    )))
+    .unwrap();
+    let implementations = serde_json::json!({"0": {"verify_task": {"task_id": "one", "complete": true}}, "1": {"verify_task": {"task_id": "two", "complete": false}}});
+    let fixes = serde_json::json!({"0": {"verify_fix": {"complete": true}}, "2": {"verify_fix": {"complete": false}}});
+    let artifacts = HashMap::from([
+        ("implement_all".to_string(), implementations.clone()),
+        ("fix_all".to_string(), fixes.clone()),
+    ]);
+    for (scope, target, expected) in [
+        ("implementation", "merge_implementations", &implementations),
+        ("implementation", "check_integration", &implementations),
+        ("fix_round", "merge_fixes", &fixes),
+    ] {
+        let sequence = workflow.node_by_name(scope).unwrap().sequence().unwrap();
+        let entry = sequence.child_entry(target).unwrap();
+
+        // When
+        let bindings = resolve_entry_bindings(Some(entry), &artifacts);
+
+        // Then
+        assert_eq!(
+            workflow
+                .node_by_name(target)
+                .unwrap()
+                .input_parameter("results")
+                .unwrap()
+                .contract,
+            None
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|(name, _)| name == "results")
+                .map(|(_, value)| value),
+            Some(expected)
+        );
+    }
+}

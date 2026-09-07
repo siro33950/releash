@@ -1304,7 +1304,7 @@ mod fanout_tests {
         let fanout = tree.aggregate.node_execution("fan-exec").unwrap();
         assert_eq!(
             fanout.artifact.as_ref(),
-            Some(&serde_json::json!([x_artifact, y_artifact]))
+            Some(&serde_json::json!({"x": x_artifact, "y": y_artifact}))
         );
         assert_eq!(fanout.status, RuntimeNodeExecutionStatus::Succeeded);
         assert_eq!(*tree.aggregate.state(), RuntimeExecutionState::Completed);

@@ -1216,8 +1216,7 @@ fn validation_error_code_stage(
         ValidationError::InvalidRules { kind, .. } => match kind {
             InvalidRuleKind::WhenFieldNotBoolean => "WFT001",
             InvalidRuleKind::SwitchFieldNotEnum | InvalidRuleKind::SwitchUnknownCase => "WFT002",
-            InvalidRuleKind::DiscriminatorOnFanout
-            | InvalidRuleKind::DiscriminatorWithoutArtifact => "WFT006",
+            InvalidRuleKind::DiscriminatorWithoutArtifact => "WFT006",
             InvalidRuleKind::SwitchMissingCases => "WFC004",
             InvalidRuleKind::LoopGuardMaxIterations | InvalidRuleKind::CycleWithoutLoopGuard => {
                 "WFC005"
@@ -1362,12 +1361,10 @@ fn invalid_rule_suffix(
             matches!(rule, Rule::LoopGuard { .. })
         })
         .map(|index| format!("rules[{index}].loop_guard.max_iterations")),
-        InvalidRuleKind::DiscriminatorOnFanout | InvalidRuleKind::DiscriminatorWithoutArtifact => {
-            entry_rule_index(wf, entry_name, |rule| {
-                matches!(rule, Rule::When { .. } | Rule::Switch { .. })
-            })
-            .map(|index| format!("rules[{index}]"))
-        }
+        InvalidRuleKind::DiscriminatorWithoutArtifact => entry_rule_index(wf, entry_name, |rule| {
+            matches!(rule, Rule::When { .. } | Rule::Switch { .. })
+        })
+        .map(|index| format!("rules[{index}]")),
         InvalidRuleKind::MultipleDiscriminators
         | InvalidRuleKind::MultipleLoopGuards
         | InvalidRuleKind::MultipleNextCatchAll
@@ -1864,8 +1861,7 @@ fn invalid_rule_field_name(kind: InvalidRuleKind) -> &'static str {
         | InvalidRuleKind::SwitchRequiresNext
         | InvalidRuleKind::MultipleNextCatchAll => "rules.next",
         InvalidRuleKind::LoopGuardMaxIterations => "rules.loop_guard.max_iterations",
-        InvalidRuleKind::DiscriminatorOnFanout
-        | InvalidRuleKind::DiscriminatorWithoutArtifact
+        InvalidRuleKind::DiscriminatorWithoutArtifact
         | InvalidRuleKind::MultipleDiscriminators
         | InvalidRuleKind::MultipleLoopGuards
         | InvalidRuleKind::StandaloneNextWithDiscriminator
@@ -3753,15 +3749,6 @@ nodes:
                     reason: "renamed wording".to_string(),
                 },
                 "WFT002",
-                DiagnosticStage::Typecheck,
-            ),
-            (
-                validation::ValidationError::InvalidRules {
-                    node: "route".to_string(),
-                    kind: InvalidRuleKind::DiscriminatorOnFanout,
-                    reason: "renamed wording".to_string(),
-                },
-                "WFT006",
                 DiagnosticStage::Typecheck,
             ),
             (

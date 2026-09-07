@@ -1983,32 +1983,31 @@ impl WorkflowGraphBuilder {
                         continue;
                     };
                     let fields = self.host.source_paths.fields(*path);
-                    let schema =
-                        reference::node_reference_schema(workflow, node).map_err(|error| {
-                            let message = match error {
-                                reference::NodeReferenceSchemaError::NoReferenceableArtifact => {
-                                    "node does not declare an artifact".to_string()
-                                }
-                                reference::NodeReferenceSchemaError::ArtifactNotObject => format!(
-                                    "artifact field '{}' cannot be read from a non-object schema",
-                                    fields[0]
-                                ),
-                            };
-                            build_error("WFR003", message, Some(location.clone()))
-                        })?;
-                    contract_schema::resolve_field_path(
-                        &schema,
-                        &crate::domain::workflow::FieldPath::new(fields),
+                    reference::resolve_node_field_path(
+                        workflow,
+                        node,
+                        &crate::domain::workflow::FieldPath::new(fields.iter().cloned()),
                     )
                     .map_err(|error| {
-                        let message = match error.kind {
-                            contract_schema::FieldPathResolutionErrorKind::NonObject => format!(
-                                "artifact field '{}' cannot be read from a non-object schema",
-                                error.segment
-                            ),
-                            contract_schema::FieldPathResolutionErrorKind::MissingProperty => {
-                                format!("artifact field '{}' does not exist", error.segment)
+                        let message = match error {
+                            reference::NodeFieldPathError::NoReferenceableArtifact => {
+                                "node does not declare an artifact".to_string()
                             }
+                            reference::NodeFieldPathError::ArtifactNotObject => format!(
+                                "artifact field '{}' cannot be read from a non-object schema",
+                                fields[0]
+                            ),
+                            reference::NodeFieldPathError::Segment(error) => match error.kind {
+                                contract_schema::FieldPathResolutionErrorKind::NonObject => {
+                                    format!(
+                                    "artifact field '{}' cannot be read from a non-object schema",
+                                    error.segment
+                                )
+                                }
+                                contract_schema::FieldPathResolutionErrorKind::MissingProperty => {
+                                    format!("artifact field '{}' does not exist", error.segment)
+                                }
+                            },
                         };
                         build_error("WFR003", message, Some(location.clone()))
                     })?;

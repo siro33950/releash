@@ -1,5 +1,5 @@
 name: fanout-session-reducer
-description: session reducer folds a fanout Artifact array into an enum Artifact
+description: session reducer folds a fanout Artifact map into an enum Artifact
 schemas:
   review-verdict:
     type: object

@@ -1,0 +1,41 @@
+name: fanout-map-references
+description: Fanout slot maps support named, indexed and nested input and items references
+schemas:
+  text: string
+  result:
+    type: object
+    properties:
+      passed: {type: boolean}
+      tasks: {type: array, items: text}
+    required: [passed, tasks]
+nodes:
+  main:
+    sequence:
+      children:
+        - fan
+        - indexed
+        - seq
+        - consume:
+            inputs:
+              all: fan
+              slot: fan.a
+              named: fan.a.passed
+              indexed: indexed.0.passed
+              nested: seq.nested_fan.nested_a.passed
+        - expand
+  fan: {fanout: {children: [a]}}
+  a: {command: collect, artifact: result}
+  indexed:
+    fanout:
+      items: fan.a.tasks
+      children: [indexed_worker]
+  indexed_worker: {command: work, input: [item], artifact: result}
+  seq: {sequence: {children: [nested_fan]}}
+  nested_fan: {fanout: {children: [nested_a]}}
+  nested_a: {command: collect, artifact: result}
+  consume: {command: consume, input: [all, slot, named, indexed, nested]}
+  expand:
+    fanout:
+      items: seq.nested_fan.nested_a.tasks
+      children: [worker]
+  worker: {command: work, input: [item]}

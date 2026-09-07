@@ -3,6 +3,40 @@ use super::*;
 const MERGED_REFERENCES: &str = include_str!("fixtures/valid/sequence-merged-references.yml");
 
 #[test]
+fn test_lua未消費参照の診断_非object契約のleafを唯一の診断で指す() {
+    // Given
+    let tmp = tempfile::tempdir().unwrap();
+    let source = r#"local r = require('releash')
+local bad = r.command{ name = 'bad', command = 'check', artifact = r.schema.string{} }
+local part = r.sequence{ name = 'part', children = { r.child{ node = bad } } }
+local main = r.sequence{ children = { r.child{ node = part } } }
+local ref = main.part.bad.ok
+return r.workflow{ name = 'nonobject-leaf', description = 'test', main = main }
+"#;
+
+    // When
+    let diagnosis =
+        diagnose_lua_workflow_source("nonobject-leaf.lua", source, tmp.path(), tmp.path(), None);
+
+    // Then
+    assert!(diagnosis.workflow.is_none());
+    assert_eq!(
+        diagnosis.diagnostics.len(),
+        1,
+        "{:?}",
+        diagnosis.diagnostics
+    );
+    let diagnostic = &diagnosis.diagnostics[0];
+    assert_eq!(diagnostic.code, "WFR003");
+    assert_eq!(diagnostic.stage, DiagnosticStage::Resolve);
+    assert_eq!(diagnostic.severity, Severity::Error);
+    assert_eq!(
+        diagnostic.message,
+        "artifact field 'bad' cannot be read from a non-object schema"
+    );
+}
+
+#[test]
 fn test_sequence宣言の診断_luaの入れ子とrequire先のartifact位置を指す() {
     // Given
     let tmp = tempfile::tempdir().unwrap();
@@ -253,4 +287,204 @@ fn test_sequence多段参照の診断_実loaderが統合mapの参照を受理す
         diagnosis.diagnostics
     );
     assert!(loaded.is_ok(), "{loaded:?}");
+}
+
+const FANOUT_REFERENCES: &str = include_str!("fixtures/valid/fanout-map-references.yml");
+const FANOUT_LUA_REFERENCES: &str = r#"local r = require('releash')
+local result = r.schema.object{ name = 'result', properties = {
+  passed = r.schema.boolean(), tasks = r.schema.array{ items = r.schema.string{} },
+}, required = { 'passed', 'tasks' } }
+local a = r.command{ name = 'a', command = 'collect', artifact = result }
+local fan = r.fanout{ name = 'fan', children = { r.child{ node = a } } }
+local indexed_worker = r.command{ name = 'indexed_worker', command = 'work', input = { r.input('item') }, artifact = result }
+local indexed = r.fanout{ name = 'indexed', items = fan.a.tasks, children = { r.child{ node = indexed_worker } } }
+local nested_a = r.command{ name = 'nested_a', command = 'collect', artifact = result }
+local nested_fan = r.fanout{ name = 'nested_fan', children = { r.child{ node = nested_a } } }
+local seq = r.sequence{ name = 'seq', children = { r.child{ node = nested_fan } } }
+local consume = r.command{ name = 'consume', command = 'consume', input = { r.input('all'), r.input('slot'), r.input('named'), r.input('indexed'), r.input('nested') } }
+local worker = r.command{ name = 'worker', command = 'work', input = { r.input('item') } }
+local expand = r.fanout{ name = 'expand', items = seq.nested_fan.nested_a.tasks, children = { r.child{ node = worker } } }
+return r.workflow{ name = 'fanout-map-references', description = 'Fanout references', main = r.sequence{ children = {
+  r.child{ node = fan }, r.child{ node = indexed }, r.child{ node = seq },
+  r.child{ node = consume, inputs = { all = fan, slot = fan.a, named = fan.a.passed, indexed = indexed['0'].passed, nested = seq.nested_fan.nested_a.passed } },
+  r.child{ node = expand },
+} } }
+"#;
+
+#[test]
+fn test_fanout多段参照の診断_yamlとluaの配線とitemsを診断ゼロでloadする() {
+    // Given
+    let tmp = tempfile::tempdir().unwrap();
+    for (extension, source) in [("yml", FANOUT_REFERENCES), ("lua", FANOUT_LUA_REFERENCES)] {
+        let filename = format!("fanout-map-references.{extension}");
+        let path = tmp.path().join(&filename);
+        std::fs::write(&path, source).unwrap();
+
+        // When
+        let diagnosis = if extension == "yml" {
+            diagnose_workflow_source(source, None)
+        } else {
+            diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
+        };
+        let loaded = crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path());
+
+        // Then
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{extension}: {:?}",
+            diagnosis.diagnostics
+        );
+        assert!(loaded.is_ok(), "{loaded:?}");
+    }
+}
+
+#[test]
+fn test_fanout多段参照の診断_未解決の配線をWFR007と絶対位置で報告する() {
+    // Given
+    for (from, to, message) in [
+        (
+            "named: fan.a.passed",
+            "named: fan.missing.passed",
+            "source node 'fan' Artifact does not declare segment 1 ('missing')",
+        ),
+        (
+            "indexed: indexed.0.passed",
+            "indexed: indexed.007.passed",
+            "source node 'indexed' Artifact does not declare segment 1 ('007')",
+        ),
+        (
+            "nested: seq.nested_fan.nested_a.passed",
+            "nested: seq.nested_fan.nested_a.passed.value",
+            "source node 'seq' Artifact cannot resolve segment 4 ('value') from a non-object value",
+        ),
+    ] {
+        // When
+        let diagnosis = diagnose_workflow_source(&FANOUT_REFERENCES.replace(from, to), None);
+
+        // Then
+        assert!(
+            diagnosis
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "WFR007"
+                    && item.stage == DiagnosticStage::Resolve
+                    && item.message.contains(message)),
+            "{to}: {:?}",
+            diagnosis.diagnostics
+        );
+    }
+}
+
+const FANOUT_ROUTING: &str = include_str!("fixtures/valid/fanout-map-routing.yml");
+
+#[test]
+fn test_fanoutの判別規則の診断_終端の型とrequiredでWFT001とWFT002を返す() {
+    // Given
+    for (from, to, code) in [
+        ("on: a.passed", "on: a.verdict", "WFT001"),
+        ("on: a.passed", "on: a.missing", "WFT001"),
+        ("on: classify.verdict", "on: classify.passed", "WFT002"),
+        ("on: classify.verdict", "on: classify.missing", "WFT002"),
+        (
+            "required: [passed, verdict]",
+            "required: [verdict]",
+            "WFT001",
+        ),
+        (
+            "required: [passed, verdict]",
+            "required: [passed]",
+            "WFT002",
+        ),
+        ("enum: [READY, HOLD]", "enum: []", "WFT002"),
+        ("on: nested_fan.nested_a.passed", "on: nested_fan", "WFT001"),
+    ] {
+        // When
+        let diagnosis = diagnose_workflow_source(&FANOUT_ROUTING.replace(from, to), None);
+
+        // Then
+        assert!(
+            diagnosis.diagnostics.iter().any(|item| item.code == code
+                && item.stage == DiagnosticStage::Typecheck
+                && item.severity == Severity::Error),
+            "{to}: {:?}",
+            diagnosis.diagnostics
+        );
+        assert!(!diagnosis
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "WFT006"));
+    }
+}
+
+#[test]
+fn test_fanoutの判別規則の診断_yamlとluaのwhenとswitchと入れ子を診断ゼロでloadする() {
+    // Given
+    let tmp = tempfile::tempdir().unwrap();
+    let lua = r#"local r = require('releash')
+local result = r.schema.object{ name = 'result', properties = {
+  passed = r.schema.boolean(), verdict = r.schema.string{ enum = { 'READY', 'HOLD' } },
+}, required = { 'passed', 'verdict' } }
+local a = r.command{ name = 'a', command = 'collect', artifact = result }
+local fan = r.fanout{ name = 'fan', children = { r.child{ node = a } } }
+local indexed_worker = r.command{ name = 'indexed_worker', command = 'collect', input = { r.input('item') }, artifact = result }
+local indexed = r.fanout{ name = 'indexed', items = { 'task' }, children = { r.child{ node = indexed_worker } } }
+local classify = r.command{ name = 'classify', command = 'collect', artifact = result }
+local classifier = r.fanout{ name = 'classifier', children = { r.child{ node = classify } } }
+local nested_a = r.command{ name = 'nested_a', command = 'collect', artifact = result }
+local nested_fan = r.fanout{ name = 'nested_fan', children = { r.child{ node = nested_a } } }
+local seq = r.sequence{ name = 'seq', children = { r.child{ node = nested_fan } } }
+local ready = r.command{ name = 'ready', command = 'ready' }
+local finished = r.command{ name = 'finished', command = 'finished' }
+return r.workflow{ name = 'fanout-map-routing', description = 'Fanout routing', main = r.sequence{ children = {
+  r.child{ node = fan, rules = { r.when{ on = fan.a.passed, on_true = indexed, next = finished } } },
+  r.child{ node = indexed, rules = { r.switch{ on = indexed['0'].verdict, cases = { READY = classifier, HOLD = finished } } } },
+  r.child{ node = classifier, rules = { r.switch{ on = classifier.classify.verdict, cases = { READY = seq, HOLD = finished } } } },
+  r.child{ node = seq, rules = { r.when{ on = seq.nested_fan.nested_a.passed, on_true = ready, next = finished } } },
+  r.child{ node = ready, rules = {} }, r.child{ node = finished },
+} } }
+"#;
+    for (extension, source) in [("yml", FANOUT_ROUTING), ("lua", lua)] {
+        let filename = format!("fanout-map-routing.{extension}");
+        let path = tmp.path().join(&filename);
+        std::fs::write(&path, source).unwrap();
+
+        // When
+        let diagnosis = if extension == "yml" {
+            diagnose_workflow_source(source, None)
+        } else {
+            diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
+        };
+        let loaded = crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path());
+
+        // Then
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{extension}: {:?}",
+            diagnosis.diagnostics
+        );
+        assert!(loaded.is_ok(), "{loaded:?}");
+    }
+}
+
+#[test]
+fn test_fanout変更後のbuiltin定義_8本すべて診断ゼロでloadする() {
+    // Given
+    let summaries = builtin::list_builtin_workflows();
+    assert_eq!(summaries.len(), 8);
+    for summary in summaries {
+        let source = builtin::builtin_workflow_source(&summary.name).unwrap();
+
+        // When
+        let diagnosis = diagnose_workflow_source(source, Some(&summary.name));
+        let loaded = builtin::load_builtin_workflow_resolved(&summary.name);
+
+        // Then
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{}: {:?}",
+            summary.name,
+            diagnosis.diagnostics
+        );
+        assert!(matches!(loaded, Ok(Some(_))), "{loaded:?}");
+    }
 }

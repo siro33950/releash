@@ -40,7 +40,6 @@ pub enum InvalidRuleKind {
     SwitchMissingCases,
     SwitchExhaustiveHasNext,
     SwitchRequiresNext,
-    DiscriminatorOnFanout,
     DiscriminatorWithoutArtifact,
     LoopGuardMaxIterations,
     CycleWithoutLoopGuard,
@@ -661,13 +660,6 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
                     .to_string(),
             }
         }
-        routing::RoutingValidationError::DiscriminatorOnFanout { node } => {
-            ValidationError::InvalidRules {
-                node,
-                kind: InvalidRuleKind::DiscriminatorOnFanout,
-                reason: "fanout children cannot be routed with when or switch rules".to_string(),
-            }
-        }
         routing::RoutingValidationError::DiscriminatorWithoutArtifact { node } => {
             ValidationError::InvalidRules {
                 node,
@@ -754,8 +746,12 @@ fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationE
                         });
                         continue;
                     }
-                    Ok(SchemaDef::Array {
-                        items: element_contract,
+                    Ok(reference::ResolvedNodeField::Leaf {
+                        schema:
+                            SchemaDef::Array {
+                                items: element_contract,
+                            },
+                        ..
                     }) => ElementShape::Contract(element_contract),
                     Ok(_) => {
                         errors.push(ValidationError::InvalidFanoutItemsReference {
@@ -1053,20 +1049,21 @@ fn validate_node_source_field_path(
     node: &NodeDefinition,
     field_path: &FieldPath,
 ) -> Result<(), String> {
-    let schema = reference::node_reference_schema(workflow, node).map_err(|error| match error {
-        reference::NodeReferenceSchemaError::ArtifactNotObject => format!(
-            "source node '{}' Artifact Contract is not an object",
-            node.name
-        ),
-        reference::NodeReferenceSchemaError::NoReferenceableArtifact => format!(
-            "source node '{}' Artifact has no field path '{field_path}'",
-            node.name
-        ),
-    })?;
-    contract_schema::resolve_field_path(&schema, field_path)
+    reference::resolve_node_field_path(workflow, node, field_path)
         .map(|_| ())
-        .map_err(|error| {
-            field_path_resolution_reason(&format!("source node '{}' Artifact", node.name), &error)
+        .map_err(|error| match error {
+            reference::NodeFieldPathError::ArtifactNotObject => format!(
+                "source node '{}' Artifact Contract is not an object",
+                node.name
+            ),
+            reference::NodeFieldPathError::NoReferenceableArtifact => format!(
+                "source node '{}' Artifact has no field path '{field_path}'",
+                node.name
+            ),
+            reference::NodeFieldPathError::Segment(error) => field_path_resolution_reason(
+                &format!("source node '{}' Artifact", node.name),
+                &error,
+            ),
         })
 }
 
