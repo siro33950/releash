@@ -484,7 +484,7 @@ nodes:
         assert!(matches!(
             &check_rules[0],
             Rule::When { on, then, next }
-                if on == "ok" && then == "done" && next == "fix"
+                if *on == crate::domain::workflow::Predicate::Ref("ok".to_string()) && then == "done" && next == "fix"
         ));
         assert!(matches!(
             &check_rules[1],

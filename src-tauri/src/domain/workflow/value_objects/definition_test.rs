@@ -485,3 +485,46 @@ fn test_fanoutキー_空childrenと不正な座標は解決しない() {
         assert_eq!(spec.artifact_key(slot), None);
     }
 }
+
+#[test]
+fn test_述語定義の保存_単一参照と合成とネストの構造と遷移先を保持する() {
+    // Given
+    for on in [
+        serde_json::json!("passed"),
+        serde_json::json!({"and": ["passed", "details.passed"]}),
+        serde_json::json!({"or": ["passed"]}),
+        serde_json::json!({"and": ["passed", {"or": ["clean", "skipped"]}]}),
+    ] {
+        let value = serde_json::json!({"when": {"on": on, "then": "done"}, "next": "fix"});
+        let rule: Rule = serde_json::from_value(value.clone()).unwrap();
+        // When
+        let encoded = serde_json::to_value(&rule).unwrap();
+        let decoded: Rule =
+            serde_saphyr::from_str(&serde_saphyr::to_string(&rule).unwrap()).unwrap();
+        // Then
+        assert_eq!(encoded, value);
+        assert_eq!(decoded, rule);
+    }
+}
+
+#[test]
+fn test_述語定義の保存_workflow全体の現在形式を再読込できる() {
+    // Given
+    let source =
+        include_str!("../../../adaptor/gateway/workflow/fixtures/valid/predicate-routing.yml");
+    for on in [
+        "passed",
+        "{and: [passed, details.passed]}",
+        "{or: [clean, skipped]}",
+        "{and: [passed, {or: [clean, skipped]}]}",
+    ] {
+        let workflow: WorkflowDefinition =
+            serde_saphyr::from_str(&source.replace("{and: [passed, {or: [clean, skipped]}]}", on))
+                .unwrap();
+        // When
+        let serialized = serde_json::to_string(&workflow).unwrap();
+        let restored: WorkflowDefinition = serde_json::from_str(&serialized).unwrap();
+        // Then
+        assert_eq!(restored, workflow);
+    }
+}

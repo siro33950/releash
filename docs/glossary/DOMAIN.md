@@ -19,6 +19,7 @@ Releash のドメイン横断ユビキタス言語を定義する。この文書
 | completion | Node 自身が持つ完了の定義 | NodeDefinition / NodeExecution |
 | 実行木（execution tree） | 実際に開始した NodeExecution が作る再帰木 | Worktree |
 | 辺（edge） | Node completion 後の進行先。Sequence の children エントリが所有する | Sequence |
+| 述語（Predicate） | 辺と completion の判断に使う真偽値の論理式。原子は Artifact の required boolean field への参照で、`and` / `or` で合成する | workflow |
 | Artifact | NodeExecution 間で生成・参照される確定した判断材料 | workflow |
 | Contract | input / Artifact を検証する名前付き schema | WorkflowDefinition |
 | Facet | Session の prompt 構成に使う再利用可能な補助部品 | workflow |

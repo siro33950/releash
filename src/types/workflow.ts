@@ -29,10 +29,12 @@ export type WorkflowExecutionStatus =
 
 export type ExecutionInterruptionReason = "crash" | "stale" | "stop" | "orphan";
 
+export type Predicate = string | { and: Predicate[] } | { or: Predicate[] };
+
 export type Rule =
 	| {
 			type: "when";
-			on: string;
+			on: Predicate;
 			then: string;
 			next: string;
 	  }

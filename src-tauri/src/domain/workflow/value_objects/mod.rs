@@ -9,6 +9,7 @@ mod field_path;
 mod ids;
 mod node_execution;
 mod node_fact;
+mod predicate;
 mod runtime_event;
 mod runtime_projection;
 mod state;
@@ -55,6 +56,7 @@ pub use node_fact::{
     SessionNodeRenamedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
     TreeRootFact,
 };
+pub use predicate::{Predicate, PredicateError};
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
 #[cfg(test)]
 pub use runtime_projection::FanoutChildSnapshot;

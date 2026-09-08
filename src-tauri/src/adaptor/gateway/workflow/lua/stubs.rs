@@ -60,6 +60,7 @@ impl From<FacetError> for StubGenerationError {
 
 const RELEASH_STUB: &str = r#"---@meta
 
+---@class ReleashPredicate
 ---@class ReleashSource
 ---@class ReleashNode: ReleashSource
 ---@class ReleashChild
@@ -119,7 +120,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field completion? ReleashCompletion
 
 ---@class ReleashWhenOptions
----@field on ReleashSource
+---@field on ReleashSource|ReleashPredicate
 ---@field on_true ReleashNode
 ---@field next ReleashNode
 
@@ -172,6 +173,8 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field child fun(options: ReleashChildOptions): ReleashChild
 ---@field next fun(node: ReleashNode): ReleashRule
 ---@field when fun(options: ReleashWhenOptions): ReleashRule
+---@field all fun(elements: (ReleashSource|ReleashPredicate)[]): ReleashPredicate
+---@field any fun(elements: (ReleashSource|ReleashPredicate)[]): ReleashPredicate
 ---@field switch fun(options: ReleashSwitchOptions): ReleashRule
 ---@field loop_guard fun(options: ReleashLoopGuardOptions): ReleashRule
 ---@field retry fun(count: integer): ReleashOnFailure
@@ -480,3 +483,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "stubs_test.rs"]
+mod stubs_tests;

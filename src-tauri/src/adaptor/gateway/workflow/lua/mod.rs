@@ -10,8 +10,9 @@ use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
     FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
-    NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef,
-    SequenceSpec, SessionPermission, SessionSpec, WorkflowDefinition, MAIN_ENTRY_NODE_NAME,
+    NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, OnFailure, Predicate, Rule,
+    SchemaDef, SequenceSpec, SessionPermission, SessionSpec, WorkflowDefinition,
+    MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
     evaluate, LuaData, LuaEvaluationRequest, LuaFailure, LuaHost, LuaHostError, LuaHostHandle,
@@ -21,6 +22,7 @@ use crate::infrastructure::lua::{
 mod field_span;
 mod stubs;
 
+use super::predicate_wire::PredicateShapeError;
 use field_span::ArtifactSpanMap;
 
 pub(crate) use stubs::generate_editor_support;
@@ -32,6 +34,7 @@ const MAX_HOST_ARENA_ENTRIES: usize = 100_000;
 const HANDLE_NODE: &str = "node";
 const HANDLE_CHILD: &str = "child";
 const HANDLE_RULE: &str = "rule";
+const HANDLE_PREDICATE: &str = "predicate";
 const HANDLE_FAILURE: &str = "on_failure";
 const HANDLE_INPUT: &str = "input";
 const HANDLE_SOURCE: &str = "source";
@@ -60,6 +63,8 @@ const FN_SCHEMA_BOOLEAN: u32 = 15;
 const FN_SCHEMA_INTEGER: u32 = 16;
 const FN_SCHEMA_NUMBER: u32 = 17;
 const FN_WORKFLOW: u32 = 18;
+const FN_ALL: u32 = 19;
+const FN_ANY: u32 = 20;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LuaFacetCatalog {
@@ -219,7 +224,7 @@ struct ChildDraft {
 enum RuleDraft {
     Next(usize),
     When {
-        on: usize,
+        on: Predicate<usize>,
         on_true: usize,
         next: usize,
     },
@@ -397,6 +402,8 @@ struct WorkflowLuaHost {
     nodes: Vec<NodeDraft>,
     children: Vec<ChildDraft>,
     rules: Vec<RuleDraft>,
+    predicates: Vec<(Predicate<usize>, usize)>,
+    predicate_entries: usize,
     failures: Vec<OnFailure>,
     inputs: Vec<InputDraft>,
     sources: Vec<SourceDraft>,
@@ -417,6 +424,8 @@ impl WorkflowLuaHost {
             nodes: Vec::new(),
             children: Vec::new(),
             rules: Vec::new(),
+            predicates: Vec::new(),
+            predicate_entries: 0,
             failures: vec![OnFailure::Ignore],
             inputs: Vec::new(),
             sources: vec![SourceDraft::Request, SourceDraft::Items],
@@ -465,6 +474,8 @@ impl WorkflowLuaHost {
             ("child", FN_CHILD),
             ("next", FN_NEXT),
             ("when", FN_WHEN),
+            ("all", FN_ALL),
+            ("any", FN_ANY),
             ("switch", FN_SWITCH),
             ("loop_guard", FN_LOOP_GUARD),
             ("retry", FN_RETRY),
@@ -562,6 +573,7 @@ impl WorkflowLuaHost {
         self.nodes.len()
             + self.children.len()
             + self.rules.len()
+            + self.predicate_entries
             + self.failures.len()
             + self.inputs.len()
             + self.sources.len()
@@ -572,8 +584,12 @@ impl WorkflowLuaHost {
 
     /// Lua VM のメモリ上限は Rust 側の arena を数えないため、ビルダー呼び出しの
     /// 入口で総数を有界にする。`MAX_NODES_PER_WORKFLOW` に収まる定義は到達しない。
-    fn ensure_arena_budget(&self, location: &LuaSourceLocation) -> Result<(), LuaHostError> {
-        if self.arena_entries() >= MAX_HOST_ARENA_ENTRIES {
+    fn ensure_arena_budget(
+        &self,
+        additional_entries: usize,
+        location: &LuaSourceLocation,
+    ) -> Result<(), LuaHostError> {
+        if self.arena_entries().saturating_add(additional_entries) > MAX_HOST_ARENA_ENTRIES {
             return Err(host_error(
                 "WFS010",
                 format!(
@@ -610,7 +626,7 @@ impl LuaHost for WorkflowLuaHost {
         arguments: Vec<LuaData>,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
-        self.ensure_arena_budget(&location)?;
+        self.ensure_arena_budget(1, &location)?;
         match function {
             FN_COMMAND => self.call_command(arguments, location),
             FN_SESSION => self.call_session(arguments, location),
@@ -619,6 +635,7 @@ impl LuaHost for WorkflowLuaHost {
             FN_CHILD => self.call_child(arguments, location),
             FN_NEXT => self.call_next(arguments, location),
             FN_WHEN => self.call_when(arguments, location),
+            FN_ALL | FN_ANY => self.call_predicate(function == FN_ALL, arguments, location),
             FN_SWITCH => self.call_switch(arguments, location),
             FN_LOOP_GUARD => self.call_loop_guard(arguments, location),
             FN_RETRY => self.call_retry(arguments, location),
@@ -646,7 +663,7 @@ impl LuaHost for WorkflowLuaHost {
         key: &str,
         location: LuaSourceLocation,
     ) -> Result<LuaData, LuaHostError> {
-        self.ensure_arena_budget(&location)?;
+        self.ensure_arena_budget(1, &location)?;
         if handle.kind == HANDLE_FACET_INDEX {
             let kind = match handle.index {
                 0 => FacetKind::Instruction,
@@ -750,7 +767,7 @@ impl WorkflowLuaHost {
         };
         let mut env = Vec::new();
         for (key, value) in &values.entries {
-            self.ensure_arena_budget(location)?;
+            self.ensure_arena_budget(1, location)?;
             let LuaTableKey::String(key) = key else {
                 return Err(type_error("env", "string-keyed table", location));
             };
@@ -1021,13 +1038,12 @@ impl WorkflowLuaHost {
                 for (key, value) in &values.entries {
                     // inputs は 1 回の呼び出しで要素数ぶんの Source を積むため、
                     // 呼び出し入口の検査だけでは上限を超えられる。要素ごとに見る。
-                    self.ensure_arena_budget(&location)?;
+                    self.ensure_arena_budget(1, &location)?;
                     let LuaTableKey::String(key) = key else {
                         return Err(type_error("inputs", "string-keyed table", &location));
                     };
-                    let source = expect_handle(value, HANDLE_SOURCE)
-                        .or_else(|_| self.node_as_source_index(value, &location))
-                        .or_else(|_| self.input_as_source_index(value, &location))
+                    let source = self
+                        .source_index(value, &location)
                         .map_err(|_| type_error("inputs", "Source values", &location))?;
                     result.push((key.clone(), source));
                 }
@@ -1092,13 +1108,108 @@ impl WorkflowLuaHost {
     ) -> Result<LuaData, LuaHostError> {
         let table = one_table(arguments, &location)?;
         reject_unknown(&table, &["on", "on_true", "next"], &location)?;
-        let on = self.required_source(&table, "on", &location)?;
+        let value = table
+            .get_string("on")
+            .ok_or_else(|| missing_field("on", &location))?;
+        let on = if expect_handle(value, HANDLE_PREDICATE).is_ok() {
+            self.predicate_value(value, "on", &location)?.0
+        } else {
+            Predicate::Ref(self.predicate_source(value, "on", &location)?)
+        };
+        self.ensure_arena_budget(1, &location)?;
         let draft = RuleDraft::When {
             on,
             on_true: required_handle(&table, "on_true", HANDLE_NODE, &location)?,
             next: required_handle(&table, "next", HANDLE_NODE, &location)?,
         };
         Ok(push_rule(&mut self.rules, draft))
+    }
+
+    fn call_predicate(
+        &mut self,
+        all: bool,
+        arguments: Vec<LuaData>,
+        location: LuaSourceLocation,
+    ) -> Result<LuaData, LuaHostError> {
+        let elements = match arguments.as_slice() {
+            [LuaData::Table(table)] => table.as_array(),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            host_error(
+                "WFS002",
+                PredicateShapeError::ExpectedArray.to_string(),
+                location.clone(),
+            )
+        })?;
+        let mut predicates = Vec::with_capacity(elements.len());
+        let mut size = 1;
+        for value in elements {
+            let (predicate, entries) =
+                self.predicate_value(value, "predicate element", &location)?;
+            predicates.push(predicate);
+            size += entries;
+        }
+        let predicate = if all {
+            Predicate::and(predicates)
+        } else {
+            Predicate::or(predicates)
+        }
+        .map_err(|error| {
+            host_error(
+                "WFS002",
+                PredicateShapeError::from(error).to_string(),
+                location.clone(),
+            )
+        })?;
+        self.ensure_arena_budget(1, &location)?;
+        self.predicate_entries += 1;
+        let index = self.predicates.len();
+        self.predicates.push((predicate, size));
+        Ok(handle(HANDLE_PREDICATE, index))
+    }
+
+    fn predicate_value(
+        &mut self,
+        value: &LuaData,
+        field: &str,
+        location: &LuaSourceLocation,
+    ) -> Result<(Predicate<usize>, usize), LuaHostError> {
+        if let Ok(index) = expect_handle(value, HANDLE_PREDICATE) {
+            let (predicate, size) = self.predicates.get(index).ok_or_else(|| {
+                host_field_error(
+                    "WFS002",
+                    PredicateShapeError::InvalidPredicate.to_string(),
+                    location.clone(),
+                    field,
+                )
+            })?;
+            self.ensure_arena_budget(*size, location)?;
+            let result = (predicate.clone(), *size);
+            self.predicate_entries += size;
+            return Ok(result);
+        }
+        self.ensure_arena_budget(1, location)?;
+        let source = self.predicate_source(value, field, location)?;
+        self.ensure_arena_budget(1, location)?;
+        self.predicate_entries += 1;
+        Ok((Predicate::Ref(source), 1))
+    }
+
+    fn predicate_source(
+        &mut self,
+        value: &LuaData,
+        field: &str,
+        location: &LuaSourceLocation,
+    ) -> Result<usize, LuaHostError> {
+        self.source_index(value, location).map_err(|_| {
+            host_field_error(
+                "WFS002",
+                PredicateShapeError::InvalidPredicate.to_string(),
+                location.clone(),
+                field,
+            )
+        })
     }
 
     fn call_switch(
@@ -1302,10 +1413,14 @@ impl WorkflowLuaHost {
         let value = table
             .get_string(field)
             .ok_or_else(|| missing_field(field, location))?;
+        self.source_index(value, location)
+            .map_err(|_| type_error(field, "Source", location))
+    }
+
+    fn source_index(&mut self, value: &LuaData, location: &LuaSourceLocation) -> Result<usize, ()> {
         expect_handle(value, HANDLE_SOURCE)
             .or_else(|_| self.node_as_source_index(value, location))
             .or_else(|_| self.input_as_source_index(value, location))
-            .map_err(|_| type_error(field, "Source", location))
     }
 
     fn index_input(
@@ -1855,7 +1970,7 @@ impl WorkflowGraphBuilder {
         match self.host.rules.get(rule) {
             Some(RuleDraft::Next(node)) => Ok(Rule::Next(target(node)?)),
             Some(RuleDraft::When { on, on_true, next }) => Ok(Rule::When {
-                on: self.rule_field(*on, child_node, location)?,
+                on: self.build_rule_predicate(on, child_node, location)?,
                 then: target(on_true)?,
                 next: target(next)?,
             }),
@@ -1879,6 +1994,29 @@ impl WorkflowGraphBuilder {
                 "rule handle does not exist",
                 Some(location.clone()),
             )),
+        }
+    }
+
+    fn build_rule_predicate(
+        &self,
+        predicate: &Predicate<usize>,
+        child_node: usize,
+        location: &LuaSourceLocation,
+    ) -> Result<Predicate<String>, LuaWorkflowError> {
+        match predicate {
+            Predicate::Ref(source) => self
+                .rule_field(*source, child_node, location)
+                .map(Predicate::Ref),
+            Predicate::And(elements) => elements
+                .iter()
+                .map(|element| self.build_rule_predicate(element, child_node, location))
+                .collect::<Result<_, _>>()
+                .map(Predicate::And),
+            Predicate::Or(elements) => elements
+                .iter()
+                .map(|element| self.build_rule_predicate(element, child_node, location))
+                .collect::<Result<_, _>>()
+                .map(Predicate::Or),
         }
     }
 

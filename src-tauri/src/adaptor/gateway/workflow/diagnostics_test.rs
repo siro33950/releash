@@ -488,3 +488,745 @@ fn test_fanout変更後のbuiltin定義_8本すべて診断ゼロでloadする()
         assert!(matches!(loaded, Ok(Some(_))), "{loaded:?}");
     }
 }
+
+const PREDICATE_ROUTING: &str = include_str!("fixtures/valid/predicate-routing.yml");
+const NESTED_PREDICATE: &str = "{and: [passed, {or: [clean, skipped]}]}";
+
+fn predicate_yaml(on: &str) -> String {
+    PREDICATE_ROUTING.replace(NESTED_PREDICATE, on)
+}
+
+#[test]
+fn test_述語load_単一参照と合成とネストを診断ゼロで受理する() {
+    // Given
+    for on in [
+        "passed",
+        "ok",
+        "legacy flag",
+        "details.passed",
+        "{and: [passed]}",
+        "{or: [passed]}",
+        "{and: [passed, clean]}",
+        "{or: [passed, skipped]}",
+        NESTED_PREDICATE,
+    ] {
+        // When
+        let diagnosis = diagnose_workflow_source(&predicate_yaml(on), None);
+        // Then
+        assert!(
+            diagnosis.workflow.is_some(),
+            "{on}: {:?}",
+            diagnosis.diagnostics
+        );
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{on}: {:?}",
+            diagnosis.diagnostics
+        );
+    }
+}
+
+#[test]
+fn test_述語load_空と不正な構造はshapeで拒否する() {
+    // Given
+    for (on, message, end_col) in [
+        (
+            "{and: []}",
+            "predicate and/or must contain at least one element",
+            24,
+        ),
+        (
+            "{or: []}",
+            "predicate and/or must contain at least one element",
+            24,
+        ),
+        (
+            "{and: [passed, {or: []}]}",
+            "predicate and/or must contain at least one element",
+            24,
+        ),
+        (
+            "{or: [passed, {and: []}]}",
+            "predicate and/or must contain at least one element",
+            24,
+        ),
+        (
+            "{and: passed}",
+            "predicate and/or must contain an array",
+            24,
+        ),
+        ("{or: true}", "predicate and/or must contain an array", 24),
+        ("{and: null}", "predicate and/or must contain an array", 24),
+        (
+            "{or: [passed, {and: false}]}",
+            "predicate and/or must contain an array",
+            24,
+        ),
+        (
+            "{and: [passed], or: [clean]}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "{or: [passed], extra: true}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "{not: passed}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "{}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "{and: [passed, {not: clean}]}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "{or: [passed, {and: [clean], or: [skipped]}]}",
+            "predicate map must contain exactly one key: and or or",
+            24,
+        ),
+        (
+            "42",
+            "predicate must be a field reference or an and/or map",
+            25,
+        ),
+        (
+            "true",
+            "predicate must be a field reference or an and/or map",
+            27,
+        ),
+        (
+            "null",
+            "predicate must be a field reference or an and/or map",
+            27,
+        ),
+        (
+            "[passed]",
+            "predicate must be a field reference or an and/or map",
+            24,
+        ),
+        (
+            "{and: [passed, false]}",
+            "predicate must be a field reference or an and/or map",
+            24,
+        ),
+        (
+            "{or: [passed, null]}",
+            "predicate must be a field reference or an and/or map",
+            24,
+        ),
+    ] {
+        // When
+        let diagnosis = diagnose_workflow_source(&predicate_yaml(on), None);
+        // Then
+        assert!(diagnosis.workflow.is_none(), "{on}");
+        assert_eq!(
+            diagnosis.diagnostics.len(),
+            1,
+            "{on}: {:?}",
+            diagnosis.diagnostics
+        );
+        let diagnostic = &diagnosis.diagnostics[0];
+        assert_eq!(diagnostic.code, "WFS002", "{on}");
+        assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(diagnostic.message, message, "{on}");
+        assert_eq!(diagnostic.field.as_deref(), Some("rules.when.on"));
+        assert_eq!(
+            diagnostic.span,
+            Some(DiagnosticSpan {
+                source: None,
+                start_line: 26,
+                start_col: 23,
+                end_line: 26,
+                end_col,
+            }),
+            "{on}"
+        );
+    }
+}
+
+#[test]
+fn test_述語load_全参照の型検査は単一参照の理由を保持する() {
+    // Given
+    for (field, reason) in [
+        (
+            "details.text",
+            "routing field 'details.text' must be boolean or string enum",
+        ),
+        (
+            "details.optional",
+            "routing field 'details.optional' must be required on its parent Object",
+        ),
+        (
+            "details.unknown",
+            "routing field 'details.unknown' has undeclared segment 2 ('unknown')",
+        ),
+        (
+            "passed.flag",
+            "routing field 'passed.flag' cannot resolve segment 2 ('flag') from a non-object value",
+        ),
+        (
+            "details..passed",
+            "routing field 'details..passed' is not a valid field path",
+        ),
+        (
+            " passed",
+            "routing field ' passed' is not a valid field path",
+        ),
+        (
+            "passed ",
+            "routing field 'passed ' is not a valid field path",
+        ),
+    ] {
+        let single = diagnose_workflow_source(&predicate_yaml(&format!("'{field}'")), None);
+        let compound = diagnose_workflow_source(
+            &predicate_yaml(&format!(
+                "{{or: [passed, {{and: ['{field}', '{field}']}}]}}"
+            )),
+            None,
+        );
+        // When / Then
+        assert!(single.has_errors());
+        assert!(compound.has_errors());
+        assert_eq!(
+            single.diagnostics.len(),
+            1,
+            "{field}: {:?}",
+            single.diagnostics
+        );
+        assert_eq!(
+            compound.diagnostics.len(),
+            2,
+            "{field}: {:?}",
+            compound.diagnostics
+        );
+        for diagnostic in single.diagnostics.iter().chain(&compound.diagnostics) {
+            assert_eq!(diagnostic.code, "WFT001");
+            assert_eq!(diagnostic.stage, DiagnosticStage::Typecheck);
+            assert_eq!(diagnostic.severity, Severity::Error);
+            assert_eq!(
+                diagnostic.message,
+                format!("node 'judge' のrulesが不正です: {reason}")
+            );
+        }
+    }
+}
+
+const PREDICATE_LUA: &str = include_str!("fixtures/valid/predicate-routing.lua");
+
+#[test]
+fn test_lua容量の診断_述語再利用の上限超過は位置を保持してloadを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("budget.lua");
+    std::fs::write(
+        &path,
+        r#"local r = require('releash')
+local judge = r.command{ command = 'judge' }
+local predicate = r.all{ judge.ok }
+for i = 1, 30 do predicate = r.all{ predicate, predicate } end
+return r.workflow{ name = 'budget', description = 'test', main = judge }
+"#,
+    )
+    .unwrap();
+    // When
+    let result = super::super::storage::load_workflow(&path, directory.path());
+    // Then
+    let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(diagnostics.len(), 1);
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, "WFS010");
+    assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
+    assert_eq!(diagnostic.severity, Severity::Error);
+    assert_eq!(
+        diagnostic.message,
+        "Lua definition exceeded the limit of 100000 builder values"
+    );
+    assert_eq!(diagnostic.field, None);
+    assert_eq!(
+        diagnostic.span,
+        Some(DiagnosticSpan {
+            source: Some("budget.lua".to_string()),
+            start_line: 4,
+            start_col: 1,
+            end_line: 4,
+            end_col: 2,
+        })
+    );
+}
+const NESTED_LUA: &str = "r.all{ judge.passed, r.any{ judge.clean, judge.skipped } }";
+
+fn predicate_lua(on: &str) -> String {
+    PREDICATE_LUA.replace(NESTED_LUA, on)
+}
+
+#[test]
+fn test_lua参照解決の診断_変換不能な値は利用箇所ごとの理由とfieldでloadを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let invalid_predicate = "predicate must be a field reference or an and/or map";
+    let mut cases = Vec::new();
+    for value in ["true", "42", "'passed'", "{}", "{ value = true }"] {
+        cases.push((predicate_lua(value), invalid_predicate, "on"));
+        for builder in ["all", "any"] {
+            cases.push((
+                predicate_lua(&format!("r.{builder}{{ {value} }}")),
+                invalid_predicate,
+                "predicate element",
+            ));
+        }
+    }
+    for value in ["true", "42", "'passed'", "{}", NESTED_LUA] {
+        cases.push((
+            predicate_lua(value)
+                .replace("r.when{", "r.switch{")
+                .replace(
+                    "on_true = done, next = fix",
+                    "cases = { yes = done }, next = fix",
+                ),
+            "field 'on' must be Source",
+            "on",
+        ));
+        cases.push((
+            PREDICATE_LUA.replace(
+                "node = judge, rules = {",
+                &format!("node = judge, inputs = {{ data = {value} }}, rules = {{"),
+            ),
+            "field 'inputs' must be Source values",
+            "inputs",
+        ));
+    }
+    for (source, message, field) in cases {
+        let path = directory.path().join("sources.lua");
+        std::fs::write(&path, &source).unwrap();
+        // When
+        let result = super::super::storage::load_workflow(&path, directory.path());
+        // Then
+        let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
+            panic!("{source}: {result:?}");
+        };
+        assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
+        let diagnostic = &diagnostics[0];
+        assert_eq!(diagnostic.code, "WFS002", "{source}");
+        assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(diagnostic.message, message, "{source}");
+        assert_eq!(diagnostic.field.as_deref(), Some(field));
+        let line = if field == "inputs" { 22 } else { 23 };
+        assert_eq!(
+            diagnostic.span,
+            Some(DiagnosticSpan {
+                source: Some("sources.lua".to_string()),
+                start_line: line,
+                start_col: 1,
+                end_line: line,
+                end_col: 2,
+            }),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn test_lua述語の診断_自childのartifact_field以外はresolveでloadを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for reference in [
+        "done.ok",
+        "judge",
+        "r.request",
+        "r.items",
+        "r.input('value')",
+    ] {
+        for expression in [
+            reference.to_string(),
+            format!("r.all{{ judge.passed, r.any{{ {reference} }} }}"),
+        ] {
+            let path = directory.path().join("scope.lua");
+            std::fs::write(&path, predicate_lua(&expression)).unwrap();
+            // When
+            let result = super::super::storage::load_workflow(&path, directory.path());
+            // Then
+            let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
+                panic!("{expression}: {result:?}");
+            };
+            assert_eq!(diagnostics.len(), 1, "{expression}: {diagnostics:?}");
+            let diagnostic = &diagnostics[0];
+            assert_eq!(diagnostic.code, "WFR003", "{expression}");
+            assert_eq!(diagnostic.stage, DiagnosticStage::Resolve);
+            assert_eq!(diagnostic.severity, Severity::Error);
+            assert_eq!(
+                diagnostic.message,
+                "rule discriminator must reference the current child artifact field"
+            );
+            assert_eq!(diagnostic.field, None);
+        }
+    }
+}
+
+#[test]
+fn test_述語の表面間同値性_受理と全真理値の遷移が一致する() {
+    use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for (yaml_on, lua_on) in [
+        ("passed", "judge.passed"),
+        ("{and: [passed]}", "r.all{ judge.passed }"),
+        ("{or: [passed]}", "r.any{ judge.passed }"),
+        (
+            "{and: [passed, clean]}",
+            "r.all{ judge.passed, judge.clean }",
+        ),
+        (
+            "{or: [passed, clean]}",
+            "r.any{ judge.passed, judge.clean }",
+        ),
+        (NESTED_PREDICATE, NESTED_LUA),
+        (
+            "{and: [details.passed, {or: [details.passed, passed]}]}",
+            "r.all{ judge.details.passed, r.any{ judge.details.passed, judge.passed } }",
+        ),
+        ("legacy flag", "judge['legacy flag']"),
+    ] {
+        let yaml = diagnose_workflow_source(&predicate_yaml(yaml_on), None);
+        let lua = diagnose_lua_workflow_source(
+            "predicate-routing.lua",
+            &predicate_lua(lua_on),
+            directory.path(),
+            directory.path(),
+            None,
+        );
+        // When / Then
+        for diagnosis in [&yaml, &lua] {
+            assert!(
+                diagnosis.diagnostics.is_empty(),
+                "{yaml_on}: {:?}",
+                diagnosis.diagnostics
+            );
+            assert!(diagnosis.workflow.is_some());
+        }
+        for passed in [false, true] {
+            for clean in [false, true] {
+                for skipped in [false, true] {
+                    let expected = match yaml_on {
+                        "passed" | "{and: [passed]}" | "{or: [passed]}" | "legacy flag" => passed,
+                        "{and: [passed, clean]}" => passed && clean,
+                        "{or: [passed, clean]}" => passed || clean,
+                        NESTED_PREDICATE => passed && (clean || skipped),
+                        _ => passed,
+                    };
+                    let value = serde_json::json!({"passed": passed, "clean": clean, "skipped": skipped, "details": {"passed": passed}, "legacy flag": passed});
+                    for diagnosis in [&yaml, &lua] {
+                        let workflow = diagnosis.workflow.as_ref().unwrap();
+                        let sequence = workflow.entry_node().unwrap().sequence().unwrap();
+                        let target = route_in_scope(
+                            workflow,
+                            sequence,
+                            "judge",
+                            Some(&value),
+                            &HashMap::new(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            target,
+                            RouteDecision::TransitionTo(
+                                if expected { "done" } else { "fix" }.to_string()
+                            ),
+                            "{yaml_on}: {value}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_述語の表面間同値性_空と型とrequiredとpathの診断が一致する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for (yaml_on, lua_on) in [
+        ("{and: []}", "r.all{}"),
+        ("{or: []}", "r.any{}"),
+        ("{or: [passed, {and: []}]}", "r.any{ judge.passed, r.all{} }"),
+        ("{and: [passed, {or: []}]}", "r.all{ judge.passed, r.any{} }"),
+        ("details.text", "judge.details.text"),
+        ("{or: [passed, details.text]}", "r.any{ judge.passed, judge.details.text }"),
+        ("{and: [passed, {or: [details.optional]}]}", "r.all{ judge.passed, r.any{ judge.details.optional } }"),
+        ("{or: [passed, details.unknown]}", "r.any{ judge.passed, judge.details.unknown }"),
+        ("{or: [passed, passed.flag]}", "r.any{ judge.passed, judge.passed.flag }"),
+        ("{or: [passed, {and: [details.text, details.optional, details.unknown]}]}", "r.any{ judge.passed, r.all{ judge.details.text, judge.details.optional, judge.details.unknown } }"),
+    ] {
+        let yaml = diagnose_workflow_source(&predicate_yaml(yaml_on), None);
+        let lua = diagnose_lua_workflow_source("predicate-routing.lua", &predicate_lua(lua_on), directory.path(), directory.path(), None);
+        // When / Then
+        assert!(yaml.has_errors(), "{yaml_on}");
+        assert!(lua.has_errors(), "{lua_on}");
+        let signature = |diagnosis: &WorkflowSourceDiagnostics| diagnosis.diagnostics.iter().map(|diagnostic| (diagnostic.code.clone(), diagnostic.stage, diagnostic.message.clone())).collect::<Vec<_>>();
+        assert_eq!(signature(&yaml), signature(&lua), "{yaml_on} / {lua_on}");
+    }
+}
+
+#[test]
+fn test_述語の表面間同値性_空と不正な要素と配列以外は同じ診断でloadを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let invalid_predicate = "predicate must be a field reference or an and/or map";
+    let expected_array = "predicate and/or must contain an array";
+    let empty = "predicate and/or must contain at least one element";
+    for (yaml_on, lua_on, message) in [
+        ("{and: []}", "r.all{}", empty),
+        ("{or: []}", "r.any{}", empty),
+        (
+            "{or: [passed, {and: []}]}",
+            "r.any{ judge.passed, r.all{} }",
+            empty,
+        ),
+        (
+            "{and: [passed, {or: []}]}",
+            "r.all{ judge.passed, r.any{} }",
+            empty,
+        ),
+        ("true", "true", invalid_predicate),
+        ("42", "42", invalid_predicate),
+        ("[passed]", "{ judge.passed }", invalid_predicate),
+        ("{and: [true]}", "r.all{ true }", invalid_predicate),
+        (
+            "{and: [passed, false]}",
+            "r.all{ judge.passed, false }",
+            invalid_predicate,
+        ),
+        (
+            "{or: [passed, false]}",
+            "r.any{ judge.passed, false }",
+            invalid_predicate,
+        ),
+        ("{and: [42]}", "r.all{ 42 }", invalid_predicate),
+        ("{or: [42]}", "r.any{ 42 }", invalid_predicate),
+        (
+            "{and: [passed, {or: [false]}]}",
+            "r.all{ judge.passed, r.any{ false } }",
+            invalid_predicate,
+        ),
+        (
+            "{or: [passed, {and: [false]}]}",
+            "r.any{ judge.passed, r.all{ false } }",
+            invalid_predicate,
+        ),
+        (
+            "{and: {field: passed}}",
+            "r.all{ field = judge.passed }",
+            expected_array,
+        ),
+        (
+            "{or: {field: passed}}",
+            "r.any{ field = judge.passed }",
+            expected_array,
+        ),
+        ("{and: true}", "r.all(true)", expected_array),
+        ("{or: passed}", "r.any('passed')", expected_array),
+        ("{and: null}", "r.all(nil)", expected_array),
+        ("{or: 42}", "r.any(42)", expected_array),
+        (
+            "{and: [passed, {or: {field: passed}}]}",
+            "r.all{ judge.passed, r.any{ field = judge.passed } }",
+            expected_array,
+        ),
+        (
+            "{or: [passed, {and: false}]}",
+            "r.any{ judge.passed, r.all(false) }",
+            expected_array,
+        ),
+    ] {
+        for (extension, source) in [
+            ("yml", predicate_yaml(yaml_on)),
+            ("lua", predicate_lua(lua_on)),
+        ] {
+            let path = directory
+                .path()
+                .join(format!("predicate-routing.{extension}"));
+            std::fs::write(&path, source).unwrap();
+            // When
+            let result = super::super::storage::load_workflow(&path, directory.path());
+            // Then
+            let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
+                panic!("{extension}: {yaml_on} / {lua_on}: {result:?}");
+            };
+            let signature: Vec<_> = diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    (
+                        diagnostic.code.as_str(),
+                        diagnostic.stage,
+                        diagnostic.severity,
+                        diagnostic.message.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                signature,
+                vec![(
+                    "WFS002",
+                    DiagnosticStage::ParseShape,
+                    Severity::Error,
+                    message
+                )],
+                "{extension}: {yaml_on} / {lua_on}",
+            );
+        }
+    }
+}
+
+#[test]
+fn test_述語の表面間同値性_sequenceとfanoutの異なるslotを合成する() {
+    use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for (yaml_node, lua_node, fields) in [
+        ("sequence: {children: [a, b]}", "r.sequence{ name = 'judge', children = { r.child{node = a}, r.child{node = b} } }", ["a.details.passed", "b.passed"]),
+        ("fanout: {children: [a, b]}", "r.fanout{ name = 'judge', children = { r.child{node = a}, r.child{node = b} } }", ["a.details.passed", "b.passed"]),
+        ("fanout: {children: [a], items: [first, second]}", "r.fanout{ name = 'judge', children = { r.child{node = a} }, items = {'first', 'second'} }", ["0.details.passed", "1.passed"]),
+        ("sequence: {children: [fan]}", "r.sequence{ name = 'judge', children = { r.child{node = fan} } }", ["fan.a.details.passed", "fan.b.passed"]),
+    ] {
+        let indexed = fields[0].starts_with('0');
+        let nested = fields[0].starts_with("fan.");
+        let yaml = predicate_yaml(&format!("{{and: [{}, {{or: [{}]}}]}}", fields[0], fields[1]))
+            .replace("  judge:\n    command: judge\n    artifact: result", &format!("  judge:\n    {yaml_node}\n  a: {{command: a, artifact: result{}}}{}{}", if indexed {", input: [item]"} else {""}, if indexed {""} else {"\n  b: {command: b, artifact: result}"}, if nested {"\n  fan: {fanout: {children: [a, b]}}"} else {""}));
+        let lua_reference = |field: &str| field.split('.').fold("judge".to_string(), |source, segment| format!("{source}['{segment}']"));
+        let lua = predicate_lua(&format!("r.all{{ {}, r.any{{ {} }} }}", lua_reference(fields[0]), lua_reference(fields[1])))
+            .replace("local judge = r.command{ name = \"judge\", command = \"judge\", artifact = result }", &format!("local a = r.command{{name = 'a', command = 'a', artifact = result{}}}\n{}{}local judge = {lua_node}", if indexed {", input = { r.input('item') }"} else {""}, if indexed {""} else {"local b = r.command{name = 'b', command = 'b', artifact = result}\n"}, if nested {"local fan = r.fanout{name = 'fan', children = { r.child{node = a}, r.child{node = b} }}\n"} else {""}));
+        for (extension, source) in [("yml", yaml), ("lua", lua)] {
+            let path = directory.path().join(format!("predicate-routing.{extension}"));
+            std::fs::write(&path, source).unwrap();
+            // When
+            let workflow = super::super::storage::load_workflow(&path, directory.path()).unwrap();
+            let sequence = workflow.entry_node().unwrap().sequence().unwrap();
+            // Then
+            for first in [false, true] {
+                for second in [false, true] {
+                    let mut artifact = serde_json::json!({});
+                    for (field, value) in fields.iter().zip([first, second]) {
+                        let mut cursor = &mut artifact;
+                        let parts: Vec<_> = field.split('.').collect();
+                        for segment in &parts[..parts.len()-1] {
+                            if cursor.get(*segment).is_none() { cursor[*segment] = serde_json::json!({}); }
+                            cursor = &mut cursor[*segment];
+                        }
+                        cursor[parts[parts.len()-1]] = serde_json::json!(value);
+                    }
+                    let decision = route_in_scope(&workflow, sequence, "judge", Some(&artifact), &HashMap::new()).unwrap();
+                    assert_eq!(decision, RouteDecision::TransitionTo(if first && second {"done"} else {"fix"}.to_string()), "{extension}: {artifact}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_述語の実loader_不正なshapeと参照を両表面でloadしない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for (yaml_on, lua_on) in [
+        ("{and: []}", "r.all{}"),
+        (
+            "{or: [passed, details.text]}",
+            "r.any{judge.passed, judge.details.text}",
+        ),
+        ("{and: [details.optional]}", "r.all{judge.details.optional}"),
+        ("{or: [details.unknown]}", "r.any{judge.details.unknown}"),
+        ("{and: [passed.flag]}", "r.all{judge.passed.flag}"),
+    ] {
+        for (extension, source) in [
+            ("yml", predicate_yaml(yaml_on)),
+            ("lua", predicate_lua(lua_on)),
+        ] {
+            let path = directory
+                .path()
+                .join(format!("predicate-routing.{extension}"));
+            std::fs::write(&path, source).unwrap();
+            // When
+            let result = super::super::storage::load_workflow(&path, directory.path());
+            // Then
+            assert!(
+                matches!(
+                    result,
+                    Err(super::super::storage::StorageError::Diagnostics(_))
+                ),
+                "{result:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照の遷移を保つ() {
+    use crate::domain::workflow::{
+        services::routing::{route_in_scope, RouteDecision},
+        Predicate,
+    };
+    // Given
+    let mut sources: Vec<_> = builtin::list_builtin_workflows()
+        .iter()
+        .map(|summary| builtin::builtin_workflow_source(&summary.name).unwrap())
+        .collect();
+    sources.push(include_str!(
+        "../../../../../workflows/examples/full-cycle-development.yml"
+    ));
+    let mut count = 0;
+    for source in sources {
+        let diagnosis = diagnose_workflow_source(source, None);
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{:?}",
+            diagnosis.diagnostics
+        );
+        let workflow = diagnosis.workflow.unwrap();
+        for sequence in workflow.nodes.iter().filter_map(|node| node.sequence()) {
+            for child in &sequence.children {
+                for rule in child.rules.iter().flatten() {
+                    let Rule::When { on, then, next } = rule else {
+                        continue;
+                    };
+                    let Predicate::Ref(field) = on else {
+                        panic!("existing when must remain a single reference")
+                    };
+                    count += 1;
+                    for (value, target) in [(true, then), (false, next)] {
+                        let artifact = field.split('.').rev().fold(
+                            serde_json::json!(value),
+                            |value, segment| serde_json::json!({segment: value}),
+                        );
+                        // When
+                        let decision = route_in_scope(
+                            &workflow,
+                            sequence,
+                            &child.name,
+                            Some(&artifact),
+                            &HashMap::new(),
+                        )
+                        .unwrap();
+                        // Then
+                        assert_eq!(
+                            decision,
+                            RouteDecision::TransitionTo(target.clone()),
+                            "{}: {}",
+                            workflow.name,
+                            child.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(count, 18);
+}
