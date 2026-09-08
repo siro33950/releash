@@ -2347,7 +2347,7 @@ mod canonical_runtime_owner_snapshot_tests {
                         kind: NodeKind::Session(SessionSpec::default()),
                         artifact: None,
                         input: Vec::new(),
-                        completion: NodeCompletion::Auto,
+                        completion: NodeCompletion::default(),
                         worktree: None,
                     }],
                     entry: "main".to_string(),

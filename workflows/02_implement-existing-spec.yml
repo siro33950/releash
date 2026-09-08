@@ -230,7 +230,8 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: implementation-confirmation
-    completion: approval
+    completion:
+      require: approval
     input:
     - spec
     - create_detailed_design

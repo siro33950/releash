@@ -95,7 +95,7 @@ fn reported_fanout_definition() -> WorkflowDefinition {
                 name: "review_acceptance_opus".to_string(),
                 kind: NodeKind::Session(SessionSpec::default()),
                 artifact: Some("review-result".to_string()),
-                completion: NodeCompletion::Approval,
+                completion: NodeCompletion::require_approval(),
                 ..NodeDefinition::default()
             },
             NodeDefinition {

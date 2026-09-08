@@ -55,12 +55,15 @@ pub(crate) enum SessionProviderDto {
     Codex,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum NodeCompletionDto {
-    #[default]
-    Auto,
+pub(crate) enum CompletionRequirementDto {
     Approval,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct NodeCompletionDto {
+    pub require: CompletionRequirementDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,8 +126,8 @@ pub(crate) struct NodeDefinitionDto {
     pub artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<InputParamDto>,
-    #[serde(default)]
-    pub completion: NodeCompletionDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<NodeCompletionDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
 }
@@ -398,11 +401,12 @@ fn node_kind_to_dto(kind: domain::NodeKindName) -> NodeKindDto {
     }
 }
 
-fn completion_to_dto(completion: domain::NodeCompletion) -> NodeCompletionDto {
-    match completion {
-        domain::NodeCompletion::Auto => NodeCompletionDto::Auto,
-        domain::NodeCompletion::Approval => NodeCompletionDto::Approval,
-    }
+fn completion_to_dto(completion: domain::NodeCompletion) -> Option<NodeCompletionDto> {
+    completion.require.map(|require| NodeCompletionDto {
+        require: match require {
+            domain::CompletionRequirement::Approval => CompletionRequirementDto::Approval,
+        },
+    })
 }
 
 fn facet_refs_to_dto(facets: &domain::FacetRefs) -> FacetRefsDto {
@@ -546,8 +550,7 @@ mod tests {
                         }
                     },
                     "artifact": "plan",
-                    "input": [{"name": "item", "contract": "plan"}],
-                    "completion": "auto"
+                    "input": [{"name": "item", "contract": "plan"}]
                 }]
             })
         );

@@ -387,18 +387,29 @@ pub struct CommandSpec {
     pub env: BTreeMap<EnvironmentVariableName, InputParameterRef>,
 }
 
-/// Node 自身が持つ完了の定義。全 Node 種別で宣言可・省略可。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeCompletion {
-    #[default]
-    Auto,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionRequirement {
     Approval,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeCompletion {
+    pub require: Option<CompletionRequirement>,
+}
+
 impl NodeCompletion {
-    fn is_auto(&self) -> bool {
-        *self == Self::Auto
+    pub fn require_approval() -> Self {
+        Self {
+            require: Some(CompletionRequirement::Approval),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.require.is_none()
+    }
+
+    pub fn requires_approval(&self) -> bool {
+        self.require == Some(CompletionRequirement::Approval)
     }
 }
 
@@ -1461,7 +1472,7 @@ impl Serialize for NodeDefinition {
             map.serialize_entry("input", &self.input)?;
         }
         serialize_option(&mut map, "artifact", &self.artifact)?;
-        if !self.completion.is_auto() {
+        if !self.completion.is_empty() {
             map.serialize_entry("completion", &self.completion)?;
         }
         serialize_option(&mut map, "worktree", &self.worktree)?;
@@ -1499,7 +1510,7 @@ impl NodeDefinition {
     }
 
     pub fn requires_approval_completion(&self) -> bool {
-        self.completion == NodeCompletion::Approval
+        self.completion.requires_approval()
     }
 
     pub fn is_fanout(&self) -> bool {

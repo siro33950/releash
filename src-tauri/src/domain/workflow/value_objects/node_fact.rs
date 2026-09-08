@@ -196,7 +196,7 @@ impl SessionExecutionTreeRootFacts {
                             }),
                             artifact: None,
                             input: Vec::new(),
-                            completion: NodeCompletion::Auto,
+                            completion: NodeCompletion::default(),
                             worktree: None,
                         }],
                         entry: node_name,

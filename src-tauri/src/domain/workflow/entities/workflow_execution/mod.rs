@@ -1490,7 +1490,7 @@ impl WorkflowExecution {
 
     /// 合成子インスタンスの既定完了条件成立後の処遇。
     ///
-    /// `completion: approval` なら承認待ちで停止し（`approved = true` で承認後の
+    /// `completion.require: approval` なら承認待ちで停止し（`approved = true` で承認後の
     /// 続きを実行）、それ以外は成果を確定して親スコープへ前進を伝播する。
     fn complete_scope(
         &mut self,
@@ -2119,7 +2119,7 @@ impl WorkflowExecution {
         if !node.requires_approval_completion() {
             return Err(
                 crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
-                    "node does not declare completion: approval".to_string(),
+                    "node does not declare completion.require: approval".to_string(),
                 ),
             );
         }
@@ -3167,7 +3167,7 @@ impl WorkflowExecution {
 
     /// fold: 完了二信号の充足から session leaf の決着を導出する。
     ///
-    /// 完了規則（Submit + Stop 揃いで完了・`completion: approval` は human
+    /// 完了規則（Submit + Stop 揃いで完了・`completion.require: approval` は human
     /// 承認まで完了しない）は live 経路と共有する
     /// `decide_node_completion_handshake` だけが知る。前進（次 leaf の起動）は
     /// 事実列自身が started として語るため行わない。
@@ -4727,7 +4727,7 @@ mod tests {
                         items: None,
                     },
                 ),
-                completion: crate::domain::workflow::NodeCompletion::Approval,
+                completion: crate::domain::workflow::NodeCompletion::require_approval(),
                 ..Default::default()
             },
             crate::domain::workflow::NodeDefinition {
@@ -5127,7 +5127,7 @@ mod tests {
     fn approval_target_requires_an_exact_attempt_when_fanout_names_are_ambiguous() {
         let mut execution = restored_execution(RuntimeExecutionState::Running);
         execution.runtime.workflow.nodes[0].completion =
-            crate::domain::workflow::NodeCompletion::Approval;
+            crate::domain::workflow::NodeCompletion::require_approval();
         for (id, child_index) in [("child-1", 0), ("child-2", 1)] {
             execution
                 .begin_node_attempt(
@@ -6219,7 +6219,7 @@ mod tests {
                 ],
             ),
             NodeDefinition {
-                completion: NodeCompletion::Approval,
+                completion: NodeCompletion::require_approval(),
                 ..tree_sequence_node("part", vec![ChildEntry::reference("inner")])
             },
             tree_command_node("inner"),

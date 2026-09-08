@@ -443,7 +443,10 @@ mod session_execution_tree_root_facts_tests {
         assert_eq!(root.definition.nodes.len(), 1);
         assert_eq!(root.definition.entry, "session");
         assert_eq!(root.definition.nodes[0].name, "session");
-        assert_eq!(root.definition.nodes[0].completion, NodeCompletion::Auto);
+        assert_eq!(
+            root.definition.nodes[0].completion,
+            NodeCompletion::default()
+        );
         assert!(matches!(
             root.definition.nodes[0].kind,
             NodeKind::Session(SessionSpec {

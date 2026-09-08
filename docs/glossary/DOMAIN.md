@@ -16,7 +16,7 @@ Releash のドメイン横断ユビキタス言語を定義する。この文書
 | Command | 非対話 command を一度実行する葉 Node | workflow |
 | Fanout | children を並列に束ねる合成 Node | workflow |
 | Sequence | children を時系列に束ね、辺を所有する合成 Node | workflow |
-| completion | Node 自身が持つ完了の定義 | NodeDefinition / NodeExecution |
+| completion | Node の完了に対する要求の集合。`require: approval` で承認を要求し、要求を書かないことが自動完了を意味する | NodeDefinition / NodeExecution |
 | 実行木（execution tree） | 実際に開始した NodeExecution が作る再帰木 | Worktree |
 | 辺（edge） | Node completion 後の進行先。Sequence の children エントリが所有する | Sequence |
 | 述語（Predicate） | 辺と completion の判断に使う真偽値の論理式。原子は Artifact の required boolean field への参照で、`and` / `or` で合成する | workflow |

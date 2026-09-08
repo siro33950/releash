@@ -508,6 +508,14 @@ fn parse_shape_diagnostics(
                 .field("nodes"),
             );
         }
+        check_completion_shape(
+            node_obj,
+            &node_path,
+            span_map,
+            workflow_name,
+            node_name,
+            &mut diagnostics,
+        );
         if let Some(input) = node_obj.get("input") {
             if !input.is_array() {
                 diagnostics.push(
@@ -794,6 +802,14 @@ fn check_child_body_shape(
     node_name: &str,
     diagnostics: &mut Vec<DiagnosticItem>,
 ) {
+    check_completion_shape(
+        body,
+        body_path,
+        span_map,
+        workflow_name,
+        node_name,
+        diagnostics,
+    );
     check_allowed_fields(
         body,
         body_path,
@@ -874,6 +890,33 @@ fn check_child_body_shape(
         node_name,
         diagnostics,
     );
+}
+
+fn check_completion_shape(
+    body: &serde_json::Map<String, serde_json::Value>,
+    body_path: &str,
+    span_map: &YamlSpanMap,
+    workflow_name: &str,
+    node_name: &str,
+    diagnostics: &mut Vec<DiagnosticItem>,
+) {
+    let Some(completion) = body.get("completion") else {
+        return;
+    };
+    if let Err(error) = super::completion_wire::parse_completion(completion) {
+        diagnostics.push(
+            DiagnosticItem::new(
+                "WFS002",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                span_map.field_span(&format!("{body_path}.completion")),
+                error.to_string(),
+            )
+            .workflow(workflow_name)
+            .node(node_name)
+            .field("completion"),
+        );
+    }
 }
 
 fn check_session_permission(

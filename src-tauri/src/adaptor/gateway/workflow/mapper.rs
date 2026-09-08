@@ -62,7 +62,7 @@ fn domain_node_to_schema(
         kind: domain_kind_to_schema(&node.kind),
         artifact: node.artifact.clone(),
         input: node.input.clone(),
-        completion: domain_completion_to_schema(node.completion),
+        completion: node.completion,
         worktree: node.worktree.clone(),
     }
 }
@@ -104,19 +104,6 @@ fn domain_kind_to_schema(
                     children: spec.children.clone(),
                 },
             )
-        }
-    }
-}
-
-fn domain_completion_to_schema(
-    completion: domain::NodeCompletion,
-) -> crate::adaptor::gateway::workflow::schema::NodeCompletion {
-    match completion {
-        domain::NodeCompletion::Auto => {
-            crate::adaptor::gateway::workflow::schema::NodeCompletion::Auto
-        }
-        domain::NodeCompletion::Approval => {
-            crate::adaptor::gateway::workflow::schema::NodeCompletion::Approval
         }
     }
 }

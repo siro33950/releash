@@ -820,3 +820,17 @@ return r.workflow{ name = 'budget', description = 'test', main = judge }
     assert_eq!(error.code, "WFS010");
     assert!(error.message.contains("builder values"));
 }
+
+#[test]
+fn test_completion要求_luaのrequire値は承認handleだけを受理する() {
+    // Given
+    for value in ["'approval'", "r.provider.claude"] {
+        let source = format!("local r = require('releash')\nreturn r.workflow{{ name = 'completion', description = 'test', main = r.command{{ command = 'true', completion = {{ require = {value} }} }} }}");
+        // When
+        let error = load_unconsumed_source(&source).unwrap_err();
+        // Then
+        assert_eq!(error.code, "WFS002");
+        assert_eq!(error.message, "completion require must be approval");
+        assert_eq!(error.field.as_deref(), Some("completion"));
+    }
+}

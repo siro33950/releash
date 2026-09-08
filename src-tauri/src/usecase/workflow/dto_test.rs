@@ -60,3 +60,29 @@ fn test_辺の定義dto_switchとloopguardとnextの意味を保持する() {
         assert_eq!(value, expected);
     }
 }
+
+#[test]
+fn test_completion表示dto_承認要求はmapで示し要求なしは省略する() {
+    // Given
+    for (completion, expected) in [
+        (domain::NodeCompletion::default(), None),
+        (
+            domain::NodeCompletion::require_approval(),
+            Some(serde_json::json!({"require": "approval"})),
+        ),
+    ] {
+        let node = domain::NodeDefinition {
+            completion,
+            ..Default::default()
+        };
+        // When
+        let dto = node_to_dto(&node);
+        let value = serde_json::to_value(&dto).unwrap();
+        // Then
+        assert_eq!(value.get("completion"), expected.as_ref());
+        assert_eq!(
+            serde_json::from_value::<NodeDefinitionDto>(value).unwrap(),
+            dto
+        );
+    }
+}

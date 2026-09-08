@@ -9,12 +9,14 @@ nodes:
       - review
   build:
     command: printf build
-    completion: approval
+    completion:
+      require: approval
   dispatch:
     fanout:
       children:
       - worker
-    completion: approval
+    completion:
+      require: approval
   worker:
     command: printf work
   review:
@@ -22,4 +24,5 @@ nodes:
       provider: claude
       facets:
         instruction: review
-    completion: approval
+    completion:
+      require: approval

@@ -2400,12 +2400,30 @@ fn parse_completion(
     table: &LuaTableData,
     location: &LuaSourceLocation,
 ) -> Result<NodeCompletion, LuaHostError> {
-    match table.get_string("completion") {
-        None | Some(LuaData::Nil) => Ok(NodeCompletion::Auto),
+    use super::completion_wire::CompletionShapeError;
+
+    let error = |error: CompletionShapeError| {
+        host_field_error("WFS002", error.to_string(), location.clone(), "completion")
+    };
+    let completion = match table.get_string("completion") {
+        None | Some(LuaData::Nil) => return Ok(NodeCompletion::default()),
+        Some(LuaData::Table(completion)) => completion,
+        Some(_) => return Err(error(CompletionShapeError::ExpectedMap)),
+    };
+    if completion.entries.is_empty() {
+        return Err(error(CompletionShapeError::Empty));
+    }
+    if completion.as_array().is_some() {
+        return Err(error(CompletionShapeError::ExpectedMap));
+    }
+    if completion.entries.len() != 1 || completion.get_string("require").is_none() {
+        return Err(error(CompletionShapeError::UnknownField));
+    }
+    match completion.get_string("require") {
         Some(value) if expect_handle(value, HANDLE_COMPLETION) == Ok(0) => {
-            Ok(NodeCompletion::Approval)
+            Ok(NodeCompletion::require_approval())
         }
-        Some(_) => Err(type_error("completion", "Completion", location)),
+        _ => Err(error(CompletionShapeError::InvalidRequirement)),
     }
 }
 
@@ -2864,7 +2882,7 @@ local r = require("releash")
 return function(command)
   local leaf = r.command{ command = command }
   return r.sequence{
-    completion = r.completion.approval,
+    completion = { require = r.completion.approval },
     children = { r.child{ node = leaf } },
   }
 end
@@ -2901,7 +2919,7 @@ return r.workflow{
         );
         assert_eq!(
             loaded.workflow.node_by_name("main#0").unwrap().completion,
-            NodeCompletion::Approval
+            NodeCompletion::require_approval()
         );
         assert!(loaded
             .workflow
@@ -3346,7 +3364,7 @@ local inspect = r.command{
   command = "echo inspect",
   artifact = result,
   input = { r.input("request_text") },
-  completion = r.completion.approval,
+  completion = { require = r.completion.approval },
 }
 return r.workflow{
   name = "review", description = "Review",
@@ -3377,7 +3395,8 @@ nodes:
             artifact: result
             input:
               - request_text
-            completion: approval
+            completion:
+              require: approval
             inputs:
               request_text: request
 "#,
@@ -3434,7 +3453,7 @@ local check = r.command{
 }
 local classify = r.command{
   command = "classify",
-  completion = r.completion.approval,
+  completion = { require = r.completion.approval },
   artifact = r.schema.object{
     properties = { status = r.schema.string{ enum = { "done", "retry" } } },
     required = { "status" },
@@ -3489,7 +3508,7 @@ return r.workflow{
         assert_eq!(main.children[3].on_failure, Some(OnFailure::Ignore));
         assert_eq!(
             loaded.workflow.node_by_name("main#1").unwrap().completion,
-            NodeCompletion::Approval
+            NodeCompletion::require_approval()
         );
         let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
         assert!(errors.is_empty(), "{errors:#?}");

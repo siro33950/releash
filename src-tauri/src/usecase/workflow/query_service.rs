@@ -507,7 +507,7 @@ mod tests {
                     },
                     ..Default::default()
                 }),
-                completion: NodeCompletion::Approval,
+                completion: NodeCompletion::require_approval(),
                 ..Default::default()
             }],
             entry: "review".to_string(),

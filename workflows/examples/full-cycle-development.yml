@@ -478,7 +478,8 @@ nodes:
         instruction: spec_confirmation
     input:
     - spec
-    completion: approval
+    completion:
+      require: approval
 
   resolve_open_threads:
     command: >-
@@ -1156,4 +1157,5 @@ nodes:
         instruction: implementation_confirmation
     input:
     - spec
-    completion: approval
+    completion:
+      require: approval

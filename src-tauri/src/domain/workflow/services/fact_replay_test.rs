@@ -1316,7 +1316,7 @@ mod approval_tests {
 
     fn approval_definition() -> WorkflowDefinition {
         let mut reviewed = session_leaf("reviewed");
-        reviewed.completion = NodeCompletion::Approval;
+        reviewed.completion = NodeCompletion::require_approval();
         workflow_definition(
             vec![
                 reviewed,

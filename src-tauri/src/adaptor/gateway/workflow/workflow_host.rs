@@ -1868,7 +1868,7 @@ impl WorkflowRuntimeHost {
                 timestamp,
             }];
             let outcome = if requires_approval {
-                // completion: approval — exit code での既定完了後、human の承認まで完了しない。
+                // completion.require: approval — exit code での既定完了後、human の承認まで完了しない。
                 if exec.mark_node_waiting_approval(&input.node_execution_id, timestamp)
                     != TransitionOutcome::Applied
                 {
@@ -2595,6 +2595,195 @@ mod workflow_host_tests {
     }
 
     #[tokio::test]
+    async fn test_command完了_承認要求ありなら承認後に完了し省略時は自動完了する() {
+        // Given
+        for parent in ["", "  main:\n    sequence: {children: [run]}\n"] {
+            for completion in ["", "    completion: {require: approval}\n"] {
+                let require_approval = !completion.is_empty();
+                let directory = tempfile::tempdir().unwrap();
+                let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                    directory.path().to_path_buf(),
+                ))
+                .unwrap();
+                let app = tauri::test::mock_builder()
+                    .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                    .unwrap();
+                app.manage(store.clone());
+                app.manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
+                    directory.path().to_path_buf(),
+                ));
+                let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
+                    Arc::new(UnusedWorkflowResolver),
+                    Arc::new(AcceptingWorktreeResolver),
+                    Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                    Arc::new(FailingWorkflowAgentSessions),
+                    Arc::new(
+                        crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
+                            store.clone(),
+                        ),
+                    ),
+                    Arc::new(MissingRepoWorktreeInventory),
+                ));
+                let node_name = if parent.is_empty() { "main" } else { "run" };
+                let workflow = serde_saphyr::from_str::<WorkflowDefinition>(&format!(
+                    "name: command-completion\ndescription: test\nnodes:\n{parent}  {node_name}:\n    command: 'true'\n{completion}"
+                ))
+                .unwrap();
+                let worktree_path = directory.path().to_string_lossy().into_owned();
+                let now = current_timestamp();
+                let execution_id = host
+                    .reserve_workflow_execution(
+                        &workflow,
+                        &worktree_path,
+                        None,
+                        ExecutionOrigin::DesktopUi,
+                        now,
+                    )
+                    .await
+                    .unwrap();
+                let (started, applied) = host
+                    .insert_workflow_execution(WorkflowExecutionInsert {
+                        execution_id: execution_id.clone(),
+                        workflow: workflow.clone(),
+                        worktree_path: worktree_path.clone(),
+                        request: None,
+                        created_from: ExecutionOrigin::DesktopUi,
+                        workflow_defaults: WorkflowDefaults,
+                        now,
+                    })
+                    .await
+                    .unwrap();
+                let mut start_events = vec![WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: workflow.name.clone(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition: workflow,
+                    timestamp: now,
+                }];
+                start_events.extend(applied.events);
+                host.write_log_required_batch(app.handle(), &start_events)
+                    .unwrap();
+                let node = started
+                    .node_executions
+                    .iter()
+                    .find(|node| node.node_name == node_name)
+                    .unwrap();
+                assert_eq!(node.status, NodeExecutionStatus::Running);
+                let node_execution_id = node.id.clone();
+                let input = CommandExecutionInput {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: node_name.to_string(),
+                    attempt: node.attempt,
+                    worktree_path,
+                    raw_command: Some("true".to_string()),
+                    definition_env: Vec::new(),
+                    contract: None,
+                    schemas: Default::default(),
+                    session_id: None,
+                };
+                let broadcasts = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let recorded = broadcasts.clone();
+                app.listen("workflow-execution-changed", move |event| {
+                    recorded.lock().unwrap().push(
+                        serde_json::from_str::<WorkflowExecutionChangedPayloadView>(
+                            event.payload(),
+                        )
+                        .unwrap(),
+                    );
+                });
+
+                // When
+                host.commit_command_output(
+                    app.handle(),
+                    input,
+                    CommandRunOutput {
+                        exit_code: 0,
+                        stdout: "command finished".to_string(),
+                        stderr: String::new(),
+                        duration_ms: 10,
+                    },
+                )
+                .await
+                .unwrap();
+
+                // Then
+                let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+                assert!(records.iter().any(|record| matches!(
+                    &record.fact,
+                    NodeFact::ArtifactProduced(fact) if record.meta.node_execution_id == node_execution_id && fact.value["stdout"] == "command finished" && fact.value["ok"] == true
+                )));
+                assert!(!records
+                    .iter()
+                    .any(|record| matches!(record.fact, NodeFact::ApprovalGranted(_))));
+                {
+                    let broadcasts = broadcasts.lock().unwrap();
+                    assert!(!broadcasts.is_empty());
+                    let statuses = broadcasts
+                        .iter()
+                        .flat_map(|broadcast| &broadcast.workflow_execution.node_executions)
+                        .filter(|node| node.id == node_execution_id)
+                        .map(|node| node.status)
+                        .collect::<Vec<_>>();
+                    let expected_view = if require_approval {
+                        NodeExecutionStatusView::WaitingApproval
+                    } else {
+                        NodeExecutionStatusView::Succeeded
+                    };
+                    assert!(!statuses.is_empty());
+                    assert!(statuses.iter().all(|status| *status == expected_view));
+                }
+                if require_approval {
+                    let snapshot = host.get_state_by_execution_id(&execution_id).await.unwrap();
+                    assert_eq!(
+                        snapshot
+                            .node_executions
+                            .iter()
+                            .find(|node| node.id == node_execution_id)
+                            .unwrap()
+                            .status,
+                        NodeExecutionStatus::WaitingApproval
+                    );
+                    assert_ne!(snapshot.state, RuntimeExecutionState::Completed);
+                    let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
+                        app.handle().clone(),
+                        host.clone(),
+                        store.clone(),
+                        store.installation_id().to_string(),
+                    ));
+                    WorkflowControlPlaneUsecase::new(gateway)
+                        .resolve_approval(ApprovalCommand {
+                            execution_id: execution_id.clone(),
+                            node_name: node_name.to_string(),
+                            node_execution_id: Some(node_execution_id.clone()),
+                            comment: None,
+                        })
+                        .await
+                        .unwrap();
+                    let records =
+                        workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
+                    assert!(records
+                        .iter()
+                        .any(|record| record.meta.node_execution_id == node_execution_id
+                            && matches!(record.fact, NodeFact::ApprovalGranted(_))));
+                }
+                let broadcasts = broadcasts.lock().unwrap();
+                let completed = &broadcasts.last().unwrap().workflow_execution;
+                assert_eq!(
+                    completed.status,
+                    crate::adaptor::protocol::workflow::ExecutionStatusView::Completed
+                );
+                assert!(completed
+                    .node_executions
+                    .iter()
+                    .all(|node| node.status == NodeExecutionStatusView::Succeeded));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_command_env_未束縛inputではprocessを起動せずnode_failureにする() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2850,7 +3039,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 },
                 NodeDefinition {
@@ -2861,7 +3050,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 },
                 NodeDefinition {
@@ -2872,7 +3061,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 },
             ]
@@ -3907,7 +4096,7 @@ nodes:
                 }),
                 artifact: None,
                 input: Vec::new(),
-                completion: NodeCompletion::Auto,
+                completion: NodeCompletion::default(),
                 worktree: None,
             };
             let mut nodes = vec![
@@ -3922,7 +4111,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 },
                 session_node("agent-first"),
@@ -4010,7 +4199,7 @@ nodes:
                 }),
                 artifact: None,
                 input: Vec::new(),
-                completion: NodeCompletion::Auto,
+                completion: NodeCompletion::default(),
                 worktree: None,
             };
             let workflow = WorkflowDefinition {
@@ -4030,7 +4219,7 @@ nodes:
                         }),
                         artifact: None,
                         input: Vec::new(),
-                        completion: NodeCompletion::Auto,
+                        completion: NodeCompletion::default(),
                         worktree: None,
                     },
                     session_node("agent-one"),
@@ -4279,7 +4468,7 @@ nodes:
 
         #[tokio::test]
         async fn test_deleted実行木解放_executions_cacheを除去する() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             assert!(fixture
                 .host
                 .executions
@@ -4302,7 +4491,7 @@ nodes:
 
         #[tokio::test]
         async fn test_登録済みworkflow実行木の予約はno_opになる() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
 
             fixture
                 .host
@@ -4326,7 +4515,7 @@ nodes:
 
         #[tokio::test]
         async fn test_started実行木登録_store未管理ならsession_storeを返す() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let unmanaged_app = tauri::test::mock_builder()
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
@@ -4342,7 +4531,7 @@ nodes:
 
         #[tokio::test]
         async fn test_started実行木登録_tree不在ならexecution_not_foundを返す() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let missing_tree_id = "missing-started-tree";
 
             let error = fixture
@@ -4359,7 +4548,7 @@ nodes:
 
         #[tokio::test]
         async fn test_started実行木登録_inactive_treeならinvalid_stateを返す() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let session_id = "inactive-started-tree";
             LocalAgentSessionRepository::new(fixture.store.clone())
                 .create(
@@ -4396,7 +4585,7 @@ nodes:
 
         #[tokio::test]
         async fn test_session実行木予約中のreconciliationは喪失を記録せず登録後のstopを保持する() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let session_id = "agent-session-reserved-before-commit";
             fixture
                 .host
@@ -4535,7 +4724,7 @@ nodes:
 
         #[tokio::test]
         async fn test_session実行木登録失敗後に予約を解放するとreconciliation対象へ戻る() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let session_id = "agent-session-registration-failed";
             fixture
                 .host
@@ -4642,7 +4831,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 }],
                 entry: "main".to_string(),
@@ -4707,7 +4896,7 @@ nodes:
 
         #[tokio::test]
         async fn test_provider_stopはlaunch区分の異なる実行木で同じsignal遷移になる() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let standalone_id = "agent-session-standalone-stop";
             LocalAgentSessionRepository::new(fixture.store.clone())
                 .create(
@@ -4843,7 +5032,7 @@ nodes:
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 }],
                 entry: "main".to_string(),
@@ -4906,7 +5095,7 @@ nodes:
         #[tokio::test]
         async fn test_provider_stop_provider_lifecycle_commit失敗後も停止effectを実行する() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             fixture
                 .control_plane
                 .submit_output(SubmitOutputCommand {
@@ -4950,7 +5139,7 @@ nodes:
         #[tokio::test]
         async fn test_submit_agent_session停止失敗でも成功とsucceededを維持する() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, true).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
             fixture
                 .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
@@ -5048,7 +5237,7 @@ nodes:
         async fn test_provider_stop受理_停止effect未完了でもcommitと後続処理が完了する() {
             // Given
             let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::Auto,
+                NodeCompletion::default(),
                 Arc::new(NeverResolvingStopWorkflowAgentSessions),
                 Arc::new(std::sync::Mutex::new(Vec::new())),
             )
@@ -5084,7 +5273,7 @@ nodes:
         #[tokio::test]
         async fn test_終端済みsessionへの再stop_確定状態と停止回数を変えない() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             fixture
                 .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
@@ -5122,7 +5311,7 @@ nodes:
         #[tokio::test]
         async fn test_承認_agent_session停止失敗でも成功とsucceededを維持する() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Approval, true).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::require_approval(), true).await;
             fixture
                 .control_plane
                 .submit_output(SubmitOutputCommand {
@@ -5174,7 +5363,7 @@ nodes:
         #[tokio::test]
         async fn test_failure_settlement_agent_session停止失敗でも成功とfailedを維持する() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, true).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
             let runtime_error = WorkflowRuntimeError::AgentSession("runtime failed".to_string());
 
             // When
@@ -5213,7 +5402,7 @@ nodes:
 
         #[tokio::test]
         async fn test_workflow起動木_runtime失敗sessionをresume対象にしない() {
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, false).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let runtime_error = WorkflowRuntimeError::AgentSession("runtime failed".to_string());
             fixture
                 .host
@@ -5260,7 +5449,7 @@ nodes:
                     String::new(),
                 );
                 let fixture = runtime_effect_fixture_with_sessions(
-                    NodeCompletion::Auto,
+                    NodeCompletion::default(),
                     sessions,
                     stop_calls,
                 )
@@ -5321,9 +5510,12 @@ nodes:
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 String::new(),
             );
-            let fixture =
-                runtime_effect_fixture_with_sessions(NodeCompletion::Auto, sessions, stop_calls)
-                    .await;
+            let fixture = runtime_effect_fixture_with_sessions(
+                NodeCompletion::default(),
+                sessions,
+                stop_calls,
+            )
+            .await;
             append_process_exit(&fixture, Some(1));
             recovery_fails.store(true, std::sync::atomic::Ordering::SeqCst);
 
@@ -5515,7 +5707,7 @@ nodes:
                 ResumeCommitFailureMode::Persistence,
             ));
             let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::Auto,
+                NodeCompletion::default(),
                 sessions.clone(),
                 Arc::new(std::sync::Mutex::new(Vec::new())),
             )
@@ -5558,7 +5750,7 @@ nodes:
                 String::new(),
             );
             let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::Auto,
+                NodeCompletion::default(),
                 sessions,
                 Arc::new(std::sync::Mutex::new(Vec::new())),
             )
@@ -5695,7 +5887,7 @@ nodes:
                 for exit_code in [Some(1), Some(0)] {
                     let sessions = Arc::new(ResumeCommitFailureWorkflowAgentSessions::new(mode));
                     let fixture = runtime_effect_fixture_with_sessions(
-                        NodeCompletion::Auto,
+                        NodeCompletion::default(),
                         sessions.clone(),
                         Arc::new(std::sync::Mutex::new(Vec::new())),
                     )
@@ -5782,7 +5974,7 @@ nodes:
                 ResumeCommitFailureMode::PersistenceWithCompensationFailure,
             ));
             let fixture = runtime_effect_fixture_with_sessions(
-                NodeCompletion::Auto,
+                NodeCompletion::default(),
                 sessions.clone(),
                 Arc::new(std::sync::Mutex::new(Vec::new())),
             )
@@ -5821,9 +6013,12 @@ nodes:
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 String::new(),
             );
-            let fixture =
-                runtime_effect_fixture_with_sessions(NodeCompletion::Auto, sessions, stop_calls)
-                    .await;
+            let fixture = runtime_effect_fixture_with_sessions(
+                NodeCompletion::default(),
+                sessions,
+                stop_calls,
+            )
+            .await;
             fixture
                 .host
                 .stop_workflow_execution(fixture.app.handle(), &fixture.execution_id)
@@ -5894,7 +6089,7 @@ nodes:
                     String::new(),
                 );
                 let fixture = runtime_effect_fixture_with_sessions(
-                    NodeCompletion::Auto,
+                    NodeCompletion::default(),
                     sessions,
                     stop_calls,
                 )
@@ -5938,9 +6133,12 @@ nodes:
                 dispatch_fails.clone(),
                 String::new(),
             );
-            let fixture =
-                runtime_effect_fixture_with_sessions(NodeCompletion::Auto, sessions, stop_calls)
-                    .await;
+            let fixture = runtime_effect_fixture_with_sessions(
+                NodeCompletion::default(),
+                sessions,
+                stop_calls,
+            )
+            .await;
             append_process_exit(&fixture, Some(1));
             rusqlite::Connection::open(fixture._directory.path().join("local-event-store.sqlite3"))
                 .unwrap()
@@ -6124,7 +6322,7 @@ nodes:
         #[tokio::test]
         async fn test_abort_agent_session停止失敗でも成功とabortedを維持する() {
             // Given
-            let fixture = runtime_effect_fixture(NodeCompletion::Auto, true).await;
+            let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
 
             // When
             let result = fixture
@@ -6276,7 +6474,7 @@ nodes:
                         }),
                         artifact: None,
                         input: Vec::new(),
-                        completion: crate::domain::workflow::NodeCompletion::Auto,
+                        completion: crate::domain::workflow::NodeCompletion::default(),
                         worktree: None,
                     },
                     NodeDefinition {
@@ -6289,7 +6487,7 @@ nodes:
                         }),
                         artifact: None,
                         input: Vec::new(),
-                        completion: crate::domain::workflow::NodeCompletion::Auto,
+                        completion: crate::domain::workflow::NodeCompletion::default(),
                         worktree: None,
                     },
                 ],

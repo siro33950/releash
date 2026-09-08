@@ -353,9 +353,9 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
 						{node.kind}
 					</span>
-					{node.completion === "approval" && (
+					{node.completion?.require === "approval" && (
 						<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
-							completion: approval
+							require: approval
 						</span>
 					)}
 					{fanout && (

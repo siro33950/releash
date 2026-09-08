@@ -612,6 +612,11 @@ describe("SettingsModal", () => {
 		const workflowCheckbox = await screen.findByRole("checkbox", {
 			name: "Approval auto-approve",
 		});
+		expect(
+			screen.getByText(
+				"Automatically approves completed nodes with completion.require: approval.",
+			),
+		).toBeInTheDocument();
 		await waitFor(() => {
 			expect(workflowCheckbox).toBeChecked();
 		});
