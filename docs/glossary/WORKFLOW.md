@@ -66,7 +66,7 @@ Node 共通 field は kind block と同じ階層に書く。
 | --- | --- |
 | `input` | Node が受け取るパラメータのリスト。文字列は型なし、`- name: Contract` は型あり |
 | `artifact` | Node が産出する Artifact の Contract 名。Sequence / Fanout には宣言しない |
-| `completion` | Node 自身の完了定義。`auto` または `approval`。省略時は `auto` |
+| `completion` | Node の完了に対する要求の map。`require: approval` で承認を要求する。要求しない場合は `completion` を省略する |
 | `worktree` | 将来の隔離実行用の予約 field。現行 loader では `WFU002` Error |
 
 `input` と `artifact` は Node の Interface であり、`inputs` は children エントリに置く配線である。本文はパラメータ名を参照し、供給元 Node 名は配線にだけ現れる。
@@ -253,7 +253,8 @@ review:
         - releash-review
       instruction: review-diff
   artifact: review_verdict
-  completion: approval
+  completion:
+    require: approval
 ```
 
 - `provider`: 必須。`claude` または `codex`。
@@ -273,13 +274,15 @@ review:
 
 `read-only` では provider CLI の判定方式が異なる。claude の `plan` は完了時の `releash workflow output submit` を拒否するため、Session Node は自動では完了しない。完了させる場合は人間が provider 側で権限を変更する。codex の `read-only` は同じ完了提出を拒否しない。
 
-Session の `completion: auto` は、同一 Node attempt の Submit と provider Stop の二信号が揃ったときに完了する。順序は問わず、一方だけでは完了しない。`completion: approval` は二信号が揃った後に WaitingApproval となり、人間の Approve で完了する。
+`completion` を省略した Session は、同一 Node attempt の Submit と provider Stop の二信号が揃ったときに完了する。順序は問わず、一方だけでは完了しない。`completion` に `require: approval` を宣言すると二信号が揃った後に WaitingApproval となり、人間の Approve で完了する。
 
 ### completion
 
-`completion` は全4種の Node で宣言できる。`approval` は本来の完了条件を満たした後、人間が承認するまで完了を保留する。
+`completion` は全4種の Node で宣言できる要求の map である。`require: approval` は本来の完了条件を満たした後に WaitingApproval となり、人間が承認するまで完了を保留する。要求しない場合は `completion` を省略し、本来の完了条件を満たした時点で完了する。
 
-| Node | `auto` | `approval` |
+`completion` を書く場合は要求を一つ以上持つ。空 map、文字列形式、`approval` 以外の `require`、`require` 以外のキー（`delegate` を含む）は Error Diagnostic になる。
+
+| Node | `completion` 省略 | `require: approval` |
 | --- | --- | --- |
 | Session | Submit と provider Stop の二信号 | 二信号の後に Approve |
 | Command | process 終了 | 終了後に Approve |
@@ -411,7 +414,7 @@ local implement = r.session{
     properties = { approved = r.schema.boolean() },
     required = { "approved" },
   },
-  completion = r.completion.approval,
+  completion = { require = r.completion.approval },
 }
 
 local main = r.sequence{
@@ -431,10 +434,10 @@ return r.workflow{
 
 | API | 戻り値 |
 | --- | --- |
-| `r.command{ name?, command, env?, artifact?, input?, completion? }` | Node |
-| `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion? }` | Node |
-| `r.fanout{ name?, children, items?, input?, completion? }` | Node |
-| `r.sequence{ name?, entry?, children, input?, completion? }` | Node |
+| `r.command{ name?, command, env?, artifact?, input?, completion?: { require = r.completion.approval } }` | Node |
+| `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion?: { require = r.completion.approval } }` | Node |
+| `r.fanout{ name?, children, items?, input?, completion?: { require = r.completion.approval } }` | Node |
+| `r.sequence{ name?, entry?, children, input?, completion?: { require = r.completion.approval } }` | Node |
 | `r.child{ node, inputs?, rules?, on_failure? }` | Child |
 | `r.next(node)` | Rule |
 | `r.when{ on, on_true, next }`（`on` は Source または Predicate） | Rule |
@@ -445,12 +448,14 @@ return r.workflow{
 | `r.retry(n)` / `r.ignore` | OnFailure |
 | `r.input(name, contract?)` | Input |
 | `r.request` / `r.items` | Source |
-| `r.completion.approval` | Completion |
+| `r.completion.approval` | CompletionRequirement（`completion` table の `require` 値） |
 | `r.provider.claude` / `r.provider.codex` | Provider |
 | `r.schema.object{ name?, properties, required? }` | Schema |
 | `r.schema.array{ name?, items }` | Schema |
 | `r.schema.string{ enum? }` / `boolean()` / `integer()` / `number()` | Schema |
 | `r.workflow{ name, description, main }` | Workflow |
+
+`completion` は `completion = { require = r.completion.approval }` の table で宣言する。handle を table で包まず直接渡す旧形式は Error Diagnostic になる。`require` の値はこの handle だけを受理し、文字列は受理しない。
 
 `r.all` / `r.any` は top-level の述語 builder である。要素は1つ以上で、空の builder はネスト内でも YAML と同じ parse/shape の Error Diagnostic になる。`r.when.on` の単一 Source は従来どおり使える。述語内の全 Source は、その辺の自 child の Artifact field を指し、多段 Object や Sequence / Fanout の map を辿れる。論理演算・型検査・欠損または非boolean値を Ref 単位で false とする評価は YAML と同じで、実行中に Lua で評価しない。
 

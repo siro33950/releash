@@ -48,7 +48,7 @@ nodes:
         let session = node.session().unwrap();
         assert_eq!(session.facets.instruction.as_deref(), Some("implement"));
         assert_eq!(session.facets.policy.as_deref(), Some("coding"));
-        assert_eq!(node.completion, NodeCompletion::Auto);
+        assert_eq!(node.completion, NodeCompletion::default());
     }
 
     #[test]
@@ -161,7 +161,8 @@ nodes:
       facets:
         instruction: approve
         policy: planning
-    completion: approval
+    completion:
+      require: approval
 "#;
         let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
@@ -696,7 +697,8 @@ nodes:
       provider: codex
     input:
     - item
-    completion: approval
+    completion:
+      require: approval
 "#;
         assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(known).is_ok());
 

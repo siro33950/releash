@@ -764,3 +764,165 @@ fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしi
         }
     }
 }
+
+#[test]
+fn test_承認対象検証_承認要求未宣言ならrequire形式で不足を示す() {
+    // Given
+    let mut execution = execution(
+        r#"
+name: missing-approval-requirement
+description: test
+nodes:
+  main: {session: {provider: codex}}
+"#,
+    );
+    let mut new_id = id_source();
+    let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
+    assert_eq!(
+        execution.mark_node_waiting_approval(&leaf.node_execution_id, 2.0),
+        TransitionOutcome::Applied
+    );
+
+    // When
+    let error = execution
+        .resolve_approval_attempt_target("main", Some(&leaf.node_execution_id))
+        .unwrap_err();
+
+    // Then
+    assert_eq!(
+        error,
+        crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
+            "node does not declare completion.require: approval".to_string()
+        )
+    );
+}
+
+#[test]
+fn test_completion要求_全node種別で本来の完了条件後に承認を待ち省略時は自動完了する() {
+    // Given
+    for kind in [
+        "session: {provider: claude}",
+        "command: 'true'",
+        "fanout: {children: [{leaf: {command: 'true'}}]}",
+        "sequence: {children: [{leaf: {command: 'true'}}]}",
+    ] {
+        for require_approval in [false, true] {
+            let completion = if require_approval {
+                "\n    completion: {require: approval}"
+            } else {
+                ""
+            };
+            let source = format!(
+                "name: completion\ndescription: test\nnodes:\n  main:\n    {kind}{completion}\n"
+            );
+            let mut execution = execution(&source);
+            let mut new_id = id_source();
+            // When
+            let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
+            let completed_events = if leaf.kind == NodeKindName::Session {
+                execution.record_node_completion_signal(
+                    &leaf.node_execution_id,
+                    NodeCompletionSignal::Submit,
+                    2.0,
+                );
+                assert_eq!(
+                    execution.decide_node_completion_handshake(&leaf.node_execution_id),
+                    NodeCompletionHandshakeDecision::AwaitingSignal
+                );
+                assert_eq!(
+                    execution.node_executions()[0].status,
+                    RuntimeNodeExecutionStatus::Running
+                );
+                execution.record_node_completion_signal(
+                    &leaf.node_execution_id,
+                    NodeCompletionSignal::Stop,
+                    3.0,
+                );
+                let expected = if require_approval {
+                    NodeCompletionHandshakeDecision::RequestApproval
+                } else {
+                    NodeCompletionHandshakeDecision::CompleteAuto
+                };
+                assert_eq!(
+                    execution.decide_node_completion_handshake(&leaf.node_execution_id),
+                    expected
+                );
+                let applied = execution
+                    .apply_node_completion_handshake(&leaf.node_execution_id, &mut new_id, 3.0)
+                    .unwrap();
+                assert_eq!(applied.advance.is_none(), require_approval);
+                applied.events
+            } else if leaf.node_name == "main" {
+                let disposition = workflow_transition::decide_completion_disposition(
+                    execution.workflow.node_by_name("main").unwrap(),
+                );
+                if require_approval {
+                    assert_eq!(
+                        disposition,
+                        workflow_transition::CompletionDisposition::RequestApproval
+                    );
+                    assert_eq!(
+                        execution.record_pending_result(
+                            &leaf.node_execution_id,
+                            Some("process exited".into()),
+                            Some(json!({"ok": true})),
+                            None,
+                            None,
+                            3.0
+                        ),
+                        TransitionOutcome::Applied
+                    );
+                    assert_eq!(
+                        execution.mark_node_waiting_approval(&leaf.node_execution_id, 3.0),
+                        TransitionOutcome::Applied
+                    );
+                    Vec::new()
+                } else {
+                    assert_eq!(
+                        disposition,
+                        workflow_transition::CompletionDisposition::Complete
+                    );
+                    finish_leaf(&mut execution, &leaf, None, &mut new_id).events
+                }
+            } else {
+                finish_leaf(&mut execution, &leaf, None, &mut new_id).events
+            };
+            let root = execution
+                .node_executions()
+                .iter()
+                .find(|node| node.node_name == "main")
+                .unwrap();
+            let root_id = root.id.clone();
+            // Then
+            if require_approval {
+                assert_eq!(
+                    root.status,
+                    RuntimeNodeExecutionStatus::WaitingApproval,
+                    "{kind}"
+                );
+                if root.kind != NodeKindName::Command {
+                    assert!(completed_events.iter().any(|event| matches!(event,
+                        WorkflowEvent::ApprovalRequested { node_execution_id, .. } if node_execution_id == &root_id
+                    )));
+                }
+                assert_ne!(*execution.state(), RuntimeExecutionState::Completed);
+                execution
+                    .apply_approval(&root_id, &mut new_id, 4.0)
+                    .unwrap();
+            } else {
+                assert!(!completed_events
+                    .iter()
+                    .any(|event| matches!(event, WorkflowEvent::ApprovalRequested { .. })));
+            }
+            assert_eq!(
+                *execution.state(),
+                RuntimeExecutionState::Completed,
+                "{kind}"
+            );
+            assert!(execution
+                .node_executions()
+                .iter()
+                .all(|node| node.status == RuntimeNodeExecutionStatus::Succeeded));
+        }
+    }
+}

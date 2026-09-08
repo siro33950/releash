@@ -5,12 +5,12 @@
 
 use serde::Serialize;
 
-#[cfg(test)]
-pub use crate::domain::workflow::NodeKindName;
 pub use crate::domain::workflow::{
-    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
-    Rule, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition as WorkflowDefinitionYaml,
+    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, Rule, SchemaDef,
+    SequenceSpec, SessionSpec, WorkflowDefinition as WorkflowDefinitionYaml,
 };
+#[cfg(test)]
+pub use crate::domain::workflow::{NodeCompletion, NodeKindName};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Summary {

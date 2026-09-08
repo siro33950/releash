@@ -278,7 +278,7 @@ pub(crate) mod test_support {
                     name: "review".to_string(),
                     kind: DomainNodeKind::Session(SessionSpec::default()),
                     artifact: Some("review-result".to_string()),
-                    completion: NodeCompletion::Approval,
+                    completion: NodeCompletion::require_approval(),
                     ..Default::default()
                 },
             ],

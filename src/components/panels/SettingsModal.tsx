@@ -610,7 +610,8 @@ function AgentSection({
 					</label>
 				</div>
 				<p className="text-[10px] text-muted-foreground">
-					Automatically approves completed nodes with completion: approval.
+					Automatically approves completed nodes with completion.require:
+					approval.
 				</p>
 				{workflow.error && (
 					<p className="text-[10px] text-destructive">{workflow.error}</p>

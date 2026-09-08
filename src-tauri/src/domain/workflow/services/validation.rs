@@ -1736,7 +1736,7 @@ mod tests {
             }),
             artifact: None,
             input: Vec::new(),
-            completion: NodeCompletion::Auto,
+            completion: NodeCompletion::default(),
             worktree: None,
         }
     }
@@ -1756,7 +1756,7 @@ mod tests {
             }),
             artifact: None,
             input: Vec::new(),
-            completion: NodeCompletion::Auto,
+            completion: NodeCompletion::default(),
             worktree: None,
         }
     }
@@ -1770,7 +1770,7 @@ mod tests {
             }),
             artifact: None,
             input: Vec::new(),
-            completion: NodeCompletion::Auto,
+            completion: NodeCompletion::default(),
             worktree: None,
         }
     }
@@ -1785,7 +1785,7 @@ mod tests {
             kind: NodeKind::Fanout(FanoutSpec { children, items }),
             artifact: None,
             input: Vec::new(),
-            completion: NodeCompletion::Auto,
+            completion: NodeCompletion::default(),
             worktree: None,
         }
     }
@@ -2375,7 +2375,7 @@ mod tests {
     #[test]
     fn test_root_sequenceのapprovalが通る() {
         let mut root = sequence_node("main", vec![ChildEntry::reference("leaf")]);
-        root.completion = NodeCompletion::Approval;
+        root.completion = NodeCompletion::require_approval();
         let wf = workflow(vec![root, command_node("leaf", "echo hi")]);
 
         assert!(validate(&wf).is_ok(), "{:?}", validate(&wf));

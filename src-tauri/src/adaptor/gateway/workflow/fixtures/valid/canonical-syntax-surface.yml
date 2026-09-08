@@ -105,7 +105,8 @@ nodes:
       provider: claude
       facets:
         instruction: review
-    completion: approval
+    completion:
+      require: approval
   done:
     command: "printf '%s' '{{ outcome.verdict }}'"
     input:

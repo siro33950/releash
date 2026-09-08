@@ -154,7 +154,7 @@ fn test_session_permission_未知値とprovider固有値は文字列構築とser
 #[test]
 fn test_子エントリ本体は重複completionキーを拒否する() {
     let error = serde_json::from_str::<RawChildBody>(
-        r#"{"command":"echo hi","completion":"auto","completion":"approval"}"#,
+        r#"{"command":"echo hi","completion":{"require":"approval"},"completion":{"require":"approval"}}"#,
     )
     .unwrap_err();
     assert!(error.to_string().contains("duplicate field `completion`"));
@@ -526,5 +526,22 @@ fn test_述語定義の保存_workflow全体の現在形式を再読込できる
         let restored: WorkflowDefinition = serde_json::from_str(&serialized).unwrap();
         // Then
         assert_eq!(restored, workflow);
+    }
+}
+
+#[test]
+fn test_completion要求_省略時は要求なしで承認要求だけが完了を保留する() {
+    // Given
+    for (completion, requires_approval) in [
+        (NodeCompletion::default(), false),
+        (NodeCompletion::require_approval(), true),
+    ] {
+        let node = NodeDefinition {
+            completion,
+            ..Default::default()
+        };
+        // When / Then
+        assert_eq!(completion.is_empty(), !requires_approval);
+        assert_eq!(node.requires_approval_completion(), requires_approval);
     }
 }

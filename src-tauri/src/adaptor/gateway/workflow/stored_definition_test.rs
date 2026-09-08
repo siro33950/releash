@@ -96,3 +96,30 @@ fn test_保存定義_未対応fanoutでも表示上の展開同定情報を保�
         std::collections::BTreeSet::from(["main".into()])
     );
 }
+
+#[test]
+fn test_保存定義_旧completion文字列は該当nodeだけ解釈不能として扱う() {
+    // Given
+    for legacy in ["auto", "approval"] {
+        let detail = started_detail(serde_json::json!({
+            "main": {"sequence": {"children": ["legacy", "current"]}},
+            "legacy": {"command": "true", "completion": legacy},
+            "current": {"command": "true", "completion": {"require": "approval"}}
+        }));
+        // When
+        let NodeFact::Started(started) = decode_started(&detail).unwrap() else {
+            panic!()
+        };
+        let root = started.root.unwrap();
+        // Then
+        assert_eq!(root.definition_resolution.node_errors.len(), 1);
+        assert!(root.definition_resolution.node_errors["legacy"].contains("completion"));
+        assert!(root.definition.node_by_name("legacy").is_none());
+        assert!(root.definition.node_by_name("main").is_some());
+        assert!(root
+            .definition
+            .node_by_name("current")
+            .unwrap()
+            .requires_approval_completion());
+    }
+}

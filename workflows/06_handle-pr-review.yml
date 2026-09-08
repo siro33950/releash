@@ -271,7 +271,8 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: pr_review_confirmation
-    completion: approval
+    completion:
+      require: approval
     artifact: pr-review-finalization
     input:
     - import_pr_review

@@ -55,7 +55,9 @@ export type Rule =
 	  };
 
 export type NodeKind = "command" | "session" | "fanout" | "sequence";
-export type NodeCompletion = "auto" | "approval";
+export interface NodeCompletion {
+	require: "approval";
+}
 
 export interface FacetRefs {
 	policy?: string;

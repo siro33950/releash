@@ -213,7 +213,8 @@ nodes:
         policy: triage
         knowledge: releash-thread-cli
         instruction: decide_pr_review_fix_policy_manual
-    completion: approval
+    completion:
+      require: approval
     input:
     - import_pr_review
 
@@ -272,7 +273,8 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: pr_review_confirmation
-    completion: approval
+    completion:
+      require: approval
     artifact: pr-review-finalization
     input:
     - import_pr_review

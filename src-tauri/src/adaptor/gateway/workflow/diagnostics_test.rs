@@ -1230,3 +1230,195 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
     }
     assert_eq!(count, 18);
 }
+
+#[test]
+fn test_completion診断_yamlとluaの同じ誤りはcode_stage_messageが一致する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for (yaml_value, lua_value, message) in [
+        (
+            "approval",
+            "r.completion.approval",
+            "completion must be a map",
+        ),
+        ("auto", "'auto'", "completion must be a map"),
+        ("approval", "'approval'", "completion must be a map"),
+        ("true", "true", "completion must be a map"),
+        ("42", "42", "completion must be a map"),
+        (
+            "[approval]",
+            "{ r.completion.approval }",
+            "completion must be a map",
+        ),
+        (
+            "{}",
+            "{}",
+            "completion must contain at least one requirement",
+        ),
+        (
+            "{require: auto}",
+            "{ require = 'auto' }",
+            "completion require must be approval",
+        ),
+        (
+            "{require: other}",
+            "{ require = 'other' }",
+            "completion require must be approval",
+        ),
+        (
+            "{require: true}",
+            "{ require = true }",
+            "completion require must be approval",
+        ),
+        (
+            "{require: 1}",
+            "{ require = 1 }",
+            "completion require must be approval",
+        ),
+        (
+            "{require: {}}",
+            "{ require = {} }",
+            "completion require must be approval",
+        ),
+        (
+            "{require: []}",
+            "{ require = { r.completion.approval } }",
+            "completion require must be approval",
+        ),
+        (
+            "{delegate: worker}",
+            "{ delegate = 'worker' }",
+            "completion map only accepts the key 'require'",
+        ),
+        (
+            "{require: approval, extra: true}",
+            "{ require = r.completion.approval, extra = true }",
+            "completion map only accepts the key 'require'",
+        ),
+    ] {
+        let lua_source = format!("local r = require('releash')\nreturn r.workflow{{ name = 'completion', description = 'test', main = r.command{{\n  command = 'true',\n  completion = {lua_value},\n}} }}");
+        let yaml_bodies = [
+            format!("  main:\n    command: 'true'\n    completion: {yaml_value}"),
+            format!("  main:\n    sequence:\n      children:\n        - leaf:\n            command: 'true'\n            completion: {yaml_value}"),
+            format!("  main:\n    fanout:\n      children:\n        - command: 'true'\n          completion: {yaml_value}"),
+        ];
+        for body in yaml_bodies {
+            let yaml_source = format!("name: completion\ndescription: test\nnodes:\n{body}\n");
+            // When
+            let yaml = diagnose_workflow_source(&yaml_source, None);
+            let lua = diagnose_lua_workflow_source(
+                "completion.lua",
+                &lua_source,
+                directory.path(),
+                directory.path(),
+                None,
+            );
+            // Then
+            for diagnosis in [&yaml, &lua] {
+                assert!(diagnosis.workflow.is_none(), "{yaml_value} / {lua_value}");
+                assert_eq!(
+                    diagnosis.diagnostics.len(),
+                    1,
+                    "{:?}",
+                    diagnosis.diagnostics
+                );
+                let diagnostic = &diagnosis.diagnostics[0];
+                assert_eq!(diagnostic.code, "WFS002");
+                assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
+                assert_eq!(diagnostic.severity, Severity::Error);
+                assert_eq!(diagnostic.message, message);
+                assert_eq!(diagnostic.field.as_deref(), Some("completion"));
+                assert!(diagnostic.span.is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_completion診断_全node種別でyamlとluaが同じ要求の有無を持つ定義を構築する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
+    std::fs::write(
+        directory.path().join("instructions/test.md"),
+        "test instruction",
+    )
+    .unwrap();
+    for (yaml_kind, lua_kind) in [
+        ("session: {provider: claude, facets: {instruction: test}}", "r.session{ provider = r.provider.claude, facets = {instruction = f.instruction.test}, %COMPLETION% }"),
+        ("command: 'true'", "r.command{ command = 'true', %COMPLETION% }"),
+        ("fanout: {children: [{leaf: {command: 'true'}}]}", "r.fanout{ children = {r.child{node = r.command{name = 'leaf', command = 'true'}}}, %COMPLETION% }"),
+        ("sequence: {children: [{leaf: {command: 'true'}}]}", "r.sequence{ children = {r.child{node = r.command{name = 'leaf', command = 'true'}}}, %COMPLETION% }"),
+    ] {
+        for required in [false, true] {
+            let yaml_completion = if required { "\n    completion: {require: approval}" } else { "" };
+            let lua_completion = if required { "completion = { require = r.completion.approval }" } else { "" };
+            let yaml_source = format!("name: completion\ndescription: test\nnodes:\n  main:\n    {yaml_kind}{yaml_completion}\n");
+            let lua_source = format!("local r = require('releash')\nlocal f = require('facets')\nreturn r.workflow{{ name = 'completion', description = 'test', main = {} }}", lua_kind.replace("%COMPLETION%", lua_completion));
+            // When
+            let yaml = diagnose_workflow_source(&yaml_source, None);
+            let lua = diagnose_lua_workflow_source("completion.lua", &lua_source, directory.path(), directory.path(), None);
+            // Then
+            assert!(yaml.diagnostics.is_empty(), "{:?}", yaml.diagnostics);
+            assert!(lua.diagnostics.is_empty(), "{:?}", lua.diagnostics);
+            let yaml_workflow = yaml.workflow.unwrap();
+            let lua_workflow = lua.workflow.unwrap();
+            assert_eq!(serde_json::to_value(&yaml_workflow).unwrap(), serde_json::to_value(&lua_workflow).unwrap());
+            assert_eq!(yaml_workflow.node_by_name("main").unwrap().requires_approval_completion(), required);
+        }
+    }
+}
+
+#[test]
+fn test_completion移行_builtin8本と正本サンプルが診断なしで既存の承認要求を保持する() {
+    // Given
+    for (name, expected) in [
+        ("01_author-spec", vec!["final_review"]),
+        (
+            "02_implement-existing-spec",
+            vec!["implementation_confirmation"],
+        ),
+        ("03_full-review", vec![]),
+        ("04_review-fix-policy", vec![]),
+        (
+            "04_review-fix-policy-manual",
+            vec!["decide_fix_policies_manual", "policy_confirmation"],
+        ),
+        ("05_review-fix", vec![]),
+        ("06_handle-pr-review", vec!["pr_review_confirmation"]),
+        (
+            "06_handle-pr-review-manual",
+            vec![
+                "decide_pr_review_fix_policies_manual",
+                "pr_review_confirmation",
+            ],
+        ),
+        (
+            "full-cycle-development",
+            vec!["implementation_confirmation", "spec_confirmation"],
+        ),
+    ] {
+        let source = if name == "full-cycle-development" {
+            include_str!("../../../../../workflows/examples/full-cycle-development.yml")
+        } else {
+            builtin::builtin_workflow_source(name).unwrap()
+        };
+        // When
+        let diagnosis = diagnose_workflow_source(source, Some(name));
+        // Then
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{name}: {:?}",
+            diagnosis.diagnostics
+        );
+        let workflow = diagnosis.workflow.unwrap();
+        let mut required = workflow
+            .nodes
+            .iter()
+            .filter(|node| node.requires_approval_completion())
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>();
+        required.sort_unstable();
+        assert_eq!(required, expected, "{name}");
+    }
+}

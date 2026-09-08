@@ -5,6 +5,7 @@ nodes:
     sequence:
       children:
       - worker
-    completion: approval
+    completion:
+      require: approval
   worker:
     command: echo work

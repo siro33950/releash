@@ -125,7 +125,7 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         kind: node_kind_to_domain(&node.kind),
         artifact: node.artifact.clone(),
         input: node.input.clone(),
-        completion: node_completion_to_domain(node.completion),
+        completion: node.completion,
         worktree: node.worktree.clone(),
     }
 }
@@ -150,13 +150,6 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
             entry: spec.entry.clone(),
             children: spec.children.clone(),
         }),
-    }
-}
-
-fn node_completion_to_domain(completion: schema::NodeCompletion) -> domain::NodeCompletion {
-    match completion {
-        schema::NodeCompletion::Auto => domain::NodeCompletion::Auto,
-        schema::NodeCompletion::Approval => domain::NodeCompletion::Approval,
     }
 }
 

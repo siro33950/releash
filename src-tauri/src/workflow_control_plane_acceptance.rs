@@ -237,11 +237,15 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                 }),
                 artifact: None,
                 input: Vec::new(),
-                completion: NodeCompletion::Auto,
+                completion: NodeCompletion::default(),
                 worktree: None,
             }];
             nodes.extend(child_names.iter().map(|name| {
-                acceptance_session_node(name, ProviderKind::Claude, NodeCompletion::Approval)
+                acceptance_session_node(
+                    name,
+                    ProviderKind::Claude,
+                    NodeCompletion::require_approval(),
+                )
             }));
             return Ok(WorkflowDefinition {
                 name: workflow_name.to_string(),
@@ -275,11 +279,19 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                         }),
                         artifact: None,
                         input: Vec::new(),
-                        completion: NodeCompletion::Auto,
+                        completion: NodeCompletion::default(),
                         worktree: None,
                     },
-                    acceptance_session_node("review-a", provider, NodeCompletion::Approval),
-                    acceptance_session_node("review-b", provider, NodeCompletion::Approval),
+                    acceptance_session_node(
+                        "review-a",
+                        provider,
+                        NodeCompletion::require_approval(),
+                    ),
+                    acceptance_session_node(
+                        "review-b",
+                        provider,
+                        NodeCompletion::require_approval(),
+                    ),
                 ],
                 entry: "fanout".to_string(),
             });
@@ -296,9 +308,9 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                 workflow_name,
                 APPROVAL_ARTIFACT_CLAUDE_WORKFLOW | APPROVAL_ARTIFACT_CODEX_WORKFLOW
             ) {
-                NodeCompletion::Approval
+                NodeCompletion::require_approval()
             } else {
-                NodeCompletion::Auto
+                NodeCompletion::default()
             };
             let mut node = acceptance_session_node("agent", provider, completion);
             node.artifact = Some("acceptance-result".to_string());
@@ -322,12 +334,20 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             });
         }
         let (provider, completion, chained) = match workflow_name {
-            AUTO_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Auto, false),
-            AUTO_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Auto, false),
-            AUTO_CHAIN_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Auto, true),
-            AUTO_CHAIN_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Auto, true),
-            APPROVAL_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::Approval, false),
-            APPROVAL_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::Approval, false),
+            AUTO_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::default(), false),
+            AUTO_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::default(), false),
+            AUTO_CHAIN_CLAUDE_WORKFLOW => (ProviderKind::Claude, NodeCompletion::default(), true),
+            AUTO_CHAIN_CODEX_WORKFLOW => (ProviderKind::Codex, NodeCompletion::default(), true),
+            APPROVAL_CLAUDE_WORKFLOW => (
+                ProviderKind::Claude,
+                NodeCompletion::require_approval(),
+                false,
+            ),
+            APPROVAL_CODEX_WORKFLOW => (
+                ProviderKind::Codex,
+                NodeCompletion::require_approval(),
+                false,
+            ),
             _ => {
                 return Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
                     "unknown acceptance workflow '{workflow_name}'"
@@ -348,7 +368,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                     }),
                     artifact: None,
                     input: Vec::new(),
-                    completion: NodeCompletion::Auto,
+                    completion: NodeCompletion::default(),
                     worktree: None,
                 },
                 acceptance_session_node("agent-first", provider, completion),

@@ -103,7 +103,7 @@ fn definition() -> WorkflowDefinition {
             }),
             artifact: None,
             input: Vec::new(),
-            completion: NodeCompletion::Auto,
+            completion: NodeCompletion::default(),
             worktree: None,
         }],
         entry: "plan".to_string(),

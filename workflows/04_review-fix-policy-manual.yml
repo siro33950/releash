@@ -93,7 +93,8 @@ nodes:
         - spec-design
         - releash-thread-cli
         instruction: existing-spec-decide-fix-policy-manual
-    completion: approval
+    completion:
+      require: approval
     input:
     - spec
     - check_open_threads
@@ -107,6 +108,7 @@ nodes:
         policy: reporting
         knowledge: releash-thread-cli
         instruction: policy-confirmation
-    completion: approval
+    completion:
+      require: approval
     input:
     - check_open_threads

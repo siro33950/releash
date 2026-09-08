@@ -70,7 +70,9 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashSchema
 ---@class ReleashFacet
 ---@class ReleashProvider
+---@class ReleashCompletionRequirement
 ---@class ReleashCompletion
+---@field require ReleashCompletionRequirement
 ---@class ReleashWorkflow
 
 ---@alias ReleashPermission "manual" | "auto" | "bypass" | "read-only"
@@ -163,7 +165,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field codex ReleashProvider
 
 ---@class ReleashCompletionModule
----@field approval ReleashCompletion
+---@field approval ReleashCompletionRequirement
 
 ---@class ReleashModule
 ---@field command fun(options: ReleashCommandOptions): ReleashNode

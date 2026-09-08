@@ -64,6 +64,26 @@ const matchLabel = (label: string) => (_content: string, el: Element | null) =>
 	el?.tagName === "SPAN" && el.textContent === `${label}:`;
 
 describe("WorkflowDetail facet refs row", () => {
+	it("承認要求のあるNodeだけにrequire approvalを表示する", () => {
+		const workflow = makeWorkflow();
+		workflow.nodes[0].completion = { require: "approval" };
+		workflow.nodes.push({ name: "check", kind: "command", command: "true" });
+		render(
+			<WorkflowDetail
+				workflow={workflow}
+				report={EMPTY_REPORT}
+				onEdit={vi.fn()}
+			/>,
+		);
+		expect(screen.getAllByText("require: approval")).toHaveLength(1);
+		expect(screen.getByRole("button", { name: /implement/ })).toHaveTextContent(
+			"require: approval",
+		);
+		expect(screen.getByRole("button", { name: /check/ })).not.toHaveTextContent(
+			"require: approval",
+		);
+	});
+
 	it("Sequenceのentryとchildrenを表示しOutput行を持たない", async () => {
 		const user = userEvent.setup();
 		const workflow = makeWorkflow();
