@@ -3,6 +3,31 @@ use crate::domain::workflow::{NodeDefinition, NodeKind, WorkflowDefinition};
 use serde_json::json;
 
 #[test]
+fn test_completion保存形式_要求なしの直接シリアライズを拒否する() {
+    // Given
+    let completion = NodeCompletion::default();
+    // When
+    let result = serde_json::to_value(completion);
+    // Then
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "completion must contain at least one requirement"
+    );
+}
+
+#[test]
+fn test_completion保存形式_承認要求を直接シリアライズして復元できる() {
+    // Given
+    let completion = NodeCompletion::require_approval();
+    // When
+    let serialized = serde_json::to_value(completion).unwrap();
+    let restored: NodeCompletion = serde_json::from_value(serialized.clone()).unwrap();
+    // Then
+    assert_eq!(serialized, json!({"require": "approval"}));
+    assert_eq!(restored, completion);
+}
+
+#[test]
 fn test_completion保存形式_要求をmapにし要求なしはnodeから省略する() {
     // Given
     for (completion, expected) in [

@@ -48,10 +48,12 @@ impl<'de> Deserialize<'de> for NodeCompletion {
 
 impl Serialize for NodeCompletion {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(usize::from(self.require.is_some())))?;
-        if let Some(CompletionRequirement::Approval) = self.require {
-            map.serialize_entry("require", "approval")?;
-        }
+        let require = match self.require {
+            Some(CompletionRequirement::Approval) => "approval",
+            None => return Err(serde::ser::Error::custom(CompletionShapeError::Empty)),
+        };
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("require", require)?;
         map.end()
     }
 }
