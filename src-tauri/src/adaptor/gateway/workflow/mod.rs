@@ -3,6 +3,8 @@
 //! Workflow definitions, diagnostics, and facets remain file-backed. Runtime
 //! execution state and events use the fixed SQLite local event store.
 
+mod predicate_wire;
+
 pub(crate) mod builtin;
 mod config_path_gateway;
 mod definition_repository;

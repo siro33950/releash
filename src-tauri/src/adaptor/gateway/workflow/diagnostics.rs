@@ -1050,6 +1050,22 @@ fn check_rules_shape(
             Some(node_name),
             diagnostics,
         );
+        if let Some(on) = rule_obj.get("when").and_then(|when| when.get("on")) {
+            if let Err(error) = super::predicate_wire::parse_predicate(on) {
+                diagnostics.push(
+                    DiagnosticItem::new(
+                        "WFS002",
+                        Severity::Error,
+                        DiagnosticStage::ParseShape,
+                        span_map.nearest_span(&format!("{rule_path}.when.on")),
+                        error.to_string(),
+                    )
+                    .workflow(workflow_name)
+                    .node(node_name)
+                    .field("rules.when.on"),
+                );
+            }
+        }
         let discriminator_count = ["when", "switch", "loop_guard"]
             .iter()
             .filter(|key| rule_obj.contains_key(**key))

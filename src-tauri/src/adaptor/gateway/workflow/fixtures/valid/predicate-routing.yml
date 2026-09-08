@@ -1,0 +1,39 @@
+name: predicate-routing
+description: Nested boolean routing
+schemas:
+  result:
+    type: object
+    properties:
+      passed: {type: boolean}
+      clean: {type: boolean}
+      skipped: {type: boolean}
+      legacy flag: {type: boolean}
+      details:
+        type: object
+        properties:
+          passed: {type: boolean}
+          text: {type: string}
+          optional: {type: boolean}
+        required: [passed, text]
+    required: [passed, clean, skipped, legacy flag]
+nodes:
+  main:
+    sequence:
+      children:
+        - judge:
+            rules:
+              - when:
+                  on: {and: [passed, {or: [clean, skipped]}]}
+                  then: done
+                next: fix
+        - done:
+            rules: []
+        - fix:
+            rules: []
+  judge:
+    command: judge
+    artifact: result
+  done:
+    command: done
+  fix:
+    command: fix

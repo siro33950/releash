@@ -2689,7 +2689,7 @@ mod tests {
                         name: "check".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![Rule::When {
-                            on: "done".to_string(),
+                            on: crate::domain::workflow::Predicate::Ref("done".to_string()),
                             then: "finish".to_string(),
                             next: "fix".to_string(),
                         }]),
@@ -2787,7 +2787,7 @@ mod tests {
                         name: "check".to_string(),
                         inputs: Vec::new(),
                         rules: Some(vec![Rule::When {
-                            on: "ok".to_string(),
+                            on: crate::domain::workflow::Predicate::Ref("ok".to_string()),
                             then: "finish".to_string(),
                             next: "finish".to_string(),
                         }]),

@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::services::contract_schema;
 
-use super::{FanoutSlot, FieldPath};
+use super::{FanoutSlot, FieldPath, Predicate};
 
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
 pub const MAX_FANOUT_CHILDREN: usize = 64;
@@ -1567,7 +1567,7 @@ impl NodeDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rule {
     When {
-        on: String,
+        on: Predicate<String>,
         then: String,
         next: String,
     },
@@ -1586,7 +1586,7 @@ pub enum Rule {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct WhenRule {
-    on: String,
+    on: Predicate<String>,
     then: String,
 }
 

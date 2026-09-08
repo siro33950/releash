@@ -298,6 +298,34 @@ rules:
     next: fix
 ```
 
+`when: { on, then }` と同じ要素の sibling `next` を維持し、`on` に述語を置く。述語は参照文字列、`and` を唯一のキーとする map、`or` を唯一のキーとする map のいずれかである。`and` / `or` の値は要素1つ以上の配列で、各要素にも同じ3形を置いてネストできる。空の合成はネスト内でも parse/shape 段の Error Diagnostic `WFS002` になり、load されない。
+
+```yaml
+# 全要素が true のとき done、それ以外は fix
+rules:
+  - when: { on: { and: [passed, clean] }, then: done }
+    next: fix
+```
+
+```yaml
+# いずれかが true のとき done、それ以外は fix
+rules:
+  - when: { on: { or: [passed, skipped] }, then: done }
+    next: fix
+```
+
+```yaml
+# passed AND (clean OR skipped)
+rules:
+  - when:
+      on:
+        and:
+          - passed
+          - or: [clean, skipped]
+      then: done
+    next: fix
+```
+
 ```yaml
 rules:
   - switch:
@@ -316,14 +344,15 @@ rules:
   - next: run_tests
 ```
 
-- `when.on` は自 Node Artifact の Object を各段に沿って辿り、末端の直上 Object で required になっている boolean field。
+- `when.on` の各参照（Ref）は自 Node の Artifact を起点に Object を各段に沿って辿る。末端は直上 Object の `required` に含まれる boolean field でなければならず、中間 Object は required でなくてよい。全 Ref を load 時に検査し、非boolean・required でない末端・未宣言の段・非Objectから次の段を引く参照は Error Diagnostic `WFT001` になる。実行時に短絡され得る Ref も検査対象である。
+- `and` は全要素が true、`or` はいずれかが true の場合に true になる。述語が true なら `then`、false なら sibling `next` へ進む。Artifact 全体・途中の値・末端の値が欠損しているか、末端の実行値が boolean でない場合、その Ref を false として合成する。欠損 Ref を含む `and` は false だが、`or` は他の Ref が true なら true になる。
 - `switch.on` は自 Node Artifact の Object を各段に沿って辿り、末端の直上 Object で required になっている非空の string enum field。中間段は required でなくてよい。case が非網羅なら同じ要素の sibling `next` が必須。
-- `when.on` / `switch.on` の field path は `.` で区切り、空の段および参照文字列全体の前後空白を拒否する。各段の文字種は制限せず、`legacy flag` のように空白を含む property 名は1段参照として引ける。`.` は段の区切りとして解釈されるため、`.` を含む property 名は `when.on` / `switch.on` から引けない。
+- `when.on` の各 Ref と `switch.on` の field path は `.` で区切り、空の段および参照文字列全体の前後空白を拒否する。各段の文字種は制限せず、`legacy flag` のように空白を含む property 名は1段参照として引ける。`.` は段の区切りとして解釈されるため、`.` を含む property 名は `when.on` / `switch.on` から引けない。
 - 単独の `next` は無条件辺。
 - 一つの `rules` リストに置ける判別規則（`when` または `switch`）、`loop_guard`、単独 `next` はそれぞれ最大一つである。判別規則と単独 `next` は併記せず、判別規則自身の sibling `next` を catch-all に使う。
 - 辺の target は存在する Node でなければならない。同じ Sequence の child またはどの合成子にも属さない Node へ遷移できるが、別の合成子が所有する child へ外から遷移できない。
 - `switch` の case は enum 値だけを使う。case が非網羅なら sibling `next` が必須で、網羅していれば `next` は書かない。ただし Artifact を持つ Command の独自 field で分岐するときは、command failure の catch-all として `next` が必要である。
-- Fanout の children エントリに `when` / `switch` を含む `rules` は置けない（`WFC007`）。Artifact を宣言しない Session child の field では分岐できない。Command の予約結果 `ok` は宣言なしで使える。Sequence を自 Node とする辺では、統合 map の `<child>.<field>...` を起点に分岐できる（例: `check_full_review_threads.has_open_threads`）。Fanout を自 Node とする辺にも `when` / `switch` を置け、`<キー>.<field>...`（例: `a.passed`、`0.verdict`）を起点に分岐できる。Sequence 経由の `<fanout>.<キー>.<field>...` も同じ規則で解決する。合成子の map のキー自体は required にせず、受理の可否は終端 field の型と、その直上 Object の `required` で決まる。実行時に `when.on` の指す値が存在しない場合、述語は false になり、同じ要素の sibling `next` へ進む。`switch.on` の指す値が存在しない場合は、どの case にも当たらない。非網羅 switch は sibling `next` へ進み、網羅 switch は `next` を書けないため進行エラーになる（前述の Command の command failure catch-all は例外）。
+- Fanout の children エントリに `when` / `switch` を含む `rules` は置けない（`WFC007`）。Artifact を宣言しない Session child の field では分岐できない。Command の予約結果 `ok` は宣言なしで使える。Sequence を自 Node とする辺では、統合 map の `<child>.<field>...` を起点に分岐できる（例: `check_full_review_threads.has_open_threads`）。Fanout を自 Node とする辺にも `when` / `switch` を置け、`<キー>.<field>...`（例: `a.passed`、`0.verdict`）を起点に分岐できる。Sequence 経由の `<fanout>.<キー>.<field>...` も同じ規則で解決する。合成子の map のキー自体は required にせず、受理の可否は終端 field の型と、その直上 Object の `required` で決まる。これらの map を経由する参照も、`when.on` の各 Ref として合成できる。`switch.on` の指す値が存在しない場合は、どの case にも当たらない。非網羅 switch は sibling `next` へ進み、網羅 switch は `next` を書けないため進行エラーになる（前述の Command の command failure catch-all は例外）。
 - 後方辺の cycle には、その cycle 上の少なくとも一つのエントリに `loop_guard` が必要である。無い場合は `WFC005` になる。`max_iterations` は1以上で、上限では `on_exhausted` へ進む。合成子の静的な包含 cycle も load 時に拒否する。
 - 全 Node は `main` から children または rule target を辿って到達可能でなければならない。Sequence 内でも、実効 `entry` から隣接辺または明示 rules で到達できない child は拒否される。
 - 比較・計算・配列集約の式言語はない。Command または Session が routing 用 boolean / enum を Artifact にする。
@@ -408,7 +437,9 @@ return r.workflow{
 | `r.sequence{ name?, entry?, children, input?, completion? }` | Node |
 | `r.child{ node, inputs?, rules?, on_failure? }` | Child |
 | `r.next(node)` | Rule |
-| `r.when{ on, on_true, next }` | Rule |
+| `r.when{ on, on_true, next }`（`on` は Source または Predicate） | Rule |
+| `r.all{ ... }`（要素は Source または Predicate） | Predicate（and） |
+| `r.any{ ... }`（要素は Source または Predicate） | Predicate（or） |
 | `r.switch{ on, cases, next? }` | Rule |
 | `r.loop_guard{ max_iterations, on_exhausted }` | Rule |
 | `r.retry(n)` / `r.ignore` | OnFailure |
@@ -420,6 +451,16 @@ return r.workflow{
 | `r.schema.array{ name?, items }` | Schema |
 | `r.schema.string{ enum? }` / `boolean()` / `integer()` / `number()` | Schema |
 | `r.workflow{ name, description, main }` | Workflow |
+
+`r.all` / `r.any` は top-level の述語 builder である。要素は1つ以上で、空の builder はネスト内でも YAML と同じ parse/shape の Error Diagnostic になる。`r.when.on` の単一 Source は従来どおり使える。述語内の全 Source は、その辺の自 child の Artifact field を指し、多段 Object や Sequence / Fanout の map を辿れる。論理演算・型検査・欠損または非boolean値を Ref 単位で false とする評価は YAML と同じで、実行中に Lua で評価しない。
+
+```lua
+r.when{
+  on = r.all{ judge.passed, r.any{ judge.clean, judge.skipped } },
+  on_true = done,
+  next = fix,
+}
+```
 
 Lua の Command は `env = { <環境変数名> = <Input>, <環境変数名> = <Input>.<field>... }` で同じ対応を宣言する。
 
@@ -452,4 +493,4 @@ Diagnostic は定義の検証結果であり lifecycle state ではない。
 | typecheck | `typecheck` | Contract、routing field、items と input の型 |
 | control-flow | `control_flow` | 排他、網羅、到達性、cycle、children の制約 |
 
-Rust backend が `code` / `stage` / `span` / `message` を返し、UI は表示だけを行う。YAML と Lua の同じ定義上の誤りには同じ domain Diagnostic が使われる。
+Rust backend が `code` / `stage` / `span` / `message` を返し、UI は表示だけを行う。YAML と Lua の同じ定義上の誤りには、同じ `code`・`stage`・`message` の domain Diagnostic が使われる。`span` は各表面の位置付けに従う。

@@ -130,10 +130,18 @@ pub(crate) struct NodeDefinitionDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum PredicateDto {
+    Ref(String),
+    And { and: Vec<PredicateDto> },
+    Or { or: Vec<PredicateDto> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub(crate) enum RuleDto {
     When {
-        on: String,
+        on: PredicateDto,
         then: String,
         next: String,
     },
@@ -405,10 +413,22 @@ fn facet_refs_to_dto(facets: &domain::FacetRefs) -> FacetRefsDto {
     }
 }
 
+fn predicate_to_dto(predicate: &domain::Predicate<String>) -> PredicateDto {
+    match predicate {
+        domain::Predicate::Ref(reference) => PredicateDto::Ref(reference.clone()),
+        domain::Predicate::And(predicates) => PredicateDto::And {
+            and: predicates.iter().map(predicate_to_dto).collect(),
+        },
+        domain::Predicate::Or(predicates) => PredicateDto::Or {
+            or: predicates.iter().map(predicate_to_dto).collect(),
+        },
+    }
+}
+
 fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
     match rule {
         domain::Rule::When { on, then, next } => RuleDto::When {
-            on: on.clone(),
+            on: predicate_to_dto(on),
             then: then.clone(),
             next: next.clone(),
         },
@@ -726,3 +746,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "dto_test.rs"]
+mod dto_tests;

@@ -373,15 +373,15 @@ fn validate_entry_rules(
     };
     match discriminator {
         Some(Rule::When { on, .. }) => {
-            if let Err(reason) =
-                validate_routing_field(workflow, child, on, RoutingFieldKind::Boolean)
-            {
-                errors.push(RoutingValidationError::WhenFieldNotBoolean {
-                    node: entry_name.to_string(),
-                    field: on.clone(),
-                    reason: Some(reason),
-                });
-            }
+            errors.extend(on.validate(&mut |field| {
+                validate_routing_field(workflow, child, field, RoutingFieldKind::Boolean)
+                    .map(|_| ())
+                    .map_err(|reason| RoutingValidationError::WhenFieldNotBoolean {
+                        node: entry_name.to_string(),
+                        field: field.clone(),
+                        reason: Some(reason),
+                    })
+            }));
         }
         Some(Rule::Switch { on, cases, next }) => {
             match validate_routing_field(workflow, child, on, RoutingFieldKind::Enum) {
@@ -770,11 +770,13 @@ fn raw_target(
         .find(|rule| matches!(rule, Rule::When { .. } | Rule::Switch { .. }));
     match discriminator {
         Some(Rule::When { on, then, next }) => {
-            let is_true = artifact
-                .zip(routing_field_path(on).ok())
-                .and_then(|(value, path)| reference::resolve_value_at_path(value, &path))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let is_true = on.evaluate(&mut |field| {
+                artifact
+                    .zip(routing_field_path(field).ok())
+                    .and_then(|(value, path)| reference::resolve_value_at_path(value, &path))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
             Ok(Some(if is_true { then } else { next }.clone()))
         }
         Some(Rule::Switch { on, cases, next }) => {
@@ -981,7 +983,7 @@ mod routing_tests {
                     entry_with_rules(
                         "work",
                         vec![Rule::When {
-                            on: "legacy flag".to_string(),
+                            on: crate::domain::workflow::Predicate::Ref("legacy flag".to_string()),
                             then: "yes".to_string(),
                             next: "no".to_string(),
                         }],
@@ -1109,7 +1111,9 @@ mod routing_tests {
                     entry_with_rules(
                         "work",
                         vec![Rule::When {
-                            on: "legacy flag.enabled".to_string(),
+                            on: crate::domain::workflow::Predicate::Ref(
+                                "legacy flag.enabled".to_string(),
+                            ),
                             then: "yes".to_string(),
                             next: "no".to_string(),
                         }],
@@ -1177,7 +1181,7 @@ mod routing_tests {
                     entry_with_rules(
                         "work",
                         vec![Rule::When {
-                            on: "outer.flag".to_string(),
+                            on: crate::domain::workflow::Predicate::Ref("outer.flag".to_string()),
                             then: "yes".to_string(),
                             next: "no".to_string(),
                         }],
