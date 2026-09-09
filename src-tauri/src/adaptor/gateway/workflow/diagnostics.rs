@@ -1252,7 +1252,6 @@ fn validation_error_code_stage(
             _ => "WFR007",
         },
         ValidationError::ReservedInputParameterName { .. } => "WFR008",
-        ValidationError::UnsupportedWorktreeField { .. } => "WFU002",
         ValidationError::UnknownSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchema { kind, .. } => match kind {
@@ -1874,9 +1873,6 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         }
         ValidationError::ReservedInputParameterName { node, .. } => {
             (Some(node.clone()), Some("input".to_string()))
-        }
-        ValidationError::UnsupportedWorktreeField { node } => {
-            (Some(node.clone()), Some("worktree".to_string()))
         }
         ValidationError::UnknownRuleTarget { node, .. } => {
             (Some(node.clone()), Some("rules.next".to_string()))
@@ -3726,13 +3722,6 @@ nodes:
                 },
                 "WFC008",
                 DiagnosticStage::ControlFlow,
-            ),
-            (
-                validation::ValidationError::UnsupportedWorktreeField {
-                    node: "fanout".to_string(),
-                },
-                "WFU002",
-                DiagnosticStage::Resolve,
             ),
             (
                 validation::ValidationError::IgnoredChildDependency {

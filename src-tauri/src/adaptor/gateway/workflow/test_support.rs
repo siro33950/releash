@@ -85,7 +85,8 @@ pub(crate) fn seed_workflow_session_facts(
         &root_meta,
         &NodeFact::Started(StartedFact {
             parent: None,
-            root: Some(TreeRootFact {
+            root: Some(Box::new(TreeRootFact {
+                repository_root: None,
                 definition_resolution: Default::default(),
                 workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(
                     seed.worktree_path,
@@ -97,7 +98,7 @@ pub(crate) fn seed_workflow_session_facts(
                 request: seed.request.to_string(),
                 definition,
                 launched_as: ExecutionTreeLaunch::Workflow,
-            }),
+            })),
         }),
         1,
     )?;
@@ -171,6 +172,7 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
     let root_node_execution_id = format!("{}-root", execution.execution_id);
     let mut events = vec![
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution.execution_id.clone(),
             workflow_name: execution.workflow_name.clone(),
             worktree_path: execution.worktree_path.clone(),

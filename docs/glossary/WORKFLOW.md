@@ -67,7 +67,7 @@ Node 共通 field は kind block と同じ階層に書く。
 | `input` | Node が受け取るパラメータのリスト。文字列は型なし、`- name: Contract` は型あり |
 | `artifact` | Node が産出する Artifact の Contract 名。Sequence / Fanout には宣言しない |
 | `completion` | Node の完了に対する要求の map。`require: approval` で承認を要求する。要求しない場合は `completion` を省略する |
-| `worktree` | 将来の隔離実行用の予約 field。現行 loader では `WFU002` Error |
+| `worktree` | `shared` / `isolated`。省略時は `shared` で、親の実行worktreeを継承する |
 
 `input` と `artifact` は Node の Interface であり、`inputs` は children エントリに置く配線である。本文はパラメータ名を参照し、供給元 Node 名は配線にだけ現れる。
 
@@ -98,7 +98,7 @@ children の `inputs` は `<パラメータ名>: <供給元>` の map である�
 - Fanout の子は並走するため、兄弟の Artifact を直接参照しない。外側の値は親から input を一段ずつ渡す。
 - `items` は本文の特殊名ではない。child の input パラメータへ配線し、そのパラメータ名を本文で参照する。
 - 配線先は child が宣言した input パラメータでなければならない。供給元は `<name>` または `<name>.<field>...` で、参照先の Node と各 field が存在し、Node 供給元は Artifact を産出する必要がある。Sequence は宣言なしに統合 map を産出し、`<sequence>.<child>.<field>...` で child の値を参照できる。
-- Fanout は宣言なしに slot ごとの Artifact の map を産出し、`<fanout>.<キー>.<field>...` で slot の値を参照できる。合成子の内側にある場合も、`<合成子>.<fanout>.<キー>.<field>...` で参照できる。例えば Sequence `outer_seq` の child に `items` なしの Fanout `parallel_checks` があり、その child `check_a` が `passed` field を持つ Artifact を産出する場合、`outer_seq.parallel_checks.check_a.passed` で参照できる。合成子経由で辿る各段の slot は Artifact を産出する Node に限る。Command / Fanout / Sequence は常に Artifact を持つが、Session は `artifact` 宣言がある場合だけであり、宣言しない Session は段にできない。配線 `inputs`、`when.on` / `switch.on`、`fanout.items` の3経路で同じ map を辿る。Fanout 全体を渡す場合は field path なしで配線する（例: `results: full_review_fanout`）。
+- Fanout は宣言なしに slot ごとの Artifact の map を産出し、`<fanout>.<キー>.<field>...` で slot の値を参照できる。合成子の内側にある場合も、`<合成子>.<fanout>.<キー>.<field>...` で参照できる。例えば Sequence `outer_seq` の child に `items` なしの Fanout `parallel_checks` があり、その child `check_a` が `passed` field を持つ Artifact を産出する場合、`outer_seq.parallel_checks.check_a.passed` で参照できる。合成子経由で辿る各段の slot は Artifact を産出する Node に限る。Command / Fanout / Sequence は常に Artifact を持つが、Session は `artifact` 宣言があるか `worktree: isolated` の場合に Artifact を持ち、参照の供給元と段にできる。配線 `inputs`、`when.on` / `switch.on`、`fanout.items` の3経路で同じ map を辿る。Fanout 全体を渡す場合は field path なしで配線する（例: `results: full_review_fanout`）。
 - 同じ名前が Sequence の兄弟 Node と Sequence 自身の input パラメータの両方に一致する配線は曖昧なので拒否される。`request` と `items` は予約供給元名であり、Node の input パラメータ名には使えない。`request` / `items` に field は無く、`items` は `items` を宣言した Fanout 内だけで使える。
 
 配線 `inputs`、Command の `env`、テンプレート `{{ }}`、`fanout.items` の field path は `.` で区切り、各段は先頭が ASCII 英数字、以降が ASCII 英数字・`-`・`_` である。参照文字列の前後に空白を含めることはできない。テンプレート `{{ }}` の内側にある空白だけは区切りとして扱い、参照文字列には含めない。段数に上限はない。起点に Contract がある参照は、各段を Object の `properties` に沿って load 時に解決する。存在しない field、Object でない値から field を引く段、または末端が参照箇所の要求型を満たさない参照は Error Diagnostic になる。中間 Object の field は `required` でなくてもよく、array の要素 Contract を経由して次の段を解決しない。共有 domain validation は、型なし input パラメータを起点とする field path の Contract 検査を行わず、実行時の Object 値を各段に沿って引く。`when.on` / `switch.on` の field path は後述の rules 固有の規則に従う。
@@ -195,7 +195,7 @@ fix_each:
 - `items` なしのキーは children エントリ名、`items` ありのキーは0から始まる展開順の添字の文字列である。
 - `items` と複数 children を同時に宣言した場合は、item を外側・children エントリを内側とするフラットな並びに展開する。キーは `item_index * children.len() + child_index` で決まり、item ごとや child ごとの階層は作らない。
 - `on_failure: ignore` の失敗 slot はキーの欠番になる。他の slot のキーはずれない。
-- Artifact を産出しなかった slot（`on_failure` 宣言なしの失敗、`artifact` を宣言しない child）はキーとして残り、値が `null` になる。宣言なしの失敗で中断する規則は変わらない。
+- Artifact を産出しなかった slot（`on_failure` 宣言なしの失敗、`artifact` を宣言せず `shared` で動く Session child）はキーとして残り、値が `null` になる。宣言なしの失敗で中断する規則は変わらない。
 - `items` が空配列で slot が展開されない場合、または全 slot が `on_failure: ignore` の失敗になった場合は空の object `{}` になる。
 
 ```json
@@ -383,9 +383,9 @@ schemas:
 
 `required` の各 field は同じ Object の `properties` に存在しなければならない。配列の `items` は同じ `schemas` 内に存在する名前付き Contract を参照し、string の `enum` は宣言するなら非空でなければならない。Node の `artifact` / 型付き `input` が参照する Contract も同じ `schemas` 内に存在する必要がある。
 
-`artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の map を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
+`artifact` は Session / Command で Object Contract を参照する。Sequence は child Artifact の統合 map、Fanout は child Artifact の map を engine が組み立てるため、どちらも `artifact` を宣言しない。routing field は `properties` と `required` の両方に必要である。Command の `ok` は宣言なしで boolean routing field として使える。全 Node の Artifact Contract の直下に `worktree` を再宣言しない。Command の Artifact Contract には標準結果 field の `ok` / `exit_code` / `stdout` / `stderr` / `duration` を再宣言しない。
 
-### 予約語と未解禁 field
+### 予約語
 
 次は Node 名に使えない。
 
@@ -396,7 +396,11 @@ inputs rules on_failure items entry children
 
 `request` と `items` は input 配線の予約供給元名であり、input パラメータ名には使えない。`request` は `schemas` の Contract 名としても使えない。
 
-`worktree` は Node 共通 field として予約されているが、`shared` / `isolated` の実行は未解禁である。現行 loader は宣言を `WFU002` Error として拒否する。成功する定義には `worktree` を書かない。
+`worktree` は全4種の Node 共通 field である。YAML は `shared` / `isolated` の文字列だけを受理する。省略時と `shared` は、その Node を子として扱う実行の worktreeを継承する。`isolated` は宣言した NodeExecution の attempt ごとに、親 worktreeの HEAD から新しい branch と worktreeを作る。Sequence / Fanout に宣言すると children 全員がその1つの worktreeで動き、Fanout の child Node に宣言すると slot ごとに独立する。入れ子の `isolated` は直近の隔離 worktreeから分岐する。
+
+engine は隔離 Node の Artifact に `worktree: { branch, path }` を合成する。`artifact` 宣言のない隔離 Session もこのキーだけを持つ Artifact を産出するため、Sequence の map に現れ、Fanout の slot は `null` にならない。合成子自身の `worktree` は children の map と同じ階層に入る。配線・env・テンプレート・fanout.items の参照は `worktree.branch` / `worktree.path` を string として解決できる。たとえば `seq.work.worktree.path` で隔離 child の pathを参照できる。
+
+`worktree` は Artifact の予約キーでもあり、全 Node で Artifact Contract の直下への再宣言を拒否する。Node の `worktree` 宣言の有無によらない。branch/path は Artifact 産出前から Node の詳細、API、CLI に表示され、失敗後にも保持される。生成失敗は Node failure となり、children エントリの `on_failure` が適用される。engine は成果の統合や worktree・branch の削除を行わない。
 
 ## Lua
 
@@ -434,10 +438,10 @@ return r.workflow{
 
 | API | 戻り値 |
 | --- | --- |
-| `r.command{ name?, command, env?, artifact?, input?, completion?: { require = r.completion.approval } }` | Node |
-| `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion?: { require = r.completion.approval } }` | Node |
-| `r.fanout{ name?, children, items?, input?, completion?: { require = r.completion.approval } }` | Node |
-| `r.sequence{ name?, entry?, children, input?, completion?: { require = r.completion.approval } }` | Node |
+| `r.command{ name?, command, env?, artifact?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
+| `r.session{ name?, provider, model?, permission?, facets?, artifact?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
+| `r.fanout{ name?, children, items?, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
+| `r.sequence{ name?, entry?, children, input?, completion?: { require = r.completion.approval }, worktree? }` | Node |
 | `r.child{ node, inputs?, rules?, on_failure? }` | Child |
 | `r.next(node)` | Rule |
 | `r.when{ on, on_true, next }`（`on` は Source または Predicate） | Rule |
@@ -448,6 +452,7 @@ return r.workflow{
 | `r.retry(n)` / `r.ignore` | OnFailure |
 | `r.input(name, contract?)` | Input |
 | `r.request` / `r.items` | Source |
+| `r.worktree.shared` / `r.worktree.isolated` | Worktree（各 Node builder の `worktree` 値。文字列は受理しない） |
 | `r.completion.approval` | CompletionRequirement（`completion` table の `require` 値） |
 | `r.provider.claude` / `r.provider.codex` | Provider |
 | `r.schema.object{ name?, properties, required? }` | Schema |

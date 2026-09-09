@@ -122,7 +122,7 @@ fn review_actor_and_worktree_from_context(
             };
             Ok((
                 ReviewActor::provider_agent(provider.to_string(), Some(session_id.to_string())),
-                session.worktree_path,
+                session.workspace_worktree_path,
             ))
         }
     }
@@ -141,7 +141,7 @@ fn review_actor_and_worktree_for_read(
             };
             (
                 ReviewActor::provider_agent(provider.to_string(), Some(session_id.to_string())),
-                session.worktree_path,
+                session.workspace_worktree_path,
             )
         }
     })
@@ -153,7 +153,7 @@ fn review_actor_and_worktree_for_read(
 fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<String, CliError> {
     let session = required_review_session_context(data_dir, session_id)?;
     Ok(match session {
-        ReviewSessionContext::Provider(session) => session.worktree_path,
+        ReviewSessionContext::Provider(session) => session.workspace_worktree_path,
     })
 }
 
@@ -197,7 +197,10 @@ fn review_list_actor_and_worktree(
                 "review list requires --session-id or RELEASH_WORKTREE_PATH".to_string(),
             )
         })?;
-    Ok((ReviewActor::human(), worktree_path.to_string()))
+    Ok((
+        ReviewActor::human(),
+        review_workspace_worktree(data_dir, worktree_path)?,
+    ))
 }
 
 fn review_session_context(
@@ -215,10 +218,16 @@ fn review_session_context(
     let provider = crate::adaptor::controller::wiring::build_canonical_agent_session_query(
         data_dir.to_path_buf(),
     )?;
-    provider
+    let context = provider
         .get_blocking(session_id)
-        .map(|context| context.map(ReviewSessionContext::Provider))
-        .map_err(|error| CliError::Other(format!("AgentSession query failed: {error:?}")))
+        .map_err(|error| CliError::Other(format!("AgentSession query failed: {error:?}")))?;
+    Ok(context.map(ReviewSessionContext::Provider))
+}
+
+fn review_workspace_worktree(data_dir: &Path, path: &str) -> Result<String, CliError> {
+    crate::adaptor::controller::wiring::build_workspace_worktree_path_usecase(data_dir)
+        .workspace_worktree_path(path)
+        .map_err(|error| CliError::Other(error.to_string()))
 }
 
 fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>, CliError> {
@@ -517,8 +526,9 @@ mod tests {
             session_id,
             ReviewSessionContext::Provider(AgentSessionItemDto {
                 id: session_id.to_string(),
-                workspace_identity: "/repo".to_string(),
-                worktree_path: "/repo/worktree".to_string(),
+                workspace_identity: "/repo/worktree".to_string(),
+                worktree_path: "/repo-worktrees/.releash-isolated/node-a1".to_string(),
+                workspace_worktree_path: "/repo//worktree/".to_string(),
                 provider: AgentSessionProviderDto::Claude,
                 tree_location: crate::usecase::agent_session::AgentSessionTreeLocationDto {
                     tree_id: "workflow-1".to_string(),
@@ -538,7 +548,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(worktree_path, "/repo/worktree");
+        assert_eq!(worktree_path, "/repo//worktree/");
         assert_eq!(actor.backend_id.as_deref(), Some("claude"));
         assert_eq!(actor.model, None);
         assert_eq!(actor.session_id.as_deref(), Some(session_id));
@@ -1528,5 +1538,73 @@ mod tests {
             },
         );
         assert!(matches!(invalid_target, Err(CliError::InvalidInput(_))));
+    }
+    #[test]
+    fn test_隔離thread参照_command環境とsession指定で同じworkspaceのopen一覧を読む() {
+        // Given
+        use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+        use crate::adaptor::gateway::workflow::fact_log;
+        use crate::domain::workflow::*;
+        let tmp = TempDir::new().unwrap();
+        write_review_config(tmp.path());
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().into())).unwrap();
+        let id = test_uuid(173);
+        let mut facts = SessionExecutionTreeRootFacts::new(
+            &id,
+            "/repo",
+            "/repo",
+            crate::domain::provider_lifecycle::ProviderKind::Codex,
+        )
+        .unwrap();
+        let NodeFact::Started(StartedFact {
+            root: Some(root), ..
+        }) = &mut facts.started
+        else {
+            unreachable!();
+        };
+        root.repository_root = Some("/repo".into());
+        root.definition.nodes[0].worktree = Some(WorktreeMode::Isolated);
+        for (meta, fact) in facts.into_facts() {
+            fact_log::append_single_fact(&store, &meta, &fact, 1).unwrap();
+        }
+        let thread_id = seed_review_thread(tmp.path());
+        let path = IsolatedWorktree::for_attempt("/repo", &id, 1).path;
+
+        // When
+        let (actor, workspace) =
+            review_list_actor_and_worktree(tmp.path(), None, Some(&path), false).unwrap();
+        let command_threads = build_review_comment_usecase()
+            .list_threads(
+                tmp.path(),
+                &workspace,
+                Some(ReviewThreadFilter {
+                    state: Some(ReviewThreadState::Open),
+                    ..Default::default()
+                }),
+                actor,
+            )
+            .unwrap();
+        let session_output = cmd_review(
+            tmp.path(),
+            ReviewSubcommand::List {
+                session_id: Some(id),
+                file: None,
+                state: Some("open".into()),
+                author: None,
+                unread: None,
+                thread_id: Vec::new(),
+                json: true,
+            },
+        )
+        .unwrap();
+        let session_threads: serde_json::Value = serde_json::from_str(&session_output).unwrap();
+
+        // Then
+        assert_eq!(workspace, "/repo");
+        assert_eq!(command_threads.len(), 1);
+        assert_eq!(command_threads[0].id, thread_id);
+        assert_eq!(session_threads[0]["id"], thread_id);
+        assert!(!state_file(tmp.path(), &path).exists());
     }
 }

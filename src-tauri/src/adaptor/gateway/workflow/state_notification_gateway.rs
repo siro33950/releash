@@ -181,6 +181,7 @@ mod tests {
         let value = serde_json::json!({"verdict": "approve"});
         let events = vec![
             WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -310,6 +311,7 @@ mod tests {
                     },
                 )]),
                 node_executions: vec![NodeExecution {
+                    worktree: None,
                     recovery_reason: None,
                     id: node_execution_id.to_string(),
                     execution_id: execution_id.to_string(),
@@ -345,6 +347,7 @@ mod tests {
             |item_index| ExecutionParentRef::fanout_child("parent", Some(item_index), 0);
         let events = vec![
             WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.to_string(),
                 workflow_name: "review".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -427,6 +430,7 @@ mod tests {
                     parent: Option<ExecutionParentRef>,
                     started_at: f64,
                     completed_at: Option<f64>| NodeExecution {
+            worktree: None,
             recovery_reason: None,
             id: id.to_string(),
             execution_id: execution_id.to_string(),

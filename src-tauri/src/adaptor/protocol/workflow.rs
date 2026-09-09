@@ -212,6 +212,8 @@ pub struct NodeExecutionFailureView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeExecutionView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::usecase::workflow::NodeWorktreeDto>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub recovery_reason: Option<String>,
     pub id: String,

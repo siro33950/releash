@@ -42,6 +42,7 @@ fn seed_artifact_node(data_dir: &Path, execution_id: &str) {
         data_dir,
         &[
             WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.to_string(),
                 workflow_name: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -269,6 +270,30 @@ fn test_workflow_output_get_file直接読取で最新artifactを返す() {
     assert_eq!(output["artifact"]["verdict"], "LGTM");
     assert_eq!(output["request_id"], "request-1");
     assert!(output.get("structured_output").is_none());
+}
+
+#[test]
+fn test_隔離worktree_output_getのfile直接読取で完了したattemptのbranchとpathを返す() {
+    use crate::adaptor::controller::api::test_support::{
+        isolated_worktree_json, seed_isolated_query_execution,
+    };
+    use crate::domain::workflow::NodeExecutionStatus;
+
+    // Given
+    let temp = TempDir::new().unwrap();
+    let execution_id = test_uuid(33);
+    seed_isolated_query_execution(temp.path(), &execution_id, NodeExecutionStatus::Succeeded);
+
+    // When
+    let output = cmd_output_get(temp.path(), &execution_id, "review", true).unwrap();
+    let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // Then
+    assert_eq!(output["status"], "submitted");
+    assert_eq!(output["contract"], "review-result");
+    assert_eq!(output["artifact"]["status"], "approved");
+    assert_eq!(output["artifact"]["worktree"], isolated_worktree_json());
+    assert_eq!(output["request_id"], "isolated-request-2");
 }
 
 #[test]

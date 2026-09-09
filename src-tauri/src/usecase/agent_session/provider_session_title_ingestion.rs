@@ -83,7 +83,7 @@ impl ProviderSessionTitleIngestionUsecase {
             if outcome == AgentSessionMutationOutcome::AlreadyApplied {
                 continue;
             }
-            let worktree_path = session.session().worktree_path().to_string();
+            let worktree_path = session.session().workspace().as_str().to_string();
             let session_id = session.session().id().to_string();
             let caller_request_id = format!(
                 "provider-session-title-ingestion.{session_id}.{}",

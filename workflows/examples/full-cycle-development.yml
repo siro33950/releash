@@ -569,6 +569,7 @@ nodes:
 
   # 部品 sequence: 1 タスクの実装と検証。検証結果を子名キーの統合 map に含める。
   implement_and_verify:
+    worktree: isolated
     sequence:
       children:
       - implement_task:
@@ -1091,6 +1092,7 @@ nodes:
 
   # 部品 sequence: 1 修正タスクの実装と検証。検証結果を子名キーの統合 map に含める。
   fix_and_verify:
+    worktree: isolated
     sequence:
       children:
       - fix_task:

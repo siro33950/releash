@@ -52,7 +52,7 @@ pub(crate) use workspace_node_command::{
     WorkspaceSessionNodeRenameTarget,
 };
 pub(crate) use workspace_tree::{
-    WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
+    NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
     WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
     WorkspaceNodeDto, WorkspaceSequenceDto, WorkspaceSessionCapabilitiesDto,
     WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto, WorkspaceTreeSelectionSnapshotDto,
@@ -707,6 +707,22 @@ mod tests {
     struct NoopExecutionProjectionRepository;
 
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
+        fn get_node_artifact_from_events(
+            &self,
+            execution_id: &WorkflowExecutionId,
+            node_name: &str,
+            _events: &[WorkflowEventDraft],
+        ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
+            Ok(self.get_execution(execution_id)?.and_then(|execution| {
+                execution
+                    .node_executions
+                    .into_iter()
+                    .rev()
+                    .find(|node| node.node_name == node_name)
+                    .and_then(|node| node.artifact)
+            }))
+        }
+
         fn get_execution(
             &self,
             _execution_id: &WorkflowExecutionId,
@@ -945,6 +961,7 @@ mod tests {
         execution_id: Option<&str>,
     ) -> crate::domain::workspace_tree::WorkspaceTreeNode {
         crate::domain::workspace_tree::WorkspaceTreeNode {
+            worktree: None,
             id: format!("node:{node_execution_id}"),
             parent_id: execution_id.map(str::to_string),
             sibling_order: 0,
@@ -973,8 +990,6 @@ mod tests {
             can_stop: false,
             can_resume: false,
             resume_eligible: false,
-            recovery_owner_reason: None,
-            resume_unavailable_reason: None,
             can_abort: false,
             can_archive: false,
             display_command: None,

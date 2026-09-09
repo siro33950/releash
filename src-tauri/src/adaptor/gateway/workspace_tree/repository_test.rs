@@ -129,6 +129,7 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
     let fix_result = serde_json::json!("fixed");
     vec![
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution_id.to_string(),
             workflow_name: "dev-cycle".to_string(),
             worktree_path: workspace.to_string(),
@@ -472,6 +473,7 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
     let duplicate_session_id = format!("{execution_id}-session");
     vec![
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution_id.to_string(),
             workflow_name: "duplicate-session-binding".to_string(),
             worktree_path: workspace.to_string(),
@@ -529,6 +531,7 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
 fn fanout_with_sequence_child_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEvent> {
     vec![
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution_id.to_string(),
             workflow_name: "multi-execution".to_string(),
             worktree_path: workspace.to_string(),
@@ -612,6 +615,7 @@ fn dynamic_fanout_with_sequence_child_events(
 ) -> Vec<WorkflowEvent> {
     vec![
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution_id.to_string(),
             workflow_name: "dynamic-multi-execution".to_string(),
             worktree_path: workspace.to_string(),
@@ -857,6 +861,7 @@ fn test_ツリー読み出し_command形のsession成果物を含む複数実行
         let node_execution_id = format!("{execution_id}-report");
         let mut events = vec![
             WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.to_string(),
                 workflow_name: definition.name.clone(),
                 worktree_path: workspace.as_str().to_string(),

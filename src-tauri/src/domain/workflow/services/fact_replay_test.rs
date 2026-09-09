@@ -107,6 +107,7 @@ fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefin
 
 fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
     TreeRootFact {
+        repository_root: None,
         definition_resolution: Default::default(),
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
@@ -126,13 +127,13 @@ fn session_root() -> TreeRootFact {
     else {
         unreachable!();
     };
-    root
+    *root
 }
 
 fn started_root(root: TreeRootFact) -> NodeFact {
     NodeFact::Started(StartedFact {
         parent: None,
-        root: Some(root),
+        root: Some(Box::new(root)),
     })
 }
 
@@ -565,50 +566,6 @@ mod standalone_session_tests {
         assert_eq!(
             view.transcript_ref.as_deref(),
             Some("provider://transcript/1")
-        );
-    }
-}
-
-mod isolated_worktree_ledger_tests {
-    use super::*;
-    use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
-    use crate::domain::workflow::IsolatedWorktreeLifecycle;
-
-    #[test]
-    fn test_隔離worktree出自は事実の再decode後も同じ台帳へ導出される() {
-        let mut log = FactLog::new();
-        let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
-        log.push(root_meta.clone(), started_root(session_root()));
-        log.push(root_meta.clone(), attached("session-1"));
-        log.push(
-            root_meta,
-            NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
-                repository_root: "/projects/repo".to_string(),
-                worktree_path: "/projects/repo-worktrees/.releash-isolated/root-exec-a1"
-                    .to_string(),
-                branch: "releash/isolated/root-exec-a1".to_string(),
-            }),
-        );
-
-        let persisted = log
-            .records
-            .iter()
-            .cloned()
-            .map(|mut record| {
-                let event_type = record.fact.event_type();
-                let detail = record.fact.encode_detail().unwrap();
-                record.fact = NodeFact::decode(event_type, &detail).unwrap();
-                record
-            })
-            .collect::<Vec<_>>();
-        let restarted = fold_execution_tree(TREE, &persisted).unwrap().unwrap();
-        let entry = restarted.isolated_worktrees.entries().next().unwrap();
-
-        assert_eq!(entry.lifecycle, IsolatedWorktreeLifecycle::Created);
-        assert_eq!(entry.owner.node_execution_id, "root-exec");
-        assert_eq!(
-            entry.worktree_path,
-            "/projects/repo-worktrees/.releash-isolated/root-exec-a1"
         );
     }
 }
@@ -1900,3 +1857,51 @@ mod input_validation_tests {
 
 #[path = "fact_replay_recovery_test.rs"]
 mod recovery_tests;
+
+#[test]
+fn test_隔離成果選択_同名slotは開始順と完了順によらず最後に提出した成果を選ぶ() {
+    // Given
+    let definition: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {fanout: {items: [x, y], children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}")
+        .unwrap();
+    let mut root = workflow_root(definition);
+    root.repository_root = Some("/repo".into());
+    let mut log = FactLog::new();
+    log.push(
+        meta(TREE, None, "main", NodeKindName::Fanout, 1),
+        started_root(root),
+    );
+    let first = meta("first", Some(TREE), "work", NodeKindName::Session, 2);
+    let second = meta("second", Some(TREE), "work", NodeKindName::Session, 1);
+    log.push(
+        first.clone(),
+        started_child(ExecutionParentRef::fanout_child(TREE, Some(0), 0)),
+    );
+    log.push(
+        second.clone(),
+        started_child(ExecutionParentRef::fanout_child(TREE, Some(1), 0)),
+    );
+    let empty = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    assert!(derive_node_artifact(&empty, &log.records, "work").is_none());
+    log.push(first.clone(), submit());
+    log.push(second.clone(), submit());
+    log.push(second, stop());
+    log.push(first, stop());
+    // When
+    let tree = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    let artifact = derive_node_artifact(&tree, &log.records, "work").unwrap();
+    // Then
+    assert_eq!(
+        artifact.value["worktree"]["branch"],
+        "releash/isolated/second-a1"
+    );
+    assert!(derive_node_artifact(&tree, &log.records, "missing").is_none());
+    let composite = derive_node_artifact(&tree, &log.records, "main").unwrap();
+    assert_eq!(
+        composite.value["0"]["worktree"]["branch"],
+        "releash/isolated/first-a2"
+    );
+    assert_eq!(
+        composite.value["1"]["worktree"]["branch"],
+        "releash/isolated/second-a1"
+    );
+}

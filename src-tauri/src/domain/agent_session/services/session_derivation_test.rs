@@ -131,6 +131,7 @@ fn context() -> SessionExecutionContext {
     SessionExecutionContext {
         workspace_identity: "workspace-1".into(),
         worktree_path: "/repo".into(),
+        workspace_worktree_path: "/repo".into(),
         launched_as: ExecutionTreeLaunch::Session,
         provider: ProviderKind::Claude,
     }

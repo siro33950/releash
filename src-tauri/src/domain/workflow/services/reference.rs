@@ -216,6 +216,14 @@ pub(crate) fn resolve_node_field_path(
     let mut position = 0;
     let mut visited = HashSet::from([node.name.as_str()]);
     while current.is_composite() {
+        if current.is_isolated()
+            && field_path
+                .segments()
+                .get(position)
+                .is_some_and(|segment| segment == "worktree")
+        {
+            break;
+        }
         let Some(segment) = field_path.segments().get(position) else {
             return Ok(ResolvedNodeField::Map);
         };
@@ -276,7 +284,7 @@ fn node_reference_schema(
         .artifact
         .as_deref()
         .and_then(|contract| workflow.schemas.get(contract));
-    match &node.kind {
+    let mut schema = match &node.kind {
         NodeKind::Command(_) => contract_schema::command_reference_schema(artifact_schema)
             .map_err(|_| NodeFieldPathError::ArtifactNotObject),
         NodeKind::Session(_) => artifact_schema
@@ -284,6 +292,38 @@ fn node_reference_schema(
             .ok_or(NodeFieldPathError::NoReferenceableArtifact),
         _ => Err(NodeFieldPathError::NoReferenceableArtifact),
     }
+    .or_else(|error| {
+        if node.is_isolated() && error == NodeFieldPathError::NoReferenceableArtifact {
+            Ok(SchemaDef::Object {
+                properties: Default::default(),
+                required: Default::default(),
+            })
+        } else {
+            Err(error)
+        }
+    })?;
+    if node.is_isolated() {
+        if let SchemaDef::Object {
+            properties,
+            required,
+        } = &mut schema
+        {
+            properties.insert(
+                "worktree".to_string(),
+                SchemaDef::Object {
+                    properties: ["branch", "path"]
+                        .into_iter()
+                        .map(|key| (key.to_string(), SchemaDef::String { r#enum: None }))
+                        .collect(),
+                    required: ["branch".to_string(), "path".to_string()]
+                        .into_iter()
+                        .collect(),
+                },
+            );
+            required.insert("worktree".to_string());
+        }
+    }
+    Ok(schema)
 }
 
 /// fanout items（`<node>.<field>...`）の終端 schema を解決する。
@@ -488,7 +528,7 @@ mod reference_path_test;
 pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
     match node.kind_name() {
         NodeKindName::Command | NodeKindName::Fanout | NodeKindName::Sequence => true,
-        NodeKindName::Session => node.artifact.is_some(),
+        NodeKindName::Session => node.artifact.is_some() || node.is_isolated(),
     }
 }
 

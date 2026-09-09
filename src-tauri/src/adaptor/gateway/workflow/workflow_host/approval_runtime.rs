@@ -71,6 +71,7 @@ mod tests {
 
     fn commit_snapshot_fixture(node_is_waiting_approval: bool) -> RuntimeCommitSnapshot {
         RuntimeCommitSnapshot {
+            repository_root: None,
             execution_id: "execution-1".to_string(),
             workflow_name: "wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -86,6 +87,7 @@ mod tests {
             artifacts: HashMap::new(),
             node_executions: node_is_waiting_approval
                 .then(|| RuntimeNodeExecution {
+                    worktree: None,
                     recovery_reason: None,
                     id: "node-execution-1".to_string(),
                     execution_id: "execution-1".to_string(),

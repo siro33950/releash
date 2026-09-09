@@ -82,12 +82,6 @@ pub enum NodeFact {
     ArchiveRequested,
     /// 人間の行動: 木の restore（root にのみ受理される）。
     RestoreRequested,
-    /// 副作用: Node attempt 用の隔離 worktree を生成した。
-    IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact),
-    /// 副作用: Node attempt が所有する隔離 worktree を解放した。
-    IsolatedWorktreeReleased,
-    /// 観測: Node attempt が所有する隔離 worktree の実体を喪失した。
-    IsolatedWorktreeLost,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,7 +92,7 @@ pub struct StartedFact {
     pub parent: Option<ExecutionParentRef>,
     /// root の started のみが持つ、木の実行構成。
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub root: Option<TreeRootFact>,
+    pub root: Option<Box<TreeRootFact>>,
 }
 
 /// 木の実行構成。root node の started に記録され、fold が木全体を導出する
@@ -113,6 +107,8 @@ pub enum ExecutionTreeLaunch {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeRootFact {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repository_root: Option<String>,
     /// workspace の同定子。terminal surface の owner 鍵になるため、呼び出し側が
     /// 指定した値を保持し、worktree_path から復元時に導出しない。
     pub workspace_identity: String,
@@ -175,7 +171,8 @@ impl SessionExecutionTreeRootFacts {
             meta,
             started: NodeFact::Started(StartedFact {
                 parent: None,
-                root: Some(TreeRootFact {
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
                     definition_resolution: Default::default(),
                     workspace_identity,
                     worktree_path,
@@ -202,7 +199,7 @@ impl SessionExecutionTreeRootFacts {
                         entry: node_name,
                     },
                     launched_as: ExecutionTreeLaunch::Session,
-                }),
+                })),
             }),
             attached: NodeFact::SessionAttached(SessionAttachedFact {
                 session_id: session_id.to_string(),
@@ -347,14 +344,6 @@ pub struct ApprovalGrantedFact {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IsolatedWorktreeCreatedFact {
-    pub repository_root: String,
-    pub worktree_path: String,
-    pub branch: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NodeFactDecodeError {
     #[error("unknown node fact event type: {0}")]
@@ -397,9 +386,6 @@ impl NodeFact {
             Self::AbortRequested => "abort_requested",
             Self::ArchiveRequested => "archive_requested",
             Self::RestoreRequested => "restore_requested",
-            Self::IsolatedWorktreeCreated(_) => "isolated_worktree_created",
-            Self::IsolatedWorktreeReleased => "isolated_worktree_released",
-            Self::IsolatedWorktreeLost => "isolated_worktree_lost",
         }
     }
 
@@ -419,14 +405,11 @@ impl NodeFact {
             Self::StopReceived(fact) => serde_json::to_string(fact),
             Self::ArtifactProduced(fact) => serde_json::to_string(fact),
             Self::ApprovalGranted(fact) => serde_json::to_string(fact),
-            Self::IsolatedWorktreeCreated(fact) => serde_json::to_string(fact),
             Self::RetryRequested
             | Self::ResumeRequested
             | Self::AbortRequested
             | Self::ArchiveRequested
-            | Self::RestoreRequested
-            | Self::IsolatedWorktreeReleased
-            | Self::IsolatedWorktreeLost => Ok("{}".to_string()),
+            | Self::RestoreRequested => Ok("{}".to_string()),
         }
     }
 
@@ -473,15 +456,6 @@ impl NodeFact {
             "abort_requested" => empty(event_type, detail).map(|()| Self::AbortRequested),
             "archive_requested" => empty(event_type, detail).map(|()| Self::ArchiveRequested),
             "restore_requested" => empty(event_type, detail).map(|()| Self::RestoreRequested),
-            "isolated_worktree_created" => {
-                parse(event_type, detail).map(Self::IsolatedWorktreeCreated)
-            }
-            "isolated_worktree_released" => {
-                empty(event_type, detail).map(|()| Self::IsolatedWorktreeReleased)
-            }
-            "isolated_worktree_lost" => {
-                empty(event_type, detail).map(|()| Self::IsolatedWorktreeLost)
-            }
             other => Err(NodeFactDecodeError::UnknownEventType(other.to_string())),
         }
     }

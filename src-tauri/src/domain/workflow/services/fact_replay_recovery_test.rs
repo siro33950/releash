@@ -338,10 +338,10 @@ fn test_部分復元_過去の未対応nodeより後の正常なnodeは前進で
         .unwrap();
 
     // Then
-    let ExecutionAdvanceDecision::StartLeaves(leaves) = advance.decision else {
+    let ExecutionAdvanceDecision::StartNodes(leaves) = advance.decision else {
         panic!("the healthy successor must start")
     };
-    assert_eq!(leaves[0].node_name, "next");
+    assert_eq!(leaves[0].node_name(), "next");
     assert_eq!(
         folded
             .aggregate
@@ -436,11 +436,11 @@ fn test_部分復元_fanoutの未対応nodeが開始済みでも他のslotを展
         .unwrap();
 
     // Then
-    let ExecutionAdvanceDecision::StartLeaves(leaves) = advance.decision else {
+    let ExecutionAdvanceDecision::StartNodes(leaves) = advance.decision else {
         panic!("the healthy slot must start")
     };
     assert_eq!(leaves.len(), 1);
-    assert_eq!(leaves[0].node_name, "cmd");
+    assert_eq!(leaves[0].node_name(), "cmd");
     assert_eq!(
         folded
             .aggregate
@@ -644,12 +644,16 @@ fn test_部分復元_未対応nodeの保存成果を取得できれば後続inpu
         .unwrap();
 
     // Then
-    let ExecutionAdvanceDecision::StartLeaves(leaves) = advance.decision else {
+    let ExecutionAdvanceDecision::StartNodes(leaves) = advance.decision else {
         panic!("stored input must be usable")
     };
     assert_eq!(
-        leaves[0].bindings,
-        vec![("previous".into(), serde_json::json!("stored"))]
+        match &leaves[0] {
+            crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf(leaf) =>
+                &leaf.bindings,
+            _ => panic!("expected leaf start"),
+        },
+        &vec![("previous".into(), serde_json::json!("stored"))]
     );
 }
 

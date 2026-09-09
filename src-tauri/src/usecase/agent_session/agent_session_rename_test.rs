@@ -99,10 +99,20 @@ fn context() -> (
     Arc<RenameNotifier>,
     AgentSessionRenameUsecase,
 ) {
+    context_with_cwd("/repo/worktree")
+}
+
+fn context_with_cwd(
+    cwd: &str,
+) -> (
+    Arc<RenameRepository>,
+    Arc<RenameNotifier>,
+    AgentSessionRenameUsecase,
+) {
     let mut session = AgentSession::create(
         "rename-session",
-        WorkspaceIdentity::new("workspace"),
-        "/repo/worktree",
+        WorkspaceIdentity::new("/repo/worktree"),
+        cwd,
         ProviderKind::Claude,
         AgentSessionTreeLocation::session_tree_root("rename-session").unwrap(),
     )
@@ -174,4 +184,18 @@ async fn test_agent_session_rename_usecase_同じ名前なら保存も通知も�
     assert_eq!(outcome, AgentSessionMutationOutcome::AlreadyApplied);
     assert_eq!(*repository.saves.lock().unwrap(), 0);
     assert!(notifier.worktrees.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_隔離通知_sessionの実行先と異なるworkspaceへrenameを通知する() {
+    // Given
+    let (_repository, notifier, usecase) =
+        context_with_cwd("/repo-worktrees/.releash-isolated/node-a1");
+    // When
+    usecase.rename("rename-session", "updated").await.unwrap();
+    // Then
+    assert_eq!(
+        notifier.worktrees.lock().unwrap().as_slice(),
+        &["/repo/worktree"]
+    );
 }

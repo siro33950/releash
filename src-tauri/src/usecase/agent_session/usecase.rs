@@ -206,7 +206,7 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)?
             .ok_or(AgentSessionUsecaseError::NotFound)?;
         let outcome = session.session_mut().observe_activity(activity);
-        let worktree_path = session.session().worktree_path().to_string();
+        let worktree_path = session.session().workspace().as_str().to_string();
         if outcome == AgentSessionMutationOutcome::Applied {
             self.repository
                 .save_activity(session, caller_request_id)

@@ -11,6 +11,8 @@ use crate::domain::workflow::{
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TreeRootHeader {
+    #[serde(default)]
+    pub(crate) repository_root: Option<String>,
     pub(crate) workspace_identity: String,
     pub(crate) worktree_path: String,
     pub(crate) launched_as: ExecutionTreeLaunch,
@@ -28,6 +30,23 @@ pub(crate) fn read_tree_header(detail: &str) -> Result<Option<TreeRootHeader>, S
 }
 
 #[derive(Deserialize)]
+pub(crate) struct TreeRootContext {
+    #[serde(flatten)]
+    pub(crate) header: TreeRootHeader,
+    pub(crate) definition: Value,
+}
+
+pub(crate) fn read_tree_context(detail: &str) -> Result<Option<TreeRootContext>, String> {
+    #[derive(Deserialize)]
+    struct Record {
+        root: Option<TreeRootContext>,
+    }
+    serde_json::from_str::<Record>(detail)
+        .map(|record| record.root)
+        .map_err(|error| format!("tree root metadata is unavailable: {error}"))
+}
+
+#[derive(Deserialize)]
 struct StartedRecord {
     parent: Option<ExecutionParentRef>,
     root: Option<RootRecord>,
@@ -36,6 +55,8 @@ struct StartedRecord {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RootRecord {
+    #[serde(default)]
+    repository_root: Option<String>,
     workspace_identity: String,
     worktree_path: String,
     created_from: String,
@@ -65,6 +86,7 @@ pub(crate) fn decode_started(detail: &str) -> Result<NodeFact, String> {
         .map(|root| {
             let (definition, definition_resolution) = read_definition(root.definition);
             Ok::<_, String>(TreeRootFact {
+                repository_root: root.repository_root,
                 workspace_identity: root.workspace_identity,
                 worktree_path: root.worktree_path,
                 created_from: ExecutionOrigin::from_public_value(&root.created_from)
@@ -78,7 +100,7 @@ pub(crate) fn decode_started(detail: &str) -> Result<NodeFact, String> {
         .transpose()?;
     Ok(NodeFact::Started(StartedFact {
         parent: record.parent,
-        root,
+        root: root.map(Box::new),
     }))
 }
 

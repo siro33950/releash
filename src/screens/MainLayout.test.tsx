@@ -192,6 +192,7 @@ describe("MainLayout node-centered workspace", () => {
 			agentSessionId: "agent-session-1",
 			workspaceIdentity: "/managed/wt",
 			worktreePath: "/managed/wt",
+			workspaceWorktreePath: "/managed/wt",
 			provider: "codex",
 		};
 		renderMainLayout({

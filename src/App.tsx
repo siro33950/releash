@@ -141,9 +141,7 @@ function WorkbenchApp() {
 				const worktrees = await invoke<WorktreeEntry[]>("list_worktrees", {
 					repoPath: mainPath,
 				});
-				const workingAreas = worktrees.filter(
-					(worktree) => worktree.management_kind === "working_area",
-				);
+				const workingAreas = worktrees;
 				if (workingAreas.length === 1) {
 					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
 					openWorktreeTab(

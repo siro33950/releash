@@ -12,6 +12,20 @@ pub(crate) enum SessionContextReadError {
     Corrupt(String),
 }
 
+impl From<crate::adaptor::gateway::workflow::worktree_context::WorktreeContextReadError>
+    for SessionContextReadError
+{
+    fn from(
+        error: crate::adaptor::gateway::workflow::worktree_context::WorktreeContextReadError,
+    ) -> Self {
+        use crate::adaptor::gateway::workflow::worktree_context::WorktreeContextReadError;
+        match error {
+            WorktreeContextReadError::Read(error) => Self::Read(error),
+            WorktreeContextReadError::Corrupt(reason) => Self::Corrupt(reason),
+        }
+    }
+}
+
 impl SessionContextReadError {
     fn is_corrupt(&self) -> bool {
         matches!(
@@ -28,7 +42,7 @@ impl SessionContextReadError {
 impl std::fmt::Display for SessionContextReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Read(error) => write!(f, "session root read failed: {error}"),
+            Self::Read(error) => write!(f, "session context read failed: {error}"),
             Self::Corrupt(reason) => f.write_str(reason),
         }
     }
@@ -70,37 +84,47 @@ pub(crate) fn read_session_context(
         })
         .map_err(SessionContextReadError::Read)?
         .ok_or_else(|| SessionContextReadError::Corrupt("session tree root is missing".into()))?;
-    let header =
-        crate::adaptor::gateway::workflow::stored_definition::read_tree_header(&row.detail)
-            .map_err(SessionContextReadError::Corrupt)?
-            .ok_or_else(|| {
-                SessionContextReadError::Corrupt("session tree root metadata is missing".into())
-            })?;
-    let value: serde_json::Value = serde_json::from_str(&row.detail)
-        .map_err(|error| SessionContextReadError::Corrupt(error.to_string()))?;
-    let provider = value
-        .get("root")
-        .and_then(|root| root.get("definition"))
-        .and_then(|definition| definition.get("nodes"))
+    let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
+        .map_err(SessionContextReadError::Corrupt)?
+        .ok_or_else(|| {
+            SessionContextReadError::Corrupt("session tree root metadata is missing".into())
+        })?;
+    let provider = root
+        .definition
+        .get("nodes")
         .and_then(|nodes| nodes.get(&location.node_name))
         .and_then(|node| node.get("session"))
         .and_then(|session| session.get("provider"))
         .ok_or_else(|| {
             SessionContextReadError::Corrupt("session provider is unavailable".into())
         })?;
+    let provider = match provider.as_str() {
+        Some("claude") => crate::domain::provider_lifecycle::ProviderKind::Claude,
+        Some("codex") => crate::domain::provider_lifecycle::ProviderKind::Codex,
+        _ => {
+            return Err(SessionContextReadError::Corrupt(
+                "session provider is unsupported".into(),
+            ))
+        }
+    };
+    let root_meta = fact_log::node_meta_from_row(&row).map_err(SessionContextReadError::Corrupt)?;
+    let workspace_identity = root.header.workspace_identity.clone();
+    let workspace_worktree_path = root.header.worktree_path.clone();
+    let launched_as = root.header.launched_as;
+    let worktree_path =
+        crate::adaptor::gateway::workflow::worktree_context::execution_worktree_path(
+            backend,
+            location.meta(),
+            root_meta,
+            root,
+        )
+        .map_err(SessionContextReadError::from)?;
     Ok(SessionExecutionContext {
-        workspace_identity: header.workspace_identity,
-        worktree_path: header.worktree_path,
-        launched_as: header.launched_as,
-        provider: match provider.as_str() {
-            Some("claude") => crate::domain::provider_lifecycle::ProviderKind::Claude,
-            Some("codex") => crate::domain::provider_lifecycle::ProviderKind::Codex,
-            _ => {
-                return Err(SessionContextReadError::Corrupt(
-                    "session provider is unsupported".into(),
-                ))
-            }
-        },
+        workspace_identity,
+        workspace_worktree_path,
+        worktree_path,
+        launched_as,
+        provider,
     })
 }
 
@@ -120,7 +144,7 @@ pub(crate) fn read_session_records(
         .map_err(|error| format!("session facts read failed: {error:?}"))?;
     rows.iter()
         .filter(|row| row.event_type != "started")
-        .map(fact_log::record_from_row)
+        .filter_map(|row| fact_log::record_from_row(row).transpose())
         .collect()
 }
 

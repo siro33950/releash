@@ -333,7 +333,8 @@ mod tests {
             },
             NodeFact::Started(StartedFact {
                 parent: None,
-                root: Some(TreeRootFact {
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
                     definition_resolution: Default::default(),
                     workspace_identity: worktree_path.to_string(),
                     worktree_path: worktree_path.to_string(),
@@ -355,7 +356,7 @@ mod tests {
                         entry: "main".to_string(),
                     },
                     launched_as: ExecutionTreeLaunch::Workflow,
-                }),
+                })),
             }),
         )]
     }

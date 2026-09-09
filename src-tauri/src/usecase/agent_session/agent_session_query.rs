@@ -38,6 +38,7 @@ pub(crate) struct AgentSessionItemDto {
     pub id: String,
     pub workspace_identity: String,
     pub worktree_path: String,
+    pub workspace_worktree_path: String,
     pub provider: AgentSessionProviderDto,
     pub tree_location: AgentSessionTreeLocationDto,
     pub lifecycle: AgentSessionLifecycleDto,

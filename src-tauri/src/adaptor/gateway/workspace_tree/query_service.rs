@@ -263,7 +263,6 @@ fn workflow_capabilities(node: &WorkspaceTreeNode) -> WorkspaceWorkflowCapabilit
     WorkspaceWorkflowCapabilitiesDto {
         can_stop: node.can_stop,
         can_resume: node.can_resume,
-        resume_unavailable_reason: node.resume_unavailable_reason.clone(),
         can_abort: node.can_abort,
         can_archive: node.can_archive,
     }
@@ -387,6 +386,12 @@ fn project_tree(
                 WorkspaceNodeKind::Fanout => {
                     let root = root_projections.get(node.id.as_str());
                     vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
+                        worktree: node.worktree.as_ref().map(|worktree| {
+                            crate::usecase::workflow::NodeWorktreeDto {
+                                branch: worktree.branch.clone(),
+                                path: worktree.path.clone(),
+                            }
+                        }),
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
                         title: root
                             .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
@@ -400,6 +405,12 @@ fn project_tree(
                 WorkspaceNodeKind::Sequence => {
                     let root = root_projections.get(node.id.as_str());
                     vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
+                        worktree: node.worktree.as_ref().map(|worktree| {
+                            crate::usecase::workflow::NodeWorktreeDto {
+                                branch: worktree.branch.clone(),
+                                path: worktree.path.clone(),
+                            }
+                        }),
                         id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
                         title: root
                             .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
@@ -462,6 +473,12 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         }),
     };
     WorkspaceNodeDetailDto {
+        worktree: node
+            .worktree
+            .map(|worktree| crate::usecase::workflow::NodeWorktreeDto {
+                branch: worktree.branch,
+                path: worktree.path,
+            }),
         id: node.id,
         title: node.title,
         status: node.status.as_public_str().to_string(),
@@ -470,11 +487,10 @@ fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         stop_received,
         waiting_for,
         has_artifact: node.has_artifact,
-        recovery_reason: node.recovery_owner_reason.or_else(|| {
-            (node.status == crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved)
-                .then(|| node.error_reason.clone())
-                .flatten()
-        }),
+        recovery_reason: (node.status
+            == crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved)
+            .then(|| node.error_reason.clone())
+            .flatten(),
         error_reason: node.error_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
             can_rename: node.can_rename,

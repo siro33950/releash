@@ -89,15 +89,6 @@ impl SqliteWorkspaceTreeRepository {
         folded: &FoldedTree,
         record: &WorkflowExecutionMetadataRecord,
     ) -> Result<Vec<WorkspaceTreeNode>, LocalEventQueryError> {
-        let node_recovery_reasons = folded
-            .isolated_worktrees
-            .entries()
-            .filter_map(|entry| {
-                entry
-                    .recovery_cause()
-                    .map(|cause| (entry.owner.node_execution_id.clone(), cause.to_string()))
-            })
-            .collect::<Vec<_>>();
         crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
             execution_id: &folded.aggregate.id,
             workflow_name: &folded.aggregate.workflow.name,
@@ -110,8 +101,7 @@ impl SqliteWorkspaceTreeRepository {
             started_at: folded.aggregate.started_at,
             updated_at: folded.aggregate.updated_at,
             execution: record,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &node_recovery_reasons,
+
             session_activities: &folded.session_activities,
             session_display_names: &folded.session_display_names,
         })

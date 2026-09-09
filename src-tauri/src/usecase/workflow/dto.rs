@@ -322,7 +322,13 @@ fn node_to_dto(node: &domain::NodeDefinition) -> NodeDefinitionDto {
         artifact: node.artifact.clone(),
         input: node.input.iter().map(input_param_to_dto).collect(),
         completion: completion_to_dto(node.completion),
-        worktree: node.worktree.clone(),
+        worktree: node.worktree.map(|mode| {
+            match mode {
+                domain::WorktreeMode::Shared => "shared",
+                domain::WorktreeMode::Isolated => "isolated",
+            }
+            .to_string()
+        }),
     }
 }
 

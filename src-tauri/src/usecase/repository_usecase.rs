@@ -183,7 +183,6 @@ impl RepositoryUsecase {
                 is_locked: wt.is_locked,
                 dirty_count,
                 base_branch,
-                management_kind: String::new(),
             });
         }
         self.query
@@ -223,7 +222,6 @@ impl RepositoryUsecase {
             is_locked: wt.is_locked,
             dirty_count: 0,
             base_branch: base_branch.map(|s| s.to_string()),
-            management_kind: "working_area".to_string(),
         })
     }
 
@@ -574,10 +572,7 @@ mod repository_usecase_tests {
     }
 
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
-        let query = RepositoryQueryService::new(
-            fake.clone(),
-            crate::usecase::repository_query_service::WorktreeClassificationQuery::empty(),
-        );
+        let query = RepositoryQueryService::new(fake.clone());
         RepositoryUsecase::new(
             fake.clone(),
             fake.clone(),
@@ -668,7 +663,6 @@ mod repository_usecase_tests {
         assert!(!e.is_main);
         assert_eq!(e.dirty_count, 3);
         assert_eq!(e.base_branch, Some("develop".to_string()));
-        assert_eq!(e.management_kind, "working_area");
     }
 
     #[test]
@@ -710,7 +704,7 @@ mod repository_usecase_tests {
     }
 
     #[test]
-    fn test_空の台帳では完全な隔離命名だけを掃除候補にする() {
+    fn test_worktree一覧_完全な隔離命名の実体を非表示にする() {
         let fake = Arc::new(FakeRepo {
             worktrees: vec![
                 wt(
@@ -725,8 +719,8 @@ mod repository_usecase_tests {
 
         let entries = usecase(fake).list_worktrees("/main").unwrap();
 
-        assert_eq!(entries[0].management_kind, "untracked_cleanup_candidate");
-        assert_eq!(entries[1].management_kind, "working_area");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch, "feature");
     }
 
     #[test]

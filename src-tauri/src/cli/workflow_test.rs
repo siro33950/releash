@@ -42,6 +42,34 @@ fn test_workflow_status_アプリ停止中はfile直接読取へfallbackする()
 }
 
 #[test]
+fn test_隔離worktree_statusのfile直接読取で実行中と失敗とabortと完了後のbranchとpathを返す() {
+    use crate::adaptor::controller::api::test_support::{
+        assert_isolated_execution_json, seed_isolated_query_execution,
+    };
+    use crate::domain::workflow::NodeExecutionStatus;
+
+    for status in [
+        NodeExecutionStatus::Running,
+        NodeExecutionStatus::Failed,
+        NodeExecutionStatus::Aborted,
+        NodeExecutionStatus::Succeeded,
+    ] {
+        // Given
+        let temp = TempDir::new().unwrap();
+        let execution_id = test_uuid(33);
+        seed_isolated_query_execution(temp.path(), &execution_id, status);
+
+        // When
+        let output = cmd_status(temp.path(), &execution_id, true).unwrap();
+        let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        // Then
+        assert_eq!(output["id"], execution_id);
+        assert_isolated_execution_json(&output, status);
+    }
+}
+
+#[test]
 fn test_workflow_status_file直接読取とtauriが同じprojectionを返す() {
     let temp = TempDir::new().unwrap();
     let execution_id = test_uuid(2);

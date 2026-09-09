@@ -1422,3 +1422,177 @@ fn test_completion移行_builtin8本と正本サンプルが診断なしで既�
         assert_eq!(required, expected, "{name}");
     }
 }
+
+#[test]
+fn test_隔離定義_yamlとluaの全node種別でmodeを受理する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
+    std::fs::write(
+        directory.path().join("instructions/test.md"),
+        "test instruction",
+    )
+    .unwrap();
+    for mode in ["shared", "isolated"] {
+        let yaml = format!("name: isolation\ndescription: test\nnodes:\n  main: {{worktree: {mode}, sequence: {{children: [group]}}}}\n  group: {{worktree: {mode}, fanout: {{children: [agent, check]}}}}\n  agent: {{worktree: {mode}, session: {{provider: codex, facets: {{instruction: test}}}}}}\n  check: {{worktree: {mode}, command: 'true'}}");
+        let lua = format!(
+            r#"local r = require('releash')
+local f = require('facets')
+local agent = r.session{{name = 'agent', provider = r.provider.codex, facets = {{instruction = f.instruction.test}}, worktree = r.worktree.{mode}}}
+local check = r.command{{name = 'check', command = 'true', worktree = r.worktree.{mode}}}
+local group = r.fanout{{name = 'group', worktree = r.worktree.{mode}, children = {{r.child{{node = agent}}, r.child{{node = check}}}}}}
+return r.workflow{{name = 'isolation', description = 'test', main = r.sequence{{worktree = r.worktree.{mode}, children = {{r.child{{node = group}}}}}}}}
+"#
+        );
+
+        // When
+        let diagnoses = [
+            diagnose_workflow_source(&yaml, None),
+            diagnose_lua_workflow_source(
+                "isolation.lua",
+                &lua,
+                directory.path(),
+                directory.path(),
+                None,
+            ),
+        ];
+
+        // Then
+        for diagnosis in diagnoses {
+            assert!(
+                diagnosis.diagnostics.is_empty(),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+            let workflow = diagnosis.workflow.unwrap();
+            assert_eq!(workflow.nodes.len(), 4);
+            assert!(workflow
+                .nodes
+                .iter()
+                .all(|node| node.is_isolated() == (mode == "isolated")));
+        }
+    }
+}
+
+#[test]
+fn test_隔離定義_値域外のyaml値とluaの文字列や他のhandleを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
+    std::fs::write(
+        directory.path().join("instructions/test.md"),
+        "test instruction",
+    )
+    .unwrap();
+    for value in ["unknown", "42", "true", "[]", "{}", "null"] {
+        let source = format!("name: invalid\ndescription: test\nnodes:\n  main: {{command: 'true', worktree: {value}}}");
+
+        // When
+        let diagnosis = diagnose_workflow_source(&source, None);
+
+        // Then
+        assert!(diagnosis.workflow.is_none(), "{value}");
+        assert!(
+            diagnosis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error),
+            "{value}"
+        );
+    }
+    for value in ["'isolated'", "42", "true", "{}", "r.provider.codex"] {
+        let source = format!("local r = require('releash')\nreturn r.workflow{{name = 'invalid', description = 'test', main = r.command{{command = 'true', worktree = {value}}}}}");
+        let diagnosis = diagnose_lua_workflow_source(
+            "invalid.lua",
+            &source,
+            directory.path(),
+            directory.path(),
+            None,
+        );
+        assert!(diagnosis.workflow.is_none(), "{value}");
+        assert!(
+            diagnosis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn test_隔離定義_宣言の有無を問わずcontract直下のworktreeを拒否する() {
+    // Given
+    for mode in ["", "worktree: shared,", "worktree: isolated,"] {
+        for kind in [
+            "command: 'true'",
+            "session: {provider: codex, facets: {instruction: test}}",
+        ] {
+            let source = format!("name: reserved\ndescription: test\nschemas:\n  result: {{type: object, properties: {{worktree: string}}}}\nnodes:\n  main: {{{mode} {kind}, artifact: result}}");
+
+            // When
+            let diagnosis = diagnose_workflow_source(&source, None);
+
+            // Then
+            assert!(diagnosis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error));
+            assert!(crate::domain::workflow::services::validation::validate(
+                &diagnosis.workflow.unwrap()
+            )
+            .is_err());
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("worktree")),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn test_隔離定義_合成子とcontractなしsessionを経由してworktreeを参照する() {
+    // Given
+    let yaml = "name: references\ndescription: test\nnodes:\n  main:\n    sequence:\n      children:\n        - seq\n        - report: {inputs: {path: seq.work.worktree.path, branch: seq.worktree.branch}}\n  seq: {worktree: isolated, sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex, facets: {instruction: test}}}\n  report: {input: [path, branch], command: 'echo {{ path }}', env: {BRANCH: branch}}";
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
+    std::fs::write(
+        directory.path().join("instructions/test.md"),
+        "test instruction",
+    )
+    .unwrap();
+    let lua = r#"local r = require('releash')
+local f = require('facets')
+local work = r.session{name = 'work', provider = r.provider.codex, facets = {instruction = f.instruction.test}, worktree = r.worktree.isolated}
+local seq = r.sequence{name = 'seq', worktree = r.worktree.isolated, children = {r.child{node = work}}}
+local path = seq.work.worktree.path
+local branch = seq.worktree.branch
+return r.workflow{name = 'references', description = 'test', main = r.sequence{children = {r.child{node = seq}}}}
+"#;
+
+    // When
+    let diagnoses = [
+        diagnose_workflow_source(yaml, None),
+        diagnose_lua_workflow_source(
+            "references.lua",
+            lua,
+            directory.path(),
+            directory.path(),
+            None,
+        ),
+    ];
+
+    // Then
+    for diagnosis in diagnoses {
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{:?}",
+            diagnosis.diagnostics
+        );
+        assert!(diagnosis.workflow.is_some());
+    }
+}

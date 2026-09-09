@@ -15,9 +15,8 @@ use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleScope};
 use crate::domain::workflow::{
     ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeCompletionSignalState, NodeDefinition,
-    NodeExecutionStatus, NodeKind, NodeKindName, RepositoryWorktreeInventory,
-    RuntimeExecutionState, SchemaDef, SequenceSpec, SessionSpec, WorkflowDefinition, WorkflowError,
-    WorkflowRuntimeSnapshot, WorktreeInventoryGateway,
+    NodeExecutionStatus, NodeKind, NodeKindName, RuntimeExecutionState, SchemaDef, SequenceSpec,
+    SessionSpec, WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTreeRepository};
@@ -391,8 +390,6 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
 
 struct AcceptanceManagedWorktreeResolver;
 
-struct AcceptanceWorktreeInventory;
-
 struct AcceptanceWorkspaceNodeActionResolver;
 
 impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
@@ -427,12 +424,6 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         Ok(WorkspaceSessionNodeRenameTarget {
             agent_session_id: node_id.to_string(),
         })
-    }
-}
-
-impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
-    fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
-        Ok(Vec::new())
     }
 }
 
@@ -530,12 +521,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             composition.interrupt.clone(),
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            ),
-            Arc::new(AcceptanceWorktreeInventory),
+            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),

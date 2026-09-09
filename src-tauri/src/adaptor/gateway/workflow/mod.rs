@@ -43,8 +43,8 @@ pub(crate) mod storage;
 pub(crate) mod stored_definition;
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
+pub(crate) mod worktree_context;
 mod worktree_gateway;
-mod worktree_ledger_repository;
 
 pub(crate) use config_path_gateway::WorkflowConfigPathFileGateway;
 pub(crate) use definition_repository::{
@@ -71,5 +71,5 @@ pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepositoryManagedWorktreeGateway;
-pub(crate) use worktree_gateway::RepositoryWorktreeInventoryGateway;
-pub(crate) use worktree_ledger_repository::NodeEventIsolatedWorktreeLedgerRepository;
+
+pub(crate) use worktree_gateway::RepositoryIsolatedWorktreeGateway;

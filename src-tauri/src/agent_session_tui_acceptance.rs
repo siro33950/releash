@@ -18,9 +18,7 @@ use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGateway;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::{
-    RepositoryWorktreeInventory, WorkflowDefinition, WorkflowError, WorktreeInventoryGateway,
-};
+use crate::domain::workflow::WorkflowDefinition;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceRuntime};
 use crate::usecase::agent_session::{
@@ -155,14 +153,6 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     }
 }
 
-struct AcceptanceWorktreeInventory;
-
-impl WorktreeInventoryGateway for AcceptanceWorktreeInventory {
-    fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
-        Ok(Vec::new())
-    }
-}
-
 pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     _app: tauri::App<R>,
     window: tauri::WebviewWindow<R>,
@@ -286,12 +276,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             composition.interrupt.clone(),
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            ),
-            Arc::new(AcceptanceWorktreeInventory),
+            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         ));
         let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
             app.handle().clone(),
@@ -432,6 +417,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         let session = self
             .workflow_agent_sessions
             .prepare_workflow_agent_session(
+                worktree_path,
                 worktree_path,
                 crate::adaptor::gateway::workflow::node_session_boundary::WorkflowSessionLaunchConfig {
                     provider: provider_kind(provider),

@@ -58,6 +58,10 @@ export function AgentSessionPanel({
 	const agentSessionId = session?.id ?? initialAttachment?.agentSessionId ?? "";
 	const worktreePath =
 		session?.worktreePath ?? initialAttachment?.worktreePath ?? "";
+	const workspaceWorktreePath =
+		session?.workspaceWorktreePath ??
+		initialAttachment?.workspaceWorktreePath ??
+		"";
 	const workspaceIdentity =
 		session?.workspaceIdentity ?? initialAttachment?.workspaceIdentity ?? "";
 	const provider = session?.provider ?? initialAttachment?.provider ?? "";
@@ -83,7 +87,7 @@ export function AgentSessionPanel({
 				outcome === "restored" ||
 				outcome === "garbage_collected"
 			) {
-				notifyAgentSessionChanged(worktreePath);
+				notifyAgentSessionChanged(workspaceWorktreePath);
 			}
 			if (outcome === "resumed" || outcome === "restored") {
 				onRefresh?.();
@@ -107,7 +111,7 @@ export function AgentSessionPanel({
 					return;
 			}
 		},
-		[onRefresh, pausedMessage, worktreePath],
+		[onRefresh, pausedMessage, workspaceWorktreePath],
 	);
 
 	const runLifecycleOperation = useCallback(
@@ -153,7 +157,7 @@ export function AgentSessionPanel({
 				callerRequestId: operationId("delete_agent_session"),
 			});
 			setState("gone");
-			notifyAgentSessionChanged(session.worktreePath);
+			notifyAgentSessionChanged(session.workspaceWorktreePath);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
@@ -302,12 +306,17 @@ export function AgentSessionRoute({
 				if (
 					!worktreePath ||
 					worktreePath ===
-						(session?.worktreePath ?? launchAttachment?.worktreePath)
+						(session?.workspaceWorktreePath ??
+							launchAttachment?.workspaceWorktreePath)
 				) {
 					refresh();
 				}
 			}),
-		[launchAttachment?.worktreePath, refresh, session?.worktreePath],
+		[
+			launchAttachment?.workspaceWorktreePath,
+			refresh,
+			session?.workspaceWorktreePath,
+		],
 	);
 
 	useEffect(() => {
