@@ -1015,6 +1015,7 @@ async fn test_issue_1696_session起動木はretryを拒否しsubmitとstopで資
         .terminal()
         .attach("issue-1696-standalone".to_string(), terminal_owner.clone())
         .unwrap();
+    receive_until(&mut terminal, "claude-workflow-fixture 日本語").await;
     host.terminal()
         .write(terminal_owner.clone(), "standalone-input\r")
         .unwrap();
@@ -1132,6 +1133,7 @@ async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届
             terminal_owner.clone(),
         )
         .unwrap();
+    receive_until(&mut terminal, "codex-workflow-fixture 日本語").await;
     host.terminal()
         .write(terminal_owner.clone(), "archive-restore-input\r")
         .unwrap();
