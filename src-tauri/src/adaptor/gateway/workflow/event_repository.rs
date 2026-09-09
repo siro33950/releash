@@ -155,6 +155,7 @@ mod tests {
     fn started_events(execution_id: &str) -> Vec<WorkflowEvent> {
         vec![
             WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.to_string(),
                 workflow_name: "wf".to_string(),
                 worktree_path: "/repo".to_string(),

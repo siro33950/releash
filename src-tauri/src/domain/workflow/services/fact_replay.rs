@@ -14,10 +14,10 @@ use crate::domain::workflow::entities::workflow_execution::{
 };
 use crate::domain::workflow::services::event_replay;
 use crate::domain::workflow::{
-    AgentSessionActivity, Artifact, ExecutionStatus, IsolatedWorktreeLedgerSnapshot,
-    NodeCompletionSignal, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
-    NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKindName, RuntimeExecutionState,
-    TreeRootFact, WorkflowExecution as WorkflowExecutionReadModel,
+    AgentSessionActivity, Artifact, ExecutionStatus, NodeCompletionSignal, NodeExecution,
+    NodeExecutionFailure, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactRecord,
+    NodeKindName, RuntimeExecutionState, TreeRootFact,
+    WorkflowExecution as WorkflowExecutionReadModel,
 };
 
 #[cfg(test)]
@@ -30,8 +30,6 @@ pub struct FoldedTree {
     pub aggregate: WorkflowExecutionAggregate,
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
-    /// 同じ tree の純粋事実から復元した隔離 worktree 台帳。
-    pub isolated_worktrees: IsolatedWorktreeLedgerSnapshot,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
     pub session_activities: HashMap<String, AgentSessionActivity>,
     /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
@@ -92,6 +90,8 @@ pub fn fold_execution_tree(
     tree_id: &str,
     records: &[NodeFactRecord],
 ) -> Result<Option<FoldedTree>, String> {
+    #[cfg(test)]
+    TREE_FOLDS.with(|count| count.set(count.get() + 1));
     for record in records {
         if record.meta.tree_id != tree_id {
             return Err(format!(
@@ -112,7 +112,6 @@ pub fn fold_execution_tree(
         ));
     };
 
-    let isolated_worktrees = IsolatedWorktreeLedgerSnapshot::from_records(records)?;
     let started_at = timestamp_of(first);
     let mut aggregate = restore_aggregate(tree_id, &root, started_at);
     let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
@@ -161,17 +160,37 @@ pub fn fold_execution_tree(
         }
     }
 
+    aggregate.derive_empty_isolated_fanouts(None)?;
     aggregate.resolve_recovery_dependencies();
     Ok(Some(FoldedTree {
         aggregate,
-        root,
-        isolated_worktrees,
+        root: *root,
         session_activities,
         session_display_names,
     }))
 }
 
-fn is_submitted_artifact_pair(submit: &NodeFactRecord, artifact: &NodeFactRecord) -> bool {
+#[cfg(test)]
+thread_local! {
+    static TREE_FOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn without_tree_fold<T>(read: impl FnOnce() -> T) -> T {
+    let before = TREE_FOLDS.with(std::cell::Cell::get);
+    let result = read();
+    assert_eq!(
+        TREE_FOLDS.with(std::cell::Cell::get),
+        before,
+        "output must not reconstruct the execution tree"
+    );
+    result
+}
+
+pub(super) fn is_submitted_artifact_pair(
+    submit: &NodeFactRecord,
+    artifact: &NodeFactRecord,
+) -> bool {
     matches!(submit.fact, NodeFact::SubmitReceived(_))
         && matches!(artifact.fact, NodeFact::ArtifactProduced(_))
         && submit.meta.node_execution_id == artifact.meta.node_execution_id
@@ -222,6 +241,50 @@ pub fn derive_read_model(tree: &FoldedTree) -> WorkflowExecutionReadModel {
     }
 }
 
+#[cfg(test)]
+pub fn derive_node_artifact(
+    tree: &FoldedTree,
+    records: &[NodeFactRecord],
+    node_name: &str,
+) -> Option<Artifact> {
+    let submitted = records
+        .iter()
+        .rev()
+        .filter(|record| {
+            record.meta.node_name == node_name
+                && matches!(
+                    record.fact,
+                    NodeFact::SubmitReceived(_) | NodeFact::ArtifactProduced(_)
+                )
+        })
+        .find_map(|record| {
+            tree.aggregate
+                .node_execution(&record.meta.node_execution_id)
+                .filter(|node| node.artifact.is_some())
+        });
+    let node = submitted.or_else(|| {
+        tree.aggregate
+            .node_executions
+            .iter()
+            .filter(|node| node.node_name == node_name && node.artifact.is_some())
+            .max_by(|left, right| {
+                left.completed_at
+                    .unwrap_or(left.started_at)
+                    .total_cmp(&right.completed_at.unwrap_or(right.started_at))
+            })
+    })?;
+    Some(Artifact {
+        node_name: node_name.to_string(),
+        contract: tree
+            .aggregate
+            .workflow
+            .node_by_name(node_name)
+            .and_then(|definition| definition.artifact.clone()),
+        value: node.artifact.clone()?,
+        produced_at: node.completed_at.unwrap_or(node.started_at),
+    })
+}
+
 fn read_model_node(
     aggregate: &WorkflowExecutionAggregate,
     node: &RuntimeNodeExecution,
@@ -241,6 +304,7 @@ fn read_model_node(
         .node_by_name(&node.node_name)
         .and_then(|definition| definition.artifact.clone());
     NodeExecution {
+        worktree: node.worktree.clone(),
         recovery_reason: node.recovery_reason.clone(),
         id: node.id.clone(),
         execution_id: node.execution_id.clone(),
@@ -279,6 +343,7 @@ fn restore_aggregate(
         workflow: root.definition.clone(),
         workflow_defaults: WorkflowDefaults,
         worktree_path: root.worktree_path.clone(),
+        repository_root: root.repository_root.clone(),
         launched_as: root.launched_as,
         created_from: root.created_from,
         started_at,
@@ -290,11 +355,17 @@ fn restore_aggregate(
     aggregate
 }
 
-fn apply_record(
+pub(super) fn apply_record(
     aggregate: &mut WorkflowExecutionAggregate,
     record: &NodeFactRecord,
     defer_submit_settlement: bool,
 ) -> Result<(), String> {
+    if !matches!(record.fact, NodeFact::AbortRequested) {
+        aggregate.derive_empty_isolated_fanouts(
+            matches!(record.fact, NodeFact::RuntimeFailureObserved(_))
+                .then_some(record.meta.node_execution_id.as_str()),
+        )?;
+    }
     let id = record.meta.node_execution_id.as_str();
     let timestamp = timestamp_of(record);
     match &record.fact {
@@ -437,11 +508,106 @@ fn apply_record(
         | NodeFact::SessionNodeRenamed(_)
         | NodeFact::ProviderSessionTitleObserved(_)
         | NodeFact::ArchiveRequested
-        | NodeFact::RestoreRequested
-        | NodeFact::IsolatedWorktreeCreated(_)
-        | NodeFact::IsolatedWorktreeReleased
-        | NodeFact::IsolatedWorktreeLost => Ok(()),
+        | NodeFact::RestoreRequested => Ok(()),
     }
+}
+
+pub(super) fn restore_artifact_scope(
+    root: &TreeRootFact,
+    first: &NodeFactRecord,
+    definition: &crate::domain::workflow::NodeDefinition,
+) -> WorkflowExecutionAggregate {
+    let mut aggregate = WorkflowExecutionAggregate::restore_runtime(WorkflowExecutionRestore {
+        id: first.meta.tree_id.clone(),
+        workflow: crate::domain::workflow::WorkflowDefinition {
+            name: root.definition.name.clone(),
+            description: String::new(),
+            builtin: false,
+            schemas: root.definition.schemas.clone(),
+            nodes: std::iter::once(definition)
+                .chain(root.definition.nodes.iter().filter(|candidate| {
+                    match &definition.kind {
+                        crate::domain::workflow::NodeKind::Sequence(spec) => spec
+                            .children
+                            .iter()
+                            .any(|child| child.name == candidate.name),
+                        crate::domain::workflow::NodeKind::Fanout(spec) => spec
+                            .children
+                            .iter()
+                            .any(|child| child.name == candidate.name),
+                        _ => false,
+                    }
+                }))
+                .cloned()
+                .collect(),
+            entry: definition.name.clone(),
+        },
+        worktree_path: root.worktree_path.clone(),
+        repository_root: root.repository_root.clone(),
+        launched_as: root.launched_as,
+        created_from: root.created_from,
+        started_at: timestamp_of(first),
+        ..WorkflowExecutionRestore::default()
+    });
+    aggregate.restore_definition_resolution((*root.definition_resolution).clone());
+    let _ = aggregate.replay_started();
+    aggregate
+}
+
+pub(super) fn fold_leaf_artifact(
+    root: &TreeRootFact,
+    records: &[&NodeFactRecord],
+    submitted_artifact_sequences: &std::collections::HashSet<i64>,
+) -> Result<Option<(RuntimeNodeExecution, i64)>, String> {
+    let Some(first) = records.first() else {
+        return Ok(None);
+    };
+    let Some(definition) = root.definition.node_by_name(&first.meta.node_name) else {
+        return Ok(None);
+    };
+    let mut aggregate = restore_artifact_scope(root, first, definition);
+    let mut settled_seq = first.seq;
+    for (index, record) in records.iter().enumerate() {
+        let previous = aggregate
+            .node_executions
+            .first()
+            .map(|node| (node.status, node.completed_at));
+        if matches!(record.fact, NodeFact::Started(_)) {
+            aggregate.replay_node_started(
+                &record.meta.node_execution_id,
+                &record.meta.node_name,
+                record.meta.kind,
+                record.meta.attempt,
+                None,
+                timestamp_of(record),
+            )?;
+        } else {
+            let defer = records.get(index + 1).is_some_and(|next| {
+                is_submitted_artifact_pair(record, next)
+                    && submitted_artifact_sequences.contains(&next.seq)
+            });
+            apply_record(&mut aggregate, record, defer)?;
+            if submitted_artifact_sequences.contains(&record.seq) {
+                aggregate.derive_session_settlement(
+                    &record.meta.node_execution_id,
+                    timestamp_of(record),
+                )?;
+            }
+        }
+        if aggregate
+            .node_executions
+            .first()
+            .map(|node| (node.status, node.completed_at))
+            != previous
+        {
+            settled_seq = record.seq;
+        }
+    }
+    Ok(aggregate
+        .node_executions
+        .first()
+        .cloned()
+        .map(|node| (node, settled_seq)))
 }
 
 /// 単独 session（および workflow の子 session node）の事実列から導出した

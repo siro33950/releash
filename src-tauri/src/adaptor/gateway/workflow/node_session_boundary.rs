@@ -38,6 +38,7 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
 
     async fn prepare_workflow_agent_session(
         &self,
+        workspace_worktree_path: &str,
         worktree_path: &str,
         config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
@@ -122,6 +123,29 @@ impl ProviderWorkflowAgentSessionPort {
     }
 }
 
+fn workflow_launch_request(
+    workspace_worktree_path: &str,
+    worktree_path: &str,
+    config: WorkflowSessionLaunchConfig,
+    workflow_execution_id: &str,
+    node_execution_id: &str,
+    initial_instruction: &str,
+) -> WorkflowAgentSessionLaunchRequest {
+    WorkflowAgentSessionLaunchRequest {
+        workspace: WorkspaceIdentity::new(workspace_worktree_path),
+        worktree_path: worktree_path.to_string(),
+        provider: config.provider,
+        model: config.model,
+        permission: config.permission,
+        workflow_execution_id: workflow_execution_id.to_string(),
+        node_execution_id: node_execution_id.to_string(),
+        initial_instruction: initial_instruction.to_string(),
+        rows: 24,
+        cols: 80,
+        caller_request_id: format!("workflow-node-launch-{node_execution_id}"),
+    }
+}
+
 #[async_trait::async_trait]
 impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
     fn is_provider_available(&self, provider: ProviderKind) -> bool {
@@ -130,6 +154,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
 
     async fn prepare_workflow_agent_session(
         &self,
+        workspace_worktree_path: &str,
         worktree_path: &str,
         config: WorkflowSessionLaunchConfig,
         workflow_execution_id: &str,
@@ -138,19 +163,14 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
     ) -> Result<NodeSessionInfo, WorkflowRuntimeError> {
         let launched = self
             .launch
-            .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
-                workspace: WorkspaceIdentity::new(worktree_path),
-                worktree_path: worktree_path.to_string(),
-                provider: config.provider,
-                model: config.model,
-                permission: config.permission,
-                workflow_execution_id: workflow_execution_id.to_string(),
-                node_execution_id: node_execution_id.to_string(),
-                initial_instruction: initial_instruction.to_string(),
-                rows: 24,
-                cols: 80,
-                caller_request_id: format!("workflow-node-launch-{node_execution_id}"),
-            })
+            .prepare_workflow_node(workflow_launch_request(
+                workspace_worktree_path,
+                worktree_path,
+                config,
+                workflow_execution_id,
+                node_execution_id,
+                initial_instruction,
+            ))
             .await
             .map_err(|error| {
                 WorkflowRuntimeError::AgentSession(format!(
@@ -286,6 +306,37 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
 mod tests {
     use super::*;
     use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
+
+    #[test]
+    fn test_session起動要求_workspaceと隔離cwdをそれぞれの項目に写す() {
+        // Given
+        let config = WorkflowSessionLaunchConfig {
+            provider: ProviderKind::Codex,
+            model: Some("model".into()),
+            permission: Some(crate::domain::workflow::SessionPermission::Auto),
+        };
+        // When
+        let request = workflow_launch_request(
+            "/repo-worktrees/development",
+            "/repo-worktrees/.releash-isolated/node-a1",
+            config.clone(),
+            "execution",
+            "node",
+            "implement",
+        );
+        // Then
+        assert_eq!(request.workspace.as_str(), "/repo-worktrees/development");
+        assert_eq!(
+            request.worktree_path,
+            "/repo-worktrees/.releash-isolated/node-a1"
+        );
+        assert_eq!(request.provider, config.provider);
+        assert_eq!(request.model, config.model);
+        assert_eq!(request.permission, config.permission);
+        assert_eq!(request.workflow_execution_id, "execution");
+        assert_eq!(request.node_execution_id, "node");
+        assert_eq!(request.initial_instruction, "implement");
+    }
 
     #[test]
     fn test_workflow_agent_session_activation_terminal_spawn分類をcontext付きで保持する() {

@@ -113,7 +113,7 @@ export interface NodeDefinition {
 	artifact?: string;
 	input?: InputParam[];
 	completion?: NodeCompletion;
-	worktree?: string;
+	worktree?: "shared" | "isolated";
 }
 
 export interface WorkflowDefinition {
@@ -146,6 +146,7 @@ export interface NodeExecutionFailure {
 }
 
 export interface NodeExecution {
+	worktree?: { branch: string; path: string } | null;
 	recoveryReason?: string;
 	id: string;
 	executionId: string;

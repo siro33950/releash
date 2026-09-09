@@ -106,6 +106,7 @@ mod tests {
         execution_id: Option<&str>,
     ) -> WorkspaceTreeNode {
         WorkspaceTreeNode {
+            worktree: None,
             id: id.to_string(),
             parent_id: parent_id.map(str::to_string),
             sibling_order,
@@ -134,8 +135,6 @@ mod tests {
             can_stop: false,
             can_resume: false,
             resume_eligible: false,
-            recovery_owner_reason: None,
-            resume_unavailable_reason: None,
             can_abort: false,
             can_archive: false,
             display_command: None,

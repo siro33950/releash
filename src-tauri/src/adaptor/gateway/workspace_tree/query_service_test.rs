@@ -802,6 +802,7 @@ fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのtitle�
 
 fn node() -> WorkspaceTreeNode {
     WorkspaceTreeNode {
+        worktree: None,
         id: "node".to_string(),
         parent_id: None,
         sibling_order: 0,
@@ -829,8 +830,6 @@ fn node() -> WorkspaceTreeNode {
         can_stop: false,
         can_resume: false,
         resume_eligible: false,
-        recovery_owner_reason: None,
-        resume_unavailable_reason: None,
         can_abort: false,
         can_archive: false,
         display_command: None,
@@ -889,6 +888,7 @@ fn open_session(id: &str) -> AgentSessionItemDto {
         id: id.to_string(),
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
+        workspace_worktree_path: "/repo".to_string(),
         provider: AgentSessionProviderDto::Codex,
         tree_location: crate::usecase::agent_session::AgentSessionTreeLocationDto {
             tree_id: id.to_string(),
@@ -1362,84 +1362,6 @@ fn test_workspaceツリー契約_can_renameとunboundをdomain_nodeからその�
 }
 
 #[test]
-fn test_workspaceツリー契約_recovery_fenceありでも操作capabilityとresume不能理由を維持する() {
-    // Given
-    let execution_id = "workflow-execution";
-    let owner = tree_owner(execution_id);
-    let mut sequence = child_node(
-        "sequence",
-        execution_id,
-        execution_id,
-        WorkspaceNodeKind::Sequence,
-        "main",
-    );
-    sequence.status = WorkspaceNodeStatus::Completed;
-    let mut approval = child_node(
-        "approval",
-        "sequence",
-        execution_id,
-        WorkspaceNodeKind::WorkflowSession,
-        "approval",
-    );
-    approval.status = WorkspaceNodeStatus::Waiting;
-    approval.can_approve = true;
-    let mut failed = child_node(
-        "failed",
-        "sequence",
-        execution_id,
-        WorkspaceNodeKind::WorkflowCommand,
-        "failed",
-    );
-    failed.sibling_order = 1;
-    failed.status = WorkspaceNodeStatus::Failed;
-    failed.can_retry = true;
-    let mut running = child_node(
-        "running",
-        "sequence",
-        execution_id,
-        WorkspaceNodeKind::WorkflowCommand,
-        "running",
-    );
-    running.sibling_order = 2;
-    let mut fenced_paused = child_node(
-        "fenced-paused",
-        "sequence",
-        execution_id,
-        WorkspaceNodeKind::WorkflowSession,
-        "fenced-paused",
-    );
-    fenced_paused.sibling_order = 3;
-    fenced_paused.status = WorkspaceNodeStatus::Paused;
-    fenced_paused.recovery_owner_reason = Some("recovery fence".to_string());
-    let tree = WorkspaceTree::restore(
-        "/repo",
-        vec![owner, sequence, approval, failed, running, fenced_paused],
-    )
-    .unwrap();
-
-    // When
-    let json = serde_json::to_value(project_tree(
-        &tree,
-        &HashSet::new(),
-        &HashSet::from([execution_id.to_string()]),
-        &[],
-    ))
-    .unwrap();
-
-    // Then
-    assert_eq!(json[0]["workflowCapabilities"]["canStop"], true);
-    assert_eq!(json[0]["workflowCapabilities"]["canResume"], false);
-    assert_eq!(
-        json[0]["workflowCapabilities"]["resumeUnavailableReason"],
-        "recovery fence"
-    );
-    assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
-    assert_eq!(json[0]["workflowCapabilities"]["canArchive"], false);
-    assert_eq!(json[0]["children"][0]["capabilities"]["canApprove"], true);
-    assert_eq!(json[0]["children"][1]["capabilities"]["canRetry"], true);
-}
-
-#[test]
 fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由を維持する() {
     // Given
     let execution_id = "paused-workflow-execution";
@@ -1469,7 +1391,9 @@ fn test_workspaceツリー契約_pausedでもresume可否とresume不能理由�
     assert_eq!(json[0]["status"], "idle");
     assert_eq!(json[0]["workflowCapabilities"]["canStop"], false);
     assert_eq!(json[0]["workflowCapabilities"]["canResume"], true);
-    assert!(json[0]["workflowCapabilities"]["resumeUnavailableReason"].is_null());
+    assert!(json[0]["workflowCapabilities"]
+        .get("resumeUnavailableReason")
+        .is_none());
 }
 
 #[test]
@@ -1625,6 +1549,72 @@ fn test_workspace読取_未対応の親または自身の定義があってもco
                 assert!(!command_detail.capabilities.can_retry);
                 assert!(command_detail.recovery_reason.is_some());
             }
+        }
+    }
+}
+
+#[test]
+fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを公開する() {
+    // Given
+    let expected = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
+    for status in [
+        WorkspaceNodeStatus::Running,
+        WorkspaceNodeStatus::Failed,
+        WorkspaceNodeStatus::Aborted,
+    ] {
+        let mut node = child_node(
+            "isolated",
+            "execution",
+            "execution",
+            WorkspaceNodeKind::WorkflowSession,
+            "work",
+        );
+        node.status = status;
+        node.worktree = Some(expected.clone());
+        // When
+        let detail = serde_json::to_value(node_detail(node)).unwrap();
+        // Then
+        assert_eq!(detail["worktree"]["branch"], expected.branch);
+        assert_eq!(detail["worktree"]["path"], expected.path);
+        assert_eq!(detail["status"], status.as_public_str());
+        assert_eq!(detail["hasArtifact"], false);
+        assert_eq!(detail["recoveryReason"], serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn test_隔離合成子の表示_空のchildrenや終端でもそのattemptのbranchとpathを返す() {
+    for kind in [WorkspaceNodeKind::Sequence, WorkspaceNodeKind::Fanout] {
+        for status in [
+            WorkspaceNodeStatus::Running,
+            WorkspaceNodeStatus::Completed,
+            WorkspaceNodeStatus::Failed,
+            WorkspaceNodeStatus::Aborted,
+        ] {
+            // Given
+            let owner = tree_owner("tree");
+            let mut composite = child_node("composite", "tree", "tree", kind, "main");
+            let expected = crate::domain::workflow::IsolatedWorktree::for_attempt(
+                "/repo",
+                "composite-execution",
+                2,
+            );
+            composite.attempt = Some(2);
+            composite.status = status;
+            composite.worktree = Some(expected.clone());
+            let tree = WorkspaceTree::restore("/repo", vec![owner, composite]).unwrap();
+            // When
+            let items = serde_json::to_value(project_tree(
+                &tree,
+                &HashSet::new(),
+                &HashSet::from(["tree".into()]),
+                &[],
+            ))
+            .unwrap();
+            // Then
+            assert_eq!(items[0]["worktree"]["branch"], expected.branch);
+            assert_eq!(items[0]["worktree"]["path"], expected.path);
+            assert!(items[0]["children"].as_array().unwrap().is_empty());
         }
     }
 }

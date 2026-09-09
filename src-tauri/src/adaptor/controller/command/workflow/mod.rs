@@ -1662,6 +1662,7 @@ mod tests {
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &local_event_store,
             &[WorkflowEvent::ExecutionStarted {
+                repository_root: None,
                 execution_id: execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 worktree_path: unauthorized_wt.to_string(),
@@ -1723,6 +1724,7 @@ mod tests {
             &local_event_store,
             &[
                 WorkflowEvent::ExecutionStarted {
+                    repository_root: None,
                     execution_id: execution_id.clone(),
                     workflow_name: "wf".to_string(),
                     worktree_path: worktree_path.clone(),
@@ -1780,6 +1782,7 @@ mod tests {
             &local_event_store,
             &[
                 WorkflowEvent::ExecutionStarted {
+                    repository_root: None,
                     execution_id: execution_id.clone(),
                     workflow_name: "adapter-boundary".to_string(),
                     worktree_path: worktree_path.clone(),
@@ -1867,6 +1870,7 @@ mod tests {
             &local_event_store,
             &[
                 WorkflowEvent::ExecutionStarted {
+                    repository_root: None,
                     execution_id: execution_id.clone(),
                     workflow_name: "wf".to_string(),
                     worktree_path: worktree_path.clone(),

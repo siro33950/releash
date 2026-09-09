@@ -70,6 +70,10 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@class ReleashSchema
 ---@class ReleashFacet
 ---@class ReleashProvider
+---@class ReleashWorktree
+---@class ReleashWorktreeModule
+---@field shared ReleashWorktree
+---@field isolated ReleashWorktree
 ---@class ReleashCompletionRequirement
 ---@class ReleashCompletion
 ---@field require ReleashCompletionRequirement
@@ -84,6 +88,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
+---@field worktree? ReleashWorktree
 
 ---@class ReleashSessionFacets
 ---@field policy? ReleashFacet
@@ -99,6 +104,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
+---@field worktree? ReleashWorktree
 
 ---@class ReleashChildOptions
 ---@field node ReleashNode
@@ -113,6 +119,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field artifact? ReleashSchema
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
+---@field worktree? ReleashWorktree
 
 ---@class ReleashSequenceOptions
 ---@field name? string
@@ -120,6 +127,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field children ReleashChild[]
 ---@field input? ReleashInput[]
 ---@field completion? ReleashCompletion
+---@field worktree? ReleashWorktree
 
 ---@class ReleashWhenOptions
 ---@field on ReleashSource|ReleashPredicate
@@ -185,6 +193,7 @@ const RELEASH_STUB: &str = r#"---@meta
 ---@field request ReleashSource
 ---@field items ReleashSource
 ---@field completion ReleashCompletionModule
+---@field worktree ReleashWorktreeModule
 ---@field provider ReleashProviderModule
 ---@field schema ReleashSchemaModule
 ---@field workflow fun(options: ReleashWorkflowOptions): ReleashWorkflow

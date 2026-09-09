@@ -36,7 +36,6 @@ const mocks = vi.hoisted(() => ({
 	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
 	selectedNodeIds: new Map<string, string | null>(),
 	worktreeBranches: [] as WorktreeBranch[],
-	cleanupCandidates: [] as WorktreeBranch[],
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -109,7 +108,6 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 vi.mock("@/hooks/useWorktreeList", () => ({
 	useWorktreeList: () => ({
 		branches: mocks.worktreeBranches,
-		cleanupCandidates: mocks.cleanupCandidates,
 		loading: false,
 		refresh: mocks.refreshWorktrees,
 	}),
@@ -253,7 +251,6 @@ function makeBranch(): WorktreeBranch {
 		behind: 0,
 		has_upstream: false,
 		base_ahead: 0,
-		management_kind: "working_area",
 	};
 }
 
@@ -369,7 +366,6 @@ beforeEach(() => {
 	mocks.worktreeBranches = [makeBranch()];
 	mocks.treeStateOverrides.clear();
 	mocks.selectedNodeIds.clear();
-	mocks.cleanupCandidates = [];
 	mocks.treeStateOverrides.set("/repo/wt", { nodes: recursiveTree });
 	mocks.invoke.mockResolvedValue(null);
 	mocks.refreshTree.mockResolvedValue(undefined);
@@ -382,32 +378,10 @@ beforeEach(() => {
 });
 
 describe("WorkspaceList", () => {
-	it("掃除候補を操作なしの別sectionに表示する", () => {
+	it("通常のworktree一覧に掃除候補sectionを表示しない", () => {
 		mocks.worktreeBranches = [makeBranch()];
-		mocks.cleanupCandidates = [
-			{
-				...makeBranch(),
-				name: "released",
-				worktree_path: "/repo/released",
-				management_kind: "cleanup_candidate",
-			},
-			{
-				...makeBranch(),
-				name: "orphan",
-				worktree_path: "/repo/orphan",
-				management_kind: "untracked_cleanup_candidate",
-			},
-		];
-
 		renderWorkspaceList();
-
-		const section = screen.getByLabelText("掃除候補");
-		expect(within(section).getByText("released")).toBeInTheDocument();
-		expect(within(section).getByText("orphan")).toBeInTheDocument();
-		expect(within(section).getByText("/repo/released")).toBeInTheDocument();
-		expect(within(section).getByText("/repo/orphan")).toBeInTheDocument();
-		expect(within(section).getByText("台帳外・掃除候補")).toBeInTheDocument();
-		expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("掃除候補")).not.toBeInTheDocument();
 	});
 
 	it("renders Waypoints for top-level and nested Sequence rows while keeping GitFork for Fanout", () => {
@@ -532,7 +506,8 @@ describe("WorkspaceList", () => {
 				{
 					id: "provider-agent-archived",
 					workspaceIdentity: "/repo/wt",
-					worktreePath: "/repo/wt",
+					workspaceWorktreePath: "/repo/wt",
+					worktreePath: "/repo-worktrees/.releash-isolated/restored-a1",
 					provider: "claude",
 					treeLocation: {
 						treeId: "provider-agent-archived",
@@ -562,6 +537,8 @@ describe("WorkspaceList", () => {
 			return Promise.resolve(null);
 		});
 		const user = userEvent.setup();
+		const changed = vi.fn();
+		window.addEventListener("agent-session-refresh", changed);
 		const { onSelectWorktree } = renderWorkspaceList();
 
 		expect(
@@ -603,12 +580,17 @@ describe("WorkspaceList", () => {
 					initialSessionAttachment: {
 						agentSessionId: "provider-agent-archived",
 						workspaceIdentity: "/repo/wt",
-						worktreePath: "/repo/wt",
+						worktreePath: "/repo-worktrees/.releash-isolated/restored-a1",
+						workspaceWorktreePath: "/repo/wt",
 						provider: "claude",
 					},
 				},
 			);
 		});
+		expect(changed).toHaveBeenCalledWith(
+			expect.objectContaining({ detail: { worktreePath: "/repo/wt" } }),
+		);
+		window.removeEventListener("agent-session-refresh", changed);
 	});
 
 	it("Standalone Session Nodeの4分類は色とpulseで表現する", () => {
@@ -1551,6 +1533,7 @@ describe("WorkspaceList", () => {
 						agentSessionId: "agent-session-1",
 						workspaceIdentity: "/repo/wt",
 						worktreePath: "/repo/wt",
+						workspaceWorktreePath: "/repo/wt",
 						provider: "codex",
 					},
 				},
@@ -1882,6 +1865,7 @@ describe("WorkspaceList", () => {
 					agentSessionId: "agent-session-2",
 					workspaceIdentity: "/repo/wt",
 					worktreePath: "/repo/wt",
+					workspaceWorktreePath: "/repo/wt",
 					provider: "codex",
 				},
 			},
@@ -2046,3 +2030,38 @@ describe("WorkspaceList", () => {
 		);
 	});
 });
+
+it.each(["sequence", "fanout"] as const)(
+	"隔離%sはchildrenが空でもbranchとpathを表示し展開を切り替えられる",
+	async (kind) => {
+		const worktree = {
+			branch: "releash/isolated/composite-a2",
+			path: "/repo-worktrees/.releash-isolated/composite-a2",
+		};
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				{
+					kind,
+					id: "composite",
+					title: "Isolated composite",
+					status: "idle",
+					children: [],
+					worktree,
+					updatedAt: 1,
+				},
+			],
+		});
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		expect(screen.getByText(worktree.branch)).toBeVisible();
+		expect(screen.getByText(worktree.path)).toBeVisible();
+		await user.click(
+			screen.getByRole("button", { name: "Isolated composite" }),
+		);
+		expect(screen.queryByText(worktree.path)).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: "Isolated composite" }),
+		);
+		expect(screen.getByText(worktree.path)).toBeVisible();
+	},
+);

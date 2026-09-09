@@ -86,6 +86,8 @@ pub(crate) struct WorkspaceNodeCapabilitiesDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceSequenceDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<NodeWorktreeDto>,
     pub id: String,
     pub title: String,
     pub status: String,
@@ -100,8 +102,6 @@ pub(crate) struct WorkspaceSequenceDto {
 pub(crate) struct WorkspaceWorkflowCapabilitiesDto {
     pub can_stop: bool,
     pub can_resume: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_unavailable_reason: Option<String>,
     pub can_abort: bool,
     pub can_archive: bool,
 }
@@ -109,6 +109,8 @@ pub(crate) struct WorkspaceWorkflowCapabilitiesDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceFanoutDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<NodeWorktreeDto>,
     pub id: String,
     pub title: String,
     pub status: String,
@@ -118,9 +120,17 @@ pub(crate) struct WorkspaceFanoutDto {
     pub updated_at: f64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NodeWorktreeDto {
+    pub branch: String,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceNodeDetailDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<NodeWorktreeDto>,
     pub id: String,
     pub title: String,
     pub status: String,
@@ -396,17 +406,18 @@ mod tests {
     fn nested_snapshot() -> WorkspaceTreeSnapshotDto {
         WorkspaceTreeSnapshotDto {
             nodes: vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
+                worktree: None,
                 id: "workflow".to_string(),
                 title: "main".to_string(),
                 status: "active".to_string(),
                 workflow_capabilities: Some(WorkspaceWorkflowCapabilitiesDto {
                     can_stop: true,
                     can_resume: false,
-                    resume_unavailable_reason: None,
                     can_abort: true,
                     can_archive: false,
                 }),
                 children: vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
+                    worktree: None,
                     id: "fanout".to_string(),
                     title: "Fanout".to_string(),
                     status: "active".to_string(),

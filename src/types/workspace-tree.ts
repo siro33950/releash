@@ -47,7 +47,6 @@ export interface WorkspaceWorkflowCapabilities {
 	canResume: boolean;
 	canAbort: boolean;
 	canArchive: boolean;
-	resumeUnavailableReason?: string | null;
 }
 
 export interface WorkspaceSessionCapabilities {
@@ -72,6 +71,7 @@ export interface WorkspaceNode {
 }
 
 export interface WorkspaceSequence {
+	worktree?: { branch: string; path: string } | null;
 	kind: "sequence";
 	id: string;
 	title: string;
@@ -82,6 +82,7 @@ export interface WorkspaceSequence {
 }
 
 export interface WorkspaceFanout {
+	worktree?: { branch: string; path: string } | null;
 	kind: "fanout";
 	id: string;
 	title: string;
@@ -134,6 +135,7 @@ export type WorkspaceNodeContent =
 	| WorkspaceCommandNodeContent;
 
 export interface WorkspaceNodeDetail {
+	worktree?: { branch: string; path: string } | null;
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;

@@ -54,6 +54,7 @@ fn definition() -> WorkflowDefinition {
 
 fn started_event() -> WorkflowEvent {
     WorkflowEvent::ExecutionStarted {
+        repository_root: None,
         execution_id: TREE.to_string(),
         workflow_name: "wf".to_string(),
         worktree_path: "/repo".to_string(),
@@ -563,14 +564,14 @@ mod mapping_tests {
                 token_usage: None,
                 timestamp: 2.0,
             },
-            WorkflowEvent::NodeFailed {
+            WorkflowEvent::NodeProcessExitObserved {
                 execution_id: TREE.to_string(),
                 node_execution_id: "c-exec".to_string(),
-                node_name: "run".to_string(),
-                attempt: 1,
-                reason: "exit 1".to_string(),
-                failure_kind: crate::domain::workflow::NodeExecutionFailureKind::ValidationFailure,
-                retry_count: None,
+                exit_code: Some(1),
+                failure_reason: Some("exit 1".to_string()),
+                failure_kind: Some(
+                    crate::domain::workflow::NodeExecutionFailureKind::ValidationFailure,
+                ),
                 timestamp: 3.0,
             },
         ];
@@ -583,6 +584,7 @@ mod mapping_tests {
         assert_eq!(rows[1].row.event_type, "process_exited");
         assert!(rows[1].row.detail.contains("\"exitCode\":0"));
         assert_eq!(rows[2].row.event_type, "process_exited");
+        assert!(rows[2].row.detail.contains("\"exitCode\":1"));
         assert!(rows[2].row.detail.contains("validation_failure"));
     }
 
@@ -608,6 +610,40 @@ mod mapping_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].row.event_type, "runtime_failure_observed");
         assert!(rows[1].row.detail.contains("activation failed"));
+    }
+
+    #[test]
+    fn test_写像_commandの起動失敗はprocess喪失ではなくruntime失敗を記録する() {
+        // Given
+        let events = vec![
+            node_started("c-exec", "run", NodeKindName::Command, None, 1.0),
+            WorkflowEvent::NodeFailed {
+                execution_id: TREE.to_string(),
+                node_execution_id: "c-exec".to_string(),
+                node_name: "run".to_string(),
+                attempt: 1,
+                reason: "worktree creation failed".to_string(),
+                failure_kind:
+                    crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+                retry_count: None,
+                timestamp: 2.0,
+            },
+        ];
+
+        // When
+        let rows = fact_rows_for_events(&events, no_lookup, no_lookup).unwrap();
+
+        // Then
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].row.event_type, "runtime_failure_observed");
+        assert_eq!(
+            NodeFact::decode(&rows[1].row.event_type, &rows[1].row.detail).unwrap(),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "worktree creation failed".to_string(),
+                failure_kind:
+                    crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+            })
+        );
     }
 
     #[test]
@@ -716,15 +752,11 @@ mod mapping_tests {
 mod reconciliation_tests {
     use super::*;
     use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
-    use crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository;
     use crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository;
     use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
     use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
-    use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
-    use crate::domain::workflow::{
-        IsolatedWorktreeLedgerRepository, RepositoryWorktreeInventory, RuntimeExecutionState,
-    };
+    use crate::domain::workflow::RuntimeExecutionState;
     use crate::domain::workspace_tree::{
         WorkspaceIdentity, WorkspaceNodeStatusClassification, WorkspaceTreeRepository,
     };
@@ -782,11 +814,11 @@ mod reconciliation_tests {
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
 
         let mut new_id = test_id_source();
-        let reconciliation = reconcile_tree_pass(&store, session_id, 10.0, &mut new_id, None)
+        let reconciliation = reconcile_tree_pass(&store, session_id, 10.0, &mut new_id)
             .unwrap()
             .unwrap();
 
-        assert!(reconciliation.leaves.is_empty());
+        assert!(reconciliation.starts.is_empty());
         assert_eq!(
             reconciliation
                 .folded
@@ -846,13 +878,13 @@ mod reconciliation_tests {
 
         // When: reconciliation パスを実行する
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
             .unwrap()
             .unwrap();
 
         // Then: 次の子（run command）の started が追記され、起動対象として返る
-        assert_eq!(outcome.leaves.len(), 1);
-        assert_eq!(outcome.leaves[0].node_name, "run");
+        assert_eq!(outcome.starts.len(), 1);
+        assert_eq!(outcome.starts[0].node_name(), "run");
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.len(), before + 1);
         let last = records.last().unwrap();
@@ -862,10 +894,10 @@ mod reconciliation_tests {
         // Then: started だけが永続化された kill 点では同じ leaf を再び起動対象に返し、
         // started を重複して追記しない。
         let mut new_id = test_id_source();
-        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
+        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
             .unwrap()
             .unwrap();
-        assert_eq!(second.leaves, outcome.leaves);
+        assert_eq!(second.starts, outcome.starts);
         let started_rows = |records: &[crate::domain::workflow::NodeFactRecord]| {
             records
                 .iter()
@@ -881,17 +913,17 @@ mod reconciliation_tests {
             &store,
             &[WorkflowEvent::CommandSpawned {
                 execution_id: TREE.to_string(),
-                node_execution_id: outcome.leaves[0].node_execution_id.clone(),
+                node_execution_id: outcome.starts[0].node_execution_id().to_string(),
                 display_command: "true".to_string(),
                 timestamp: 11.5,
             }],
         )
         .unwrap();
         let mut new_id = test_id_source();
-        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id, None)
+        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
             .unwrap()
             .unwrap();
-        assert!(third.leaves.is_empty());
+        assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
             after_third.last().unwrap().fact.event_type(),
@@ -901,7 +933,7 @@ mod reconciliation_tests {
         // 喪失記録後は安定点に達する。
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id, None)
+        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
             .unwrap()
             .unwrap();
         assert_eq!(row_count(&store), count_after_third);
@@ -921,13 +953,13 @@ mod reconciliation_tests {
         .unwrap();
 
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
             .unwrap()
             .unwrap();
 
         // Then: entry の子 a が開始される
-        assert_eq!(outcome.leaves.len(), 1);
-        assert_eq!(outcome.leaves[0].node_name, "a");
+        assert_eq!(outcome.starts.len(), 1);
+        assert_eq!(outcome.starts[0].node_name(), "a");
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.last().unwrap().meta.node_name, "a");
 
@@ -940,10 +972,10 @@ mod reconciliation_tests {
             .filter(|record| record.fact.event_type() == "started")
             .count();
         let mut new_id = test_id_source();
-        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
+        let second = reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
             .unwrap()
             .unwrap();
-        assert_eq!(second.leaves, outcome.leaves);
+        assert_eq!(second.starts, outcome.starts);
         let after_second = read_tree_records(&store, TREE).unwrap();
         assert_eq!(after_second.len(), expected_record_count);
         assert_eq!(
@@ -958,17 +990,17 @@ mod reconciliation_tests {
             &store,
             &[WorkflowEvent::SessionAttached {
                 execution_id: TREE.to_string(),
-                node_execution_id: outcome.leaves[0].node_execution_id.clone(),
+                node_execution_id: outcome.starts[0].node_execution_id().to_string(),
                 session_id: "session-1".to_string(),
                 timestamp: 11.5,
             }],
         )
         .unwrap();
         let mut new_id = test_id_source();
-        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id, None)
+        let third = reconcile_tree_pass(&store, TREE, 12.0, &mut new_id)
             .unwrap()
             .unwrap();
-        assert!(third.leaves.is_empty());
+        assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).unwrap();
         assert_eq!(
             after_third.last().unwrap().fact.event_type(),
@@ -977,7 +1009,7 @@ mod reconciliation_tests {
 
         let count_after_third = after_third.len();
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id, None)
+        reconcile_tree_pass(&store, TREE, 13.0, &mut new_id)
             .unwrap()
             .unwrap();
         assert_eq!(row_count(&store), count_after_third);
@@ -1011,12 +1043,12 @@ mod reconciliation_tests {
         .unwrap();
 
         let mut new_id = test_id_source();
-        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id, None)
+        let outcome = reconcile_tree_pass(&store, TREE, 10.0, &mut new_id)
             .unwrap()
             .unwrap();
 
         // Then: process_exited（喪失）が追記され、node は Failed・木は Running
-        assert!(outcome.leaves.is_empty());
+        assert!(outcome.starts.is_empty());
         let records = read_tree_records(&store, TREE).unwrap();
         assert_eq!(records.last().unwrap().fact.event_type(), "process_exited");
         assert_eq!(
@@ -1035,101 +1067,9 @@ mod reconciliation_tests {
         // 冪等: Failed は喪失対象でないため2周目は何も追記しない
         let count = row_count(&store);
         let mut new_id = test_id_source();
-        reconcile_tree_pass(&store, TREE, 11.0, &mut new_id, None)
+        reconcile_tree_pass(&store, TREE, 11.0, &mut new_id)
             .unwrap()
             .unwrap();
-        assert_eq!(row_count(&store), count);
-    }
-
-    #[test]
-    fn test_隔離worktree喪失を同じpassで一度だけ記録しleafを再起動しない() {
-        let (_root, store) = open_store();
-        append_facts_for_events(
-            &store,
-            &[
-                started_event(),
-                node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
-                node_started(
-                    "a-exec",
-                    "a",
-                    NodeKindName::Session,
-                    Some(ExecutionParentRef::sequence_child("main-exec")),
-                    1.0,
-                ),
-                WorkflowEvent::SessionAttached {
-                    execution_id: TREE.to_string(),
-                    node_execution_id: "a-exec".to_string(),
-                    session_id: "session-1".to_string(),
-                    timestamp: 2.0,
-                },
-            ],
-        )
-        .unwrap();
-        let meta = NodeFactMeta {
-            tree_id: TREE.to_string(),
-            node_execution_id: "a-exec".to_string(),
-            parent_id: Some("main-exec".to_string()),
-            node_name: "a".to_string(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-        };
-        append_single_fact(
-            &store,
-            &meta,
-            &NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
-                repository_root: "/repo".to_string(),
-                worktree_path: "/repo-worktrees/.releash-isolated/a-exec-a1".to_string(),
-                branch: "releash/isolated/a-exec-a1".to_string(),
-            }),
-            3,
-        )
-        .unwrap();
-        let ledger = NodeEventIsolatedWorktreeLedgerRepository::new(store.clone());
-        ledger.snapshot().unwrap();
-        let inventory = [RepositoryWorktreeInventory::new("/repo", Vec::new())];
-
-        let mut new_id = test_id_source();
-        let first = reconcile_tree_pass(
-            &store,
-            TREE,
-            10.0,
-            &mut new_id,
-            Some(WorktreeReconciliationPorts {
-                ledger: &ledger,
-                inventory: &inventory,
-            }),
-        )
-        .unwrap()
-        .unwrap();
-        assert!(first.leaves.is_empty());
-        assert_eq!(
-            first
-                .folded
-                .isolated_worktrees
-                .recovery_cause_for_node(TREE, "a-exec")
-                .unwrap()
-                .to_string(),
-            "isolated worktree is missing: /repo-worktrees/.releash-isolated/a-exec-a1"
-        );
-        assert!(!read_tree_records(&store, TREE)
-            .unwrap()
-            .iter()
-            .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
-
-        let count = row_count(&store);
-        let mut new_id = test_id_source();
-        reconcile_tree_pass(
-            &store,
-            TREE,
-            11.0,
-            &mut new_id,
-            Some(WorktreeReconciliationPorts {
-                ledger: &ledger,
-                inventory: &inventory,
-            }),
-        )
-        .unwrap()
-        .unwrap();
         assert_eq!(row_count(&store), count);
     }
 }
@@ -1310,5 +1250,169 @@ mod round_trip_tests {
                     | "restore_requested"
             ));
         }
+    }
+}
+
+#[tokio::test]
+async fn test_旧隔離事実の読取_状態導出と再起動復元からだけ除外する() {
+    use crate::domain::local_event::{
+        CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryResult,
+        LocalEventTransactionRepository,
+    };
+    use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
+    // Given
+    let directory = tempfile::TempDir::new().unwrap();
+    let config = LocalEventStoreConfig::production(directory.path().to_path_buf());
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    append_facts_for_events(
+        &store,
+        &[
+            started_event(),
+            node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
+            node_started(
+                "a-exec",
+                "a",
+                NodeKindName::Session,
+                Some(ExecutionParentRef::sequence_child("main-exec")),
+                2.0,
+            ),
+        ],
+    )
+    .unwrap();
+    append_single_fact(
+        &store,
+        &NodeFactMeta {
+            tree_id: TREE.into(),
+            node_execution_id: "a-exec".into(),
+            parent_id: Some("main-exec".into()),
+            node_name: "a".into(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+        },
+        &NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: "legacy-session".into(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: true,
+        }),
+        2000,
+    )
+    .unwrap();
+    let original = read_tree_records(&store, TREE).unwrap();
+    let rows = [
+        (
+            "isolated_worktree_created",
+            serde_json::json!({
+                "repositoryRoot": "/repo", "worktreePath": "/old-isolated", "branch": "old-branch"
+            }),
+        ),
+        ("isolated_worktree_released", serde_json::json!({})),
+        ("isolated_worktree_lost", serde_json::json!({})),
+    ]
+    .into_iter()
+    .map(|(event_type, detail)| PendingFactRow {
+        row: NewNodeEventRow {
+            tree_id: TREE.into(),
+            node_execution_id: "a-exec".into(),
+            parent_id: Some("main-exec".into()),
+            node_name: "a".into(),
+            kind: "session".into(),
+            attempt: 1,
+            event_type: event_type.into(),
+            session_id: None,
+            detail: detail.to_string(),
+        },
+        timestamp_ms: 3000,
+    })
+    .collect();
+    append_pending_rows_blocking(&store, rows).unwrap();
+    drop(store);
+
+    // When
+    let store = LocalEventStore::open(config).unwrap();
+    let readonly =
+        crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
+            directory.path(),
+        )
+        .unwrap();
+    for backend in [
+        FactLogReadBackend::Live(store.clone()),
+        FactLogReadBackend::ReadOnly(readonly),
+    ] {
+        let records = read_tree_records_from(&backend, TREE).unwrap();
+        // Then
+        assert_eq!(records, original);
+        let tree = fold_tree_from(&backend, TREE).unwrap().unwrap();
+        let node = tree.aggregate.node_execution("a-exec").unwrap();
+        assert!(node.worktree.is_none());
+        assert!(node.recovery_reason.is_none());
+        assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Running);
+    }
+    use crate::domain::agent_session::repository::AgentSessionRepository;
+    let session =
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone())
+            .find("legacy-session")
+            .await
+            .unwrap();
+    assert!(session.is_some());
+    let status = super::super::execution_projection_repository::WorkflowExecutionProjectionLogRepository::new(store.clone())
+        .get_execution(&crate::domain::workflow::WorkflowExecutionId::new(TREE).unwrap()).unwrap().unwrap();
+    assert_eq!(
+        status.status,
+        crate::domain::workflow::ExecutionStatus::Running
+    );
+    let owners = store
+        .query(LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit: 10 })
+        .await
+        .unwrap();
+    assert!(
+        matches!(owners, LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(owners)
+        if owners == vec![CanonicalRuntimeOwnerView::ActiveWorkflow { worktree_path: "/repo".into() }])
+    );
+    let restored = reconcile_tree_pass(&store, TREE, 5.0, &mut || "next-exec".into())
+        .unwrap()
+        .unwrap();
+    assert!(restored
+        .folded
+        .aggregate
+        .node_execution("a-exec")
+        .unwrap()
+        .recovery_reason
+        .is_none());
+    let rows = FactLogReadBackend::Live(store)
+        .run_indexed(|connection| {
+            node_events::read_tree(connection, TREE)
+                .map_err(|_| LocalEventQueryError::InvalidRequest)
+        })
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.event_type.starts_with("isolated_worktree_"))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn test_旧隔離事実の読取_破損payloadと未知の事実を拒否する() {
+    // Given
+    for (event_type, detail) in [
+        ("isolated_worktree_created", "{}"),
+        (
+            "isolated_worktree_created",
+            r#"{"repositoryRoot":1,"worktreePath":"/tmp","branch":"b"}"#,
+        ),
+        ("isolated_worktree_released", "null"),
+        ("isolated_worktree_lost", "[]"),
+        ("isolated_worktree_unknown", "{}"),
+    ] {
+        // When / Then
+        assert!(
+            decode_stored_fact(event_type, detail).is_err(),
+            "{event_type}: {detail}"
+        );
     }
 }

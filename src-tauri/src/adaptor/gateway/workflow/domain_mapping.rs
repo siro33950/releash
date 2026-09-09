@@ -126,7 +126,7 @@ pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         completion: node.completion,
-        worktree: node.worktree.clone(),
+        worktree: node.worktree,
     }
 }
 

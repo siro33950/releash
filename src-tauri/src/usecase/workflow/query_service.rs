@@ -128,6 +128,31 @@ impl WorkflowQueryService {
             .unwrap_or(WorkflowGetOutputResult::NotSubmitted)
     }
 
+    pub(super) fn get_node_output_from_events(
+        &self,
+        execution_id: &str,
+        node_name: &str,
+        events: &[WorkflowEventDraft],
+    ) -> Result<WorkflowGetOutputResult, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        Ok(
+            match self.execution_projection.get_node_artifact_from_events(
+                &execution_id,
+                node_name,
+                events,
+            )? {
+                Some(artifact) => WorkflowGetOutputResult::Submitted {
+                    contract: artifact.contract,
+                    structured_output: artifact.value,
+                    submitted_at: None,
+                    request_id: None,
+                    timestamp: artifact.produced_at,
+                },
+                None => WorkflowGetOutputResult::NotSubmitted,
+            },
+        )
+    }
+
     pub fn get_execution_state(
         &self,
         execution_id: &str,
@@ -376,6 +401,22 @@ mod tests {
     }
 
     impl WorkflowExecutionProjectionRepository for FakeExecutionProjectionRepository {
+        fn get_node_artifact_from_events(
+            &self,
+            execution_id: &WorkflowExecutionId,
+            node_name: &str,
+            _events: &[WorkflowEventDraft],
+        ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
+            Ok(self.get_execution(execution_id)?.and_then(|execution| {
+                execution
+                    .node_executions
+                    .into_iter()
+                    .rev()
+                    .find(|node| node.node_name == node_name)
+                    .and_then(|node| node.artifact)
+            }))
+        }
+
         fn get_execution(
             &self,
             execution_id: &WorkflowExecutionId,
@@ -530,6 +571,7 @@ mod tests {
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
+                worktree: None,
                 recovery_reason: None,
                 id: "ne-review-1".to_string(),
                 execution_id: execution_id.to_string(),

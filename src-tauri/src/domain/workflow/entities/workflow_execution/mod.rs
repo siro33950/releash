@@ -11,6 +11,9 @@
 mod recovery;
 pub mod scope;
 
+mod artifact_replay;
+mod worktree;
+
 use std::collections::HashMap;
 
 use crate::domain::workflow::services::{
@@ -193,6 +196,7 @@ pub struct ApprovalAttemptTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeNodeExecution {
     pub recovery_reason: Option<String>,
+    pub worktree: Option<crate::domain::workflow::IsolatedWorktree>,
     pub id: String,
     pub execution_id: String,
     pub node_name: String,
@@ -221,7 +225,7 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_retry(&self) -> bool {
-        if self.recovery_reason.is_some() {
+        if self.recovery_reason.is_some() || self.kind.is_composite_kind() {
             return false;
         }
         self.status == RuntimeNodeExecutionStatus::Failed
@@ -453,6 +457,7 @@ pub struct WorkflowExecutionRestore {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
@@ -483,6 +488,7 @@ impl Default for WorkflowExecutionRestore {
             node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults,
             worktree_path: String::new(),
+            repository_root: None,
             launched_as: ExecutionTreeLaunch::Workflow,
             created_from: ExecutionOrigin::DesktopUi,
             error_reason: None,
@@ -567,6 +573,7 @@ pub enum ProviderStopRejection {
 /// Stable rejection reasons returned by aggregate admission methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionRejection {
+    MissingRepositoryRoot,
     #[cfg(test)]
     AlreadyStopped,
     NotActive,
@@ -613,14 +620,14 @@ pub enum ReplayOutcome {
 
 /// 完了伝播の出力先。
 ///
-/// live 経路は追記イベントと起動 leaf を収集し、fold（事実からの導出）は
+/// live 経路は追記イベントと Node 起動要求を収集し、fold（事実からの導出）は
 /// 状態効果のみを適用する。導出では前進（次 leaf の起動）を行わない —
 /// 実際に起きた起動は事実列自身が started として語る。
 enum AdvanceEffects<'a> {
     Live {
         new_id: &'a mut dyn FnMut() -> String,
         events: &'a mut Vec<WorkflowEvent>,
-        leaves: &'a mut Vec<LeafStart>,
+        starts: &'a mut Vec<NodeStart>,
     },
     Derive,
 }
@@ -633,12 +640,69 @@ impl AdvanceEffects<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeafKind {
+    Session,
+    Command,
+}
+
+impl TryFrom<NodeKindName> for LeafKind {
+    type Error = crate::domain::workflow::WorkflowError;
+
+    fn try_from(kind: NodeKindName) -> Result<Self, Self::Error> {
+        match kind {
+            NodeKindName::Session => Ok(Self::Session),
+            NodeKindName::Command => Ok(Self::Command),
+            NodeKindName::Sequence | NodeKindName::Fanout => Err(Self::Error::invalid_state(
+                "composite nodes have no leaf runtime",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositePreparation {
+    pub node_execution_id: String,
+    pub node_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeStart {
+    Leaf(LeafStart),
+    PrepareComposite(CompositePreparation),
+}
+
+impl NodeStart {
+    pub fn node_execution_id(&self) -> &str {
+        match self {
+            Self::Leaf(leaf) => &leaf.node_execution_id,
+            Self::PrepareComposite(composite) => &composite.node_execution_id,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn node_name(&self) -> &str {
+        match self {
+            Self::Leaf(leaf) => &leaf.node_name,
+            Self::PrepareComposite(composite) => &composite.node_name,
+        }
+    }
+}
+
+#[cfg(test)]
+fn expect_leaf(start: &NodeStart) -> &LeafStart {
+    match start {
+        NodeStart::Leaf(leaf) => leaf,
+        NodeStart::PrepareComposite(_) => panic!("expected leaf runtime start"),
+    }
+}
+
 /// 起動すべき leaf（Session / Command）実行。束縛は起動時に確定した値。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LeafStart {
     pub node_execution_id: String,
     pub node_name: String,
-    pub kind: NodeKindName,
+    pub kind: LeafKind,
     /// 起動時に解決された入力パラメータ束縛（宣言順）。
     pub bindings: Vec<(String, serde_json::Value)>,
     /// fanout 展開の子なら、その items 要素。
@@ -649,8 +713,8 @@ pub struct LeafStart {
 pub enum ExecutionAdvanceDecision {
     /// 起動すべき runtime は無い（完了・承認待ち・失敗停止・並走子待ち）。
     Persist,
-    /// 起動すべき leaf 群（sequence の前進は 1 つ、fanout の展開は複数）。
-    StartLeaves(Vec<LeafStart>),
+    /// 合成子の準備要求と葉 runtime の起動要求。
+    StartNodes(Vec<NodeStart>),
 }
 
 /// 前進の適用結果: 起動対象と、追記すべきイベント列（発生順）。
@@ -675,11 +739,11 @@ pub enum PendingAdvance {
 }
 
 /// children エントリの on_failure 処遇の適用結果: 追記すべきイベント列と
-/// 起動すべき leaf（自動 retry の新 attempt / ignore 前進で始まる leaf）。
+/// 自動 retry / ignore 前進で必要な合成子の準備と葉 runtime の起動。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FailureTreatmentOutcome {
     pub events: Vec<WorkflowEvent>,
-    pub leaves: Vec<LeafStart>,
+    pub starts: Vec<NodeStart>,
 }
 
 /// replay 中の NodeRetryRequested → 直後の NodeStarted の対応付け。
@@ -699,6 +763,7 @@ pub struct WorkflowExecution {
     interruption_reason: Option<ExecutionInterruptionReason>,
     runtime: WorkflowExecutionView,
     pending_restart: Option<PendingRestart>,
+    pending_empty_fanout: Option<String>,
     definition_resolution: crate::domain::workflow::DefinitionResolution,
 }
 
@@ -714,6 +779,7 @@ pub struct WorkflowExecutionView {
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
+    pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
     pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
@@ -779,6 +845,7 @@ impl WorkflowExecution {
             state: restore.lifecycle.state,
             interruption_reason: restore.lifecycle.interruption_reason,
             pending_restart: None,
+            pending_empty_fanout: None,
             definition_resolution: Default::default(),
             runtime: WorkflowExecutionView {
                 id: restore.id,
@@ -786,6 +853,7 @@ impl WorkflowExecution {
                 node_history: restore.node_history,
                 workflow_defaults: restore.workflow_defaults,
                 worktree_path: restore.worktree_path,
+                repository_root: restore.repository_root,
                 launched_as: restore.launched_as,
                 created_from: restore.created_from,
                 error_reason: restore.error_reason,
@@ -882,28 +950,28 @@ impl WorkflowExecution {
     ) -> Result<AppliedAdvance, crate::domain::workflow::WorkflowError> {
         let root_name = self.runtime.workflow.entry.clone();
         let mut events = Vec::new();
-        let mut leaves = Vec::new();
+        let mut starts = Vec::new();
         self.start_node_instance(
             None,
             &root_name,
             new_id,
             timestamp,
             &mut events,
-            &mut leaves,
+            &mut starts,
         )?;
         self.runtime.updated_at = timestamp;
         Ok(AppliedAdvance {
-            decision: if leaves.is_empty() {
+            decision: if starts.is_empty() {
                 ExecutionAdvanceDecision::Persist
             } else {
-                ExecutionAdvanceDecision::StartLeaves(leaves)
+                ExecutionAdvanceDecision::StartNodes(starts)
             },
             events,
         })
     }
 
     /// スコープ（または root）に node の新しい実行インスタンスを生やす。
-    /// 合成子なら配下の開始まで再帰し、leaf なら起動対象として leaves へ積む。
+    /// 合成子なら配下の開始まで再帰し、leaf なら起動対象として starts へ積む。
     fn start_node_instance(
         &mut self,
         parent_scope_id: Option<&str>,
@@ -911,7 +979,7 @@ impl WorkflowExecution {
         new_id: &mut dyn FnMut() -> String,
         timestamp: f64,
         events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
+        starts: &mut Vec<NodeStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
         if let Some(reason) = self.start_unavailable_reason(parent_scope_id, node_name, None) {
             if let Some(scope_id) = parent_scope_id {
@@ -963,17 +1031,17 @@ impl WorkflowExecution {
             id.clone(),
             timestamp,
             events,
-        );
+        )?;
         match node.kind_name() {
             NodeKindName::Command | NodeKindName::Session => {
                 let bindings = self.resolve_child_bindings(parent_scope_id, &node, None);
-                leaves.push(LeafStart {
+                starts.push(NodeStart::Leaf(LeafStart {
                     node_execution_id: id.clone(),
                     node_name: node.name.clone(),
-                    kind: node.kind_name(),
+                    kind: LeafKind::try_from(node.kind_name())?,
                     bindings,
                     item: None,
-                });
+                }));
             }
             NodeKindName::Sequence => {
                 let parameters = self.resolve_child_bindings(parent_scope_id, &node, None);
@@ -984,6 +1052,13 @@ impl WorkflowExecution {
                     parameters,
                     kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime::default()),
                 });
+                if node.is_isolated() {
+                    starts.push(NodeStart::PrepareComposite(
+                        self.isolated_composite_start(&id)
+                            .expect("started isolated composite"),
+                    ));
+                    return Ok(());
+                }
                 let entry_child = node
                     .sequence()
                     .and_then(|sequence| sequence.entry_child_name())
@@ -1000,7 +1075,7 @@ impl WorkflowExecution {
                     new_id,
                     timestamp,
                     events,
-                    leaves,
+                    starts,
                 )?;
             }
             NodeKindName::Fanout => {
@@ -1012,7 +1087,14 @@ impl WorkflowExecution {
                     parameters,
                     kind: ScopeRuntimeKind::Fanout(FanoutScopeRuntime::default()),
                 });
-                self.expand_fanout_scope(&id, new_id, timestamp, events, leaves)?;
+                if node.is_isolated() {
+                    starts.push(NodeStart::PrepareComposite(
+                        self.isolated_composite_start(&id)
+                            .expect("started isolated composite"),
+                    ));
+                    return Ok(());
+                }
+                self.expand_fanout_scope(&id, new_id, timestamp, events, starts)?;
             }
         }
         Ok(())
@@ -1026,7 +1108,7 @@ impl WorkflowExecution {
         new_id: &mut dyn FnMut() -> String,
         timestamp: f64,
         events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
+        starts: &mut Vec<NodeStart>,
     ) -> Result<(), crate::domain::workflow::WorkflowError> {
         let scope = self.scope(scope_id).ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(format!(
@@ -1088,7 +1170,7 @@ impl WorkflowExecution {
                 &mut AdvanceEffects::Live {
                     new_id,
                     events,
-                    leaves,
+                    starts,
                 },
                 timestamp,
             );
@@ -1127,7 +1209,7 @@ impl WorkflowExecution {
                 new_id,
                 timestamp,
                 events,
-                leaves,
+                starts,
             )?;
         }
         Ok(())
@@ -1145,7 +1227,7 @@ impl WorkflowExecution {
         new_id: &mut dyn FnMut() -> String,
         timestamp: f64,
         events: &mut Vec<WorkflowEvent>,
-        leaves: &mut Vec<LeafStart>,
+        starts: &mut Vec<NodeStart>,
     ) -> Result<String, crate::domain::workflow::WorkflowError> {
         let node = self
             .runtime
@@ -1190,17 +1272,17 @@ impl WorkflowExecution {
             item_index,
             child_index,
         ));
-        self.push_started_node(&node, attempt, parent, id.clone(), timestamp, events);
+        self.push_started_node(&node, attempt, parent, id.clone(), timestamp, events)?;
         match node.kind_name() {
             NodeKindName::Command | NodeKindName::Session => {
                 let bindings = self.resolve_child_bindings(Some(scope_id), &node, item.as_ref());
-                leaves.push(LeafStart {
+                starts.push(NodeStart::Leaf(LeafStart {
                     node_execution_id: id.clone(),
                     node_name: node.name.clone(),
-                    kind: node.kind_name(),
+                    kind: LeafKind::try_from(node.kind_name())?,
                     bindings,
                     item,
-                });
+                }));
             }
             NodeKindName::Sequence => {
                 let parameters = self.resolve_child_bindings(Some(scope_id), &node, item.as_ref());
@@ -1211,6 +1293,13 @@ impl WorkflowExecution {
                     parameters,
                     kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime::default()),
                 });
+                if node.is_isolated() {
+                    starts.push(NodeStart::PrepareComposite(
+                        self.isolated_composite_start(&id)
+                            .expect("started isolated composite"),
+                    ));
+                    return Ok(id);
+                }
                 let entry_child = node
                     .sequence()
                     .and_then(|sequence| sequence.entry_child_name())
@@ -1227,7 +1316,7 @@ impl WorkflowExecution {
                     new_id,
                     timestamp,
                     events,
-                    leaves,
+                    starts,
                 )?;
             }
             NodeKindName::Fanout => {
@@ -1239,7 +1328,14 @@ impl WorkflowExecution {
                     parameters,
                     kind: ScopeRuntimeKind::Fanout(FanoutScopeRuntime::default()),
                 });
-                self.expand_fanout_scope(&id, new_id, timestamp, events, leaves)?;
+                if node.is_isolated() {
+                    starts.push(NodeStart::PrepareComposite(
+                        self.isolated_composite_start(&id)
+                            .expect("started isolated composite"),
+                    ));
+                    return Ok(id);
+                }
+                self.expand_fanout_scope(&id, new_id, timestamp, events, starts)?;
             }
         }
         Ok(id)
@@ -1253,8 +1349,16 @@ impl WorkflowExecution {
         node_execution_id: String,
         timestamp: f64,
         events: &mut Vec<WorkflowEvent>,
-    ) {
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        let worktree = crate::domain::workflow::WorktreeInheritance::new(node.worktree)
+            .for_attempt(
+                self.runtime.repository_root.as_deref(),
+                &node_execution_id,
+                attempt,
+            )
+            .map_err(crate::domain::workflow::WorkflowError::invalid_state)?;
         self.runtime.node_executions.push(RuntimeNodeExecution {
+            worktree,
             recovery_reason: None,
             id: node_execution_id.clone(),
             execution_id: self.runtime.id.clone(),
@@ -1283,6 +1387,7 @@ impl WorkflowExecution {
             timestamp,
         });
         self.runtime.updated_at = timestamp;
+        Ok(())
     }
 
     /// 親スコープの解決空間から children エントリの inputs を束縛する。
@@ -1455,7 +1560,7 @@ impl WorkflowExecution {
                         AdvanceEffects::Live {
                             new_id,
                             events,
-                            leaves,
+                            starts,
                         } => {
                             self.start_node_instance(
                                 Some(scope_id),
@@ -1463,7 +1568,7 @@ impl WorkflowExecution {
                                 &mut **new_id,
                                 timestamp,
                                 events,
-                                leaves,
+                                starts,
                             )?;
                         }
                         AdvanceEffects::Derive => {}
@@ -1554,23 +1659,19 @@ impl WorkflowExecution {
                         node.name
                     ))
                 })?;
-                let aggregated = spec
-                    .children
-                    .iter()
-                    .filter_map(|entry| {
-                        sequence
-                            .artifacts
-                            .get(&entry.name)
-                            .and_then(|child| child.artifact.as_ref())
-                            .map(|artifact| (entry.name.clone(), artifact.clone()))
-                    })
-                    .collect();
-                (
-                    Some(serde_json::Value::Object(aggregated)),
-                    None,
-                    None,
-                    None,
-                )
+                let aggregated = serde_json::Value::Object(
+                    spec.children
+                        .iter()
+                        .filter_map(|entry| {
+                            sequence
+                                .artifacts
+                                .get(&entry.name)
+                                .and_then(|child| child.artifact.as_ref())
+                                .map(|value| (entry.name.clone(), value.clone()))
+                        })
+                        .collect(),
+                );
+                (Some(aggregated), None, None, None)
             }
 
             ScopeRuntimeKind::Fanout(fanout) => {
@@ -1611,6 +1712,7 @@ impl WorkflowExecution {
             }
         };
 
+        let artifact_value = self.with_worktree_artifact(scope_id, artifact_value);
         let scope_attempt = self
             .node_execution(scope_id)
             .map(|execution| execution.attempt)
@@ -1753,6 +1855,7 @@ impl WorkflowExecution {
         // submit 済みの成果（スコープ / slot に記録済み）を完了値として読む。
         let (artifact, contract, result, token_usage) =
             self.pending_leaf_result(&node, parent_scope_id.as_deref());
+        let artifact = self.with_worktree_artifact(node_execution_id, artifact);
         if self
             .node_execution(node_execution_id)
             .is_some_and(|execution| {
@@ -1949,7 +2052,7 @@ impl WorkflowExecution {
         Ok(LeafStart {
             node_execution_id: node_execution_id.to_string(),
             node_name: node.name.clone(),
-            kind: node.kind_name(),
+            kind: LeafKind::try_from(node.kind_name())?,
             bindings,
             item,
         })
@@ -2036,7 +2139,8 @@ impl WorkflowExecution {
             new_node_execution_id.clone(),
             timestamp,
             &mut events,
-        );
+        )
+        .ok()?;
         self.runtime
             .retry_predecessors
             .insert(new_node_execution_id.clone(), node_execution_id.to_string());
@@ -2156,7 +2260,7 @@ impl WorkflowExecution {
             ));
         }
         let mut events = Vec::new();
-        let mut leaves = Vec::new();
+        let mut starts = Vec::new();
         match target.kind {
             NodeKindName::Command | NodeKindName::Session => {
                 self.apply_leaf_completion(
@@ -2164,7 +2268,7 @@ impl WorkflowExecution {
                     &mut AdvanceEffects::Live {
                         new_id,
                         events: &mut events,
-                        leaves: &mut leaves,
+                        starts: &mut starts,
                     },
                     timestamp,
                 )?;
@@ -2176,7 +2280,7 @@ impl WorkflowExecution {
                     &mut AdvanceEffects::Live {
                         new_id,
                         events: &mut events,
-                        leaves: &mut leaves,
+                        starts: &mut starts,
                     },
                     timestamp,
                 )?;
@@ -2184,10 +2288,10 @@ impl WorkflowExecution {
         }
         self.runtime.updated_at = timestamp;
         Ok(AppliedAdvance {
-            decision: if leaves.is_empty() {
+            decision: if starts.is_empty() {
                 ExecutionAdvanceDecision::Persist
             } else {
-                ExecutionAdvanceDecision::StartLeaves(leaves)
+                ExecutionAdvanceDecision::StartNodes(starts)
             },
             events,
         })
@@ -2213,7 +2317,16 @@ impl WorkflowExecution {
         {
             return Ok(id);
         }
+        let mode = self
+            .runtime
+            .workflow
+            .node_by_name(&node_name)
+            .and_then(|node| node.worktree);
+        let worktree = crate::domain::workflow::WorktreeInheritance::new(mode)
+            .for_attempt(self.runtime.repository_root.as_deref(), &id, attempt)
+            .map_err(|_| TransitionRejection::MissingRepositoryRoot)?;
         self.runtime.node_executions.push(RuntimeNodeExecution {
+            worktree,
             recovery_reason: None,
             id: id.clone(),
             execution_id: self.runtime.id.clone(),
@@ -2322,6 +2435,10 @@ impl WorkflowExecution {
         token_usage: Option<TokenUsage>,
         timestamp: f64,
     ) -> TransitionOutcome {
+        let artifact = artifact.map(|value| {
+            self.with_worktree_artifact(node_execution_id, Some(value))
+                .expect("provided artifact")
+        });
         let Some(execution) = self
             .runtime
             .node_executions
@@ -2887,21 +3004,21 @@ impl WorkflowExecution {
             }
             NodeCompletionHandshakeDecision::CompleteAuto => {
                 let mut events = Vec::new();
-                let mut leaves = Vec::new();
+                let mut starts = Vec::new();
                 self.apply_leaf_completion(
                     node_execution_id,
                     &mut AdvanceEffects::Live {
                         new_id,
                         events: &mut events,
-                        leaves: &mut leaves,
+                        starts: &mut starts,
                     },
                     timestamp,
                 )?;
                 Ok(AppliedNodeCompletionHandshake {
-                    advance: Some(if leaves.is_empty() {
+                    advance: Some(if starts.is_empty() {
                         ExecutionAdvanceDecision::Persist
                     } else {
-                        ExecutionAdvanceDecision::StartLeaves(leaves)
+                        ExecutionAdvanceDecision::StartNodes(starts)
                     }),
                     events,
                 })
@@ -2918,22 +3035,22 @@ impl WorkflowExecution {
         timestamp: f64,
     ) -> Result<AppliedAdvance, crate::domain::workflow::WorkflowError> {
         let mut events = Vec::new();
-        let mut leaves = Vec::new();
+        let mut starts = Vec::new();
         self.apply_leaf_completion(
             node_execution_id,
             &mut AdvanceEffects::Live {
                 new_id,
                 events: &mut events,
-                leaves: &mut leaves,
+                starts: &mut starts,
             },
             timestamp,
         )?;
         self.runtime.updated_at = timestamp;
         Ok(AppliedAdvance {
-            decision: if leaves.is_empty() {
+            decision: if starts.is_empty() {
                 ExecutionAdvanceDecision::Persist
             } else {
-                ExecutionAdvanceDecision::StartLeaves(leaves)
+                ExecutionAdvanceDecision::StartNodes(starts)
             },
             events,
         })
@@ -3134,7 +3251,7 @@ impl WorkflowExecution {
                 ];
                 Ok(Some(FailureTreatmentOutcome {
                     events,
-                    leaves: vec![restarted.leaf],
+                    starts: vec![NodeStart::Leaf(restarted.leaf)],
                 }))
             }
             OnFailure::Ignore => {
@@ -3149,18 +3266,18 @@ impl WorkflowExecution {
                     return Ok(None);
                 }
                 let mut events = Vec::new();
-                let mut leaves = Vec::new();
+                let mut starts = Vec::new();
                 self.advance_scope_after_child(
                     &parent_scope_id,
                     &target.node_name,
                     &mut AdvanceEffects::Live {
                         new_id,
                         events: &mut events,
-                        leaves: &mut leaves,
+                        starts: &mut starts,
                     },
                     timestamp,
                 )?;
-                Ok(Some(FailureTreatmentOutcome { events, leaves }))
+                Ok(Some(FailureTreatmentOutcome { events, starts }))
             }
         }
     }
@@ -3419,7 +3536,7 @@ impl WorkflowExecution {
     }
 
     /// reconciliation: 検出された未実行の前進を live 経路と同じ機構で実行する。
-    /// 返り値の events は追記すべき事実、leaves は起動すべき leaf。
+    /// 返り値の events は追記すべき事実、starts は Node 起動要求。
     pub fn apply_pending_advance(
         &mut self,
         advance: &PendingAdvance,
@@ -3427,7 +3544,7 @@ impl WorkflowExecution {
         timestamp: f64,
     ) -> Result<AppliedAdvance, crate::domain::workflow::WorkflowError> {
         let mut events = Vec::new();
-        let mut leaves = Vec::new();
+        let mut starts = Vec::new();
         match advance {
             PendingAdvance::AfterChild {
                 scope_id,
@@ -3439,7 +3556,7 @@ impl WorkflowExecution {
                     &mut AdvanceEffects::Live {
                         new_id,
                         events: &mut events,
-                        leaves: &mut leaves,
+                        starts: &mut starts,
                     },
                     timestamp,
                 )?;
@@ -3462,19 +3579,19 @@ impl WorkflowExecution {
                     new_id,
                     timestamp,
                     &mut events,
-                    &mut leaves,
+                    &mut starts,
                 )?;
             }
             PendingAdvance::ExpandFanout { scope_id } => {
-                self.expand_fanout_scope(scope_id, new_id, timestamp, &mut events, &mut leaves)?;
+                self.expand_fanout_scope(scope_id, new_id, timestamp, &mut events, &mut starts)?;
             }
         }
         self.runtime.updated_at = timestamp;
         Ok(AppliedAdvance {
-            decision: if leaves.is_empty() {
+            decision: if starts.is_empty() {
                 ExecutionAdvanceDecision::Persist
             } else {
-                ExecutionAdvanceDecision::StartLeaves(leaves)
+                ExecutionAdvanceDecision::StartNodes(starts)
             },
             events,
         })
@@ -3549,6 +3666,32 @@ impl WorkflowExecution {
         parent: Option<ExecutionParentRef>,
         timestamp: f64,
     ) -> Result<(), String> {
+        self.replay_node_start(
+            artifact_replay::ReplayedNodeStart {
+                node_execution_id,
+                node_name,
+                kind,
+                attempt,
+                parent,
+                timestamp,
+            },
+            artifact_replay::ReplayScope::Recorded,
+        )
+    }
+
+    fn replay_node_start(
+        &mut self,
+        start: artifact_replay::ReplayedNodeStart<'_>,
+        replay_scope: artifact_replay::ReplayScope,
+    ) -> Result<(), String> {
+        let artifact_replay::ReplayedNodeStart {
+            node_execution_id,
+            node_name,
+            kind,
+            attempt,
+            parent,
+            timestamp,
+        } = start;
         let node = self.runtime.workflow.node_by_name(node_name).cloned();
         let definition_error = self.definition_error(node_name).or_else(|| {
             node.as_ref()
@@ -3666,7 +3809,9 @@ impl WorkflowExecution {
             self.record_recovery_block(node_execution_id, reason);
         }
         // 合成子ならスコープを生やす。
-        if kind.is_composite_kind() {
+        if kind.is_composite_kind()
+            && !matches!(replay_scope, artifact_replay::ReplayScope::ArtifactChild)
+        {
             let parent_scope_id = parent.as_ref().map(|parent| parent.parent_id.clone());
             let slot_item = parent
                 .as_ref()
@@ -3711,15 +3856,18 @@ impl WorkflowExecution {
             {
                 // items を開始時点のスコープ状態から再解決して保持する
                 // （子 slot の item 復元に使う）。
-                let items = {
-                    let scope = self
-                        .scope(node_execution_id)
-                        .expect("the fanout scope was just pushed");
-                    let spec = node
-                        .as_ref()
-                        .and_then(|node| node.fanout())
-                        .ok_or_else(|| format!("node '{node_name}' is not a fanout"))?;
-                    self.resolve_fanout_items_in_scope(scope, spec)
+                let items = match replay_scope {
+                    artifact_replay::ReplayScope::ArtifactRoot(items) => Ok(items),
+                    _ => {
+                        let scope = self
+                            .scope(node_execution_id)
+                            .expect("the fanout scope was just pushed");
+                        let spec = node
+                            .as_ref()
+                            .and_then(|node| node.fanout())
+                            .ok_or_else(|| format!("node '{node_name}' is not a fanout"))?;
+                        self.resolve_fanout_items_in_scope(scope, spec)
+                    }
                 };
                 let items = match items {
                     Ok(items) => items,
@@ -3738,6 +3886,13 @@ impl WorkflowExecution {
                         }
                     }
                 };
+                if items.as_ref().is_some_and(Vec::is_empty)
+                    && self
+                        .node_execution(node_execution_id)
+                        .is_some_and(|node| node.worktree.is_some())
+                {
+                    self.pending_empty_fanout = Some(node_execution_id.to_string());
+                }
                 if let Some(fanout) = self
                     .scope_mut(node_execution_id)
                     .and_then(ScopeRuntime::fanout_mut)
@@ -4872,13 +5027,15 @@ mod tests {
 
         assert_eq!(
             result.advance,
-            Some(ExecutionAdvanceDecision::StartLeaves(vec![LeafStart {
-                node_execution_id: "node-execution-2".to_string(),
-                node_name: "verify".to_string(),
-                kind: NodeKindName::Command,
-                bindings: Vec::new(),
-                item: None,
-            }]))
+            Some(ExecutionAdvanceDecision::StartNodes(vec![NodeStart::Leaf(
+                LeafStart {
+                    node_execution_id: "node-execution-2".to_string(),
+                    node_name: "verify".to_string(),
+                    kind: LeafKind::Command,
+                    bindings: Vec::new(),
+                    item: None,
+                }
+            )]))
         );
         assert_eq!(
             execution.node_executions().last().unwrap().id,
@@ -5835,10 +5992,10 @@ mod tests {
         execution.request = Some("document body".to_string());
         let mut new_id = tree_id_source();
         let started = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = started.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = started.decision else {
             panic!("command leaf must start");
         };
-        let original = &leaves[0].node_execution_id;
+        let original = leaves[0].node_execution_id();
         assert_eq!(
             execution.pause_node_execution(original, 2.0),
             TransitionOutcome::Applied
@@ -5853,7 +6010,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(restarted.leaf.bindings, leaves[0].bindings);
+        assert_eq!(restarted.leaf.bindings, expect_leaf(&leaves[0]).bindings);
         let command = execution
             .workflow
             .node_by_name("run")
@@ -5893,19 +6050,22 @@ mod tests {
     /// 完了させた leaf の (node_name, node_execution_id) を完了順で返す。
     fn drive_leaves_to_end(
         execution: &mut WorkflowExecution,
-        initial: Vec<LeafStart>,
+        initial: Vec<NodeStart>,
         new_id: &mut dyn FnMut() -> String,
     ) -> Vec<(String, String)> {
-        let mut queue: std::collections::VecDeque<LeafStart> = initial.into();
+        let mut queue: std::collections::VecDeque<NodeStart> = initial.into();
         let mut completed = Vec::new();
         let mut now = 10.0;
         while let Some(leaf) = queue.pop_front() {
             now += 1.0;
             let applied = execution
-                .complete_leaf_and_advance(&leaf.node_execution_id, new_id, now)
+                .complete_leaf_and_advance(leaf.node_execution_id(), new_id, now)
                 .unwrap();
-            completed.push((leaf.node_name, leaf.node_execution_id));
-            if let ExecutionAdvanceDecision::StartLeaves(next) = applied.decision {
+            completed.push((
+                leaf.node_name().to_string(),
+                leaf.node_execution_id().to_string(),
+            ));
+            if let ExecutionAdvanceDecision::StartNodes(next) = applied.decision {
                 queue.extend(next);
             }
         }
@@ -5970,13 +6130,13 @@ mod tests {
             started_names(&applied.events),
             ["main", "fan", "part", "s1", "solo"]
         );
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("nested start must yield leaves");
         };
         assert_eq!(
             leaves
                 .iter()
-                .map(|leaf| leaf.node_name.as_str())
+                .map(|leaf| leaf.node_name())
                 .collect::<Vec<_>>(),
             ["s1", "solo"]
         );
@@ -6043,6 +6203,8 @@ mod tests {
         let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
         let mut execution = WorkflowExecution::restore_runtime(WorkflowExecutionRestore {
             id: "canonical-example-execution".to_string(),
+            repository_root: Some("/repo".into()),
+            worktree_path: "/repo".into(),
             workflow,
             ..WorkflowExecutionRestore::default()
         });
@@ -6113,31 +6275,47 @@ mod tests {
             [
                 "implement_all",
                 "implement_and_verify",
-                "implement_task",
                 "implement_and_verify",
-                "implement_task",
             ]
         );
-        let Some(ExecutionAdvanceDecision::StartLeaves(implement_leaves)) = applied.advance else {
+        let Some(ExecutionAdvanceDecision::StartNodes(implement_leaves)) = applied.advance else {
             panic!("canonical example must start one implementation leaf per task");
         };
         assert_eq!(implement_leaves.len(), 2);
+        let implement_leaves = implement_leaves
+            .into_iter()
+            .flat_map(|composite| {
+                assert!(matches!(composite, NodeStart::PrepareComposite(_)));
+                let prepared = execution
+                    .start_prepared_composite(composite.node_execution_id(), &mut new_id, 5.0)
+                    .unwrap();
+                assert_eq!(started_names(&prepared.events), ["implement_task"]);
+                let ExecutionAdvanceDecision::StartNodes(leaves) = prepared.decision else {
+                    panic!("prepared isolated sequence must start its child");
+                };
+                leaves
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            execution.execution_worktree_path(implement_leaves[0].node_execution_id()),
+            execution.execution_worktree_path(implement_leaves[1].node_execution_id())
+        );
 
         let mut verify_leaves = Vec::new();
         for (index, leaf) in implement_leaves.iter().enumerate() {
             let applied = settle_session_leaf(
                 &mut execution,
-                &leaf.node_execution_id,
+                leaf.node_execution_id(),
                 &mut new_id,
                 6.0 + index as f64,
             );
-            let Some(ExecutionAdvanceDecision::StartLeaves(leaves)) = applied.advance else {
+            let Some(ExecutionAdvanceDecision::StartNodes(leaves)) = applied.advance else {
                 panic!("implement_and_verify must advance from implement_task to verify_task");
             };
             assert_eq!(
                 leaves
                     .iter()
-                    .map(|leaf| leaf.node_name.as_str())
+                    .map(|leaf| leaf.node_name())
                     .collect::<Vec<_>>(),
                 ["verify_task"]
             );
@@ -6148,7 +6326,7 @@ mod tests {
         for (index, leaf) in verify_leaves.iter().enumerate() {
             assert_eq!(
                 execution.record_pending_result(
-                    &leaf.node_execution_id,
+                    leaf.node_execution_id(),
                     Some("verified".to_string()),
                     Some(serde_json::json!({
                         "task_id": format!("task-{}", index + 1),
@@ -6163,7 +6341,7 @@ mod tests {
             );
             let applied = settle_session_leaf(
                 &mut execution,
-                &leaf.node_execution_id,
+                leaf.node_execution_id(),
                 &mut new_id,
                 10.0 + index as f64,
             );
@@ -6171,9 +6349,15 @@ mod tests {
         }
 
         assert_eq!(final_started, ["merge_implementations"]);
+        let worktrees = execution
+            .node_executions
+            .iter()
+            .filter(|node| node.node_name == "implement_and_verify")
+            .map(|node| node.worktree.as_ref().unwrap())
+            .collect::<Vec<_>>();
         let expected_results = serde_json::json!({
-            "0": {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}},
-            "1": {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}}
+            "0": {"verify_task": {"task_id": "task-1", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[0].branch, "path": worktrees[0].path}},
+            "1": {"verify_task": {"task_id": "task-2", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[1].branch, "path": worktrees[1].path}}
         });
         let merge_id = execution_id_of(&execution, "merge_implementations");
         let merge = execution.leaf_start_for(&merge_id).unwrap();
@@ -6228,12 +6412,12 @@ mod tests {
         let mut new_id = tree_id_source();
 
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield the inner leaf");
         };
         let part_id = execution_id_of(&execution, "part");
         let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 2.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
             .unwrap();
 
         // ネスト内で承認待ち停止: part は WaitingApproval、前進しない。
@@ -6258,12 +6442,12 @@ mod tests {
         let applied = execution
             .apply_approval(&part_id, &mut new_id, 3.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("approval must resume the parent sequence");
         };
-        assert_eq!(leaves[0].node_name, "report");
+        assert_eq!(leaves[0].node_name(), "report");
         let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 4.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 4.0)
             .unwrap();
         assert!(applied
             .events
@@ -6296,11 +6480,11 @@ mod tests {
         let mut live = tree_execution(nodes.clone());
         let mut new_id = tree_id_source();
         let applied = live.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield the inner-a leaf");
         };
         let advanced = live
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 2.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
             .unwrap();
         let mut events = applied.events;
         events.extend(advanced.events);
@@ -6408,13 +6592,13 @@ mod tests {
         let mut new_id = tree_id_source();
 
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield one fix leaf per lane");
         };
         assert_eq!(
             leaves
                 .iter()
-                .map(|leaf| leaf.node_name.as_str())
+                .map(|leaf| leaf.node_name())
                 .collect::<Vec<_>>(),
             ["fix", "fix"]
         );
@@ -6424,7 +6608,7 @@ mod tests {
                 execution
                     .node_executions()
                     .iter()
-                    .find(|node| node.id == leaf.node_execution_id)
+                    .find(|node| node.id == leaf.node_execution_id())
                     .and_then(|node| node.parent.clone())
                     .expect("a lane fix must hang under its part instance")
                     .parent_id
@@ -6437,33 +6621,33 @@ mod tests {
 
         // lane 0 が fix の予算 2 回を使い切り exit へ抜ける。
         let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 2.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(lane0_second) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(lane0_second) = applied.decision else {
             panic!("lane 0 must revisit fix");
         };
-        assert_eq!(lane0_second[0].node_name, "fix");
+        assert_eq!(lane0_second[0].node_name(), "fix");
         let applied = execution
-            .complete_leaf_and_advance(&lane0_second[0].node_execution_id, &mut new_id, 3.0)
+            .complete_leaf_and_advance(lane0_second[0].node_execution_id(), &mut new_id, 3.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(lane0_exit) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(lane0_exit) = applied.decision else {
             panic!("lane 0 must exhaust into exit");
         };
-        assert_eq!(lane0_exit[0].node_name, "exit");
+        assert_eq!(lane0_exit[0].node_name(), "exit");
 
         // lane 1 の fix はカウント独立: lane 0 が 2 回消費済みでも 2 回目に入れる。
         let applied = execution
-            .complete_leaf_and_advance(&leaves[1].node_execution_id, &mut new_id, 4.0)
+            .complete_leaf_and_advance(leaves[1].node_execution_id(), &mut new_id, 4.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(lane1_second) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(lane1_second) = applied.decision else {
             panic!("lane 1 must revisit fix with its own budget");
         };
-        assert_eq!(lane1_second[0].node_name, "fix");
+        assert_eq!(lane1_second[0].node_name(), "fix");
         assert_eq!(
             execution
                 .node_executions()
                 .iter()
-                .find(|node| node.id == lane1_second[0].node_execution_id)
+                .find(|node| node.id == lane1_second[0].node_execution_id())
                 .and_then(|node| node.parent.clone())
                 .unwrap()
                 .parent_id,
@@ -6477,9 +6661,9 @@ mod tests {
         while let Some(leaf) = queue.pop() {
             now += 1.0;
             let applied = execution
-                .complete_leaf_and_advance(&leaf.node_execution_id, &mut new_id, now)
+                .complete_leaf_and_advance(leaf.node_execution_id(), &mut new_id, now)
                 .unwrap();
-            if let ExecutionAdvanceDecision::StartLeaves(next) = applied.decision {
+            if let ExecutionAdvanceDecision::StartNodes(next) = applied.decision {
                 queue.extend(next);
             }
         }
@@ -6539,13 +6723,13 @@ mod tests {
         let mut new_id = tree_id_source();
 
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield the prepare leaf");
         };
         let prepared_value = serde_json::json!({"path": "src/lib.rs"});
         assert_eq!(
             execution.record_pending_result(
-                &leaves[0].node_execution_id,
+                leaves[0].node_execution_id(),
                 Some("done".to_string()),
                 Some(prepared_value.clone()),
                 None,
@@ -6555,17 +6739,17 @@ mod tests {
             TransitionOutcome::Applied
         );
         let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 3.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 3.0)
             .unwrap();
 
         // part スコープは input `target` を prepare の Artifact で束縛し、
         // worker の起動束縛は `target` から `data` を受け取る。
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("main must advance into part");
         };
-        assert_eq!(leaves[0].node_name, "worker");
+        assert_eq!(leaves[0].node_name(), "worker");
         assert_eq!(
-            leaves[0].bindings,
+            expect_leaf(&leaves[0]).bindings,
             vec![("data".to_string(), prepared_value.clone())]
         );
         let part_id = execution_id_of(&execution, "part");
@@ -6600,7 +6784,7 @@ mod tests {
         ]);
         let mut new_id = tree_id_source();
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield one fix leaf per lane");
         };
         assert_eq!(leaves.len(), 2);
@@ -6654,7 +6838,7 @@ mod tests {
         let mut new_id = tree_id_source();
 
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield one worker leaf per lane");
         };
         let attempts: Vec<u32> = leaves
@@ -6663,7 +6847,7 @@ mod tests {
                 execution
                     .node_executions()
                     .iter()
-                    .find(|node| node.id == leaf.node_execution_id)
+                    .find(|node| node.id == leaf.node_execution_id())
                     .unwrap()
                     .attempt
             })
@@ -6671,7 +6855,7 @@ mod tests {
         assert_eq!(attempts, [1, 1], "each lane must start at attempt 1");
 
         // lane 0 を失敗させて retry すると、その lane だけ attempt 2 になる。
-        let lane0 = leaves[0].node_execution_id.clone();
+        let lane0 = leaves[0].node_execution_id().to_string();
         assert_eq!(
             execution.fail_leaf_execution(
                 &lane0,
@@ -6696,7 +6880,7 @@ mod tests {
             execution
                 .node_executions()
                 .iter()
-                .find(|node| node.id == leaves[1].node_execution_id)
+                .find(|node| node.id == leaves[1].node_execution_id())
                 .unwrap()
                 .attempt,
             1
@@ -6752,7 +6936,7 @@ mod tests {
         let mut new_id = tree_id_source();
 
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield the first fix leaf");
         };
         let completed = drive_leaves_to_end(&mut execution, leaves, &mut new_id);
@@ -6807,11 +6991,11 @@ mod tests {
         new_id: &mut dyn FnMut() -> String,
     ) -> String {
         let applied = execution.start_root(new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield a leaf");
         };
         assert_eq!(leaves.len(), 1);
-        leaves[0].node_execution_id.clone()
+        leaves[0].node_execution_id().to_string()
     }
 
     #[test]
@@ -6854,8 +7038,8 @@ mod tests {
             };
             assert_eq!(node_name, "flaky");
             assert_eq!(*attempt, expected_attempt);
-            assert_eq!(outcome.leaves.len(), 1);
-            assert_eq!(outcome.leaves[0].node_execution_id, *node_execution_id);
+            assert_eq!(outcome.starts.len(), 1);
+            assert_eq!(outcome.starts[0].node_execution_id(), *node_execution_id);
             current = node_execution_id.clone();
         }
 
@@ -6917,7 +7101,7 @@ mod tests {
             .apply_on_failure_treatment(&first, &mut new_id, 3.0)
             .unwrap()
             .expect("first failure must auto-retry");
-        let second = auto.leaves[0].node_execution_id.clone();
+        let second = auto.starts[0].node_execution_id().to_string();
         fail_leaf(&mut execution, &second, 4.0);
         assert_eq!(
             execution
@@ -6934,17 +7118,17 @@ mod tests {
         let applied = execution
             .complete_leaf_and_advance(&third, &mut new_id, 7.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("flaky completion must start back");
         };
-        assert_eq!(leaves[0].node_name, "back");
+        assert_eq!(leaves[0].node_name(), "back");
         let applied = execution
-            .complete_leaf_and_advance(&leaves[0].node_execution_id, &mut new_id, 8.0)
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 8.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("back completion must revisit flaky");
         };
-        let revisit = leaves[0].node_execution_id.clone();
+        let revisit = leaves[0].node_execution_id().to_string();
         assert_eq!(
             execution.node_execution(&revisit).unwrap().attempt,
             4,
@@ -6957,10 +7141,10 @@ mod tests {
             .apply_on_failure_treatment(&revisit, &mut new_id, 10.0)
             .unwrap()
             .expect("a fresh visit must restore the auto-retry budget");
-        assert_eq!(outcome.leaves.len(), 1);
+        assert_eq!(outcome.starts.len(), 1);
         assert_eq!(
             execution
-                .node_execution(&outcome.leaves[0].node_execution_id)
+                .node_execution(outcome.starts[0].node_execution_id())
                 .unwrap()
                 .attempt,
             5
@@ -6989,8 +7173,8 @@ mod tests {
             .unwrap()
             .expect("ignored failure must continue the sequence");
         assert_eq!(started_names(&outcome.events), ["after"]);
-        assert_eq!(outcome.leaves.len(), 1);
-        assert_eq!(outcome.leaves[0].node_name, "after");
+        assert_eq!(outcome.starts.len(), 1);
+        assert_eq!(outcome.starts[0].node_name(), "after");
         let main_id = execution_id_of(&execution, "main");
         let sequence = execution.scope(&main_id).unwrap().sequence().unwrap();
         assert_eq!(sequence.current_child.as_deref(), Some("after"));
@@ -7015,17 +7199,17 @@ mod tests {
         let applied = execution
             .complete_leaf_and_advance(&work, &mut new_id, 2.0)
             .unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("work completion must start optional");
         };
-        let optional = leaves[0].node_execution_id.clone();
+        let optional = leaves[0].node_execution_id().to_string();
 
         fail_leaf(&mut execution, &optional, 3.0);
         let outcome = execution
             .apply_on_failure_treatment(&optional, &mut new_id, 4.0)
             .unwrap()
             .expect("ignored terminal failure must complete the sequence");
-        assert!(outcome.leaves.is_empty());
+        assert!(outcome.starts.is_empty());
         assert!(outcome
             .events
             .iter()
@@ -7057,11 +7241,11 @@ mod tests {
         ]);
         let mut new_id = tree_id_source();
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield both fanout children");
         };
-        let steady = leaves[0].node_execution_id.clone();
-        let flaky = leaves[1].node_execution_id.clone();
+        let steady = leaves[0].node_execution_id().to_string();
+        let flaky = leaves[1].node_execution_id().to_string();
 
         // ignore の失敗が先に決着しても、残りの子が走っている間は前進しない。
         fail_leaf(&mut execution, &flaky, 2.0);
@@ -7070,7 +7254,7 @@ mod tests {
             .unwrap()
             .expect("ignored fanout failure must be treated");
         assert!(outcome.events.is_empty());
-        assert!(outcome.leaves.is_empty());
+        assert!(outcome.starts.is_empty());
 
         // 最後の子の完了で fanout が完了し、失敗子のキーは結果 map から除かれる。
         let applied = execution
@@ -7113,11 +7297,11 @@ mod tests {
         ]);
         let mut new_id = tree_id_source();
         let applied = execution.start_root(&mut new_id, 1.0).unwrap();
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = applied.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
             panic!("start must yield both fanout children");
         };
-        let steady = leaves[0].node_execution_id.clone();
-        let flaky = leaves[1].node_execution_id.clone();
+        let steady = leaves[0].node_execution_id().to_string();
+        let flaky = leaves[1].node_execution_id().to_string();
 
         // 宣言なしの失敗は現行どおり中断（treatment なし）。
         fail_leaf(&mut execution, &steady, 2.0);
@@ -7163,7 +7347,7 @@ mod tests {
             .apply_on_failure_treatment(&first, &mut new_id, 3.0)
             .unwrap()
             .expect("lane failure must auto-retry once");
-        let second = outcome.leaves[0].node_execution_id.clone();
+        let second = outcome.starts[0].node_execution_id().to_string();
         assert_eq!(execution.node_execution(&second).unwrap().attempt, 2);
         let fan_id = execution_id_of(&execution, "fan");
         let slot = &execution.scope(&fan_id).unwrap().fanout().unwrap().children[0];
@@ -7203,7 +7387,7 @@ mod tests {
             .apply_on_failure_treatment(&first, &mut new_id, 3.0)
             .unwrap()
             .unwrap();
-        let second = outcome.leaves[0].node_execution_id.clone();
+        let second = outcome.starts[0].node_execution_id().to_string();
 
         // replay: 同じ事実列（NodeStarted×2 → NodeFailed → NodeRetryRequested →
         // NodeStarted）の適用。
@@ -7302,7 +7486,7 @@ mod tests {
             .apply_on_failure_treatment(&optional, &mut new_id, 3.0)
             .unwrap()
             .unwrap();
-        let after = outcome.leaves[0].node_execution_id.clone();
+        let after = outcome.starts[0].node_execution_id().to_string();
 
         // replay: NodeStarted×2 → NodeFailed → NodeStarted（前進の事実）。
         let mut replayed = tree_execution(nodes);

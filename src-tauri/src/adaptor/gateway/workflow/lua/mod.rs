@@ -43,6 +43,7 @@ const HANDLE_FACET: &str = "facet";
 const HANDLE_FACET_INDEX: &str = "facet_index";
 const HANDLE_WORKFLOW: &str = "workflow";
 const HANDLE_PROVIDER: &str = "provider";
+const HANDLE_WORKTREE: &str = "worktree";
 const HANDLE_COMPLETION: &str = "completion";
 
 const FN_COMMAND: u32 = 1;
@@ -180,6 +181,7 @@ struct NodeDraft {
     artifact: Option<usize>,
     input: Vec<usize>,
     completion: NodeCompletion,
+    worktree: Option<crate::domain::workflow::WorktreeMode>,
     location: LuaSourceLocation,
 }
 
@@ -499,6 +501,21 @@ impl WorkflowLuaHost {
             LuaModuleValue::Data(handle(HANDLE_SOURCE, self.items_source)),
         );
         members.insert(
+            "worktree".to_string(),
+            LuaModuleValue::Module(LuaModule {
+                members: BTreeMap::from([
+                    (
+                        "shared".to_string(),
+                        LuaModuleValue::Data(handle(HANDLE_WORKTREE, 0)),
+                    ),
+                    (
+                        "isolated".to_string(),
+                        LuaModuleValue::Data(handle(HANDLE_WORKTREE, 1)),
+                    ),
+                ]),
+            }),
+        );
+        members.insert(
             "completion".to_string(),
             LuaModuleValue::Module(LuaModule {
                 members: BTreeMap::from([(
@@ -736,7 +753,15 @@ impl WorkflowLuaHost {
         let table = one_table(arguments, &location)?;
         reject_unknown(
             &table,
-            &["name", "command", "env", "artifact", "input", "completion"],
+            &[
+                "name",
+                "command",
+                "env",
+                "artifact",
+                "input",
+                "completion",
+                "worktree",
+            ],
             &location,
         )?;
         let env = self.command_env_sources(&table, &location)?;
@@ -750,6 +775,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            worktree: parse_worktree(&table, &location)?,
             location,
         };
         Ok(push_node(&mut self.nodes, draft))
@@ -806,6 +832,7 @@ impl WorkflowLuaHost {
                 "artifact",
                 "input",
                 "completion",
+                "worktree",
             ],
             &location,
         )?;
@@ -838,6 +865,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            worktree: parse_worktree(&table, &location)?,
             location,
         };
         Ok(push_node(&mut self.nodes, draft))
@@ -916,6 +944,7 @@ impl WorkflowLuaHost {
                 "artifact",
                 "input",
                 "completion",
+                "worktree",
             ],
             &location,
         )?;
@@ -966,6 +995,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            worktree: parse_worktree(&table, &location)?,
             location,
         };
         Ok(push_node(&mut self.nodes, draft))
@@ -1002,6 +1032,7 @@ impl WorkflowLuaHost {
                 "artifact",
                 "input",
                 "completion",
+                "worktree",
             ],
             &location,
         )?;
@@ -1015,6 +1046,7 @@ impl WorkflowLuaHost {
             input: optional_handle_array(&table, "input", HANDLE_INPUT, &location)?
                 .unwrap_or_default(),
             completion: parse_completion(&table, &location)?,
+            worktree: parse_worktree(&table, &location)?,
             location,
         };
         Ok(push_node(&mut self.nodes, draft))
@@ -1676,7 +1708,7 @@ impl WorkflowGraphBuilder {
             artifact,
             input,
             completion: draft.completion,
-            worktree: None,
+            worktree: draft.worktree,
         });
         for child_index in &child_indices {
             let node = self.host.children[*child_index].node;
@@ -2393,6 +2425,27 @@ fn optional_string_array(
             .collect::<Result<Vec<_>, _>>()
             .map(Some),
         Some(_) => Err(type_error(field, "string array", location)),
+    }
+}
+
+fn parse_worktree(
+    table: &LuaTableData,
+    location: &LuaSourceLocation,
+) -> Result<Option<crate::domain::workflow::WorktreeMode>, LuaHostError> {
+    use crate::domain::workflow::WorktreeMode;
+    match table.get_string("worktree") {
+        None | Some(LuaData::Nil) => Ok(None),
+        Some(value) if expect_handle(value, HANDLE_WORKTREE) == Ok(0) => {
+            Ok(Some(WorktreeMode::Shared))
+        }
+        Some(value) if expect_handle(value, HANDLE_WORKTREE) == Ok(1) => {
+            Ok(Some(WorktreeMode::Isolated))
+        }
+        _ => Err(type_error(
+            "worktree",
+            "r.worktree.shared or r.worktree.isolated",
+            location,
+        )),
     }
 }
 

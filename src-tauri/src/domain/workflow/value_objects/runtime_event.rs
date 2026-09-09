@@ -22,6 +22,8 @@ pub struct ContractViolationRecord {
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum WorkflowEvent {
     ExecutionStarted {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        repository_root: Option<String>,
         execution_id: String,
         workflow_name: String,
         worktree_path: String,

@@ -175,14 +175,9 @@ delegate 固有の扱いは、**child の結果の親 session への注入を事
 
 `isolated` の NodeExecution は attempt ごとに、親 worktree の HEAD から branch と worktree を生成し、そこを cwd として実行する。
 
-隔離 worktree の台帳と reconciliation は milestone 86 W7（#1467）で実装済みである。
+branch は `releash/isolated/<node_execution_id>-a<attempt>`、path は `<repository root の親>/<repository 名>-worktrees/.releash-isolated/<node_execution_id>-a<attempt>` とする。命名に埋め込まれた NodeExecution・attempt と実行木の状態から所有者を識別する。実行木の所属は root Worktree のままである。
 
-- 事実: `NodeFact::IsolatedWorktreeCreated` / `IsolatedWorktreeReleased` / `IsolatedWorktreeLost`
-- 台帳: 事実ログから導出する `IsolatedWorktreeLedgerSnapshot`
-- 起動時の突合: `worktree_reconciliation`（実体喪失 / 所有者終了済み / 台帳外）
-- 命名: `isolated_worktree_branch` / `isolated_worktree_path`
-
-本 milestone で実装するのは、`worktree` field の解禁（現行 loader は `WFU002` Error で拒否する）、実行時の branch + worktree 生成と cwd 適用、および観測経路への露出である。
+生成先を各 Node の cwdに適用し、branch/path は attempt 開始時点から UI・CLI・API の Node 詳細で観測できる。Artifact には `worktree: { branch, path }` を合成する。隔離 worktreeは Worktree 管理の一覧に出さず、生成失敗と実体喪失後の起動失敗は既存の Node failure 経路へ渡す。
 
 ### 3.3 統合
 

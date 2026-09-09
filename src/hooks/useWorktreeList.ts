@@ -7,7 +7,6 @@ const POLL_INTERVAL = 120_000;
 
 interface WorktreeDisplayGroups {
 	working_areas: WorktreeBranch[];
-	cleanup_candidates: WorktreeBranch[];
 }
 
 interface BranchCardsSnapshot {
@@ -21,9 +20,6 @@ interface BranchCardsSnapshot {
 
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
-	const [cleanupCandidates, setCleanupCandidates] = useState<WorktreeBranch[]>(
-		[],
-	);
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
 	const prevBranchesRef = useRef("");
@@ -71,13 +67,11 @@ export function useWorktreeList(repoPath: string) {
 				// 表示先の振り分けは backend が確定済み。ここでは PR 情報を重ねるだけ。
 				const groups = snapshot.worktree_display_groups;
 				const filtered = await enrichWithPrStatus(groups.working_areas);
-				const cleanup = groups.cleanup_candidates;
 				if (seq === refreshSeqRef.current) {
-					const serialized = JSON.stringify({ filtered, cleanup });
+					const serialized = JSON.stringify(filtered);
 					if (serialized !== prevBranchesRef.current) {
 						prevBranchesRef.current = serialized;
 						setBranches(filtered);
-						setCleanupCandidates(cleanup);
 					}
 				}
 			} catch (e) {
@@ -143,5 +137,5 @@ export function useWorktreeList(repoPath: string) {
 		return () => clearInterval(id);
 	}, [refresh]);
 
-	return { branches, cleanupCandidates, loading, refresh };
+	return { branches, loading, refresh };
 }

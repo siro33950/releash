@@ -40,30 +40,25 @@ use crate::adaptor::gateway::workflow::{
     EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
 use crate::adaptor::gateway::workflow::{
-    NodeEventIsolatedWorktreeLedgerRepository, RepoPathsManagedWorktreeGateway,
-    RepositoryManagedWorktreeGateway, TauriWorkflowExternalEditorGateway,
-    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
-    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
-    WorkflowExecutionProjectionLogRepository, WorkflowFacetFileRepository,
-    WorkflowSecretSourceConfigGateway,
+    RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
+    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
+    TauriWorkflowRuntimeCommandGatewayDeps, WorkflowConfigPathFileGateway,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
+    WorkflowExecutionArchiveFileRepository, WorkflowExecutionProjectionLogRepository,
+    WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
 use crate::domain::repository::WorktreeTerminalGateway;
-use crate::domain::workflow::{
-    IsolatedWorktreeLedgerRepository, ManagedWorktreeGateway, SecretSourceGateway,
-};
+use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
 use crate::usecase::git_host::GitHostUsecase;
-use crate::usecase::repository_query_service::{
-    RepositoryQueryService, WorktreeClassificationQuery,
-};
+use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 #[cfg(test)]
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
@@ -88,28 +83,10 @@ pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
 
 /// worktree 削除時に紐づく terminal surface を停止できる repository usecase を構築する
 /// （Tauri アプリ本体の composition 用）。
-#[cfg(test)]
 pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
 ) -> RepositoryUsecase {
-    let query = RepositoryQueryService::new(
-        Arc::new(BranchCardGateway),
-        WorktreeClassificationQuery::empty(),
-    );
-    build_repository_usecase_inner(worktree_terminals, query)
-}
-
-pub(crate) fn build_repository_usecase_with_worktree_terminals_and_ledger(
-    worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
-    worktree_ledger: Arc<dyn IsolatedWorktreeLedgerRepository>,
-    workflow_executions: Arc<
-        dyn crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository,
-    >,
-) -> RepositoryUsecase {
-    let query = RepositoryQueryService::new(
-        Arc::new(BranchCardGateway),
-        WorktreeClassificationQuery::new(worktree_ledger, workflow_executions),
-    );
+    let query = RepositoryQueryService::new(Arc::new(BranchCardGateway));
     build_repository_usecase_inner(worktree_terminals, query)
 }
 
@@ -256,23 +233,25 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
     )
 }
 
+pub(crate) fn build_workspace_worktree_path_usecase(
+    data_dir: &std::path::Path,
+) -> crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase {
+    crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase::new(Arc::new(
+        crate::adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(
+            data_dir.to_path_buf(),
+        ),
+    ))
+}
+
 pub(crate) fn build_canonical_workflow_read_usecase(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
-    let worktree_ledger = Arc::new(NodeEventIsolatedWorktreeLedgerRepository::new_read_only(
-        local_event_store.clone(),
-    ));
-    let workflow_executions = Arc::new(WorkflowExecutionProjectionLogRepository::new_read_only(
-        local_event_store.clone(),
-    ));
-    let repository_usecase = Arc::new(build_repository_usecase_with_worktree_terminals_and_ledger(
-        Arc::new(NoopWorktreeTerminalGateway),
-        worktree_ledger,
-        workflow_executions,
-    ));
+    let repository_usecase = Arc::new(build_repository_usecase_with_worktree_terminals(Arc::new(
+        NoopWorktreeTerminalGateway,
+    )));
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let config_path = data_dir.join("releash.toml");

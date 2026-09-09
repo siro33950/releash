@@ -1,204 +1,83 @@
-use std::collections::BTreeMap;
-
 use crate::domain::repository::{normalize_repo_path, worktree_dir};
-
-use super::{IsolatedWorktreeCreatedFact, NodeFact, NodeFactMeta, NodeFactRecord};
 
 const ISOLATED_BRANCH_PREFIX: &str = "releash/isolated/";
 const ISOLATED_DIRECTORY: &str = ".releash-isolated";
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IsolatedWorktreeIdentity {
-    pub tree_id: String,
-    pub node_execution_id: String,
-    pub attempt: u32,
-}
-
-impl IsolatedWorktreeIdentity {
-    pub fn from_meta(meta: &NodeFactMeta) -> Self {
-        Self {
-            tree_id: meta.tree_id.clone(),
-            node_execution_id: meta.node_execution_id.clone(),
-            attempt: meta.attempt,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IsolatedWorktreeLifecycle {
-    Created,
-    Released,
-    Lost,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsolatedWorktreeLedgerEntry {
-    pub owner: NodeFactMeta,
-    pub repository_root: String,
-    pub worktree_path: String,
+pub struct IsolatedWorktree {
     pub branch: String,
-    pub lifecycle: IsolatedWorktreeLifecycle,
+    pub path: String,
 }
 
-impl IsolatedWorktreeLedgerEntry {
-    pub fn identity(&self) -> IsolatedWorktreeIdentity {
-        IsolatedWorktreeIdentity::from_meta(&self.owner)
+impl IsolatedWorktree {
+    pub fn with_artifact(&self, artifact: Option<serde_json::Value>) -> serde_json::Value {
+        let mut artifact = artifact.unwrap_or_else(|| serde_json::json!({}));
+        artifact
+            .as_object_mut()
+            .expect("Artifact is an object")
+            .insert(
+                "worktree".to_string(),
+                serde_json::json!({"branch": self.branch, "path": self.path}),
+            );
+        artifact
     }
 
-    pub fn recovery_cause(&self) -> Option<IsolatedWorktreeRecoveryCause> {
-        (self.lifecycle == IsolatedWorktreeLifecycle::Lost)
-            .then(|| IsolatedWorktreeRecoveryCause::new(self.worktree_path.clone()))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct IsolatedWorktreeLedgerSnapshot {
-    entries: BTreeMap<IsolatedWorktreeIdentity, IsolatedWorktreeLedgerEntry>,
-}
-
-impl IsolatedWorktreeLedgerSnapshot {
-    pub fn from_records(records: &[NodeFactRecord]) -> Result<Self, String> {
-        let mut snapshot = Self::default();
-        for record in records {
-            snapshot.apply_record(record)?;
+    pub fn for_attempt(repository_root: &str, node_execution_id: &str, attempt: u32) -> Self {
+        Self {
+            branch: isolated_worktree_branch(node_execution_id, attempt),
+            path: isolated_worktree_path(repository_root, node_execution_id, attempt),
         }
-        Ok(snapshot)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WorktreeInheritance {
+    mode: super::WorktreeMode,
+}
+
+impl WorktreeInheritance {
+    pub fn new(mode: Option<super::WorktreeMode>) -> Self {
+        Self {
+            mode: mode.unwrap_or_default(),
+        }
     }
 
-    pub fn entries(&self) -> impl Iterator<Item = &IsolatedWorktreeLedgerEntry> {
-        self.entries.values()
+    pub fn is_isolated(self) -> bool {
+        self.mode.is_isolated()
     }
 
-    pub fn entry(
-        &self,
-        identity: &IsolatedWorktreeIdentity,
-    ) -> Option<&IsolatedWorktreeLedgerEntry> {
-        self.entries.get(identity)
-    }
-
-    pub fn entry_for_path(
-        &self,
-        repository_root: &str,
-        worktree_path: &str,
-    ) -> Option<&IsolatedWorktreeLedgerEntry> {
-        let repository_root = normalize_repo_path(repository_root);
-        let worktree_path = normalize_repo_path(worktree_path);
-        self.entries.values().find(|entry| {
-            entry.repository_root == repository_root && entry.worktree_path == worktree_path
-        })
-    }
-
-    pub fn recovery_cause(
-        &self,
-        identity: &IsolatedWorktreeIdentity,
-    ) -> Option<IsolatedWorktreeRecoveryCause> {
-        self.entry(identity)
-            .and_then(IsolatedWorktreeLedgerEntry::recovery_cause)
-    }
-
-    pub fn recovery_cause_for_node(
-        &self,
-        tree_id: &str,
+    pub fn for_attempt(
+        self,
+        repository_root: Option<&str>,
         node_execution_id: &str,
-    ) -> Option<IsolatedWorktreeRecoveryCause> {
-        self.entries.values().find_map(|entry| {
-            (entry.owner.tree_id == tree_id && entry.owner.node_execution_id == node_execution_id)
-                .then(|| entry.recovery_cause())
-                .flatten()
-        })
-    }
-
-    pub fn recovery_cause_for_tree(&self, tree_id: &str) -> Option<IsolatedWorktreeRecoveryCause> {
-        self.entries.values().find_map(|entry| {
-            (entry.owner.tree_id == tree_id)
-                .then(|| entry.recovery_cause())
-                .flatten()
-        })
-    }
-
-    pub fn merge(&mut self, other: &Self) -> Result<(), String> {
-        for entry in other.entries() {
-            let identity = entry.identity();
-            if self
-                .entries
-                .insert(identity.clone(), entry.clone())
-                .is_some()
-            {
-                return Err(format!(
-                    "duplicate isolated worktree owner {} attempt {} in tree {}",
-                    identity.node_execution_id, identity.attempt, identity.tree_id
-                ));
-            }
+        attempt: u32,
+    ) -> Result<Option<IsolatedWorktree>, &'static str> {
+        if !self.is_isolated() {
+            return Ok(None);
         }
-        Ok(())
+        let root = repository_root.ok_or("isolated execution requires repository root")?;
+        Ok(Some(IsolatedWorktree::for_attempt(
+            root,
+            node_execution_id,
+            attempt,
+        )))
     }
 
-    pub fn apply_record(&mut self, record: &NodeFactRecord) -> Result<(), String> {
-        let identity = IsolatedWorktreeIdentity::from_meta(&record.meta);
-        match &record.fact {
-            NodeFact::IsolatedWorktreeCreated(fact) => {
-                let entry = entry_from_created(&record.meta, fact);
-                match self.entries.get(&identity) {
-                    Some(existing) if existing == &entry => Ok(()),
-                    Some(_) => Err(format!(
-                        "isolated worktree owner {} attempt {} has conflicting creation facts",
-                        identity.node_execution_id, identity.attempt
-                    )),
-                    None => {
-                        self.entries.insert(identity, entry);
-                        Ok(())
-                    }
-                }
-            }
-            NodeFact::IsolatedWorktreeReleased => {
-                self.transition(&identity, IsolatedWorktreeLifecycle::Released)
-            }
-            NodeFact::IsolatedWorktreeLost => {
-                self.transition(&identity, IsolatedWorktreeLifecycle::Lost)
-            }
-            _ => Ok(()),
-        }
+    pub fn isolated_path(self, worktree: Option<&IsolatedWorktree>) -> Option<&str> {
+        self.is_isolated()
+            .then_some(worktree)
+            .flatten()
+            .map(|worktree| worktree.path.as_str())
     }
 
-    fn transition(
-        &mut self,
-        identity: &IsolatedWorktreeIdentity,
-        lifecycle: IsolatedWorktreeLifecycle,
-    ) -> Result<(), String> {
-        let entry = self.entries.get_mut(identity).ok_or_else(|| {
-            format!(
-                "isolated worktree {} fact precedes its creation fact",
-                match lifecycle {
-                    IsolatedWorktreeLifecycle::Created => "creation",
-                    IsolatedWorktreeLifecycle::Released => "release",
-                    IsolatedWorktreeLifecycle::Lost => "loss",
-                }
-            )
-        })?;
-        if entry.lifecycle == lifecycle {
-            return Ok(());
-        }
-        if entry.lifecycle != IsolatedWorktreeLifecycle::Created {
-            return Err(format!(
-                "isolated worktree owner {} attempt {} cannot transition from {:?} to {:?}",
-                identity.node_execution_id, identity.attempt, entry.lifecycle, lifecycle
-            ));
-        }
-        entry.lifecycle = lifecycle;
-        Ok(())
-    }
-}
-
-fn entry_from_created(
-    meta: &NodeFactMeta,
-    fact: &IsolatedWorktreeCreatedFact,
-) -> IsolatedWorktreeLedgerEntry {
-    IsolatedWorktreeLedgerEntry {
-        owner: meta.clone(),
-        repository_root: normalize_repo_path(&fact.repository_root),
-        worktree_path: normalize_repo_path(&fact.worktree_path),
-        branch: fact.branch.clone(),
-        lifecycle: IsolatedWorktreeLifecycle::Created,
+    pub fn effective_path<'a>(
+        root_worktree_path: &'a str,
+        ancestors: impl IntoIterator<Item = (Self, Option<&'a IsolatedWorktree>)>,
+    ) -> &'a str {
+        ancestors
+            .into_iter()
+            .find_map(|(rule, worktree)| rule.isolated_path(worktree))
+            .unwrap_or(root_worktree_path)
     }
 }
 
@@ -207,25 +86,6 @@ pub struct WorktreeInventoryEntry {
     pub repository_root: String,
     pub worktree_path: String,
     pub branch: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryWorktreeInventory {
-    pub repository_root: String,
-    pub worktrees: Vec<WorktreeInventoryEntry>,
-}
-
-impl RepositoryWorktreeInventory {
-    pub fn new(repository_root: impl AsRef<str>, worktrees: Vec<WorktreeInventoryEntry>) -> Self {
-        let repository_root = normalize_repo_path(repository_root.as_ref());
-        debug_assert!(worktrees
-            .iter()
-            .all(|worktree| worktree.repository_root == repository_root));
-        Self {
-            repository_root,
-            worktrees,
-        }
-    }
 }
 
 impl WorktreeInventoryEntry {
@@ -251,48 +111,6 @@ impl WorktreeInventoryEntry {
         self.branch == isolated_worktree_branch(node_execution_id, attempt)
             && self.worktree_path
                 == isolated_worktree_path(&self.repository_root, node_execution_id, attempt)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorktreeManagementKind {
-    WorkingArea,
-    IsolatedOwned,
-    CleanupCandidate,
-    UntrackedCleanupCandidate,
-}
-
-impl WorktreeManagementKind {
-    pub fn as_public_str(self) -> &'static str {
-        match self {
-            Self::WorkingArea => "working_area",
-            Self::IsolatedOwned => "isolated_owned",
-            Self::CleanupCandidate => "cleanup_candidate",
-            Self::UntrackedCleanupCandidate => "untracked_cleanup_candidate",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IsolatedWorktreeRecoveryCause {
-    worktree_path: String,
-}
-
-impl IsolatedWorktreeRecoveryCause {
-    pub fn new(worktree_path: impl AsRef<str>) -> Self {
-        Self {
-            worktree_path: normalize_repo_path(worktree_path.as_ref()),
-        }
-    }
-}
-
-impl std::fmt::Display for IsolatedWorktreeRecoveryCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "isolated worktree is missing: {}",
-            self.worktree_path
-        )
     }
 }
 
@@ -325,6 +143,18 @@ fn isolated_worktree_path_for_token(repository_root: &str, token: &str) -> Strin
     ))
 }
 
+pub fn isolated_worktree_owner(path: &str) -> Option<(String, u32)> {
+    let path = normalize_repo_path(path);
+    let (directory, token) = path.rsplit_once('/')?;
+    let (_, isolated_directory) = directory.rsplit_once('/')?;
+    if isolated_directory != ISOLATED_DIRECTORY {
+        return None;
+    }
+    let (node_execution_id, attempt) = parse_identity_token(token)?;
+    (token == isolated_worktree_identity_token(node_execution_id, attempt))
+        .then(|| (node_execution_id.to_string(), attempt))
+}
+
 fn parse_identity_token(token: &str) -> Option<(&str, u32)> {
     let (node_execution_id, attempt) = token.rsplit_once("-a")?;
     if node_execution_id.is_empty() {
@@ -333,6 +163,10 @@ fn parse_identity_token(token: &str) -> Option<(&str, u32)> {
     let attempt = attempt.parse().ok()?;
     Some((node_execution_id, attempt))
 }
+
+#[cfg(test)]
+#[path = "worktree_origin_test.rs"]
+mod worktree_origin_tests;
 
 #[cfg(test)]
 mod tests {

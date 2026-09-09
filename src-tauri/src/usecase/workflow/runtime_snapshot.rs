@@ -15,6 +15,7 @@ pub(crate) struct RuntimeCommitSnapshot {
     pub(crate) execution_id: String,
     pub(crate) workflow_name: String,
     pub(crate) worktree_path: String,
+    pub(crate) repository_root: Option<String>,
     pub(crate) created_from: ExecutionOrigin,
     pub(crate) request: String,
     pub(crate) error_reason: Option<String>,
@@ -40,6 +41,7 @@ impl RuntimeCommitSnapshot {
             execution_id: execution.id.clone(),
             workflow_name: execution.workflow.name.clone(),
             worktree_path: execution.worktree_path.clone(),
+            repository_root: execution.repository_root.clone(),
             created_from: execution.created_from,
             request: execution.request.clone().unwrap_or_default(),
             error_reason: execution.error_reason.clone(),
@@ -92,6 +94,7 @@ fn runtime_node_execution_to_domain(
     let artifact_node_name = execution.node_name.clone();
     let artifact_produced_at = execution.completed_at.unwrap_or(execution.started_at);
     crate::domain::workflow::NodeExecution {
+        worktree: execution.worktree.clone(),
         recovery_reason: execution.recovery_reason.clone(),
         id: execution.id,
         execution_id: execution.execution_id,

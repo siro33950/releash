@@ -348,14 +348,6 @@ pub(crate) mod test_support {
             "node-execution-next".to_string()
         }
 
-        fn ensure_node_recovery_available(
-            &self,
-            _execution_id: &str,
-            _node_execution_id: &str,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
         async fn resolve_workflow_execution_id(
             &self,
             node_execution_id: &str,
@@ -806,6 +798,140 @@ pub(crate) mod test_support {
             }),
         }];
         append_canonical_workflow_drafts(data_dir, &drafts).unwrap();
+    }
+
+    pub(crate) fn seed_isolated_query_execution(
+        data_dir: &Path,
+        execution_id: &str,
+        status: crate::domain::workflow::NodeExecutionStatus,
+    ) {
+        use crate::adaptor::gateway::workflow::fact_log::append_single_fact;
+        use crate::domain::workflow::{
+            ArtifactProducedFact, ExecutionParentRef, ExecutionTreeLaunch,
+            NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta, NodeKindName,
+            RuntimeFailureObservedFact, StartedFact, StopReceivedFact, SubmitReceivedFact,
+            TreeRootFact,
+        };
+
+        let store = canonical_local_event_store(data_dir);
+        let root = NodeFactMeta {
+            tree_id: execution_id.into(),
+            node_execution_id: execution_id.into(),
+            parent_id: None,
+            node_name: "main".into(),
+            kind: NodeKindName::Sequence,
+            attempt: 1,
+        };
+        let definition = serde_saphyr::from_str(
+            "name: review\ndescription: isolated output fixture\nschemas:\n  review-result:\n    type: object\n    properties:\n      status: {type: string}\n    required: [status]\nnodes:\n  main: {sequence: {children: [review]}}\n  review: {session: {provider: codex}, worktree: isolated, artifact: review-result}",
+        )
+        .unwrap();
+        append_single_fact(
+            &store,
+            &root,
+            &NodeFact::Started(StartedFact {
+                parent: None,
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: Some("/repo".into()),
+                    definition_resolution: Default::default(),
+                    workspace_identity: "/repo-worktrees/development".into(),
+                    worktree_path: "/repo-worktrees/development".into(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    definition,
+                    launched_as: ExecutionTreeLaunch::Workflow,
+                })),
+            }),
+            100_000,
+        )
+        .unwrap();
+        let node = NodeFactMeta {
+            node_execution_id: "isolated-review-2".into(),
+            parent_id: Some(execution_id.into()),
+            node_name: "review".into(),
+            kind: NodeKindName::Session,
+            attempt: 2,
+            ..root
+        };
+        append_single_fact(
+            &store,
+            &node,
+            &NodeFact::Started(StartedFact {
+                parent: Some(ExecutionParentRef::sequence_child(execution_id)),
+                root: None,
+            }),
+            101_000,
+        )
+        .unwrap();
+        let facts = match status {
+            NodeExecutionStatus::Running => Vec::new(),
+            NodeExecutionStatus::Failed => vec![NodeFact::RuntimeFailureObserved(
+                RuntimeFailureObservedFact {
+                    reason: "provider failed".into(),
+                    failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+                },
+            )],
+            NodeExecutionStatus::Aborted => vec![NodeFact::AbortRequested],
+            NodeExecutionStatus::Succeeded => vec![
+                NodeFact::ArtifactProduced(ArtifactProducedFact {
+                    contract: Some("review-result".into()),
+                    value: serde_json::json!({"status": "approved"}),
+                    request_id: Some("isolated-request-2".into()),
+                }),
+                NodeFact::SubmitReceived(SubmitReceivedFact {
+                    request_id: Some("isolated-request-2".into()),
+                }),
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+            ],
+            other => panic!("unsupported isolated fixture status: {other:?}"),
+        };
+        for (index, fact) in facts.iter().enumerate() {
+            append_single_fact(&store, &node, fact, 110_000 + index as i64).unwrap();
+        }
+    }
+
+    pub(crate) fn assert_isolated_execution_json(
+        execution: &serde_json::Value,
+        status: crate::domain::workflow::NodeExecutionStatus,
+    ) {
+        use crate::domain::workflow::NodeExecutionStatus;
+
+        let node = execution["nodeExecutions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "isolated-review-2")
+            .unwrap();
+        assert_eq!(node["attempt"], 2);
+        assert_eq!(node["status"], status.as_str());
+        assert_eq!(node["worktree"], isolated_worktree_json());
+        let artifact = execution["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["nodeName"] == "review");
+        if status == NodeExecutionStatus::Succeeded {
+            assert_eq!(execution["status"], "completed");
+            assert_eq!(node["artifact"]["value"]["status"], "approved");
+            assert_eq!(
+                node["artifact"]["value"]["worktree"],
+                isolated_worktree_json()
+            );
+            assert_eq!(artifact.unwrap(), &node["artifact"]);
+        } else {
+            assert!(node["artifact"].is_null());
+            assert!(artifact.is_none());
+        }
+    }
+
+    pub(crate) fn isolated_worktree_json() -> serde_json::Value {
+        serde_json::json!({
+            "branch": "releash/isolated/isolated-review-2-a2",
+            "path": "/repo-worktrees/.releash-isolated/isolated-review-2-a2"
+        })
     }
 
     #[tokio::test]
@@ -1322,6 +1448,47 @@ pub(crate) mod test_support {
         assert_eq!(output.1["value"], serde_json::json!({"status": "approved"}));
         assert_eq!(output.1["submitted_at"], 110.0);
         assert_eq!(output.1["request_id"], "request-1");
+    }
+
+    #[tokio::test]
+    async fn test_隔離worktree_apiで実行中と失敗とabortと完了後のbranchとpathを返す() {
+        use crate::domain::workflow::NodeExecutionStatus;
+
+        for status in [
+            NodeExecutionStatus::Running,
+            NodeExecutionStatus::Failed,
+            NodeExecutionStatus::Aborted,
+            NodeExecutionStatus::Succeeded,
+        ] {
+            // Given
+            let directory = tempfile::tempdir().unwrap();
+            let execution_id = "00000000-0000-4000-8000-000000001733";
+            seed_isolated_query_execution(directory.path(), execution_id, status);
+            let (router, _, _) = test_router(directory.path(), "secret");
+
+            // When
+            let execution =
+                get_json(&router, &format!("/v1/workflow/executions/{execution_id}")).await;
+            let output = get_json(
+                &router,
+                &format!("/v1/workflow/executions/{execution_id}/artifacts/review"),
+            )
+            .await;
+
+            // Then
+            assert_eq!(execution.0, StatusCode::OK);
+            assert_isolated_execution_json(&execution.1, status);
+            assert_eq!(output.0, StatusCode::OK);
+            if status == NodeExecutionStatus::Succeeded {
+                assert_eq!(output.1["status"], "submitted");
+                assert_eq!(output.1["contract"], "review-result");
+                assert_eq!(output.1["value"]["status"], "approved");
+                assert_eq!(output.1["value"]["worktree"], isolated_worktree_json());
+                assert_eq!(output.1["request_id"], "isolated-request-2");
+            } else {
+                assert_eq!(output.1, serde_json::json!({"status": "not_submitted"}));
+            }
+        }
     }
 
     #[tokio::test]

@@ -360,7 +360,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         if outcome == AgentSessionMutationOutcome::Applied {
             self.change_notifier
-                .agent_session_changed(session.session().worktree_path());
+                .agent_session_changed(session.session().workspace().as_str());
         }
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
@@ -417,6 +417,8 @@ impl AgentSessionLifecycleUsecase {
             .confirm_archive_fallback_delete(agent_session_id, caller_request_id)
             .await
             .map_err(map_session_error)?;
+        self.change_notifier
+            .agent_session_changed(owner.workspace_identity().as_str());
         self.release_deleted_execution_tree(&tree_id).await;
         Ok(())
     }
@@ -479,7 +481,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_session_error)?;
         if outcome == AgentSessionProcessExitOutcome::Paused {
             self.change_notifier
-                .agent_session_changed(session.session().worktree_path());
+                .agent_session_changed(session.session().workspace().as_str());
         }
         if outcome != AgentSessionProcessExitOutcome::GcRequired {
             self.release_launch_binding(agent_session_id).await?;
@@ -637,6 +639,8 @@ impl AgentSessionLifecycleUsecase {
             .delete(agent_session_id, caller_request_id)
             .await
             .map_err(map_session_error)?;
+        self.change_notifier
+            .agent_session_changed(owner.workspace_identity().as_str());
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }
@@ -695,6 +699,8 @@ impl AgentSessionLifecycleUsecase {
             )
             .await
             .map_err(map_session_error)?;
+        self.change_notifier
+            .agent_session_changed(owner.workspace_identity().as_str());
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }

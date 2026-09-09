@@ -147,14 +147,6 @@ impl WorkflowControlPlaneGateway for DiagnosticsAcceptanceRuntimeGateway {
         String::new()
     }
 
-    fn ensure_node_recovery_available(
-        &self,
-        _execution_id: &str,
-        _node_execution_id: &str,
-    ) -> Result<(), WorkflowError> {
-        Err(unsupported_runtime_operation())
-    }
-
     async fn resolve_workflow_execution_id(
         &self,
         _node_execution_id: &str,

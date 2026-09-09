@@ -117,6 +117,7 @@ pub struct NodeExecutionFailure {
 /// event replay から構築する node 実行 1 回分の read model。
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeExecution {
+    pub worktree: Option<crate::domain::workflow::IsolatedWorktree>,
     pub recovery_reason: Option<String>,
     pub id: String,
     pub execution_id: String,
@@ -144,7 +145,7 @@ impl NodeExecution {
     }
 
     pub fn can_retry(&self) -> bool {
-        if self.recovery_reason.is_some() {
+        if self.recovery_reason.is_some() || self.kind.is_composite_kind() {
             return false;
         }
         self.status == NodeExecutionStatus::Failed
@@ -170,6 +171,7 @@ mod tests {
     #[test]
     fn retry_admission_belongs_to_the_node_execution() {
         let mut node = NodeExecution {
+            worktree: None,
             recovery_reason: None,
             id: "node-1".to_string(),
             execution_id: "execution-1".to_string(),

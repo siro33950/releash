@@ -484,7 +484,7 @@ async fn assert_activity_ingress_for_location(
     assert!(transaction.commits.lock().unwrap().is_empty());
     assert_eq!(
         notifier.worktree_paths.lock().unwrap().as_slice(),
-        ["/repo/worktree"]
+        ["/repo"]
     );
 }
 
@@ -676,7 +676,7 @@ async fn test_provider_lifecycle_ingress_claudeのstop_failureは活動だけを
     assert!(transaction.commits.lock().unwrap().is_empty());
     assert_eq!(
         notifier.worktree_paths.lock().unwrap().as_slice(),
-        ["/repo/worktree"]
+        ["/repo"]
     );
 
     let revision_after_transition = agent_repository.stored.lock().unwrap().revision();
@@ -691,7 +691,7 @@ async fn test_provider_lifecycle_ingress_claudeのstop_failureは活動だけを
     assert!(transaction.commits.lock().unwrap().is_empty());
     assert_eq!(
         notifier.worktree_paths.lock().unwrap().as_slice(),
-        ["/repo/worktree"]
+        ["/repo"]
     );
 }
 

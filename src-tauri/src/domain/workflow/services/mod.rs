@@ -1,4 +1,5 @@
 pub mod approval_rules;
+pub mod artifact_query;
 pub mod contract;
 pub mod contract_schema;
 pub mod event_replay;
@@ -13,7 +14,6 @@ pub mod secret_masker;
 pub mod template_preview;
 pub mod transition;
 pub mod validation;
-pub mod worktree_reconciliation;
 
 #[cfg(test)]
 pub use failure_policy::{TimeoutContext, TimeoutPolicy};

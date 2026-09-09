@@ -97,8 +97,8 @@ struct FactRowMeta {
 /// イベント列から事実行への写像。
 ///
 /// - 事実でないイベント（遷移・観測の導出・合成子の導出成果）は行にしない。
-/// - command / session の NodeCompleted / NodeFailed は「プロセスの終了」という
-///   事実（process_exited）として写像する。
+/// - command の完了は process_exited、runtime が確定した NodeFailed は
+///   runtime_failure_observed として写像する。
 /// - meta をイベントが運ばない事実は、同一バッチ内の started か、既存の
 ///   node_events 行（`lookup`）から同定カラムを補完する。
 fn fact_rows_for_events(
@@ -126,6 +126,7 @@ fn fact_rows_for_events(
         let timestamp = event.timestamp();
         match event {
             WorkflowEvent::ExecutionStarted {
+                repository_root,
                 worktree_path,
                 created_from,
                 request,
@@ -133,6 +134,7 @@ fn fact_rows_for_events(
                 ..
             } => {
                 pending_root = Some(TreeRootFact {
+                    repository_root: repository_root.clone(),
                     definition_resolution: Default::default(),
                     workspace_identity: WorkspaceIdentity::new(worktree_path).as_str().to_string(),
                     worktree_path: worktree_path.clone(),
@@ -158,7 +160,7 @@ fn fact_rows_for_events(
                     attempt: *attempt,
                 };
                 let root = if parent.is_none() {
-                    pending_root.take()
+                    pending_root.take().map(Box::new)
                 } else {
                     None
                 };
@@ -325,24 +327,11 @@ fn fact_rows_for_events(
                 ..
             } => {
                 let meta = resolve(&batch_meta, node_execution_id)?;
-                let fact = match meta.kind {
-                    NodeKindName::Session => Some(NodeFact::RuntimeFailureObserved(
-                        RuntimeFailureObservedFact {
-                            reason: reason.clone(),
-                            failure_kind: *failure_kind,
-                        },
-                    )),
-                    NodeKindName::Command => Some(NodeFact::ProcessExited(ProcessExitedFact {
-                        exit_code: None,
-                        result_summary: None,
-                        failure_reason: Some(reason.clone()),
-                        failure_kind: Some(*failure_kind),
-                    })),
-                    NodeKindName::Fanout | NodeKindName::Sequence => None,
-                };
-                if let Some(fact) = fact {
-                    rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
-                }
+                let fact = NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                    reason: reason.clone(),
+                    failure_kind: *failure_kind,
+                });
+                rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
             WorkflowEvent::ApprovalResolved {
                 node_execution_id,
@@ -411,6 +400,18 @@ fn meta_from_row(row: &NodeEventRow) -> Result<FactRowMeta, String> {
         kind: kind_from_column(&row.kind)?,
         attempt: u32::try_from(row.attempt)
             .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?,
+    })
+}
+
+pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, String> {
+    let meta = meta_from_row(row)?;
+    Ok(NodeFactMeta {
+        tree_id: row.tree_id.clone(),
+        node_execution_id: meta.node_execution_id,
+        parent_id: meta.parent_id,
+        node_name: meta.node_name,
+        kind: meta.kind,
+        attempt: meta.attempt,
     })
 }
 
@@ -603,7 +604,9 @@ pub(crate) fn read_tree_records_from(
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("node fact tree read failed: {error:?}"))?;
-    rows.iter().map(record_from_row).collect()
+    rows.iter()
+        .filter_map(|row| record_from_row(row).transpose())
+        .collect()
 }
 
 pub(crate) fn read_latest_activity_record_for_node(
@@ -621,6 +624,7 @@ pub(crate) fn read_latest_activity_record_for_node(
         .as_ref()
         .map(record_from_row)
         .transpose()
+        .map(Option::flatten)
 }
 
 pub(crate) fn read_records_for_event_types(
@@ -638,7 +642,9 @@ pub(crate) fn read_records_for_event_types(
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .map_err(|error| format!("node lifecycle fact lookup failed: {error:?}"))?;
-    rows.iter().map(record_from_row).collect()
+    rows.iter()
+        .filter_map(|row| record_from_row(row).transpose())
+        .collect()
 }
 
 pub(crate) fn read_latest_record_for_node_with_event_types(
@@ -665,6 +671,7 @@ pub(crate) fn read_latest_record_for_node_with_event_types(
         .as_ref()
         .map(record_from_row)
         .transpose()
+        .map(Option::flatten)
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
@@ -675,27 +682,58 @@ pub(crate) fn read_tree_records(
     read_tree_records_from(&FactLogReadBackend::Live(Arc::clone(store)), tree_id)
 }
 
-pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<NodeFactRecord, String> {
-    let fact = if row.event_type == "started" {
-        super::stored_definition::decode_started(&row.detail)
-    } else {
-        NodeFact::decode(&row.event_type, &row.detail).map_err(|error| error.to_string())
+pub(crate) fn decode_stored_fact(
+    event_type: &str,
+    detail: &str,
+) -> Result<Option<NodeFact>, String> {
+    match event_type {
+        "isolated_worktree_created" => {
+            #[derive(serde::Deserialize)]
+            struct RetiredWorktreeCreated {
+                #[serde(rename = "repositoryRoot")]
+                _repository_root: String,
+                #[serde(rename = "worktreePath")]
+                _worktree_path: String,
+                #[serde(rename = "branch")]
+                _branch: String,
+            }
+            serde_json::from_str::<RetiredWorktreeCreated>(detail)
+                .map(|_| None)
+                .map_err(|error| error.to_string())
+        }
+        "isolated_worktree_released" | "isolated_worktree_lost" => {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(detail)
+                .map(|_| None)
+                .map_err(|error| error.to_string())
+        }
+        "started" => super::stored_definition::decode_started(detail).map(Some),
+        _ => NodeFact::decode(event_type, detail)
+            .map(Some)
+            .map_err(|error| error.to_string()),
     }
-    .map_err(|error| format!("node fact decode failed: {error}"))?;
-    Ok(NodeFactRecord {
+    .map_err(|error| format!("node fact decode failed: {error}"))
+}
+
+pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecord>, String> {
+    let kind = kind_from_column(&row.kind)?;
+    let attempt = u32::try_from(row.attempt)
+        .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?;
+    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail)? else {
+        return Ok(None);
+    };
+    Ok(Some(NodeFactRecord {
         meta: NodeFactMeta {
             tree_id: row.tree_id.clone(),
             node_execution_id: row.node_execution_id.clone(),
             parent_id: row.parent_id.clone(),
             node_name: row.node_name.clone(),
-            kind: kind_from_column(&row.kind)?,
-            attempt: u32::try_from(row.attempt)
-                .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?,
+            kind,
+            attempt,
         },
         seq: row.seq,
         timestamp_ms: row.timestamp_ms,
         fact,
-    })
+    }))
 }
 
 /// 単独の事実（human の行動等）を1行 append する。
@@ -736,13 +774,8 @@ pub(crate) fn pending_single_fact(
 /// 1 tree に対する reconciliation パスの結果。
 pub(crate) struct TreeReconciliation {
     pub(crate) folded: crate::domain::workflow::services::fact_replay::FoldedTree,
-    /// 前進の実行で新たに起動すべきになった leaf。
-    pub(crate) leaves: Vec<crate::domain::workflow::entities::workflow_execution::LeafStart>,
-}
-
-pub(crate) struct WorktreeReconciliationPorts<'a> {
-    pub(crate) ledger: &'a dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository,
-    pub(crate) inventory: &'a [crate::domain::workflow::RepositoryWorktreeInventory],
+    /// 前進の実行で必要になった合成子の準備と葉 runtime の起動。
+    pub(crate) starts: Vec<crate::domain::workflow::entities::workflow_execution::NodeStart>,
 }
 
 /// 1 tree の冪等 reconciliation パス:
@@ -756,63 +789,20 @@ pub(crate) fn reconcile_tree_pass(
     tree_id: &str,
     now: f64,
     new_id: &mut dyn FnMut() -> String,
-    worktrees: Option<WorktreeReconciliationPorts<'_>>,
 ) -> Result<Option<TreeReconciliation>, String> {
     use crate::domain::workflow::entities::workflow_execution::{
         ExecutionAdvanceDecision, RuntimeNodeExecutionStatus,
     };
-    use crate::domain::workflow::services::worktree_reconciliation::{
-        reconcile_worktrees, IsolatedWorktreeOwnerLifecycle, IsolatedWorktreeOwnerState,
-    };
-    use crate::domain::workflow::{
-        IsolatedWorktreeIdentity, NodeCompletionSignalState, ProcessExitedFact,
-    };
+    use crate::domain::workflow::{NodeCompletionSignalState, ProcessExitedFact};
 
     let backend = FactLogReadBackend::Live(Arc::clone(store));
-    let Some(mut folded) = fold_tree_from(&backend, tree_id)? else {
+    let Some(folded) = fold_tree_from(&backend, tree_id)? else {
         return Ok(None);
     };
-    if let Some(worktrees) = worktrees {
-        let owner_states = folded
-            .aggregate
-            .node_executions
-            .iter()
-            .map(|node| IsolatedWorktreeOwnerState {
-                identity: IsolatedWorktreeIdentity {
-                    tree_id: tree_id.to_string(),
-                    node_execution_id: node.id.clone(),
-                    attempt: node.attempt,
-                },
-                lifecycle: if node.status.is_active() {
-                    IsolatedWorktreeOwnerLifecycle::Active
-                } else {
-                    IsolatedWorktreeOwnerLifecycle::Ended
-                },
-            })
-            .collect::<Vec<_>>();
-        for inventory in worktrees.inventory {
-            let reconciliation =
-                reconcile_worktrees(&folded.isolated_worktrees, &owner_states, inventory);
-            for loss in reconciliation.losses {
-                worktrees
-                    .ledger
-                    .append(
-                        &loss.entry.owner,
-                        &NodeFact::IsolatedWorktreeLost,
-                        (now * 1000.0) as i64,
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        let Some(refolded) = fold_tree_from(&backend, tree_id)? else {
-            return Ok(None);
-        };
-        folded = refolded;
-    }
     if !folded.aggregate.is_active() {
         return Ok(Some(TreeReconciliation {
             folded,
-            leaves: Vec::new(),
+            starts: Vec::new(),
         }));
     }
     let records = read_tree_records_from(&backend, tree_id)?;
@@ -835,18 +825,6 @@ pub(crate) fn reconcile_tree_pass(
         if !is_leaf
             || node.status != RuntimeNodeExecutionStatus::Running
             || node.completion_signals == NodeCompletionSignalState::StopReceived
-        {
-            continue;
-        }
-        let worktree_identity = IsolatedWorktreeIdentity {
-            tree_id: tree_id.to_string(),
-            node_execution_id: node.id.clone(),
-            attempt: node.attempt,
-        };
-        if folded
-            .isolated_worktrees
-            .recovery_cause(&worktree_identity)
-            .is_some()
         {
             continue;
         }
@@ -884,12 +862,20 @@ pub(crate) fn reconcile_tree_pass(
             folded
                 .aggregate
                 .leaf_start_for(&node_execution_id)
+                .map(crate::domain::workflow::entities::workflow_execution::NodeStart::Leaf)
                 .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut advance_rounds = 0;
     loop {
-        let advances = folded.aggregate.derive_pending_advances();
+        let advances = folded.aggregate.derive_pending_advances().into_iter().filter(|advance| {
+            let scope_id = match advance {
+                crate::domain::workflow::entities::workflow_execution::PendingAdvance::StartEntry { scope_id }
+                | crate::domain::workflow::entities::workflow_execution::PendingAdvance::ExpandFanout { scope_id }
+                | crate::domain::workflow::entities::workflow_execution::PendingAdvance::AfterChild { scope_id, .. } => scope_id,
+            };
+            !leaves.iter().any(|leaf| leaf.node_execution_id() == scope_id)
+        }).collect::<Vec<_>>();
         if advances.is_empty() {
             break;
         }
@@ -900,17 +886,29 @@ pub(crate) fn reconcile_tree_pass(
         }
         advance_rounds += 1;
         for advance in advances {
+            let scope_id = match &advance {
+                crate::domain::workflow::entities::workflow_execution::PendingAdvance::StartEntry { scope_id }
+                | crate::domain::workflow::entities::workflow_execution::PendingAdvance::ExpandFanout { scope_id }
+                | crate::domain::workflow::entities::workflow_execution::PendingAdvance::AfterChild { scope_id, .. } => scope_id,
+            };
+            if let Some(start) = folded.aggregate.isolated_composite_start(scope_id) {
+                leaves.push(crate::domain::workflow::entities::workflow_execution::NodeStart::PrepareComposite(start));
+                continue;
+            }
             let applied = folded
                 .aggregate
                 .apply_pending_advance(&advance, new_id, now)
                 .map_err(|error| error.to_string())?;
             append_facts_for_events(store, &applied.events)?;
-            if let ExecutionAdvanceDecision::StartLeaves(applied_leaves) = applied.decision {
+            if let ExecutionAdvanceDecision::StartNodes(applied_leaves) = applied.decision {
                 leaves.extend(applied_leaves);
             }
         }
     }
-    Ok(Some(TreeReconciliation { folded, leaves }))
+    Ok(Some(TreeReconciliation {
+        folded,
+        starts: leaves,
+    }))
 }
 
 /// worktree に root を植えた木の識別子と root 事実（root started の追記順）。
@@ -1008,7 +1006,8 @@ pub(crate) fn find_session_attachment_record(
     let Some(row) = row else {
         return Ok(None);
     };
-    let record = record_from_row(&row)?;
+    let record = record_from_row(&row)?
+        .ok_or_else(|| "session attachment index points to a retired fact".to_string())?;
     let NodeFact::SessionAttached(fact) = &record.fact else {
         return Err("session attachment index points to a non-attachment fact".to_string());
     };

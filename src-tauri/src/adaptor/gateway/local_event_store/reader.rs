@@ -911,7 +911,7 @@ fn canonical_runtime_owner_snapshot(
         let records = super::node_events::read_tree(connection, &root.tree_id)
             .map_err(|error| storage_unavailable(&error))?
             .iter()
-            .map(record_from_row)
+            .filter_map(|row| record_from_row(row).transpose())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| LocalEventQueryError::InvalidRequest)?;
         let Some(NodeFact::Started(started)) = records.first().map(|record| &record.fact) else {
@@ -2331,7 +2331,8 @@ mod canonical_runtime_owner_snapshot_tests {
     fn workflow_root(worktree_path: &str) -> NodeFact {
         NodeFact::Started(StartedFact {
             parent: None,
-            root: Some(TreeRootFact {
+            root: Some(Box::new(TreeRootFact {
+                repository_root: None,
                 definition_resolution: Default::default(),
                 workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
@@ -2353,7 +2354,7 @@ mod canonical_runtime_owner_snapshot_tests {
                     entry: "main".to_string(),
                 },
                 launched_as: ExecutionTreeLaunch::Workflow,
-            }),
+            })),
         })
     }
 

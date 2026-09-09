@@ -9,6 +9,7 @@ use crate::domain::workflow::NodeFactRecord;
 pub(crate) struct SessionExecutionContext {
     pub(crate) workspace_identity: String,
     pub(crate) worktree_path: String,
+    pub(crate) workspace_worktree_path: String,
     pub(crate) launched_as: crate::domain::workflow::ExecutionTreeLaunch,
     pub(crate) provider: ProviderKind,
 }

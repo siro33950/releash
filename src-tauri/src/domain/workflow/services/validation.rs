@@ -176,10 +176,6 @@ pub enum ValidationError {
         node: String,
         parameter: String,
     },
-    /// `worktree` フィールドは未対応（#85 で導入）。
-    UnsupportedWorktreeField {
-        node: String,
-    },
     /// 合成子の包含循環（children を辿ると自分自身へ戻る）。
     CompositeInclusionCycle {
         node: String,
@@ -382,12 +378,6 @@ impl fmt::Display for ValidationError {
                     "node '{node}' input parameter '{parameter}' is a reserved source name and cannot be declared"
                 )
             }
-            Self::UnsupportedWorktreeField { node } => {
-                write!(
-                    f,
-                    "node '{node}' declares `worktree`, which is not supported yet (#85)"
-                )
-            }
             Self::CompositeInclusionCycle { node, cycle } => {
                 write!(
                     f,
@@ -451,7 +441,7 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "command node '{node}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
+                    "node '{node}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
             Self::InvalidArtifactReference {
@@ -1175,18 +1165,6 @@ fn collect_on_failure_errors(workflow: &WorkflowDefinition) -> Vec<ValidationErr
     errors
 }
 
-/// 未解禁の構文（worktree・#85 で導入）を検出する。
-fn collect_unsupported_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
-    workflow
-        .nodes
-        .iter()
-        .filter(|node| node.worktree.is_some())
-        .map(|node| ValidationError::UnsupportedWorktreeField {
-            node: node.name.clone(),
-        })
-        .collect()
-}
-
 /// 合成子の包含循環（children に置かれた合成子を辿ると自分自身へ戻る）を検出する。
 /// 深さの総量は `MAX_NODES_PER_WORKFLOW` が縛るため、循環だけが非有界の芽になる。
 fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
@@ -1358,9 +1336,6 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     if let Some(err) = collect_on_failure_errors(workflow).into_iter().next() {
         return Err(err);
     }
-    if let Some(err) = collect_unsupported_errors(workflow).into_iter().next() {
-        return Err(err);
-    }
 
     for node in &workflow.nodes {
         validate_node_kind_fields(node)?;
@@ -1504,6 +1479,15 @@ fn validate_node_schema_refs(
                 node: node_name.to_string(),
                 contract: contract.to_string(),
             });
+        }
+        if let SchemaDef::Object { properties, .. } = schema {
+            if properties.contains_key("worktree") {
+                return Err(ValidationError::ReservedArtifactField {
+                    node: node_name.to_string(),
+                    contract: contract.to_string(),
+                    field: "worktree".to_string(),
+                });
+            }
         }
         if is_command {
             if let Some(field) = contract_schema::schema_declares_command_reserved_field(schema) {
@@ -1703,7 +1687,6 @@ pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     errors.extend(collect_reserved_parameter_errors(workflow));
     errors.extend(collect_sequence_artifact_errors(workflow));
     errors.extend(collect_on_failure_errors(workflow));
-    errors.extend(collect_unsupported_errors(workflow));
 
     for node in &workflow.nodes {
         if let Err(e) = validate_node_kind_fields(node) {
@@ -2357,18 +2340,6 @@ mod tests {
             error,
             ValidationError::CompositeInclusionCycle { node, cycle }
                 if node == "part" && cycle == "part -> part"
-        )));
-    }
-
-    #[test]
-    fn test_未対応_worktreeフィールドを検出する() {
-        let mut fan = fanout_node("main", vec![ChildEntry::reference("worker")], None);
-        fan.worktree = Some("isolated".to_string());
-        let wf = workflow(vec![fan, command_node("worker", "echo hi")]);
-
-        assert!(validate_all(&wf).iter().any(|error| matches!(
-            error,
-            ValidationError::UnsupportedWorktreeField { node } if node == "main"
         )));
     }
 

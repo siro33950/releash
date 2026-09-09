@@ -2535,7 +2535,7 @@ async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通知�
         .create(
             "agent-notify",
             WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
+            "/repo-worktrees/.releash-isolated/agent-notify-a1",
             ProviderKind::Claude,
             session_location("agent-notify"),
             "create-notify",
@@ -2555,7 +2555,7 @@ async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通知�
 
     assert_eq!(
         change_notifier.notified.lock().unwrap().as_slice(),
-        &["/repo/worktree"]
+        &["/repo"]
     );
     assert!(
         sessions
@@ -2624,6 +2624,71 @@ async fn test_agent_session_open_未対応の親または自身の定義があ�
                 .session()
                 .lifecycle(),
             AgentSessionLifecycle::Open
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_隔離通知_session削除とgcとarchive代替削除の成功後だけworkspaceを通知する() {
+    for action in ["delete", "gc", "archive-fallback"] {
+        // Given
+        let LifecycleTestContext {
+            _directory,
+            sessions,
+            lifecycle,
+            terminal,
+            change_notifier,
+            ..
+        } = setup();
+        sessions
+            .create(
+                "isolated-notify",
+                WorkspaceIdentity::new("/repo"),
+                "/repo-worktrees/.releash-isolated/isolated-notify-a1",
+                ProviderKind::Claude,
+                session_location("isolated-notify"),
+                "create-isolated-notify",
+            )
+            .await
+            .unwrap();
+        // When
+        match action {
+            "delete" => {
+                assert!(lifecycle
+                    .delete("isolated-notify", "reject-live-delete")
+                    .await
+                    .is_err());
+                assert!(change_notifier.notified.lock().unwrap().is_empty());
+                sessions
+                    .associate_provider_session("isolated-notify", "provider", None, "associate")
+                    .await
+                    .unwrap();
+                lifecycle
+                    .archive("isolated-notify", "archive")
+                    .await
+                    .unwrap();
+                lifecycle.delete("isolated-notify", "delete").await.unwrap();
+            }
+            "gc" => {
+                *terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+                lifecycle
+                    .observe_process_exit("isolated-notify", 1, Some(0), "exit")
+                    .await
+                    .unwrap();
+            }
+            "archive-fallback" => {
+                lifecycle
+                    .confirm_archive_fallback_delete("isolated-notify", "archive-delete")
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        // Then
+        assert!(sessions.find("isolated-notify").await.unwrap().is_none());
+        assert_eq!(
+            change_notifier.notified.lock().unwrap().as_slice(),
+            &["/repo"]
         );
     }
 }

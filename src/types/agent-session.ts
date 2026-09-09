@@ -2,6 +2,7 @@ export interface AgentSessionItem {
 	id: string;
 	workspaceIdentity: string;
 	worktreePath: string;
+	workspaceWorktreePath: string;
 	provider: string;
 	treeLocation: {
 		treeId: string;
@@ -21,6 +22,7 @@ export interface AgentSessionLaunchAttachment {
 	agentSessionId: string;
 	workspaceIdentity: string;
 	worktreePath: string;
+	workspaceWorktreePath: string;
 	provider: AgentSessionItem["provider"];
 }
 

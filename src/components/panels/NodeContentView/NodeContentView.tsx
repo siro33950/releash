@@ -173,6 +173,18 @@ function NodeHeader({
 					{visibleErrorReason}
 				</span>
 			)}
+			{detail.worktree && (
+				<dl className="space-y-1 text-xs text-muted-foreground">
+					<div>
+						<dt>Branch</dt>
+						<dd className="break-all">{detail.worktree.branch}</dd>
+					</div>
+					<div>
+						<dt>Worktree</dt>
+						<dd className="break-all">{detail.worktree.path}</dd>
+					</div>
+				</dl>
+			)}
 			{detail.recoveryReason && (
 				<span className="min-w-0 truncate text-xs text-orange-600 dark:text-orange-300">
 					{detail.recoveryReason}

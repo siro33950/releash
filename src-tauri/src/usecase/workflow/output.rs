@@ -93,6 +93,25 @@ impl WorkflowOutputUsecase {
                 )))
             }
         }
+        if event_draft::node_is_isolated_in_drafts(&events, node_name, execution_id)
+            .map_err(contract_lookup_error_to_workflow_error)?
+        {
+            if let Some(submitted) =
+                event_draft::latest_isolated_artifact_from_drafts(&events, node_name, execution_id)?
+            {
+                return Ok(WorkflowGetOutputResult::Submitted {
+                    contract: submitted.contract,
+                    structured_output: submitted.value,
+                    submitted_at: submitted.submitted_at,
+                    request_id: submitted.request_id,
+                    timestamp: submitted.timestamp,
+                });
+            }
+            return self
+                .query
+                .get_node_output_from_events(execution_id, node_name, &events);
+        }
+
         Ok(WorkflowQueryService::get_output_from_events(
             &events, node_name,
         ))
@@ -167,6 +186,7 @@ mod tests {
     #[derive(Default)]
     struct FakeEventRepository {
         events: Mutex<Vec<WorkflowEventDraft>>,
+        reads: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeEventRepository {
@@ -185,6 +205,7 @@ mod tests {
             &self,
             _execution_id: &WorkflowExecutionId,
         ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.events.lock().unwrap().clone())
         }
     }
@@ -235,6 +256,15 @@ mod tests {
     struct NoopExecutionProjectionRepository;
 
     impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
+        fn get_node_artifact_from_events(
+            &self,
+            _execution_id: &WorkflowExecutionId,
+            _node_name: &str,
+            _events: &[WorkflowEventDraft],
+        ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
+            panic!("submitted output must not reconstruct the execution aggregate")
+        }
+
         fn get_execution(
             &self,
             _execution_id: &WorkflowExecutionId,
@@ -450,5 +480,104 @@ mod tests {
             error,
             WorkflowError::Validation(message) if message.contains("is not defined")
         ));
+    }
+    #[test]
+    fn test_隔離出力_開始順によらず最後の提出と同じattemptの成果を一度の読取で返す() {
+        // Given
+        let fixture = Fixture::new();
+        let mut definition = definition_with_artifact_contract("review-result");
+        definition.nodes[0].worktree = Some(crate::domain::workflow::WorktreeMode::Isolated);
+        let mut root = execution_started(test_execution_id(), definition);
+        root.payload["root"]["repositoryRoot"] = "/repo".into();
+        fixture.events.seed(root);
+        for (id, attempt) in [("earlier-slot", 2), ("later-slot", 1)] {
+            fixture.events.seed(WorkflowEventDraft {
+                execution_id: test_execution_id().into(),
+                event_kind: "started".into(),
+                timestamp: 1.5,
+                payload: serde_json::json!({"nodeExecutionId": id, "nodeName": "review", "kind": "session", "attempt": attempt}),
+            });
+        }
+        for (id, attempt, timestamp, request_id) in [
+            ("earlier-slot", 2, 2.0, "first"),
+            ("later-slot", 1, 3.0, "second"),
+            ("earlier-slot", 2, 4.0, "last"),
+        ] {
+            let mut submitted = artifact_produced(
+                test_execution_id(),
+                "review",
+                "review-result",
+                serde_json::json!({"status": request_id}),
+                timestamp,
+                request_id,
+            );
+            submitted.payload["nodeExecutionId"] = id.into();
+            submitted.payload["attempt"] = attempt.into();
+            fixture.events.seed(submitted);
+            // When
+            fixture
+                .events
+                .reads
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            let output = fixture
+                .usecase
+                .get_output(test_execution_id(), "review")
+                .unwrap();
+            // Then
+            let worktree =
+                crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", id, attempt);
+            assert_eq!(
+                output,
+                WorkflowGetOutputResult::Submitted {
+                    contract: Some("review-result".into()),
+                    structured_output: serde_json::json!({"status": request_id, "worktree": {"branch": worktree.branch, "path": worktree.path}}),
+                    submitted_at: Some(timestamp),
+                    request_id: Some(request_id.into()),
+                    timestamp,
+                }
+            );
+            assert_eq!(
+                fixture
+                    .events
+                    .reads
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn test_隔離出力_所有者情報の破損を未提出に置き換えない() {
+        for field in ["nodeExecutionId", "attempt", "repositoryRoot"] {
+            // Given
+            let fixture = Fixture::new();
+            let mut definition = definition_with_artifact_contract("review-result");
+            definition.nodes[0].worktree = Some(crate::domain::workflow::WorktreeMode::Isolated);
+            let mut root = execution_started(test_execution_id(), definition);
+            root.payload["root"]["repositoryRoot"] = "/repo".into();
+            let mut submitted = artifact_produced(
+                test_execution_id(),
+                "review",
+                "review-result",
+                serde_json::json!({"status":"ok"}),
+                2.0,
+                "request",
+            );
+            if field == "repositoryRoot" {
+                root.payload["root"].as_object_mut().unwrap().remove(field);
+            } else {
+                submitted.payload.as_object_mut().unwrap().remove(field);
+            }
+            fixture.events.seed(root);
+            fixture.events.seed(submitted);
+            // When / Then
+            assert!(
+                fixture
+                    .usecase
+                    .get_output(test_execution_id(), "review")
+                    .is_err(),
+                "{field}"
+            );
+        }
     }
 }

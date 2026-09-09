@@ -63,7 +63,7 @@ fn domain_node_to_schema(
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         completion: node.completion,
-        worktree: node.worktree.clone(),
+        worktree: node.worktree,
     }
 }
 

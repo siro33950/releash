@@ -165,6 +165,7 @@ fn agent_session_item_from_facts(
         id: session_id.to_string(),
         workspace_identity: derived.workspace_identity,
         worktree_path: derived.worktree_path,
+        workspace_worktree_path: context.workspace_worktree_path.clone(),
         provider: match derived.provider {
             ProviderKind::Claude => AgentSessionProviderDto::Claude,
             ProviderKind::Codex => AgentSessionProviderDto::Codex,

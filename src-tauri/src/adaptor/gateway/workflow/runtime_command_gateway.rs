@@ -34,6 +34,7 @@ pub(crate) struct TauriWorkflowRuntimeCommandGateway<R: tauri::Runtime = tauri::
 }
 
 pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
+    pub(crate) isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub(crate) repository_usecase: Arc<RepositoryUsecase>,
     pub(crate) app_config: Arc<dyn ConfigRepository>,
     pub(crate) data_dir: Option<PathBuf>,
@@ -50,8 +51,6 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
         Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>,
     pub(crate) provider_availability:
         Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
-    pub(crate) worktree_ledger: Arc<dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository>,
-    pub(crate) worktree_inventory: Arc<dyn crate::domain::workflow::WorktreeInventoryGateway>,
 }
 
 struct WorkflowShutdownRecord<'a> {
@@ -180,8 +179,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             agent_session_interrupt,
             agent_session_lifecycle,
             provider_availability,
-            worktree_ledger,
-            worktree_inventory,
+            isolated_worktrees,
         } = deps;
         let driver = Arc::new(WorkflowRuntimeHost::new_canonical(
             Arc::new(DefaultWorkflowDefinitionResolver),
@@ -196,8 +194,7 @@ impl<R: tauri::Runtime> TauriWorkflowRuntimeCommandGateway<R> {
             agent_session_interrupt,
             agent_session_lifecycle,
             provider_availability,
-            worktree_ledger,
-            worktree_inventory,
+            isolated_worktrees,
         ));
         Ok(Self {
             app,
@@ -333,16 +330,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneGateway for TauriWorkflowRuntimeComm
 
     fn new_node_execution_id(&self) -> String {
         uuid::Uuid::new_v4().to_string()
-    }
-
-    fn ensure_node_recovery_available(
-        &self,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowError> {
-        self.driver
-            .ensure_node_recovery_available(execution_id, node_execution_id)
-            .map_err(workflow_runtime_error_to_workflow_error)
     }
 
     async fn resolve_workflow_execution_id(

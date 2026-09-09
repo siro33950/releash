@@ -47,6 +47,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
     let artifact_node_name = execution.node_name.clone();
     let artifact_produced_at = execution.completed_at.unwrap_or(execution.started_at);
     crate::domain::workflow::NodeExecution {
+        worktree: execution.worktree.clone(),
         recovery_reason: execution.recovery_reason.clone(),
         id: execution.id,
         execution_id: execution.execution_id,

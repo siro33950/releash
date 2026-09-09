@@ -22,8 +22,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub started_at: f64,
     pub updated_at: f64,
     pub execution: &'a crate::domain::local_event::WorkflowExecutionMetadataRecord,
-    pub recovery_owner_reason: Option<String>,
-    pub node_recovery_reasons: &'a [(String, String)],
+
     pub session_activities:
         &'a std::collections::HashMap<String, crate::domain::workflow::AgentSessionActivity>,
     pub session_display_names: &'a std::collections::HashMap<
@@ -52,8 +51,6 @@ pub fn runtime_snapshot_nodes(
         started_at,
         updated_at,
         execution,
-        recovery_owner_reason,
-        node_recovery_reasons,
         session_activities,
         session_display_names,
     } = input;
@@ -69,10 +66,6 @@ pub fn runtime_snapshot_nodes(
             .collect(),
         timestamp: started_at,
     }];
-    facts.push(F::RecoveryFenceProjected {
-        owner: execution_id.to_string(),
-        reason: recovery_owner_reason,
-    });
     for node in node_executions
         .iter()
         .filter(|node| node.execution_id == execution_id)
@@ -174,14 +167,6 @@ pub fn runtime_snapshot_nodes(
             }),
         }
     }
-    facts.extend(
-        node_recovery_reasons
-            .iter()
-            .map(|(owner, reason)| F::RecoveryFenceProjected {
-                owner: owner.clone(),
-                reason: Some(reason.clone()),
-            }),
-    );
     facts.push(F::WorkflowSummaryProjected {
         execution_id: execution.execution_id.clone(),
         workflow_name: execution.workflow_name.clone(),
@@ -199,12 +184,12 @@ pub fn runtime_snapshot_nodes(
         };
         node.completion_signals = runtime.completion_signals;
         node.has_artifact = runtime.artifact.is_some();
-        node.can_retry = node.recovery_owner_reason.is_none()
-            && accepts_explicit_retry
+        node.can_retry = accepts_explicit_retry
             && runtime.can_retry()
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
             });
+        node.worktree = runtime.worktree.clone();
         node.resume_eligible = runtime.can_resume();
         if let Some(reason) = &runtime.recovery_reason {
             node.status = crate::domain::workspace_tree::WorkspaceNodeStatus::Unresolved;
@@ -257,6 +242,7 @@ mod tests {
         status: RuntimeNodeExecutionStatus,
     ) -> RuntimeNodeExecution {
         RuntimeNodeExecution {
+            worktree: None,
             recovery_reason: None,
             id: id.to_string(),
             execution_id: execution_id.to_string(),
@@ -309,8 +295,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution(),
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -318,6 +302,35 @@ mod tests {
         .into_iter()
         .find(|node| node.node_execution_id.as_deref() == Some(&node_execution_id))
         .unwrap()
+    }
+
+    #[test]
+    fn test_隔離worktree投影_実行中と成果物なし終端でもbranchとpathを保持する() {
+        // Given
+        let expected =
+            crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
+        for status in [
+            RuntimeNodeExecutionStatus::Running,
+            RuntimeNodeExecutionStatus::Failed,
+            RuntimeNodeExecutionStatus::Aborted,
+        ] {
+            let mut runtime = node("isolated", EXECUTION_ID, status);
+            runtime.worktree = Some(expected.clone());
+            // When
+            let projected = project_artifact_node(runtime);
+            // Then
+            assert_eq!(projected.worktree.as_ref(), Some(&expected));
+            assert!(!projected.has_artifact);
+            assert_eq!(
+                projected.status,
+                match status {
+                    RuntimeNodeExecutionStatus::Running => WorkspaceNodeStatus::Running,
+                    RuntimeNodeExecutionStatus::Failed => WorkspaceNodeStatus::Failed,
+                    RuntimeNodeExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
+                    _ => unreachable!(),
+                }
+            );
+        }
     }
 
     fn command_shaped_artifact() -> serde_json::Value {
@@ -409,9 +422,7 @@ mod tests {
         }
     }
 
-    fn capability_state(
-        node: &WorkspaceTreeNode,
-    ) -> (bool, bool, bool, bool, bool, bool, Option<&str>) {
+    fn capability_state(node: &WorkspaceTreeNode) -> (bool, bool, bool, bool, bool, bool) {
         (
             node.can_approve,
             node.can_retry,
@@ -419,7 +430,6 @@ mod tests {
             node.can_resume,
             node.can_abort,
             node.can_archive,
-            node.resume_unavailable_reason.as_deref(),
         )
     }
 
@@ -484,8 +494,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -545,8 +553,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &display_names,
         })
@@ -594,8 +600,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -624,8 +628,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -671,8 +673,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -750,8 +750,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -794,8 +792,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -810,48 +806,6 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("raw internal failure"));
-    }
-
-    #[test]
-    fn isolated_worktree_loss_fences_retry_and_projects_the_recovery_reason() {
-        let failed = node(
-            "lost-node",
-            EXECUTION_ID,
-            RuntimeNodeExecutionStatus::Failed,
-        );
-        let execution = execution();
-        let reason = "isolated worktree is missing: /repo/.releash-isolated/lost-node-a1";
-
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &[failed],
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[("lost-node".to_string(), reason.to_string())],
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-
-        let failed = nodes
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some("lost-node"))
-            .unwrap();
-        assert_eq!(failed.recovery_owner_reason.as_deref(), Some(reason));
-        assert!(!failed.can_retry);
-        let root = nodes
-            .iter()
-            .find(|node| node.node_execution_id.is_none())
-            .unwrap();
-        assert_eq!(root.resume_unavailable_reason.as_deref(), Some(reason));
     }
 
     #[test]
@@ -900,8 +854,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -926,11 +878,11 @@ mod tests {
         );
         assert_eq!(
             capability_state(by_execution_id["stopped-child"]),
-            (false, true, false, false, false, false, None)
+            (false, true, false, false, false, false)
         );
         assert_eq!(
             capability_state(workflow),
-            (false, false, true, false, true, false, None)
+            (false, false, true, false, true, false)
         );
     }
 
@@ -962,8 +914,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -1031,8 +981,6 @@ mod tests {
                     started_at: 1.0,
                     updated_at: 10.0,
                     execution: &execution,
-                    recovery_owner_reason: None,
-                    node_recovery_reasons: &[],
                     session_activities: &session_activities,
                     session_display_names: &std::collections::HashMap::new(),
                 })
@@ -1093,8 +1041,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -1117,7 +1063,6 @@ mod tests {
         );
         assert!(failed.can_retry);
         assert!(workflow.can_resume);
-        assert_eq!(workflow.resume_unavailable_reason, None);
     }
 
     #[test]
@@ -1149,8 +1094,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -1196,8 +1139,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
         })
@@ -1218,89 +1159,14 @@ mod tests {
         );
         assert_eq!(
             capability_state(paused),
-            (false, true, false, false, false, false, None)
+            (false, true, false, false, false, false)
         );
         assert_eq!(
             capability_state(workflow),
-            (false, false, true, false, true, false, None)
+            (false, false, true, false, true, false)
         );
     }
 
-    #[test]
-    fn test_runtime_snapshot分類_recovery_fenceをfailureにしてcapabilityを維持する() {
-        // Given
-        let mut fanout = node(
-            "fanout",
-            EXECUTION_ID,
-            RuntimeNodeExecutionStatus::Succeeded,
-        );
-        fanout.node_name = "fanout".to_string();
-        fanout.kind = NodeKindName::Fanout;
-        fanout.display_command = None;
-        fanout.completed_at = Some(4.0);
-        let mut recovery = node("recovery", EXECUTION_ID, RuntimeNodeExecutionStatus::Paused);
-        recovery.node_name = "recovery".to_string();
-        recovery.parent = Some(crate::domain::workflow::ExecutionParentRef::fanout_child(
-            "fanout", None, 0,
-        ));
-        let execution = execution();
-        let runtime_nodes = [fanout, recovery];
-        let recovery_reason = "recovery fence";
-
-        // When
-        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            execution_id: EXECUTION_ID,
-            workflow_name: "workflow",
-            workspace_identity: "/repo",
-            recorded_dynamic_fanout_names: &Default::default(),
-            workflow_definition: &WorkflowDefinition::default(),
-            node_executions: &runtime_nodes,
-            retry_predecessors: &std::collections::HashMap::new(),
-            accepts_explicit_retry: true,
-            started_at: 1.0,
-            updated_at: 10.0,
-            execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[("recovery".to_string(), recovery_reason.to_string())],
-            session_activities: &std::collections::HashMap::new(),
-            session_display_names: &std::collections::HashMap::new(),
-        })
-        .unwrap();
-        let by_execution_id = nodes
-            .iter()
-            .filter_map(|node| node.node_execution_id.as_deref().map(|id| (id, node)))
-            .collect::<std::collections::HashMap<_, _>>();
-        let workflow = nodes
-            .iter()
-            .find(|node| node.node_execution_id.is_none())
-            .unwrap();
-
-        // Then
-        assert_eq!(
-            by_execution_id["recovery"].status_classification,
-            WorkspaceNodeStatusClassification::Failure
-        );
-        assert_eq!(
-            by_execution_id["fanout"].status_classification,
-            WorkspaceNodeStatusClassification::Failure
-        );
-        assert_eq!(
-            capability_state(by_execution_id["recovery"]),
-            (false, false, false, false, false, false, None)
-        );
-        assert_eq!(
-            capability_state(workflow),
-            (
-                false,
-                false,
-                true,
-                false,
-                true,
-                false,
-                Some(recovery_reason)
-            )
-        );
-    }
     #[test]
     fn test_runtime_snapshot復旧_未対応nodeがあっても正常なleafの再開を提示する() {
         // Given
@@ -1327,8 +1193,6 @@ mod tests {
             started_at: 1.0,
             updated_at: 10.0,
             execution: &execution,
-            recovery_owner_reason: None,
-            node_recovery_reasons: &[],
             session_activities: &Default::default(),
             session_display_names: &Default::default(),
         })
@@ -1342,7 +1206,6 @@ mod tests {
             .find(|node| node.kind == crate::domain::workspace_tree::WorkspaceNodeKind::Workflow)
             .unwrap();
         assert!(workflow.can_resume);
-        assert!(workflow.resume_unavailable_reason.is_none());
         let old = nodes
             .iter()
             .find(|node| node.node_execution_id.as_deref() == Some("unresolved"))
@@ -1394,8 +1257,6 @@ mod tests {
                 started_at: 1.0,
                 updated_at: 10.0,
                 execution: &execution,
-                recovery_owner_reason: None,
-                node_recovery_reasons: &[],
                 session_activities: &Default::default(),
                 session_display_names: &Default::default(),
             })

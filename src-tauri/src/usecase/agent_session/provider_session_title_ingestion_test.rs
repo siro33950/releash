@@ -195,7 +195,7 @@ impl AgentSessionChangeNotifier for RecordingNotifier {
 fn session(id: &str, provider_session_id: &str, title: Option<&str>) -> VersionedAgentSession {
     let mut session = AgentSession::create(
         id,
-        WorkspaceIdentity::new("workspace"),
+        WorkspaceIdentity::new(format!("/repo/{id}")),
         format!("/repo/{id}"),
         ProviderKind::Claude,
         AgentSessionTreeLocation::session_tree_root(id).unwrap(),
@@ -243,8 +243,6 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         started_at: folded.aggregate.started_at,
         updated_at: folded.aggregate.updated_at,
         execution: &execution,
-        recovery_owner_reason: None,
-        node_recovery_reasons: &[],
         session_activities: &folded.session_activities,
         session_display_names: &folded.session_display_names,
     })
@@ -435,4 +433,35 @@ async fn test_provider_session_title_ingestion_タイトル事実から単独ses
         standalone_session_title(session_id, &records),
         "Updated title"
     );
+}
+
+#[tokio::test]
+async fn test_隔離通知_providerタイトルの更新をrootのworkspaceへ通知する() {
+    // Given
+    let mut agent = AgentSession::create(
+        "isolated",
+        WorkspaceIdentity::new("/repo"),
+        "/repo-worktrees/.releash-isolated/node-a1",
+        ProviderKind::Claude,
+        AgentSessionTreeLocation::session_tree_root("isolated").unwrap(),
+    )
+    .unwrap();
+    agent.take_uncommitted_events();
+    agent
+        .associate_provider_session("provider-isolated", None)
+        .unwrap();
+    agent.take_uncommitted_events();
+    let repository = Arc::new(RecordingRepository::new(vec![
+        VersionedAgentSession::restored(agent, 1),
+    ]));
+    let gateway = Arc::new(FixedTitleGateway::new([(
+        "provider-isolated",
+        Ok(Some("updated")),
+    )]));
+    let notifier = Arc::new(RecordingNotifier::default());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(repository, gateway, notifier.clone());
+    // When
+    usecase.ingest_due().await;
+    // Then
+    assert_eq!(notifier.worktrees.lock().unwrap().as_slice(), &["/repo"]);
 }

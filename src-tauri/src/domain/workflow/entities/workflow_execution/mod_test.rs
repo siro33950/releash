@@ -34,7 +34,7 @@ fn finish_leaf(
         ),
         TransitionOutcome::Applied
     );
-    if leaf.kind == NodeKindName::Session {
+    if leaf.kind == LeafKind::Session {
         for signal in [NodeCompletionSignal::Submit, NodeCompletionSignal::Stop] {
             assert_eq!(
                 execution.record_node_completion_signal(&leaf.node_execution_id, signal, 3.0),
@@ -55,11 +55,14 @@ fn finish_leaf(
 }
 
 fn next_leaf(decision: ExecutionAdvanceDecision) -> LeafStart {
-    let ExecutionAdvanceDecision::StartLeaves(mut leaves) = decision else {
+    let ExecutionAdvanceDecision::StartNodes(mut leaves) = decision else {
         panic!("expected a leaf start, got {decision:?}");
     };
     assert_eq!(leaves.len(), 1);
-    leaves.remove(0)
+    match leaves.remove(0) {
+        NodeStart::Leaf(leaf) => leaf,
+        _ => panic!("expected leaf start"),
+    }
 }
 
 #[test]
@@ -275,14 +278,17 @@ fn test_sequenceの多段参照_配線と辺とfanout展開へ統合mapの値を
             assert_eq!(next_leaf(completed.decision).node_name, "finished");
             continue;
         }
-        let ExecutionAdvanceDecision::StartLeaves(leaves) = completed.decision else {
+        let ExecutionAdvanceDecision::StartNodes(leaves) = completed.decision else {
             panic!("fanout must expand");
         };
         assert_eq!(leaves.len(), 2);
         for (leaf, item) in leaves.iter().zip(["first", "second"]) {
-            assert_eq!(leaf.node_name, "worker");
-            assert_eq!(leaf.bindings, vec![("item".to_string(), json!(item))]);
-            assert_eq!(leaf.item, Some(json!(item)));
+            assert_eq!(leaf.node_name(), "worker");
+            assert_eq!(
+                expect_leaf(leaf).bindings,
+                vec![("item".to_string(), json!(item))]
+            );
+            assert_eq!(expect_leaf(leaf).item, Some(json!(item)));
         }
     }
 }
@@ -307,12 +313,18 @@ fn start_fanout(
     execution: &mut WorkflowExecution,
     new_id: &mut dyn FnMut() -> String,
 ) -> Vec<LeafStart> {
-    let ExecutionAdvanceDecision::StartLeaves(leaves) =
+    let ExecutionAdvanceDecision::StartNodes(leaves) =
         execution.start_root(new_id, 1.0).unwrap().decision
     else {
         panic!("expected fanout leaves");
     };
     leaves
+        .into_iter()
+        .map(|start| match start {
+            NodeStart::Leaf(leaf) => leaf,
+            _ => panic!("expected leaf start"),
+        })
+        .collect()
 }
 
 #[test]
@@ -338,10 +350,10 @@ fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空�
         let mut events = started.events;
 
         // When
-        if let ExecutionAdvanceDecision::StartLeaves(leaves) = started.decision {
+        if let ExecutionAdvanceDecision::StartNodes(leaves) = started.decision {
             for (index, leaf) in leaves.iter().enumerate().rev() {
                 execution.record_pending_result(
-                    &leaf.node_execution_id,
+                    leaf.node_execution_id(),
                     None,
                     Some(json!({"slot": index})),
                     None,
@@ -353,7 +365,7 @@ fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空�
                 );
                 events.extend(
                     execution
-                        .complete_leaf_and_advance(&leaf.node_execution_id, &mut new_id, 3.0)
+                        .complete_leaf_and_advance(leaf.node_execution_id(), &mut new_id, 3.0)
                         .unwrap()
                         .events,
                 );
@@ -596,23 +608,33 @@ fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛と
 
     // When
     let completed = finish_leaf(&mut execution, &leaf, Some(named.clone()), &mut new_id);
-    let ExecutionAdvanceDecision::StartLeaves(leaves) = completed.decision else {
+    let ExecutionAdvanceDecision::StartNodes(leaves) = completed.decision else {
         panic!("expected items expansion");
     };
 
     // Then
     assert_eq!(leaves.len(), 2);
     for (leaf, item) in leaves.iter().zip(["first", "second"]) {
-        assert_eq!(leaf.bindings, vec![("item".to_string(), json!(item))]);
+        assert_eq!(
+            expect_leaf(leaf).bindings,
+            vec![("item".to_string(), json!(item))]
+        );
     }
     finish_leaf(
         &mut execution,
-        &leaves[0],
+        expect_leaf(&leaves[0]),
         Some(indexed.clone()),
         &mut new_id,
     );
-    let leaf =
-        next_leaf(finish_leaf(&mut execution, &leaves[1], Some(indexed), &mut new_id).decision);
+    let leaf = next_leaf(
+        finish_leaf(
+            &mut execution,
+            expect_leaf(&leaves[1]),
+            Some(indexed),
+            &mut new_id,
+        )
+        .decision,
+    );
     assert_eq!(leaf.node_name, "nested_a");
     let leaf = next_leaf(finish_leaf(&mut execution, &leaf, Some(nested), &mut new_id).decision);
     assert_eq!(leaf.node_name, "consume");
@@ -627,13 +649,16 @@ fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛と
         ]
     );
     let completed = finish_leaf(&mut execution, &leaf, None, &mut new_id);
-    let ExecutionAdvanceDecision::StartLeaves(leaves) = completed.decision else {
+    let ExecutionAdvanceDecision::StartNodes(leaves) = completed.decision else {
         panic!("expected nested items expansion");
     };
     assert_eq!(leaves.len(), 2);
     for (leaf, item) in leaves.iter().zip(["third", "fourth"]) {
-        assert_eq!(leaf.node_name, "worker");
-        assert_eq!(leaf.bindings, vec![("item".to_string(), json!(item))]);
+        assert_eq!(leaf.node_name(), "worker");
+        assert_eq!(
+            expect_leaf(leaf).bindings,
+            vec![("item".to_string(), json!(item))]
+        );
     }
 }
 
@@ -752,7 +777,7 @@ fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしi
                     json!({"review-a": review_a, "review-b": review_b})
                 )]
             );
-            let judgment = if judge.kind == NodeKindName::Command {
+            let judgment = if judge.kind == LeafKind::Command {
                 json!({"ok": true, "all_lgtm": all_lgtm})
             } else {
                 json!({"verdict": if all_lgtm {"READY"} else {"NEEDS_FIX"}})
@@ -819,7 +844,7 @@ fn test_completion要求_全node種別で本来の完了条件後に承認を待
             let mut new_id = id_source();
             // When
             let leaf = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
-            let completed_events = if leaf.kind == NodeKindName::Session {
+            let completed_events = if leaf.kind == LeafKind::Session {
                 execution.record_node_completion_signal(
                     &leaf.node_execution_id,
                     NodeCompletionSignal::Submit,

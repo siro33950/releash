@@ -962,6 +962,14 @@ impl Serialize for InputParam {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeMode {
+    #[default]
+    Shared,
+    Isolated,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(test, derive(Default))]
 pub struct NodeDefinition {
@@ -970,8 +978,7 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Vec<InputParam>,
     pub completion: NodeCompletion,
-    /// 未対応（#85 まで）。受理して保持し、load 時に Diagnostic を出す。
-    pub worktree: Option<String>,
+    pub worktree: Option<WorktreeMode>,
 }
 
 /// nodes マップの値（node 名は親マップのキー）。配線（inputs / rules）は持たない。
@@ -994,8 +1001,14 @@ struct RawNodeBody {
     input: Vec<InputParam>,
     #[serde(default)]
     completion: NodeCompletion,
-    #[serde(default)]
-    worktree: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_worktree_mode")]
+    worktree: Option<WorktreeMode>,
+}
+
+fn deserialize_worktree_mode<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WorktreeMode>, D::Error> {
+    WorktreeMode::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1491,7 +1504,17 @@ where
     Ok(())
 }
 
+impl WorktreeMode {
+    pub fn is_isolated(self) -> bool {
+        self == Self::Isolated
+    }
+}
+
 impl NodeDefinition {
+    pub fn is_isolated(&self) -> bool {
+        super::WorktreeInheritance::new(self.worktree).is_isolated()
+    }
+
     pub fn has_facet_refs(&self) -> bool {
         self.session()
             .is_some_and(|session| !session.facets.is_empty())

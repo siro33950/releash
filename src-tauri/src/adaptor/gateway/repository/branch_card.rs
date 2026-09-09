@@ -211,7 +211,6 @@ fn build_branch_card(
         behind,
         has_upstream,
         base_ahead,
-        management_kind: None,
     }
 }
 
@@ -234,7 +233,6 @@ fn build_unmatched_worktree_card(
         behind: 0,
         has_upstream: false,
         base_ahead: 0,
-        management_kind: None,
     }
 }
 

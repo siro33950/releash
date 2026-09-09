@@ -1,7 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { listen } from "@tauri-apps/api/event";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkspaceNodeDetail } from "@/hooks/useWorkspaceNodeDetail";
 import { AgentSessionPanel, AgentSessionRoute } from "./AgentSessionPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -15,6 +23,7 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 				data-testid="provider-terminal"
 				data-initialization={String(props.initialization)}
 				data-auto-focus={String(props.autoFocus)}
+				data-cwd={String(props.cwd)}
 				data-owner={JSON.stringify(props.owner)}
 			>
 				<button
@@ -37,7 +46,8 @@ const mockInvoke = vi.mocked(invoke);
 const session = {
 	id: "agent-session-1",
 	workspaceIdentity: "/repo",
-	worktreePath: "/repo/worktree",
+	workspaceWorktreePath: "/repo/worktree",
+	worktreePath: "/repo-worktrees/.releash-isolated/node-a1",
 	provider: "claude" as const,
 	treeLocation: {
 		treeId: "agent-session-1",
@@ -335,6 +345,7 @@ describe("AgentSessionRoute", () => {
 						agentSessionId: "agent-session-1",
 						workspaceIdentity: "/repo",
 						worktreePath: "/repo/worktree",
+						workspaceWorktreePath: "/repo/worktree",
 						provider: "claude",
 					}}
 					onInitialSessionConsumed={onInitialSessionConsumed}
@@ -463,5 +474,136 @@ describe("AgentSessionRoute", () => {
 		).toBeVisible();
 		expect(getReads).toBe(2);
 		expect(openCalls).toBe(1);
+	});
+});
+
+describe("隔離SessionのWorkspace通知", () => {
+	beforeEach(() => {
+		mockInvoke.mockReset();
+		vi.mocked(listen)
+			.mockReset()
+			.mockResolvedValue(() => {});
+	});
+
+	it.each(["pause", "delete", "rename", "provider title"])(
+		"%sのbackend通知でrootに属するSessionを再取得する",
+		async (change) => {
+			let notify:
+				| ((event: { payload: { worktreePath: string } }) => void)
+				| undefined;
+			vi.mocked(listen).mockImplementation(async (event, handler) => {
+				if (event === "agent-session-changed")
+					notify = handler as typeof notify;
+				return () => {};
+			});
+			let reads = 0;
+			mockInvoke.mockImplementation(async (command) => {
+				if (command === "get_agent_session") {
+					reads++;
+					if (reads > 1 && change === "delete") return null;
+					return reads > 1 && change === "pause"
+						? { ...session, lifecycle: "paused" }
+						: session;
+				}
+				if (command === "open_agent_session") return "attached";
+				throw new Error(`unexpected command: ${command}`);
+			});
+			render(<AgentSessionRoute agentSessionId={session.id} />);
+			expect(await screen.findByTestId("provider-terminal")).toHaveAttribute(
+				"data-cwd",
+				session.worktreePath,
+			);
+			await act(async () =>
+				notify?.({ payload: { worktreePath: session.workspaceWorktreePath } }),
+			);
+			await waitFor(() => expect(reads).toBe(2));
+			if (change === "pause")
+				expect(
+					await screen.findByText("AgentSession is paused."),
+				).toBeVisible();
+			if (change === "delete")
+				expect(
+					await screen.findByText("AgentSession is no longer available."),
+				).toBeVisible();
+		},
+	);
+
+	it("DTOがまだ無い起動attachmentもrootの通知を照合する", async () => {
+		let reads = 0;
+		mockInvoke.mockImplementation((command) => {
+			if (command === "get_agent_session") {
+				reads++;
+				return reads === 1 ? new Promise(() => {}) : Promise.resolve(session);
+			}
+			throw new Error(`unexpected command: ${command}`);
+		});
+		render(
+			<AgentSessionRoute
+				agentSessionId={session.id}
+				initialAttachment={{
+					agentSessionId: session.id,
+					workspaceIdentity: session.workspaceIdentity,
+					workspaceWorktreePath: session.workspaceWorktreePath,
+					worktreePath: session.worktreePath,
+					provider: session.provider,
+				}}
+			/>,
+		);
+		expect(screen.getByTestId("provider-terminal")).toHaveAttribute(
+			"data-cwd",
+			session.worktreePath,
+		);
+		await act(async () =>
+			window.dispatchEvent(
+				new CustomEvent("agent-session-refresh", {
+					detail: { worktreePath: session.workspaceWorktreePath },
+				}),
+			),
+		);
+		await waitFor(() => expect(reads).toBe(2));
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"open_agent_session",
+			expect.anything(),
+		);
+	});
+
+	it("panelからのrestore通知がrootを購読するNode詳細へ届く", async () => {
+		let detailReads = 0;
+		function Detail() {
+			useWorkspaceNodeDetail({
+				worktreePath: session.workspaceWorktreePath,
+				nodeId: "node",
+			});
+			return null;
+		}
+		mockInvoke.mockImplementation(async (command) => {
+			if (command === "get_workspace_node_detail") {
+				detailReads++;
+				return null;
+			}
+			if (command === "restore_agent_session") return "restored";
+			throw new Error(`unexpected command: ${command}`);
+		});
+		render(
+			<>
+				<Detail />
+				<AgentSessionPanel
+					initiallyAttached
+					session={{
+						...session,
+						lifecycle: "archived",
+						operations: { ...session.operations, canRestore: true },
+					}}
+				/>
+			</>,
+		);
+		const restore = await screen.findByRole("button", { name: "Restore" });
+		await waitFor(() => expect(detailReads).toBe(1));
+		fireEvent.click(restore);
+		await waitFor(() => expect(detailReads).toBe(2));
+		expect(await screen.findByTestId("provider-terminal")).toHaveAttribute(
+			"data-cwd",
+			session.worktreePath,
+		);
 	});
 });

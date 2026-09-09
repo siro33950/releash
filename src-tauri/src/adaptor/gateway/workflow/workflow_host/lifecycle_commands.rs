@@ -486,13 +486,6 @@ impl WorkflowRuntimeHost {
         execution_id: &str,
     ) -> Result<(), WorkflowRuntimeError> {
         let metadata = self.validate_execution_command_target(execution_id).await?;
-        let ledger = self
-            .worktree_ledger
-            .snapshot_for_tree(execution_id)
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
-        if let Some(cause) = ledger.recovery_cause_for_tree(execution_id) {
-            return Err(WorkflowRuntimeError::InvalidState(cause.to_string()));
-        }
         if metadata.status != ExecutionStatus::Running {
             return Err(WorkflowRuntimeError::InvalidState(format!(
                 "execution {execution_id} cannot be resumed from status {}",
@@ -603,6 +596,25 @@ impl WorkflowRuntimeHost {
                 .recover_workflow_agent_session_provider(session_id, node_execution_id)
                 .await
             {
+                if candidate.execution_worktree_path(node_execution_id)
+                    != Some(worktree_path.as_str())
+                {
+                    self.restore_unactivated_resumes(
+                        app,
+                        execution_id,
+                        &previously_paused_node_execution_ids,
+                        &rollbacks,
+                    )
+                    .await?;
+                    self.fail_resumed_isolated_session(
+                        app,
+                        execution_id,
+                        node_execution_id,
+                        &error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
                 return Err(self
                     .restore_unactivated_resumes_after_failure(
                         app,
@@ -660,6 +672,33 @@ impl WorkflowRuntimeHost {
                 )
                 .await;
             if let Err(error) = activation {
+                let isolated =
+                    self.executions
+                        .lock()
+                        .await
+                        .get(execution_id)
+                        .is_some_and(|execution| {
+                            execution.execution_worktree_path(&node_execution_id)
+                                != Some(worktree_path.as_str())
+                        });
+                if isolated {
+                    unactivated.remove(&node_execution_id);
+                    self.restore_unactivated_resumes(
+                        app,
+                        execution_id,
+                        &previously_paused_node_execution_ids,
+                        &unactivated,
+                    )
+                    .await?;
+                    self.fail_resumed_isolated_session(
+                        app,
+                        execution_id,
+                        &node_execution_id,
+                        &error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
                 return Err(self
                     .restore_unactivated_resumes_after_failure(
                         app,
@@ -681,6 +720,45 @@ impl WorkflowRuntimeHost {
         }
         Ok(())
     }
+    async fn fail_resumed_isolated_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        execution_id: &str,
+        node_execution_id: &str,
+        error: &WorkflowRuntimeError,
+    ) -> Result<(), WorkflowRuntimeError> {
+        let timestamp = current_timestamp();
+        let (before, mut candidate) = {
+            let executions = self.executions.lock().await;
+            let current = executions
+                .get(execution_id)
+                .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.to_string()))?;
+            (current.clone(), current.clone())
+        };
+        if candidate.resume_node_execution(node_execution_id, timestamp)
+            == TransitionOutcome::Applied
+        {
+            self.commit_control_plane_candidate(
+                app,
+                ControlPlaneCommitCandidate {
+                    execution_id,
+                    snapshot_before: before,
+                    candidate,
+                    transition_outcome: TransitionOutcome::Applied,
+                    events: &[WorkflowEvent::NodeResumed {
+                        execution_id: execution_id.to_string(),
+                        node_execution_id: node_execution_id.to_string(),
+                        timestamp,
+                    }],
+                    provider_events: Vec::new(),
+                },
+            )
+            .await?;
+        }
+        self.settle_runtime_failure_for_node(app, execution_id, node_execution_id, error)
+            .await
+    }
+
     pub(super) async fn validate_execution_command_target(
         &self,
         execution_id: &str,

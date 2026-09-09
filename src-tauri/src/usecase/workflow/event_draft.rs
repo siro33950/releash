@@ -70,6 +70,29 @@ pub(crate) fn node_exists_in_drafts(
     })
 }
 
+pub(crate) fn node_is_isolated_in_drafts(
+    events: &[WorkflowEventDraft],
+    node_name: &str,
+    execution_id: &str,
+) -> Result<bool, ContractLookupError> {
+    let workflow = execution_started_workflow_from_drafts(events, execution_id)?;
+    let value = workflow
+        .definition
+        .get("nodes")
+        .and_then(|nodes| nodes.get(node_name))
+        .and_then(|node| node.get("worktree"));
+    value
+        .cloned()
+        .map(serde_json::from_value::<Option<crate::domain::workflow::WorktreeMode>>)
+        .transpose()
+        .map(|mode| crate::domain::workflow::WorktreeInheritance::new(mode.flatten()).is_isolated())
+        .map_err(
+            |error| ContractLookupError::InvalidExecutionStartedPayload {
+                details: error.to_string(),
+            },
+        )
+}
+
 struct ExecutionStartedWorkflow<'a> {
     name: String,
     definition: &'a Value,
@@ -171,6 +194,10 @@ fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
 struct ArtifactProducedDraftPayload {
     node_name: String,
     #[serde(default)]
+    node_execution_id: Value,
+    #[serde(default)]
+    attempt: Value,
+    #[serde(default)]
     contract: Option<String>,
     value: Value,
     #[serde(default)]
@@ -181,20 +208,69 @@ pub(crate) fn latest_artifact_produced_from_drafts(
     events: &[WorkflowEventDraft],
     node_name: &str,
 ) -> Option<ArtifactSubmittedSnapshot> {
+    latest_artifact_produced_event(events, node_name)
+        .map(|(payload, timestamp)| payload.into_snapshot(timestamp))
+}
+
+impl ArtifactProducedDraftPayload {
+    fn into_snapshot(self, timestamp: f64) -> ArtifactSubmittedSnapshot {
+        ArtifactSubmittedSnapshot {
+            contract: self.contract,
+            value: self.value,
+            submitted_at: Some(timestamp),
+            request_id: self.request_id,
+            timestamp,
+        }
+    }
+}
+
+fn latest_artifact_produced_event(
+    events: &[WorkflowEventDraft],
+    node_name: &str,
+) -> Option<(ArtifactProducedDraftPayload, f64)> {
     events.iter().rev().find_map(|event| {
         if event.event_kind != "artifact_produced" {
             return None;
         }
         let payload =
             serde_json::from_value::<ArtifactProducedDraftPayload>(event.payload.clone()).ok()?;
-        (payload.node_name == node_name).then_some(ArtifactSubmittedSnapshot {
-            contract: payload.contract,
-            value: payload.value,
-            submitted_at: Some(event.timestamp),
-            request_id: payload.request_id,
-            timestamp: event.timestamp,
-        })
+        (payload.node_name == node_name).then_some((payload, event.timestamp))
     })
+}
+
+pub(crate) fn latest_isolated_artifact_from_drafts(
+    events: &[WorkflowEventDraft],
+    node_name: &str,
+    execution_id: &str,
+) -> Result<Option<ArtifactSubmittedSnapshot>, crate::domain::workflow::WorkflowError> {
+    use crate::domain::workflow::{WorkflowError, WorktreeInheritance, WorktreeMode};
+    let Some((payload, timestamp)) = latest_artifact_produced_event(events, node_name) else {
+        return Ok(None);
+    };
+    let id = payload.node_execution_id.as_str().ok_or_else(|| {
+        WorkflowError::validation("artifact owner node_execution_id must be a string")
+    })?;
+    let attempt = payload
+        .attempt
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| WorkflowError::validation("artifact owner attempt must be a u32"))?;
+    let repository_root = events
+        .iter()
+        .find(|event| {
+            event.execution_id == execution_id
+                && event.event_kind == "started"
+                && event.payload.get("root").is_some_and(Value::is_object)
+        })
+        .and_then(|event| event.payload["root"]["repositoryRoot"].as_str())
+        .ok_or_else(|| WorkflowError::validation("isolated execution requires repository root"))?;
+    let worktree = WorktreeInheritance::new(Some(WorktreeMode::Isolated))
+        .for_attempt(Some(repository_root), id, attempt)
+        .map_err(WorkflowError::validation)?
+        .expect("isolated mode has an attempt worktree");
+    let mut snapshot = payload.into_snapshot(timestamp);
+    snapshot.value = worktree.with_artifact(Some(snapshot.value));
+    Ok(Some(snapshot))
 }
 
 #[cfg(test)]
@@ -432,3 +508,7 @@ mod tests {
         assert_eq!(snapshot.value["stdout"], "ok");
     }
 }
+
+#[cfg(test)]
+#[path = "event_draft_test.rs"]
+mod event_draft_tests;

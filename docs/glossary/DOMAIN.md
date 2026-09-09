@@ -117,14 +117,11 @@ AgentSession は provider、provider session identity、opaque transcript refere
 
 ### 隔離 worktree
 
-`isolated` 宣言で作られる隔離 worktree では、Node attempt が次の Releash 側状態を所有する。
+`isolated` を宣言した NodeExecution は attempt ごとに、親 worktree の HEAD から branch と worktree を生成し、そこを実行コンテキストにする。`shared`（省略時を含む）は親から継承する。実行木の所属は root の Worktree のままであり、隔離 worktree は Workspace にならない。
 
-- root Worktree と owner NodeExecution の identity。
-- attempt ごとの隔離 branch / path identity。
-- 作成済み、喪失、cleanup candidate などの lifecycle fact。
-- recovery fence と公開 reason。
+branch は `releash/isolated/<node_execution_id>-a<attempt>`、path は `<repository root の親>/<repository 名>-worktrees/.releash-isolated/<node_execution_id>-a<attempt>` である。命名に埋め込まれた NodeExecution と attempt、および実行木の状態だけで識別する。Worktree 管理の一覧には、実行中も終了後も再起動後も現れない。branch/path は Node 詳細と Artifact から観測できる。Thread は読み側で所有実行木の Workspaceへ結び付ける。
 
-隔離 worktree 内の Code / Diff と Git 履歴自体は外部状態である。成果の統合は engine が無条件に実行せず、人間または親 Session が判断して通常の Git 操作として行う。定義上の `worktree` field は現時点では未解禁である。
+隔離 worktree 内の Code / Diff と Git 履歴は外部状態である。engine は成果の統合も worktree・branch の削除も行わない。統合は人間または親 Sessionが判断して通常の Git 操作として行う。逐次 Nodeで `isolated` を使った成果は隔離 branchに残り、親 worktree で動く後続 Nodeには見えない。実体が失われた場合の再開は process の起動失敗として扱い、Retry は新しい attempt の worktree を作る。
 
 ## 使用禁止語
 

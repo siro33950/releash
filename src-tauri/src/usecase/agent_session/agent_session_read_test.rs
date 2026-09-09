@@ -59,6 +59,7 @@ fn item(id: &str) -> AgentSessionItemDto {
         id: id.to_string(),
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo/worktree".to_string(),
+        workspace_worktree_path: "/repo/worktree".to_string(),
         provider: AgentSessionProviderDto::Claude,
         tree_location: AgentSessionTreeLocationDto {
             tree_id: id.to_string(),

@@ -162,6 +162,51 @@ fn test_保持対象cli_discoveryとlive_httpを通る() {
 }
 
 #[test]
+fn test_隔離worktree_cliのlive_httpで実行中と失敗とabortと完了後のbranchとpathを返す() {
+    use crate::cli::test_helpers::start_local_api_test_host;
+    use crate::domain::workflow::NodeExecutionStatus;
+
+    for status in [
+        NodeExecutionStatus::Running,
+        NodeExecutionStatus::Failed,
+        NodeExecutionStatus::Aborted,
+        NodeExecutionStatus::Succeeded,
+    ] {
+        // Given
+        let client_data = TempDir::new().unwrap();
+        let query_data = TempDir::new().unwrap();
+        let workflows = TempDir::new().unwrap();
+        let execution_id = "00000000-0000-4000-8000-000000001733";
+        api_test_support::seed_isolated_query_execution(query_data.path(), execution_id, status);
+        let _host =
+            start_local_api_test_host(client_data.path(), query_data.path(), workflows.path());
+
+        // When
+        let execution = workflow::cmd_status(client_data.path(), execution_id, true).unwrap();
+        let execution: serde_json::Value = serde_json::from_str(&execution).unwrap();
+        let output =
+            output::cmd_output_get(client_data.path(), execution_id, "review", true).unwrap();
+        let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        // Then
+        assert_eq!(execution["id"], execution_id);
+        api_test_support::assert_isolated_execution_json(&execution, status);
+        if status == NodeExecutionStatus::Succeeded {
+            assert_eq!(output["status"], "submitted");
+            assert_eq!(output["contract"], "review-result");
+            assert_eq!(output["artifact"]["status"], "approved");
+            assert_eq!(
+                output["artifact"]["worktree"],
+                api_test_support::isolated_worktree_json()
+            );
+            assert_eq!(output["request_id"], "isolated-request-2");
+        } else {
+            assert_eq!(output, serde_json::json!({"status": "not_submitted"}));
+        }
+    }
+}
+
+#[test]
 fn test_local_api読取_discovery欠落時にfallbackする() {
     let temp = TempDir::new().unwrap();
     let value = read_with_fallback(temp.path(), |_| unreachable!(), || Ok(42)).unwrap();

@@ -133,6 +133,7 @@ describe("NodeContentView", () => {
 			agentSessionId: "agent-session-created",
 			workspaceIdentity: "/repo",
 			worktreePath: "/repo",
+			workspaceWorktreePath: "/repo",
 			provider: "codex",
 		};
 
@@ -159,6 +160,7 @@ describe("NodeContentView", () => {
 			agentSessionId: "agent-session-a",
 			workspaceIdentity: "/repo",
 			worktreePath: "/repo",
+			workspaceWorktreePath: "/repo",
 			provider: "codex",
 		};
 		mocks.detailState.detail = sessionDetail("node-a", "agent-session-a");
@@ -467,3 +469,22 @@ describe("NodeContentView", () => {
 		});
 	});
 });
+
+it.each(["running", "failed", "aborted"] as const)(
+	"%sのNodeでArtifactなしでも隔離branchとpathを表示する",
+	(status) => {
+		mocks.detailState.detail = {
+			...sessionDetail("isolated"),
+			status,
+			worktree: {
+				branch: "releash/isolated/node-a1",
+				path: "/repo-worktrees/.releash-isolated/node-a1",
+			},
+		};
+		renderView("isolated");
+		expect(screen.getByText("releash/isolated/node-a1")).toBeVisible();
+		expect(
+			screen.getByText("/repo-worktrees/.releash-isolated/node-a1"),
+		).toBeVisible();
+	},
+);

@@ -13,7 +13,7 @@
 //! transports implement the closures/ports consumed here.
 
 use crate::domain::workflow::entities::workflow_execution::{
-    ExecutionAdvanceDecision, LeafStart, TransitionOutcome, WorkflowExecution,
+    ExecutionAdvanceDecision, NodeStart, TransitionOutcome, WorkflowExecution,
 };
 use crate::domain::workflow::WorkflowEvent;
 use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
@@ -21,14 +21,14 @@ use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 pub(crate) enum NodeOutcome {
     /// 起動すべき runtime は無い（完了・承認待ち・並走子待ち）。
     Persist(RuntimeCommitSnapshot),
-    /// 起動すべき leaf 群。
-    StartLeaves(RuntimeCommitSnapshot, Vec<LeafStart>),
+    /// 合成子の準備要求と葉 runtime の起動要求。
+    StartNodes(RuntimeCommitSnapshot, Vec<NodeStart>),
 }
 
 impl NodeOutcome {
     pub(crate) fn snapshot(&self) -> &RuntimeCommitSnapshot {
         match self {
-            Self::Persist(snapshot) | Self::StartLeaves(snapshot, _) => snapshot,
+            Self::Persist(snapshot) | Self::StartNodes(snapshot, _) => snapshot,
         }
     }
 }
@@ -40,7 +40,7 @@ pub(crate) fn node_outcome_from_advance(
     let snapshot = RuntimeCommitSnapshot::from_execution(execution)?;
     Ok(match decision {
         ExecutionAdvanceDecision::Persist => NodeOutcome::Persist(snapshot),
-        ExecutionAdvanceDecision::StartLeaves(leaves) => NodeOutcome::StartLeaves(snapshot, leaves),
+        ExecutionAdvanceDecision::StartNodes(leaves) => NodeOutcome::StartNodes(snapshot, leaves),
     })
 }
 

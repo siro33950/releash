@@ -2110,7 +2110,8 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
     };
     let workflow_root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
-        root: Some(TreeRootFact {
+        root: Some(Box::new(TreeRootFact {
+            repository_root: None,
             definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
@@ -2125,7 +2126,7 @@ async fn test_agent_session_query_service_workflow木のsessionを一覧に出�
                 entry: "main".to_string(),
             },
             launched_as: ExecutionTreeLaunch::Workflow,
-        }),
+        })),
     });
     fact_log::append_single_fact(&store, &workflow_meta, &workflow_root, 1).unwrap();
     let items = workspace_session_items(
@@ -2153,7 +2154,8 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
     };
     let root = NodeFact::Started(crate::domain::workflow::StartedFact {
         parent: None,
-        root: Some(TreeRootFact {
+        root: Some(Box::new(TreeRootFact {
+            repository_root: None,
             definition_resolution: Default::default(),
             workspace_identity: "/repo".to_string(),
             worktree_path: "/repo".to_string(),
@@ -2179,7 +2181,7 @@ async fn test_agent_session_repository_workflow子sessionの事実は元nodeのa
                 entry: "session".to_string(),
             },
             launched_as: ExecutionTreeLaunch::Workflow,
-        }),
+        })),
     });
     fact_log::append_single_fact(&store, &meta, &root, 1).unwrap();
     fact_log::append_single_fact(

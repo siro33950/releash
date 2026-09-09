@@ -16,6 +16,7 @@ pub(crate) mod approval_runtime;
 mod command_preparation;
 pub(crate) mod execution_registry;
 pub(crate) mod execution_state;
+mod isolated_worktree;
 mod lifecycle_commands;
 pub(crate) mod node_settings;
 pub(crate) mod output_limit;
@@ -37,8 +38,9 @@ use crate::adaptor::gateway::workflow::node_session_boundary::{
 };
 use crate::adaptor::gateway::workflow::secret_source;
 use crate::domain::workflow::entities::workflow_execution::{
-    AppliedAdvance, LeafStart, RuntimeNodeExecutionStatus as NodeExecutionStatus,
-    RuntimeNodeResumePreviousState, TransitionOutcome,
+    AppliedAdvance, LeafKind, LeafStart, NodeStart,
+    RuntimeNodeExecutionStatus as NodeExecutionStatus, RuntimeNodeResumePreviousState,
+    TransitionOutcome,
 };
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::reference as workflow_reference;
@@ -121,8 +123,7 @@ pub struct WorkflowRuntimeHost {
     workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
-    worktree_ledger: Arc<dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository>,
-    worktree_inventory: Arc<dyn crate::domain::workflow::WorktreeInventoryGateway>,
+    isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
 }
 
 enum RequiredEventCommitFailure {
@@ -277,21 +278,6 @@ fn commit_snapshot_is_current(
 // driver と CLI の双方が同じ domain service を参照するため、本モジュールではメモのみ残す。
 
 impl WorkflowRuntimeHost {
-    pub(crate) fn ensure_node_recovery_available(
-        &self,
-        execution_id: &str,
-        node_execution_id: &str,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let snapshot = self
-            .worktree_ledger
-            .snapshot_for_tree(execution_id)
-            .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;
-        if let Some(cause) = snapshot.recovery_cause_for_node(execution_id, node_execution_id) {
-            return Err(WorkflowRuntimeError::InvalidState(cause.to_string()));
-        }
-        Ok(())
-    }
-
     pub(crate) async fn load_control_plane_execution(
         &self,
         execution_id: &str,
@@ -425,8 +411,7 @@ impl WorkflowRuntimeHost {
         agent_session_interrupt: Arc<AgentSessionInterruptUsecase>,
         agent_session_lifecycle: Arc<AgentSessionLifecycleUsecase>,
         provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
-        worktree_ledger: Arc<dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository>,
-        worktree_inventory: Arc<dyn crate::domain::workflow::WorktreeInventoryGateway>,
+        isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     ) -> Self {
         Self::with_execution_store(
             workflow_resolver,
@@ -439,8 +424,7 @@ impl WorkflowRuntimeHost {
                 agent_session_lifecycle,
                 provider_availability,
             )),
-            worktree_ledger,
-            worktree_inventory,
+            isolated_worktrees,
         )
     }
 
@@ -449,8 +433,7 @@ impl WorkflowRuntimeHost {
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         execution_store: Arc<ExecutionStore>,
         workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
-        worktree_ledger: Arc<dyn crate::domain::workflow::IsolatedWorktreeLedgerRepository>,
-        worktree_inventory: Arc<dyn crate::domain::workflow::WorktreeInventoryGateway>,
+        isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     ) -> Self {
         Self {
             executions: Arc::new(Mutex::new(HashMap::new())),
@@ -467,8 +450,7 @@ impl WorkflowRuntimeHost {
             workflow_resolver,
             worktree_resolver,
             workflow_agent_sessions,
-            worktree_ledger,
-            worktree_inventory,
+            isolated_worktrees,
         }
     }
 
@@ -592,6 +574,19 @@ impl WorkflowRuntimeHost {
             workflow_defaults,
             now,
         } = input;
+        let repository_root = if workflow
+            .nodes
+            .iter()
+            .any(crate::domain::workflow::NodeDefinition::is_isolated)
+        {
+            Some(
+                self.isolated_worktrees
+                    .repository_root(&worktree_path)
+                    .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let mut execution = crate::adaptor::gateway::workflow::workflow_host::execution_state::domain_workflow_execution! {
             id: execution_id.clone(),
             workflow: workflow.clone(),
@@ -609,6 +604,7 @@ impl WorkflowRuntimeHost {
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
             launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
+            repository_root,
         };
 
         let mut execs = self.executions.lock().await;
@@ -665,15 +661,6 @@ impl WorkflowRuntimeHost {
             return Ok(());
         };
         let store = store.inner().clone();
-        // inventory を読めないことは「全 worktree が消えた」ではない。隔離環境の
-        // 突合だけを止め、プロセス喪失の観測と未実行の前進は続ける。
-        let worktree_inventory = match self.worktree_inventory.snapshot() {
-            Ok(inventory) => Some(inventory),
-            Err(error) => {
-                log::warn!("isolated worktree inventory is unavailable: {error}");
-                None
-            }
-        };
         let backend = workflow_fact_log::FactLogReadBackend::Live(store.clone());
         let tree_ids = workflow_fact_log::list_tree_ids(&backend, None)
             .map_err(WorkflowRuntimeError::SessionStore)?;
@@ -687,31 +674,21 @@ impl WorkflowRuntimeHost {
             }
             let now = current_timestamp();
             let mut new_id = new_node_execution_id;
-            let reconciliation = match workflow_fact_log::reconcile_tree_pass(
-                &store,
-                &tree_id,
-                now,
-                &mut new_id,
-                worktree_inventory.as_ref().map(|inventory| {
-                    workflow_fact_log::WorktreeReconciliationPorts {
-                        ledger: self.worktree_ledger.as_ref(),
-                        inventory,
+            let reconciliation =
+                match workflow_fact_log::reconcile_tree_pass(&store, &tree_id, now, &mut new_id) {
+                    Ok(Some(reconciliation)) => reconciliation,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        let error = WorkflowRuntimeError::SessionStore(format!(
+                            "workflow {tree_id}: reconciliation pass failed: {error}"
+                        ));
+                        log::warn!("{error}");
+                        first_recovery_error.get_or_insert(error);
+                        continue;
                     }
-                }),
-            ) {
-                Ok(Some(reconciliation)) => reconciliation,
-                Ok(None) => continue,
-                Err(error) => {
-                    let error = WorkflowRuntimeError::SessionStore(format!(
-                        "workflow {tree_id}: reconciliation pass failed: {error}"
-                    ));
-                    log::warn!("{error}");
-                    first_recovery_error.get_or_insert(error);
-                    continue;
-                }
-            };
+                };
             let folded = reconciliation.folded;
-            let pending_leaves = reconciliation.leaves;
+            let pending_leaves = reconciliation.starts;
             if !folded.aggregate.is_active() {
                 continue;
             }
@@ -771,7 +748,7 @@ impl WorkflowRuntimeHost {
             //    registry から戻し、次の reconciliation 呼び出しで再試行できるようにする。
             if !pending_leaves.is_empty() {
                 if let Err(error) = self
-                    .start_leaves(app, &tree_id, &worktree_path, pending_leaves)
+                    .start_nodes(app, &tree_id, &worktree_path, pending_leaves)
                     .await
                 {
                     self.executions.lock().await.remove(&tree_id);
@@ -886,6 +863,7 @@ impl WorkflowRuntimeHost {
         // [04] commit point: ExecutionStarted と起動カスケードの NodeStarted 群を
         // 同一の required batch で append する。
         let mut required_start_events = vec![WorkflowEvent::ExecutionStarted {
+            repository_root: snapshot.repository_root.clone(),
             execution_id: snapshot.execution_id.clone(),
             workflow_name: snapshot.workflow_name.clone(),
             worktree_path: worktree_path.clone(),
@@ -912,15 +890,15 @@ impl WorkflowRuntimeHost {
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
         //    初回 runtime 起動失敗は Failed 状態遷移として観測し、
         //    start primitive は Ok(execution_id) を返す（spec [04]『command 受理境界』Rule）。
-        if let crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartLeaves(leaves) =
+        if let crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision::StartNodes(leaves) =
             applied.decision
         {
             if let Err(e) = self
-                .start_leaves(app, &execution_id, &worktree_path, leaves)
+                .start_nodes(app, &execution_id, &worktree_path, leaves)
                 .await
             {
                 if let Err(settle_error) = self
-                    .settle_runtime_failure(app, &worktree_path, &execution_id, &e)
+                    .settle_runtime_failure(app, &execution_id, &e)
                     .await
                 {
                     log::error!(
@@ -1042,9 +1020,9 @@ impl WorkflowRuntimeHost {
             app,
             &worktree_path,
             &snapshot,
-            Some(NodeOutcome::StartLeaves(
+            Some(NodeOutcome::StartNodes(
                 snapshot.clone(),
-                vec![restarted.leaf],
+                vec![NodeStart::Leaf(restarted.leaf)],
             )),
         )
         .await?;
@@ -1310,15 +1288,21 @@ impl WorkflowRuntimeHost {
 
     // ---- 内部メソッド ----
 
-    /// advance が返した leaf 群を起動する。Session はまとめて prepare →
+    /// advance が返した Node を準備して起動する。Session はまとめて prepare →
     /// SessionAttached を一括 commit → activate、Command は spawn する。
-    async fn start_leaves<R: tauri::Runtime + 'static>(
+    async fn start_nodes<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
         execution_id: &str,
         worktree_path: &str,
-        leaves: Vec<LeafStart>,
+        starts: Vec<NodeStart>,
     ) -> Result<(), WorkflowRuntimeError> {
+        if starts.is_empty() {
+            return Ok(());
+        }
+        let leaves = self
+            .prepare_isolated_starts(app, execution_id, worktree_path, starts)
+            .await?;
         if leaves.is_empty() {
             return Ok(());
         }
@@ -1353,8 +1337,22 @@ impl WorkflowRuntimeHost {
                         leaf.node_name
                     ))
                 })?;
+            let execution_worktree_path = {
+                let executions = self.executions.lock().await;
+                executions
+                    .get(&execution_id)
+                    .and_then(|execution| {
+                        execution.execution_worktree_path(&leaf.node_execution_id)
+                    })
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        WorkflowRuntimeError::InvalidState(
+                            "execution worktree is unavailable".to_string(),
+                        )
+                    })?
+            };
             match leaf.kind {
-                NodeKindName::Command => {
+                LeafKind::Command => {
                     let command = node.command_spec().ok_or_else(|| {
                         WorkflowRuntimeError::InvalidState(format!(
                             "node '{}' is not a command",
@@ -1377,7 +1375,7 @@ impl WorkflowRuntimeHost {
                                 .get(&leaf.node_execution_id)
                                 .copied()
                                 .unwrap_or(1),
-                            worktree_path: worktree_path.to_string(),
+                            worktree_path: execution_worktree_path,
                             raw_command: Some(rendered),
                             definition_env,
                             contract: node.artifact.clone(),
@@ -1389,7 +1387,7 @@ impl WorkflowRuntimeHost {
                         }
                     }
                 }
-                NodeKindName::Session => {
+                LeafKind::Session => {
                     let (system_prompt, user_message) = workflow_prompt::build_leaf_prompt(
                         &node,
                         facet_contents.for_node(&node.name),
@@ -1413,26 +1411,25 @@ impl WorkflowRuntimeHost {
                         })?;
                     session_plans.push((
                         leaf.node_execution_id.clone(),
+                        execution_worktree_path,
                         launch_config,
                         initial_instruction,
                     ));
-                }
-                NodeKindName::Fanout | NodeKindName::Sequence => {
-                    return Err(WorkflowRuntimeError::InvalidState(format!(
-                        "composite node '{}' has no leaf runtime to start",
-                        leaf.node_name
-                    )));
                 }
             }
         }
 
         // Session を先に全 prepare し、SessionAttached を一括 commit してから activate する。
         let mut session_setups: Vec<(String, String)> = Vec::with_capacity(session_plans.len());
-        for (node_execution_id, launch_config, initial_instruction) in session_plans {
+        let mut session_failures = Vec::new();
+        for (node_execution_id, execution_worktree_path, launch_config, initial_instruction) in
+            session_plans
+        {
             let prepared = self
                 .workflow_agent_sessions
                 .prepare_workflow_agent_session(
                     worktree_path,
+                    &execution_worktree_path,
                     launch_config,
                     &execution_id,
                     &node_execution_id,
@@ -1444,12 +1441,7 @@ impl WorkflowRuntimeHost {
                     session_setups.push((node_execution_id, session.id));
                 }
                 Err(launch_error) => {
-                    return match self.rollback_prepared_sessions(&session_setups).await {
-                        Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(format!(
-                            "{launch_error}; rollback failed: {rollback_error}"
-                        ))),
-                        None => Err(launch_error),
-                    };
+                    session_failures.push((node_execution_id, launch_error));
                 }
             }
         }
@@ -1533,26 +1525,10 @@ impl WorkflowRuntimeHost {
             {
                 Ok(()) => activated_sessions.push((node_execution_id.clone(), session_id.clone())),
                 Err(error) => {
-                    if let Err(settlement_error) = self
-                        .settle_runtime_failure_for_node(
-                            app,
-                            worktree_path,
-                            &execution_id,
-                            node_execution_id,
-                            &error,
-                        )
-                        .await
-                    {
-                        return match self.rollback_prepared_sessions(&session_setups).await {
-                            Some(rollback_error) => Err(WorkflowRuntimeError::AgentSession(
-                                format!("{settlement_error}; rollback failed: {rollback_error}"),
-                            )),
-                            None => Err(settlement_error),
-                        };
-                    }
                     log::warn!(
                         "workflow {execution_id}: NodeExecution '{node_execution_id}' failed to activate: {error}"
                     );
+                    session_failures.push((node_execution_id.clone(), error));
                 }
             }
         }
@@ -1569,6 +1545,10 @@ impl WorkflowRuntimeHost {
         }
         drop(activation_guard);
         drop(activation_gate);
+        for (node_execution_id, error) in session_failures {
+            self.settle_runtime_failure_for_node(app, &execution_id, &node_execution_id, &error)
+                .await?;
+        }
         for input in command_inputs {
             let (node_execution_id, result) = match input {
                 Ok(input) => {
@@ -1586,7 +1566,6 @@ impl WorkflowRuntimeHost {
             if let Err(error) = result {
                 self.settle_runtime_failure_for_node(
                     app,
-                    worktree_path,
                     &execution_id,
                     &node_execution_id,
                     &error,
@@ -1768,12 +1747,7 @@ impl WorkflowRuntimeHost {
                     log::warn!("{reason}");
                     if self.command_execution_still_current(&failure_input).await {
                         if let Err(settle_error) = self
-                            .settle_runtime_failure(
-                                app,
-                                &failure_input.worktree_path,
-                                &failure_input.execution_id,
-                                &error,
-                            )
+                            .settle_runtime_failure(app, &failure_input.execution_id, &error)
                             .await
                         {
                             log::error!(
@@ -1965,7 +1939,6 @@ impl WorkflowRuntimeHost {
         if is_current {
             self.settle_node_failure_for_node(
                 app,
-                &input.worktree_path,
                 &input.execution_id,
                 &input.node_execution_id,
                 reason,
@@ -2225,7 +2198,6 @@ impl WorkflowRuntimeHost {
     async fn settle_runtime_failure<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        worktree_path: &str,
         execution_id: &str,
         error: &WorkflowRuntimeError,
     ) -> Result<(), WorkflowRuntimeError> {
@@ -2249,21 +2221,13 @@ impl WorkflowRuntimeHost {
                     ))
                 })?
         };
-        self.settle_runtime_failure_for_node(
-            app,
-            worktree_path,
-            execution_id,
-            &node_execution_id,
-            error,
-        )
-        .await
+        self.settle_runtime_failure_for_node(app, execution_id, &node_execution_id, error)
+            .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn settle_runtime_failure_for_node<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        worktree_path: &str,
         execution_id: &str,
         node_execution_id: &str,
         error: &WorkflowRuntimeError,
@@ -2275,7 +2239,6 @@ impl WorkflowRuntimeHost {
             match self
                 .settle_node_failure_for_node(
                     app,
-                    worktree_path,
                     execution_id,
                     node_execution_id,
                     reason.clone(),
@@ -2300,11 +2263,9 @@ impl WorkflowRuntimeHost {
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn settle_node_failure_for_node<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        worktree_path: &str,
         execution_id: &str,
         node_execution_id: &str,
         reason: String,
@@ -2398,7 +2359,7 @@ impl WorkflowRuntimeHost {
         let mut leaves = Vec::new();
         if let Some(treatment) = treatment {
             events.extend(treatment.events);
-            leaves = treatment.leaves;
+            leaves = treatment.starts;
         }
         let snapshot = self
             .commit_control_plane_candidate(
@@ -2414,14 +2375,14 @@ impl WorkflowRuntimeHost {
             )
             .await?;
         let outcome = if !leaves.is_empty() {
-            Some(NodeOutcome::StartLeaves(snapshot.clone(), leaves))
+            Some(NodeOutcome::StartNodes(snapshot.clone(), leaves))
         } else if treatment_applied {
             // ignore 前進が leaf 起動なしで完了へ到達した場合も finalize を通す。
             Some(NodeOutcome::Persist(snapshot.clone()))
         } else {
             None
         };
-        self.finish_control_plane_commit(app, worktree_path, &snapshot, outcome)
+        self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, outcome)
             .await?;
         Ok(())
     }
@@ -2448,18 +2409,13 @@ impl WorkflowRuntimeHost {
         }
         match outcome {
             NodeOutcome::Persist(_) => Ok(()),
-            NodeOutcome::StartLeaves(snapshot, leaves) => {
+            NodeOutcome::StartNodes(snapshot, leaves) => {
                 if let Err(e) =
-                    Box::pin(self.start_leaves(app, &snapshot.execution_id, worktree_path, leaves))
+                    Box::pin(self.start_nodes(app, &snapshot.execution_id, worktree_path, leaves))
                         .await
                 {
-                    if let Err(settle_error) = Box::pin(self.settle_runtime_failure(
-                        app,
-                        worktree_path,
-                        &snapshot.execution_id,
-                        &e,
-                    ))
-                    .await
+                    if let Err(settle_error) =
+                        Box::pin(self.settle_runtime_failure(app, &snapshot.execution_id, &e)).await
                     {
                         return Err(WorkflowRuntimeError::InvalidState(format!(
                             "{e}; NodeFailed settlement failed: {settle_error}"
@@ -2528,7 +2484,7 @@ mod workflow_host_tests {
     const EFFECT_NODE_NAME: &str = "agent";
     const EFFECT_AGENT_SESSION_ID: &str = "agent-session-effect-test";
 
-    struct UnusedWorkflowResolver;
+    pub(super) struct UnusedWorkflowResolver;
 
     #[async_trait::async_trait]
     impl WorkflowDefinitionResolver for UnusedWorkflowResolver {
@@ -2544,7 +2500,7 @@ mod workflow_host_tests {
 
     struct UnusedWorktreeResolver;
 
-    struct AcceptingWorktreeResolver;
+    pub(super) struct AcceptingWorktreeResolver;
 
     #[async_trait::async_trait]
     impl ManagedWorktreeResolver for UnusedWorktreeResolver {
@@ -2579,21 +2535,6 @@ mod workflow_host_tests {
         failing_agent_session_id: String,
     }
 
-    struct MissingRepoWorktreeInventory;
-
-    impl crate::domain::workflow::WorktreeInventoryGateway for MissingRepoWorktreeInventory {
-        fn snapshot(
-            &self,
-        ) -> Result<
-            Vec<crate::domain::workflow::RepositoryWorktreeInventory>,
-            crate::domain::workflow::WorkflowError,
-        > {
-            Ok(vec![
-                crate::domain::workflow::RepositoryWorktreeInventory::new("/repo", Vec::new()),
-            ])
-        }
-    }
-
     #[tokio::test]
     async fn test_command完了_承認要求ありなら承認後に完了し省略時は自動完了する() {
         // Given
@@ -2617,12 +2558,7 @@ mod workflow_host_tests {
                     Arc::new(AcceptingWorktreeResolver),
                     Arc::new(ExecutionStore::new_in_memory_for_tests()),
                     Arc::new(FailingWorkflowAgentSessions),
-                    Arc::new(
-                        crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                            store.clone(),
-                        ),
-                    ),
-                    Arc::new(MissingRepoWorktreeInventory),
+                    Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
                 ));
                 let node_name = if parent.is_empty() { "main" } else { "run" };
                 let workflow = serde_saphyr::from_str::<WorkflowDefinition>(&format!(
@@ -2654,6 +2590,7 @@ mod workflow_host_tests {
                     .await
                     .unwrap();
                 let mut start_events = vec![WorkflowEvent::ExecutionStarted {
+                    repository_root: None,
                     execution_id: execution_id.clone(),
                     workflow_name: workflow.name.clone(),
                     worktree_path: worktree_path.clone(),
@@ -2802,12 +2739,7 @@ mod workflow_host_tests {
             Arc::new(AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             Arc::new(FailingWorkflowAgentSessions),
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            ),
-            Arc::new(MissingRepoWorktreeInventory),
+            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: missing-command-env
@@ -2844,11 +2776,22 @@ nodes:
         let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
         assert!(records.iter().any(|record| matches!(
             &record.fact,
-            NodeFact::ProcessExited(fact) if fact.failure_reason.is_some()
+            NodeFact::RuntimeFailureObserved(fact) if !fact.reason.is_empty()
         )));
         assert!(!records
             .iter()
             .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
+        let restored = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(store),
+            &execution_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            restored.aggregate.node_executions[0].status,
+            NodeExecutionStatus::Failed
+        );
+        assert!(restored.aggregate.node_executions[0].can_retry());
     }
 
     #[tokio::test]
@@ -2870,12 +2813,7 @@ nodes:
             Arc::new(AcceptingWorktreeResolver),
             Arc::new(ExecutionStore::new_in_memory_for_tests()),
             Arc::new(FailingWorkflowAgentSessions),
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            ),
-            Arc::new(MissingRepoWorktreeInventory),
+            Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: nul-command-env
@@ -2921,11 +2859,25 @@ nodes:
         let records = workflow_fact_log::read_tree_records(&store, &execution_id).unwrap();
         assert!(records.iter().any(|record| matches!(
             &record.fact,
-            NodeFact::ProcessExited(fact) if fact.failure_reason.is_some()
+            NodeFact::RuntimeFailureObserved(fact) if !fact.reason.is_empty()
         )));
         assert!(!records
             .iter()
             .any(|record| matches!(record.fact, NodeFact::CommandSpawned(_))));
+        let restored = workflow_fact_log::fold_tree_from(
+            &workflow_fact_log::FactLogReadBackend::Live(store),
+            &execution_id,
+        )
+        .unwrap()
+        .unwrap();
+        let failed = restored
+            .aggregate
+            .node_executions
+            .iter()
+            .find(|node| node.node_name == "run")
+            .unwrap();
+        assert_eq!(failed.status, NodeExecutionStatus::Failed);
+        assert!(failed.can_retry());
     }
 
     #[async_trait::async_trait]
@@ -2936,6 +2888,7 @@ nodes:
 
         async fn prepare_workflow_agent_session(
             &self,
+            _workspace_worktree_path: &str,
             _worktree_path: &str,
             _config: WorkflowSessionLaunchConfig,
             _workflow_execution_id: &str,
@@ -3228,6 +3181,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 _config: WorkflowSessionLaunchConfig,
                 _workflow_execution_id: &str,
@@ -3372,6 +3326,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 _config: WorkflowSessionLaunchConfig,
                 _workflow_execution_id: &str,
@@ -3500,6 +3455,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 config: WorkflowSessionLaunchConfig,
                 workflow_execution_id: &str,
@@ -3616,6 +3572,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 _config: WorkflowSessionLaunchConfig,
                 workflow_execution_id: &str,
@@ -3744,6 +3701,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 _config: WorkflowSessionLaunchConfig,
                 _workflow_execution_id: &str,
@@ -3832,6 +3790,7 @@ nodes:
 
             async fn prepare_workflow_agent_session(
                 &self,
+                _workspace_worktree_path: &str,
                 _worktree_path: &str,
                 _config: WorkflowSessionLaunchConfig,
                 _workflow_execution_id: &str,
@@ -3969,17 +3928,12 @@ nodes:
                 directory.path().to_path_buf(),
             ));
             let host = Arc::new(WorkflowRuntimeHost::with_execution_store(
-            Arc::new(UnusedWorkflowResolver),
-            Arc::new(AcceptingWorktreeResolver),
-            Arc::new(ExecutionStore::new_in_memory_for_tests()),
-            sessions,
-            Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            ),
-            Arc::new(MissingRepoWorktreeInventory),
-        ));
+                Arc::new(UnusedWorkflowResolver),
+                Arc::new(AcceptingWorktreeResolver),
+                Arc::new(ExecutionStore::new_in_memory_for_tests()),
+                sessions,
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+            ));
             let mut nodes = vec![NodeDefinition {
                 name: EFFECT_NODE_NAME.to_string(),
                 kind: NodeKind::Session(SessionSpec {
@@ -4076,12 +4030,7 @@ nodes:
                 Arc::new(AcceptingWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 sessions,
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
             let session_node = |name: &str| NodeDefinition {
                 name: name.to_string(),
@@ -4179,12 +4128,7 @@ nodes:
                 Arc::new(OrderedWorkflowAgentSessions {
                     calls: calls.clone(),
                 }),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
             let session_node = |name: &str| NodeDefinition {
                 name: name.to_string(),
@@ -4681,12 +4625,7 @@ nodes:
                 Arc::new(UnusedWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 Arc::new(FailingWorkflowAgentSessions),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        fixture.store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
             restarted
                 .reconcile_startup(fixture.app.handle())
@@ -4797,12 +4736,7 @@ nodes:
                 Arc::new(AcceptingWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 sessions.clone(),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
             let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
             let gateway = Arc::new(TauriWorkflowRuntimeCommandGateway::new_with_driver(
@@ -5004,12 +4938,7 @@ nodes:
                     dispatch_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     failing_agent_session_id: String::new(),
                 }),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store,
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
             host.register_started_execution_tree(app.handle(), session_id)
                 .await
@@ -5371,7 +5300,6 @@ nodes:
                 .host
                 .settle_runtime_failure_for_node(
                     fixture.app.handle(),
-                    EFFECT_WORKTREE_PATH,
                     &fixture.execution_id,
                     &fixture.node_execution_id,
                     &runtime_error,
@@ -5408,7 +5336,6 @@ nodes:
                 .host
                 .settle_runtime_failure_for_node(
                     fixture.app.handle(),
-                    EFFECT_WORKTREE_PATH,
                     &fixture.execution_id,
                     &fixture.node_execution_id,
                     &runtime_error,
@@ -6198,12 +6125,7 @@ nodes:
                 Arc::new(AcceptingWorktreeResolver),
                 execution_store.clone(),
                 sessions,
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             ));
 
             // Given: Session 起動由来の単独実行木で Stop 後の正常終了が Paused を導出している
@@ -6425,12 +6347,7 @@ nodes:
                 Arc::new(UnusedWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 Arc::new(FailingWorkflowAgentSessions),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                        store.clone(),
-                    ),
-                ),
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
             host.reconcile_startup(app.handle()).await.unwrap();
@@ -6506,7 +6423,8 @@ nodes:
                 &root_meta,
                 &NodeFact::Started(StartedFact {
                     parent: None,
-                    root: Some(TreeRootFact {
+                    root: Some(Box::new(TreeRootFact {
+                        repository_root: None,
                         definition_resolution: Default::default(),
                         workspace_identity: worktree_path.to_string(),
                         worktree_path: worktree_path.to_string(),
@@ -6514,7 +6432,7 @@ nodes:
                         request: String::new(),
                         definition,
                         launched_as: ExecutionTreeLaunch::Workflow,
-                    }),
+                    })),
                 }),
                 timestamp_ms,
             )
@@ -6550,29 +6468,6 @@ nodes:
             ))
             .unwrap();
             append_started_session_tree(&store, CORRUPT_TREE_ID, "/repo/corrupt", 1);
-            let corrupt_child_meta = NodeFactMeta {
-                tree_id: CORRUPT_TREE_ID.to_string(),
-                node_execution_id: format!("{CORRUPT_TREE_ID}-session"),
-                parent_id: Some(CORRUPT_TREE_ID.to_string()),
-                node_name: "impl".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-            };
-            workflow_fact_log::append_single_fact(
-                &store,
-                &corrupt_child_meta,
-                &NodeFact::IsolatedWorktreeCreated(
-                    crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact {
-                        repository_root: "/repo".to_string(),
-                        worktree_path: format!(
-                            "/repo-worktrees/.releash-isolated/{CORRUPT_TREE_ID}-session-a1"
-                        ),
-                        branch: format!("releash/isolated/{CORRUPT_TREE_ID}-session-a1"),
-                    },
-                ),
-                3,
-            )
-            .unwrap();
             store
                 .append_node_event_blocking(
                     NewNodeEventRow {
@@ -6600,19 +6495,13 @@ nodes:
             let app = tauri::test::mock_builder()
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
-            let worktree_ledger = Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            );
             app.manage(store.clone());
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 Arc::new(FailingWorkflowAgentSessions),
-                worktree_ledger,
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
             let error = host.reconcile_startup(app.handle()).await.unwrap_err();
@@ -6631,25 +6520,6 @@ nodes:
                     .len(),
                 valid_count
             );
-            assert!(!workflow_fact_log::read_tree_records(&store, VALID_TREE_ID)
-                .unwrap()
-                .iter()
-                .any(|record| matches!(record.fact, NodeFact::IsolatedWorktreeLost)));
-            let corrupt_lost_count = store
-                .submit_indexed_query_blocking(move |connection| {
-                    crate::adaptor::gateway::local_event_store::node_events::read_tree(
-                        connection,
-                        CORRUPT_TREE_ID,
-                    )
-                    .map(|rows| {
-                        rows.into_iter()
-                            .filter(|row| row.event_type == "isolated_worktree_lost")
-                            .count()
-                    })
-                    .map_err(|_| crate::domain::local_event::LocalEventQueryError::InvalidRequest)
-                })
-                .unwrap();
-            assert_eq!(corrupt_lost_count, 0);
         }
 
         #[tokio::test]
@@ -6714,100 +6584,16 @@ nodes:
             let app = tauri::test::mock_builder()
                 .build(tauri::test::mock_context(tauri::test::noop_assets()))
                 .unwrap();
-            let worktree_ledger = Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            );
             app.manage(store);
             let host = WorkflowRuntimeHost::with_execution_store(
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
                 Arc::new(ExecutionStore::new_in_memory_for_tests()),
                 Arc::new(FailingWorkflowAgentSessions),
-                worktree_ledger,
-                Arc::new(MissingRepoWorktreeInventory),
+                Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
             host.reconcile_startup(app.handle()).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn test_隔離worktree喪失後のresumeは事実を追記せず拒否する() {
-            use crate::domain::workflow::value_objects::IsolatedWorktreeCreatedFact;
-
-            const TREE_ID: &str = "00000000-0000-4000-8000-000000000003";
-            let directory = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                directory.path().to_path_buf(),
-            ))
-            .unwrap();
-            append_started_session_tree(&store, TREE_ID, "/repo", 1);
-            let child_meta = NodeFactMeta {
-                tree_id: TREE_ID.to_string(),
-                node_execution_id: format!("{TREE_ID}-session"),
-                parent_id: Some(TREE_ID.to_string()),
-                node_name: "impl".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-            };
-            workflow_fact_log::append_single_fact(
-                &store,
-                &child_meta,
-                &NodeFact::IsolatedWorktreeCreated(IsolatedWorktreeCreatedFact {
-                    repository_root: "/repo".to_string(),
-                    worktree_path: format!(
-                        "/repo-worktrees/.releash-isolated/{TREE_ID}-session-a1"
-                    ),
-                    branch: format!("releash/isolated/{TREE_ID}-session-a1"),
-                }),
-                3,
-            )
-            .unwrap();
-
-            let app = tauri::test::mock_builder()
-                .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                .unwrap();
-            let worktree_ledger = Arc::new(
-                crate::adaptor::gateway::workflow::NodeEventIsolatedWorktreeLedgerRepository::new(
-                    store.clone(),
-                ),
-            );
-            app.manage(store.clone());
-            let host = WorkflowRuntimeHost::with_execution_store(
-                Arc::new(UnusedWorkflowResolver),
-                Arc::new(AcceptingWorktreeResolver),
-                Arc::new(ExecutionStore::new_in_memory_for_tests()),
-                Arc::new(FailingWorkflowAgentSessions),
-                worktree_ledger,
-                Arc::new(MissingRepoWorktreeInventory),
-            );
-            host.reconcile_startup(app.handle()).await.unwrap();
-            let before = workflow_fact_log::read_tree_records(&store, TREE_ID)
-                .unwrap()
-                .len();
-
-            let error = host
-                .resume_workflow_execution(app.handle(), TREE_ID)
-                .await
-                .unwrap_err();
-
-            assert!(
-                matches!(
-                    &error,
-                    WorkflowRuntimeError::InvalidState(reason)
-                        if reason
-                            == &format!(
-                                "isolated worktree is missing: /repo-worktrees/.releash-isolated/{TREE_ID}-session-a1"
-                            )
-                ),
-                "unexpected error: {error}"
-            );
-            let records = workflow_fact_log::read_tree_records(&store, TREE_ID).unwrap();
-            assert_eq!(records.len(), before);
-            assert!(!records
-                .iter()
-                .any(|record| matches!(record.fact, NodeFact::ResumeRequested)));
         }
     }
 }
@@ -6923,3 +6709,7 @@ nodes:
         );
     }
 }
+
+#[cfg(test)]
+#[path = "workflow_host/isolated_worktree_test.rs"]
+mod isolated_worktree_tests;

@@ -504,6 +504,25 @@ function WorkspaceBranchRow({
 					onArchiveWorkflow={onArchiveWorkflow}
 				/>
 			</div>
+			{expanded && item.worktree && (
+				<dl
+					className="space-y-1 py-1 pr-2 text-xs"
+					style={{ paddingLeft: indentPx + TREE_LEVEL_INDENT_PX }}
+				>
+					<div>
+						<dt className="text-muted-foreground">Branch</dt>
+						<dd className="select-text break-all font-mono">
+							{item.worktree.branch}
+						</dd>
+					</div>
+					<div>
+						<dt className="text-muted-foreground">Worktree</dt>
+						<dd className="select-text break-all font-mono">
+							{item.worktree.path}
+						</dd>
+					</div>
+				</dl>
+			)}
 			{expanded &&
 				item.children.map((child) => (
 					<WorkspaceTreeItemRow
@@ -901,7 +920,7 @@ function WorktreeTreeItem({
 					cols: 80,
 					callerRequestId: `restore.${crypto.randomUUID()}`,
 				});
-				notifyAgentSessionChanged(session.worktreePath);
+				notifyAgentSessionChanged(session.workspaceWorktreePath);
 				await refreshAgentSessions();
 				const nodeId = await invoke<string | null>(
 					"get_workspace_session_node_id",
@@ -919,6 +938,7 @@ function WorktreeTreeItem({
 						agentSessionId: session.id,
 						workspaceIdentity: session.workspaceIdentity,
 						worktreePath: session.worktreePath,
+						workspaceWorktreePath: session.workspaceWorktreePath,
 						provider: session.provider,
 					},
 				});
@@ -1007,6 +1027,7 @@ function WorktreeTreeItem({
 						agentSessionId,
 						workspaceIdentity: branch.worktree_path,
 						worktreePath: branch.worktree_path,
+						workspaceWorktreePath: branch.worktree_path,
 						provider: candidate.provider,
 					},
 				});
@@ -1135,6 +1156,7 @@ function WorktreeTreeItem({
 							agentSessionId,
 							workspaceIdentity: branch.worktree_path,
 							worktreePath: branch.worktree_path,
+							workspaceWorktreePath: branch.worktree_path,
 							provider,
 						},
 					});
@@ -1699,7 +1721,6 @@ function WorktreeTreeItem({
 function RepoTreeSectionView({
 	repoPath,
 	branches,
-	cleanupCandidates,
 	loading,
 	refresh,
 	selectedRootPath,
@@ -1710,7 +1731,6 @@ function RepoTreeSectionView({
 }: {
 	repoPath: string;
 	branches: WorktreeBranch[];
-	cleanupCandidates: WorktreeBranch[];
 	loading: boolean;
 	refresh: (options?: { silent?: boolean }) => Promise<void>;
 	selectedRootPath: string | null;
@@ -1813,34 +1833,6 @@ function RepoTreeSectionView({
 							/>
 						))
 					)}
-					{!loading && cleanupCandidates.length > 0 && (
-						<section
-							className="mx-2 mt-2 space-y-1 border-border border-t pt-2"
-							aria-label="掃除候補"
-						>
-							<div className="text-[11px] font-medium text-muted-foreground">
-								掃除候補
-							</div>
-							{cleanupCandidates.map((branch) => (
-								<div
-									key={`${branch.name}:${branch.worktree_path}`}
-									className="rounded border border-border/60 px-2 py-1.5 text-[11px]"
-								>
-									<div className="truncate font-medium text-foreground">
-										{branch.name}
-									</div>
-									<div className="text-muted-foreground">
-										{branch.management_kind === "untracked_cleanup_candidate"
-											? "台帳外・掃除候補"
-											: "掃除候補"}
-									</div>
-									<div className="truncate text-muted-foreground/80">
-										{branch.worktree_path}
-									</div>
-								</div>
-							))}
-						</section>
-					)}
 				</div>
 			)}
 			<DeleteWorktreeDialog
@@ -1868,17 +1860,11 @@ function RepoTreeSection({
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 }) {
-	const {
-		branches,
-		cleanupCandidates = [],
-		loading,
-		refresh,
-	} = useWorktreeList(repoPath);
+	const { branches, loading, refresh } = useWorktreeList(repoPath);
 	return (
 		<RepoTreeSectionView
 			repoPath={repoPath}
 			branches={branches}
-			cleanupCandidates={cleanupCandidates}
 			loading={loading}
 			refresh={refresh}
 			selectedRootPath={selectedRootPath}

@@ -351,6 +351,7 @@ pub(in crate::cli) mod test_support {
         worktree: &str,
     ) -> WorkflowEvent {
         WorkflowEvent::ExecutionStarted {
+            repository_root: None,
             execution_id: execution_id.to_string(),
             workflow_name: workflow_name.to_string(),
             worktree_path: worktree.to_string(),

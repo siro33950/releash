@@ -121,6 +121,12 @@ fn node_execution_to_view_with_retry(
     let can_approve = node.status == workflow::NodeExecutionStatus::WaitingApproval;
     let has_artifact = node.artifact.is_some();
     workflow_wire::NodeExecutionView {
+        worktree: node
+            .worktree
+            .map(|worktree| crate::usecase::workflow::NodeWorktreeDto {
+                branch: worktree.branch,
+                path: worktree.path,
+            }),
         recovery_reason: node.recovery_reason.clone(),
         id: node.id,
         execution_id: node.execution_id,
@@ -277,6 +283,7 @@ mod tests {
 
     fn node() -> workflow::NodeExecution {
         workflow::NodeExecution {
+            worktree: None,
             recovery_reason: None,
             id: "node-1".to_string(),
             execution_id: "execution-1".to_string(),

@@ -40,6 +40,12 @@ pub trait WorkflowEventRepository: Send + Sync {
 }
 
 pub trait WorkflowExecutionProjectionRepository: Send + Sync {
+    fn get_node_artifact_from_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        node_name: &str,
+        events: &[WorkflowEventDraft],
+    ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError>;
     fn get_execution(
         &self,
         execution_id: &WorkflowExecutionId,

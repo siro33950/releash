@@ -22,7 +22,7 @@ pub use definition::{
     InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
     NodeKindName, NodeNamespace, NodeNamespaceError, OnFailure, Rule, SchemaDef, SequenceSpec,
     SessionPermission, SessionSpec, WorkflowDefinition, WorkflowSourceFormat, WorkflowSummary,
-    MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
+    WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
 };
 pub use definition_resolution::DefinitionResolution;
 pub use execution::{
@@ -50,11 +50,10 @@ pub use node_execution::{
 };
 pub use node_fact::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
-    CommandSpawnedFact, ExecutionTreeLaunch, IsolatedWorktreeCreatedFact, NodeFact, NodeFactMeta,
-    NodeFactRecord, ProcessExitedFact, ProviderSessionTitleObservedFact,
-    RuntimeFailureObservedFact, SessionAttachedFact, SessionExecutionTreeRootFacts,
-    SessionNodeRenamedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
-    TreeRootFact,
+    CommandSpawnedFact, ExecutionTreeLaunch, NodeFact, NodeFactMeta, NodeFactRecord,
+    ProcessExitedFact, ProviderSessionTitleObservedFact, RuntimeFailureObservedFact,
+    SessionAttachedFact, SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact,
+    StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
 };
 pub use predicate::{Predicate, PredicateError};
 pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
@@ -65,10 +64,6 @@ pub use runtime_projection::{
     NODE_STATUS_FAILED,
 };
 pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
-#[cfg(test)]
-pub use worktree_origin::{isolated_worktree_branch, isolated_worktree_path};
 pub use worktree_origin::{
-    IsolatedWorktreeIdentity, IsolatedWorktreeLedgerEntry, IsolatedWorktreeLedgerSnapshot,
-    IsolatedWorktreeLifecycle, IsolatedWorktreeRecoveryCause, RepositoryWorktreeInventory,
-    WorktreeInventoryEntry, WorktreeManagementKind,
+    isolated_worktree_owner, IsolatedWorktree, WorktreeInheritance, WorktreeInventoryEntry,
 };

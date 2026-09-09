@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,10 +5,7 @@ use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::domain::app_config::value_objects::AppSettings;
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::repository::WorktreeRepository;
-use crate::domain::workflow::{
-    ManagedWorktreeGateway, RepositoryWorktreeInventory, WorkflowError, WorktreeInventoryEntry,
-    WorktreeInventoryGateway,
-};
+use crate::domain::workflow::{ManagedWorktreeGateway, WorkflowError};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
@@ -18,33 +14,6 @@ fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
         paths.push(app.last_root_path.clone());
     }
     paths
-}
-
-fn inventory_snapshot_inner(
-    repository: &dyn WorktreeRepository,
-    repo_paths: Vec<String>,
-) -> Vec<RepositoryWorktreeInventory> {
-    let mut seen = BTreeSet::new();
-    let mut snapshots = Vec::new();
-    for configured_path in repo_paths {
-        let Ok(repository_root) = repository.main_repo_path(&configured_path) else {
-            continue;
-        };
-        if !seen.insert(repository_root.clone()) {
-            continue;
-        }
-        let Ok(worktrees) = repository.list(&repository_root) else {
-            continue;
-        };
-        let worktrees = worktrees
-            .into_iter()
-            .map(|worktree| {
-                WorktreeInventoryEntry::new(&repository_root, worktree.path, worktree.branch)
-            })
-            .collect();
-        snapshots.push(RepositoryWorktreeInventory::new(repository_root, worktrees));
-    }
-    snapshots
 }
 
 /// [05] API / CLI 共有 helper: `worktree_path` filter input を OS レベルで canonicalize し、
@@ -134,30 +103,72 @@ impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
 }
 
 #[derive(Clone)]
-pub(crate) struct RepositoryWorktreeInventoryGateway {
-    repository: Arc<dyn WorktreeRepository>,
-    config: Arc<dyn ConfigRepository>,
-}
+pub(crate) struct RepositoryIsolatedWorktreeGateway;
 
-impl RepositoryWorktreeInventoryGateway {
-    pub(crate) fn new(config: Arc<dyn ConfigRepository>) -> Self {
-        Self {
-            repository: Arc::new(WorktreeGateway),
-            config,
-        }
+impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWorktreeGateway {
+    fn repository_root(&self, worktree_path: &str) -> Result<String, WorkflowError> {
+        WorktreeGateway
+            .main_repo_path(worktree_path)
+            .map_err(|error| WorkflowError::external(error.to_string()))
     }
-}
 
-impl WorktreeInventoryGateway for RepositoryWorktreeInventoryGateway {
-    fn snapshot(&self) -> Result<Vec<RepositoryWorktreeInventory>, WorkflowError> {
-        let config = self
-            .config
-            .load()
-            .map_err(|error| WorkflowError::external(error.to_string()))?;
-        Ok(inventory_snapshot_inner(
-            self.repository.as_ref(),
-            configured_repo_paths(&config.app),
-        ))
+    fn is_created(
+        &self,
+        parent_worktree_path: &str,
+        worktree: &crate::domain::workflow::IsolatedWorktree,
+    ) -> Result<bool, WorkflowError> {
+        let inspect = || -> Result<bool, Box<dyn std::error::Error>> {
+            let repo = git2::Repository::open(parent_worktree_path)?;
+            let path = std::path::Path::new(&worktree.path);
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("invalid isolated worktree path")?;
+            let existing = match repo.find_worktree(name) {
+                Ok(existing) => existing,
+                Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            };
+            existing.validate()?;
+            if existing.path().canonicalize()? != path.canonicalize()? {
+                return Err("isolated worktree path does not match its registration".into());
+            }
+            let isolated = git2::Repository::open(path)?;
+            if isolated.commondir().canonicalize()? != repo.commondir().canonicalize()?
+                || isolated.head()?.name()? != format!("refs/heads/{}", worktree.branch)
+            {
+                return Err("isolated worktree repository or branch does not match".into());
+            }
+            Ok(true)
+        };
+        inspect().map_err(|error| WorkflowError::external(error.to_string()))
+    }
+
+    fn create(
+        &self,
+        parent_worktree_path: &str,
+        worktree: &crate::domain::workflow::IsolatedWorktree,
+    ) -> Result<(), WorkflowError> {
+        let create = || -> Result<(), Box<dyn std::error::Error>> {
+            let repo = git2::Repository::open(parent_worktree_path)?;
+            let commit = repo.head()?.peel_to_commit()?;
+            let reference = repo
+                .branch(&worktree.branch, &commit, false)?
+                .into_reference();
+            let path = std::path::Path::new(&worktree.path);
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("invalid isolated worktree path")?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut options = git2::WorktreeAddOptions::new();
+            options.reference(Some(&reference));
+            repo.worktree(name, path, Some(&options))?;
+            Ok(())
+        };
+        create().map_err(|error| WorkflowError::external(error.to_string()))
     }
 }
 
@@ -201,11 +212,6 @@ impl ManagedWorktreeGateway for PassthroughManagedWorktreeGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{
-        isolated_worktree_branch, isolated_worktree_path,
-    };
-    use git2::{BranchType, Repository};
-    use std::fs;
 
     fn test_usecase() -> RepositoryUsecase {
         crate::adaptor::controller::wiring::build_repository_usecase()
@@ -239,47 +245,8 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("not a configured git worktree"));
     }
-
-    #[test]
-    fn inventory_snapshot_is_read_only_and_omits_repositories_that_cannot_be_read() {
-        let parent = tempfile::TempDir::new().unwrap();
-        let repo_path = parent.path().join("main-repo");
-        fs::create_dir(&repo_path).unwrap();
-        let repo = Repository::init(&repo_path).unwrap();
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
-        crate::test_support::git::create_initial_commit(&repo);
-
-        let repository_root = WorktreeGateway
-            .main_repo_path(&repo_path.to_string_lossy())
-            .unwrap();
-        let node_execution_id = "node-1";
-        let branch = isolated_worktree_branch(node_execution_id, 1);
-        let worktree_path = isolated_worktree_path(&repository_root, node_execution_id, 1);
-        WorktreeGateway
-            .create(&repository_root, &worktree_path, &branch, true, None)
-            .unwrap();
-
-        let snapshots = inventory_snapshot_inner(
-            &WorktreeGateway,
-            vec![
-                repository_root.clone(),
-                parent
-                    .path()
-                    .join("missing-repository")
-                    .to_string_lossy()
-                    .to_string(),
-            ],
-        );
-
-        assert_eq!(snapshots.len(), 1);
-        assert!(snapshots[0]
-            .worktrees
-            .iter()
-            .any(|worktree| worktree.worktree_path == worktree_path && worktree.branch == branch));
-        assert!(std::path::Path::new(&worktree_path).exists());
-        assert!(repo.find_branch(&branch, BranchType::Local).is_ok());
-        assert!(repo.find_worktree("node-1-a1").is_ok());
-    }
 }
+
+#[cfg(test)]
+#[path = "worktree_gateway_test.rs"]
+mod worktree_gateway_tests;

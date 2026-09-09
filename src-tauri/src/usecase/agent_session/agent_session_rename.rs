@@ -63,7 +63,7 @@ impl AgentSessionRenameExecutor for AgentSessionRenameUsecase {
             return Ok(outcome);
         }
         debug_assert!(session.session().manual_name().is_some());
-        let worktree_path = session.session().worktree_path().to_string();
+        let worktree_path = session.session().workspace().as_str().to_string();
         self.repository
             .save(
                 session,
