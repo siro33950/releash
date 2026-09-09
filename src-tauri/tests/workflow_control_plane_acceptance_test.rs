@@ -1157,6 +1157,24 @@ async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届
         host.agent_session_lifecycle(&session_id).await.unwrap(),
         Some(AcceptanceAgentSessionLifecycle::Open)
     );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let replay = host
+                .terminal()
+                .get(terminal_owner.clone())
+                .unwrap()
+                .terminal_surface
+                .replay;
+            if replay.contains("codex-workflow-fixture 日本語")
+                && !replay.contains("releash-fixture-input-complete-0")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("復元したfixtureが古い画面を描き直す");
     let mut restored_terminal = host
         .terminal()
         .attach(
@@ -1164,7 +1182,17 @@ async fn test_issue_1696_archive_restore後のstopはcache上のsession木へ届
             terminal_owner.clone(),
         )
         .unwrap();
-    receive_until(&mut restored_terminal, "releash-fixture-input-complete-0").await;
+    host.terminal()
+        .write(terminal_owner.clone(), "restored-session-input\r")
+        .unwrap();
+    receive_until_all(
+        &mut restored_terminal,
+        &[
+            "received-0:restored-session-input",
+            "releash-fixture-input-complete-0",
+        ],
+    )
+    .await;
     associate_provider_session(
         &host,
         &mut restored_terminal,
